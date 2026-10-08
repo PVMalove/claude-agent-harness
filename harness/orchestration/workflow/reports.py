@@ -41,6 +41,16 @@ from harness.orchestration.core.constants import (
     MAX_CHECK_EVIDENCE_CHARS,
     PLANNED_TRIGGER_KINDS,
     PLANNED_TRIGGER_THRESHOLD_KEY,
+    QA_CODE_CHECKS_STARTED,
+    QA_DIAGNOSIS_CATEGORIES,
+    QA_DIAGNOSIS_FIELDS,
+    QA_NOT_RUN_RESULT,
+    QA_STAGE_ENTRY_FIELDS,
+    QA_STAGE_ENTRY_OPTIONAL_FIELDS,
+    QA_PRIMARY_STAGE_NAMES,
+    QA_STAGE_NAMES,
+    QA_STAGES_FIELDS,
+    QA_STAGES_OPTIONAL_FIELDS,
     RATE_LIMIT_TERMINATION_REASONS,
     REPORT_FIELDS,
     REPORT_OPTIONAL_FIELDS,
@@ -1215,6 +1225,141 @@ def _validate_incomplete_items(report: JsonObject, role: JsonObject) -> None:
             )
 
 
+def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
+    """Shape and consistency of a QA report's ``qa_stages`` against its checks and outcome (issue #618).
+
+    The stage list is the evidence: its gate entries must be the leading approved verification
+    commands with the same results as ``checks_run``, every later command is ``not-run``, and the
+    failed stage, the code-check fact, the diagnosis and the outcome must follow from the entries.
+    """
+    if "qa_stages" not in report:
+        return
+    stages = report["qa_stages"]
+
+    def refuse(problem: str) -> CoordinatorError:
+        return CoordinatorError(
+            f"completion report qa_stages {problem}",
+            remedy="resubmit qa_stages exactly as the clean-room QA runner records it; "
+            "QA reports are produced by 'qa run', not by hand",
+        )
+
+    if dispatch.get("role") != "qa":
+        raise refuse("belongs only to a QA report")
+    if (
+        not isinstance(stages, dict)
+        or not QA_STAGES_FIELDS <= set(stages)
+        or set(stages) - QA_STAGES_FIELDS - QA_STAGES_OPTIONAL_FIELDS
+    ):
+        raise refuse("has an invalid schema")
+    entries = stages["stages"]
+    if not isinstance(entries, list) or not entries:
+        raise refuse("stages must be a non-empty list")
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or not QA_STAGE_ENTRY_FIELDS <= set(entry)
+            or set(entry) - QA_STAGE_ENTRY_FIELDS - QA_STAGE_ENTRY_OPTIONAL_FIELDS
+            or entry["stage"] not in QA_STAGE_NAMES
+            or not _non_empty(entry["command"])
+            or isinstance(entry["exit_code"], bool)
+            or not isinstance(entry["exit_code"], int)
+            or entry["result"] != ("pass" if entry["exit_code"] == 0 else "fail")
+        ):
+            raise refuse("has an invalid stage entry")
+        diagnostics = entry.get("diagnostics")
+        if (diagnostics is not None) != (entry["exit_code"] != 0) or (
+            diagnostics is not None
+            and (
+                not _non_empty(diagnostics)
+                or len(diagnostics) > MAX_CHECK_EVIDENCE_CHARS
+            )
+        ):
+            raise refuse(
+                "carries sanitised, bounded diagnostics for a failed stage and none otherwise"
+            )
+    names = [entry["stage"] for entry in entries]
+    if names != sorted(names, key=QA_STAGE_NAMES.index):
+        raise refuse("lists the gate stage before the preparation stage")
+    # Probes and project-file checks run only to diagnose a failed preparation, so their own
+    # failures are facts, not stage failures.
+    primary = [entry for entry in entries if entry["stage"] in QA_PRIMARY_STAGE_NAMES]
+    failed = [entry for entry in primary if entry["result"] == "fail"]
+    if failed and failed[0] is not primary[-1]:
+        raise refuse("continues past the first failing stage")
+    facts = [entry for entry in entries if entry["stage"] not in QA_PRIMARY_STAGE_NAMES]
+    if facts and not (failed and failed[0]["stage"] == "preparation"):
+        raise refuse(
+            "records environment probes or project-file checks without a failed preparation"
+        )
+    failed_stage = stages["failed_stage"]
+    if failed_stage != (failed[0]["stage"] if failed else None):
+        raise refuse("failed_stage does not match the failing stage entry")
+    gate = [entry for entry in entries if entry["stage"] == "gate"]
+    started = stages["code_checks_started"]
+    if started not in QA_CODE_CHECKS_STARTED:
+        raise refuse(
+            f"code_checks_started must be one of: {', '.join(QA_CODE_CHECKS_STARTED)}"
+        )
+    if bool(gate) != (started == "started"):
+        raise refuse("code_checks_started contradicts the gate stage entries")
+    diagnosis = stages.get("diagnosis")
+    if failed_stage == "preparation":
+        if (
+            not isinstance(diagnosis, dict)
+            or set(diagnosis) != QA_DIAGNOSIS_FIELDS
+            or diagnosis["category"] not in QA_DIAGNOSIS_CATEGORIES
+            or not isinstance(diagnosis["signals"], list)
+            or not all(_non_empty(item) for item in diagnosis["signals"])
+            or not _non_empty(diagnosis["basis"])
+        ):
+            raise refuse("needs a valid diagnosis for a failed preparation stage")
+        if diagnosis["category"] != "unknown" and started != "not_started":
+            raise refuse(
+                "confirms a cause although it does not confirm that no code check started"
+            )
+        probes_failed = [
+            e
+            for e in facts
+            if e["stage"] == "environment-probe" and e["result"] == "fail"
+        ]
+        file_checks = [e for e in facts if e["stage"] == "project-file-check"]
+        if diagnosis["category"] == "infrastructure" and not (
+            probes_failed
+            and file_checks
+            and all(e["result"] == "pass" for e in file_checks)
+        ):
+            raise refuse(
+                "confirms an infrastructure cause without a failed environment probe "
+                "and passing project-file checks"
+            )
+    elif diagnosis is not None:
+        raise refuse("carries a diagnosis although preparation did not fail")
+    approved = dispatch["verification_commands"]
+    commands = [entry["command"] for entry in gate]
+    if commands != approved[: len(commands)]:
+        raise refuse("gate entries are not the leading approved verification commands")
+    checks = report["checks_run"]
+    expected = [(entry["command"], entry["result"]) for entry in gate] + [
+        (command, QA_NOT_RUN_RESULT) for command in approved[len(gate) :]
+    ]
+    if [(check["command"], check["result"]) for check in checks] != expected:
+        raise refuse(
+            "does not agree with checks_run (a command never reached is not-run)"
+        )
+    if failed_stage is None:
+        expected_outcome = "completed"
+    elif (
+        failed_stage == "gate" or (diagnosis or {}).get("category") == "project-defect"
+    ):
+        expected_outcome = "failed"
+    else:
+        expected_outcome = "blocked"
+    if report["outcome"] != expected_outcome:
+        raise refuse(
+            f"requires outcome {expected_outcome} for failed_stage {failed_stage}"
+        )
+
+
 def _resolve_report_commit(repo: Path, commit_sha: str) -> str:
     try:
         return _candidate_commit(repo, commit_sha)
@@ -1326,6 +1471,7 @@ def _validate_report(
             f"(expected {dispatch['verification_commands']}, got {commands_run})",
             remedy="re-run exactly the approved verification_commands and report those results",
         )
+    _validate_qa_stages(report, dispatch)
     plan_rules.check_fields_allowed(report, dispatch)
     carried_items.check_closure(report, dispatch)
     commit_sha = report["commit_sha"]
@@ -1510,6 +1656,22 @@ def _report_markdown(report: JsonObject) -> str:
         if field in report:
             lines.append(f"- {label}:")
             lines.extend(f"  - {item}" for item in report[field])
+    qa_stages = report.get("qa_stages")
+    if isinstance(qa_stages, dict):
+        lines.append(
+            f"- QA stages: failed stage {qa_stages['failed_stage'] or 'none'}, "
+            f"code checks started: {qa_stages['code_checks_started']}"
+        )
+        for entry in qa_stages["stages"]:
+            lines.append(
+                f"  - [{entry['stage']}] `{entry['command']}` — {entry['result']}, exit {entry['exit_code']}"
+            )
+        diagnosis = qa_stages.get("diagnosis")
+        if isinstance(diagnosis, dict):
+            lines.append(
+                f"  - Diagnosis: {diagnosis['category']} ({diagnosis['basis']}; "
+                f"signals: {', '.join(diagnosis['signals']) or 'none'})"
+            )
     tooling = report.get("tooling_blocker")
     if isinstance(tooling, dict):
         lines.append(

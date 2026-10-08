@@ -48,8 +48,8 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 4. **Решение.** Coordinator принимает report (`batch decide --decision accept`), отправляет на
    retry с маршрутизацией по структурным данным report, блокирует или завершает batch. При
    `approval_policy` `milestone`/`low_risk`/`auto` чистые report без рисков принимаются автоматически.
-5. **QA и publish.** Clean-room QA гоняет `verification_commands` на закреплённом candidate SHA в
-   общей очереди. Publish выдаёт принятый SHA; PR открывает человек через `/to-pull-requests`.
+5. **QA и publish.** Clean-room QA выполняет `qa_preparation` (если задан), затем `verification_commands`
+   на закреплённом candidate SHA в общей очереди; провал подготовки не считается провалом проверок кода. Publish выдаёт принятый SHA; PR открывает человек через `/to-pull-requests`.
 6. **Integration accounting.** После accepted publish `integration prepare` записывает связь
    тикет, ветка, source batch, опубликованный candidate SHA и target SHA; `integration status`
    только наблюдает `stale` без dispatch, а `integration link-evidence` принимает будущие CI,
@@ -92,6 +92,9 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `backend_zones` | объект | — | Устаревшее, необязательное: имя → `paths` (glob). Больше не блокирует параллельные batch; существующий конфиг с зонами остаётся валидным. |
 | `concurrency_budget` | целое ≥ 1 | 1 | Сколько batch могут быть активны одновременно. Единственный предел параллелизма: пересечение файлов и совпадение зон его не заменяют. |
 | `verification_commands` | список строк | `[]` | Полный gate clean-room QA. Пустой список — QA без проверок; впишите реальные команды проекта. |
+| `qa_preparation` | список строк | `[]` | Команды подготовки окружения clean-room QA (установка зависимостей и т.п.): выполняются в том же checkout кандидата до `verification_commands`, остановка на первой упавшей. Без поля QA сразу гоняет gate, report не меняется. |
+| `qa_environment_probes` | список строк | `[]` | Независимые пробы окружения QA (например, доступность реестра): выполняются только после упавшей `qa_preparation`. Упавшая проба при успешных `qa_project_file_checks` подтверждает инфраструктурную причину. |
+| `qa_project_file_checks` | список строк | `[]` | Офлайн-проверки файлов проекта (например, согласованность lock-файла): выполняются только после упавшей `qa_preparation`. Упавшая проверка подтверждает дефект проекта. Без проб и проверок инфраструктурная причина не подтверждается. |
 | `developer_verification_commands` | список строк | = `verification_commands` | Быстрые проверки developer. Без поля developer гоняет полный gate, `harness health` предупреждает. |
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |

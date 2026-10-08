@@ -387,6 +387,8 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "delta-review",
             ],
         }
+        if report and "qa_stages" in report:
+            packet["qa_stages"] = report["qa_stages"]
         if report and report.get("outcome") == "blocked":
             blocked_options = ["retry", "block", "abandon"]
             packet["options"] = blocked_options
@@ -462,6 +464,42 @@ def _review_severity(review: JsonObject) -> dict[str, str]:
     return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
 
 
+QA_INFRASTRUCTURE_CATEGORY = "verification-infrastructure"
+
+
+def _independent_infrastructure_facts(stages: JsonObject) -> bool:
+    """Whether ``qa_stages`` itself records a failed environment probe and only passing project-file
+    checks: an infrastructure diagnosis is never taken on trust from the category alone."""
+    entries = [e for e in stages.get("stages", []) if isinstance(e, dict)]
+    probes = [e for e in entries if e.get("stage") == "environment-probe"]
+    checks = [e for e in entries if e.get("stage") == "project-file-check"]
+    return (
+        any(e.get("result") == "fail" for e in probes)
+        and bool(checks)
+        and all(e.get("result") == "pass" for e in checks)
+    )
+
+
+def _qa_preparation_diagnosis(report: JsonObject) -> tuple[str, bool] | None:
+    """The confirmed diagnosis category of a QA report whose preparation stage failed, and whether
+    the report confirms that no code check started (issue #618); ``None`` for any other report.
+
+    Both facts come from the structured ``qa_stages`` the clean-room runner recorded. The stage
+    alone proves nothing: a category other than ``unknown`` counts only with that confirmation.
+    """
+    stages = report.get("qa_stages")
+    if not isinstance(stages, dict) or stages.get("failed_stage") != "preparation":
+        return None
+    diagnosis = stages.get("diagnosis")
+    category = diagnosis.get("category") if isinstance(diagnosis, dict) else None
+    confirmed = stages.get("code_checks_started") == "not_started"
+    if category not in {"infrastructure", "project-defect"} or not confirmed:
+        return "unknown", confirmed
+    if category == "infrastructure" and not _independent_infrastructure_facts(stages):
+        return "unknown", confirmed
+    return cast(str, category), confirmed
+
+
 def _retry_evidence(
     report: JsonObject, candidate_moved: bool
 ) -> tuple[str, str] | None:
@@ -489,6 +527,12 @@ def _retry_evidence(
         isinstance(check, dict) and check.get("result") == "fail" for check in checks
     ):
         return "code", "a verification check failed"
+    preparation = _qa_preparation_diagnosis(report)
+    if preparation is not None and preparation[0] == "project-defect":
+        return (
+            "code",
+            "QA preparation failed on a confirmed defect in the project files and no code check started",
+        )
     if candidate_moved:
         return "candidate-change", "the candidate changed after the dispatch was pinned"
     return None
@@ -553,6 +597,29 @@ def _retry_routing(
         category, basis = explicit_category, "the approver named this reason category"
     elif structured is not None:
         category, basis = structured
+    elif (
+        stage == "qa"
+        and not bypass_named
+        and explicit_category in {None, QA_INFRASTRUCTURE_CATEGORY}
+        and outcome == "blocked"
+        and (preparation := _qa_preparation_diagnosis(report)) is not None
+        and preparation[0] == "infrastructure"
+    ):
+        category = QA_INFRASTRUCTURE_CATEGORY
+        basis = "QA preparation failed on a confirmed infrastructure cause and no code check started, so the candidate code was not verified"
+    elif (
+        stage == "qa"
+        and explicit_category is None
+        and not bypass_named
+        and outcome == "blocked"
+        and _qa_preparation_diagnosis(report) is not None
+    ):
+        raise CoordinatorError(
+            "QA preparation failed with a cause the coordinator could not confirm, so the report needs triage before any retry",
+            remedy="inspect the report's qa_stages diagnostics, then retry with --reason-category "
+            f"{QA_INFRASTRUCTURE_CATEGORY} once the environment is confirmed ready, with a developer "
+            f"category ({', '.join(DEVELOPER_REASON_CATEGORIES)}) for a project defect, or block the batch",
+        )
     elif bypass_named:
         category = BLOCK_BYPASS_REASON_CATEGORY
         basis = "the approver found that the role worked around a hook or tool block, so its findings, checks and outcome are no evidence"

@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
-from harness.gate_runner.gate_runner import GateResult, GateRunnerError
+from harness.gate_runner.gate_runner import (
+    Diagnosis,
+    GateResult,
+    GateRunnerError,
+    QAStagesResult,
+    format_command_log,
+)
 from harness.orchestration import coordinator, operation_access, qa_lane
 from harness.storage import storage_path
 from harness.orchestration.core.utils import CoordinatorError
@@ -28,6 +34,7 @@ from harness.orchestration.ledger import (
     PlanRecord,
 )
 from harness.orchestration.qa_lane import CoordinatorOps
+from harness.orchestration.workflow import reports
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
 OTHER_DISPATCH_ID = "dispatch-fedcba9876543210"
@@ -862,6 +869,285 @@ class QaLaneRunTests(QaLaneTestCase):
         self.assertEqual(
             persisted[0]["blockers"], "new approved developer retry required"
         )
+
+    # ---- preparation and gate stages (issue #618) ----
+
+    PREPARE = "uv sync --locked"
+    PROBE = "curl -sI https://pypi.org"
+    FILE_CHECK = "uv lock --check"
+    GATE = ["make lint", "make test"]
+
+    def _staged(
+        self,
+        *,
+        prep_exit: int = 0,
+        gate_exits: tuple[int, ...] = (0, 0),
+        diagnosis: Diagnosis | None = None,
+        probe_exit: int | None = None,
+        check_exit: int | None = None,
+    ) -> QAStagesResult:
+        """A runner result consistent with its own artifact, as ``run_qa_stages`` builds it."""
+        stages: list[dict[str, object]] = []
+        blocks = format_command_log(self.PREPARE, prep_exit, "prep output")
+        stages.append(
+            {
+                "stage": "preparation",
+                "command": self.PREPARE,
+                "result": "pass" if prep_exit == 0 else "fail",
+                "exit_code": prep_exit,
+                **({"diagnostics": "prep output"} if prep_exit else {}),
+            }
+        )
+        for stage, command, code in (
+            ("environment-probe", self.PROBE, probe_exit),
+            ("project-file-check", self.FILE_CHECK, check_exit),
+        ):
+            if prep_exit and code is not None:
+                blocks += format_command_log(command, code, "fact output")
+                stages.append(
+                    {
+                        "stage": stage,
+                        "command": command,
+                        "result": "pass" if code == 0 else "fail",
+                        "exit_code": code,
+                        **({"diagnostics": "fact output"} if code else {}),
+                    }
+                )
+        checks: list[dict[str, str]] = []
+        if prep_exit == 0:
+            for command, code in zip(self.GATE, gate_exits):
+                blocks += format_command_log(command, code, "gate output")
+                stages.append(
+                    {
+                        "stage": "gate",
+                        "command": command,
+                        "result": "pass" if code == 0 else "fail",
+                        "exit_code": code,
+                        **({"diagnostics": "gate output"} if code else {}),
+                    }
+                )
+                checks.append(
+                    {
+                        "command": command,
+                        "result": "pass" if code == 0 else "fail",
+                        "evidence": f"exit {code}; gate output",
+                    }
+                )
+        failed = next((s["stage"] for s in stages if s["result"] == "fail"), None)
+        return QAStagesResult(
+            stages=stages,
+            gate_checks=checks,
+            artifact=blocks,
+            duration_seconds=0.0,
+            failed_stage=cast("str | None", failed),
+            code_checks_started="not_started" if prep_exit else "started",
+            diagnosis=diagnosis,
+        )
+
+    def _run_staged(self, staged: QAStagesResult) -> dict[str, object]:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        self._seed()
+        persisted: list[dict[str, object]] = []
+
+        def persist(
+            ledger: LifecycleLedger,
+            root: Path,
+            batch: object,
+            dispatch: object,
+            report: dict[str, object],
+        ) -> Path:
+            persisted.append(report)
+            return root / "report.json"
+
+        ops = _Ops(
+            _validate_batch_integrity=lambda root, batch: None,
+            _validate_dispatch=lambda repo, config, root, batch, dispatch: None,
+            _config=lambda repo: {"qa_preparation": [self.PREPARE]},
+            _role=lambda repo, name: {},
+            _validate_report=lambda *arguments, **keywords: None,
+            _persist_report=persist,
+        )
+        with (
+            mock.patch.object(qa_lane, "run_qa_stages", return_value=staged) as runner,
+            mock.patch.object(qa_lane, "run_gate") as legacy,
+        ):
+            qa_lane.run(self.args, cast(CoordinatorOps, ops))
+        legacy.assert_not_called()
+        self.assertEqual(runner.call_args.args[0], [self.PREPARE])
+        self.assertEqual(runner.call_args.args[1], self.GATE)
+        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
+        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        report = persisted[0]
+        reports._validate_qa_stages(report, self.dispatch)
+        return report
+
+    def test_a_run_with_preparation_records_stages_and_a_green_report(self) -> None:
+        report = self._run_staged(self._staged())
+
+        self.assertEqual(report["outcome"], "completed")
+        stages = cast("dict[str, object]", report["qa_stages"])
+        self.assertEqual(stages["code_checks_started"], "started")
+        self.assertIsNone(stages["failed_stage"])
+        self.assertEqual(
+            [c["result"] for c in cast("list[dict[str, str]]", report["checks_run"])],
+            ["pass", "pass"],
+        )
+
+    def test_an_infrastructure_preparation_failure_blocks_without_a_failed_code_check(
+        self,
+    ) -> None:
+        diagnosis = Diagnosis("infrastructure", ("exit-code:6",), "outage")
+        report = self._run_staged(
+            self._staged(prep_exit=6, diagnosis=diagnosis, probe_exit=6, check_exit=0)
+        )
+
+        self.assertEqual(report["outcome"], "blocked")
+        checks = cast("list[dict[str, str]]", report["checks_run"])
+        self.assertEqual([c["result"] for c in checks], ["not-run", "not-run"])
+        self.assertEqual([c["command"] for c in checks], self.GATE)
+        self.assertIn("code was not verified", str(report["output"]))
+        self.assertIn("no developer retry", str(report["blockers"]))
+        stages = cast("dict[str, object]", report["qa_stages"])
+        self.assertEqual(stages["code_checks_started"], "not_started")
+        self.assertEqual(stages["failed_stage"], "preparation")
+
+    def test_an_infrastructure_diagnosis_without_independent_facts_is_refused(
+        self,
+    ) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        diagnosis = Diagnosis("infrastructure", ("exit-code:6",), "outage")
+        for probe_exit, check_exit in (
+            (None, None),
+            (6, None),
+            (0, 0),
+            (6, 1),
+        ):
+            kwargs = {"probe_exit": probe_exit, "check_exit": check_exit}
+            staged = self._staged(
+                prep_exit=6,
+                diagnosis=diagnosis,
+                probe_exit=probe_exit,
+                check_exit=check_exit,
+            )
+            report = qa_lane._qa_report(
+                self.dispatch,
+                staged.gate_checks,
+                Path("a"),
+                "0" * 64,
+                staged.record(),
+            )
+            with self.subTest(kwargs), self.assertRaises(coordinator.CoordinatorError):
+                reports._validate_qa_stages(report, self.dispatch)
+
+    def test_facts_without_a_failed_preparation_are_refused(self) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        staged = self._staged()
+        staged.stages.append(
+            {
+                "stage": "environment-probe",
+                "command": self.PROBE,
+                "result": "pass",
+                "exit_code": 0,
+            }
+        )
+        report = qa_lane._qa_report(
+            self.dispatch, staged.gate_checks, Path("a"), "0" * 64, staged.record()
+        )
+        with self.assertRaises(coordinator.CoordinatorError):
+            reports._validate_qa_stages(report, self.dispatch)
+
+    def test_a_confirmed_project_defect_fails_the_report_for_the_developer(
+        self,
+    ) -> None:
+        diagnosis = Diagnosis("project-defect", ("project-file:uv.lock",), "lock")
+        report = self._run_staged(self._staged(prep_exit=2, diagnosis=diagnosis))
+
+        self.assertEqual(report["outcome"], "failed")
+        self.assertIn("developer retry", str(report["blockers"]))
+
+    def test_an_unknown_preparation_cause_blocks_for_triage(self) -> None:
+        diagnosis = Diagnosis("unknown", ("exit-code:1",), "no signal")
+        report = self._run_staged(self._staged(prep_exit=1, diagnosis=diagnosis))
+
+        self.assertEqual(report["outcome"], "blocked")
+        self.assertIn("triage", str(report["blockers"]))
+        self.assertIn("no automatic retry", str(report["blockers"]))
+
+    def test_a_failing_gate_stage_keeps_its_checks_and_pads_the_rest(self) -> None:
+        report = self._run_staged(self._staged(gate_exits=(1,)))
+
+        self.assertEqual(report["outcome"], "failed")
+        checks = cast("list[dict[str, str]]", report["checks_run"])
+        self.assertEqual([c["result"] for c in checks], ["fail", "not-run"])
+
+    def test_stages_that_disagree_with_the_artifact_release_the_lane(self) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        self._seed()
+        staged = self._staged()
+        tampered = QAStagesResult(
+            **{**staged.__dict__, "artifact": format_command_log("other", 0, "x")}
+        )
+        with (
+            mock.patch.object(qa_lane, "run_qa_stages", return_value=tampered),
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(
+                self.args,
+                cast(
+                    CoordinatorOps,
+                    _Ops(
+                        _validate_batch_integrity=lambda root, batch: None,
+                        _validate_dispatch=lambda *a, **k: None,
+                        _config=lambda repo: {"qa_preparation": [self.PREPARE]},
+                    ),
+                ),
+            )
+
+        self.assertIn("does not match the immutable evidence", caught.exception.message)
+        self._assert_transient_failure_released()
+
+    def test_report_validation_refuses_inconsistent_stages(self) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        staged = self._staged(
+            prep_exit=6,
+            diagnosis=Diagnosis("infrastructure", ("exit-code:6",), "outage"),
+            probe_exit=6,
+            check_exit=0,
+        )
+        artifact = Path(tempfile.mkdtemp()) / "a"
+        good = qa_lane._qa_report(
+            self.dispatch, staged.gate_checks, artifact, "0" * 64, staged.record()
+        )
+        reports._validate_qa_stages(good, self.dispatch)
+
+        def refused(change: Callable[[dict[str, object]], object]) -> None:
+            import copy
+
+            report = copy.deepcopy(good)
+            change(report)
+            with self.assertRaises(coordinator.CoordinatorError):
+                reports._validate_qa_stages(report, self.dispatch)
+
+        def stages(report: dict[str, object]) -> dict[str, object]:
+            return cast("dict[str, object]", report["qa_stages"])
+
+        refused(lambda r: r.update(outcome="failed"))
+        refused(lambda r: stages(r).update(code_checks_started="started"))
+        refused(lambda r: stages(r).pop("diagnosis"))
+        refused(lambda r: stages(r).update(failed_stage="gate"))
+        refused(lambda r: stages(r).update(unexpected=1))
+        refused(
+            lambda r: cast("list[dict[str, str]]", r["checks_run"])[0].update(
+                result="fail"
+            )
+        )
+        refused(lambda r: r.update(role="qa", qa_stages="not a mapping"))
+
+    def test_qa_stages_belong_only_to_a_qa_report(self) -> None:
+        with self.assertRaises(coordinator.CoordinatorError):
+            reports._validate_qa_stages(
+                {"qa_stages": {}}, {**self.dispatch, "role": "developer"}
+            )
 
 
 if __name__ == "__main__":
