@@ -525,9 +525,11 @@ It must contain, at minimum:
   `tooling-retry`), the `reason` and its `reason_category` (`tooling` for an item a tool blocked,
   otherwise `null`); its `summary` is the brief item and its `files` are empty. A non-empty section
   is bound into the transition as `carried_items_sha256`;
-- `rebase target`: `rebase_target_commit`, the integration tip a `rebase-fix-forward`
-  developer-retry rebases onto, bound into the transition as `rebase_target_sha`, or `null` on every
-  other brief, including the developer dispatch of a legacy stale-base record;
+- `rebase target`: `rebase_target_commit`, the commit a developer-retry rebases onto, bound into the
+  transition as `rebase_target_sha`: the integration tip of a `rebase-fix-forward` retry, or the
+  `supersedes.rebase_target_commit` of a superseding batch while the snapshot does not contain it
+  yet. It is `null` on every other brief, including the developer dispatch of a legacy stale-base
+  record;
 - `delta review scope` (code-review): `delta_review_scope`, the coordinator's delta or full choice
   after a fix-forward (`mode`, `route`, `prior_review`, `developer_dispatch_id`, `delta_base`,
   `delta_commits`, `reviewed_copies`, `closure`, `escalations`), bound into the transition as

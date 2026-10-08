@@ -873,7 +873,8 @@ remedy, а `decision-packet` показывает её в `route_preview.retry`.
 
 Target попадает в brief только через dispatch с явным approval при любой `approval_policy`: policy
 approval для него отклоняется. `dispatch propose` показывает переход с полем `rebase_target_sha`, а
-brief получает `rebase_target_commit`; у остальных brief это поле равно `null`, в том числе у
+brief получает `rebase_target_commit`. Кроме этого brief поле заполнено только у developer-retry
+замещающего batch (см. «Замещающий batch» ниже); у остальных brief оно равно `null`, в том числе у
 developer dispatch legacy-записи stale-base:
 
 ```bash
