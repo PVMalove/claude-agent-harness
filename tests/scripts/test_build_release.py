@@ -98,3 +98,15 @@ def test_check_release_validates_without_building(tmp_path: Path) -> None:
     ):
         with pytest.raises(ValueError, match=message):
             check_release(repo, tag)
+
+
+def test_cli_validate_only_uses_version_file(tmp_path: Path) -> None:
+    """The CLI supports --validate-only without explicit --tag."""
+    script = Path(__file__).resolve().parent.parent.parent / "scripts" / "build_release.py"
+    result = subprocess.run(
+        ["python", str(script), "--validate-only"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "release checks passed" in result.stdout
