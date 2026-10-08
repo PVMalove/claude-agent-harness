@@ -19,7 +19,13 @@ from pathlib import Path
 from harness.orchestration.core import config
 from harness.orchestration.core.constants import AUTO_REPORT_FIELDS
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
-from harness.orchestration.workflow import approval, auto_policy, dispatch, history
+from harness.orchestration.workflow import (
+    approval,
+    auto_policy,
+    decisions,
+    dispatch,
+    history,
+)
 
 MOMENT = "2026-10-08T00:00:00+00:00"
 
@@ -620,6 +626,96 @@ class AutoDecisionTableTests(unittest.TestCase):
     def test_a_stop_outside_the_closed_list_cannot_exist(self) -> None:
         with self.assertRaises(CoordinatorError):
             auto_policy.Stop("no-automatic-route", "operator-preference", {})
+
+
+class AutoStopListTests(unittest.TestCase):
+    """The closed stop list on ledger facts that need no I/O."""
+
+    def _finding(self, reason: str) -> dict[str, str]:
+        return {"key": f"{reason}:dispatch-1", "reason": reason}
+
+    def test_each_attention_reason_maps_to_one_listed_stop(self) -> None:
+        for reason, expected in (
+            ("stale-dispatch", ("integrity-failure", "stale")),
+            ("stale-evidence", ("integrity-failure", "stale")),
+            ("retry-queued-too-long", ("integrity-failure", "stale")),
+            (
+                "infrastructure-retry-repeated",
+                ("budget-exhausted", "attention_policy.max_infrastructure_retries"),
+            ),
+            (
+                "tooling-retry-repeated",
+                ("budget-exhausted", "tooling-retry-repeated"),
+            ),
+            ("unknown-reason", ("no-automatic-route", "unknown-reason")),
+        ):
+            with self.subTest(reason=reason):
+                [stop] = auto_policy.attention_stops({}, [self._finding(reason)])
+                self.assertEqual((stop.category, stop.reason), expected)
+
+    def test_an_acknowledged_finding_is_no_stop_but_the_flag_is(self) -> None:
+        finding = self._finding("stale-dispatch")
+        self.assertEqual(
+            auto_policy.attention_stops(
+                {"attention_acknowledged": [finding["key"]]}, [finding]
+            ),
+            [],
+        )
+        [stop] = auto_policy.attention_stops(
+            {
+                "needs_attention": True,
+                "attention_reason": "infrastructure-retry-repeated",
+            },
+            [],
+        )
+        self.assertEqual(stop.category, "budget-exhausted")
+
+    def test_a_spent_continuation_budget_is_a_budget_stop(self) -> None:
+        batch: JsonObject = {
+            "dispatches": [
+                {"dispatch_id": "dispatch-1", "state": "checkpointed"},
+                {"dispatch_id": "dispatch-2", "state": "rate_limited"},
+            ],
+            "coordinator_decisions": [
+                {"dispatch_id": "dispatch-1", "decision": "continue"},
+                {"dispatch_id": "dispatch-1", "decision": "continue"},
+                {"dispatch_id": "dispatch-2", "decision": "continue-automatic"},
+            ],
+        }
+        stops = auto_policy._continuation_stops({}, batch)
+        self.assertEqual(
+            [(stop.reason, stop.evidence["dispatch_id"]) for stop in stops],
+            [
+                ("continuation_policy.max_continuations", "dispatch-1"),
+                ("continuation_policy.max_rate_limit_resumes", "dispatch-2"),
+            ],
+        )
+
+    def test_a_recorded_stop_ends_the_policy_auto_accept(self) -> None:
+        config_ = {"approval_policy": "auto"}
+        batch: JsonObject = {"approval_policy": "auto"}
+        architect = {"role": "architect", "purpose": "work"}
+        report = _clean("architect", checks_run=[])
+        self.assertEqual(
+            decisions._auto_accept_policy(config_, batch, architect, report), "auto"
+        )
+        stopped = {**batch, "auto_stop": _stop()}
+        self.assertIsNone(
+            decisions._auto_accept_policy(config_, stopped, architect, report)
+        )
+        self.assertFalse(approval.auto_active(config_, stopped))
+        self.assertTrue(approval.auto_configured(config_, stopped))
+
+    def test_record_stop_seals_the_stop_once_for_the_batch(self) -> None:
+        batch: JsonObject = {"batch_id": "batch-1"}
+        record = auto_policy.record_stop(
+            batch,
+            auto_policy.Stop("no-automatic-route", "supersede-dead-end", {}),
+            detected_by="batch auto-report",
+            moment=MOMENT,
+        )
+        self.assertEqual(batch["auto_stop"], record)
+        history._validate_operational_batch_fields(batch)
 
 
 if __name__ == "__main__":

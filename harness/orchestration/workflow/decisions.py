@@ -122,6 +122,9 @@ def _auto_accept_policy(
         "auto",
     }:
         return None
+    # A recorded auto stop is irreversible for the batch: a human decides every report after it.
+    if policy == "auto" and "auto_stop" in batch:
+        return None
     if (
         report.get("outcome") != "completed"
         or str(report.get("blockers", "")).strip().lower() != "none"
@@ -1027,9 +1030,20 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
+    # `batch auto-decide` (issue #643): the policy computes the decision under this lock and it
+    # then passes every check a human decision passes; a stop of the closed list is recorded.
+    auto_inputs = getattr(args, "_policy_auto", None)
+    auto_choice = None
+    if auto_inputs is not None:
+        from harness.orchestration.workflow import auto_policy
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
-        _validate_batch_integrity(root, batch)
+        try:
+            _validate_batch_integrity(root, batch)
+        except CoordinatorError as exc:
+            if auto_inputs is None:
+                raise
+            raise auto_policy.ledger_stop_error(exc) from exc
         pending = [
             item
             for item in batch.get("dispatches", [])
@@ -1043,34 +1057,34 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         report = _pending_report(root, batch, pending[0])
         dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
         config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
-        _validate_report(
-            report,
-            dispatch,
-            _role(repo, dispatch["role"]),
-            repo,
-            rebase.report_base(repo, root, batch, dispatch),
-            _rebase_target(batch, dispatch),
-            _closure_base(repo, root, batch, dispatch),
-        )
-        resolver_state.validate_report(repo, root, batch, dispatch, report)
-        # `batch auto-decide` (issue #643): the policy computes the decision under this lock and
-        # it then passes every check a human decision passes.
-        auto_inputs = getattr(args, "_policy_auto", None)
-        auto_choice = None
+        try:
+            _validate_dispatch(repo, config, root, batch, dispatch)
+            _validate_report(
+                report,
+                dispatch,
+                _role(repo, dispatch["role"]),
+                repo,
+                rebase.report_base(repo, root, batch, dispatch),
+                _rebase_target(batch, dispatch),
+                _closure_base(repo, root, batch, dispatch),
+            )
+            resolver_state.validate_report(repo, root, batch, dispatch, report)
+        except CoordinatorError as exc:
+            if auto_inputs is None or not approvals.auto_active(config, batch):
+                raise
+            return auto_policy.persist_stop(
+                ledger,
+                batch,
+                auto_policy.validation_stop(repo, batch, exc),
+                detected_by="batch auto-decide",
+            )
         if auto_inputs is not None:
-            from harness.orchestration.workflow import auto_policy
-
             resolution = auto_policy.resolve(
                 repo, root, config, batch, dispatch, report, auto_inputs
             )
             if resolution.stop is not None:
-                stop = resolution.stop
-                raise CoordinatorError(
-                    f"the automatic path has no decision for this report "
-                    f"({stop.category}: {stop.reason})",
-                    remedy="show the decision packet to a human, who decides with batch decide "
-                    "and --approved-by",
+                return auto_policy.persist_stop(
+                    ledger, batch, resolution.stop, detected_by="batch auto-decide"
                 )
             args = argparse.Namespace(**{**vars(args), **resolution.fields})
             auto_choice = resolution.choice
@@ -1392,6 +1406,16 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 _attention_findings(repo, root, config, batch, utils._now()),
                 utils._now(),
             )
+            if auto_inputs is not None:
+                # Under `auto` that attention is a stop of the closed list (issue #643).
+                stops = auto_policy.attention_stops(batch, [])
+                if stops:
+                    auto_policy.record_stop(
+                        batch,
+                        stops[0],
+                        detected_by="batch auto-decide",
+                        moment=utils._now(),
+                    )
         abandoned: list[str] = []
         if args.decision in {"block", "fail", "abandon"}:
             # A terminal decision starts nothing: no next action is left behind to be picked up.

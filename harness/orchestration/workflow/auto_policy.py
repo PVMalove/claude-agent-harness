@@ -14,22 +14,60 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
-from harness.orchestration.core.config import _reject_sensitive
+from harness.orchestration.core import utils
+from harness.orchestration.core.config import _continuation_policy, _reject_sensitive
 from harness.orchestration.core.constants import (
     AUTO_STOP_REASONS,
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
     INCOMPLETE_ITEM_TARGET_ROLES,
+    TERMINAL_BATCH_STATES,
 )
-from harness.orchestration.core.utils import CoordinatorError, JsonObject, _non_empty
+from harness.orchestration.core.utils import (
+    CoordinatorError,
+    JsonObject,
+    _non_empty,
+    _repo,
+    _safe_id,
+)
+from harness.orchestration.core.workspace import _validate_harness_runtime_snapshot
+from harness.orchestration.ledger.ledger_ops import (
+    _load_batch,
+    _load_dispatch_status,
+    _replace_record,
+    _state_root,
+)
+from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import decisions, resolver_state
-from harness.orchestration.workflow.history import _latest_developer_candidate
-from harness.orchestration.workflow.reports import report_scope_warnings
+from harness.orchestration.workflow.attention import _attention_findings
+from harness.orchestration.workflow.history import (
+    _latest_developer_candidate,
+    _settled,
+)
+from harness.orchestration.workflow.reports import (
+    _continuation_counts,
+    report_scope_warnings,
+)
 
+# An attention reason is a stop of the closed list: the automatic path never resolves attention.
+ATTENTION_STOPS = {
+    "stale-dispatch": ("integrity-failure", "stale"),
+    "stale-evidence": ("integrity-failure", "stale"),
+    "retry-queued-too-long": ("integrity-failure", "stale"),
+    "infrastructure-retry-repeated": (
+        "budget-exhausted",
+        "attention_policy.max_infrastructure_retries",
+    ),
+    "tooling-retry-repeated": ("budget-exhausted", "tooling-retry-repeated"),
+    "unknown-reason": ("no-automatic-route", "unknown-reason"),
+}
+# Detection order: an untrustworthy ledger or runtime first, then a spent budget, then a dead end.
+STOP_ORDER = tuple(AUTO_STOP_REASONS)
 CLEAN_BASIS = (
     "the report is clean: completed, no blockers, every check passed, and nothing is left "
     "uncovered, unclosed, open or outside the approved scope"
@@ -279,6 +317,195 @@ def finish(
     return None
 
 
+def attention_stops(batch: JsonObject, findings: list[dict[str, str]]) -> list[Stop]:
+    """The stops the batch's attention state shows: the persisted flag and every finding not
+    acknowledged by a human (no I/O)."""
+    acknowledged = set(batch.get("attention_acknowledged", []))
+    keys = {
+        finding["reason"]: finding["key"]
+        for finding in findings
+        if finding["key"] not in acknowledged
+    }
+    if batch.get("needs_attention") is True:
+        keys.setdefault(str(batch.get("attention_reason")), "needs_attention")
+    stops = []
+    for reason, key in keys.items():
+        if reason in ATTENTION_STOPS:
+            category_name, stop_reason = ATTENTION_STOPS[reason]
+            stops.append(
+                Stop(category_name, stop_reason, {"attention": reason, "key": key})
+            )
+    return stops
+
+
+def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
+    """An open dispatch whose worker ran another model or another worktree than its brief
+    approved; a dispatch a human already settled (abandoned on resume) is no stop."""
+    stops = []
+    for entry in batch.get("dispatches", []):
+        if _settled(entry):
+            continue
+        try:
+            status = _load_dispatch_status(root, entry["dispatch_id"])
+        except CoordinatorError:
+            continue
+        model = status.get("model_self_report")
+        if isinstance(model, dict) and model.get("match") is False:
+            stops.append(
+                Stop(
+                    "integrity-failure",
+                    "model-mismatch",
+                    {
+                        "dispatch_id": entry["dispatch_id"],
+                        "reported_model": model.get("reported_model"),
+                        "expected_model": model.get("expected_model"),
+                    },
+                )
+            )
+        worktree = status.get("worktree_attestation")
+        if isinstance(worktree, dict) and worktree.get("match") is False:
+            stops.append(
+                Stop(
+                    "integrity-failure",
+                    "worktree-mismatch",
+                    {
+                        "dispatch_id": entry["dispatch_id"],
+                        "error": worktree.get("error"),
+                    },
+                )
+            )
+    return stops
+
+
+def _continuation_stops(config: JsonObject, batch: JsonObject) -> list[Stop]:
+    """A checkpointed or rate-limited dispatch whose continuation budget is spent."""
+    policy = _continuation_policy(config)
+    stops = []
+    for entry in batch.get("dispatches", []):
+        if entry.get("state") not in {"checkpointed", "rate_limited"}:
+            continue
+        spent, automatic = _continuation_counts(batch, entry["dispatch_id"])
+        evidence = {
+            "dispatch_id": entry["dispatch_id"],
+            "continuations": spent,
+            "rate_limit_resumes": automatic,
+        }
+        if spent >= policy["max_continuations"]:
+            stops.append(
+                Stop(
+                    "budget-exhausted",
+                    "continuation_policy.max_continuations",
+                    evidence,
+                )
+            )
+        elif (
+            entry.get("state") == "rate_limited"
+            and automatic >= policy["max_rate_limit_resumes"]
+        ):
+            stops.append(
+                Stop(
+                    "budget-exhausted",
+                    "continuation_policy.max_rate_limit_resumes",
+                    evidence,
+                )
+            )
+    return stops
+
+
+def fact_stops(
+    repo: Path, root: Path, config: JsonObject, batch: JsonObject, moment: str
+) -> list[Stop]:
+    """Every stop the ledger facts of a validated batch show, in detection order."""
+    stops: list[Stop] = []
+    try:
+        _validate_harness_runtime_snapshot(repo, batch)
+    except CoordinatorError as exc:
+        stops.append(
+            Stop(
+                "integrity-failure",
+                "harness-snapshot-changed",
+                {"refused": exc.message},
+            )
+        )
+    stops.extend(_status_stops(root, batch))
+    findings = (
+        []
+        if batch.get("state") in TERMINAL_BATCH_STATES
+        else _attention_findings(repo, root, config, batch, moment)
+    )
+    stops.extend(attention_stops(batch, findings))
+    stops.extend(_continuation_stops(config, batch))
+    if batch.get("state") in {"blocked", "failed"}:
+        stops.append(
+            Stop("no-automatic-route", "abandon-dead-end", {"state": batch["state"]})
+        )
+    if batch.get("state") == "abandoned":
+        stops.append(
+            Stop(
+                "no-automatic-route",
+                "supersede-dead-end",
+                {"state": "abandoned", "next": "batch create --supersedes, by a human"},
+            )
+        )
+    return sorted(stops, key=lambda stop: STOP_ORDER.index(stop.category))
+
+
+def validation_stop(repo: Path, batch: JsonObject, refusal: CoordinatorError) -> Stop:
+    """The stop a failed revalidation of the pending report or its dispatch shows."""
+    try:
+        _validate_harness_runtime_snapshot(repo, batch)
+    except CoordinatorError as exc:
+        return Stop(
+            "integrity-failure", "harness-snapshot-changed", {"refused": exc.message}
+        )
+    return Stop(
+        "integrity-failure",
+        "deterministic-gate-failed",
+        {"gate": "report-revalidation", "refused": refusal.message},
+    )
+
+
+def ledger_stop(refusal: CoordinatorError) -> Stop:
+    """A ledger that fails validation: the stop is shown and never recorded in that ledger."""
+    return Stop(
+        "integrity-failure", "ledger-validation-failed", {"refused": refusal.message}
+    )
+
+
+def ledger_stop_error(refusal: CoordinatorError) -> CoordinatorError:
+    return CoordinatorError(
+        "the automatic path stops (integrity-failure: ledger-validation-failed); the stop is "
+        f"not recorded because the ledger failed validation: {refusal.message}",
+        remedy=f"a human inspects the ledger before any further step: {refusal.remedy}",
+    )
+
+
+def record_stop(
+    batch: JsonObject, stop: Stop, *, detected_by: str, moment: str
+) -> JsonObject:
+    """Record ``stop`` on the batch once: after it, every step needs a human."""
+    batch["auto_stop"] = approvals.sealed(
+        {
+            "category": stop.category,
+            "reason": stop.reason,
+            "detected_at": moment,
+            "detected_by": detected_by,
+            "evidence": stop.evidence,
+        }
+    )
+    return cast(JsonObject, batch["auto_stop"])
+
+
+def persist_stop(
+    ledger: LifecycleLedger, batch: JsonObject, stop: Stop, *, detected_by: str
+) -> JsonObject:
+    """Record ``stop`` and write the batch; the caller holds the ledger lock."""
+    record_stop(batch, stop, detected_by=detected_by, moment=utils._now())
+    _safe_id(batch["batch_id"], "batch")
+    _replace_record(ledger, BatchRecord.from_dict(batch))
+    return batch
+
+
 def _note(choice: Choice, inputs: Inputs) -> str:
     note = f"policy:auto {choice.decision}: {choice.basis}"
     return f"{note}; {inputs.note}" if inputs.note else note
@@ -310,6 +537,9 @@ def resolve(
             "a conflict-resolver report is outside the automatic path",
             remedy="a human decides it with batch decide and --approved-by",
         )
+    stops = fact_stops(repo, root, config, batch, utils._now())
+    if stops:
+        return Resolution(stop=stops[0])
     stage = decisions._reporting_stage(dispatch, report)
     scope = (
         report_scope_warnings(report, dispatch)
@@ -467,8 +697,13 @@ def record_decision(
 
 
 def auto_decide(args: argparse.Namespace) -> JsonObject:
-    """``batch auto-decide``: the policy decision on the batch's pending report."""
+    """``batch auto-decide``: the policy decision on the batch's pending report, or the stop of
+    the closed list it shows."""
     inputs = inputs_from(args)
+    repo = _repo(args)
+    before = len(
+        _load_batch(_state_root(args, repo), args.batch).get("auto_decisions", [])
+    )
     batch = decisions.decide_batch(
         argparse.Namespace(
             **{
@@ -488,15 +723,27 @@ def auto_decide(args: argparse.Namespace) -> JsonObject:
             }
         )
     )
-    record = batch["auto_decisions"][-1]
-    route = record["evidence"]["route_preview"]
+    record = next(
+        (
+            item
+            for item in batch.get("auto_decisions", [])[before:]
+            if item["kind"] == "decision"
+        ),
+        None,
+    )
+    route = record["evidence"]["route_preview"] if record is not None else None
+    stop = batch.get("auto_stop")
     return {
         "batch_id": batch["batch_id"],
-        "outcome": "decided",
-        "dispatch_id": record["dispatch_id"],
-        "decision": record["evidence"]["decision"],
+        "outcome": "stopped" if stop is not None else "decided",
+        "dispatch_id": record["dispatch_id"] if record is not None else None,
+        "decision": record["evidence"]["decision"] if record is not None else None,
         "route": route.get("route") if isinstance(route, dict) else None,
         "auto_decision": record,
+        "stop": stop,
         "batch_state": batch["state"],
-        "next_action": batch.get("next_action"),
+        "next_action": "show the final auto report (batch auto-report) to a human; every "
+        "later step of this batch needs --approved-by"
+        if stop is not None
+        else batch.get("next_action"),
     }

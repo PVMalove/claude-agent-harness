@@ -55,6 +55,7 @@ from harness.orchestration.ledger import (
 )
 from harness.orchestration.workflow import (
     approval,
+    auto_policy,
     carried_items,
     commit_plan,
     decisions,
@@ -13498,6 +13499,142 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             self._auto_records("dispatch")[-1]["evidence"]["lifted_milestones"],
             ["risk-trigger", "bypass-rerun"],
+        )
+
+    def _assert_stopped(self, result: JsonObject, category: str, reason: str) -> None:
+        stored = self._batch_record(self.batch_id)
+        self.assertEqual(result["outcome"], "stopped")
+        self.assertEqual(
+            (stored["auto_stop"]["category"], stored["auto_stop"]["reason"]),
+            (category, reason),
+        )
+        history._validate_batch_integrity(
+            ledger_ops._state_root(self._args(), self.repo), stored
+        )
+
+    def test_an_unknown_reason_stops_the_automatic_path_for_good(self) -> None:
+        """no-automatic-route: nothing structured explains the blocked report."""
+        developer = self._auto_developer_brief()
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="the work could not continue",
+                checks_run=self._checks(developer, "not-run"),
+            ),
+        )
+
+        result = self._auto_decide()
+
+        self._assert_stopped(result, "no-automatic-route", "unknown-reason")
+        self.assertIsNone(result["decision"])
+        stored = self._batch_record(self.batch_id)
+        self.assertNotIn("decision", stored["dispatches"][-1])
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._auto_decide()
+        self.assertIn("stopped", refused.exception.message)
+        # A human still decides: the stop weakens no validation and invents no decision.
+        decided = self._decide(self.batch_id, "block")
+        self.assertEqual(decided["state"], "blocked")
+
+    def test_a_commit_plan_outside_the_scope_stops_on_its_gate(self) -> None:
+        """integrity-failure: the architect plan fails the deterministic commit-plan gate."""
+        self._auto_batch(allowed_path=["services/**"])
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", risks="a wide plan"),
+        )
+        plan = self._plan_file(
+            [{**self._plan_entry("first", [1]), "expected_paths": ["docs/**"]}]
+        )
+
+        result = self._auto_decide(commit_plan_file=plan)
+
+        self._assert_stopped(result, "integrity-failure", "deterministic-gate-failed")
+        self.assertEqual(
+            self._batch_record(self.batch_id)["auto_stop"]["evidence"][
+                "paths_outside_scope"
+            ],
+            ["docs/**"],
+        )
+        self._decide(self.batch_id, "accept")
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._auto_dispatch("developer")
+        self.assertIn("--approved-by", refused.exception.remedy)
+
+    def test_a_model_mismatch_is_an_integrity_stop_before_the_dead_end(self) -> None:
+        self._auto_batch()
+        architect = self._auto_dispatch("architect")
+        coordinator.send_dispatch(
+            self._args(
+                dispatch=architect["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=architect["dispatch_id"],
+                    model="another-model",
+                    worktree=str(self.worktree),
+                )
+            )
+        root = ledger_ops._state_root(self._args(), self.repo)
+        batch = self._batch_record(self.batch_id)
+
+        stops = auto_policy.fact_stops(
+            self.repo, root, config._config(self.repo), batch, coordinator._now()
+        )
+
+        self.assertEqual(
+            [(stop.category, stop.reason) for stop in stops],
+            [
+                ("integrity-failure", "model-mismatch"),
+                ("no-automatic-route", "abandon-dead-end"),
+            ],
+        )
+
+    def test_an_exhausted_developer_retry_budget_stops_the_automatic_path(
+        self,
+    ) -> None:
+        """budget-exhausted: retry_policy.max_developer_retries is spent."""
+        developer = self._auto_developer_brief()
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                checks_run=self._checks(developer, "fail"),
+            ),
+        )
+        first = self._auto_decide()
+        self.assertEqual(
+            (first["outcome"], first["route"]), ("decided", "developer-retry")
+        )
+        retry = self._auto_dispatch("developer")
+        self._start(retry["dispatch_id"])
+        fixed, changed = self._developer_commit("y")
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry, fixed, changed, checks_run=self._checks(retry, "fail")
+            ),
+        )
+
+        result = self._auto_decide()
+
+        self._assert_stopped(
+            result, "budget-exhausted", "retry_policy.max_developer_retries"
         )
 
     def test_auto_decide_refuses_a_batch_outside_the_auto_policy(self) -> None:
