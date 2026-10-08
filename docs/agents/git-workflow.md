@@ -1,7 +1,6 @@
 # Git workflow: feature branch + PR
 
-Архитектурный контекст интерактивного workflow и его связь с opt-in backend orchestration приведены
-в [backend-orchestration.md](../../.harness/docs/backend-orchestration.md). Этот документ определяет только правила Git, тикетов и PR.
+This guide defines only the rules for Git, tickets, and PRs. The opt-in backend orchestration, which `/implement` drives, follows `.harness/orchestration/playbook.md`.
 
 ### 1. Fundamental Constraints & Tooling
 * **Zero Direct Commits:** `base_branch` and every `integration/*` branch are protected targets. Agents commit and push only from an isolated issue branch matching `branch_pattern`. The one exception is `/to-spec` pushing a new `integration/*` branch that is absent on the remote; the hook checks the remote and blocks the push when it cannot.
@@ -26,7 +25,7 @@ branch is the PR target for child work; `base_branch` is the release target for 
 1. **Initialization (Branching):**
    An isolated issue branch is created for each task from the epic's exact integration branch — never from whatever branch happens to already be checked out. If the task has no epic, use `base_branch`.
    * **Format:** must match `branch_pattern` in `.harness/project.json` (default: `feature/issue-<ID>-<short-slug>`, where `<ID>` is the tracker issue number and `<short-slug>` is a short task description — transliterated, words separated by hyphens or underscores).
-   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with the required `base_branch` from `.harness/project.json`.
+   * **Command:** `git fetch origin <integration-branch> && git switch -c feature/issue-<ID>-<slug> --track origin/<integration-branch>`. For an epic-less task, replace `<integration-branch>` with the required `base_branch` from `.harness/project.json`. A coordinator creates the branch with `git worktree add --no-track` instead (see [worktrees.md](./worktrees.md#coordinator-issue-worktree)); `git push -u` in step 2 then sets the upstream.
 2. **Post-branch Push:**
    * Immediately after creating the branch, push it to the remote (`origin`) so it exists there: `git push -u origin feature/issue-<ID>-<slug>`.
 3. **Implementation & Quality Assurance (TDD):**
@@ -59,57 +58,7 @@ branch is the PR target for child work; `base_branch` is the release target for 
 
 ### 3. PR Body Template
 
-Read `language` from `.harness/project.json` (default `ru`) to pick which template below applies.
-
-**`language: ru`** — every PR body passed via `gh pr create --body-file` (or MR body via `glab mr create --description-file`) MUST start with the following HTML comment verbatim (invisible when the tracker renders the PR/MR, but a checklist for the author and a navigator for the reviewer), followed by the seven sections it describes, filled in for the actual change:
-
-```html
-<!--
-Этот закомментированный блок в теле Pull Request служит чек-листом для автора и навигатором для ревьюера. Каждый пункт должен давать чёткое понимание контекста изменений.
-
-1. Итог
-Краткая выжимка того, какая конечная цель достигнута этим пулл-реквестом. Читая только этот пункт, ревьюер должен понять суть PR без погружения в код.
-
-2. Затронутые части проекта
-Названия модулей, слоёв архитектуры, сервисов или баз данных, которые были изменены.
-
-3. Бизнес-логика
-Какие бизнес-правила добавлены, изменены или удалены. Как теперь должна вести себя система с точки зрения бизнеса.
-
-4. Что изменено
-Техническое описание реализации — использованные паттерны, добавленные классы/интерфейсы, изменения в сигнатурах.
-
-5. Проверка
-Как именно тестировался функционал (unit, интеграционные, e2e, ручная проверка) — используй результат `qa-gate`, если он запускался в этой сессии.
-
-6. Не проверено и риски
-Краевые случаи, не покрытые тестами, потенциальные проблемы производительности, оставленные "костыли".
-
-7. Интеграция
-Что нужно сделать при выкладке в другие окружения — миграции БД, новые переменные окружения, зависимости от других PR.
--->
-```
-
-```markdown
-## Итог
-
-## Затронутые части проекта
-
-## Бизнес-логика
-
-## Что изменено
-
-## Проверка
-
-## Не проверено и риски
-
-## Интеграция
-
-<!-- Выбрать ровно один footer: `Closes #<ID>` для PR в default branch; `Related to #<ID>` для любого другого target. -->
-Related to #<ID>
-```
-
-**`language: en`** — the same checklist and seven sections, in English:
+Every PR body (or MR body) MUST start with the following HTML comment verbatim. The comment is the same for every project language. The tracker does not render it; it is a checklist for the author and a navigator for the reviewer. After the comment, write the seven sections for the actual change; the comment items map to the section headings in order. Pass the body through `--body-file` (`--description-file` on GitLab) as §1 requires.
 
 ```html
 <!--
@@ -137,6 +86,31 @@ Edge cases not covered by tests, potential performance issues, remaining workaro
 What needs to happen when deploying to other environments — DB migrations, new env vars, dependencies on other PRs.
 -->
 ```
+
+Read `language` from `.harness/project.json` (default `ru`) to pick the section headings. The headings are output text in the project language. Do not translate them.
+
+**`language: ru`**:
+
+```markdown
+## Итог
+
+## Затронутые части проекта
+
+## Бизнес-логика
+
+## Что изменено
+
+## Проверка
+
+## Не проверено и риски
+
+## Интеграция
+
+<!-- Выбрать ровно один footer: `Closes #<ID>` для PR в default branch; `Related to #<ID>` для любого другого target. -->
+Related to #<ID>
+```
+
+**`language: en`**:
 
 ```markdown
 ## Summary
