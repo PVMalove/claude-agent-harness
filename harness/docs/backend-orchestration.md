@@ -1002,8 +1002,11 @@ Approver с префиксом `policy:` отклоняется. Флаги appr
 ledger, если его состояние не `abandoned`, если `abandoned.last_accepted` равен `null`, если ticket
 или issue-ветка отличаются или если последний принятый candidate не резолвится в коммит. Batch,
 закрытый `batch abandon`, остаётся в `failed` без `last_accepted`, а при `null` ничего не было
-принято: в обоих случаях нужен обычный batch. Abandoned batch не держит ticket, ветку и worktree,
-но другой незавершённый batch с тем же ticket, веткой или worktree по-прежнему блокирует создание.
+принято: в обоих случаях нужен обычный batch. Исключение — источник с `null`, который сам замещал
+batch: remedy предлагает снова передать в `--supersedes` тот batch (`supersedes.batch_id`
+источника), чей `last_accepted` по-прежнему последний. Abandoned batch не держит ticket, ветку
+и worktree, но другой незавершённый batch с тем же ticket, веткой или worktree по-прежнему
+блокирует создание.
 
 Новый batch и его immutable plan несут одну и ту же неизменяемую ссылку `supersedes`: `batch_id`,
 `approved_by`, `approved_at`, копию `last_accepted`, `definition_of_done_matches`, `architect`,
@@ -1020,7 +1023,9 @@ ledger, если его состояние не `abandoned`, если `abandoned
   (#478). Если источник сам перенёс architect, передаётся та же ссылка. Batch начинает с
   `next_action: developer`: developer dispatch создаётся сразу, а architect dispatch не допускается.
   При другом Definition of Done не переносится ничего, и стадия architect проходит заново;
-- `start_commit` — candidate из `last_accepted` (`null`, если принят только architect). Первый
+- `start_commit` — candidate из `last_accepted` (`null`, если принят только architect). У
+  замещающего batch без принятого developer этот candidate — его собственный `start_commit`, так
+  что следующий замещающий batch в цепочке не теряет принятый candidate. Первый
   developer dispatch берёт его как `snapshot_commit`, и brief, preflight и проверка свежести Context
   Package видят один и тот же SHA. Если `start_commit` — потомок integration base, закреплённой при
   create, это обычный initial developer: его `commit_map` покрывает все коммиты после base, включая
