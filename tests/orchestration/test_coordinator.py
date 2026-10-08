@@ -13708,6 +13708,92 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             ],
         )
 
+    def _auto_architect_report(self) -> None:
+        """A pending architect report that the policy does not accept by itself."""
+        self._auto_batch()
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", risks="a wide plan"),
+        )
+
+    def test_a_worktree_mismatch_is_an_integrity_stop(self) -> None:
+        """integrity-failure: the worker attested another worktree than its brief."""
+        self._auto_batch()
+        architect = self._auto_dispatch("architect")
+        coordinator.send_dispatch(
+            self._args(
+                dispatch=architect["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=architect["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.repo),
+                )
+            )
+
+        rendered = coordinator.auto_report(self._args(batch=self.batch_id))
+
+        stop = self._batch_record(self.batch_id)["auto_stop"]
+        self.assertEqual(
+            (stop["category"], stop["reason"], rendered["report"]["stop"]),
+            ("integrity-failure", "worktree-mismatch", stop),
+        )
+
+    def test_a_changed_harness_runtime_is_an_integrity_stop(self) -> None:
+        """integrity-failure: the installed harness runtime no longer matches the batch pin."""
+        self._auto_architect_report()
+
+        with mock.patch.object(workspace, "_runtime_matches", return_value=False):
+            result = self._auto_decide()
+
+        self._assert_stopped(result, "integrity-failure", "harness-snapshot-changed")
+
+    def test_a_ledger_that_fails_validation_is_a_stop_that_is_never_recorded(
+        self,
+    ) -> None:
+        """integrity-failure: the stop is shown, and the failing ledger stays unwritten."""
+        self._auto_architect_report()
+        root = ledger_ops._state_root(self._args(), self.repo)
+        ledger = LifecycleLedger(root)
+        with ledger_ops._ledger_lock(ledger):
+            record = ledger_ops._load_batch(root, self.batch_id)
+            record["auto_decisions"][0]["rationale"] = "rewritten"
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._auto_decide()
+
+        self.assertIn("ledger-validation-failed", refused.exception.message)
+        rendered = coordinator.auto_report(self._args(batch=self.batch_id))
+        self.assertEqual(
+            (rendered["recorded"], rendered["stop"]["reason"]),
+            (False, "ledger-validation-failed"),
+        )
+        stored = self._batch_record(self.batch_id)
+        self.assertNotIn("auto_stop", stored)
+        self.assertNotIn("decision", stored["dispatches"][-1])
+
+    def test_an_abandoned_batch_is_a_supersede_dead_end(self) -> None:
+        """no-automatic-route: only a human continues an abandoned batch."""
+        self._auto_architect_report()
+        self._decide(self.batch_id, "abandon", reason="the plan is obsolete")
+
+        rendered = coordinator.auto_report(self._args(batch=self.batch_id))
+
+        stop = self._batch_record(self.batch_id)["auto_stop"]
+        self.assertEqual(
+            (stop["category"], stop["reason"], rendered["report"]["stop"]),
+            ("no-automatic-route", "supersede-dead-end", stop),
+        )
+
     def test_an_exhausted_developer_retry_budget_stops_the_automatic_path(
         self,
     ) -> None:
