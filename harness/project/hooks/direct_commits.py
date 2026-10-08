@@ -33,7 +33,10 @@ else:
 GUIDE = "(docs/agents/git-workflow.md)"
 ISSUE_BRANCH = f"работай на issue-ветке {GUIDE}."
 CALL_TEXT = re.compile(r"\bgit\b[\s\S]*\b(?:commit|push)\b")
-ACTION_TEXT = re.compile(r"\b(?:commit|push)\b")
+# `commit`/`push` as a whole token: not a part of an option (`--commit-plan-file`) or a name.
+ACTION_TOKEN = r"(?<![\w-])(?:commit|push)(?![\w-])"
+ACTION_WORD = re.compile(ACTION_TOKEN)
+GIT_ACTION_TEXT = re.compile(rf"\bgit\b[\s\S]*{ACTION_TOKEN}")
 # Environment variables that point git at a repository other than its working directory's.
 GIT_ENV = re.compile(r"\bGIT_(?:DIR|WORK_TREE)\b")
 DIR_COMMANDS = frozenset({"cd", "pushd", "popd"})
@@ -83,7 +86,7 @@ def calls(command: str, start: Path) -> list[Call] | None:
     parsed = pr_commands.parse(command)
     if any(CALL_TEXT.search(fragment) for fragment in parsed.opaque):
         return None
-    if ACTION_TEXT.search(command) and any(map(_computed, parsed.commands)):
+    if _unparsed_computed(command, parsed.commands):
         return None
     found = _calls_in(parsed.commands, start)
     if GIT_ENV.search(command):
@@ -111,6 +114,27 @@ def _computed(argv: list[str]) -> bool:
         (i for i, name in enumerate(names) if name in pr_commands.EVALUATORS), None
     )
     return evaluator is not None and any(map(_dynamic, argv[evaluator + 1 :]))
+
+
+def _unparsed_computed(command: str, commands: list[list[str]]) -> bool:
+    """commit/push может оказаться git-подкомандой в вычисляемой команде, текст которой не разобрать.
+
+    Часть опции (`--commit-plan-file`) и имени файла к отказу не ведёт; слово `commit` в другой
+    команде цепочки ведёт, только если вычисляемая команда может получить его из переменной.
+    """
+    computed = [argv for argv in commands if _computed(argv)]
+    if not computed:
+        return False
+    # The value of `$X` is unknown: `git … commit` anywhere in the text may end up in it.
+    if GIT_ACTION_TEXT.search(command):
+        return True
+    # `$GIT commit`: the program is unknown, so a `commit`/`push` argument is its subcommand.
+    if any(ACTION_WORD.search(word) for argv in computed for word in argv):
+        return True
+    # `SUB=commit; $GIT $SUB`: a computed argument may carry the word from another command.
+    return bool(ACTION_WORD.search(command)) and any(
+        _dynamic(word) for argv in computed for word in argv[1:]
+    )
 
 
 def _dir_change(argv: list[str]) -> list[str]:
