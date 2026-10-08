@@ -39,6 +39,7 @@ from harness.orchestration import (
     coordinator,
     coordinator_cli,
     extensions,
+    operation_access,
     operational_guards,
     qa_lane,
 )
@@ -3439,6 +3440,127 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 brief["transition"]["runtime_access_sha256"], plan["plan_digest"]
             )
         self.assertEqual(qa["access"], "read-only")
+
+    def _publish_brief_under(
+        self, access_policy: JsonObject | None
+    ) -> tuple[str, JsonObject, str]:
+        """An accepted QA candidate and an approved publish brief pinned under ``access_policy``."""
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id)
+        self._accepted_review_and_qa(batch_id, candidate)
+        if access_policy is not None:
+            (self.repo / ".harness/orchestration.json").write_text(
+                json.dumps({"access_policy": access_policy}), encoding="utf-8"
+            )
+        brief = self._dispatch(
+            batch_id, "developer", purpose="publish", candidate=candidate
+        )["brief"]
+        return batch_id, brief, candidate
+
+    def _assert_nothing_published(
+        self, brief: JsonObject, remote: str, candidate: str
+    ) -> None:
+        self.assertEqual(
+            coordinator._load_dispatch_status(
+                ledger_ops._state_root(self._args(), self.repo),
+                brief["dispatch_id"],
+            )["state"],
+            "approved",
+        )
+        self.assertNotIn(
+            candidate,
+            subprocess.run(
+                ["git", "-C", str(self.repo), "ls-remote", "--heads", remote],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout,
+        )
+
+    def test_publish_verifies_the_pinned_plan_and_reports_the_evidence(self) -> None:
+        _, brief, candidate = self._publish_brief_under(
+            {"defaults": {"mode": "inherit"}}
+        )
+
+        published = coordinator.publish_dispatch(
+            self._args(dispatch=brief["dispatch_id"], remote="origin")
+        )
+
+        self.assertEqual(published["candidate_commit"], candidate)
+        self.assertEqual(published["access"]["status"], "verified")
+        self.assertEqual(
+            published["access"]["plan_digest"], brief["runtime_access"]["plan_digest"]
+        )
+
+    def test_publish_stops_before_the_push_when_the_remote_host_is_not_approved(
+        self,
+    ) -> None:
+        _, brief, candidate = self._publish_brief_under(
+            {"defaults": {"mode": "inherit", "network": {"hosts": ["github.com"]}}}
+        )
+        _git(self.repo, "remote", "add", "mirror", "git@example.invalid:o/r.git")
+
+        with self.assertRaises(operation_access.OperationAccessError) as refused:
+            coordinator.publish_dispatch(
+                self._args(dispatch=brief["dispatch_id"], remote="mirror")
+            )
+
+        self.assertEqual(refused.exception.evidence["status"], "denied")
+        self.assertIn("example.invalid", refused.exception.remedy)
+        self._assert_nothing_published(brief, "origin", candidate)
+
+    def test_publish_stops_before_the_push_when_the_remote_is_unreachable(self) -> None:
+        _, brief, candidate = self._publish_brief_under(
+            {"defaults": {"mode": "inherit"}}
+        )
+        _git(self.repo, "remote", "add", "gone", str(self.tmp / "gone.git"))
+
+        with self.assertRaises(operation_access.OperationAccessError) as refused:
+            coordinator.publish_dispatch(
+                self._args(dispatch=brief["dispatch_id"], remote="gone")
+            )
+
+        self.assertEqual(refused.exception.evidence["status"], "unverified")
+        self._assert_nothing_published(brief, "origin", candidate)
+
+    def test_publish_uses_the_pinned_plan_not_a_later_config_edit(self) -> None:
+        _, brief, candidate = self._publish_brief_under(
+            {"defaults": {"mode": "inherit"}}
+        )
+        (self.repo / ".harness/orchestration.json").write_text(
+            json.dumps({"access_policy": {"defaults": {"mode": "unsandboxed"}}}),
+            encoding="utf-8",
+        )
+
+        published = coordinator.publish_dispatch(
+            self._args(dispatch=brief["dispatch_id"], remote="origin")
+        )
+
+        self.assertEqual(published["access"]["mode"], "inherit")
+        self.assertEqual(published["candidate_commit"], candidate)
+
+    def test_publish_classifies_a_remote_that_refuses_the_push(self) -> None:
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("a privileged process is not denied by file permissions")
+        _, brief, candidate = self._publish_brief_under(None)
+        origin = self.tmp / "origin.git"
+        paths = [origin, *origin.rglob("*")]
+        modes = {path: path.stat().st_mode & 0o7777 for path in paths}
+        for path in paths:
+            path.chmod(modes[path] & ~0o222)
+        try:
+            with self.assertRaises(git_utils.GitAccessError) as refused:
+                coordinator.publish_dispatch(
+                    self._args(dispatch=brief["dispatch_id"], remote="origin")
+                )
+        finally:
+            for path in paths:
+                path.chmod(modes[path])
+
+        self.assertEqual(refused.exception.category, git_utils.REMOTE_DENIED)
+        self._assert_nothing_published(brief, "origin", candidate)
 
     def test_qa_defect_routes_to_developer_retry_even_with_an_infrastructure_category(
         self,
