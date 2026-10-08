@@ -335,12 +335,18 @@ def _review_verification_commands(config: JsonObject) -> list[str]:
     return _strings(commands, "review_verification_commands", allow_empty=True)
 
 
-def _qa_preparation_commands(config: JsonObject) -> list[str]:
-    """Environment-preparation commands the clean-room QA runs before the gate; none when absent."""
-    commands = config.get("qa_preparation")
+def _qa_preparation_commands(
+    config: JsonObject, key: str = "qa_preparation"
+) -> list[str]:
+    """Commands of a QA preparation key the clean-room QA runs; none when absent.
+
+    ``qa_preparation`` is run before the gate. ``qa_environment_probes`` and
+    ``qa_project_file_checks`` are run only after a preparation failure, as independent facts.
+    """
+    commands = config.get(key)
     if commands is None:
         return []
-    return _strings(commands, "qa_preparation", allow_empty=True)
+    return _strings(commands, key, allow_empty=True)
 
 
 def _worker_attestation_required(config: JsonObject) -> bool:

@@ -69,3 +69,24 @@ def test_the_accessor_refuses_a_malformed_value_with_a_remedy() -> None:
         _qa_preparation_commands({"qa_preparation": "uv sync"})
     assert "qa_preparation" in raised.value.message
     assert raised.value.remedy
+
+
+@pytest.mark.parametrize("key", ["qa_environment_probes", "qa_project_file_checks"])
+def test_the_independent_fact_keys_are_declared_validated_and_read(
+    tmp_path: Path, key: str
+) -> None:
+    schema = json.loads(
+        (ROOT / "harness/orchestration/orchestration.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert schema["properties"][key]["items"] == {"type": "string", "minLength": 1}
+    assert key not in schema.get("required", [])
+    assert [p for p in _problems(tmp_path, {key: ["check"]}) if key in p] == []
+    assert [p for p in _problems(tmp_path, {key: "check"}) if key in p] == [
+        f"orchestration {key} must be a list of strings when provided"
+    ]
+    assert _qa_preparation_commands({}, key) == []
+    assert _qa_preparation_commands({key: ["a"]}, key) == ["a"]
+    with pytest.raises(CoordinatorError):
+        _qa_preparation_commands({key: "a"}, key)
