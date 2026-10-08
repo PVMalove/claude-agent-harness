@@ -1049,7 +1049,7 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             + INTERNAL_INVARIANT_REMEDY,
         )
     policy = dispatch["orchestration_policy"]
-    if not isinstance(policy, dict) or set(policy) != {
+    if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
         "approval_ttl_seconds",
         "attention",
         "context_pressure",
@@ -1060,6 +1060,9 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    from harness.orchestration.infrastructure_retry import pinned
+
+    pinned(dispatch)
     liveness = dispatch.get("liveness")
     if liveness is not None and (
         not isinstance(liveness, dict)

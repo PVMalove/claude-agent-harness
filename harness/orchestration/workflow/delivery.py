@@ -529,17 +529,40 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
                 "publish requires an approved, unsent publish-only dispatch",
                 remedy="approve a publish-only dispatch, and send it, before publishing",
             )
+        from harness.orchestration.infrastructure_retry import (
+            require_publish_destination,
+            stop_attention,
+        )
+
+        try:
+            require_publish_destination(repo, root, dispatch, remote)
+        except CoordinatorError as exc:
+            stop_attention(repo, root, args.dispatch, exc, locked=True)
+            raise
         candidate = dispatch["candidate_commit"]
         _accepted_qa_for_candidate(root, batch, candidate)
         # Only a candidate with accepted QA reaches this check, and nothing leaves the machine
         # before the pinned plan of this brief is proven for Git metadata, storage and the remote.
-        access = operation_access.require(
-            repo,
-            core_config._config(repo),
-            "publish",
-            brief=dispatch,
-            remote=remote,
-        )
+        try:
+            access = operation_access.require(
+                repo,
+                core_config._config(repo),
+                "publish",
+                brief=dispatch,
+                remote=remote,
+            )
+        except operation_access.OperationAccessError as exc:
+            from harness.orchestration.infrastructure_retry import (
+                pinned,
+                record_operation_failure,
+            )
+
+            policy = pinned(dispatch)
+            if policy and policy["enabled"]:
+                record_operation_failure(
+                    repo, root, dispatch, "publish", exc.evidence, remote, locked=True
+                )
+            raise
         result = subprocess.run(
             [
                 "git",

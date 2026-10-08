@@ -140,11 +140,30 @@ is not refused when that budget is exhausted; the human decision on every retry 
 `tooling-retry-repeated` attention bound it instead. `--retry-role developer` on a read-only stage
 still forces a budgeted `developer-retry`.
 A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks
-Context Package freshness, and needs its own explicit human approval under
+Context Package freshness, and, by default, needs its own explicit human approval under
 `manual_all`. The earlier brief, report and blocker stay untouched as audit evidence. A retry never
 uses an empty or fictitious commit, a changed candidate always needs a new risk assessment before
 review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
 forces a developer retry where a same-candidate re-run would otherwise be routed.
+
+A separate project opt-in, `infrastructure_retry_policy: {"enabled": true}`, permits only a
+confirmed infrastructure retry. It preserves the role, operation, candidate SHA, commands, access,
+runtime/model/effort and scope. The opt-in, preparation/probe/file-check commands and
+`attention_policy.max_infrastructure_retries` (default 2, including explicit 0) are snapshot into
+the approval-bound brief. Historical briefs stay manual; live configuration cannot expand this
+approval. The policy spends no developer retry budget and never grants native permissions.
+
+For a blocked QA preparation report, both its independent diagnosis and fresh readiness checks
+must confirm infrastructure and the same candidate. `report complete --dispatch <id>` resumes the
+policy decision and the new dispatch after recovery; it returns the existing successor on replay.
+For an unsent QA/publish operation, `dispatch retry-infrastructure --dispatch <id>` requires the
+recorded probe-confirmed denial and fresh readiness, then cancels the unsent brief and creates a
+new dispatch. Each decision records `policy:infrastructure-retry` and preserves previous evidence.
+An unchanged denial does not launch work. Unknown causes, changed boundaries or exhausted budgets
+stop the policy and raise attention. Unsupported/unverified access and arbitrary Git failures
+require manual recovery. Git operations without an approved dispatch stay manual. An explicitly
+selected native access mode needs actual runtime-access proof; health and checkout attestation do
+not supply it. See the project guide for the smoke procedure and its unverified runtime matrix.
 
 `block-bypass` means a read-only role (code-review, qa or verification) worked around a hook or tool
 block instead of stopping with `tooling_blocker`. Only an approver names it, and none of that report

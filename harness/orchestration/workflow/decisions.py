@@ -1215,7 +1215,25 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 _reporting_stage(dispatch, report), report, utils._now()
             )
         policy_auto_accept = getattr(args, "_policy_auto_accept", False)
-        if policy_auto_accept:
+        policy_retry = getattr(args, "_policy_infrastructure_retry", False)
+        if policy_retry:
+            from harness.orchestration.infrastructure_retry import authorize
+
+            if args.decision != "retry":
+                raise CoordinatorError(
+                    "policy infrastructure continuation requires retry",
+                    remedy="use an explicit coordinator decision",
+                )
+            readiness = authorize(repo, root, batch, dispatch, report)
+            assert routing is not None
+            routing["infrastructure_readiness"] = readiness
+            routing["source_report_sha256"] = pending[0]["report_sha256"]
+            approval = {
+                "approved_by": "policy:infrastructure-retry",
+                "approved_at": utils._now(),
+            }
+            approver = {"kind": "policy", "name": "infrastructure-retry"}
+        elif policy_auto_accept:
             accepted_policy = _auto_accept_policy(config, batch, dispatch, report)
             if args.decision != "accept" or accepted_policy is None:
                 raise CoordinatorError(
