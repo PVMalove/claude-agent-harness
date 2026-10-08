@@ -5693,7 +5693,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     ) -> None:
         args = _ns(approved_by=None, approved_at=None)
         batch: JsonObject = {"allowed_paths": ["**"], "dispatches": []}
-        for policy in ("milestone", "low_risk", "auto"):
+        for policy in ("milestone", "low_risk"):
             with self.subTest(policy=policy):
                 settings = {**batch, "approval_policy": policy}
                 config_ = {"low_risk_paths": ["**"]}
@@ -5708,19 +5708,34 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                         args, settings, config_, "developer", "work", None, "a" * 40
                     )
                 self.assertIn("--approved-by", raised.exception.remedy)
-        # Only `auto`, chosen by the project config as well as the batch, approves it (#643).
-        self.assertEqual(
-            dispatch._dispatch_approval_mode(
-                args,
-                {**batch, "approval_policy": "auto"},
-                {"approval_policy": "auto"},
-                "developer",
-                "work",
-                None,
-                "a" * 40,
-            ),
-            "policy:auto",
-        )
+        # Only `auto`, chosen by the project config as well as the batch, approves it (#643);
+        # without the config it approves no transition at all.
+        settings = {**batch, "approval_policy": "auto"}
+        for target in (None, "a" * 40):
+            with self.subTest(policy="auto", target=target):
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    dispatch._dispatch_approval_mode(
+                        args,
+                        settings,
+                        {"low_risk_paths": ["**"]},
+                        "developer",
+                        "work",
+                        None,
+                        target,
+                    )
+                self.assertIn("--approved-by", raised.exception.remedy)
+                self.assertEqual(
+                    dispatch._dispatch_approval_mode(
+                        args,
+                        settings,
+                        {"approval_policy": "auto"},
+                        "developer",
+                        "work",
+                        None,
+                        target,
+                    ),
+                    "policy:auto",
+                )
 
     def test_a_retry_before_the_rebase_keeps_the_superseding_rebase_target(
         self,
@@ -10951,8 +10966,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     ) -> None:
         args = _ns(approved_by=None, approved_at=None)
         for policy in ("milestone", "low_risk", "auto"):
+            # A batch `auto` without the project config approves no transition (#643).
             for route, expected in (
-                ("fix-forward", f"policy:{policy}"),
+                ("fix-forward", None if policy == "auto" else f"policy:{policy}"),
                 ("rebase-fix-forward", None),
             ):
                 batch: JsonObject = {

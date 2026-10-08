@@ -420,6 +420,46 @@ class AutoDispatchApprovalTests(unittest.TestCase):
         self.assertIn("stopped", refused.exception.message)
         self.assertIn("batch auto-report", refused.exception.remedy)
 
+    def test_a_batch_auto_policy_alone_approves_no_transition(self) -> None:
+        # A non-milestone transition: only the config decides whether the policy approves it.
+        for config_policy in (None, "milestone", "low_risk", "manual_all"):
+            with (
+                self.subTest(config=config_policy),
+                self.assertRaises(CoordinatorError) as refused,
+            ):
+                self._mode(config_policy, {}, "code-review", "work", None, None)
+            self.assertIn("both choose it", refused.exception.message)
+            self.assertIn("--approved-by", refused.exception.remedy)
+
+    def test_a_recorded_stop_ends_policy_approval_whatever_the_config(self) -> None:
+        for config_policy in (None, "auto", "milestone"):
+            with (
+                self.subTest(config=config_policy),
+                self.assertRaises(CoordinatorError) as refused,
+            ):
+                self._mode(
+                    config_policy,
+                    {},
+                    "code-review",
+                    "work",
+                    None,
+                    None,
+                    auto_stop={"category": "budget-exhausted", "reason": "stale"},
+                )
+            self.assertIn("stopped", refused.exception.message)
+
+    def test_a_batch_without_a_policy_is_not_approved_by_a_config_auto(self) -> None:
+        with self.assertRaises(CoordinatorError) as refused:
+            dispatch._dispatch_approval_mode(
+                self.NO_APPROVAL,
+                {"allowed_paths": ["**"], "dispatches": []},
+                {"approval_policy": "auto"},
+                "code-review",
+                "work",
+                None,
+            )
+        self.assertIn("both choose it", refused.exception.message)
+
     def test_an_explicit_approval_stays_explicit(self) -> None:
         self.assertEqual(
             dispatch._dispatch_approval_mode(

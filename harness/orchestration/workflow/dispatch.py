@@ -225,14 +225,15 @@ def _dispatch_approval_mode(
     the developer-retry that rebases onto a proposed target (``rebase-fix-forward``, issue #504)
     or onto the ``rebase_target`` of a superseding batch (issue #506): no policy but ``auto``
     ever approves a rebase target. ``auto`` approves every transition, milestones included, while
-    both the project config and the batch plan choose it and no stop is recorded (issue #643).
+    both the project config and the batch plan choose it and no stop is recorded (issue #643);
+    otherwise every transition of an ``auto`` batch needs a human.
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
     ):
         return "explicit"
     policy = batch.get("approval_policy", _approval_policy(config))
-    if approvals.auto_configured(config, batch):
+    if policy == approvals.AUTO_POLICY:
         if "auto_stop" in batch:
             raise CoordinatorError(
                 "the automatic path of this batch stopped "
@@ -240,6 +241,13 @@ def _dispatch_approval_mode(
                 "transition requires --approved-by and --approved-at",
                 remedy="show the final auto report (batch auto-report) to a human; every later "
                 "step of this batch needs --approved-by and --approved-at",
+            )
+        if not approvals.auto_configured(config, batch):
+            raise CoordinatorError(
+                "approval_policy auto approves only while the project config and the batch plan "
+                "both choose it, so this transition requires --approved-by and --approved-at",
+                remedy="pass --approved-by and --approved-at: a human approves every transition "
+                "of this batch while the project config and the batch plan disagree",
             )
         return approvals.AUTO_APPROVER
     milestones = _milestones(batch, policy, role, purpose, risk, rebase_target)
