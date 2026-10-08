@@ -29,9 +29,14 @@ TRANSITION_FIELDS = (
     "context_package_id",
     "required_gates",
 )
-# Bound only when a brief carries a non-empty carried-items section (issue #499) or a human-approved
-# rebase target (issue #504), so every transition without one keeps the digest it always had.
-OPTIONAL_TRANSITION_FIELDS = ("carried_items_sha256", "rebase_target_sha")
+# Bound only when a brief carries a non-empty carried-items section (issue #499), a human-approved
+# rebase target (issue #504) or a delta-review scope after a fix-forward (issue #625), so every
+# transition without one keeps the digest it always had.
+OPTIONAL_TRANSITION_FIELDS = (
+    "carried_items_sha256",
+    "rebase_target_sha",
+    "delta_review_sha256",
+)
 # A new dispatch (issue #624) always binds the sha256 of its resolved runtime access plan.
 ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
@@ -80,6 +85,7 @@ def build_transition(
     required_gates: Sequence[str],
     carried_items_sha256: str | None = None,
     rebase_target_sha: str | None = None,
+    delta_review_sha256: str | None = None,
 ) -> dict[str, object]:
     """Сконструировать словарь перехода между этапами жизненного цикла."""
     transition: dict[str, object] = {
@@ -101,11 +107,18 @@ def build_transition(
         transition["carried_items_sha256"] = carried_items_sha256
     if rebase_target_sha is not None:
         transition["rebase_target_sha"] = rebase_target_sha
+    if delta_review_sha256 is not None:
+        transition["delta_review_sha256"] = delta_review_sha256
     return transition
 
 
 def carried_items_digest(section: Mapping[str, object]) -> str:
     """Дайджест секции carried_items задания, который связывается с переходом (issue #499)."""
+    return _digest(dict(section))
+
+
+def delta_review_digest(section: Mapping[str, object]) -> str:
+    """Дайджест секции delta_review_scope задания code-review, связываемый с переходом (issue #625)."""
     return _digest(dict(section))
 
 
@@ -117,7 +130,8 @@ def transition_digest(transition: Mapping[str, object]) -> str:
             "a transition must carry exactly the fields an approval binds",
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
             "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
-            "when it carries an approved rebase target and runtime_access_sha256 for a new brief",
+            "when it carries an approved rebase target, delta_review_sha256 only when it "
+            "carries a delta-review scope and runtime_access_sha256 for a new brief",
         )
     return _digest(dict(transition))
 

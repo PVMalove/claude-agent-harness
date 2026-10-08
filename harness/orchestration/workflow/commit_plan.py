@@ -445,7 +445,8 @@ def _check_rebase_mapping(
     """A developer-retry under an approved rebase target accounts for every previous-candidate
     commit (those above the old base, up to ``snapshot_commit``) exactly once, as ``rebased_from``
     of its rebased copy or as ``dropped``, and maps every commit it created after the target exactly
-    once: a rebased copy inherits its original's plan entry, a new commit closes its own entry."""
+    once: a rebased copy inherits its original's plan entry, a new commit closes its own entry. A
+    copy is never its own original: that pair would claim a merged commit as reviewed by patch-id."""
     planned, rebased, dropped = _rebase_entries(commit_map, resolve)
     originals = [original for original, _ in rebased] + [
         original for original, _ in dropped
@@ -472,6 +473,14 @@ def _check_rebase_mapping(
             remedy='add {"commit_sha": <copy>, "rebased_from": <original>} for each commit the '
             'rebase carried onto rebase_target_commit, or {"rebased_from": <original>, '
             '"dropped": "<reason>"} for a commit it did not carry',
+        )
+    own = _unique([copy for original, copy in rebased if copy == original])
+    if own:
+        raise CoordinatorError(
+            f"commit_map maps previous-candidate commits as rebased copies of themselves: {own}",
+            remedy="rebase the previous-candidate commits onto rebase_target_commit with "
+            "git rebase --onto instead of merging it: a rebased copy is a new commit after the "
+            "target, and rebased_from names its original",
         )
     mapped = [sha for sha, _ in planned] + [sha for _, sha in rebased]
     foreign = _unique([sha for sha in mapped if sha not in created])

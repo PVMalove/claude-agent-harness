@@ -117,7 +117,7 @@ class TransitionDigestTests(unittest.TestCase):
 
         self.assertEqual(
             guards.OPTIONAL_TRANSITION_FIELDS,
-            ("carried_items_sha256", "rebase_target_sha"),
+            ("carried_items_sha256", "rebase_target_sha", "delta_review_sha256"),
         )
         self.assertNotEqual(
             guards.transition_digest(bound), guards.transition_digest(_transition())
@@ -130,6 +130,28 @@ class TransitionDigestTests(unittest.TestCase):
         self.assertEqual(_built(rebase_target_sha=target)["rebase_target_sha"], target)
         both = _built(carried_items_sha256="0" * 64, rebase_target_sha=target)
         self.assertRegex(guards.transition_digest(both), r"^[0-9a-f]{64}$")
+
+    def test_a_delta_review_scope_is_bound_only_when_the_brief_carries_one(
+        self,
+    ) -> None:
+        """Issue #625: a code-review brief after a fix-forward binds its delta_review_scope."""
+        digest = guards.delta_review_digest({"mode": "delta", "escalations": []})
+        bound = _transition(delta_review_sha256=digest)
+
+        self.assertRegex(digest, r"^[0-9a-f]{64}$")
+        self.assertNotEqual(
+            digest, guards.delta_review_digest({"mode": "full", "escalations": []})
+        )
+        self.assertNotEqual(
+            guards.transition_digest(bound), guards.transition_digest(_transition())
+        )
+        self.assertNotIn("delta_review_sha256", _built())
+        self.assertEqual(
+            _built(delta_review_sha256=digest)["delta_review_sha256"], digest
+        )
+        with self.assertRaises(HarnessError) as unknown:
+            guards.transition_digest(_transition(delta_review_scope=digest))
+        self.assertIn("delta_review_sha256 only when", unknown.exception.remedy)
 
 
 class RetryIdempotencyKeyTests(unittest.TestCase):

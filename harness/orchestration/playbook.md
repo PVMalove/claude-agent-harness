@@ -196,6 +196,7 @@ that stage. The coordinator chooses a route by this table:
 | A warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer`, and the closed list of carried items is empty: no review finding, no open coordinator finding, no open incomplete item for the developer and no item of a retried developer brief | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the axis, check or candidate change that decided it, and an empty `retry_item_ids` |
 | An additional commit is needed: a retry routes to a developer-retry whose closed list of carried items is not empty (the retried review's Standards and Spec findings, open coordinator findings, open incomplete items for the developer, or the items of a retried developer brief); a `tooling-retry` keeps its own route and carries the same list | `fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch is approved under `approval_policy`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the `retry_item_ids` the brief carries, and the brief's `snapshot_commit` as the candidate the new commits continue |
 | The integration base moved ahead: a retry routes to a developer-retry (`developer-retry` or `fix-forward`) of a developer, verification, code-review, qa or publish report while `origin/<integration_ref>` has moved past the pinned `integration_base_commit` and the candidate the retry continues does not contain that tip yet | `rebase-fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch that carries the proposed tip as `rebase_target_commit` always needs an explicit approval (`--approved-by` with the transition digest), under every `approval_policy`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the routing record's `rebase_target_commit` and `integration_base_commit`, the `retry_item_ids` the brief carries, and the `rebase_check` of the retry report |
+| After fix-forward: a code-review is dispatched for the candidate of an accepted `fix-forward` or `rebase-fix-forward` developer-retry that continued a candidate an earlier code-review of the batch judged (the review was accepted, or retried to a developer) | `fix-forward` | No separate decision: `dispatch create --role code-review` without `--delta-review-of` chooses a delta or a full review itself, and the code-review dispatch is approved under `approval_policy` with that choice bound into its transition | The brief's `delta_review_scope`: `prior_review` (dispatch ID, `report_sha256`, reviewed candidate), `developer_dispatch_id`, `delta_base`, `delta_commits`, `reviewed_copies`, `closure` and the `escalations` that make it `full`; the transition's `delta_review_sha256`; the QA dispatch's `candidate_commit`, the new SHA |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
 | A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
 | The coordinator finds a defect in a clean developer report whose Definition of Done is met inside its allowed paths | `carry-over` | The approver of the `accept` (`batch decide --findings-file`); after a policy auto-accept the coordinator itself (`batch carry-over`, `policy:carry-over`) while no code-review dispatch exists for the candidate; the code-review dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the accepted developer report, the candidate, and the `carried_items` item IDs. No developer retry is spent before review |
@@ -242,6 +243,32 @@ together with the review's findings, so `retry_policy.max_developer_retries` is 
 accepted developer report, and names it: an unsent one is cancelled with `dispatch cancel` first, a
 sent one leaves the defect to the decision on its report, and one whose report is already decided
 takes the finding through `batch decide --findings-file` when the next developer report is accepted.
+
+After a fix-forward, the coordinator chooses the scope of the next code-review itself (issue #625).
+`dispatch create --role code-review` without `--delta-review-of` computes `delta_review_scope`
+when the candidate is the `commit_sha` of the batch's latest accepted developer work report, that
+report is a developer-retry whose chain of directly retried developer-retry attempts was routed
+`fix-forward` or `rebase-fix-forward`, and the newest code-review before the chain completed its
+report on the chain's first `snapshot_commit` and was accepted or retried to a developer. That
+review is the prior review. The delta is `git diff <delta_base> <candidate_commit>`: `delta_base`
+is the prior review's candidate; after a rebase in the chain, it is the parent of the first commit
+after the last rebase target that is not a reviewed copy. A reviewed copy resolves through the
+chain's `rebased_from` pairs, each with a matching `git patch-id`, to a commit the prior review
+judged. The scope is `full` with one or more `escalations`, each `{reason, evidence}`:
+`new-risk-trigger` (a trigger of the candidate's risk assessment or of the delta's commits and
+files that the prior review's assessment did not match), `file-outside-carried-items` (a delta file
+outside the files of the developer-retry's carried items; a `review-finding` counts the
+`review_scope` of its review), `patch-id-mismatch` (a pair of a chain report's `rebase_check`),
+`dropped-commit` (a `dropped` entry of a chain report's `rebase_check`: the candidate lost a change
+the prior review judged), or `no-new-commits`. Otherwise it is `delta`: the brief also carries the developer-retry's
+`review-finding` items and its `incomplete-item` entries for the developer, and the review judges
+both axes on the delta and accounts for every carried item. A `full` brief is an ordinary full review with the
+section as audit evidence. Either way the brief keeps the full `review_scope`, the proposal shows
+the section and the transition binds it as `delta_review_sha256`; an explicit `--delta-review-of`
+keeps the test-only delta-review and records `delta_review_scope: null`. Accepting either review
+moves the batch to `qa`, and clean-room QA runs on the new candidate SHA with the full
+`verification_commands`. A retry of a delta-review hands on the carried items it did not mark
+`closed`, and its own findings take the next `review-finding` numbers.
 
 A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
 
@@ -478,7 +505,11 @@ It must contain, at minimum:
   is bound into the transition as `carried_items_sha256`;
 - `rebase target`: `rebase_target_commit`, the integration tip a `rebase-fix-forward`
   developer-retry rebases onto, bound into the transition as `rebase_target_sha`, or `null` on every
-  other brief, including the developer dispatch of a legacy stale-base record.
+  other brief, including the developer dispatch of a legacy stale-base record;
+- `delta review scope` (code-review): `delta_review_scope`, the coordinator's delta or full choice
+  after a fix-forward (`mode`, `route`, `prior_review`, `developer_dispatch_id`, `delta_base`,
+  `delta_commits`, `reviewed_copies`, `closure`, `escalations`), bound into the transition as
+  `delta_review_sha256`, or `null` on every other brief, including a test-only delta-review.
 
 The brief is a starting contract, not a conversation buffer. A role must escalate an ambiguity,
 overlap, credential request, irreversible action, policy decision, or missing proof. It must not
@@ -534,8 +565,8 @@ The report must include:
   `snapshot_commit`) exactly once, as `{commit_sha, rebased_from}` for its rebased copy, which
   inherits the original's plan entry, or as `{rebased_from, dropped}` with a non-empty reason; every
   commit after the target appears once, a rebased copy or a new commit. A missing, repeated or
-  unknown previous-candidate commit is refused, and so are `rebased_from` and `dropped` without a
-  target. `report submit`, `batch decision-packet` and the accept decision return `rebase_check`:
+  unknown previous-candidate commit is refused, and so are a copy that is its own original (a merge
+  of the target instead of a rebase) and `rebased_from` and `dropped` without a target. `report submit`, `batch decision-packet` and the accept decision return `rebase_check`:
   the target, the old base, each pair with `patch_id_match` (`git patch-id --stable`), the dropped
   commits and the `patch_id_mismatches`. A mismatch is a conflict resolved with changes: it is
   shown for delta-review and neither refuses the report nor makes it unclean;

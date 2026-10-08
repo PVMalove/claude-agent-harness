@@ -209,7 +209,19 @@ DISPATCH_FIELDS = {
     "carried_items",
     "rebase_target_commit",
     "runtime_access",
+    "delta_review_scope",
 }
+# A code-review brief after an accepted fix-forward developer-retry records whether the coordinator
+# scoped it to the new commits (``delta``) or escalated it to a full review (``full``), and why
+# (issue #625). An escalation reason is one of a closed set.
+DELTA_REVIEW_MODES = ("delta", "full")
+DELTA_REVIEW_ESCALATIONS = (
+    "new-risk-trigger",
+    "file-outside-carried-items",
+    "patch-id-mismatch",
+    "dropped-commit",
+    "no-new-commits",
+)
 # The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
 # that raised an item; a later kind adds its value here without changing the section's shape.
 CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding", "incomplete-item")

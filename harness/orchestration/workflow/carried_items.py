@@ -260,11 +260,14 @@ def _brief_item(record: JsonObject) -> JsonObject:
     return {field: record[field] for field in sorted(CARRIED_ITEM_FIELDS)}
 
 
-def _review_findings(entry: JsonObject, report: JsonObject) -> list[JsonObject]:
+def _review_findings(
+    entry: JsonObject, report: JsonObject, first: int = 1
+) -> list[JsonObject]:
     """The Standards and Spec findings of a retried code-review report as brief items (no I/O).
 
     They reach only the developer-retry that answers the review: the next review judges the new
-    candidate afresh.
+    candidate afresh, or, as a delta-review after that fix-forward, accounts for their closure.
+    They are numbered from ``first``, after the review findings the review's own brief carried.
     """
     review = report["review"]
     findings = [
@@ -286,8 +289,41 @@ def _review_findings(entry: JsonObject, report: JsonObject) -> list[JsonObject]:
             "files": [],
             "expected_evidence": finding["evidence"],
         }
-        for number, (axis, finding) in enumerate(findings, start=1)
+        for number, (axis, finding) in enumerate(findings, start=first)
     ]
+
+
+def _review_handoff(
+    dispatch: JsonObject, report: JsonObject
+) -> tuple[list[JsonObject], list[JsonObject], int]:
+    """What a retried code-review hands on from its own brief (issue #625), with no I/O.
+
+    A delta-review after a fix-forward carries the review findings and the developer's incomplete
+    items that fix-forward closed. Those its review did not mark ``closed`` go to the next
+    developer-retry again. Returns them by kind and the highest review-finding number its brief
+    carried. A brief from before issue #625 never carried either kind, so it hands on nothing.
+    """
+    section = dispatch.get("carried_items") or {}
+    closed = {
+        entry["item_id"]
+        for entry in report["review"].get("carried_items", [])
+        if entry["status"] == "closed"
+    }
+    findings = section.get(REVIEW_FINDING, [])
+    incomplete = [
+        item
+        for item in section.get(INCOMPLETE_ITEM, [])
+        if item["source"].get("target_role") == "developer"
+        and item["item_id"] not in closed
+    ]
+    highest = max(
+        (int(item["item_id"].rsplit("-", 1)[1]) for item in findings), default=0
+    )
+    return (
+        [item for item in findings if item["item_id"] not in closed],
+        incomplete,
+        highest,
+    )
 
 
 def next_incomplete_item_ids(batch: JsonObject, count: int) -> list[str]:
@@ -450,8 +486,10 @@ def retry_section(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObjec
     A retried developer work report accepted none of its brief's items, so the retry owes exactly
     that brief's section. Any other retried report hands on the open coordinator findings, a
     code-review's Standards and Spec findings, and the open incomplete items handed to the
-    developer. Nothing can change these lists between the retry decision and the brief, so the
-    decision records their ids and the brief carries the same list.
+    developer; a retried delta-review also hands on the review findings and developer items its
+    brief carried and it did not close (issue #625). Nothing can change these lists between the
+    retry decision and the brief, so the decision records their ids and the brief carries the same
+    list.
     """
     if entry.get("role") == "developer":
         dispatch = _load_dispatch(root, entry["dispatch_id"])
@@ -468,11 +506,19 @@ def retry_section(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObjec
     ]
     if findings:
         section[COORDINATOR_FINDING] = findings
+    incomplete = open_incomplete_items(root, batch, "developer")
     if entry.get("role") == "code-review":
-        review_findings = _review_findings(entry, _pending_report(root, batch, entry))
+        report = _pending_report(root, batch, entry)
+        handed, handed_incomplete, highest = _review_handoff(
+            _load_dispatch(root, entry["dispatch_id"]), report
+        )
+        review_findings = [*handed, *_review_findings(entry, report, highest + 1)]
         if review_findings:
             section[REVIEW_FINDING] = review_findings
-    incomplete = open_incomplete_items(root, batch, "developer")
+        known = {item["item_id"] for item in incomplete}
+        incomplete += [
+            item for item in handed_incomplete if item["item_id"] not in known
+        ]
     if incomplete:
         section[INCOMPLETE_ITEM] = incomplete
     return section
