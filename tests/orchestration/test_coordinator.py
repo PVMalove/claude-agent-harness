@@ -4697,6 +4697,48 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._decide(batch_id, "abandon", reason="review dead end")
         return candidate
 
+    def _abandon_after_a_blocked_developer(self, batch_id: str) -> JsonObject:
+        """Abandon ``batch_id`` after its next developer stops before any commit: nothing of
+        that developer is accepted. Returns the blocked developer brief."""
+        brief: JsonObject = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                brief["snapshot_commit"],
+                [],
+                commit_map=[],
+                outcome="blocked",
+                blockers="the developer cannot continue",
+            ),
+        )
+        self._decide(batch_id, "abandon", reason="developer dead end")
+        return brief
+
+    def test_a_superseding_source_without_an_accept_names_the_batch_it_superseded(
+        self,
+    ) -> None:
+        first, candidate = self._abandoned_batch()
+        second = cast(str, self._supersede(first)["batch_id"])
+        coordinator.approve_batch(self._args(batch=second, **self._approval()))
+        self._abandon_after_a_blocked_developer(second)
+        self.assertIsNone(self._batch_record(second)["abandoned"]["last_accepted"])
+        before = self._ledger_bytes()
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            coordinator.create_batch(self._args(**self._superseding_plan(second)))
+
+        self.assertIn("no abandoned.last_accepted record", refused.exception.message)
+        self.assertIn(f"--supersedes {first}", refused.exception.remedy)
+        self.assertIn("ordinary batch", refused.exception.remedy)
+        self.assertEqual(self._ledger_bytes(), before)
+        again = self._supersede(first)
+        self.assertEqual(
+            (again["supersedes"]["batch_id"], again["supersedes"]["start_commit"]),
+            (first, candidate),
+        )
+
     def test_a_superseding_batch_links_its_abandoned_batch_and_records_the_route(
         self,
     ) -> None:

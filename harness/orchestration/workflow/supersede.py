@@ -93,8 +93,9 @@ def _load_source(root: Path, source_id: str) -> JsonObject:
     return source
 
 
-def _last_accepted(source: JsonObject) -> JsonObject:
-    """The abandoned batch's ``abandoned.last_accepted`` record; refuse any other source."""
+def _resume_record(source: JsonObject) -> JsonObject:
+    """The abandoned batch's ``abandoned.last_accepted`` record that the superseding batch resumes
+    from; refuse any other source."""
     source_id = source.get("batch_id")
     if source.get("state") != "abandoned":
         raise CoordinatorError(
@@ -107,10 +108,22 @@ def _last_accepted(source: JsonObject) -> JsonObject:
     abandoned = source.get("abandoned")
     last = abandoned.get("last_accepted") if isinstance(abandoned, dict) else None
     if not isinstance(last, dict):
+        link = source.get("supersedes")
+        earlier = link.get("batch_id") if isinstance(link, dict) else None
+        remedy = (
+            "nothing of that batch was accepted: create an ordinary batch without "
+            "--supersedes, which starts from the architect stage"
+        )
+        if isinstance(earlier, str):
+            remedy = (
+                f"nothing of that batch was accepted, but it superseded batch {earlier}: pass "
+                f"--supersedes {earlier} to resume from that batch's last accepted record "
+                "again, or create an ordinary batch without --supersedes, which starts from "
+                "the architect stage"
+            )
         raise CoordinatorError(
             f"abandoned batch {source_id} has no abandoned.last_accepted record to resume from",
-            remedy="nothing of that batch was accepted: create an ordinary batch without "
-            "--supersedes, which starts from the architect stage",
+            remedy=remedy,
         )
     return last
 
@@ -252,7 +265,7 @@ def attach(
     integration base pinned now, the base becomes its ``rebase_target_commit``.
     """
     source = _load_source(root, source_id)
-    last = _last_accepted(source)
+    last = _resume_record(source)
     _require_same_work(source, record)
     same_done = source.get("definition_of_done") == record["definition_of_done"]
     architect = _architect_reference(root, source) if same_done else None
