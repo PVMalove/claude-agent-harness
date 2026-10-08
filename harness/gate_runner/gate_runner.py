@@ -385,6 +385,8 @@ def run_gate(
 
 
 QA_STAGE_PREPARATION = "preparation"
+QA_STAGE_ENVIRONMENT_PROBE = "environment-probe"
+QA_STAGE_PROJECT_FILE_CHECK = "project-file-check"
 QA_STAGE_GATE = "gate"
 CODE_CHECKS_STARTED = "started"
 CODE_CHECKS_NOT_STARTED = "not_started"
@@ -394,8 +396,9 @@ DIAGNOSIS_PROJECT_DEFECT = "project-defect"
 DIAGNOSIS_UNKNOWN = "unknown"
 DIAGNOSTICS_LIMIT = 1_200
 
-# Log signatures are only one signal. A category is confirmed only when a signature agrees with a
-# structural fact (see ``diagnose``); neither an exit code nor a signature decides it alone.
+# Log signatures are only corroborating signals. A cause is confirmed by independent facts: the
+# project's own environment probes and project-file checks (see ``diagnose``); neither an exit code
+# nor a log signature decides a category alone.
 _INFRASTRUCTURE_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "network",
@@ -492,15 +495,23 @@ def _project_file_names(tracked_files: tuple[str, ...]) -> frozenset[str]:
 
 
 def diagnose(
-    command: str, exit_code: int, output: str, tracked_files: tuple[str, ...]
+    command: str,
+    exit_code: int,
+    output: str,
+    tracked_files: tuple[str, ...],
+    probes: Sequence[StageCommand] = (),
+    file_checks: Sequence[StageCommand] = (),
 ) -> Diagnosis:
-    """Classify one failed preparation command from independent signals (pure, no I/O).
+    """Classify one failed preparation command from independent facts (pure, no I/O).
 
-    A category is confirmed only when a log signature and a structural fact agree: a project defect
-    needs a signature and a manifest or lock file that the candidate tracks and the output names; an
-    infrastructure failure needs an infrastructure signature, and no project-defect signature and no
-    tracked project file named in the output, so a defect in the project's own files cannot pass as
-    an outage. A bare non-zero exit, or a keyword alone, is ``unknown``; so is any contradiction.
+    ``probes`` are the project's environment probes (for example a reachability check) and
+    ``file_checks`` its offline project-file checks (for example a lock-file consistency check), both
+    run after the preparation failure in the same checkout. An infrastructure cause needs a failed
+    probe and at least one project-file check, every one of which passes: the environment is shown
+    broken while the project's files are shown sound. A project defect needs a failing project-file
+    check, or a defect log signature agreeing with a tracked project file the output names. A bare
+    non-zero exit, a log keyword alone, an absent probe or any contradiction is ``unknown``; log
+    signatures are only recorded as corroboration.
     """
     if exit_code == 0:
         return Diagnosis(
@@ -517,16 +528,38 @@ def diagnose(
     named = sorted(
         name for name in _project_file_names(tracked_files) if name in lowered
     )
+    failed_probes = [item.command for item in probes if item.exit_code != 0]
+    failed_checks = [item.command for item in file_checks if item.exit_code != 0]
+    sound = bool(file_checks) and not failed_checks
+    logged = [f"log:{n}" for n in (*infrastructure, *defects)]
     if infrastructure and defects:
+        return Diagnosis(
+            DIAGNOSIS_UNKNOWN,
+            (f"exit-code:{exit_code}", *logged),
+            "the output carries both an infrastructure and a project-defect signature",
+        )
+    if failed_probes and failed_checks:
         return Diagnosis(
             DIAGNOSIS_UNKNOWN,
             (
                 f"exit-code:{exit_code}",
-                *(f"log:{n}" for n in (*infrastructure, *defects)),
+                *(f"environment-probe-failed:{c}" for c in failed_probes),
+                *(f"project-file-check-failed:{c}" for c in failed_checks),
+                *logged,
             ),
-            "the output carries both an infrastructure and a project-defect signature",
+            "an environment probe and a project-file check both failed, so neither cause is isolated",
         )
-    if defects and named:
+    if failed_checks:
+        return Diagnosis(
+            DIAGNOSIS_PROJECT_DEFECT,
+            (
+                f"exit-code:{exit_code}",
+                *(f"project-file-check-failed:{c}" for c in failed_checks),
+                *logged,
+            ),
+            "a project-file check failed while no environment probe did",
+        )
+    if defects and named and not sound:
         return Diagnosis(
             DIAGNOSIS_PROJECT_DEFECT,
             (
@@ -536,24 +569,26 @@ def diagnose(
             ),
             "a project-defect signature agrees with a tracked project file the output names",
         )
-    if infrastructure and not named:
+    if failed_probes and sound and not defects:
         return Diagnosis(
             DIAGNOSIS_INFRASTRUCTURE,
             (
                 f"exit-code:{exit_code}",
-                *(f"log:{n}" for n in infrastructure),
-                "no-project-file-implicated",
+                *(f"environment-probe-failed:{c}" for c in failed_probes),
+                f"project-file-checks-passed:{len(file_checks)}",
+                *logged,
             ),
-            "an infrastructure signature, with no project-defect signature and no tracked project file named",
+            "an environment probe failed while every project-file check passed",
         )
     return Diagnosis(
         DIAGNOSIS_UNKNOWN,
         (
             f"exit-code:{exit_code}",
-            *(f"log:{n}" for n in (*infrastructure, *defects)),
+            *(f"environment-probe-failed:{c}" for c in failed_probes),
             *(f"project-file:{n}" for n in named),
+            *logged,
         ),
-        "the signals do not confirm one cause; a non-zero exit or a keyword alone is not evidence",
+        "the facts do not confirm one cause; a non-zero exit or a keyword alone is not evidence",
     )
 
 
@@ -602,7 +637,7 @@ def _stage_record(stage: str, item: StageCommand) -> dict[str, object]:
 
 
 def _tracked_files(checkout: Path) -> tuple[str, ...]:
-    """Files the candidate tracks, or none when Git cannot list them (a diagnosis then stays unknown)."""
+    """Files the candidate tracks, or none when Git cannot list them (a log-based defect then stays unknown)."""
     listed = _run_git(["git", "-C", str(checkout), "ls-files"])
     return tuple(listed.stdout.splitlines()) if listed.returncode == 0 else ()
 
@@ -611,11 +646,15 @@ def run_qa_stages(
     preparation: Sequence[str | list[str]],
     gate: Sequence[str | list[str]],
     policy: ExecutionPolicy,
+    *,
+    environment_probes: Sequence[str | list[str]] = (),
+    project_file_checks: Sequence[str | list[str]] = (),
 ) -> QAStagesResult:
     """Run preparation, then the gate, in one checkout, stopping at the first failing stage.
 
     A failed preparation command stops the run before any gate command starts, so the result states
-    that no code check ran and diagnoses the failure; the gate is never recorded as failed.
+    that no code check ran; the gate is never recorded as failed. Only then are the environment
+    probes and project-file checks run, in the same checkout, to diagnose the failure.
     """
     checks: list[dict[str, str]] = []
     outputs: list[str] = []
@@ -635,6 +674,25 @@ def run_qa_stages(
         stages.extend(_stage_record(QA_STAGE_PREPARATION, item) for item in prepared)
         broken = next((item for item in prepared if item.exit_code != 0), None)
         if broken is not None:
+            probed: list[StageCommand] = []
+            checked: list[StageCommand] = []
+            for commands, found in (
+                (environment_probes, probed),
+                (project_file_checks, checked),
+            ):
+                _execute_commands(
+                    commands,
+                    checkout,
+                    stop_on_failure=False,
+                    checks=[],
+                    outputs=outputs,
+                    started=started,
+                    stage=found,
+                )
+            stages.extend(_stage_record(QA_STAGE_ENVIRONMENT_PROBE, i) for i in probed)
+            stages.extend(
+                _stage_record(QA_STAGE_PROJECT_FILE_CHECK, i) for i in checked
+            )
             return QAStagesResult(
                 stages=stages,
                 gate_checks=[],
@@ -647,6 +705,8 @@ def run_qa_stages(
                     broken.exit_code,
                     broken.output,
                     _tracked_files(checkout),
+                    probed,
+                    checked,
                 ),
             )
         ran: list[StageCommand] = []

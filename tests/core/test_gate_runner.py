@@ -24,6 +24,7 @@ from harness.gate_runner.gate_runner import (
     _clean_room_python,
     diagnose,
     run_gate,
+    StageCommand,
     run_qa_stages,
 )
 
@@ -480,7 +481,49 @@ def test_a_failed_preparation_stops_before_the_gate_and_records_no_code_check(
     assert "Could not resolve host" in str(result.stages[0]["diagnostics"])
     assert "must not run" not in result.artifact
     assert result.diagnosis is not None
+    # The log signature is only corroboration: with no probe, nothing confirms the cause.
+    assert result.diagnosis.category == "unknown"
+
+
+def test_a_failed_probe_with_sound_project_files_confirms_infrastructure(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    result = run_qa_stages(
+        [_py("import sys; sys.exit(1)")],
+        [_py("print('gate must not run')")],
+        CleanRoomPolicy(repo, head),
+        environment_probes=[_py("import sys; sys.exit(7)")],
+        project_file_checks=[_py("print('lock is consistent')")],
+    )
+
+    assert [(s["stage"], s["result"]) for s in result.stages] == [
+        ("preparation", "fail"),
+        ("environment-probe", "fail"),
+        ("project-file-check", "pass"),
+    ]
+    assert result.failed_stage == "preparation"
+    assert result.code_checks_started == "not_started"
+    assert result.diagnosis is not None
     assert result.diagnosis.category == "infrastructure"
+    assert "lock is consistent" in result.artifact
+    assert "gate must not run" not in result.artifact
+
+
+def test_probes_and_file_checks_do_not_run_when_preparation_passes(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    result = run_qa_stages(
+        [_py("print('ready')")],
+        [_py("print('gate')")],
+        CleanRoomPolicy(repo, head),
+        environment_probes=[_py("print('probe must not run')")],
+        project_file_checks=[_py("print('check must not run')")],
+    )
+
+    assert [s["stage"] for s in result.stages] == ["preparation", "gate"]
+    assert "must not run" not in result.artifact
 
 
 def test_a_failing_gate_command_keeps_the_gate_stage_failure(tmp_path: Path) -> None:
@@ -514,28 +557,83 @@ def test_stage_diagnostics_are_sanitised_and_bounded(tmp_path: Path) -> None:
 LOCK_FILES = ("package.json", "package-lock.json", "src/app.py")
 
 
-def test_diagnose_confirms_an_infrastructure_failure_from_agreeing_signals() -> None:
+def _fact(command: str, exit_code: int) -> StageCommand:
+    return StageCommand(command, command, exit_code, "")
+
+
+OUTAGE = "npm ERR! network request failed: getaddrinfo EAI_AGAIN registry.npmjs.org"
+LOCK_MISMATCH = (
+    "npm ERR! `npm ci` can only install packages when your package.json and "
+    "package-lock.json are in sync"
+)
+
+
+def test_diagnose_confirms_infrastructure_from_a_failed_probe_and_sound_project_files() -> (
+    None
+):
     diagnosis = diagnose(
         "npm ci",
         1,
-        "npm ERR! network request failed: getaddrinfo EAI_AGAIN registry.npmjs.org",
+        OUTAGE,
         LOCK_FILES,
+        [_fact("curl -sI https://registry.npmjs.org", 6)],
+        [_fact("npm ls --package-lock-only", 0)],
     )
     assert diagnosis.category == "infrastructure"
-    assert "no-project-file-implicated" in diagnosis.signals
+    assert "environment-probe-failed:curl -sI https://registry.npmjs.org" in (
+        diagnosis.signals
+    )
+    assert "project-file-checks-passed:1" in diagnosis.signals
+
+
+def test_diagnose_never_confirms_infrastructure_from_the_log_alone() -> None:
+    # The finding's cases: a keyword plus no named project file is no independent fact.
+    assert diagnose("uv sync", 1, "Connection refused", ()).category == "unknown"
+    assert diagnose("make deps", 2, "ECONNRESET", ("Makefile",)).category == "unknown"
+    typo = "npm ERR! getaddrinfo ENOTFOUND registry.typo-example.com"
+    assert diagnose("npm ci", 1, typo, LOCK_FILES).category == "unknown"
+    # A failed probe without a passing project-file check does not isolate the cause either.
+    probe = [_fact("curl registry", 6)]
+    assert diagnose("npm ci", 1, OUTAGE, LOCK_FILES, probe).category == "unknown"
+    # Nor does a passing probe with only a log signature.
+    assert (
+        diagnose(
+            "npm ci",
+            1,
+            OUTAGE,
+            LOCK_FILES,
+            [_fact("curl registry", 0)],
+            [_fact("c", 0)],
+        ).category
+        == "unknown"
+    )
+
+
+def test_diagnose_routes_a_failing_project_file_check_to_a_project_defect() -> None:
+    diagnosis = diagnose("uv sync", 1, "", (), [], [_fact("uv lock --check", 1)])
+    assert diagnosis.category == "project-defect"
+    assert "project-file-check-failed:uv lock --check" in diagnosis.signals
+
+
+def test_diagnose_treats_both_a_failed_probe_and_a_failed_check_as_unknown() -> None:
+    diagnosis = diagnose(
+        "npm ci",
+        1,
+        OUTAGE,
+        LOCK_FILES,
+        [_fact("curl registry", 6)],
+        [_fact("npm ls", 1)],
+    )
+    assert diagnosis.category == "unknown"
 
 
 def test_diagnose_confirms_a_project_defect_only_with_a_tracked_project_file() -> None:
-    output = (
-        "npm ERR! `npm ci` can only install packages when your package.json and "
-        "package-lock.json are in sync"
-    )
-    confirmed = diagnose("npm ci", 1, output, LOCK_FILES)
+    confirmed = diagnose("npm ci", 1, LOCK_MISMATCH, LOCK_FILES)
     assert confirmed.category == "project-defect"
     assert "project-file:package-lock.json" in confirmed.signals
 
     # The same words with no tracked project file to back them confirm nothing.
-    assert diagnose("npm ci", 1, output, ("src/app.py",)).category == "unknown"
+    assert diagnose("npm ci", 1, LOCK_MISMATCH, ("src/app.py",)).category == "unknown"
 
 
 def test_diagnose_never_decides_from_an_exit_code_or_a_keyword_alone() -> None:
@@ -550,6 +648,13 @@ def test_diagnose_never_decides_from_an_exit_code_or_a_keyword_alone() -> None:
 def test_diagnose_treats_contradicting_signals_as_unknown() -> None:
     mixed = "Could not resolve host\nlockfile is out of date"
     assert diagnose("uv sync", 1, mixed, LOCK_FILES).category == "unknown"
+    # A log defect that a passing project-file check contradicts is not a confirmed defect.
+    assert (
+        diagnose(
+            "npm ci", 1, LOCK_MISMATCH, LOCK_FILES, [], [_fact("npm ls", 0)]
+        ).category
+        == "unknown"
+    )
     # An outage signature next to a named tracked project file is not an outage proof.
     implicated = "Connection timed out while reading package-lock.json"
     assert diagnose("npm ci", 1, implicated, LOCK_FILES).category == "unknown"
