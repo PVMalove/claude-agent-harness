@@ -335,6 +335,14 @@ def _review_verification_commands(config: JsonObject) -> list[str]:
     return _strings(commands, "review_verification_commands", allow_empty=True)
 
 
+def _qa_preparation_commands(config: JsonObject) -> list[str]:
+    """Environment-preparation commands the clean-room QA runs before the gate; none when absent."""
+    commands = config.get("qa_preparation")
+    if commands is None:
+        return []
+    return _strings(commands, "qa_preparation", allow_empty=True)
+
+
 def _worker_attestation_required(config: JsonObject) -> bool:
     value = config.get("worker_attestation_required", False)
     if not isinstance(value, bool):
