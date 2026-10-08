@@ -4,6 +4,8 @@
 `python direct_commits.py < payload.json` печатает `allow` и завершается с кодом 0, если ни один
 вызов commit/push не идёт из защищённой ветки (`master`, `main`, `base_branch`, `integration/*`)
 и ни один push не обновляет защищённый реф. Иначе причина выводится в stderr, код — 2.
+Исключения для /to-spec: push, который только создаёт отсутствующие на remote `integration/*`,
+и отдельный коммит документов прожарки в ещё не опубликованную `integration/*`.
 
 Вызовы находит разбор `pr_commands.parse`: упоминание commit/push в аргументах печатающих
 команд, в кавычках и в теле heredoc вызовом не считается. Checkout вызова — каталог запуска
@@ -49,6 +51,10 @@ LOCATION_OPTIONS = frozenset({"-C", "--git-dir", "--work-tree"})
 VALUE_OPTIONS = frozenset(
     {"-c", "--config-env", "--namespace", "--super-prefix", "--attr-source"}
 )
+# The only `git commit` options of the /to-spec grill docs commit: a message and output flags.
+# Paths, `-a`, `--amend` and every other option commit more than the staged index.
+COMMIT_MESSAGE_OPTIONS = frozenset({"-m", "--message", "-F", "--file"})
+COMMIT_FLAGS = frozenset({"-q", "--quiet", "-s", "--signoff"})
 UNPARSED = (
     "Zero Direct Commits: команду с git commit/push не удалось разобрать (код интерпретатора, "
     "команда из переменной или подстановки, незакрытая кавычка) — она заблокирована (fail "
@@ -279,7 +285,6 @@ def _push_targets(call: Call, base_branch: str) -> tuple[str, bool]:
     positional = [arg for arg in call.args if not arg.startswith("-")]
     remote, refspecs = (positional[0], positional[1:]) if positional else ("", [])
     create_only = bool(refspecs)
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
     for refspec in refspecs:
         dest = re.sub(r"^refs/heads/", "", refspec.lstrip("+").rsplit(":", 1)[-1])
         if not dest.startswith("integration/"):
@@ -291,16 +296,7 @@ def _push_targets(call: Call, base_branch: str) -> tuple[str, bool]:
                 )
             create_only = False
             continue
-        try:
-            code: int | None = subprocess.run(
-                [*call.git(), "ls-remote", "--exit-code", remote, "refs/heads/" + dest],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=env,
-                timeout=20,
-            ).returncode
-        except (OSError, subprocess.TimeoutExpired):
-            code = None
+        code = _ls_remote(call, remote, dest)
         if code == 0:
             return (
                 f"Zero Direct Commits: push в существующую ветку '{dest}' запрещён — "
@@ -314,6 +310,74 @@ def _push_targets(call: Call, base_branch: str) -> tuple[str, bool]:
                 False,
             )
     return "", create_only
+
+
+def _ls_remote(call: Call, remote: str, branch: str) -> int | None:
+    """Код `git ls-remote --exit-code` для ветки: 0 — она есть, 2 — нет, иначе не проверить."""
+    try:
+        return subprocess.run(
+            [*call.git(), "ls-remote", "--exit-code", remote, "refs/heads/" + branch],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=dict(os.environ, GIT_TERMINAL_PROMPT="0"),
+            timeout=20,
+        ).returncode
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _grill_doc(path: str) -> bool:
+    """Путь документации прожарки: `CONTEXT.md`, `CONTEXT-MAP.md`, `**/CONTEXT.md`,
+    `docs/adr/**`, `**/docs/adr/**`."""
+    parts = path.split("/")
+    return (
+        parts[-1] == "CONTEXT.md"
+        or path == "CONTEXT-MAP.md"
+        or any(parts[i : i + 2] == ["docs", "adr"] for i in range(len(parts) - 2))
+    )
+
+
+def _message_only(args: list[str]) -> bool:
+    """У `git commit` только опции сообщения и флаги вывода: он коммитит один индекс."""
+    words = iter(args)
+    for arg in words:
+        if arg in COMMIT_MESSAGE_OPTIONS:
+            if next(words, None) is None:
+                return False
+        elif not (
+            arg in COMMIT_FLAGS
+            or arg.startswith(("--message=", "--file="))
+            or (arg[:2] in ("-m", "-F") and len(arg) > 2)
+        ):
+            return False
+    return True
+
+
+def _grill_docs_commit(command: str, call: Call, branch: str) -> bool:
+    """Коммит документов прожарки в новую `integration/*` до её публикации (/to-spec).
+
+    Разрешён, только если команда — один простой `git commit` с сообщением, индекс содержит
+    только пути документации прожарки, а ветки нет на `origin`. Другая команда в том же вызове
+    могла бы изменить индекс после проверки, поэтому она отменяет исключение.
+    """
+    if call.action != "commit" or not branch.startswith("integration/"):
+        return False
+    steps = pr_commands.strict_steps(command)
+    if steps is None or len(steps) != 1:
+        return False
+    _, argv = steps[0]
+    if argv[:1] != ["git"] or not _message_only(call.args):
+        return False
+    staged = subprocess.run(
+        [*call.git(), "diff", "--cached", "--name-only", "--no-renames", "-z"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    paths = [path for path in staged.stdout.split("\0") if path]
+    if staged.returncode or not paths or not all(map(_grill_doc, paths)):
+        return False
+    return _ls_remote(call, "origin", branch) == 2
 
 
 def block_reason(command: str, start: Path, project: Path) -> str:
@@ -343,7 +407,9 @@ def block_reason(command: str, start: Path, project: Path) -> str:
         if result.returncode and call.location:
             return UNRESOLVED
         branch = result.stdout.strip()
-        if _protected(branch, base_branch):
+        if _protected(branch, base_branch) and not _grill_docs_commit(
+            command, call, branch
+        ):
             return (
                 f"Zero Direct Commits: коммит/push в защищённую ветку '{branch}' запрещён — "
                 f"{ISSUE_BRANCH}"

@@ -1244,6 +1244,92 @@ def run(ctx: SimpleNamespace) -> None:
                 f"block-direct-master.sh allowed a commit or push from an integration branch: {command!r}"
             )
 
+    # /to-spec commits the grill docs into a new integration branch before it publishes it
+    # (#644): a lone `git commit` whose index holds only CONTEXT.md, CONTEXT-MAP.md and ADR
+    # paths passes while the branch is absent on origin; any other commit stays blocked.
+    grill_wt = test_root / "grill-wt"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "integration/grill", str(grill_wt)],
+        cwd=direct_repo,
+        check=True,
+    )
+    (grill_wt / "app.py").write_text("x = 1\n", encoding="utf-8")
+    for args in (["add", "app.py"], [*commit[1:], "-m", "test fixture"]):
+        subprocess.run(["git", *args], cwd=grill_wt, check=True)
+    (grill_wt / "app.py").write_text("x = 2\n", encoding="utf-8")
+    grill_docs = (
+        "CONTEXT.md",
+        "CONTEXT-MAP.md",
+        "docs/adr/0001-orders.md",
+        "src/orders/CONTEXT.md",
+        "src/orders/docs/adr/0001-refunds.md",
+    )
+    for path in grill_docs:
+        (grill_wt / path).parent.mkdir(parents=True, exist_ok=True)
+        (grill_wt / path).write_text("# doc\n", encoding="utf-8")
+    subprocess.run(["git", "add", "--", *grill_docs], cwd=grill_wt, check=True)
+
+    def grill_commit(command: str) -> subprocess.CompletedProcess:
+        return run_hook(direct_hook, grill_wt, command)
+
+    for command in (
+        "git commit -m 'docs: grill'",
+        "git commit -q -F msg.txt",
+        "git commit --message='docs: grill' --signoff",
+        "git commit -m 'docs: grill' 2>&1",
+        f"git -C {grill_wt.as_posix()} commit -m 'docs: grill'",
+    ):
+        if grill_commit(command).returncode != 0:
+            sys.exit(
+                f"block-direct-master.sh rejected the grill docs commit on a new integration branch: {command!r}"
+            )
+    for command in (
+        "git commit -a -m 'docs: grill'",
+        "git commit --amend -m 'docs: grill'",
+        "git commit -m 'docs: grill' app.py",
+        "git commit -m 'docs: grill' -- CONTEXT.md",
+        "git commit -i -m 'docs: grill' app.py",
+        "git add app.py && git commit -m 'docs: grill'",
+        "GIT_INDEX_FILE=other git commit -m 'docs: grill'",
+        "git commit -m 'docs: grill' | tail -1",
+        "git commit -m 'docs: grill' && git push -u origin integration/grill",
+        "git push",
+    ):
+        if grill_commit(command).returncode == 0:
+            sys.exit(
+                f"block-direct-master.sh allowed a non-docs commit on a new integration branch: {command!r}"
+            )
+
+    # A staged path outside the grill docs, a rename out of one, an unverifiable remote and a
+    # published branch each block the same commit, which passes again once the state is undone.
+    def blocked_with(setup: list[str], undo: list[str], state: str) -> None:
+        if grill_commit("git commit -m 'docs: grill'").returncode != 0:
+            sys.exit(f"grill docs commit was not allowed before the {state} case")
+        subprocess.run(["git", *setup], cwd=grill_wt, check=True)
+        if grill_commit("git commit -m 'docs: grill'").returncode == 0:
+            sys.exit(
+                f"block-direct-master.sh allowed an integration branch commit with {state}"
+            )
+        if undo:
+            subprocess.run(["git", *undo], cwd=grill_wt, check=True)
+
+    for path in ("app.py", "src/CONTEXT-MAP.md", "docs/adrs/0001.md", "docs/adr.md"):
+        (grill_wt / path).parent.mkdir(parents=True, exist_ok=True)
+        if not (grill_wt / path).exists():
+            (grill_wt / path).write_text("# doc\n", encoding="utf-8")
+        blocked_with(["add", "--", path], ["reset", "-q", "--", path], path)
+    blocked_with(
+        ["mv", "app.py", "docs/adr/0002-app.md"],
+        ["mv", "docs/adr/0002-app.md", "app.py"],
+        "rename into docs/adr",
+    )
+    blocked_with(
+        ["remote", "set-url", "origin", str(test_root / "missing-remote.git")],
+        ["remote", "set-url", "origin", str(direct_remote)],
+        "unverifiable remote",
+    )
+    blocked_with(["push", "-q", "origin", "integration/grill"], [], "published branch")
+
     # Each git commit/push is checked in the checkout it runs in (#476): `git -C`/`--work-tree`/
     # `--git-dir`, then a preceding `cd`, then the payload cwd, then the project root. Mentions
     # in other commands' arguments, quotes and heredocs are not calls.
