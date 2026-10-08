@@ -508,7 +508,7 @@ def test_installed_sync_uses_real_fake_cli_without_orchestration(
         )
         executable.chmod(0o755)
     monkeypatch.setenv("PATH", str(remote_repo) + os.pathsep + os.environ["PATH"])
-    code = "import importlib.util,sys\nfrom pathlib import Path\ns=importlib.util.spec_from_file_location('harness','.harness/__init__.py',submodule_search_locations=['.harness'])\np=importlib.util.module_from_spec(s)\nsys.modules['harness']=p\ns.loader.exec_module(p)\nfrom harness.memory import sync,search\nassert sync(Path.cwd())['status']=='synced'\nassert search(Path.cwd(),'installedword')['pointers']\n"
+    code = "import importlib.machinery,importlib.util,sys\nfrom pathlib import Path\ns=importlib.machinery.ModuleSpec('harness',None,is_package=True)\ns.submodule_search_locations=['.harness']\nsys.modules['harness']=importlib.util.module_from_spec(s)\nfrom harness.memory import sync,search\nassert sync(Path.cwd())['status']=='synced'\nassert search(Path.cwd(),'installedword')['pointers']\n"
     result = subprocess.run(
         [sys.executable, "-c", code],
         cwd=remote_repo,

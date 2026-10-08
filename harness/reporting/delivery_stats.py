@@ -10,6 +10,7 @@ CLI трекера задач. Никакие данные никуда не о�
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -41,16 +42,10 @@ _HARNESS_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-if _HARNESS_ROOT.name != "harness":
-    _spec = importlib.util.spec_from_file_location(
-        "harness",
-        _HARNESS_ROOT / "__init__.py",
-        submodule_search_locations=[str(_HARNESS_ROOT)],
-    )
-    assert _spec is not None and _spec.loader is not None
-    _pkg = importlib.util.module_from_spec(_spec)
-    sys.modules["harness"] = _pkg
-    _spec.loader.exec_module(_pkg)
+if _HARNESS_ROOT.name != "harness" or not (_HARNESS_ROOT / "__init__.py").is_file():
+    _spec = importlib.machinery.ModuleSpec("harness", None, is_package=True)
+    _spec.submodule_search_locations = [str(_HARNESS_ROOT)]
+    sys.modules["harness"] = importlib.util.module_from_spec(_spec)
 
 # Keep these explicit re-exports for callers of the installed delivery_stats.py script.
 from harness.errors import HarnessError, print_and_exit  # noqa: I001

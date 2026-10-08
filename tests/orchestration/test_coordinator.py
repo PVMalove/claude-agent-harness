@@ -14607,7 +14607,8 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         installed = self.repo / ".harness"
         ignore = shutil.ignore_patterns("state", "__pycache__", "*.pyc")
         for item in ORCHESTRATION_ROOT.parent.iterdir():
-            if item.is_file() and item.suffix == ".py":
+            # An installed runtime has no top-level __init__.py (#626).
+            if item.is_file() and item.suffix == ".py" and item.name != "__init__.py":
                 shutil.copy2(item, installed / item.name)
             elif item.is_dir() and (item / "__init__.py").is_file():
                 shutil.copytree(
@@ -14620,7 +14621,9 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _coordinator(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+    def _coordinator(
+        self, *arguments: str, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 sys.executable,
@@ -14631,6 +14634,7 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
                 str(self.state_dir),
                 *arguments,
             ],
+            cwd=cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -14674,7 +14678,9 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         )
         return cast(str, batch["batch_id"])
 
-    def _approve(self, batch_id: str) -> subprocess.CompletedProcess[str]:
+    def _approve(
+        self, batch_id: str, cwd: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
         return self._coordinator(
             "batch",
             "approve",
@@ -14684,6 +14690,7 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
             "Malove",
             "--approved-at",
             datetime.now(UTC).isoformat(),
+            cwd=cwd,
         )
 
     def _reinstall_runtime(self) -> None:
@@ -14709,6 +14716,26 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
             {"executed_by": "reinstalled runtime"},
         )
         self.assertEqual(len(list(self.runtimes.iterdir())), 2)
+
+    def test_pinned_snapshot_ignores_a_harness_package_in_the_working_directory(
+        self,
+    ) -> None:
+        """A snapshot without a top-level __init__.py runs through `python -c`, which puts the
+        working directory on sys.path; a `harness` package there must not shadow it (#626)."""
+        planned = self._create_batch("decoy")
+        (snapshot,) = self.runtimes.iterdir()
+        self.assertFalse((snapshot / "harness" / "__init__.py").exists())
+        self._reinstall_runtime()
+        decoy = self.tmp / "decoy"
+        (decoy / "harness").mkdir(parents=True)
+        (decoy / "harness" / "__init__.py").write_text(
+            "raise RuntimeError('cwd decoy imported')\n", encoding="utf-8"
+        )
+
+        approved = self._approve(planned, cwd=decoy)
+
+        self.assertEqual(approved.returncode, 0, approved.stderr or approved.stdout)
+        self.assertEqual(json.loads(approved.stdout)["batch_id"], planned)
 
     def _architect_dispatch(self, batch_id: str) -> JsonObject:
         shape = (
