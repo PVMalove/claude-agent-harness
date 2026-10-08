@@ -41,7 +41,8 @@ FIX_FORWARD_ROUTES = ("fix-forward", "rebase-fix-forward")
 # A prior review whose report stands as evidence: accepted, or retried to a developer.
 PRIOR_REVIEW_RETRY_ROUTES = ("developer-retry", "fix-forward", "rebase-fix-forward")
 # The carried items a delta-review accounts for on top of its own brief's: the review findings and
-# the developer's incomplete items the accepted developer-retry closed.
+# the developer's incomplete items the accepted developer-retry carried, closed or not. A retry
+# accepted through override-warning counts as accepted.
 CLOSURE_KINDS = (carried_items.REVIEW_FINDING, carried_items.INCOMPLETE_ITEM)
 
 

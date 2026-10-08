@@ -45,9 +45,14 @@ Issue tracker должен быть предоставлен. Если `docs/age
 В coordinator-конвейере review получает candidate SHA и Context Package как evidence. Перед review
 и publish coordinator заново проверяет, что `base_commit` совпадает с актуальным
 `origin/<integration_ref>`; при drift нужен новый developer/rebase dispatch и новый risk assessment.
-После Warning допустим delta-review только для нового кандидата, чей diff затрагивает исключительно
-тестовые файлы и не совпадает с risk triggers: он запускается новым независимым dispatch, повторно
-проверяет только Warning-ось и наследует Standards=Clean.
+Delta-review бывает двух видов. Test-only delta-review допустим после Warning для нового кандидата,
+чей diff затрагивает исключительно тестовые файлы и не совпадает с risk triggers: он запускается
+новым независимым dispatch, повторно проверяет только Warning-ось и наследует Standards=Clean.
+Delta-review после fix-forward coordinator назначает сам; такой delta-review проверяет обе оси
+только на diff исправления и опирается на прежний отчёт review для остальной части кандидата. Полный
+review назначается вместо delta в пяти случаях: кандидат или новые коммиты совпадают с risk trigger,
+которого не видел прежний review; новые коммиты меняют файл вне перенесённых пунктов; у перенесённой
+копии не совпадает `git patch-id`; кандидат потерял коммит прежнего кандидата; новых коммитов нет.
 
 ### 2. Найдите источник спецификации
 
