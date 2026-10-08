@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
 from harness.orchestration.core.constants import (
@@ -164,6 +165,33 @@ def default_plan(
         }
         for index, item in enumerate(definition_of_done, start=1)
     ]
+
+
+def outside_scope(paths: Iterable[str], patterns: list[str]) -> list[str]:
+    """The distinct ``paths`` that match none of the scope ``patterns``, in input order.
+
+    The one matcher for a report's ``changed_files`` against ``write_paths`` and a plan's
+    ``expected_paths`` against ``allowed_paths``, so both sides of a scope warning agree.
+    """
+    outside: list[str] = []
+    for path in paths:
+        if path not in outside and not any(
+            fnmatchcase(path, pattern) for pattern in patterns
+        ):
+            outside.append(path)
+    return outside
+
+
+def paths_outside_scope(plan: list[JsonObject], allowed_paths: object) -> list[str]:
+    """The plan's ``expected_paths`` that lie outside the batch ``allowed_paths``, in plan order.
+
+    A batch recorded before explicit scopes existed has no ``allowed_paths``: nothing to compare.
+    """
+    if not isinstance(allowed_paths, list) or not allowed_paths:
+        return []
+    return outside_scope(
+        (path for entry in plan for path in entry["expected_paths"]), allowed_paths
+    )
 
 
 def plan_sha256(plan: list[JsonObject]) -> str:

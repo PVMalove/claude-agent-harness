@@ -670,6 +670,16 @@ checks, раскрытые risks, risk triggers и findings любой оси re
    отчёт нечистым при любой policy: auto-accept не срабатывает, `--decision accept` отклоняется,
    принять отчёт можно только `--decision override-warning` с `--note`, отличным от `none`
    (решение получает `dod_not_covered` с причинами), либо вернуть его через `retry`.
+   Выход за scope — предупреждение, а не отказ (#633). Completed-отчёт developer с `changed_files` вне
+   `write_paths` `report submit` записывает, а `batch decision-packet` показывает эти пути в
+   `scope_warnings`. Такой отчёт не принимается автоматически ни при одной policy, `--decision accept`
+   отклоняется, принять его можно только `--decision override-warning` с `--note`, отличным от `none`,
+   и явным `--approved-by`. Решение получает `scope_warnings`, а override добавляет coordinator finding:
+   следующий brief code-review несёт эти пути как пункт, который review должен закрыть. Принятие
+   architect-отчёта с `--commit-plan-file` проходит, если `expected_paths` плана выходят за
+   `allowed_paths` batch-а: packet (с тем же `--commit-plan-file`) и решение содержат те же
+   `scope_warnings`. Запрет записи вне `write_paths` для самого worker-а, проверка `changed_files`
+   в checkpoint и отчёты других write-ролей остаются строгими.
    `batch decision-packet` показывает `dod_coverage`, `dod_coverage_source` (`report` или
    `derived`) и `commit_plan_divergence`. Brief code-review несёт `commit_plan_divergence`
    последнего принятого initial или rebase developer report (у остальных ролей поле `null`), чтобы

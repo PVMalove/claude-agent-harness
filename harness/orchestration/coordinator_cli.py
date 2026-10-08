@@ -294,6 +294,11 @@ def build_parser(
         help="preview the retry route as batch decide computes it with --retry-role developer; the preview does not check the developer-retry budget",
     )
     packet.add_argument(
+        "--commit-plan-file",
+        help="preview the scope_warnings batch decide --commit-plan-file records when it pins "
+        "this commit plan on the pending architect report",
+    )
+    packet.add_argument(
         "--findings-file",
         help="preview the carry-over route that batch decide --findings-file on the pending "
         "developer report, or else batch carry-over, records with this findings file",

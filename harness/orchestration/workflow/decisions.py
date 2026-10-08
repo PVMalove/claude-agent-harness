@@ -93,6 +93,7 @@ from harness.orchestration.workflow.reports import (
     _closure_base,
     _rebase_target,
     _validate_report,
+    report_scope_warnings,
 )
 
 AUTO_ACCEPT_RATIONALE = "Auto-accepted due to low_risk policy and clean report"
@@ -102,6 +103,11 @@ MILESTONE_AUTO_ACCEPT_RATIONALE = (
 AUTO_POLICY_ACCEPT_RATIONALE = (
     "Auto-accepted due to auto policy and clean report without risk triggers"
 )
+
+
+def _blank_note(args: argparse.Namespace) -> bool:
+    """Whether the decision carries no recorded note: absent, blank or ``none``."""
+    return not _non_empty(args.note) or args.note.strip().lower() == "none"
 
 
 def _auto_accept_policy(
@@ -130,6 +136,8 @@ def _auto_accept_policy(
         # Nor is a read-only report that left brief items undone (issue #501): only a human
         # carries them forward or narrows a retry to them.
         or report.get("incomplete_items")
+        # Nor is a developer report that changed files outside the approved scope (issue #633).
+        or report_scope_warnings(report, dispatch)
     ):
         return None
     if policy == "low_risk" and not low_risk_eligible(config, batch):
@@ -168,6 +176,27 @@ def _auto_accept_policy(
             ):
                 return None
     return cast(str, policy)
+
+
+def _packet_scope_warnings(
+    repo: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject | None,
+    entry: JsonObject,
+    plan_file: str | None,
+) -> list[str]:
+    """What ``batch decide`` records as ``scope_warnings`` for this report, or already recorded."""
+    if report is None:
+        return []
+    if "decision" in entry:
+        return list(entry["decision"].get("scope_warnings", []))
+    plan = (
+        _read_commit_plan(repo, batch, plan_file)
+        if plan_file and report.get("role") == "architect"
+        else None
+    )
+    return _scope_warnings(batch, dispatch, report, plan)
 
 
 def decision_packet(args: argparse.Namespace) -> JsonObject:
@@ -327,6 +356,14 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             "carried_items_gap": carried_items.carried_gap(report, dispatch)
             if report
             else [],
+            "scope_warnings": _packet_scope_warnings(
+                repo,
+                batch,
+                dispatch,
+                report,
+                entry,
+                getattr(args, "commit_plan_file", None),
+            ),
             "incomplete_items": report.get("incomplete_items", []) if report else [],
             "commit_plan_divergence": (
                 plan_rules.divergence(report, dispatch, resolve) if report else None
@@ -772,11 +809,49 @@ def _pinned_commit_plan(
             "--commit-plan-file is only valid when accepting an architect report",
             remedy="drop --commit-plan-file, or pass it with --decision accept on the pending architect report",
         )
+    return _read_commit_plan(repo, batch, plan_file)
+
+
+def _read_commit_plan(
+    repo: Path, batch: JsonObject, plan_file: str
+) -> list[JsonObject]:
     document = _read_object(
         _agent_authored_file(repo, plan_file, "a commit plan"), "commit plan"
     )
     _reject_sensitive(document, "commit plan")
     return plan_rules.pinned_plan(document, batch["definition_of_done"])
+
+
+def _scope_warnings(
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    plan: list[JsonObject] | None,
+) -> list[str]:
+    """The paths outside the batch's approved scope that a decision on this report must surface.
+
+    An architect accept with a pinned plan reports the plan's ``expected_paths`` outside the batch
+    ``allowed_paths``; a completed developer report reports its ``changed_files`` outside the
+    brief's ``write_paths`` (issue #633). Neither is a refusal by itself.
+    """
+    if report.get("role") == "architect":
+        return (
+            plan_rules.paths_outside_scope(plan, batch.get("allowed_paths"))
+            if plan is not None
+            else []
+        )
+    return report_scope_warnings(report, dispatch)
+
+
+def _scope_finding(paths: list[str]) -> JsonObject:
+    """The carried item an override of out-of-scope developer changes hands to code-review."""
+    return {
+        "summary": "The developer changed files outside the approved write_paths and the "
+        "coordinator accepted them with override-warning.",
+        "files": paths,
+        "expected_evidence": "Confirm each listed file change is necessary for the ticket, "
+        "stays within its intent and breaks no boundary the approved scope protected.",
+    }
 
 
 def _decision_findings(
@@ -926,10 +1001,26 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "read-only role on its incomplete items only",
             )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
+        scope_warnings = _scope_warnings(batch, dispatch, report, pinned_plan)
+        developer_scope = bool(scope_warnings) and report.get("role") == "developer"
         findings = _decision_findings(repo, dispatch, report, args)
         incomplete_carry = _incomplete_carry(batch, dispatch, report, args)
         uncovered = plan_rules.not_covered(report)
         gap = carried_items.carried_gap(report, dispatch)
+        if developer_scope:
+            if args.decision == "accept":
+                raise CoordinatorError(
+                    f"the report changed files outside the approved scope {scope_warnings}, so it is not clean",
+                    remedy="retry the developer, or pass --decision override-warning with a "
+                    "--note (other than 'none') and --approved-by explaining why the "
+                    "out-of-scope changes may be accepted",
+                )
+            if args.decision == "override-warning" and (_blank_note(args)):
+                raise CoordinatorError(
+                    "overriding changes outside the approved scope requires a recorded note",
+                    remedy="pass --note (other than 'none') explaining why the files outside "
+                    "the approved scope may be accepted",
+                )
         if report.get("role") == "code-review":
             severities = _review_severity(report["review"])
             warned = any(value == "warning" for value in severities.values())
@@ -957,13 +1048,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         remedy="retry the developer, or pass --decision override-warning with a "
                         "--note explaining why the omitted, unverified or open items may be accepted",
                     )
-                if (
-                    args.decision == "override-warning"
-                    and gap
-                    and (
-                        not _non_empty(args.note) or args.note.strip().lower() == "none"
-                    )
-                ):
+                if args.decision == "override-warning" and gap and (_blank_note(args)):
                     raise CoordinatorError(
                         "overriding carried items the review did not close requires a recorded note",
                         remedy="pass --note (other than 'none') explaining why the carried items "
@@ -987,9 +1072,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="retry the developer, or pass --decision override-warning with a --note "
                     "explaining why the uncovered items may be accepted",
                 )
-            if args.decision == "override-warning" and (
-                not _non_empty(args.note) or args.note.strip().lower() == "none"
-            ):
+            if args.decision == "override-warning" and (_blank_note(args)):
                 raise CoordinatorError(
                     "overriding not-covered definition-of-done items requires a recorded note",
                     remedy="pass --note (other than 'none') explaining why the uncovered items may be accepted",
@@ -1002,18 +1085,16 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     remedy="retry the developer, or pass --decision override-warning with a "
                     "--note explaining why the items that are not closed may be accepted",
                 )
-            if args.decision == "override-warning" and (
-                not _non_empty(args.note) or args.note.strip().lower() == "none"
-            ):
+            if args.decision == "override-warning" and (_blank_note(args)):
                 raise CoordinatorError(
                     "overriding carried items that are not closed requires a recorded note",
                     remedy="pass --note (other than 'none') explaining why the carried items "
                     "that are not closed may be accepted",
                 )
-        elif args.decision == "override-warning":
+        elif args.decision == "override-warning" and not developer_scope:
             raise CoordinatorError(
-                "only a recorded review warning, a not-covered definition-of-done item or a carried item that is not closed can be overridden",
-                remedy="only override a recorded review warning, a not-covered definition-of-done item or a carried item that is not closed",
+                "only a recorded review warning, a not-covered definition-of-done item, a carried item that is not closed or a change outside the approved scope can be overridden",
+                remedy="only override a recorded review warning, a not-covered definition-of-done item, a carried item that is not closed or a change outside the approved scope",
             )
         routing: JsonObject | None = None
         if args.decision == "retry":
@@ -1021,9 +1102,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             bypass_named = (
                 getattr(args, "reason_category", None) == BLOCK_BYPASS_REASON_CATEGORY
             )
-            if bypass_named and (
-                not _non_empty(args.note) or args.note.strip().lower() == "none"
-            ):
+            if bypass_named and (_blank_note(args)):
                 raise CoordinatorError(
                     "a block-bypass retry requires a recorded note naming the violation",
                     remedy="pass --note (other than 'none') naming the hook or tool block the role worked around and how",
@@ -1113,6 +1192,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 decision["dod_not_covered"] = uncovered
             if gap and args.decision == "override-warning":
                 decision["carried_items_gap"] = gap
+            if scope_warnings:
+                decision["scope_warnings"] = scope_warnings
             check = rebase.rebase_check(repo, report, dispatch)
             if check is not None:
                 # Audit evidence for a later delta-review of the rebased copies (issue #504).
@@ -1120,6 +1201,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         if pinned_plan is not None:
             batch["commit_plan"] = pinned_plan
             decision["commit_plan_sha256"] = plan_rules.plan_sha256(pinned_plan)
+        if (
+            developer_scope
+            and args.decision == "override-warning"
+            and dispatch.get("purpose") == "work"
+        ):
+            # The accepted warning becomes an item the next code-review brief must settle.
+            findings = [*findings, _scope_finding(scope_warnings)]
         if findings:
             candidate = _candidate_commit(repo, report["commit_sha"])
             records = carried_items.attach(

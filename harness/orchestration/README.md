@@ -124,7 +124,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 
 | Поле | Назначение |
 | --- | --- |
-| `write_paths` | Потолок записи роли (по умолчанию весь репозиторий). `--allowed-path` batch не может быть шире; brief и report проверяются по scope batch. |
+| `write_paths` | Потолок записи роли (по умолчанию весь репозиторий). `--allowed-path` batch не может быть шире; brief и report проверяются по scope batch, а `changed_files` developer вне scope — предупреждение, принимаемое только через `override-warning`. |
 | `zone` | Устаревшее, необязательное имя зоны из `backend_zones`: без `write_paths` потолок — пути этой зоны. |
 | `transport` | `in-process` (по умолчанию: субагент coordinator-сессии) или `external` (проектный runtime adapter). |
 | `runtimes` | Именованные наборы (`claude`, `codex`, …): у каждого `profiles`, `model`, `effort`. |
