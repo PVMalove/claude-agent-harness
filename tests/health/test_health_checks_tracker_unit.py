@@ -151,6 +151,11 @@ _ORIGIN_WITH_SECRET = (
         ),
         (
             f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "server certificate verification failed. CAfile: none CRLfile: none\n",
+            "tls",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
             "CONNECT tunnel failed, response 403\n",
             "network",
         ),

@@ -336,7 +336,13 @@ _REACHABILITY_CAUSES: tuple[tuple[str, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
-    ("tls", re.compile(r"ssl certificate problem", re.IGNORECASE)),
+    (
+        "tls",
+        re.compile(
+            r"ssl certificate problem|server certificate verification failed",
+            re.IGNORECASE,
+        ),
+    ),
     (
         "credentials",
         re.compile(
