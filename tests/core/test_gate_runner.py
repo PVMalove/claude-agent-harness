@@ -22,7 +22,9 @@ from harness.gate_runner.gate_runner import (
     GateRunnerError,
     LocalPolicy,
     _clean_room_python,
+    diagnose,
     run_gate,
+    run_qa_stages,
 )
 
 
@@ -426,3 +428,128 @@ def test_an_unlaunchable_git_is_a_gate_error_and_leaves_no_checkout_directory(
     assert "could not run Git" in raised.value.message
     runs = storage_path(repo, "runs", "qa")
     assert not runs.is_dir() or list(runs.iterdir()) == []
+
+
+def _py(code: str) -> str:
+    return f'{sys.executable} -c "{code}"'
+
+
+def test_qa_stages_run_preparation_then_the_gate_in_one_clean_checkout(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    result = run_qa_stages(
+        [_py("open('prepared.txt','w').write('x')")],
+        [_py("import os; print(os.path.exists('prepared.txt'))")],
+        CleanRoomPolicy(repo, head),
+    )
+
+    assert result.failed_stage is None
+    assert result.code_checks_started == "started"
+    assert [(stage["stage"], stage["result"]) for stage in result.stages] == [
+        ("preparation", "pass"),
+        ("gate", "pass"),
+    ]
+    # The gate saw the file the preparation wrote: both ran in the same checkout.
+    assert "True" in result.artifact
+    assert [check["result"] for check in result.gate_checks] == ["pass"]
+    assert not (repo / "prepared.txt").exists()
+
+
+def test_a_failed_preparation_stops_before_the_gate_and_records_no_code_check(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    result = run_qa_stages(
+        [
+            _py(
+                "import sys; print('curl: Could not resolve host: registry.example', "
+                "file=sys.stderr); sys.exit(6)"
+            ),
+            _py("print('second preparation must not run')"),
+        ],
+        [_py("print('gate must not run')")],
+        CleanRoomPolicy(repo, head),
+    )
+
+    assert result.failed_stage == "preparation"
+    assert result.code_checks_started == "not_started"
+    assert result.gate_checks == []
+    assert len(result.stages) == 1
+    assert result.stages[0]["exit_code"] == 6
+    assert "Could not resolve host" in str(result.stages[0]["diagnostics"])
+    assert "must not run" not in result.artifact
+    assert result.diagnosis is not None
+    assert result.diagnosis.category == "infrastructure"
+
+
+def test_a_failing_gate_command_keeps_the_gate_stage_failure(tmp_path: Path) -> None:
+    repo, head = _committed_repo(tmp_path)
+    result = run_qa_stages(
+        [],
+        [_py("import sys; sys.exit(3)"), _py("print('skipped')")],
+        CleanRoomPolicy(repo, head),
+    )
+
+    assert result.failed_stage == "gate"
+    assert result.code_checks_started == "started"
+    assert result.diagnosis is None
+    assert [check["result"] for check in result.gate_checks] == ["fail"]
+    assert result.record()["failed_stage"] == "gate"
+
+
+def test_stage_diagnostics_are_sanitised_and_bounded(tmp_path: Path) -> None:
+    result = run_qa_stages(
+        [_py("import sys; print('x' * 5000); print('token=visible'); sys.exit(1)")],
+        [],
+        LocalPolicy(tmp_path),
+    )
+
+    diagnostics = str(result.stages[0]["diagnostics"])
+    assert "token=<redacted>" in diagnostics
+    assert "token=visible" not in diagnostics
+    assert len(diagnostics) <= 1_200
+
+
+LOCK_FILES = ("package.json", "package-lock.json", "src/app.py")
+
+
+def test_diagnose_confirms_an_infrastructure_failure_from_agreeing_signals() -> None:
+    diagnosis = diagnose(
+        "npm ci",
+        1,
+        "npm ERR! network request failed: getaddrinfo EAI_AGAIN registry.npmjs.org",
+        LOCK_FILES,
+    )
+    assert diagnosis.category == "infrastructure"
+    assert "no-project-file-implicated" in diagnosis.signals
+
+
+def test_diagnose_confirms_a_project_defect_only_with_a_tracked_project_file() -> None:
+    output = (
+        "npm ERR! `npm ci` can only install packages when your package.json and "
+        "package-lock.json are in sync"
+    )
+    confirmed = diagnose("npm ci", 1, output, LOCK_FILES)
+    assert confirmed.category == "project-defect"
+    assert "project-file:package-lock.json" in confirmed.signals
+
+    # The same words with no tracked project file to back them confirm nothing.
+    assert diagnose("npm ci", 1, output, ("src/app.py",)).category == "unknown"
+
+
+def test_diagnose_never_decides_from_an_exit_code_or_a_keyword_alone() -> None:
+    assert diagnose("make setup", 2, "", LOCK_FILES).category == "unknown"
+    assert (
+        diagnose("make setup", 1, "something failed", LOCK_FILES).category == "unknown"
+    )
+    # A bare keyword with no matching signature is not evidence either.
+    assert diagnose("make setup", 1, "network", LOCK_FILES).category == "unknown"
+
+
+def test_diagnose_treats_contradicting_signals_as_unknown() -> None:
+    mixed = "Could not resolve host\nlockfile is out of date"
+    assert diagnose("uv sync", 1, mixed, LOCK_FILES).category == "unknown"
+    # An outage signature next to a named tracked project file is not an outage proof.
+    implicated = "Connection timed out while reading package-lock.json"
+    assert diagnose("npm ci", 1, implicated, LOCK_FILES).category == "unknown"

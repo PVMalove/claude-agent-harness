@@ -198,6 +198,16 @@ class GateResult:
         return all(check["result"] == "pass" for check in self.checks)
 
 
+@dataclass(frozen=True)
+class StageCommand:
+    """One executed QA stage command: the approved text, what ran, its exit code and sanitised output."""
+
+    command: str
+    executed: str
+    exit_code: int
+    output: str
+
+
 _LOG_COMMAND = re.compile(r"^\$ (.*)$")
 _LOG_EXIT = re.compile(r"^exit_code=(-?\d+)$")
 
@@ -278,6 +288,79 @@ def concise_evidence(text: str) -> str:
     return lines[0][:240] if lines else "no output"
 
 
+def _execute_commands(
+    commands: list[str | list[str]],
+    checkout: Path,
+    *,
+    stop_on_failure: bool,
+    checks: list[dict[str, str]],
+    outputs: list[str],
+    started: float,
+    stage: list[StageCommand] | None = None,
+) -> None:
+    """Run commands in one checkout, appending each check, artifact block and optional stage record.
+
+    ``checks`` and ``outputs`` are the caller's accumulators, so an unlaunchable command can still
+    hand the evidence gathered so far back through ``GateRunnerError.partial_result``.
+    """
+    for command in commands:
+        prepared, shell = _prepared_command(command, checkout)
+        # The artifact shows what actually ran; the check keeps the approved command verbatim,
+        # which is what a completion report is matched against.
+        command_text = (
+            prepared if isinstance(prepared, str) else subprocess.list2cmdline(prepared)
+        )
+        approved_text = (
+            command if isinstance(command, str) else subprocess.list2cmdline(command)
+        )
+        try:
+            result: subprocess.CompletedProcess[str] = subprocess.run(
+                prepared,
+                cwd=checkout,
+                shell=shell,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            failure = GateRunnerError(
+                f"could not launch QA command: {sanitise(str(exc))}",
+                remedy="restore the command execution environment before an explicit retry",
+            )
+            failure.partial_result = GateResult(
+                checks, "\n".join(outputs), time.monotonic() - started
+            )
+            raise failure from exc
+        combined: str = sanitise(
+            (result.stdout or "")
+            + ("\n" if result.stdout and result.stderr else "")
+            + (result.stderr or "")
+        )
+        outputs.append(
+            format_command_log(sanitise(command_text), result.returncode, combined)
+        )
+        checks.append(
+            {
+                "command": approved_text,
+                "result": "pass" if result.returncode == 0 else "fail",
+                "evidence": f"exit {result.returncode}; {concise_evidence(combined)}",
+            }
+        )
+        if stage is not None:
+            stage.append(
+                StageCommand(
+                    command=approved_text,
+                    executed=sanitise(command_text),
+                    exit_code=result.returncode,
+                    output=combined,
+                )
+            )
+        if result.returncode != 0 and stop_on_failure:
+            break
+
+
 def run_gate(
     commands: list[str | list[str]], policy: ExecutionPolicy, *, stop_on_failure: bool
 ) -> GateResult:
@@ -286,59 +369,304 @@ def run_gate(
     outputs: list[str] = []
     started: float = time.monotonic()
     with policy.checkout() as checkout:
-        for command in commands:
-            prepared, shell = _prepared_command(command, checkout)
-            # The artifact shows what actually ran; the check keeps the approved command verbatim,
-            # which is what a completion report is matched against.
-            command_text = (
-                prepared
-                if isinstance(prepared, str)
-                else subprocess.list2cmdline(prepared)
-            )
-            approved_text = (
-                command
-                if isinstance(command, str)
-                else subprocess.list2cmdline(command)
-            )
-            try:
-                result: subprocess.CompletedProcess[str] = subprocess.run(
-                    prepared,
-                    cwd=checkout,
-                    shell=shell,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    check=False,
-                )
-            except OSError as exc:
-                failure = GateRunnerError(
-                    f"could not launch QA command: {sanitise(str(exc))}",
-                    remedy="restore the command execution environment before an explicit retry",
-                )
-                failure.partial_result = GateResult(
-                    checks, "\n".join(outputs), time.monotonic() - started
-                )
-                raise failure from exc
-            combined: str = sanitise(
-                (result.stdout or "")
-                + ("\n" if result.stdout and result.stderr else "")
-                + (result.stderr or "")
-            )
-            outputs.append(
-                format_command_log(sanitise(command_text), result.returncode, combined)
-            )
-            checks.append(
-                {
-                    "command": approved_text,
-                    "result": "pass" if result.returncode == 0 else "fail",
-                    "evidence": f"exit {result.returncode}; {concise_evidence(combined)}",
-                }
-            )
-            if result.returncode != 0 and stop_on_failure:
-                break
+        _execute_commands(
+            commands,
+            checkout,
+            stop_on_failure=stop_on_failure,
+            checks=checks,
+            outputs=outputs,
+            started=started,
+        )
     return GateResult(
         checks=checks,
         artifact="\n".join(outputs),
         duration_seconds=time.monotonic() - started,
+    )
+
+
+QA_STAGE_PREPARATION = "preparation"
+QA_STAGE_GATE = "gate"
+CODE_CHECKS_STARTED = "started"
+CODE_CHECKS_NOT_STARTED = "not_started"
+CODE_CHECKS_UNKNOWN = "unknown"
+DIAGNOSIS_INFRASTRUCTURE = "infrastructure"
+DIAGNOSIS_PROJECT_DEFECT = "project-defect"
+DIAGNOSIS_UNKNOWN = "unknown"
+DIAGNOSTICS_LIMIT = 1_200
+
+# Log signatures are only one signal. A category is confirmed only when a signature agrees with a
+# structural fact (see ``diagnose``); neither an exit code nor a signature decides it alone.
+_INFRASTRUCTURE_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "network",
+        re.compile(
+            r"(?i)temporary failure in name resolution|could not resolve host|"
+            r"name or service not known|network is unreachable|connection (?:timed out|reset|refused)|"
+            r"tls handshake timeout|read timed out|\b(?:econnreset|etimedout|enotfound|eai_again)\b|"
+            r"\b50[234]\b[^\n]{0,40}(?:gateway|unavailable|timeout)"
+        ),
+    ),
+    (
+        "resource",
+        re.compile(
+            r"(?i)no space left on device|disk quota exceeded|cannot allocate memory"
+        ),
+    ),
+)
+_PROJECT_DEFECT_SIGNATURES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "lock-file-incompatible",
+        re.compile(
+            r"(?i)lock ?file[^\n]{0,80}(?:out of (?:date|sync)|not up to date|needs to be updated|"
+            r"incompatible|mismatch|not consistent)|"
+            r"(?:out of sync|not in sync)[^\n]{0,80}lock|"
+            r"can only install packages when your package\.json and package-lock\.json|"
+            r"(?:poetry|uv|cargo)\.lock[^\n]{0,80}(?:out of date|needs to be updated|not consistent)|"
+            r"frozen[- ]lockfile"
+        ),
+    ),
+    (
+        "unsatisfiable-requirement",
+        re.compile(
+            r"(?i)resolutionimpossible|conflicting dependencies|no solution found|"
+            r"could not find a version that satisfies"
+        ),
+    ),
+)
+_PROJECT_FILE_NAMES = frozenset(
+    {
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "pyproject.toml",
+        "poetry.lock",
+        "uv.lock",
+        "pipfile",
+        "pipfile.lock",
+        "setup.py",
+        "setup.cfg",
+        "cargo.toml",
+        "cargo.lock",
+        "go.mod",
+        "go.sum",
+        "gemfile",
+        "gemfile.lock",
+        "composer.json",
+        "composer.lock",
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+    }
+)
+
+
+@dataclass(frozen=True)
+class Diagnosis:
+    """The cause of a failed preparation command: a confirmed category, or ``unknown``."""
+
+    category: str
+    signals: tuple[str, ...]
+    basis: str
+
+    def record(self) -> dict[str, object]:
+        """The report-ready form of the diagnosis."""
+        return {
+            "category": self.category,
+            "signals": list(self.signals),
+            "basis": self.basis,
+        }
+
+
+def _project_file_names(tracked_files: tuple[str, ...]) -> frozenset[str]:
+    """The manifest and lock-file base names the candidate actually tracks."""
+    names: set[str] = set()
+    for path in tracked_files:
+        name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name in _PROJECT_FILE_NAMES or (
+            name.startswith("requirements") and name.endswith(".txt")
+        ):
+            names.add(name)
+    return frozenset(names)
+
+
+def diagnose(
+    command: str, exit_code: int, output: str, tracked_files: tuple[str, ...]
+) -> Diagnosis:
+    """Classify one failed preparation command from independent signals (pure, no I/O).
+
+    A category is confirmed only when a log signature and a structural fact agree: a project defect
+    needs a signature and a manifest or lock file that the candidate tracks and the output names; an
+    infrastructure failure needs an infrastructure signature, and no project-defect signature and no
+    tracked project file named in the output, so a defect in the project's own files cannot pass as
+    an outage. A bare non-zero exit, or a keyword alone, is ``unknown``; so is any contradiction.
+    """
+    if exit_code == 0:
+        return Diagnosis(
+            DIAGNOSIS_UNKNOWN,
+            (),
+            f"`{command}` succeeded, so there is no failure to classify",
+        )
+    text = sanitise(output)
+    infrastructure = [
+        name for name, rule in _INFRASTRUCTURE_SIGNATURES if rule.search(text)
+    ]
+    defects = [name for name, rule in _PROJECT_DEFECT_SIGNATURES if rule.search(text)]
+    lowered = text.lower()
+    named = sorted(
+        name for name in _project_file_names(tracked_files) if name in lowered
+    )
+    if infrastructure and defects:
+        return Diagnosis(
+            DIAGNOSIS_UNKNOWN,
+            (
+                f"exit-code:{exit_code}",
+                *(f"log:{n}" for n in (*infrastructure, *defects)),
+            ),
+            "the output carries both an infrastructure and a project-defect signature",
+        )
+    if defects and named:
+        return Diagnosis(
+            DIAGNOSIS_PROJECT_DEFECT,
+            (
+                f"exit-code:{exit_code}",
+                *(f"log:{n}" for n in defects),
+                *(f"project-file:{n}" for n in named),
+            ),
+            "a project-defect signature agrees with a tracked project file the output names",
+        )
+    if infrastructure and not named:
+        return Diagnosis(
+            DIAGNOSIS_INFRASTRUCTURE,
+            (
+                f"exit-code:{exit_code}",
+                *(f"log:{n}" for n in infrastructure),
+                "no-project-file-implicated",
+            ),
+            "an infrastructure signature, with no project-defect signature and no tracked project file named",
+        )
+    return Diagnosis(
+        DIAGNOSIS_UNKNOWN,
+        (
+            f"exit-code:{exit_code}",
+            *(f"log:{n}" for n in (*infrastructure, *defects)),
+            *(f"project-file:{n}" for n in named),
+        ),
+        "the signals do not confirm one cause; a non-zero exit or a keyword alone is not evidence",
+    )
+
+
+@dataclass(frozen=True)
+class QAStagesResult:
+    """Per-stage evidence of one QA run: preparation, then the gate, in one clean checkout."""
+
+    stages: list[dict[str, object]]
+    gate_checks: list[dict[str, str]]
+    artifact: str
+    duration_seconds: float
+    failed_stage: str | None
+    code_checks_started: str
+    diagnosis: Diagnosis | None
+
+    def record(self) -> dict[str, object]:
+        """The ``qa_stages`` report field."""
+        record: dict[str, object] = {
+            "stages": self.stages,
+            "failed_stage": self.failed_stage,
+            "code_checks_started": self.code_checks_started,
+        }
+        if self.diagnosis is not None:
+            record["diagnosis"] = self.diagnosis.record()
+        return record
+
+
+def _diagnostic_tail(output: str) -> str:
+    """The sanitised, bounded last lines of a failed stage command's output."""
+    lines = [line.rstrip() for line in sanitise(output).splitlines() if line.strip()]
+    return "\n".join(lines[-12:])[-DIAGNOSTICS_LIMIT:] or "no output"
+
+
+def _stage_record(stage: str, item: StageCommand) -> dict[str, object]:
+    record: dict[str, object] = {
+        "stage": stage,
+        "command": item.command,
+        "result": "pass" if item.exit_code == 0 else "fail",
+        "exit_code": item.exit_code,
+    }
+    if item.executed != item.command:
+        record["executed_command"] = item.executed
+    if item.exit_code != 0:
+        record["diagnostics"] = _diagnostic_tail(item.output)
+    return record
+
+
+def _tracked_files(checkout: Path) -> tuple[str, ...]:
+    """Files the candidate tracks, or none when Git cannot list them (a diagnosis then stays unknown)."""
+    listed = _run_git(["git", "-C", str(checkout), "ls-files"])
+    return tuple(listed.stdout.splitlines()) if listed.returncode == 0 else ()
+
+
+def run_qa_stages(
+    preparation: list[str | list[str]],
+    gate: list[str | list[str]],
+    policy: ExecutionPolicy,
+) -> QAStagesResult:
+    """Run preparation, then the gate, in one checkout, stopping at the first failing stage.
+
+    A failed preparation command stops the run before any gate command starts, so the result states
+    that no code check ran and diagnoses the failure; the gate is never recorded as failed.
+    """
+    checks: list[dict[str, str]] = []
+    outputs: list[str] = []
+    started = time.monotonic()
+    stages: list[dict[str, object]] = []
+    with policy.checkout() as checkout:
+        prepared: list[StageCommand] = []
+        _execute_commands(
+            preparation,
+            checkout,
+            stop_on_failure=True,
+            checks=[],
+            outputs=outputs,
+            started=started,
+            stage=prepared,
+        )
+        stages.extend(_stage_record(QA_STAGE_PREPARATION, item) for item in prepared)
+        broken = next((item for item in prepared if item.exit_code != 0), None)
+        if broken is not None:
+            return QAStagesResult(
+                stages=stages,
+                gate_checks=[],
+                artifact="\n".join(outputs),
+                duration_seconds=time.monotonic() - started,
+                failed_stage=QA_STAGE_PREPARATION,
+                code_checks_started=CODE_CHECKS_NOT_STARTED,
+                diagnosis=diagnose(
+                    broken.command,
+                    broken.exit_code,
+                    broken.output,
+                    _tracked_files(checkout),
+                ),
+            )
+        ran: list[StageCommand] = []
+        _execute_commands(
+            gate,
+            checkout,
+            stop_on_failure=True,
+            checks=checks,
+            outputs=outputs,
+            started=started,
+            stage=ran,
+        )
+        stages.extend(_stage_record(QA_STAGE_GATE, item) for item in ran)
+    failed = any(item.exit_code != 0 for item in ran)
+    return QAStagesResult(
+        stages=stages,
+        gate_checks=checks,
+        artifact="\n".join(outputs),
+        duration_seconds=time.monotonic() - started,
+        failed_stage=QA_STAGE_GATE if failed else None,
+        code_checks_started=CODE_CHECKS_STARTED if ran else CODE_CHECKS_UNKNOWN,
+        diagnosis=None,
     )
