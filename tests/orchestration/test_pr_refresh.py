@@ -6,16 +6,20 @@ Real ledger and real Git (a local bare remote); no mocks.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
-from harness.orchestration import coordinator
+from harness.orchestration import coordinator, operation_access
+from harness.orchestration.core import git_utils
 from harness.orchestration.workflow import pr_refresh
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.ledger import IntegrationRefreshRecord, LifecycleLedger
@@ -425,6 +429,128 @@ class GuardTests(RefreshFixture):
             self.remote_tip(self.branch.branch), result["new_candidate_sha"]
         )
         self.assertEqual(self.remote_tip("master"), tip)
+
+
+@unittest.skipIf(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    "a privileged process is not denied by file permissions",
+)
+class AccessRefusalTests(RefreshFixture):
+    """The environment refuses what refresh needs: nothing may change and the cause is named."""
+
+    @contextlib.contextmanager
+    def read_only(self, path: Path, *, tree: bool = False) -> Iterator[None]:
+        paths = [path, *path.rglob("*")] if tree else [path]
+        modes = {item: item.stat().st_mode & 0o7777 for item in paths}
+        for item in paths:
+            item.chmod(modes[item] & ~0o222)
+        try:
+            yield
+        finally:
+            for item in paths:
+                item.chmod(modes[item])
+
+    def authored_inherit_policy(self) -> None:
+        (self.branch.repo / ".harness/orchestration.json").write_text(
+            json.dumps({"access_policy": {"defaults": {"mode": "inherit"}}}),
+            encoding="utf-8",
+        )
+
+    def test_a_refused_git_metadata_write_stops_refresh_before_any_change(
+        self,
+    ) -> None:
+        self.land("landed.txt")
+        self.authored_inherit_policy()
+        before = self.branch.snapshot()
+
+        with self.read_only(self.branch.repo / ".git"):
+            with self.assertRaises(operation_access.OperationAccessError) as raised:
+                self.refresh()
+
+        evidence = raised.exception.evidence
+        self.assertEqual((evidence["operation"], evidence["status"]), ("git", "denied"))
+        self.assertIn("shared Git metadata", raised.exception.message)
+        self.assertEqual(self.branch.snapshot(), before)
+        self.assertEqual(self.refresh_files(), [])
+        self.assertEqual(self.refresh()["state"], "rebased")
+
+    def test_a_refused_worktree_metadata_write_is_a_classified_git_error(self) -> None:
+        self.land("landed.txt")
+        before = self.branch.snapshot()
+        admin = Path(_git(self.worktree, "rev-parse", "--absolute-git-dir"))
+
+        with self.read_only(admin):
+            with self.assertRaises(git_utils.GitAccessError) as raised:
+                self.refresh()
+
+        self.assertEqual(raised.exception.category, git_utils.METADATA_DENIED)
+        self.assertEqual(self.branch.snapshot(), before)
+        self.assertEqual(self.refresh_files(), [])
+
+    def test_a_rebase_the_environment_refused_is_not_reported_as_a_conflict(
+        self,
+    ) -> None:
+        self.land("landed.txt")
+        hook = self.branch.repo / ".git" / "hooks" / "pre-rebase"
+        hook.write_text(
+            "#!/bin/sh\necho \"fatal: Unable to create '/r/.git/index.lock': "
+            'Permission denied" >&2\nexit 1\n',
+            encoding="utf-8",
+        )
+        hook.chmod(hook.stat().st_mode | stat.S_IXUSR)
+        before = self.branch.snapshot()
+
+        with self.assertRaises(git_utils.GitAccessError) as raised:
+            self.refresh()
+        hook.unlink()
+
+        self.assertEqual(raised.exception.category, git_utils.METADATA_DENIED)
+        self.assertEqual(
+            _git(self.worktree, "rev-parse", "--abbrev-ref", "HEAD"),
+            self.branch.branch,
+        )
+        self.assertEqual(self.branch.snapshot(), before)
+        self.assertEqual(self.refresh()["state"], "rebased")
+
+    def test_a_conflict_whose_commit_subject_mentions_a_denial_is_not_an_access_failure(
+        self,
+    ) -> None:
+        rebase = subprocess.CompletedProcess(
+            ["git", "rebase"],
+            1,
+            stdout=(
+                "Auto-merging x.py\nCONFLICT (content): Merge conflict in x.py\n"
+                "error: could not apply 1a2b3c4... fix: handle permission denied on metadata write\n"
+            ),
+            stderr="hint: Resolve all conflicts manually\n",
+        )
+
+        self.assertIsNone(
+            pr_refresh._rebase_access_failure(self.worktree, self.branch.branch, rebase)
+        )
+
+    def test_a_remote_that_refuses_the_rewrite_is_classified_and_leaves_the_branch(
+        self,
+    ) -> None:
+        self.land("landed.txt")
+        remote = Path(_git(self.branch.repo, "remote", "get-url", "origin"))
+        before = self.branch.snapshot()
+
+        with self.read_only(remote, tree=True):
+            with self.assertRaises(git_utils.GitAccessError) as raised:
+                self.refresh()
+
+        self.assertEqual(raised.exception.category, git_utils.REMOTE_DENIED)
+        self.assertEqual(
+            _git(self.worktree, "rev-parse", "HEAD"), self.published["candidate"]
+        )
+        self.assertEqual(
+            _git(self.worktree, "rev-parse", "--abbrev-ref", "HEAD"),
+            self.branch.branch,
+        )
+        self.assertEqual(self.branch.snapshot(), before)
+        self.assertEqual(self.refresh_files(), [])
+        self.assertEqual(self.refresh()["state"], "rebased")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,8 @@ from typing import cast
 from unittest import mock
 
 from harness.gate_runner.gate_runner import GateResult, GateRunnerError
-from harness.orchestration import coordinator, qa_lane
+from harness.orchestration import coordinator, operation_access, qa_lane
+from harness.storage import storage_path
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import (
     BatchRecord,
@@ -22,6 +23,7 @@ from harness.orchestration.ledger import (
     JsonObject,
     JsonValue,
     LedgerError,
+    LedgerRecordVO,
     LifecycleLedger,
     PlanRecord,
 )
@@ -694,6 +696,125 @@ class QaLaneRunTests(QaLaneTestCase):
         self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
         attempts = list((self.lane / "attempts").glob("*.json"))
         self.assertEqual(len(attempts), 1)
+
+    def _refusal(self) -> operation_access.OperationAccessError:
+        return operation_access.OperationAccessError(
+            "qa access is denied: shared Git metadata (write /repo/.git): Permission denied",
+            remedy="grant write access to /repo/.git; then repeat the command",
+            evidence={"operation": "qa", "status": "denied", "checks": []},
+        )
+
+    def test_an_access_refusal_is_recorded_before_the_lane_is_acquired(self) -> None:
+        self._seed()
+        refusal = self._refusal()
+
+        with (
+            mock.patch.object(operation_access, "require", side_effect=refusal),
+            mock.patch.object(qa_lane, "run_gate") as gate,
+            self.assertRaises(operation_access.OperationAccessError) as caught,
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self.assertIs(caught.exception, refusal)
+        gate.assert_not_called()
+        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
+        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(status["state"], "approved")
+        (attempt,) = (
+            coordinator._read_object(path, "attempt")
+            for path in (self.lane / "attempts").glob("*.json")
+        )
+        self.assertEqual(attempt["stage"], "access")
+        self.assertEqual(attempt["evidence"]["status"], "denied")
+        self.assertEqual(attempt["remedy"], refusal.remedy)
+
+    def test_a_later_allowed_run_proceeds_and_keeps_the_refusal_evidence(self) -> None:
+        self._seed()
+        passing = GateResult(
+            checks=[{"result": "pass", "command": "true"}],
+            artifact="all green",
+            duration_seconds=0.0,
+        )
+        with (
+            mock.patch.object(operation_access, "require", side_effect=self._refusal()),
+            self.assertRaises(operation_access.OperationAccessError),
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        with mock.patch.object(qa_lane, "run_gate", return_value=passing):
+            result = qa_lane.run(self.args, self._ops([]))
+
+        self.assertEqual(result["state"], "reported")
+        self.assertEqual(len(list((self.lane / "attempts").glob("*.json"))), 1)
+
+    def test_the_access_check_uses_the_pinned_brief_and_the_clean_room_directory(
+        self,
+    ) -> None:
+        self._seed()
+        gate = GateResult(
+            checks=[{"result": "pass", "command": "true"}],
+            artifact="ok",
+            duration_seconds=0.0,
+        )
+        with (
+            mock.patch.object(operation_access, "require") as require,
+            mock.patch.object(qa_lane, "run_gate", return_value=gate),
+        ):
+            qa_lane.run(self.args, self._ops([]))
+
+        (call,) = require.call_args_list
+        self.assertEqual(call.args[2], "qa")
+        self.assertEqual(call.kwargs["brief"]["dispatch_id"], DISPATCH_ID)
+        self.assertEqual(call.kwargs["checkout"], storage_path(self.repo, "runs", "qa"))
+
+    def test_an_unexpected_gate_failure_releases_the_lane_for_a_later_run(self) -> None:
+        self._seed()
+        with (
+            mock.patch.object(
+                qa_lane, "run_gate", side_effect=PermissionError("denied")
+            ),
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self.assertRemedy(caught)
+        self.assertIsInstance(caught.exception.__cause__, PermissionError)
+        self._assert_transient_failure_released()
+
+    def test_an_interrupted_gate_releases_the_lane_and_propagates(self) -> None:
+        self._seed()
+        with (
+            mock.patch.object(qa_lane, "run_gate", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self._assert_transient_failure_released()
+
+    def test_a_failure_while_marking_the_dispatch_running_releases_the_lane(
+        self,
+    ) -> None:
+        self._seed()
+        original = qa_lane._replace_record
+        calls: list[object] = []
+
+        def flaky(ledger: LifecycleLedger, ops: CoordinatorOps, record: object) -> None:
+            calls.append(record)
+            if len(calls) == 1:
+                raise coordinator.CoordinatorError("ledger busy", remedy="retry")
+            original(ledger, ops, cast(LedgerRecordVO, record))
+
+        with (
+            mock.patch.object(qa_lane, "_replace_record", side_effect=flaky),
+            mock.patch.object(qa_lane, "run_gate") as gate,
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(caught.exception.message, "ledger busy")
+        gate.assert_not_called()
+        self._assert_transient_failure_released()
 
     def test_report_requires_a_running_dispatch(self) -> None:
         self._seed(batch_state="approved", status_state="approved")

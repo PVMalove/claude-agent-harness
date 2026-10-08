@@ -336,9 +336,12 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 - Компоненты `mode` (`inherit`, `sandbox`, `unsandboxed`), `network.hosts` и `filesystem`
   выбираются независимо от транспорта роли: `in-process` или `external`.
 - Override роли (`roles`) или операции (`operations`: `qa`, `git`, `publish`) заменяет только те
-  компоненты, которые в нём указаны. Остальные берутся из `defaults`. Операцию выбирает сам dispatch:
-  `publish` для `--purpose publish` и `qa` для роли `qa`; для `git` отдельного dispatch нет, поэтому
-  её override сейчас не выбирается.
+  компоненты, которые в нём указаны. Остальные берутся из `defaults`. Операции `qa`, `git` и
+  `publish` выполняет сам coordinator, а не worker, поэтому к ним применяется только `defaults` и
+  собственный override операции, а `roles` не применяется никогда. Операцию выбирает сама команда:
+  `publish` для `--purpose publish`, `qa` для роли `qa` и `integration local-qa`, `git` для
+  `integration refresh` и `integration resolve`. Что именно проверяется — в разделе
+  «Доступ QA, Git и publish» ниже.
 - `filesystem` называет ресурс: `checkout`, `git_common`, `shared_storage` или `cache` (только `cache`
   требует `path`). Coordinator превращает их в реальные пути worktree, общего Git-каталога и
   хранилища. Корень диска и домашний каталог целиком отклоняются.
@@ -362,6 +365,62 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 Если `dispatch send` остановлен, причина названа в ошибке, а remedy одинаковый: подготовить указанные
 хосты, пути и режим в новой сессии runtime, подключить реализацию `runtime_access`, которая
 проверяет реальный запуск worker, и повторить `dispatch preflight`.
+
+### Доступ QA, Git и publish
+
+`qa run`, `integration local-qa`, `integration refresh`, `integration resolve` и `dispatch publish`
+выполняет сам coordinator в своём процессе. Если в проекте нет `access_policy`, они работают как
+раньше (`legacy-inherit`), а отказ среды всё равно останавливает их, но уже с обычной классификацией
+ошибки Git или checkout. Если `access_policy` есть, перед действием coordinator проверяет план:
+
+- Какой план. Для `qa run` и `dispatch publish` — план, закреплённый в approved brief: правка конфига
+  после `dispatch propose` его не расширяет, а brief без плана остаётся `legacy-inherit`. Для
+  `integration local-qa`, `integration refresh` и `integration resolve` — `defaults` и override
+  операции (`qa`, `git`) из живого конфига. Override роли не применяется ни к одной из них.
+- Что требуется. Запись в общий Git-каталог и общее хранилище `.harness`, запись в каталог
+  clean-room checkout (`qa`) или в worktree batch (`git`), пути `cache` из `filesystem`, а для `git`
+  и `publish` ещё и доступность remote, с проверкой его хоста по `network.hosts`, когда режим
+  `sandbox` или список хостов непуст. План должен разрешать эти требования: brief, закреплённый
+  до этой версии без записи в Git и хранилище, потребует нового `dispatch propose`. Требование
+  QA-роли «только чтение» на coordinator-операцию не распространяется.
+- Как проверяется. Coordinator реально пробует запись (создаёт и сразу удаляет файл с уникальным
+  именем) и читает remote через `git ls-remote`; режим `inherit` ничего не утверждает о самой среде,
+  он лишь означает, что coordinator работает в своём окружении. `sandbox` и `unsandboxed`
+  принимаются, только если подключённая реализация `runtime_access` подтверждает их для процесса
+  coordinator (`observe` с транспортом `in-process`); без неё режим считается неподдерживаемым.
+  Харнесс такой реализации не поставляет и не заявляет нативной поддержки: что именно подтверждает
+  ваша реализация, определяет ваш проект.
+- Результат. Подтверждённый отказ (`denied`), неподдерживаемый режим (`unsupported`) и непроверенное
+  требование (`unverified`, например путь не существует или remote недоступен) останавливают
+  действие до первого изменения. Ошибка называет ресурс, путь и причину, а её remedy — конкретное
+  действие среды. Структурное evidence (`operation`, `status`, `plan_digest`, `checks`) доступно
+  в записи попытки: `qa-lane/attempts/*.json` для `qa run` (стадия `access`) и запись попытки
+  `integration local-qa` (стадия `access`, поля `access` и `remedy`). `dispatch publish` возвращает
+  evidence успешной проверки в поле `access`.
+
+Что остаётся нетронутым при отказе. Отказ `qa run` происходит до постановки в очередь: lease и
+запись очереди не создаются, dispatch остаётся `approved`, предыдущие evidence и попытки сохраняются,
+а следующий запуск после исправления среды проходит без ручной очистки. Любой сбой `qa run` уже
+после взятия lease (создание checkout, смена состояния, запись evidence, неожиданное исключение)
+снимает lease, запись очереди и состояние dispatch. Отказ перед `refresh`, `resolve` и `publish`
+происходит до fetch, rebase, создания batch и push. Откат отказавшего rebase возвращает worktree на
+issue-ветку, а отказ записи метаданных или remote при rebase и push классифицируется как ошибка
+доступа (`metadata-write-denied`, `remote-access-denied`, `remote-unreachable`), а не как конфликт
+или обычный сбой Git. Для классификации Git запускается с `LC_ALL=C`.
+
+Диагностика по сообщению:
+
+| Сообщение | Что сделать |
+| --- | --- |
+| `qa access is denied: shared Git metadata (write …)` | Выдать процессу coordinator запись в указанный общий Git-каталог в sandbox или правах файловой системы. |
+| `… clean-room checkout (write …)` или `could not prepare clean QA checkout storage` | Выдать запись в `.harness/.sandboxes/runs/qa` (или каталог хранилища, названный в ошибке). |
+| `… is unsupported` / `mode … is not provable for the coordinator` | Подключить `runtime_access`, подтверждающую режим для coordinator, либо задать `mode: inherit` для операции в `access_policy.operations`. |
+| `host … is not in the approved network hosts` | Добавить хост в `network.hosts` операции и, для операции с brief, заново выполнить `dispatch propose`. |
+| `remote … ` недоступен (`unverified`) | Восстановить связь с remote из среды coordinator и повторить команду. |
+| `remote-access-denied` при push | Выдать учётным данным процесса право записи в issue-ветку remote; затем повторить команду. |
+
+Обход блокировки инструментом или хуком не предусмотрен: при блокировке остановитесь и сообщите
+блокировку.
 
 ### Discovery Context и Context Package
 
