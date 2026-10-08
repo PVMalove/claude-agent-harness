@@ -23,6 +23,9 @@ else:
         raise SystemExit(2) from exc
 
 
+EVIDENCE_TIMEOUT_SECONDS = 60
+
+
 def git(checkout: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
     """Выполнить команду Git в указанном checkout и вернуть stdout в виде байтов."""
     return subprocess.run(
@@ -173,6 +176,86 @@ def state(checkout: Path) -> str:
     return f"{head}:{digest}"
 
 
+def main_worktree(project: Path) -> Path:
+    """Основной worktree репозитория: Git перечисляет его первым."""
+    return worktrees(project)[0][0]
+
+
+def qa_gate_commands(project: Path, checkout: Path) -> list[str]:
+    """Команды `qa_gate_commands` проекта; пусто, если конфигурации нет."""
+    # A linked worktree lacks the gitignored .harness/: use the project root config,
+    # then the main worktree's when the session itself runs in a linked worktree.
+    configs = [
+        path / ".harness" / "project.json"
+        for path in (checkout, project, main_worktree(project))
+    ]
+    config = next((path for path in configs if path.is_file()), None)
+    if config is None:
+        return []
+    commands = json.loads(config.read_text(encoding="utf-8")).get(
+        "qa_gate_commands", []
+    )
+    return cast(list[str], commands)
+
+
+def coordinator_evidence(project: Path, checkout: Path) -> bool:
+    """Принял ли координатор оркестрации зелёный QA ровно для HEAD чистого checkout."""
+    commands = qa_gate_commands(project, checkout)
+    if not commands or git(checkout, "diff", "HEAD"):
+        return False
+    main_checkout = main_worktree(project)
+    script = main_checkout / ".harness" / "orchestration" / "coordinator.py"
+    branch = dict(worktrees(project)).get(checkout, "")
+    issue = re.search(r"(?:^|/)issue-(\d+)(?:-|$)", branch)
+    if issue is None or not script.is_file():
+        return False
+    head = git(checkout, "rev-parse", "HEAD").decode().strip()
+    # The CLI checks the accept decision, the pinned candidate and the report's integrity hash.
+    # It takes the ledger lock, so a busy coordinator must not hang the PR hook: give up and block.
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--repo",
+                str(main_checkout),
+                "qa",
+                "evidence",
+                "--ticket",
+                f"#{issue.group(1)}",
+                "--branch",
+                branch,
+                "--candidate-commit",
+                head,
+            ],
+            cwd=main_checkout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=EVIDENCE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    try:
+        evidence = json.loads(result.stdout)
+        report = evidence["qa_report"]
+        passed = {
+            check["command"]
+            for check in report["checks_run"]
+            if check["result"] == "pass"
+        }
+        return (
+            evidence["candidate_commit"] == head
+            and report["outcome"] == "completed"
+            and all(command in passed for command in commands)
+        )
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
 def main() -> int:
     """Точка входа хука проверки и фиксации состояния QA-gate."""
     mode = sys.argv[1]
@@ -183,19 +266,7 @@ def main() -> int:
         return 0
     checkout = checkout_for(project, data, command)
     if mode == "mark":
-        # A linked worktree lacks the gitignored .harness/: use the project root config,
-        # then the main worktree's when the session itself runs in a linked worktree.
-        main_checkout = worktrees(project)[0][0]
-        configs = [
-            path / ".harness" / "project.json"
-            for path in (checkout, project, main_checkout)
-        ]
-        config = next((path for path in configs if path.is_file()), None)
-        if config is None:
-            return 0
-        commands = json.loads(config.read_text(encoding="utf-8")).get(
-            "qa_gate_commands", []
-        )
+        commands = qa_gate_commands(project, checkout)
         if not commands or not runs_qa_command(command, commands[-1]):
             return 0
     marker = checkout / ".claude" / ".qa-gate" / "passed"
@@ -204,7 +275,7 @@ def main() -> int:
         if (
             not marker.is_file()
             or marker.read_text(encoding="utf-8").strip() != current
-        ):
+        ) and not coordinator_evidence(project, checkout):
             raise ValueError("сначала запусти skill qa-gate для checkout ветки PR/MR")
     else:
         marker.parent.mkdir(parents=True, exist_ok=True)
