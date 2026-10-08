@@ -9,6 +9,7 @@ without a decision (abandon, not-required) live here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import uuid
 from dataclasses import replace as _vo_replace
 from pathlib import Path
@@ -45,6 +46,7 @@ from harness.orchestration.core.git_utils import (
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
+    _canonical,
     _non_empty,
     _read_object,
     _repo,
@@ -76,6 +78,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     PlanRecord,
 )
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import supersede
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -461,6 +464,44 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     return record
 
 
+def _auto_batch_approval(
+    repo: Path, root: Path, args: argparse.Namespace, record: JsonObject
+) -> JsonObject | None:
+    """The ``policy:auto`` planning approval of ``record``, recorded on it, or ``None`` when a
+    human must approve: an approval was passed, or ``auto`` does not apply (issue #643)."""
+    if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
+        getattr(args, "approved_at", None)
+    ):
+        return None
+    try:
+        config = core_config._config(repo)
+    except CoordinatorError:
+        return None
+    if not approvals.auto_active(config, record):
+        return None
+    plan = _read_object(
+        _records_root(root) / "plans" / f"{_safe_id(record['batch_id'], 'batch')}.json",
+        "immutable batch plan",
+    )
+    moment = utils._now()
+    preflight = record.get("scope_preflight")
+    approvals.record_auto(
+        record,
+        kind="batch-approve",
+        dispatch_id=None,
+        rationale="the immutable batch plan passed its scope preflight",
+        evidence={
+            "plan_sha256": hashlib.sha256(_canonical(plan).encode("utf-8")).hexdigest(),
+            "scope_preflight_status": preflight.get("status")
+            if isinstance(preflight, dict)
+            else None,
+            "definition_of_done_items": len(record["definition_of_done"]),
+        },
+        moment=moment,
+    )
+    return {"approved_by": approvals.AUTO_APPROVER, "approved_at": moment}
+
+
 def approve_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -473,9 +514,10 @@ def approve_batch(args: argparse.Namespace) -> JsonObject:
                 "only a planned batch can receive its planning approval",
                 remedy="only approve a batch that is still in the planned state",
             )
+        approval = _auto_batch_approval(repo, root, args, record) or _approval(args)
         updated = _vo_replace(
             BatchRecord.from_dict(record),
-            coordinator_approval=_approval(args),
+            coordinator_approval=approval,
             state="awaiting-approval",
         )
         _safe_id(updated.batch_id, "batch")

@@ -17,6 +17,7 @@ from typing import cast
 
 from harness.orchestration import extensions
 from harness.orchestration.contract import (
+    AUTO_TTY_PROBLEM,
     COMMUNICATION_POLICY_FIELDS,
     ContractError,
     health_problems,
@@ -394,6 +395,12 @@ def _approval_policy(config: JsonObject) -> str:
         raise CoordinatorError(
             "approval_policy must be manual_all, milestone, low_risk or auto",
             remedy="set approval_policy to 'manual_all', 'milestone', 'low_risk' or 'auto' in the project orchestration config",
+        )
+    if policy == "auto" and _human_approval_gate(config) == "tty":
+        # `auto` approves by policy, `tty` demands a human on a terminal: no step could ever run.
+        raise CoordinatorError(
+            AUTO_TTY_PROBLEM,
+            remedy="set human_approval_gate to 'trusted', or choose an approval_policy other than 'auto'",
         )
     return cast(str, policy)
 

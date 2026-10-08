@@ -121,7 +121,8 @@ moved from), and keeps `retry_item_ids`. It is still a developer-retry: `next_ac
 `developer-retry` and it spends one `retry_policy.max_developer_retries`. The decision only proposes
 the target. The developer-retry brief carries it as `rebase_target_commit`, bound into the
 transition as `rebase_target_sha`, and that dispatch always needs an explicit approval with the
-transition digest, under every `approval_policy`; no policy approves a rebase target. The developer
+transition digest, under every `approval_policy` except `auto`; no policy except `auto` approves a
+rebase target (see "Automatic path"). The developer
 rebases the candidate onto exactly that target and fixes on top of it in the same dispatch. An
 accept of its report, or of a later retry whose candidate sits on that target, pins
 `integration_base_commit` to the target. A fetch
@@ -173,7 +174,7 @@ candidate still sends it to `developer-retry`. Its route is `bypass-rerun`: a ne
 same stage on the same SHA (verification on its registered candidate) with no new candidate commit.
 `batch decide` requires a `--note` naming the violation, the report is never accepted or
 warning-overridden, and the re-run dispatch always needs an explicit approval, under every
-`approval_policy`. A `bypass-rerun` spends no `retry_policy.max_developer_retries`. `block-bypass`
+`approval_policy` except `auto`. A `bypass-rerun` spends no `retry_policy.max_developer_retries`. `block-bypass`
 is refused for an architect, developer or publish report, which is still retried with a developer
 reason category (`code`, `requirements`, `candidate-change`) or blocked.
 
@@ -258,16 +259,16 @@ that stage. The coordinator chooses a route by this table:
 | A conflict-resolver report is retried and its `resolver.cause` is not `task-defect` | `same-candidate-rerun` | A human decides the retry; the new resolver dispatch is a fix on the same target and is bounded by `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the resolver report and its `resolver` block |
 | A warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer`, and the closed list of carried items is empty: no review finding, no open coordinator finding, no open incomplete item for the developer and no item of a retried developer brief | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the axis, check or candidate change that decided it, and an empty `retry_item_ids` |
 | An additional commit is needed: a retry routes to a developer-retry whose closed list of carried items is not empty (the retried review's Standards and Spec findings, open coordinator findings, open incomplete items for the developer, or the items of a retried developer brief); a `tooling-retry` keeps its own route and carries the same list | `fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch is approved under `approval_policy`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the `retry_item_ids` the brief carries, and the brief's `snapshot_commit` as the candidate the new commits continue |
-| The integration base moved ahead: a retry routes to a developer-retry (`developer-retry` or `fix-forward`) of a developer, verification, code-review, qa or publish report while `origin/<integration_ref>` has moved past the pinned `integration_base_commit` and the candidate the retry continues does not contain that tip yet | `rebase-fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch that carries the proposed tip as `rebase_target_commit` always needs an explicit approval (`--approved-by` with the transition digest), under every `approval_policy`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the routing record's `rebase_target_commit` and `integration_base_commit`, the `retry_item_ids` the brief carries, and the `rebase_check` of the retry report |
+| The integration base moved ahead: a retry routes to a developer-retry (`developer-retry` or `fix-forward`) of a developer, verification, code-review, qa or publish report while `origin/<integration_ref>` has moved past the pinned `integration_base_commit` and the candidate the retry continues does not contain that tip yet | `rebase-fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch that carries the proposed tip as `rebase_target_commit` always needs an explicit approval (`--approved-by` with the transition digest), under every `approval_policy` except `auto`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the routing record's `rebase_target_commit` and `integration_base_commit`, the `retry_item_ids` the brief carries, and the `rebase_check` of the retry report |
 | After fix-forward: a code-review is dispatched for the candidate of an accepted `fix-forward` or `rebase-fix-forward` developer-retry that continued a candidate an earlier code-review of the batch judged (the review was accepted, or retried to a developer) | `fix-forward` | No separate decision: `dispatch create --role code-review` without `--delta-review-of` chooses a delta or a full review itself, and the code-review dispatch is approved under `approval_policy` with that choice bound into its transition | The brief's `delta_review_scope`: `prior_review` (dispatch ID, `report_sha256`, reviewed candidate), `developer_dispatch_id`, `delta_base`, `delta_commits`, `reviewed_copies`, `closure` and the `escalations` that make it `full`; the transition's `delta_review_sha256`; the QA dispatch's `candidate_commit`, the new SHA |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
-| A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
+| A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy` except `auto`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
 | The coordinator finds a defect in a clean developer report whose Definition of Done is met inside its allowed paths | `carry-over` | The approver of the `accept` (`batch decide --findings-file`); after a policy auto-accept the coordinator itself (`batch carry-over`, `policy:carry-over`) while no code-review dispatch exists for the candidate; the code-review dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the accepted developer report, the candidate, and the `carried_items` item IDs. No developer retry is spent before review |
 | A read-only report (architect, verification, code-review or qa) lists `incomplete_items` that no item targets back at the reporting role, and the approver hands them on | `carry-over` | The approver of the `accept` or `override-warning` with `batch decide --carry-incomplete`; never a policy, since such a report is never auto-accepted; each target role's dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the read-only report and the `carried_item_ids`; each carried item's `source` names the report, its role, its target role and the reason. No retry is spent |
 | A read-only report lists `incomplete_items` and none carries `tooling_blocker`, with no finding or warning/blocker severity, no open carried item, no failed check and an unchanged candidate | `narrowed-retry` | A human decides `batch decide --decision retry --narrowed`; the new dispatch of the same stage on the same SHA is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` of the retried report, the `carried_item_ids` the new brief carries, and the unchanged `candidate_commit` (none for an architect) |
 | A read-only report lists `incomplete_items` and at least one carries `tooling_blocker` (for example, the safety classifier interrupted the role on that item), with the same absence of structured evidence | `tooling-retry` | A human decides `batch decide --decision retry --narrowed` after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage on the same SHA is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, each item's `tooling_blocker`, the `carried_item_ids` and the unchanged `candidate_commit` |
 | `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
-| After a forced abandon (a dead end), the work resumes in a new batch for the same ticket and issue branch from the abandoned batch's `abandoned.last_accepted` record: `batch create --supersedes <batch>` | `supersede` | A human only, with `--approved-by` and `--approved-at` on `batch create`; a `policy:` approver is refused. The new batch still needs `batch approve`, its dispatches are approved under `approval_policy`, and a first developer-retry that carries a rebase target always needs an explicit approval; no `retry_policy.max_developer_retries` is spent | The superseded batch ID and its `abandoned.last_accepted`; for the same Definition of Done, the carried architect reference (`dispatch_id`, `report`, `report_sha256`, `commit_plan_sha256`); the `start_commit` and the `rebase_target_commit`. No risk, review, QA or operator decision evidence is copied |
+| After a forced abandon (a dead end), the work resumes in a new batch for the same ticket and issue branch from the abandoned batch's `abandoned.last_accepted` record: `batch create --supersedes <batch>` | `supersede` | A human only, with `--approved-by` and `--approved-at` on `batch create`; a `policy:` approver is refused. The new batch still needs `batch approve`, its dispatches are approved under `approval_policy`, and a first developer-retry that carries a rebase target always needs an explicit approval except under `auto`; no `retry_policy.max_developer_retries` is spent | The superseded batch ID and its `abandoned.last_accepted`; for the same Definition of Done, the carried architect reference (`dispatch_id`, `report`, `report_sha256`, `commit_plan_sha256`); the `start_commit` and the `rebase_target_commit`. No risk, review, QA or operator decision evidence is copied |
 | `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
 | Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
 
@@ -336,6 +337,105 @@ the carried items it did not mark `closed`, and its own findings take the next `
 numbers.
 
 A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
+
+## Automatic path (`approval_policy: auto`)
+
+`approval_policy: auto` runs a batch from `batch approve` to the accepted publish without a human
+approval. The policy applies only while the project config and the batch plan both choose `auto`
+and the batch records no `auto_stop`. The project config must also set
+`human_approval_gate: "trusted"` and `worker_attestation_required: true`; config validation and
+`harness health` refuse any other combination. For `auto`, this section overrides the "Who
+approves" column of the recovery route table.
+
+Every approval that the policy gives is one hashed record in `batch.auto_decisions`: `sequence`,
+`kind`, `dispatch_id`, `approved_by: "policy:auto"`, `approved_at`, `rationale` and `evidence`.
+Ledger validation recomputes each `record_sha256` and checks that each record matches the approval
+that it names. An explicit `--approved-by` is still a human approval under `auto`.
+
+### Approvals
+
+The coordinator session omits `--approved-by` and `--approved-at`. The policy then approves:
+
+| Step | Record `kind` | Evidence |
+| --- | --- | --- |
+| `batch approve` | `batch-approve` | `plan_sha256` of the immutable plan, `scope_preflight_status`, `definition_of_done_items` |
+| `dispatch create`, milestones included: `publish`, `risk-trigger`, `risk-reassessment-required`, `bypass-rerun`, `rebase-fix-forward`, `rebase-target` | `dispatch` | `transition_digest`, `brief_sha256`, `lifted_milestones`, `route_preview` and `reason_category` of the previous decision, its `report_sha256` |
+| `dispatch resume --trigger` for a planned continuation (not `human-decision`) | `continuation` | `trigger`, `checkpoint_id`, `continuations_spent`, `max_continuations` |
+| `batch auto-decide`, and an accept of the `report submit` or `qa run` chain | `decision` | `decision`, `report_sha256`, `route_preview`, `reason_category`, `basis`, `accepted_risks`, `commit_plan_sha256`, `bug_ticket`, `carried_item_ids` |
+| `batch carry-over` | `carry-over` | `report_sha256`, `carried_item_ids` |
+
+### Decisions
+
+The chain of `report submit` and `qa run` accepts a clean report as before. For every other
+pending report, the coordinator session runs `batch auto-decide --batch <id>`. The command
+computes the decision from ledger facts under the ledger lock. The decision then passes every
+check of `batch decide`, and the coordinator records it as `policy:auto`. The session passes only
+the inputs that need judgement:
+
+| Input | Use |
+| --- | --- |
+| `--commit-plan-file <path>` | An architect report that the policy accepts. The policy pins the plan if its `expected_paths` lie inside `allowed_paths` and it covers every Definition of Done item. Otherwise the path stops with `deterministic-gate-failed`. If the command cannot read the file as a JSON object, it refuses and records nothing. |
+| `--findings-file <path>` | A developer work report that the policy accepts: the coordinator findings go to code-review as carried items. |
+| `--bug-ticket <ticket>` | A `tooling-retry`. Before the command, the session creates or reuses a bug ticket for the blocking tool through the tracker CLI. Without it, the command refuses and records nothing. |
+| `--block-bypass --note <text>` | The role worked around a hook or tool block. The note names the violation. |
+
+The decision table:
+
+1. A conflict-resolver report is outside the automatic path: the command refuses, and a human
+   decides the report.
+2. The policy accepts a clean report: `outcome: completed`, `blockers: none`, every check passes,
+   no `not_covered` item, no carried gap, no scope warning, no review finding or warning/blocker
+   severity, no incomplete item for the reporting role, and no `--block-bypass`. The record lists
+   the report risks, its `risk_triggers` and the matched triggers of the candidate as
+   `accepted_risks`. Incomplete items for later roles are carried. The accept of the publish
+   report completes the batch.
+3. The policy retries any other report. The reason category is `block-bypass` for a read-only
+   stage and `code` for an architect or developer with `--block-bypass`. A report whose only
+   evidence is incomplete items for its own role gets a narrowed retry. A completed developer
+   report with a `not_covered` item, a scope warning or a carried gap gets `requirements`. A
+   blocked report with a critical `context_pressure` record gets `context-pressure`. Otherwise the
+   structured report data decides. The route is the `route_preview` of `batch decision-packet`.
+
+The policy never chooses `override-warning`, `block`, `fail` or `abandon`.
+
+### Stops
+
+A closed list of conditions stops the automatic path. `batch auto-decide` and `batch auto-report`
+detect them in this order: integrity, budget, route.
+
+| `category` | `reason` | Source |
+| --- | --- | --- |
+| `integrity-failure` | `stale` | Attention `stale-dispatch`, `stale-evidence` or `retry-queued-too-long` |
+| `integrity-failure` | `model-mismatch`, `worktree-mismatch` | A self-report with `match: false` |
+| `integrity-failure` | `harness-snapshot-changed` | The installed harness runtime differs from the pinned snapshot |
+| `integrity-failure` | `deterministic-gate-failed` | The commit plan gate, or a failed revalidation of the pending report or its brief |
+| `integrity-failure` | `ledger-validation-failed` | Ledger validation fails; the command shows the stop and records nothing |
+| `budget-exhausted` | `retry_policy.max_developer_retries` | A developer-retry beyond the budget |
+| `budget-exhausted` | `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes` | A checkpointed or rate-limited dispatch with a spent budget |
+| `budget-exhausted` | `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` | Attention `infrastructure-retry-repeated` or `tooling-retry-repeated` |
+| `no-automatic-route` | `unknown-reason` | The route has reason category `unknown`, or attention `unknown-reason` |
+| `no-automatic-route` | `abandon-dead-end` | The coordinator refuses the retry route, or the batch is `blocked` or `failed` |
+| `no-automatic-route` | `supersede-dead-end` | The batch is `abandoned`; only a human continues with `batch create --supersedes` |
+
+The coordinator records the stop once as the hashed `batch.auto_stop` (`category`, `reason`,
+`detected_at`, `detected_by`, `evidence`). A stop records no decision and weakens no validation.
+After a stop, every later step of the batch needs `--approved-by`, the chain accepts no report by
+policy, and the batch never returns to `auto`.
+
+### Final report
+
+The coordinator records the final report once as the hashed `batch.auto_report`: at the accept of
+the publish report, or with the stop. The report lists every `policy:auto` decision with its route,
+reason and evidence, the accepted risks, the carried findings and their state, the retries and the
+spent budget, the Definition of Done coverage per commit plan, the review and QA results, the
+`candidate_commit`, and the stop when there is one. `batch auto-report --batch <id>` renders the
+recorded report. Without a recorded report, it records a stop that the ledger shows, or renders the
+live report with `recorded: false`. After any refused command under `auto`, the session runs
+`batch auto-report`.
+
+No policy opens or merges a pull request. The coordinator shows the final report to the human
+and may propose `/to-pull-requests`. A pull request needs an explicit human confirmation, and
+auto-merge is forbidden.
 
 ## Developer-retry handoff
 

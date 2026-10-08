@@ -149,6 +149,18 @@ route for `retry` or `abandon`, show the decision packet's `route_preview` (with
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
 evidence).
 
+Under `approval_policy: auto`, the coordinator takes every path decision by policy and records it
+as `policy:auto`; follow "Automatic path" in `.harness/orchestration/playbook.md`. Do not write
+`--approved-by` or `--approved-at`: run `batch approve`, `dispatch create` and a planned
+`dispatch resume --trigger` without them. For every pending report that the `report submit` or
+`qa run` chain did not accept, including the publish report, run
+`batch auto-decide --batch <id>`. Pass `--commit-plan-file` with the architect's plan copied
+exactly, `--findings-file` for coordinator findings on a developer report, `--bug-ticket` after
+you file or reuse the tool's bug ticket through the tracker CLI, and `--block-bypass --note` when a
+role worked around a block. Pass nothing else, and never choose the decision yourself. After any
+refused command, and after a `stopped` outcome, run `batch auto-report --batch <id>`. A stop is
+final for the batch: show the report, and every later step needs the operator's explicit approval.
+
 A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
 interpreter or a split command) breaks the protocol: never accept or warning-override that report,
 and record the violation in `--note`. For an architect or developer (publish included), decide
@@ -156,7 +168,8 @@ and record the violation in `--note`. For an architect or developer (publish inc
 or verification role, pass `--reason-category block-bypass` to `batch decision-packet` and, once its
 `route_preview.retry.route` is `bypass-rerun`, to `batch decide --decision retry`: the same stage
 re-runs on the same SHA with no new candidate and no developer retry spent, and its new dispatch
-always needs explicit approval. A report that stops with `tooling_blocker` instead is confirmed
+needs explicit approval under every `approval_policy` except `auto`. A report that stops with
+`tooling_blocker` instead is confirmed
 before its retry: check that its `command` is legitimate under the brief (allowed paths and tool policy) and
 that its `message` refuses that command. For a false positive, file or reuse a bug ticket against
 the tool through the tracker CLI (tool, command, message, dispatch ID), name the ticket in `--note`,
@@ -281,7 +294,10 @@ After an accepted publish, record the integration link before the branch is merg
 integration record and is safe to repeat; if it refuses, report its remedy to the developer and do
 not work around it. Never edit the completed batch or its reports by hand.
 
+Under `approval_policy: auto`, first show the final report of `batch auto-report --batch <id>`
+(decisions, accepted risks, findings, retries, budget, DoD coverage, review and QA results).
 Then offer `/to-pull-requests <ticket>`. Do not invoke it automatically, open
-or merge a PR, write to an integration branch, or close the ticket in this skill. Leave
+or merge a PR, write to an integration branch, or close the ticket in this skill. A pull request
+needs the developer's explicit confirmation under every `approval_policy`; auto-merge is forbidden. Leave
 `status::in-progress` on the ticket: closing it and moving its unblocked dependents to
 `status::ready` belong to `/to-pull-requests` after the merge.

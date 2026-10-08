@@ -135,7 +135,9 @@ runtime-наборы (`codex`, `claude` и т.п.); в каждом обязат
 который проект всегда хочет запускать через Claude, это выглядит как
 `"default_runtime": "claude"` рядом с `runtimes`. Пример также включает
 `"worker_attestation_required": true`: worker до любой работы подтверждает свой фактический Git
-worktree, branch и SHA; legacy projects могут включить это поле постепенно.
+worktree, branch и SHA; legacy projects могут включить это поле постепенно. `approval_policy: auto`
+требует `worker_attestation_required: true` и `human_approval_gate: trusted`: проверка конфигурации и
+`harness health` отклоняют другое сочетание.
 
 ```json
 {
@@ -508,10 +510,10 @@ report оставляет dispatch в `reported` до решения челов�
 report batch, чей scope целиком лежит в `low_risk_paths`, принимается автоматически с записью решения в ledger. Blockers, failed
 checks, раскрытые risks, risk triggers и findings любой оси review сохраняют ручной gate; publish тоже требует
 отдельного approval. При `milestone` чистый отчёт обычной роли также принимается автоматически,
-но QA, publish и рискованные переходы остаются ручными вехами. При `auto` координатор сам принимает
-чистые отчёты любого batch, включая чистый QA, и готовит следующий dispatch без `low_risk_paths`;
-решение записывается как `policy:auto`. Ручными остаются publish, открытие PR и merge, batch с
-совпавшими risk triggers, findings review, упавшие проверки, blockers и раскрытые risks.
+но QA, publish и рискованные переходы остаются ручными вехами. При `auto` координатор проходит
+путь от `batch approve` до принятого publish без человека: политика согласует каждый шаг, а
+`batch auto-decide` принимает решения по отчётам (см. «Автоматический путь `approval_policy: auto`»
+ниже). Ручными остаются открытие PR и merge.
 
 1. Создать planned batch и затем отдельно утвердить его:
 
@@ -876,7 +878,7 @@ preflight worktree на незакоммиченные изменения не �
 той же стадии на том же SHA (verification — на её зарегистрированном candidate) без нового candidate
 commit. `batch decide` требует `--note` с описанием нарушения; report не принимается и не
 закрывается через override-warning, а новый dispatch всегда требует явного approval
-(`--approved-by`) при любой `approval_policy`. `bypass-rerun` не расходует
+(`--approved-by`) при любой `approval_policy`, кроме `auto`. `bypass-rerun` не расходует
 `retry_policy.max_developer_retries`. Для architect, developer и publish `block-bypass` отклоняется:
 такой report по-прежнему получает `retry` с developer-категорией (`code`, `requirements`,
 `candidate-change`) или `block`.
@@ -945,8 +947,8 @@ candidate, который продолжит retry (собственный у re
 remedy, а `decision-packet` показывает её в `route_preview.retry`. Решение только предлагает target:
 `integration_base_commit` batch до accept не меняется.
 
-Target попадает в brief только через dispatch с явным approval при любой `approval_policy`: policy
-approval для него отклоняется. `dispatch propose` показывает переход с полем `rebase_target_sha`, а
+Target попадает в brief только через dispatch с явным approval при любой `approval_policy`, кроме
+`auto`: approval другой политики для него отклоняется. `dispatch propose` показывает переход с полем `rebase_target_sha`, а
 brief получает `rebase_target_commit`. Кроме этого brief поле заполнено только у developer-retry
 замещающего batch (см. «Замещающий batch» ниже); у остальных brief оно равно `null`, в том числе у
 developer dispatch legacy-записи stale-base:
@@ -1108,7 +1110,8 @@ batch: remedy предлагает снова передать в `--supersedes`
 - `rebase_target_commit` — эта base, если `start_commit` её не содержит. Тогда первый developer —
   developer-retry маршрута rebase внутри retry (#504): он перебазирует коммиты на target, исправляет
   поверх и сдаёт пары `rebased_from`, а `report submit` возвращает `rebase_check`. Такой dispatch
-  всегда требует явного approval с transition digest. Target остаётся в brief, пока продолжаемый
+  требует явного approval с transition digest при любой `approval_policy`, кроме `auto`. Target
+  остаётся в brief, пока продолжаемый
   snapshot его не содержит, например после retry ещё не перебазированного отчёта.
 
 Что не переносится никогда: risk assessment, code-review, QA, carried items, candidate registrations
@@ -1188,6 +1191,71 @@ policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для я
 определяется путём, которым решение утверждено, а не строкой имени. Деталь входит в ту же audit-запись
 и ту же контрольную сумму, что и переход batch. Маршрут вне `RECOVERY_ROUTES` отклоняется с remedy
 при записи и при чтении batch.
+
+### Автоматический путь `approval_policy: auto`
+
+Политика `auto` действует, пока конфигурация проекта и план batch выбирают `auto` и в batch нет
+`auto_stop`. Сессия не передаёт `--approved-by` и `--approved-at`. Политика согласует:
+
+- `batch approve`: `coordinator_approval.approved_by` равен `policy:auto`;
+- `dispatch create`, включая вехи `publish`, `risk-trigger`, `risk-reassessment-required`,
+  `bypass-rerun`, `rebase-fix-forward` и `rebase-target`;
+- `dispatch resume --trigger` для планового продолжения, кроме `human-decision`;
+- `batch carry-over`: решение пишется как `policy:auto`, а не `policy:carry-over`.
+
+Явный `--approved-by` при `auto` остаётся approval человека. Каждое согласование политики — одна
+хешируемая запись в `batch.auto_decisions` (`sequence`, `kind`, `dispatch_id`, `approved_by`,
+`approved_at`, `rationale`, `evidence`). Валидация ledger пересчитывает `record_sha256` и сверяет
+запись с согласованием, которое она называет.
+
+Чистый отчёт по-прежнему принимает цепочка `report submit` или `qa run`. Для остальных отчётов,
+включая отчёт publish, сессия запускает:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch auto-decide --batch <batch-id>
+```
+
+Команда вычисляет решение из фактов ledger, проводит его через проверки `batch decide` и пишет как
+`policy:auto` с маршрутом, причиной и evidence. Сессия передаёт только входы, которые требуют
+суждения:
+
+- `--commit-plan-file` — план architect-а. Политика закрепляет план, если он лежит внутри
+  `allowed_paths` и покрывает все пункты DoD; иначе путь останавливается. Если команда не может
+  прочитать файл как JSON-объект, она отказывает и ничего не пишет.
+- `--findings-file` — находки координатора для принятого отчёта developer-а.
+- `--bug-ticket` — bug-тикет на инструмент для `tooling-retry`. Без него команда отказывает и
+  ничего не пишет.
+- `--block-bypass --note` — роль обошла блокировку hook-а или инструмента.
+
+Политика принимает чистый отчёт и записывает его риски как `accepted_risks`. Для остальных отчётов
+политика выбирает `retry` по `route_preview`. Политика никогда не выбирает `override-warning`,
+`block`, `fail` или `abandon`. Отчёт conflict-resolver-а вне автоматического пути: его решает человек.
+
+Закрытый список остановок:
+
+| `category` | `reason` |
+| --- | --- |
+| `integrity-failure` | `stale`, `model-mismatch`, `worktree-mismatch`, `harness-snapshot-changed`, `deterministic-gate-failed`, `ledger-validation-failed` |
+| `budget-exhausted` | `retry_policy.max_developer_retries`, `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes`, `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` |
+| `no-automatic-route` | `unknown-reason`, `abandon-dead-end`, `supersede-dead-end` |
+
+`batch auto-decide` и `batch auto-report` находят остановку в порядке: целостность, бюджет, маршрут.
+Координатор пишет остановку один раз в `batch.auto_stop` вместе с итоговым отчётом.
+`ledger-validation-failed` команда только выводит: ledger недостоверен. Остановка не создаёт решения
+и не ослабляет валидацию. После остановки каждый шаг batch требует `--approved-by`, а вернуться в
+`auto` batch не может.
+
+Итоговый отчёт пишется один раз в `batch.auto_report`: при accept отчёта publish или при остановке.
+Отчёт перечисляет решения `policy:auto`, принятые риски, findings, retry и потраченный бюджет,
+покрытие DoD по commit plan, результаты review и QA и остановку. Команда выводит отчёт:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch auto-report --batch <batch-id>
+```
+
+Без записанного отчёта команда записывает остановку, которую показывает ledger, или выводит
+live-отчёт с `recorded: false`. Политика не открывает и не мерджит PR: PR открывается только после
+явного подтверждения человека, auto-merge запрещён.
 
 ### Approval, привязанный к digest перехода
 

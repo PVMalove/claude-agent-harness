@@ -137,8 +137,15 @@ def build_parser(
     approve = batch_commands.add_parser("approve")
     _common(approve)
     approve.add_argument("--batch", required=True)
-    approve.add_argument("--approved-by", required=True)
-    approve.add_argument("--approved-at", required=True)
+    approve.add_argument(
+        "--approved-by",
+        help="human who approved the batch plan; omitted only under approval_policy auto, "
+        "which records the approval as policy:auto",
+    )
+    approve.add_argument(
+        "--approved-at",
+        help="time of the approval; omitted only under approval_policy auto",
+    )
     approve.set_defaults(handler=handlers.approve_batch)
     batch_list = batch_commands.add_parser("list")
     _common(batch_list)
@@ -237,6 +244,44 @@ def build_parser(
         "re-run the same role on the same SHA with a brief that carries only those items",
     )
     decide.set_defaults(handler=handlers.decide_batch)
+    auto_decide = batch_commands.add_parser(
+        "auto-decide",
+        help="under approval_policy auto: take the policy decision on the pending report and "
+        "record it as policy:auto; a stop ends the automatic path of the batch",
+    )
+    _common(auto_decide)
+    auto_decide.add_argument("--batch", required=True)
+    auto_decide.add_argument(
+        "--findings-file",
+        help="a developer work report the policy accepts: coordinator findings carried into "
+        "code-review, as for batch decide --findings-file",
+    )
+    auto_decide.add_argument(
+        "--commit-plan-file",
+        help="an architect report the policy accepts: the architect's commit plan, pinned when "
+        "it lies inside allowed_paths and covers every definition-of-done item",
+    )
+    auto_decide.add_argument(
+        "--bug-ticket",
+        help="the tracker ticket of the tool that blocked the role; required for a tooling-retry",
+    )
+    auto_decide.add_argument(
+        "--block-bypass",
+        action="store_true",
+        help="the role worked around a hook or tool block; requires --note naming the violation",
+    )
+    auto_decide.add_argument(
+        "--note", help="added to the deterministic rationale of the decision"
+    )
+    auto_decide.set_defaults(handler=handlers.auto_decide)
+    auto_report = batch_commands.add_parser(
+        "auto-report",
+        help="render the final report of an approval_policy auto batch; records a stop the "
+        "ledger shows, else renders the live report",
+    )
+    _common(auto_report)
+    auto_report.add_argument("--batch", required=True)
+    auto_report.set_defaults(handler=handlers.auto_report)
     carry_over = batch_commands.add_parser(
         "carry-over",
         help="carry coordinator findings into review after the developer report was accepted, "
