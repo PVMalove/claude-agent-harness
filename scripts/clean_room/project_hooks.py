@@ -1291,6 +1291,30 @@ def run(ctx: SimpleNamespace) -> None:
         ('echo "git commit -m x"', None),
         ("git log --grep 'git push'", None),
         ("cat <<'EOF'\ngit push origin HEAD:integration/existing\nEOF", None),
+        # A program from a variable is no git call when `commit` is part of an option or of
+        # a path, or sits in another command of the chain (#642).
+        (
+            'C="python x.py"; $C batch decide --decision accept --commit-plan-file plan.json',
+            None,
+        ),
+        (
+            'C="python x.py"; $C dispatch wait --id 1; R=.; python - "$R" <<\'EOF\'\n'
+            "open('scratch/commit-plan-618.json', 'w')\nEOF",
+            None,
+        ),
+        ('C="python x.py"; $C push-notes --ok', None),
+        ("python x.py batch decide --batch $B --commit-plan-file plan.json", None),
+        (
+            'python x.py batch decide --approved-at "$(date -u +%FT%TZ)" '
+            "--commit-plan-file plan.json",
+            None,
+        ),
+        (
+            "python - \"$R\" <<'EOF'\n"
+            "open('scratch/commit-plan-618.json', 'w')\nEOF",
+            None,
+        ),
+        ('git status; $C batch decide --commit-plan-file "$P"', None),
     ):
         if direct_at(direct_repo, command, cwd).returncode != 0:
             sys.exit(
@@ -1342,6 +1366,14 @@ def run(ctx: SimpleNamespace) -> None:
         (f"cd {test_root / 'missing'}; git commit -m x", "checkout"),
         ("python3 -c 'import os; os.system(\"git commit -m x\")'", "разобрать"),
         ('X="git push origin HEAD:master"; $X', "разобрать"),
+        ("$GIT commit -m x", "разобрать"),
+        ("C=git; $C commit -m x", "разобрать"),
+        ("$C commit", "разобрать"),
+        ("$C push", "разобрать"),
+        ('X="git commit -m x"; sh -c "$X"', "разобрать"),
+        ('CMD="git push"; eval "$CMD"', "разобрать"),
+        ("SUB=commit; $GIT $SUB -m x", "разобрать"),
+        ('cd "$TMPDIR" && git commit -m x', "checkout"),
         ('sh -c "$(printf %s "git push origin HEAD:master")"', "разобрать"),
         (f"GIT_DIR={repo}/.git git commit -m x", "checkout"),
         (f"env -C {repo} git commit -m x", "checkout"),
