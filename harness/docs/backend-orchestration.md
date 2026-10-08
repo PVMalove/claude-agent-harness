@@ -1664,6 +1664,39 @@ python .harness/orchestration/coordinator.py --repo . qa clear-stale-lease \
   --reason 'проверено, что владелец больше не выполняется'
 ```
 
+#### Подготовка окружения и категории провала
+
+Необязательный `qa_preparation` в `.harness/orchestration.json` задаёт команды подготовки окружения
+(например, `uv sync --locked`). `qa run` выполняет их и затем `verification_commands` в одном чистом
+checkout точного `candidate_commit` и останавливается на первой упавшей команде. Без `qa_preparation`
+(конфигурации только с `verification_commands`) поведение и форма report не меняются.
+
+Report и артефакт с подготовкой несут `qa_stages`: на каждую выполненную команду стадия
+(`preparation` или `gate`), точная команда, результат, exit code и санитизированная диагностика
+упавшей команды; плюс `failed_stage` и `code_checks_started` (`started`, `not_started` или
+`unknown`). Записи сверяются с неизменяемым артефактом: команды и exit codes должны совпасть с его
+блоками. Если подготовка упала, команды gate в `checks_run` записываются как `not-run`: это не
+выдуманная упавшая проверка кода.
+
+Причина провала подготовки подтверждается только согласованными сигналами; ни exit code, ни
+ключевое слово в логе не решают в одиночку, а сама стадия подготовки не доказывает инфраструктурную
+причину:
+
+| Диагноз | Подтверждение | Report | Маршрут `batch decide --decision retry` |
+| --- | --- | --- | --- |
+| `infrastructure` | сигнатура сети или ресурсов в выводе, отсутствие сигнатуры дефекта проекта и отслеживаемого файла проекта в выводе; код не проверялся | `blocked`, «код не проверен» | `same-candidate-rerun` без `--reason-category`: новый qa dispatch на тот же SHA, бюджет developer retry не тратится |
+| `project-defect` | сигнатура (например, несовместимый lock-файл), согласованная с отслеживаемым манифестом или lock-файлом, названным в выводе | `failed` | `developer-retry`, причина `code` |
+| `unknown` | сигналы не подтверждают причину или противоречат друг другу | `blocked`, нужен triage | `retry` без `--reason-category` отклоняется; coordinator называет причину или блокирует batch |
+
+Провал самого gate остаётся обычным провалом проверок кода и идёт по прежнему маршруту
+`developer-retry`.
+
+**Восстановление на том же SHA.** После подтверждения готовности окружения coordinator решает
+`batch decide --decision retry`, затем создаёт новый qa dispatch для того же `candidate_commit` с
+теми же командами и границами. Прежние brief, report, артефакт и approval сохраняются как audit
+evidence. Сбой подготовки или записи report не оставляет lease, запись очереди или состояние
+`working`: тот же approved dispatch можно запустить заново без правки ledger и без нового batch.
+
 После выполнения создаётся immutable completion report с командами, exit codes и кратким
 санитизированным evidence. Полный санитизированный stdout/stderr сохраняется вне Git в
 `.harness/orchestration/state/qa-artifacts/<sha256>.log`; report ссылается на этот путь и checksum.

@@ -71,8 +71,26 @@ In this table and the Recovery route table, an operational reason is one of thes
 | developer | risk assessment | `verification` on the registered candidate when the report is `blocked` with an operational reason; otherwise `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
 | verification | risk assessment | `developer-retry` | terminal | `abandoned` |
 | code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure`, `transport` or `context-pressure`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` | terminal | `abandoned` |
-| qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry` | terminal | `abandoned` |
+| qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry`; a preparation failure follows the QA preparation rules below | terminal | `abandoned` |
 | publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change | terminal | `abandoned` |
+
+**QA preparation failures.** When the project declares `qa_preparation`, the QA report carries `qa_stages`
+(per-stage command, result, exit code, sanitised diagnostics, `failed_stage`, `code_checks_started`
+and, for a failed preparation, a `diagnosis`). A failed preparation stops the run before any gate
+command: the gate commands are recorded as `not-run`, never as failed checks. The runner confirms a
+cause only from agreeing signals: neither an exit code nor a log keyword decides alone, and the
+preparation stage alone proves no infrastructure cause.
+
+- `infrastructure` (confirmed, no code check started): the report is `blocked` and says the code was
+  not verified. A `retry` needs no `--reason-category`: it routes `same-candidate-rerun` with
+  `verification-infrastructure`, a new qa dispatch on the same SHA, and spends no
+  `retry_policy.max_developer_retries`. The coordinator decides it by hand once the environment is ready.
+- `project-defect` (a defect in project files such as an incompatible lock file, confirmed against a
+  tracked project file): the report is `failed`; a `retry` routes `developer-retry` with `code`.
+- `unknown`: the report is `blocked` and needs coordinator triage. `retry` without
+  `--reason-category` is refused and nothing is retried; the coordinator names the cause
+  (`verification-infrastructure` for a same-SHA rerun, or a developer category) or blocks the batch.
+- A failing gate stage is an ordinary code-check failure: findings kept, route `developer-retry`.
 
 `code`, `requirements`, `candidate-change` and `unknown` always route to `developer-retry`; only the
 three operational categories, besides `tooling` and `block-bypass` below, may re-run a read-only
@@ -212,6 +230,7 @@ that stage. The coordinator chooses a route by this table:
 | An architect report is retried without `--narrowed`, whatever the reason category except `tooling` | `architect-retry` | A human decides the retry with `batch decide`; the new architect dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the architect report. Not `same-candidate-rerun`: it is not conditioned on a reason category and pins no candidate |
 | A developer report is `blocked` with an operational reason, no finding and no failed check | `verification` | A human decides the retry; the read-only verification dispatch is approved under `approval_policy` | Dispatch ID, `report_sha256`, the `candidate_registrations` entry with its `source_report_sha256`, and for `context-pressure` the critical `context_pressure` record |
 | A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
+| A qa report is `blocked` because its `qa_stages` show a failed preparation with a confirmed `infrastructure` diagnosis and `code_checks_started: not_started` | `same-candidate-rerun` | A human decides the retry once the environment is confirmed ready; the new qa dispatch on the same SHA needs its own approval under `approval_policy`; it spends no `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the report's `qa_stages` with its diagnosis signals, the unchanged `candidate_commit`; the earlier brief, report and artifact stay as audit evidence |
 | A verification report is retried without `--narrowed`, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry`, `bypass-rerun` or `narrowed-retry` |
 | A conflict-resolver report is retried and its `resolver.cause` is not `task-defect` | `same-candidate-rerun` | A human decides the retry; the new resolver dispatch is a fix on the same target and is bounded by `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the resolver report and its `resolver` block |
 | A warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer`, and the closed list of carried items is empty: no review finding, no open coordinator finding, no open incomplete item for the developer and no item of a retried developer brief | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the axis, check or candidate change that decided it, and an empty `retry_item_ids` |
