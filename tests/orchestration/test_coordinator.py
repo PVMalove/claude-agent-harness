@@ -61,6 +61,7 @@ from harness.orchestration.workflow import (
     dispatch,
     history,
     reports,
+    supersede,
 )
 from harness.orchestration.workflow import batch as batch_module
 
@@ -4562,6 +4563,853 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         fresh = coordinator.create_batch(self._args(**self._batch_plan()))
         self.assertNotEqual(fresh["batch_id"], batch["batch_id"])
         self.assertEqual(fresh["state"], "planned")
+
+    # -- supersede (issue #506) ------------------------------------------------------------------
+
+    def _abandoned_batch(self, *, review: bool = True) -> tuple[str, str]:
+        """A batch abandoned after a dead end: architect and developer accepted, a code-review
+        that cannot be decided otherwise. Returns the batch and its last accepted candidate."""
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id)
+        if review:
+            self._infra_review(batch_id, candidate)
+        self._decide(batch_id, "abandon", reason="review dead end")
+        return batch_id, candidate
+
+    def _superseding_plan(self, source: str | None, **overrides: object) -> JsonObject:
+        return {
+            **self._batch_plan(),
+            "supersedes": source,
+            **self._approval(),
+            **overrides,
+        }
+
+    def _supersede(self, source: str, **overrides: object) -> JsonObject:
+        batch = coordinator.create_batch(
+            self._args(**self._superseding_plan(source, **overrides))
+        )
+        self.batch_id = batch["batch_id"]
+        return batch
+
+    def _ledger_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file() and path.parent.name != "audit"
+        }
+
+    def test_batch_create_supersedes_requires_a_human_approval_and_writes_nothing(
+        self,
+    ) -> None:
+        source, _ = self._abandoned_batch()
+        before = self._ledger_bytes()
+        for label, plan, message in (
+            (
+                "no approval",
+                self._superseding_plan(source, approved_by=None, approved_at=None),
+                "requires a human approval",
+            ),
+            (
+                "half an approval",
+                self._superseding_plan(source, approved_at=None),
+                "requires a human approval",
+            ),
+            (
+                "a policy approver",
+                self._superseding_plan(source, approved_by="policy:auto"),
+                "never by a policy",
+            ),
+            (
+                "approval flags without --supersedes",
+                self._superseding_plan(None),
+                "approve only --supersedes",
+            ),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    coordinator.create_batch(self._args(**plan))
+                self.assertIn(message, refused.exception.message)
+                self.assertTrue(refused.exception.remedy)
+                self.assertEqual(self._ledger_bytes(), before)
+
+    def test_batch_create_supersedes_refuses_a_source_it_cannot_resume(self) -> None:
+        failed = cast(str, self._create_batch()["batch_id"])
+        coordinator.abandon_batch(
+            self._args(batch=failed, reason="worker died", **self._approval())
+        )
+        unaccepted = cast(
+            str, coordinator.create_batch(self._args(**self._batch_plan()))["batch_id"]
+        )
+        coordinator.approve_batch(self._args(batch=unaccepted, **self._approval()))
+        self._reported_architect(unaccepted)
+        self._decide(unaccepted, "abandon", reason="architect dead end")
+        source = cast(
+            str, coordinator.create_batch(self._args(**self._batch_plan()))["batch_id"]
+        )
+        coordinator.approve_batch(self._args(batch=source, **self._approval()))
+        self.batch_id = source
+        self._accepted_architect(source)
+        self._decide_abandon_after_candidate(source)
+        before = self._ledger_bytes()
+        for label, plan, message, remedy in (
+            (
+                "a batch closed with batch abandon",
+                self._superseding_plan(failed),
+                "'failed', not abandoned",
+                "batch decide",
+            ),
+            (
+                "nothing accepted",
+                self._superseding_plan(unaccepted),
+                "no abandoned.last_accepted record",
+                "ordinary batch",
+            ),
+            (
+                "another ticket",
+                self._superseding_plan(source, ticket="#245"),
+                "belongs to ticket '#244'",
+                "--ticket #244",
+            ),
+            (
+                "another issue branch",
+                self._superseding_plan(source, branch="feature/issue-244-other"),
+                f"belongs to branch {self.branch!r}",
+                f"--branch {self.branch}",
+            ),
+            (
+                "a missing batch",
+                self._superseding_plan(f"batch-{uuid.uuid4()}"),
+                "does not exist",
+                "batch list",
+            ),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    coordinator.create_batch(self._args(**plan))
+                self.assertIn(message, refused.exception.message)
+                self.assertIn(remedy, refused.exception.remedy)
+                self.assertEqual(self._ledger_bytes(), before)
+
+    def _decide_abandon_after_candidate(self, batch_id: str) -> str:
+        candidate = self._accepted_candidate(batch_id)
+        self._infra_review(batch_id, candidate)
+        self._decide(batch_id, "abandon", reason="review dead end")
+        return candidate
+
+    def _abandon_after_a_blocked_developer(self, batch_id: str) -> JsonObject:
+        """Abandon ``batch_id`` after its next developer stops before any commit: nothing of
+        that developer is accepted. Returns the blocked developer brief."""
+        brief: JsonObject = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                brief["snapshot_commit"],
+                [],
+                commit_map=[],
+                outcome="blocked",
+                blockers="the developer cannot continue",
+            ),
+        )
+        self._decide(batch_id, "abandon", reason="developer dead end")
+        return brief
+
+    def test_a_superseding_source_without_an_accept_names_the_batch_it_superseded(
+        self,
+    ) -> None:
+        first, candidate = self._abandoned_batch()
+        second = cast(str, self._supersede(first)["batch_id"])
+        coordinator.approve_batch(self._args(batch=second, **self._approval()))
+        self._abandon_after_a_blocked_developer(second)
+        self.assertIsNone(self._batch_record(second)["abandoned"]["last_accepted"])
+        before = self._ledger_bytes()
+
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            coordinator.create_batch(self._args(**self._superseding_plan(second)))
+
+        self.assertIn("no abandoned.last_accepted record", refused.exception.message)
+        self.assertIn(f"--supersedes {first}", refused.exception.remedy)
+        self.assertIn("ordinary batch", refused.exception.remedy)
+        self.assertEqual(self._ledger_bytes(), before)
+        again = self._supersede(first)
+        self.assertEqual(
+            (again["supersedes"]["batch_id"], again["supersedes"]["start_commit"]),
+            (first, candidate),
+        )
+
+    def test_a_superseding_batch_links_its_abandoned_batch_and_records_the_route(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        source_bytes = (self._records() / "batches" / f"{source}.json").read_bytes()
+        abandoned = self._batch_record(source)["abandoned"]
+
+        batch = self._supersede(source)
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (
+                link["batch_id"],
+                link["approved_by"],
+                link["approved_at"],
+                link["last_accepted"],
+                link["definition_of_done_matches"],
+            ),
+            (
+                source,
+                "Malove",
+                self.APPROVED_AT,
+                abandoned["last_accepted"],
+                True,
+            ),
+        )
+        self.assertEqual(abandoned["last_accepted"]["candidate_commit"], candidate)
+        plan = coordinator._read_object(
+            self._records() / "plans" / f"{batch['batch_id']}.json", "plan"
+        )
+        self.assertEqual(plan["supersedes"], link)
+        (decision,) = batch["coordinator_decisions"]
+        self.assertEqual(
+            (
+                decision["decision"],
+                decision["approved_by"],
+                decision["routing"]["route"],
+            ),
+            ("supersede", "Malove", "supersede"),
+        )
+        self.assertEqual(decision["routing"]["superseded_batch_id"], source)
+        (audit,) = self._decision_audits(batch["batch_id"])
+        self.assertEqual(
+            (audit["decision"], audit["route"], audit["approver"]),
+            ("supersede", "supersede", {"kind": "human", "name": "Malove"}),
+        )
+        self.assertEqual(audit["evidence"]["batch_id"], source)
+        self.assertEqual(audit["evidence"]["last_accepted"], abandoned["last_accepted"])
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(
+            (stored["supersedes"], stored["coordinator_decisions"]),
+            (link, batch["coordinator_decisions"]),
+        )
+        self.assertEqual(
+            (stored["state"], stored["dispatches"], stored["risk_assessments"]),
+            ("planned", [], []),
+        )
+        for field in ("carried_items", "candidate_registrations", "abandoned"):
+            self.assertNotIn(field, stored)
+        self.assertEqual(
+            (self._records() / "batches" / f"{source}.json").read_bytes(), source_bytes
+        )
+        root = ledger_ops._state_root(self._args(), self.repo)
+        tampered = {**stored, "supersedes": {**link, "batch_id": "batch-other"}}
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "supersedes link does not match"
+        ):
+            history._validate_batch_integrity(root, tampered)
+        approved = coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+        self.assertEqual(approved["supersedes"], link)
+
+    def _abandoned_with_pinned_plan(self) -> tuple[str, str, list[JsonObject]]:
+        """An abandoned batch whose architect accept pinned a commit plan (#478)."""
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(batch_id)
+        entries = [self._plan_entry("route-retries", [1])]
+        self._decide(batch_id, "accept", commit_plan_file=self._plan_file(entries))
+        candidate = self._accepted_candidate(batch_id)
+        self._infra_review(batch_id, candidate)
+        self._decide(batch_id, "abandon", reason="review dead end")
+        return batch_id, candidate, entries
+
+    def test_the_same_definition_of_done_carries_the_architect_and_its_pinned_plan(
+        self,
+    ) -> None:
+        source, _, entries = self._abandoned_with_pinned_plan()
+        architect = next(
+            item
+            for item in self._batch_record(source)["dispatches"]
+            if item["role"] == "architect"
+        )
+        source_bytes = (self._records() / "batches" / f"{source}.json").read_bytes()
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        digest = commit_plan.plan_sha256(entries)
+        reference = {
+            "batch_id": source,
+            "dispatch_id": architect["dispatch_id"],
+            "report": architect["report"],
+            "report_sha256": architect["report_sha256"],
+            "commit_plan_sha256": digest,
+        }
+        self.assertEqual(batch["supersedes"]["architect"], reference)
+        self.assertEqual(
+            (batch["commit_plan"], batch["next_action"]), (entries, "developer")
+        )
+        routing = batch["coordinator_decisions"][0]["routing"]
+        self.assertEqual(
+            (routing["next_role"], routing["next_action"]), ("developer", "developer")
+        )
+        (audit,) = self._decision_audits(batch["batch_id"])
+        self.assertEqual(audit["evidence"]["architect"], reference)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "coordinator-prepared next action"
+        ):
+            self._propose(batch["batch_id"], "architect")
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(brief["commit_plan"], entries)
+        stored = self._batch_record(batch["batch_id"])
+        self.assertTrue(history._accepted_architect(stored))
+        self.assertEqual(commit_plan.accepted_plan_sha256(stored), digest)
+        self.assertEqual(
+            [item["role"] for item in stored["dispatches"]],
+            ["developer"],
+            "no architect dispatch runs in the superseding batch",
+        )
+        self.assertEqual(
+            (self._records() / "batches" / f"{source}.json").read_bytes(), source_bytes
+        )
+
+    def test_an_accepted_architect_alone_is_carried_and_the_developer_starts_at_the_base(
+        self,
+    ) -> None:
+        source = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(source)
+        entries = [self._plan_entry("route-retries", [1])]
+        self._decide(source, "accept", commit_plan_file=self._plan_file(entries))
+        self._abandon_after_a_blocked_developer(source)
+        architect = next(
+            item
+            for item in self._batch_record(source)["dispatches"]
+            if item["role"] == "architect"
+        )
+        self.assertEqual(
+            self._batch_record(source)["abandoned"]["last_accepted"],
+            {
+                "dispatch_id": architect["dispatch_id"],
+                "role": "architect",
+                "candidate_commit": None,
+            },
+        )
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (
+                link["architect"]["dispatch_id"],
+                link["architect"]["commit_plan_sha256"],
+                link["start_commit"],
+                link["rebase_target_commit"],
+            ),
+            (architect["dispatch_id"], commit_plan.plan_sha256(entries), None, None),
+        )
+        self.assertEqual(
+            (batch["commit_plan"], batch["next_action"]), (entries, "developer")
+        )
+        routing = batch["coordinator_decisions"][0]["routing"]
+        self.assertEqual(
+            (routing["next_role"], routing["candidate_commit"]), ("developer", None)
+        )
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(
+            (
+                brief["snapshot_commit"],
+                brief["rebase_target_commit"],
+                brief["transition"]["next_action"],
+                brief["commit_plan"],
+            ),
+            (stored["base_commit"], None, "developer", entries),
+        )
+        self.assertEqual([item["role"] for item in stored["dispatches"]], ["developer"])
+
+    def test_another_definition_of_done_carries_nothing_and_needs_a_new_architect(
+        self,
+    ) -> None:
+        source, _, _ = self._abandoned_with_pinned_plan()
+        batch = self._supersede(
+            source,
+            definition_of_done=["route retries by cause", "log the chosen route"],
+        )
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (link["definition_of_done_matches"], link["architect"]), (False, None)
+        )
+        for field in ("commit_plan", "next_action"):
+            self.assertNotIn(field, batch)
+        routing = batch["coordinator_decisions"][0]["routing"]
+        self.assertEqual(
+            (routing["next_role"], routing["next_action"]), ("architect", None)
+        )
+        stored = self._batch_record(batch["batch_id"])
+        self.assertFalse(history._accepted_architect(stored))
+        self.assertIsNone(commit_plan.accepted_plan_sha256(stored))
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "requires an accepted architect report"
+        ):
+            self._propose(batch["batch_id"], "developer")
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self.assertEqual(brief["role"], "architect")
+
+    def test_a_carried_architect_reference_is_handed_on_by_a_superseding_source(
+        self,
+    ) -> None:
+        reference = {
+            "batch_id": "batch-first",
+            "dispatch_id": "dispatch-architect",
+            "report": "reports/dispatch-architect.json",
+            "report_sha256": "0" * 64,
+            "commit_plan_sha256": None,
+        }
+        root = ledger_ops._state_root(self._args(), self.repo)
+        source: JsonObject = {
+            "batch_id": "batch-second",
+            "dispatches": [],
+            "supersedes": {"architect": reference},
+        }
+
+        carried = supersede._architect_reference(root, source)
+
+        self.assertEqual(carried, reference)
+        self.assertIsNone(
+            supersede._architect_reference(root, {**source, "supersedes": None})
+        )
+
+    def _superseding_initial_report(
+        self, brief: JsonObject, candidate: str, fix: str, changed: list[str]
+    ) -> JsonObject:
+        """The initial report of a superseding batch's first developer: the map covers every
+        commit after the integration base, the start commit's too (startup recovery)."""
+        entry = brief["commit_plan"][0]["id"]
+        return self._developer_report(
+            brief,
+            fix,
+            changed,
+            commit_map=[
+                {"commit_sha": candidate, "plan_entry_id": entry},
+                {"commit_sha": fix, "plan_entry_id": entry},
+            ],
+            dod_coverage=[{"dod_item": 1, "commits": [candidate, fix]}],
+            divergence_justification="the start commit and the fix both close the one entry",
+        )
+
+    def test_a_start_commit_on_the_integration_base_starts_an_initial_developer(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (link["start_commit"], link["rebase_target_commit"], batch["next_action"]),
+            (candidate, None, "developer"),
+        )
+        routing = batch["coordinator_decisions"][0]["routing"]
+        self.assertEqual(
+            (routing["candidate_commit"], routing["rebase_target_commit"]),
+            (candidate, None),
+        )
+        preflight = self._developer_preflight(batch["batch_id"])
+        self.assertEqual(
+            (preflight["candidate_sha"], preflight["preview_brief"]["snapshot_commit"]),
+            (candidate, candidate),
+        )
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(
+            (
+                brief["snapshot_commit"],
+                brief["candidate_commit"],
+                brief["rebase_target_commit"],
+                brief["transition"]["next_action"],
+            ),
+            (candidate, None, None, "developer"),
+        )
+        freshness = history._context_package_freshness(
+            self.repo,
+            ledger_ops._state_root(self._args(), self.repo),
+            self._batch_record(batch["batch_id"]),
+            context_package_id=brief["context_package_id"],
+        )
+        self.assertEqual((freshness or {}).get("current_candidate_commit"), candidate)
+        self.assertEqual((freshness or {}).get("status"), "fresh")
+        self._start(brief["dispatch_id"])
+        fix, changed = self._developer_commit("fix")
+        self._submit(
+            brief["dispatch_id"],
+            self._superseding_initial_report(brief, candidate, fix, changed),
+        )
+        accepted = self._decide(batch["batch_id"], "accept")
+
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+        self.assertTrue(git_utils._git_is_ancestor(self.repo, candidate, fix))
+
+    def test_a_start_commit_off_the_moved_base_takes_the_in_retry_rebase_route(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        old_base = self._batch_record(source)["integration_base_commit"]
+        upstream = self._push_upstream()
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (
+                batch["integration_base_commit"],
+                link["start_commit"],
+                link["rebase_target_commit"],
+                batch["next_action"],
+            ),
+            (upstream, candidate, upstream, "developer-retry"),
+        )
+        proposal = self._propose(batch["batch_id"], "developer")
+        self.assertEqual(proposal["transition"]["rebase_target_sha"], upstream)
+        with self.assertRaises(coordinator.CoordinatorError) as policy:
+            coordinator.create_dispatch(
+                self._args(
+                    transition_digest=None,
+                    **self._proposal_fields(
+                        batch["batch_id"], "developer", "work", None
+                    ),
+                    approved_by=None,
+                    approved_at=None,
+                )
+            )
+        self.assertIn("--approved-by", policy.exception.remedy)
+        retry = self._dispatch(
+            batch["batch_id"], "developer", digest=proposal["transition_digest"]
+        )["brief"]
+        self.assertEqual(
+            (
+                retry["snapshot_commit"],
+                retry["rebase_target_commit"],
+                retry["transition"]["next_action"],
+                retry["carried_items"],
+            ),
+            (candidate, upstream, "developer-retry", {}),
+        )
+        self._start(retry["dispatch_id"])
+        originals = _git(
+            self.worktree, "rev-list", "--reverse", f"{old_base}..{candidate}"
+        ).splitlines()
+        copies = self._rebase_onto(candidate, upstream)
+        fix, _ = self._developer_commit("fix")
+        changed = git_utils._changed_files_between(self.repo, upstream, fix)
+        submitted = self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                changed,
+                commit_map=[
+                    *self._rebased_map(originals, copies),
+                    {"commit_sha": fix, "plan_entry_id": retry["commit_plan"][0]["id"]},
+                ],
+            ),
+        )
+        check = submitted["rebase_check"]
+        self.assertEqual(
+            (
+                check["rebase_target_commit"],
+                check["previous_base_commit"],
+                [pair["patch_id_match"] for pair in check["rebased"]],
+            ),
+            (upstream, old_base, [True] * len(originals)),
+        )
+        accepted = self._decide(batch["batch_id"], "accept")
+        self.assertEqual(
+            (accepted["integration_base_commit"], accepted["next_action"]),
+            (upstream, "risk-assessment"),
+        )
+        self.assertEqual(decisions._developer_retry_count(accepted), 0)
+        self._assess(batch["batch_id"], fix, changed)
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=fix)[
+            "brief"
+        ]
+        self.assertEqual(
+            (review["candidate_commit"], review["delta_review_scope"]), (fix, None)
+        )
+
+    def test_a_superseding_rebase_target_always_needs_an_explicit_approval(
+        self,
+    ) -> None:
+        args = _ns(approved_by=None, approved_at=None)
+        batch: JsonObject = {"allowed_paths": ["**"], "dispatches": []}
+        for policy in ("milestone", "low_risk", "auto"):
+            with self.subTest(policy=policy):
+                settings = {**batch, "approval_policy": policy}
+                config_ = {"low_risk_paths": ["**"]}
+                self.assertEqual(
+                    dispatch._dispatch_approval_mode(
+                        args, settings, config_, "developer", "work", None, None
+                    ),
+                    f"policy:{policy}",
+                )
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    dispatch._dispatch_approval_mode(
+                        args, settings, config_, "developer", "work", None, "a" * 40
+                    )
+                self.assertIn("--approved-by", raised.exception.remedy)
+
+    def test_a_retry_before_the_rebase_keeps_the_superseding_rebase_target(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        upstream = self._push_upstream()
+        batch_id = cast(str, self._supersede(source)["batch_id"])
+        coordinator.approve_batch(self._args(batch=batch_id, **self._approval()))
+        first = self._dispatch(batch_id, "developer")["brief"]
+        self._start(first["dispatch_id"])
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                candidate,
+                [],
+                commit_map=[],
+                outcome="blocked",
+                blockers="the rebase needs a decision on a conflict",
+            ),
+        )
+        self._decide(batch_id, "retry", reason_category="code")
+
+        second = self._dispatch(batch_id, "developer")["brief"]
+
+        self.assertEqual(
+            (
+                second["snapshot_commit"],
+                second["rebase_target_commit"],
+                second["transition"]["next_action"],
+            ),
+            (candidate, upstream, "developer-retry"),
+        )
+        self.assertEqual(
+            supersede.developer_next_action(self._batch_record(batch_id)), "developer"
+        )
+
+    def test_an_architect_accept_in_a_superseding_batch_routes_to_the_rebase(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        upstream = self._push_upstream()
+        batch_id = cast(
+            str,
+            self._supersede(
+                source,
+                definition_of_done=["route retries by cause", "log the chosen route"],
+            )["batch_id"],
+        )
+        coordinator.approve_batch(self._args(batch=batch_id, **self._approval()))
+        architect = self._dispatch(batch_id, "architect")["brief"]
+        self.assertEqual(architect["snapshot_commit"], candidate)
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+
+        accepted = self._decide(batch_id, "accept")
+
+        self.assertEqual(accepted["next_action"], "developer-retry")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(
+            (retry["snapshot_commit"], retry["rebase_target_commit"]),
+            (candidate, upstream),
+        )
+        self.assertEqual(
+            [entry["id"] for entry in retry["commit_plan"]],
+            [
+                entry["id"]
+                for entry in commit_plan.default_plan(
+                    accepted["definition_of_done"], ["**"]
+                )
+            ],
+        )
+
+    def test_a_superseding_batch_superseded_again_keeps_the_first_architect(
+        self,
+    ) -> None:
+        first, candidate, entries = self._abandoned_with_pinned_plan()
+        reference = self._supersede(first)["supersedes"]["architect"]
+        second = self.batch_id
+        coordinator.approve_batch(self._args(batch=second, **self._approval()))
+        brief = self._dispatch(second, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        fix, changed = self._developer_commit("second")
+        self._submit(
+            brief["dispatch_id"],
+            self._superseding_initial_report(brief, candidate, fix, changed),
+        )
+        self._decide(second, "accept")
+        self._assess(second, fix, changed)
+        self._infra_review(second, fix)
+        self._decide(second, "abandon", reason="review dead end again")
+
+        third = self._supersede(second)
+
+        self.assertEqual(third["supersedes"]["architect"], reference)
+        self.assertEqual(reference["batch_id"], first)
+        self.assertEqual(
+            (third["supersedes"]["start_commit"], third["commit_plan"]),
+            (fix, entries),
+        )
+        self.assertEqual(third["next_action"], "developer")
+
+    def test_a_superseding_batch_with_only_its_architect_accepted_hands_on_its_start_commit(
+        self,
+    ) -> None:
+        first, candidate = self._abandoned_batch()
+        other = ["route retries by cause", "log the chosen route"]
+        second = cast(str, self._supersede(first, definition_of_done=other)["batch_id"])
+        coordinator.approve_batch(self._args(batch=second, **self._approval()))
+        self._accepted_architect(second)
+        blocked = self._abandon_after_a_blocked_developer(second)
+        self.assertEqual(blocked["snapshot_commit"], candidate)
+        architect = next(
+            item
+            for item in self._batch_record(second)["dispatches"]
+            if item["role"] == "architect"
+        )
+        self.assertEqual(
+            self._batch_record(second)["abandoned"]["last_accepted"],
+            {
+                "dispatch_id": architect["dispatch_id"],
+                "role": "architect",
+                "candidate_commit": candidate,
+            },
+        )
+
+        third = self._supersede(second, definition_of_done=other)
+        coordinator.approve_batch(
+            self._args(batch=third["batch_id"], **self._approval())
+        )
+
+        link = third["supersedes"]
+        self.assertEqual(
+            (
+                link["start_commit"],
+                link["rebase_target_commit"],
+                link["architect"]["batch_id"],
+                third["next_action"],
+            ),
+            (candidate, None, second, "developer"),
+        )
+        brief = self._dispatch(third["batch_id"], "developer")["brief"]
+        self.assertEqual(
+            (brief["snapshot_commit"], brief["transition"]["next_action"]),
+            (candidate, "developer"),
+        )
+
+    def test_issue_443_an_abandoned_dead_end_resumes_in_a_superseding_batch(
+        self,
+    ) -> None:
+        """Regression for #443 (issue #506): a review dead end forced an abandon, and the work
+        restarted with a new architect and commits cherry-picked by hand. A superseding batch
+        resumes from abandoned.last_accepted: no architect dispatch, no cherry-pick, and risk
+        assessment, code-review and QA run again on the new candidate."""
+        blocker = {
+            "severity": "blocker",
+            "summary": "data loss",
+            "evidence": "services/x.py:1",
+        }
+        source = cast(str, self._create_batch()["batch_id"])
+        self._reported_architect(source)
+        entries = [self._plan_entry("route-retries", [1])]
+        self._decide(source, "accept", commit_plan_file=self._plan_file(entries))
+        candidate = self._accepted_candidate(source)
+        self._reported_review(source, candidate, standards=("blocker", [blocker]))
+        exhausted = {"max_developer_retries": 0}
+        with mock.patch.object(decisions, "_retry_policy", return_value=exhausted):
+            with self.assertRaisesRegex(
+                coordinator.CoordinatorError, "budget is exhausted"
+            ):
+                self._decide(source, "retry")
+            self._decide(source, "abandon", reason="review blocker, no retry left")
+        abandoned = self._batch_record(source)
+        owned = {
+            source,
+            *(item["dispatch_id"] for item in abandoned["dispatches"]),
+            *(item["risk_assessment_id"] for item in abandoned["risk_assessments"]),
+        }
+        source_files = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file() and any(owned_id in path.name for owned_id in owned)
+        }
+        audit_files = {
+            path: path.read_bytes() for path in (self._records() / "audit").glob("*")
+        }
+
+        batch_id = cast(str, self._supersede(source)["batch_id"])
+        coordinator.approve_batch(self._args(batch=batch_id, **self._approval()))
+        developer = self._dispatch(batch_id, "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        fix, changed = self._developer_commit("fix")
+        self._submit(
+            developer["dispatch_id"],
+            self._superseding_initial_report(developer, candidate, fix, changed),
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, fix, changed)
+        review = self._reported_review(batch_id, fix)
+        self._decide(batch_id, "accept")
+        self._reported_qa(batch_id, fix)
+        resumed = self._decide(batch_id, "accept")
+
+        self.assertEqual(
+            (
+                developer["snapshot_commit"],
+                developer["worktree"],
+                developer["commit_plan"],
+            ),
+            (candidate, str(self.worktree), entries),
+        )
+        self.assertEqual(
+            [item["role"] for item in resumed["dispatches"]],
+            ["developer", "code-review", "qa"],
+            "no architect dispatch runs again",
+        )
+        self.assertEqual(resumed["next_action"], "publish")
+        self.assertEqual(
+            _git(self.worktree, "rev-list", f"{candidate}..HEAD").split(),
+            [fix],
+            "the new candidate adds one commit on top of the old one; nothing was cherry-picked",
+        )
+        self.assertEqual(review["candidate_commit"], fix)
+        self.assertEqual(
+            [item["candidate_commit"] for item in resumed["risk_assessments"]], [fix]
+        )
+        self.assertFalse(
+            owned & {item["risk_assessment_id"] for item in resumed["risk_assessments"]}
+        )
+        self.assertEqual(
+            [item["decision"] for item in resumed["coordinator_decisions"]],
+            ["supersede", "accept", "accept", "accept"],
+        )
+        for field in ("carried_items", "candidate_registrations", "abandoned"):
+            self.assertNotIn(field, resumed)
+        self.assertTrue(source_files and audit_files)
+        for path, content in {**source_files, **audit_files}.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
 
     def test_a_forced_developer_retry_records_the_developer_retry_route(self) -> None:
         batch = self._create_batch()
@@ -11875,7 +12723,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_twelve(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_thirteen(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -11891,6 +12739,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "narrowed-retry",
                 "fix-forward",
                 "rebase-fix-forward",
+                "supersede",
             ),
         )
         for route in constants.RECOVERY_ROUTES:
@@ -12839,6 +13688,50 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(pinned.handler, coordinator.decide_batch)
         self.assertEqual(pinned.commit_plan_file, "plan.json")
         self.assertIsNone(parse(decide).commit_plan_file)
+
+    def test_batch_create_accepts_supersedes_with_its_approval(self) -> None:
+        create = [
+            "batch",
+            "create",
+            "--ticket",
+            "#506",
+            "--branch",
+            "feature/issue-506-x",
+            "--worktree",
+            "wt",
+            "--definition-of-done",
+            "resume",
+            "--prohibited-change",
+            "secrets",
+        ]
+        parse = coordinator.parser().parse_args
+
+        superseding = parse(
+            [
+                *create,
+                "--supersedes",
+                "batch-1",
+                "--approved-by",
+                "Malove",
+                "--approved-at",
+                "2026-09-17T00:00:00+00:00",
+            ]
+        )
+        ordinary = parse(create)
+
+        self.assertIs(superseding.handler, coordinator.create_batch)
+        self.assertEqual(
+            (
+                superseding.supersedes,
+                superseding.approved_by,
+                superseding.approved_at,
+            ),
+            ("batch-1", "Malove", "2026-09-17T00:00:00+00:00"),
+        )
+        self.assertEqual(
+            (ordinary.supersedes, ordinary.approved_by, ordinary.approved_at),
+            (None, None, None),
+        )
 
     def test_batch_decide_accepts_a_findings_file(self) -> None:
         decide = [

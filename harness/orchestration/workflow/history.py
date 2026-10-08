@@ -542,14 +542,23 @@ def _current_developer_candidate(
     repo: Path, root: Path, batch: JsonObject
 ) -> str | None:
     """The candidate the next developer-side dispatch continues: the retry-pinned candidate, else
-    the latest accepted developer candidate, else ``None``."""
+    the latest accepted developer candidate, else a superseding batch's ``start_commit`` (the
+    abandoned batch's last accepted candidate, issue #506), else ``None``."""
     pinned = _retry_pinned_candidate(repo, root, batch)
     if pinned is not None:
         return pinned
     try:
         return _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        return None
+        return _superseding_start_commit(batch)
+
+
+def _superseding_start_commit(batch: JsonObject) -> str | None:
+    """A superseding batch's ``start_commit``: the abandoned batch's last accepted candidate
+    (issue #506); ``None`` for any other batch or when only the architect was accepted."""
+    link = batch.get("supersedes")
+    start = link.get("start_commit") if isinstance(link, dict) else None
+    return start if isinstance(start, str) else None
 
 
 def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> str:
@@ -573,6 +582,11 @@ def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> 
 
 
 def _accepted_architect(batch: JsonObject) -> bool:
+    """Whether the batch has an accepted architect: its own, or the one a superseding batch
+    carried by reference from the abandoned batch with the same definition of done (issue #506)."""
+    link = batch.get("supersedes")
+    if isinstance(link, dict) and isinstance(link.get("architect"), dict):
+        return True
     return any(
         item.get("role") == "architect"
         and item.get("state") == "reported"
@@ -759,6 +773,13 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
         raise CoordinatorError(
             "batch goal does not match its immutable plan",
             remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    # The link of a superseding batch (issue #506); a batch planned without one has none on both.
+    if batch.get("supersedes") != plan.get("supersedes"):
+        raise CoordinatorError(
+            "batch supersedes link does not match its immutable plan",
+            remedy="the batch supersedes link diverged from its immutable plan -- "
+            + INTERNAL_INVARIANT_REMEDY,
         )
     for field in ("approval_policy", "communication_policy", "allowed_paths"):
         if (field in batch) != (field in plan):
