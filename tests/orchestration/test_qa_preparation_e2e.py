@@ -81,6 +81,21 @@ class PreparationFixture(unittest.TestCase):
             """,
         )
         gate_two = self._script("gate_two", "print('second check')")
+        # Independent facts: a reachability probe and an offline project-file check.
+        self.probe = self._script(
+            "probe",
+            f"""
+            import os, sys
+            sys.exit(6 if os.path.exists({str(self.registry_down)!r}) else 0)
+            """,
+        )
+        self.file_check = self._script(
+            "file_check",
+            f"""
+            import os, sys
+            sys.exit(1 if os.path.exists({str(self.lock_broken)!r}) else 0)
+            """,
+        )
         self.prepare, self.gate = prepare, [gate_one, gate_two]
         # The batch plan pins the verification commands, so the gate is declared before the batch.
         (self.repo / ".harness/project.json").write_text(
@@ -102,13 +117,16 @@ class PreparationFixture(unittest.TestCase):
         path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
         return f'{Path(sys.executable).name} "{path}"'
 
-    def configure(self, *, preparation: list[str] | None) -> None:
+    def configure(self, *, preparation: list[str] | None, facts: bool = True) -> None:
         config: JsonObject = {
             "access_policy": INHERIT,
             "verification_commands": self.gate,
         }
         if preparation is not None:
             config["qa_preparation"] = preparation
+            if facts:
+                config["qa_environment_probes"] = [self.probe]
+                config["qa_project_file_checks"] = [self.file_check]
         (self.repo / ".harness/orchestration.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
@@ -167,7 +185,11 @@ class QaPreparationE2ETests(PreparationFixture):
         self.assertEqual(stages["failed_stage"], "preparation")
         self.assertEqual(stages["code_checks_started"], "not_started")
         self.assertEqual(stages["diagnosis"]["category"], "infrastructure")
-        (stage,) = stages["stages"]
+        stage, probe, check = stages["stages"]
+        self.assertEqual(
+            [(probe["stage"], probe["result"]), (check["stage"], check["result"])],
+            [("environment-probe", "fail"), ("project-file-check", "pass")],
+        )
         self.assertEqual(stage["command"], self.prepare)
         self.assertEqual(stage["exit_code"], 1)
         self.assertIn("EAI_AGAIN", stage["diagnostics"])
@@ -253,7 +275,9 @@ class QaPreparationE2ETests(PreparationFixture):
         self.assertEqual(report["outcome"], "failed")
         diagnosis = report["qa_stages"]["diagnosis"]
         self.assertEqual(diagnosis["category"], "project-defect")
-        self.assertIn("project-file:package-lock.json", diagnosis["signals"])
+        self.assertIn(
+            f"project-file-check-failed:{self.file_check}", diagnosis["signals"]
+        )
         self.assertEqual(report["qa_stages"]["code_checks_started"], "not_started")
         self.assertFalse(self.gate_ran.exists())
         decided = self.fx._decide(self.batch_id, "retry")
@@ -263,6 +287,21 @@ class QaPreparationE2ETests(PreparationFixture):
             ("developer-retry", "code", "developer"),
         )
         self.assertEqual(self.developer_retries(), 1)
+
+    def test_an_outage_log_without_independent_facts_waits_for_triage(self) -> None:
+        # The log names an outage, but no probe or project-file check confirms it.
+        self.configure(preparation=[self.prepare], facts=False)
+        brief = self.qa_brief()
+        self.registry_down.write_text("down", encoding="utf-8")
+
+        report = self.report_of(self.run_qa(brief))
+
+        self.assertEqual(report["outcome"], "blocked")
+        self.assertEqual(report["qa_stages"]["diagnosis"]["category"], "unknown")
+        with self.assertRaises(CoordinatorError) as refused:
+            self.fx._decide(self.batch_id, "retry")
+        self.assertIn("needs triage", refused.exception.message)
+        self.assertEqual(self.developer_retries(), 0)
 
     def test_an_unknown_cause_waits_for_triage_and_retries_nothing_by_itself(
         self,
