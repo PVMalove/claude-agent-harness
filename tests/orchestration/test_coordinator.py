@@ -3733,7 +3733,26 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                             "result": "fail",
                             "exit_code": 1,
                             "diagnostics": "registry unreachable",
-                        }
+                        },
+                        *(
+                            [
+                                {
+                                    "stage": "environment-probe",
+                                    "command": "curl -sI https://pypi.org",
+                                    "result": "fail",
+                                    "exit_code": 6,
+                                    "diagnostics": "could not resolve host",
+                                },
+                                {
+                                    "stage": "project-file-check",
+                                    "command": "uv lock --check",
+                                    "result": "pass",
+                                    "exit_code": 0,
+                                },
+                            ]
+                            if category == "infrastructure"
+                            else []
+                        ),
                     ],
                     "failed_stage": "preparation",
                     "code_checks_started": started,
@@ -3869,6 +3888,31 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "qa_stages": {
                 "failed_stage": "preparation",
                 "code_checks_started": "unknown",
+                "diagnosis": {"category": "infrastructure"},
+            },
+        }
+        with self.assertRaises(coordinator.CoordinatorError) as raised:
+            decisions._retry_routing(
+                "qa",
+                report,
+                dispatch_candidate="a",
+                current_candidate="a",
+                explicit_category=None,
+            )
+        self.assertIn("needs triage", raised.exception.message)
+
+    def test_an_infrastructure_category_without_independent_facts_is_not_confirmed(
+        self,
+    ) -> None:
+        report: JsonObject = {
+            "outcome": "blocked",
+            "qa_stages": {
+                "stages": [
+                    {"stage": "preparation", "result": "fail"},
+                    {"stage": "environment-probe", "result": "fail"},
+                ],
+                "failed_stage": "preparation",
+                "code_checks_started": "not_started",
                 "diagnosis": {"category": "infrastructure"},
             },
         }

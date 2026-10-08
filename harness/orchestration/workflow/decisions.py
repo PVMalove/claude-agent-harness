@@ -467,6 +467,19 @@ def _review_severity(review: JsonObject) -> dict[str, str]:
 QA_INFRASTRUCTURE_CATEGORY = "verification-infrastructure"
 
 
+def _independent_infrastructure_facts(stages: JsonObject) -> bool:
+    """Whether ``qa_stages`` itself records a failed environment probe and only passing project-file
+    checks: an infrastructure diagnosis is never taken on trust from the category alone."""
+    entries = [e for e in stages.get("stages", []) if isinstance(e, dict)]
+    probes = [e for e in entries if e.get("stage") == "environment-probe"]
+    checks = [e for e in entries if e.get("stage") == "project-file-check"]
+    return (
+        any(e.get("result") == "fail" for e in probes)
+        and bool(checks)
+        and all(e.get("result") == "pass" for e in checks)
+    )
+
+
 def _qa_preparation_diagnosis(report: JsonObject) -> tuple[str, bool] | None:
     """The confirmed diagnosis category of a QA report whose preparation stage failed, and whether
     the report confirms that no code check started (issue #618); ``None`` for any other report.
@@ -481,6 +494,8 @@ def _qa_preparation_diagnosis(report: JsonObject) -> tuple[str, bool] | None:
     category = diagnosis.get("category") if isinstance(diagnosis, dict) else None
     confirmed = stages.get("code_checks_started") == "not_started"
     if category not in {"infrastructure", "project-defect"} or not confirmed:
+        return "unknown", confirmed
+    if category == "infrastructure" and not _independent_infrastructure_facts(stages):
         return "unknown", confirmed
     return cast(str, category), confirmed
 
