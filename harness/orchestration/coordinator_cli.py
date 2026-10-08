@@ -137,8 +137,15 @@ def build_parser(
     approve = batch_commands.add_parser("approve")
     _common(approve)
     approve.add_argument("--batch", required=True)
-    approve.add_argument("--approved-by", required=True)
-    approve.add_argument("--approved-at", required=True)
+    approve.add_argument(
+        "--approved-by",
+        help="human who approved the batch plan; omitted only under approval_policy auto, "
+        "which records the approval as policy:auto",
+    )
+    approve.add_argument(
+        "--approved-at",
+        help="time of the approval; omitted only under approval_policy auto",
+    )
     approve.set_defaults(handler=handlers.approve_batch)
     batch_list = batch_commands.add_parser("list")
     _common(batch_list)

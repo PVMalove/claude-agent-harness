@@ -8,6 +8,7 @@ decision table, the closed stop list and the final report.
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 import tempfile
@@ -17,7 +18,7 @@ from pathlib import Path
 from harness.orchestration.core import config
 from harness.orchestration.core.constants import AUTO_REPORT_FIELDS
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
-from harness.orchestration.workflow import approval, history
+from harness.orchestration.workflow import approval, dispatch, history
 
 MOMENT = "2026-10-08T00:00:00+00:00"
 
@@ -282,6 +283,146 @@ class AutoLedgerRecordTests(unittest.TestCase):
             ):
                 history._validate_operational_batch_fields(batch)
             self.assertIn("auto_report", refused.exception.message)
+
+
+class AutoDispatchApprovalTests(unittest.TestCase):
+    """``_dispatch_approval_mode`` under ``auto``: every milestone is lifted while both the
+    project config and the batch choose ``auto`` and no stop is recorded."""
+
+    NO_APPROVAL = argparse.Namespace(approved_by=None, approved_at=None)
+
+    def _batch(self, policy: str, route: str | None = None) -> JsonObject:
+        entries: list[JsonObject] = []
+        if route is not None:
+            entries.append(
+                {
+                    "dispatch_id": "dispatch-1",
+                    "role": "code-review",
+                    "decision": {"decision": "retry", "routing": {"route": route}},
+                }
+            )
+        return {
+            "approval_policy": policy,
+            "allowed_paths": ["**"],
+            "dispatches": entries,
+        }
+
+    def _cases(
+        self,
+    ) -> list[tuple[str, JsonObject, str, str, JsonObject | None, str | None]]:
+        """(milestone, batch fields, role, purpose, risk, rebase target) per milestone."""
+        return [
+            ("publish", {}, "developer", "publish", None, None),
+            ("risk-trigger", {}, "qa", "work", {"matched_triggers": ["auth"]}, None),
+            (
+                "risk-reassessment-required",
+                {"risk_reassessment_required": True},
+                "code-review",
+                "work",
+                None,
+                None,
+            ),
+            (
+                "bypass-rerun",
+                {"route": "bypass-rerun"},
+                "code-review",
+                "work",
+                None,
+                None,
+            ),
+            (
+                "rebase-fix-forward",
+                {"route": "rebase-fix-forward"},
+                "developer",
+                "work",
+                None,
+                None,
+            ),
+            ("rebase-target", {}, "developer", "work", None, "a" * 40),
+        ]
+
+    def _mode(
+        self,
+        config_policy: str | None,
+        fields: JsonObject,
+        role: str,
+        purpose: str,
+        risk: JsonObject | None,
+        target: str | None,
+        **batch_fields: object,
+    ) -> str:
+        batch = {
+            **self._batch("auto", fields.get("route")),
+            **{key: value for key, value in fields.items() if key != "route"},
+            **batch_fields,
+        }
+        config_ = {"approval_policy": config_policy} if config_policy else {}
+        return dispatch._dispatch_approval_mode(
+            self.NO_APPROVAL, batch, config_, role, purpose, risk, target
+        )
+
+    def test_milestones_are_listed_in_a_fixed_order(self) -> None:
+        for name, fields, role, purpose, risk, target in self._cases():
+            with self.subTest(milestone=name):
+                batch = {
+                    **self._batch("manual_all", fields.get("route")),
+                    **{key: value for key, value in fields.items() if key != "route"},
+                }
+                self.assertEqual(
+                    dispatch._milestones(batch, "auto", role, purpose, risk, target),
+                    [name],
+                )
+        self.assertEqual(
+            dispatch._milestones(
+                self._batch("milestone"), "milestone", "qa", "work", None, None
+            ),
+            ["qa"],
+        )
+
+    def test_auto_lifts_every_milestone(self) -> None:
+        for name, fields, role, purpose, risk, target in self._cases():
+            with self.subTest(milestone=name):
+                self.assertEqual(
+                    self._mode("auto", fields, role, purpose, risk, target),
+                    approval.AUTO_APPROVER,
+                )
+
+    def test_a_batch_auto_policy_alone_keeps_the_milestones(self) -> None:
+        for config_policy in (None, "milestone"):
+            for name, fields, role, purpose, risk, target in self._cases():
+                with (
+                    self.subTest(config=config_policy, milestone=name),
+                    self.assertRaises(CoordinatorError) as refused,
+                ):
+                    self._mode(config_policy, fields, role, purpose, risk, target)
+                self.assertIn("--approved-by", refused.exception.remedy)
+
+    def test_a_recorded_stop_ends_every_policy_approval(self) -> None:
+        with self.assertRaises(CoordinatorError) as refused:
+            self._mode(
+                "auto",
+                {},
+                "architect",
+                "work",
+                None,
+                None,
+                auto_stop={"category": "budget-exhausted", "reason": "stale"},
+            )
+        self.assertIn("stopped", refused.exception.message)
+        self.assertIn("batch auto-report", refused.exception.remedy)
+
+    def test_an_explicit_approval_stays_explicit(self) -> None:
+        self.assertEqual(
+            dispatch._dispatch_approval_mode(
+                argparse.Namespace(approved_by="Malove", approved_at=MOMENT),
+                self._batch("auto"),
+                {"approval_policy": "auto"},
+                "architect",
+                "work",
+                None,
+            ),
+            "explicit",
+        )
 
 
 if __name__ == "__main__":

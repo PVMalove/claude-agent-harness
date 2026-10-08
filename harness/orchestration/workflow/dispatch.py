@@ -85,6 +85,7 @@ from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow import supersede
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -180,6 +181,34 @@ def _accepted_divergence(
     return None
 
 
+def _milestones(
+    batch: JsonObject,
+    policy: str,
+    role: str,
+    purpose: str,
+    risk: JsonObject | None,
+    rebase_target: str | None,
+) -> list[str]:
+    """The risk milestones this dispatch transition crosses, in a fixed order (no I/O).
+
+    Under every policy but ``auto`` any milestone needs an explicit approval; ``auto`` lifts them
+    and records them as ``lifted_milestones`` (issue #643).
+    """
+    previous = _newest_decided_dispatch(batch)
+    routing = previous["decision"].get("routing") if previous else None
+    route = routing.get("route") if isinstance(routing, dict) else None
+    crossed = {
+        "publish": purpose == "publish",
+        "qa": role == "qa" and policy not in {"low_risk", "auto"},
+        "risk-trigger": bool(risk and risk.get("matched_triggers")),
+        "risk-reassessment-required": bool(batch.get("risk_reassessment_required")),
+        "bypass-rerun": route == "bypass-rerun",
+        "rebase-fix-forward": route == "rebase-fix-forward",
+        "rebase-target": rebase_target is not None,
+    }
+    return [name for name, hit in crossed.items() if hit]
+
+
 def _dispatch_approval_mode(
     args: argparse.Namespace,
     batch: JsonObject,
@@ -194,29 +223,27 @@ def _dispatch_approval_mode(
     A project-approved continuation is allowed only outside the preserved risk milestones. A
     re-run after a role worked around a block (``bypass-rerun``) is always one of them, and so is
     the developer-retry that rebases onto a proposed target (``rebase-fix-forward``, issue #504)
-    or onto the ``rebase_target`` of a superseding batch (issue #506): no policy ever approves a
-    rebase target.
+    or onto the ``rebase_target`` of a superseding batch (issue #506): no policy but ``auto``
+    ever approves a rebase target. ``auto`` approves every transition, milestones included, while
+    both the project config and the batch plan choose it and no stop is recorded (issue #643).
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
     ):
         return "explicit"
     policy = batch.get("approval_policy", _approval_policy(config))
-    risk_triggered = bool(risk and risk.get("matched_triggers"))
-    previous = _newest_decided_dispatch(batch)
-    routing = previous["decision"].get("routing") if previous else None
-    milestone = (
-        purpose == "publish"
-        or (role == "qa" and policy not in {"low_risk", "auto"})
-        or risk_triggered
-        or batch.get("risk_reassessment_required")
-        or (
-            isinstance(routing, dict)
-            and routing.get("route") in {"bypass-rerun", "rebase-fix-forward"}
-        )
-        or rebase_target is not None
-    )
-    if policy == "manual_all" or milestone:
+    if approvals.auto_configured(config, batch):
+        if "auto_stop" in batch:
+            raise CoordinatorError(
+                "the automatic path of this batch stopped "
+                f"({batch['auto_stop']['category']}: {batch['auto_stop']['reason']}), so this "
+                "transition requires --approved-by and --approved-at",
+                remedy="show the final auto report (batch auto-report) to a human; every later "
+                "step of this batch needs --approved-by and --approved-at",
+            )
+        return approvals.AUTO_APPROVER
+    milestones = _milestones(batch, policy, role, purpose, risk, rebase_target)
+    if policy == "manual_all" or milestones:
         raise CoordinatorError(
             "this transition requires --approved-by and --approved-at under its approval policy",
             remedy="pass --approved-by and --approved-at, as required by this project's approval_policy",
@@ -227,6 +254,40 @@ def _dispatch_approval_mode(
             remedy="add the batch's paths to low_risk_paths in the project orchestration config, narrow the batch's --allowed-path, or use a different approval_policy",
         )
     return f"policy:{policy}"
+
+
+def _record_auto_dispatch(
+    batch: JsonObject,
+    dispatch_id: str,
+    approval: dict[str, str],
+    lifted: list[str],
+) -> None:
+    """Record the ``policy:auto`` approval of a new dispatch with the evidence it rests on: the
+    transition digest, the brief, the lifted milestones and the decision that led here."""
+    entry = next(
+        item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id
+    )
+    previous = _newest_decided_dispatch(batch)
+    routing = previous["decision"].get("routing") if previous else None
+    route = routing if isinstance(routing, dict) else None
+    approvals.record_auto(
+        batch,
+        kind="dispatch",
+        dispatch_id=dispatch_id,
+        rationale=(
+            f"the {entry['role']} dispatch is the transition the coordinator prepared"
+            + (f"; lifted milestones: {', '.join(lifted)}" if lifted else "")
+        ),
+        evidence={
+            "transition_digest": approval["transition_digest"],
+            "brief_sha256": entry["brief_sha256"],
+            "lifted_milestones": lifted,
+            "route_preview": route,
+            "reason_category": route.get("reason_category") if route else None,
+            "report_sha256": previous.get("report_sha256") if previous else None,
+        },
+        moment=approval["approved_at"],
+    )
 
 
 def _bind_dispatch_approval(
@@ -1092,6 +1153,20 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             ),
         )
+        if approval_mode == approvals.AUTO_APPROVER:
+            _record_auto_dispatch(
+                batch,
+                dispatch_id,
+                approval,
+                _milestones(
+                    batch,
+                    approvals.AUTO_POLICY,
+                    role_name,
+                    purpose,
+                    risk,
+                    supersede_target,
+                ),
+            )
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
         batch["state"] = "active"

@@ -31,7 +31,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import ClassVar, cast
 from unittest import mock
 
 from harness.orchestration import (
@@ -5707,6 +5707,19 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                         args, settings, config_, "developer", "work", None, "a" * 40
                     )
                 self.assertIn("--approved-by", raised.exception.remedy)
+        # Only `auto`, chosen by the project config as well as the batch, approves it (#643).
+        self.assertEqual(
+            dispatch._dispatch_approval_mode(
+                args,
+                {**batch, "approval_policy": "auto"},
+                {"approval_policy": "auto"},
+                "developer",
+                "work",
+                None,
+                "a" * 40,
+            ),
+            "policy:auto",
+        )
 
     def test_a_retry_before_the_rebase_keeps_the_superseding_rebase_target(
         self,
@@ -10970,6 +10983,19 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                             args, batch, config_, "developer", "work", None
                         )
                     self.assertIn("--approved-by", raised.exception.remedy)
+                    # Only `auto`, chosen by the project config too, approves it (#643).
+                    if policy == "auto":
+                        self.assertEqual(
+                            dispatch._dispatch_approval_mode(
+                                args,
+                                batch,
+                                {"approval_policy": "auto"},
+                                "developer",
+                                "work",
+                                None,
+                            ),
+                            "policy:auto",
+                        )
 
     def test_a_brief_whose_rebase_target_left_its_transition_is_refused(self) -> None:
         batch_id, _, _, upstream = self._moved_base_retry()
@@ -13104,6 +13130,168 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         developer = self._dispatch(self.batch_id, "developer")["brief"]
         self.assertEqual(developer["carried_items"], {})
+
+    # -- approval_policy: auto (issue #643) ---------------------------------------------------
+
+    AUTO_POLICY: ClassVar[JsonObject] = {
+        "approval_policy": "auto",
+        "worker_attestation_required": True,
+    }
+
+    def _auto_batch(self, **plan: object) -> str:
+        """A batch planned and approved under ``approval_policy: auto``, without a human."""
+        self._patch_config(**self.AUTO_POLICY)
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
+        batch = coordinator.create_batch(self._args(**{**self._batch_plan(), **plan}))
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], approved_by=None, approved_at=None)
+        )
+        self.batch_id = batch["batch_id"]
+        return cast(str, batch["batch_id"])
+
+    def _auto_dispatch(
+        self, role: str, *, purpose: str = "work", candidate: str | None = None
+    ) -> JsonObject:
+        """``dispatch create`` without ``--approved-by``: the policy approves the transition."""
+        return cast(
+            JsonObject,
+            coordinator.create_dispatch(
+                self._args(
+                    transition_digest=None,
+                    approved_by=None,
+                    approved_at=None,
+                    **self._proposal_fields(self.batch_id, role, purpose, candidate),
+                )
+            )["brief"],
+        )
+
+    def _auto_records(self, kind: str | None = None) -> list[JsonObject]:
+        records = self._batch_record(self.batch_id).get("auto_decisions", [])
+        return [item for item in records if kind is None or item["kind"] == kind]
+
+    def test_auto_approves_the_batch_plan_by_policy(self) -> None:
+        batch_id = self._auto_batch()
+
+        stored = self._batch_record(batch_id)
+        plan = self._records() / "plans" / f"{batch_id}.json"
+        self.assertEqual(stored["state"], "awaiting-approval")
+        self.assertEqual(stored["coordinator_approval"]["approved_by"], "policy:auto")
+        [record] = self._auto_records()
+        self.assertEqual(record["kind"], "batch-approve")
+        self.assertEqual(
+            record["evidence"],
+            {
+                "plan_sha256": hashlib.sha256(
+                    utils._canonical(json.loads(plan.read_text())).encode("utf-8")
+                ).hexdigest(),
+                "scope_preflight_status": "pass",
+                "definition_of_done_items": 1,
+            },
+        )
+        history._validate_batch_integrity(
+            ledger_ops._state_root(self._args(), self.repo), stored
+        )
+
+    def test_batch_approve_without_auto_still_needs_a_human(self) -> None:
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
+        batch = coordinator.create_batch(self._args(**self._batch_plan()))
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            coordinator.approve_batch(
+                self._args(batch=batch["batch_id"], approved_by=None, approved_at=None)
+            )
+        self.assertIn("approved-by", refused.exception.message)
+        self.assertEqual(self._batch_record(batch["batch_id"])["state"], "planned")
+
+    def test_auto_approves_a_dispatch_and_records_its_evidence(self) -> None:
+        self._auto_batch()
+
+        brief = self._auto_dispatch("architect")
+
+        self.assertEqual(brief["coordinator_approval"]["approved_by"], "policy:auto")
+        [record] = self._auto_records("dispatch")
+        entry = self._batch_record(self.batch_id)["dispatches"][-1]
+        self.assertEqual(record["dispatch_id"], brief["dispatch_id"])
+        self.assertEqual(
+            record["evidence"],
+            {
+                "transition_digest": brief["transition_digest"],
+                "brief_sha256": entry["brief_sha256"],
+                "lifted_milestones": [],
+                "route_preview": None,
+                "reason_category": None,
+                "report_sha256": None,
+            },
+        )
+
+    def test_auto_approves_a_planned_continuation_by_policy(self) -> None:
+        self._auto_batch(definition_of_done=["first slice", "remaining slice"])
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(self.batch_id)["dispatches"][-1][
+            "dispatch_id"
+        ]
+        brief = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(brief, first, changed)
+        facts = workspace._prepare_agent_inbox(self.repo) / "continuation-facts.json"
+        facts.write_text(
+            json.dumps(
+                {
+                    "dispatch_id": developer_id,
+                    "remaining_definition_of_done": checkpoint[
+                        "remaining_definition_of_done"
+                    ],
+                    "risks": checkpoint["risks"],
+                    "dependencies": brief["dependencies"],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        coordinator.resume_dispatch(
+            self._args(
+                dispatch=developer_id,
+                termination_reason=None,
+                trigger="vertical-slice",
+                measured_value=None,
+                file=str(facts),
+                note=None,
+                approved_by=None,
+                approved_at=None,
+            )
+        )
+
+        stored = self._batch_record(self.batch_id)
+        self.assertEqual(
+            stored["coordinator_decisions"][-1]["approved_by"], "policy:auto"
+        )
+        [record] = self._auto_records("continuation")
+        self.assertEqual(
+            (record["dispatch_id"], record["evidence"]["trigger"]),
+            (developer_id, "vertical-slice"),
+        )
 
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
