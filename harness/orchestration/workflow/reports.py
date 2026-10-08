@@ -47,6 +47,7 @@ from harness.orchestration.core.constants import (
     QA_NOT_RUN_RESULT,
     QA_STAGE_ENTRY_FIELDS,
     QA_STAGE_ENTRY_OPTIONAL_FIELDS,
+    QA_PRIMARY_STAGE_NAMES,
     QA_STAGE_NAMES,
     QA_STAGES_FIELDS,
     QA_STAGES_OPTIONAL_FIELDS,
@@ -1279,9 +1280,17 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
     names = [entry["stage"] for entry in entries]
     if names != sorted(names, key=QA_STAGE_NAMES.index):
         raise refuse("lists the gate stage before the preparation stage")
-    failed = [entry for entry in entries if entry["result"] == "fail"]
-    if failed and failed[0] is not entries[-1]:
+    # Probes and project-file checks run only to diagnose a failed preparation, so their own
+    # failures are facts, not stage failures.
+    primary = [entry for entry in entries if entry["stage"] in QA_PRIMARY_STAGE_NAMES]
+    failed = [entry for entry in primary if entry["result"] == "fail"]
+    if failed and failed[0] is not primary[-1]:
         raise refuse("continues past the first failing stage")
+    facts = [entry for entry in entries if entry["stage"] not in QA_PRIMARY_STAGE_NAMES]
+    if facts and not (failed and failed[0]["stage"] == "preparation"):
+        raise refuse(
+            "records environment probes or project-file checks without a failed preparation"
+        )
     failed_stage = stages["failed_stage"]
     if failed_stage != (failed[0]["stage"] if failed else None):
         raise refuse("failed_stage does not match the failing stage entry")
@@ -1307,6 +1316,21 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
         if diagnosis["category"] != "unknown" and started != "not_started":
             raise refuse(
                 "confirms a cause although it does not confirm that no code check started"
+            )
+        probes_failed = [
+            e
+            for e in facts
+            if e["stage"] == "environment-probe" and e["result"] == "fail"
+        ]
+        file_checks = [e for e in facts if e["stage"] == "project-file-check"]
+        if diagnosis["category"] == "infrastructure" and not (
+            probes_failed
+            and file_checks
+            and all(e["result"] == "pass" for e in file_checks)
+        ):
+            raise refuse(
+                "confirms an infrastructure cause without a failed environment probe "
+                "and passing project-file checks"
             )
     elif diagnosis is not None:
         raise refuse("carries a diagnosis although preparation did not fail")

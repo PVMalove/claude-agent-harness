@@ -304,7 +304,10 @@ QA_STAGES_FIELDS = frozenset({"stages", "failed_stage", "code_checks_started"})
 QA_STAGES_OPTIONAL_FIELDS = frozenset({"diagnosis"})
 QA_STAGE_ENTRY_FIELDS = frozenset({"stage", "command", "result", "exit_code"})
 QA_STAGE_ENTRY_OPTIONAL_FIELDS = frozenset({"executed_command", "diagnostics"})
-QA_STAGE_NAMES = ("preparation", "gate")
+# ``environment-probe`` and ``project-file-check`` stages exist only after a failed preparation stage:
+# they are the independent facts its diagnosis rests on.
+QA_PRIMARY_STAGE_NAMES = ("preparation", "gate")
+QA_STAGE_NAMES = ("preparation", "environment-probe", "project-file-check", "gate")
 # Whether any gate (code-check) command started: the runner states ``not_started`` only because the
 # gate stage was never reached; a reader that cannot confirm it must treat it as ``unknown``.
 QA_CODE_CHECKS_STARTED = ("started", "not_started", "unknown")

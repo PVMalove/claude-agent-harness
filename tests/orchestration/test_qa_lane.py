@@ -873,6 +873,8 @@ class QaLaneRunTests(QaLaneTestCase):
     # ---- preparation and gate stages (issue #618) ----
 
     PREPARE = "uv sync --locked"
+    PROBE = "curl -sI https://pypi.org"
+    FILE_CHECK = "uv lock --check"
     GATE = ["make lint", "make test"]
 
     def _staged(
@@ -881,6 +883,8 @@ class QaLaneRunTests(QaLaneTestCase):
         prep_exit: int = 0,
         gate_exits: tuple[int, ...] = (0, 0),
         diagnosis: Diagnosis | None = None,
+        probe_exit: int | None = None,
+        check_exit: int | None = None,
     ) -> QAStagesResult:
         """A runner result consistent with its own artifact, as ``run_qa_stages`` builds it."""
         stages: list[dict[str, object]] = []
@@ -894,6 +898,21 @@ class QaLaneRunTests(QaLaneTestCase):
                 **({"diagnostics": "prep output"} if prep_exit else {}),
             }
         )
+        for stage, command, code in (
+            ("environment-probe", self.PROBE, probe_exit),
+            ("project-file-check", self.FILE_CHECK, check_exit),
+        ):
+            if prep_exit and code is not None:
+                blocks += format_command_log(command, code, "fact output")
+                stages.append(
+                    {
+                        "stage": stage,
+                        "command": command,
+                        "result": "pass" if code == 0 else "fail",
+                        "exit_code": code,
+                        **({"diagnostics": "fact output"} if code else {}),
+                    }
+                )
         checks: list[dict[str, str]] = []
         if prep_exit == 0:
             for command, code in zip(self.GATE, gate_exits):
@@ -978,7 +997,9 @@ class QaLaneRunTests(QaLaneTestCase):
         self,
     ) -> None:
         diagnosis = Diagnosis("infrastructure", ("exit-code:6",), "outage")
-        report = self._run_staged(self._staged(prep_exit=6, diagnosis=diagnosis))
+        report = self._run_staged(
+            self._staged(prep_exit=6, diagnosis=diagnosis, probe_exit=6, check_exit=0)
+        )
 
         self.assertEqual(report["outcome"], "blocked")
         checks = cast("list[dict[str, str]]", report["checks_run"])
@@ -989,6 +1010,51 @@ class QaLaneRunTests(QaLaneTestCase):
         stages = cast("dict[str, object]", report["qa_stages"])
         self.assertEqual(stages["code_checks_started"], "not_started")
         self.assertEqual(stages["failed_stage"], "preparation")
+
+    def test_an_infrastructure_diagnosis_without_independent_facts_is_refused(
+        self,
+    ) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        diagnosis = Diagnosis("infrastructure", ("exit-code:6",), "outage")
+        for probe_exit, check_exit in (
+            (None, None),
+            (6, None),
+            (0, 0),
+            (6, 1),
+        ):
+            kwargs = {"probe_exit": probe_exit, "check_exit": check_exit}
+            staged = self._staged(
+                prep_exit=6,
+                diagnosis=diagnosis,
+                probe_exit=probe_exit,
+                check_exit=check_exit,
+            )
+            report = qa_lane._qa_report(
+                self.dispatch,
+                staged.gate_checks,
+                Path("a"),
+                "0" * 64,
+                staged.record(),
+            )
+            with self.subTest(kwargs), self.assertRaises(coordinator.CoordinatorError):
+                reports._validate_qa_stages(report, self.dispatch)
+
+    def test_facts_without_a_failed_preparation_are_refused(self) -> None:
+        self.dispatch["verification_commands"] = list(self.GATE)
+        staged = self._staged()
+        staged.stages.append(
+            {
+                "stage": "environment-probe",
+                "command": self.PROBE,
+                "result": "pass",
+                "exit_code": 0,
+            }
+        )
+        report = qa_lane._qa_report(
+            self.dispatch, staged.gate_checks, Path("a"), "0" * 64, staged.record()
+        )
+        with self.assertRaises(coordinator.CoordinatorError):
+            reports._validate_qa_stages(report, self.dispatch)
 
     def test_a_confirmed_project_defect_fails_the_report_for_the_developer(
         self,
@@ -1045,6 +1111,8 @@ class QaLaneRunTests(QaLaneTestCase):
         staged = self._staged(
             prep_exit=6,
             diagnosis=Diagnosis("infrastructure", ("exit-code:6",), "outage"),
+            probe_exit=6,
+            check_exit=0,
         )
         artifact = Path(tempfile.mkdtemp()) / "a"
         good = qa_lane._qa_report(
