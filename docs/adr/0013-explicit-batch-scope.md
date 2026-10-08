@@ -14,7 +14,10 @@ writer-а должна быть явной и проверяемой, а не с
 
 - Batch закрепляет `allowed_paths` — явный scope записи (`batch create --allowed-path`, повторяется).
   Он входит в immutable plan и в `write_paths` каждого brief writer-а. Brief, checkpoint и completion
-  report отклоняются, если меняют файл вне этого scope. Batch без scope не создаётся.
+  report отклоняются, если меняют файл вне этого scope. Исключение (#633): completed-отчёт developer с
+  `changed_files` вне `write_paths` записывается как предупреждение `scope_warnings`, которое
+  принимает только `override-warning` с `--note` и явным `--approved-by`; так же `accept` architect-плана
+  с `expected_paths` вне `allowed_paths` записывает предупреждение, а не отклоняется. Batch без scope не создаётся.
 - Потолок записи роли — `write_paths` в assignment plan, по умолчанию весь репозиторий. Scope batch не
   может быть шире потолка; потолок проверяет и `batch create`, и `dispatch create`.
 - Zone необязательна. Поле `zone` в batch, brief и `dispatch_preflight` остаётся историческим

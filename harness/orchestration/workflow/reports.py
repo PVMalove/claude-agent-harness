@@ -118,6 +118,9 @@ from harness.orchestration.workflow.risk import (
     _validate_trigger_names,
 )
 
+# The one write role whose change outside write_paths is a warning, not a rejection (issue #633).
+SCOPE_WARNING_ROLE = "developer"
+
 
 def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]:
     decisions = [
@@ -1363,18 +1366,22 @@ def _validate_report(
             remedy="a read-only role's completion report must not claim changed_files",
         )
     if role["mode"] == "write":
-        paths = dispatch["write_paths"]
         for changed_file in changed_files:
             normalized = changed_file.replace("\\", "/")
-            if (
-                normalized.startswith("/")
-                or ".." in Path(normalized).parts
-                or not any(fnmatchcase(normalized, pattern) for pattern in paths)
-            ):
+            if normalized.startswith("/") or ".." in Path(normalized).parts:
                 raise CoordinatorError(
-                    "completion report changed_files must remain inside the approved scope",
-                    remedy="keep completion report changed_files inside the brief's write_paths",
+                    "completion report changed_files must remain inside the repository",
+                    remedy="report changed_files as repository-relative paths without '..'",
                 )
+        # A developer's change outside write_paths is recorded and shown as a scope warning that
+        # only an explicit override-warning accepts (issue #633); other write roles stay strict.
+        if role.get("name") != SCOPE_WARNING_ROLE and plan_rules.outside_scope(
+            (path.replace("\\", "/") for path in changed_files), dispatch["write_paths"]
+        ):
+            raise CoordinatorError(
+                "completion report changed_files must remain inside the approved scope",
+                remedy="keep completion report changed_files inside the brief's write_paths",
+            )
         if repo is not None and changed_files:
             resolved = _resolve_report_commit(repo, commit_sha)
             if rebase_target is not None:
@@ -1457,6 +1464,19 @@ def _validate_report(
             "only the code-review role may submit composite review evidence",
             remedy="only the code-review role may submit composite review evidence",
         )
+
+
+def report_scope_warnings(report: JsonObject, dispatch: JsonObject) -> list[str]:
+    """The ``changed_files`` of a developer report that lie outside the brief's write_paths.
+
+    Only a developer report carries them as a warning (issue #633); any other report has none.
+    """
+    if report.get("role") != SCOPE_WARNING_ROLE:
+        return []
+    return plan_rules.outside_scope(
+        (path.replace("\\", "/") for path in report["changed_files"]),
+        dispatch["write_paths"],
+    )
 
 
 def _report_markdown(report: JsonObject) -> str:

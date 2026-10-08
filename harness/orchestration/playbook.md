@@ -676,6 +676,17 @@ unclean, and the decision records it as `commit_plan_divergence`. Any `not_cover
 clean: no policy accepts it automatically, plain `accept` is refused, and the report can be
 accepted only by `override-warning` with a note other than `none`, or returned with `retry`.
 
+A change outside the approved scope is a warning, not a rejection (issue #633). A completed
+developer report whose `changed_files` lie outside the brief's `write_paths` is recorded by
+`report submit`; `batch decision-packet` lists those paths as `scope_warnings`. Such a report is never
+auto-accepted, plain `accept` is refused, and it is accepted only by `override-warning` with a note
+other than `none` and an explicit `--approved-by`. The decision records `scope_warnings`, and the
+override attaches a coordinator finding, so the next code-review brief carries the paths as an item
+to settle. An architect `accept` with `--commit-plan-file` passes when the plan's `expected_paths`
+lie outside the batch `allowed_paths`; the packet (with `--commit-plan-file`) and the decision record
+the same `scope_warnings`. The worker's own ban on writing outside `write_paths`, the checkpoint
+`changed_files` check and non-developer write roles stay strict.
+
 The coordinator does not rewrite a report to make it pass. A missing commit SHA, changed-file
 list, check result, risk statement, or blocker statement is a proof gap and keeps the batch from
 being marked `completed`.
