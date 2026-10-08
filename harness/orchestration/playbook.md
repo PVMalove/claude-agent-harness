@@ -163,7 +163,8 @@ An unchanged denial does not launch work. Unknown causes, changed boundaries or 
 stop the policy and raise attention. Unsupported/unverified access and arbitrary Git failures
 require manual recovery. Git operations without an approved dispatch stay manual. An explicitly
 selected native access mode needs actual runtime-access proof; health and checkout attestation do
-not supply it. See the project guide for the smoke procedure and its unverified runtime matrix.
+not supply it. See the project guide for the smoke procedure, the verified native support row and
+the remaining unverified runtime matrix.
 
 `block-bypass` means a read-only role (code-review, qa or verification) worked around a hook or tool
 block instead of stopping with `tooling_blocker`. Only an approver names it, and none of that report

@@ -1760,8 +1760,9 @@ policy и поднимают `needs_attention`. Снимает attention чел�
 SHA harness и candidate, чистоту checkout и точные preparation/gate команды. Через публичный CLI
 пройдите batch/dispatch approval, native handoff роли, preparation/clean-room QA и publish
 accepted SHA. Подтвердите отказ доступа, отсутствие retry до готовности, ограниченный повтор
-и сохранение evidence. Dynamic IDs и digest берите из JSON команд. Native approval выполняет
-человек в coding-приложении. Не меняйте machine/global профили, не очищайте пользовательский
+и сохранение evidence. Dynamic IDs и digest берите из JSON команд. Native approval принимает
+coding-runtime согласно действующей политике пользователя; orchestration policy её не заменяет.
+Не меняйте machine/global профили, не очищайте пользовательский
 cache, не создавайте PR и не выполняйте merge. Внешний push требует разрешения на конкретный
 smoke remote; push в локальный bare remote проверяет Git/publish, но не внешний Git-доступ.
 
@@ -1784,10 +1785,20 @@ python "$SMOKE_REPO/.harness/orchestration/coordinator.py" --repo "$SMOKE_REPO" 
 Создайте tracked `smoke.py`, manifest/lock и реальные project-owned команды подготовки, независимой
 пробы сети/cache и offline проверки файлов. Настройте opt-in до proposal. Создайте отдельный cache
 и зафиксируйте его пустоту. Для QA используется, например,
-`UV_CACHE_DIR=<новый-cache> UV_PROJECT_ENVIRONMENT=.venv uv sync --locked`; developer использует
-другой cache. Команда gate должна проверять фактическое изменение в `smoke.py`.
+`UV_CACHE_DIR=<новый-cache> UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked`; developer использует
+другой cache. Runner выбирает Python из `.harness/.venv` текущего clean-room checkout. Команда gate
+должна проверять фактическое изменение в `smoke.py`, расположение `sys.prefix` и импортируемого
+пакета в этом checkout; сохраните фактический `executed_command` из stage evidence.
 
-Из JSON `batch create` возьмите `batch_id`, затем человек выполняет `batch approve` с
+Выберите transport до создания batch. Для отдельной native CLI-сессии задайте
+`assignment_plans.<role>.transport: "external"` и реальные `runtimes`, `provider_profiles` и команды
+проверок. У authored assignment plan обязательны architect, developer, code-review и qa; health
+проверяет этот набор. Подготовьте project-owned adapter, который получает `dispatch --repo --brief`
+и действительно запускает coding CLI в approved worktree с моделью и effort из brief. Adapter
+возвращается после запуска worker и не управляет ledger. Для `in-process` роль запускают как
+субагента текущей coordinator-сессии. Отдельную CLI-сессию нельзя считать таким субагентом.
+
+Из JSON `batch create` возьмите `batch_id`, затем человек или явно назначенный им coordinator выполняет `batch approve` с
 `--approved-by` и фактическим `--approved-at`. В том же smoke checkout:
 
 ```bash
@@ -1799,12 +1810,21 @@ python .harness/orchestration/coordinator.py --repo . dispatch create \
 python .harness/orchestration/coordinator.py --repo . dispatch send --dispatch "$DISPATCH"
 ```
 
+Для выбранного `external` последняя команда содержит реальный adapter:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . dispatch send \
+  --dispatch "$DISPATCH" --adapter "$SMOKE_REPO/scripts/native_codex_adapter.py"
+```
+
 `DIGEST` берётся из просмотренного proposal, `DISPATCH` — из create. Handoff выводит путь brief,
-report staging path и ожидаемую модель. Человек запускает роль в coding-приложении; роль выполняет
+report staging path и ожидаемую модель. При `external` роль запускает adapter; при `in-process` —
+coordinator в своей coding-сессии. Роль выполняет
 `dispatch self-report --dispatch "$DISPATCH" --model "$ACTUAL_MODEL" --worktree "$SMOKE_REPO"`,
 затем `dispatch heartbeat --dispatch "$DISPATCH"` и настоящий `report submit --file <report>`.
-Architect не меняет код и не запускает full gate. После проверки report человек выполняет
-`batch decide --batch "$BATCH" --decision accept --approved-by "$APPROVER" --approved-at "$APPROVED_AT"`.
+Architect не меняет код и не запускает full gate. После проверки report coordinator сохраняет
+его план как `{"commit_plan": [...]}` в `$COMMIT_PLAN` и выполняет
+`batch decide --batch "$BATCH" --decision accept --commit-plan-file "$COMMIT_PLAN" --approved-by "$APPROVER" --approved-at "$APPROVED_AT"`.
 Повторите proposal/create/send для developer; его commit/report задают полный candidate SHA.
 `risk assess --batch "$BATCH" --candidate-commit "$SHA" --changed-file smoke.py` определяет,
 нужен ли review. Требуемый review нельзя пропустить; его send использует checkout точного SHA.
@@ -1833,8 +1853,24 @@ budget, attention, metadata refusal и локальный publish. Это кон
 `extensions.runtime_access`. Она должна наблюдать и применять фактический доступ worker.
 `none` не предоставляет такого proof; явно выбранный непроверенный режим блокируется.
 `legacy-inherit` сохраняет прежнюю передачу задания, но не подтверждает права worker.
-Режимы `sandbox`/`unsandboxed`, внешний worker и полный native smoke следует отмечать
-«не проверено» до получения фактического evidence, а не считать поддержанными по результату pytest.
+Проверенный 2026-10-08 native smoke установлен из harness
+`cca45e172c7b3685c012e7e6c077356d6cbd6722`: Linux, Codex CLI 0.160.1, настоящий project adapter и
+две отдельные роли `architect`/`developer`. Candidate
+`1dba1785bc809971981129c747e85bffd9b29c51` прошёл preparation и gate в новом clean-room checkout
+с пустым QA cache, свежей `.harness/.venv` и скачанными зависимостями, затем опубликован в local bare
+remote. Отказ cache и отказ записи `.git` остановили продолжение до readiness; восстановление
+израсходовало два общих infrastructure retry, replay сохранил successor IDs, прежние records — checksum.
+Batch завершён через публичный CLI. Это подтверждает только следующие границы:
+
+| Runtime / transport / режим | Результат native smoke | Граница evidence |
+| --- | --- | --- |
+| Codex CLI 0.160.1 / `external` / worker `legacy-inherit` | PASS: реальные роли, self-report, heartbeat, commit и report | Native CLI работал с `workspace-write`; authored worker access plan не проверен |
+| Coordinator / `inherit` / QA и publish | PASS: fresh dependencies, exact-SHA gate, cache/Git denial, readiness, budget и replay | Фактические операции в одной разрешённой среде coordinator; publish только в local bare remote |
+| Worker с authored `inherit`, `sandbox` или `unsandboxed` / `runtime_access: none` | Blocker | Нужен действующий extension с proof наблюдения и применения плана; attestation его не заменяет |
+| `in-process`, Claude и другие runtime, внешний Git push | Не проверено | Для каждого сочетания нужен отдельный фактический запуск |
+
+CLI flags, host execution coordinator и POSIX `chmod` fixture не доказывают всю permission-матрицу.
+Для другого runtime, transport или authored режима поддержки требуют собственного native evidence.
 
 После выполнения создаётся immutable completion report с командами, exit codes и кратким
 санитизированным evidence. Полный санитизированный stdout/stderr сохраняется вне Git в
