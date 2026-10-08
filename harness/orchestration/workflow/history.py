@@ -542,14 +542,18 @@ def _current_developer_candidate(
     repo: Path, root: Path, batch: JsonObject
 ) -> str | None:
     """The candidate the next developer-side dispatch continues: the retry-pinned candidate, else
-    the latest accepted developer candidate, else ``None``."""
+    the latest accepted developer candidate, else a superseding batch's ``start_commit`` (the
+    abandoned batch's last accepted candidate, issue #506), else ``None``."""
     pinned = _retry_pinned_candidate(repo, root, batch)
     if pinned is not None:
         return pinned
     try:
         return _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        return None
+        pass
+    link = batch.get("supersedes")
+    start = link.get("start_commit") if isinstance(link, dict) else None
+    return start if isinstance(start, str) else None
 
 
 def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> str:

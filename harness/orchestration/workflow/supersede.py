@@ -19,6 +19,7 @@ from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
+from harness.orchestration.core.git_utils import _candidate_commit, _git_is_ancestor
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -29,6 +30,7 @@ from harness.orchestration.ledger.ledger_ops import _load_batch, _records_root
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.approval import _approval
 from harness.orchestration.workflow.history import (
+    _current_developer_candidate,
     _pending_report,
     _require_route,
     _validate_batch_integrity,
@@ -164,6 +166,71 @@ def _carried_plan(source: JsonObject, architect: JsonObject) -> list[JsonObject]
     return [dict(entry) for entry in plan]
 
 
+def _start_commit(repo: Path, source: JsonObject, last: JsonObject) -> str | None:
+    """The last accepted candidate the first developer starts from; ``None`` when only the
+    architect was accepted."""
+    candidate = last.get("candidate_commit")
+    if candidate is None:
+        return None
+    try:
+        return _candidate_commit(repo, candidate)
+    except CoordinatorError as exc:
+        raise CoordinatorError(
+            f"the last accepted candidate {candidate} of batch {source.get('batch_id')} does not "
+            "resolve to a commit",
+            remedy="restore that commit in the issue branch (for example from git reflog) or "
+            "fetch it, then create the superseding batch again; or create an ordinary batch "
+            "without --supersedes",
+        ) from exc
+
+
+def developer_next_action(batch: JsonObject) -> str:
+    """The developer action that follows the settled architect stage of ``batch``.
+
+    It is ``developer-retry`` while a superseding batch's start commit does not descend from its
+    integration base and no developer report of the batch has been decided: that first developer
+    rebases the start commit onto ``rebase_target_commit`` and fixes on top of it (#504). Every
+    other batch starts with the initial ``developer``.
+    """
+    link = batch.get("supersedes")
+    target = link.get("rebase_target_commit") if isinstance(link, dict) else None
+    decided = any(
+        item.get("role") == "developer" and isinstance(item.get("decision"), dict)
+        for item in batch.get("dispatches", [])
+    )
+    return "developer-retry" if isinstance(target, str) and not decided else "developer"
+
+
+def rebase_target(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    next_action: object,
+    role: str,
+    purpose: str,
+    candidate: str | None,
+) -> str | None:
+    """The rebase target a superseding batch's developer-retry brief carries, or ``None``.
+
+    It is the integration base pinned at ``batch create`` (``supersedes.rebase_target_commit``),
+    bound while the developer-retry work brief continues a snapshot (``candidate``, else the
+    batch's current developer candidate) that does not contain it yet; a retry of a report that
+    already rebased onto it continues without a target.
+    """
+    link = batch.get("supersedes")
+    target = link.get("rebase_target_commit") if isinstance(link, dict) else None
+    if (
+        not isinstance(target, str)
+        or next_action != "developer-retry"
+        or (role, purpose) != ("developer", "work")
+    ):
+        return None
+    snapshot = candidate or _current_developer_candidate(repo, root, batch)
+    if snapshot is None or _git_is_ancestor(repo, target, snapshot):
+        return None
+    return target
+
+
 def attach(
     repo: Path,
     root: Path,
@@ -180,13 +247,20 @@ def attach(
 
     With the same definition of done, the source's accepted architect is carried by reference and
     its pinned commit plan is copied, so the batch starts at the developer stage; with another
-    definition of done nothing is carried and the architect stage runs again.
+    definition of done nothing is carried and the architect stage runs again. The first developer
+    starts at the last accepted candidate (``start_commit``); when that does not descend from the
+    integration base pinned now, the base becomes its ``rebase_target_commit``.
     """
     source = _load_source(root, source_id)
     last = _last_accepted(source)
     _require_same_work(source, record)
     same_done = source.get("definition_of_done") == record["definition_of_done"]
     architect = _architect_reference(root, source) if same_done else None
+    start = _start_commit(repo, source, last)
+    base = record["integration_base_commit"]
+    target = (
+        base if start is not None and not _git_is_ancestor(repo, base, start) else None
+    )
     link: JsonObject = {
         "batch_id": source["batch_id"],
         "approved_by": approval["approved_by"],
@@ -194,6 +268,8 @@ def attach(
         "last_accepted": dict(last),
         "definition_of_done_matches": same_done,
         "architect": architect,
+        "start_commit": start,
+        "rebase_target_commit": target,
     }
     if architect is not None:
         plan = _carried_plan(source, architect)
@@ -202,7 +278,7 @@ def attach(
     record["supersedes"] = link
     if architect is not None:
         # The developer stage is the only next action: no architect dispatch is allowed.
-        record["next_action"] = "developer"
+        record["next_action"] = developer_next_action(record)
     moment = utils._now()
     routing: JsonObject = {
         "route": _require_route(ROUTE),
@@ -210,7 +286,8 @@ def attach(
         "reason_category": None,
         "next_role": "developer" if architect is not None else "architect",
         "next_action": record.get("next_action"),
-        "candidate_commit": None,
+        "candidate_commit": start,
+        "rebase_target_commit": target,
         "superseded_batch_id": source["batch_id"],
         "rationale": f"batch {source['batch_id']} was abandoned after its accepted "
         f"{last.get('role')} stage {last.get('dispatch_id')}; this batch resumes from that "

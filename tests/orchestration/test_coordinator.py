@@ -4889,6 +4889,292 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             supersede._architect_reference(root, {**source, "supersedes": None})
         )
 
+    def _superseding_initial_report(
+        self, brief: JsonObject, candidate: str, fix: str, changed: list[str]
+    ) -> JsonObject:
+        """The initial report of a superseding batch's first developer: the map covers every
+        commit after the integration base, the start commit's too (startup recovery)."""
+        entry = brief["commit_plan"][0]["id"]
+        return self._developer_report(
+            brief,
+            fix,
+            changed,
+            commit_map=[
+                {"commit_sha": candidate, "plan_entry_id": entry},
+                {"commit_sha": fix, "plan_entry_id": entry},
+            ],
+            dod_coverage=[{"dod_item": 1, "commits": [candidate, fix]}],
+            divergence_justification="the start commit and the fix both close the one entry",
+        )
+
+    def test_a_start_commit_on_the_integration_base_starts_an_initial_developer(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (link["start_commit"], link["rebase_target_commit"], batch["next_action"]),
+            (candidate, None, "developer"),
+        )
+        routing = batch["coordinator_decisions"][0]["routing"]
+        self.assertEqual(
+            (routing["candidate_commit"], routing["rebase_target_commit"]),
+            (candidate, None),
+        )
+        preflight = self._developer_preflight(batch["batch_id"])
+        self.assertEqual(
+            (preflight["candidate_sha"], preflight["preview_brief"]["snapshot_commit"]),
+            (candidate, candidate),
+        )
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(
+            (
+                brief["snapshot_commit"],
+                brief["candidate_commit"],
+                brief["rebase_target_commit"],
+                brief["transition"]["next_action"],
+            ),
+            (candidate, None, None, "developer"),
+        )
+        freshness = history._context_package_freshness(
+            self.repo,
+            ledger_ops._state_root(self._args(), self.repo),
+            self._batch_record(batch["batch_id"]),
+            context_package_id=brief["context_package_id"],
+        )
+        self.assertEqual((freshness or {}).get("current_candidate_commit"), candidate)
+        self.assertEqual((freshness or {}).get("status"), "fresh")
+        self._start(brief["dispatch_id"])
+        fix, changed = self._developer_commit("fix")
+        self._submit(
+            brief["dispatch_id"],
+            self._superseding_initial_report(brief, candidate, fix, changed),
+        )
+        accepted = self._decide(batch["batch_id"], "accept")
+
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+        self.assertTrue(git_utils._git_is_ancestor(self.repo, candidate, fix))
+
+    def test_a_start_commit_off_the_moved_base_takes_the_in_retry_rebase_route(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        old_base = self._batch_record(source)["integration_base_commit"]
+        upstream = self._push_upstream()
+
+        batch = self._supersede(source)
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (
+                batch["integration_base_commit"],
+                link["start_commit"],
+                link["rebase_target_commit"],
+                batch["next_action"],
+            ),
+            (upstream, candidate, upstream, "developer-retry"),
+        )
+        proposal = self._propose(batch["batch_id"], "developer")
+        self.assertEqual(proposal["transition"]["rebase_target_sha"], upstream)
+        with self.assertRaises(coordinator.CoordinatorError) as policy:
+            coordinator.create_dispatch(
+                self._args(
+                    transition_digest=None,
+                    **self._proposal_fields(
+                        batch["batch_id"], "developer", "work", None
+                    ),
+                    approved_by=None,
+                    approved_at=None,
+                )
+            )
+        self.assertIn("--approved-by", policy.exception.remedy)
+        retry = self._dispatch(
+            batch["batch_id"], "developer", digest=proposal["transition_digest"]
+        )["brief"]
+        self.assertEqual(
+            (
+                retry["snapshot_commit"],
+                retry["rebase_target_commit"],
+                retry["transition"]["next_action"],
+                retry["carried_items"],
+            ),
+            (candidate, upstream, "developer-retry", {}),
+        )
+        self._start(retry["dispatch_id"])
+        originals = _git(
+            self.worktree, "rev-list", "--reverse", f"{old_base}..{candidate}"
+        ).splitlines()
+        copies = self._rebase_onto(candidate, upstream)
+        fix, _ = self._developer_commit("fix")
+        changed = git_utils._changed_files_between(self.repo, upstream, fix)
+        submitted = self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                changed,
+                commit_map=[
+                    *self._rebased_map(originals, copies),
+                    {"commit_sha": fix, "plan_entry_id": retry["commit_plan"][0]["id"]},
+                ],
+            ),
+        )
+        check = submitted["rebase_check"]
+        self.assertEqual(
+            (
+                check["rebase_target_commit"],
+                check["previous_base_commit"],
+                [pair["patch_id_match"] for pair in check["rebased"]],
+            ),
+            (upstream, old_base, [True] * len(originals)),
+        )
+        accepted = self._decide(batch["batch_id"], "accept")
+        self.assertEqual(
+            (accepted["integration_base_commit"], accepted["next_action"]),
+            (upstream, "risk-assessment"),
+        )
+        self.assertEqual(decisions._developer_retry_count(accepted), 0)
+        self._assess(batch["batch_id"], fix, changed)
+        review = self._dispatch(batch["batch_id"], "code-review", candidate=fix)[
+            "brief"
+        ]
+        self.assertEqual(
+            (review["candidate_commit"], review["delta_review_scope"]), (fix, None)
+        )
+
+    def test_a_superseding_rebase_target_always_needs_an_explicit_approval(
+        self,
+    ) -> None:
+        args = _ns(approved_by=None, approved_at=None)
+        batch: JsonObject = {"allowed_paths": ["**"], "dispatches": []}
+        for policy in ("milestone", "low_risk", "auto"):
+            with self.subTest(policy=policy):
+                settings = {**batch, "approval_policy": policy}
+                config_ = {"low_risk_paths": ["**"]}
+                self.assertEqual(
+                    dispatch._dispatch_approval_mode(
+                        args, settings, config_, "developer", "work", None, None
+                    ),
+                    f"policy:{policy}",
+                )
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    dispatch._dispatch_approval_mode(
+                        args, settings, config_, "developer", "work", None, "a" * 40
+                    )
+                self.assertIn("--approved-by", raised.exception.remedy)
+
+    def test_a_retry_before_the_rebase_keeps_the_superseding_rebase_target(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        upstream = self._push_upstream()
+        batch_id = cast(str, self._supersede(source)["batch_id"])
+        coordinator.approve_batch(self._args(batch=batch_id, **self._approval()))
+        first = self._dispatch(batch_id, "developer")["brief"]
+        self._start(first["dispatch_id"])
+        self._submit(
+            first["dispatch_id"],
+            self._developer_report(
+                first,
+                candidate,
+                [],
+                commit_map=[],
+                outcome="blocked",
+                blockers="the rebase needs a decision on a conflict",
+            ),
+        )
+        self._decide(batch_id, "retry", reason_category="code")
+
+        second = self._dispatch(batch_id, "developer")["brief"]
+
+        self.assertEqual(
+            (
+                second["snapshot_commit"],
+                second["rebase_target_commit"],
+                second["transition"]["next_action"],
+            ),
+            (candidate, upstream, "developer-retry"),
+        )
+        self.assertEqual(
+            supersede.developer_next_action(self._batch_record(batch_id)), "developer"
+        )
+
+    def test_an_architect_accept_in_a_superseding_batch_routes_to_the_rebase(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        upstream = self._push_upstream()
+        batch_id = cast(
+            str,
+            self._supersede(
+                source,
+                definition_of_done=["route retries by cause", "log the chosen route"],
+            )["batch_id"],
+        )
+        coordinator.approve_batch(self._args(batch=batch_id, **self._approval()))
+        architect = self._dispatch(batch_id, "architect")["brief"]
+        self.assertEqual(architect["snapshot_commit"], candidate)
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+
+        accepted = self._decide(batch_id, "accept")
+
+        self.assertEqual(accepted["next_action"], "developer-retry")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self.assertEqual(
+            (retry["snapshot_commit"], retry["rebase_target_commit"]),
+            (candidate, upstream),
+        )
+        self.assertEqual(
+            [entry["id"] for entry in retry["commit_plan"]],
+            [
+                entry["id"]
+                for entry in commit_plan.default_plan(
+                    accepted["definition_of_done"], ["**"]
+                )
+            ],
+        )
+
+    def test_a_superseding_batch_superseded_again_keeps_the_first_architect(
+        self,
+    ) -> None:
+        first, candidate, entries = self._abandoned_with_pinned_plan()
+        reference = self._supersede(first)["supersedes"]["architect"]
+        second = self.batch_id
+        coordinator.approve_batch(self._args(batch=second, **self._approval()))
+        brief = self._dispatch(second, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        fix, changed = self._developer_commit("second")
+        self._submit(
+            brief["dispatch_id"],
+            self._superseding_initial_report(brief, candidate, fix, changed),
+        )
+        self._decide(second, "accept")
+        self._assess(second, fix, changed)
+        self._infra_review(second, fix)
+        self._decide(second, "abandon", reason="review dead end again")
+
+        third = self._supersede(second)
+
+        self.assertEqual(third["supersedes"]["architect"], reference)
+        self.assertEqual(reference["batch_id"], first)
+        self.assertEqual(
+            (third["supersedes"]["start_commit"], third["commit_plan"]),
+            (fix, entries),
+        )
+        self.assertEqual(third["next_action"], "developer")
+
     def test_a_forced_developer_retry_records_the_developer_retry_route(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
