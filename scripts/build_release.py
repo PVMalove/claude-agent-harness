@@ -129,23 +129,36 @@ def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]
 def main() -> int:
     """Точка входа CLI: сборка или валидация релиза по переданным параметрам."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True)
+    parser.add_argument(
+        "--tag",
+        required=False,
+        help="release tag, e.g. v1.3.0 (defaults to v<harness/VERSION> when checking)",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--check",
+        "--validate-only",
         action="store_true",
+        dest="check",
         help="only validate the tag, harness/VERSION, CHANGELOG and payload; build nothing",
     )
     arguments = parser.parse_args()
+    repo = Path(__file__).resolve().parent.parent
+    tag = arguments.tag
+    if tag is None:
+        if arguments.check:
+            version = (repo / "harness" / "VERSION").read_text(encoding="utf-8").strip()
+            tag = f"v{version}"
+        else:
+            parser.error("--tag is required unless --check or --validate-only is given")
     if not arguments.check and arguments.output is None:
         parser.error("--output is required unless --check is given")
-    repo = Path(__file__).resolve().parent.parent
     try:
         if arguments.check:
-            check_release(repo, arguments.tag)
-            print(f"{arguments.tag}: release checks passed")
+            check_release(repo, tag)
+            print(f"{tag}: release checks passed")
             return 0
-        archive, checksum, notes = build_release(repo, arguments.tag, arguments.output)
+        archive, checksum, notes = build_release(repo, tag, arguments.output)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         parser.error(str(exc))
     print(archive)

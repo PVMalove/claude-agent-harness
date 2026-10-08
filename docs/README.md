@@ -14,6 +14,7 @@
 | [Справочник харнесса](../harness/docs/harness-guide.md) | Установка, команды CLI, `health`, `console`, скилы и hooks. |
 | [Backend-оркестрация](../harness/docs/backend-orchestration.md) | Конфиг, coordinator, роли и lifecycle batch. |
 | [Technical English](../harness/docs/technical-english.md) | Общий контракт английской координации агентов, доставляемый в каждую установку. |
+| [Technical Russian](./technical-russian.md) | Правила стандарта ASD-STE100 и Keep a Changelog для документации на русском языке. |
 | [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards и pr-composer. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
 | [Hooks](./hooks/) | Русские описания двенадцати проектных hooks. |

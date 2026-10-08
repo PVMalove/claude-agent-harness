@@ -22,7 +22,8 @@ logs.
   clean-room checks.
 - `docs/README.md` — documentation index; `docs/agents/` — operations, releases, and Russian
   agent descriptions; `docs/adr/` — architectural decisions; `docs/skills/`, `docs/hooks/` —
-  Russian descriptions; `docs/runtime-discovery.md` — runtime skill routes.
+  Russian descriptions; `docs/technical-russian.md` — Russian ASD-STE100 style guide;
+  `docs/runtime-discovery.md` — runtime skill routes.
 - `third_party/mattpocock-skills/` — upstream manifest, lock, license, and checksums;
   `.github/workflows/` — CI.
 - `harness/CAPABILITIES.json` is the capability source of truth. `.harness/` and root
