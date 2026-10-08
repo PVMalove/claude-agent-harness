@@ -1908,6 +1908,12 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         )
         response["decision_packet"] = packet
+        if approvals.auto_active(config, batch):
+            # Under `auto` the policy decides a report its chain does not accept (issue #643).
+            response["next_coordinator_command"] = (
+                "python .harness/orchestration/coordinator.py --repo . batch auto-decide "
+                f"--batch {batch['batch_id']}"
+            )
         return response
     # The policy decision, risk assessment and next dispatch run after the ledger lock is released,
     # each as an ordinary command revalidated against the persisted report.  The report is

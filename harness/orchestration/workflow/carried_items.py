@@ -28,6 +28,7 @@ from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
+from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import (
@@ -61,6 +62,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.history import (
     _pending_report,
@@ -1036,11 +1038,16 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
 
     This is the route after a policy auto-accept, which never takes a findings file. It starts no
     dispatch and moves no candidate, so the coordinator records it under ``policy:carry-over``; it
-    only adds review obligations, and a batch bound for qa goes to code-review instead.
+    only adds review obligations, and a batch bound for qa goes to code-review instead. Under an
+    active ``approval_policy: auto`` it is recorded as ``policy:auto`` (issue #643).
     """
     repo = _repo(args)
     root = _state_root(args, repo)
     findings = read_findings(repo, args.findings_file)
+    try:
+        config = core_config._config(repo)
+    except CoordinatorError:
+        config = {}
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
@@ -1049,7 +1056,9 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
         report = _pending_report(root, batch, entry)
         candidate = _candidate_commit(repo, report["commit_sha"])
         moment = utils._now()
-        approved_by = f"policy:{CARRY_OVER_POLICY}"
+        auto = approvals.auto_active(config, batch)
+        policy = approvals.AUTO_POLICY if auto else CARRY_OVER_POLICY
+        approved_by = f"policy:{policy}"
         records = attach(
             batch,
             findings,
@@ -1071,6 +1080,18 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
             "routing": routing,
         }
         batch.setdefault("coordinator_decisions", []).append(decision)
+        if auto:
+            approvals.record_auto(
+                batch,
+                kind="carry-over",
+                dispatch_id=entry["dispatch_id"],
+                rationale=decision["note"],
+                evidence={
+                    "report_sha256": entry["report_sha256"],
+                    "carried_item_ids": routing["carried_item_ids"],
+                },
+                moment=moment,
+            )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(
             ledger,
@@ -1084,7 +1105,7 @@ def carry_over_findings(args: argparse.Namespace) -> JsonObject:
                     "report": entry["report"],
                     "report_sha256": entry["report_sha256"],
                 },
-                "approver": {"kind": "policy", "name": CARRY_OVER_POLICY},
+                "approver": {"kind": "policy", "name": policy},
                 "approved_at": moment,
             },
         )

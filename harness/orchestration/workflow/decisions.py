@@ -66,6 +66,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -1053,6 +1054,26 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             _closure_base(repo, root, batch, dispatch),
         )
         resolver_state.validate_report(repo, root, batch, dispatch, report)
+        # `batch auto-decide` (issue #643): the policy computes the decision under this lock and
+        # it then passes every check a human decision passes.
+        auto_inputs = getattr(args, "_policy_auto", None)
+        auto_choice = None
+        if auto_inputs is not None:
+            from harness.orchestration.workflow import auto_policy
+
+            resolution = auto_policy.resolve(
+                repo, root, config, batch, dispatch, report, auto_inputs
+            )
+            if resolution.stop is not None:
+                stop = resolution.stop
+                raise CoordinatorError(
+                    f"the automatic path has no decision for this report "
+                    f"({stop.category}: {stop.reason})",
+                    remedy="show the decision packet to a human, who decides with batch decide "
+                    "and --approved-by",
+                )
+            args = argparse.Namespace(**{**vars(args), **resolution.fields})
+            auto_choice = resolution.choice
         if report.get("outcome") != "completed" and args.decision in {
             "accept",
             "override-warning",
@@ -1165,7 +1186,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             )
         routing: JsonObject | None = None
         if args.decision == "retry":
-            routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
+            routing = getattr(args, "_auto_routing", None) or _decide_retry_route(
+                repo, root, batch, dispatch, report, args
+            )
             bypass_named = (
                 getattr(args, "reason_category", None) == BLOCK_BYPASS_REASON_CATEGORY
             )
@@ -1215,7 +1238,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 _reporting_stage(dispatch, report), report, utils._now()
             )
         policy_auto_accept = getattr(args, "_policy_auto_accept", False)
-        if policy_auto_accept:
+        if auto_inputs is not None:
+            approval = {
+                "approved_by": approvals.AUTO_APPROVER,
+                "approved_at": utils._now(),
+            }
+            approver = {"kind": "policy", "name": approvals.AUTO_POLICY}
+        elif policy_auto_accept:
             accepted_policy = _auto_accept_policy(config, batch, dispatch, report)
             if args.decision != "accept" or accepted_policy is None:
                 raise CoordinatorError(
@@ -1294,6 +1323,12 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             # each target role's brief reads the items back from the report.
             decision["routing"] = incomplete_carry
         pending[0]["decision"] = decision
+        if decision["approved_by"] == approvals.AUTO_APPROVER:
+            from harness.orchestration.workflow import auto_policy
+
+            auto_policy.record_decision(
+                batch, pending[0], dispatch, report, decision, auto_choice, auto_inputs
+            )
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:
             decision_entry["next_role"] = routing["next_role"]

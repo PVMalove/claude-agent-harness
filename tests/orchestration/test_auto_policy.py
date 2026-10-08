@@ -13,12 +13,13 @@ import json
 import shutil
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 
 from harness.orchestration.core import config
 from harness.orchestration.core.constants import AUTO_REPORT_FIELDS
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
-from harness.orchestration.workflow import approval, dispatch, history
+from harness.orchestration.workflow import approval, auto_policy, dispatch, history
 
 MOMENT = "2026-10-08T00:00:00+00:00"
 
@@ -152,7 +153,7 @@ class AutoConfigGateTests(unittest.TestCase):
                 )
 
     def test_config_validation_refuses_an_incompatible_auto_config(self) -> None:
-        for policy, problem in (
+        cases: tuple[tuple[dict[str, object], str], ...] = (
             ({"approval_policy": "auto"}, "worker_attestation_required"),
             (
                 {"approval_policy": "auto", "worker_attestation_required": False},
@@ -166,7 +167,8 @@ class AutoConfigGateTests(unittest.TestCase):
                 },
                 "human_approval_gate",
             ),
-        ):
+        )
+        for policy, problem in cases:
             with (
                 self.subTest(policy=policy),
                 self.assertRaises(CoordinatorError) as refused,
@@ -221,7 +223,7 @@ class AutoLedgerRecordTests(unittest.TestCase):
                 )
 
     def test_validation_refuses_a_modified_or_misplaced_record(self) -> None:
-        cases = {
+        cases: dict[str, Callable[[JsonObject], object]] = {
             "rationale": lambda batch: batch["auto_decisions"][0].update(
                 rationale="edited"
             ),
@@ -423,6 +425,201 @@ class AutoDispatchApprovalTests(unittest.TestCase):
             ),
             "explicit",
         )
+
+
+def _clean(role: str, **overrides: object) -> JsonObject:
+    report: JsonObject = {
+        "role": role,
+        "outcome": "completed",
+        "blockers": "none",
+        "risks": "none",
+        "checks_run": [{"command": "pytest", "result": "pass", "evidence": "ok"}],
+    }
+    report.update(overrides)
+    return report
+
+
+def _axes(severity: str, findings: list[JsonObject]) -> JsonObject:
+    return {
+        axis: {
+            "severity": severity,
+            "findings": findings,
+            "risks": "none",
+            "blockers": "none",
+        }
+        for axis in ("standards", "spec")
+    }
+
+
+class AutoDecisionTableTests(unittest.TestCase):
+    """``category`` and ``finish`` on data: the auto decision table without I/O."""
+
+    WORK: JsonObject = {"role": "developer", "purpose": "work"}
+
+    def _category(
+        self,
+        stage: str,
+        report: JsonObject,
+        *,
+        scope: list[str] | None = None,
+        bypass: bool = False,
+        pressure: bool = False,
+    ) -> auto_policy.Choice:
+        return auto_policy.category(
+            stage,
+            report,
+            {"role": stage, "purpose": "work"},
+            scope_warnings=scope or [],
+            block_bypass=bypass,
+            candidate_moved=False,
+            pressure_recorded=pressure,
+        )
+
+    def test_a_clean_report_with_risks_is_accepted_and_its_risks_recorded(self) -> None:
+        report = _clean("architect", risks="the ledger schema grows", checks_run=[])
+        choice = self._category("architect", report)
+        self.assertEqual((choice.decision, choice.carry_incomplete), ("accept", False))
+        self.assertEqual(
+            auto_policy.accepted_risks({}, {}, report),
+            [{"source": "report", "risks": "the ledger schema grows"}],
+        )
+
+    def test_incomplete_items_of_later_roles_are_carried_with_the_accept(self) -> None:
+        item = {"brief_item": "x", "reason": "y", "target_role": "developer"}
+        choice = self._category(
+            "architect", _clean("architect", incomplete_items=[item])
+        )
+        self.assertEqual((choice.decision, choice.carry_incomplete), ("accept", True))
+
+    def test_incomplete_items_of_the_role_itself_narrow_the_retry(self) -> None:
+        item = {"brief_item": "x", "reason": "y", "target_role": "architect"}
+        choice = self._category(
+            "architect", _clean("architect", incomplete_items=[item])
+        )
+        self.assertEqual((choice.decision, choice.narrowed), ("retry", True))
+
+    def test_a_review_with_findings_retries_by_its_structured_evidence(self) -> None:
+        finding = {"summary": "x", "file": "a.py", "line": 1}
+        choice = self._category(
+            "code-review", _clean("code-review", review=_axes("warning", [finding]))
+        )
+        self.assertEqual((choice.decision, choice.reason_category), ("retry", None))
+
+    def test_a_block_bypass_reruns_a_read_only_stage_and_retries_a_writer(self) -> None:
+        for stage, expected in (
+            ("code-review", "block-bypass"),
+            ("qa", "block-bypass"),
+            ("developer", "code"),
+            ("architect", "code"),
+        ):
+            with self.subTest(stage=stage):
+                choice = self._category(stage, _clean(stage), bypass=True)
+                self.assertEqual(
+                    (choice.decision, choice.reason_category), ("retry", expected)
+                )
+
+    def test_unfinished_developer_requirements_retry_as_requirements(self) -> None:
+        for name, report, scope in (
+            (
+                "not covered",
+                _clean(
+                    "developer",
+                    dod_coverage=[{"dod_item": 1, "not_covered": "out of time"}],
+                ),
+                [],
+            ),
+            ("out of scope", _clean("developer"), ["services/b.py"]),
+        ):
+            with self.subTest(case=name):
+                choice = self._category("developer", report, scope=scope)
+                self.assertEqual(
+                    (choice.decision, choice.reason_category), ("retry", "requirements")
+                )
+
+    def test_recorded_context_pressure_names_its_category(self) -> None:
+        blocked = _clean("developer", outcome="blocked", blockers="context is full")
+        self.assertEqual(
+            self._category("developer", blocked, pressure=True).reason_category,
+            "context-pressure",
+        )
+        self.assertIsNone(self._category("developer", blocked).reason_category)
+
+    def test_finish_stops_on_a_dead_end_an_unknown_reason_or_an_exhausted_budget(
+        self,
+    ) -> None:
+        retry = {"route": "developer-retry", "next_action": "developer-retry"}
+        cases = (
+            (None, CoordinatorError("refused", remedy="x"), False, "abandon-dead-end"),
+            ({**retry, "reason_category": "unknown"}, None, False, "unknown-reason"),
+            (
+                {**retry, "reason_category": "code"},
+                None,
+                True,
+                "retry_policy.max_developer_retries",
+            ),
+        )
+        for routing, refusal, exhausted, reason in cases:
+            with self.subTest(reason=reason):
+                stop = auto_policy.finish(
+                    routing, refusal, budget_exhausted=exhausted, bug_ticket=None
+                )
+                assert stop is not None
+                self.assertEqual(stop.reason, reason)
+
+    def test_finish_retries_inside_the_budget(self) -> None:
+        """A tooling-retry spends no developer retry, so an exhausted budget does not stop it."""
+        for routing, ticket, exhausted in (
+            (
+                {
+                    "route": "fix-forward",
+                    "next_action": "developer-retry",
+                    "reason_category": "code",
+                },
+                None,
+                False,
+            ),
+            (
+                {
+                    "route": "tooling-retry",
+                    "next_action": "developer-retry",
+                    "reason_category": "tooling",
+                },
+                "#700",
+                True,
+            ),
+        ):
+            with self.subTest(route=routing["route"]):
+                self.assertIsNone(
+                    auto_policy.finish(
+                        routing, None, budget_exhausted=exhausted, bug_ticket=ticket
+                    )
+                )
+
+    def test_a_tooling_retry_without_a_bug_ticket_is_refused(self) -> None:
+        with self.assertRaises(CoordinatorError) as refused:
+            auto_policy.finish(
+                {
+                    "route": "tooling-retry",
+                    "next_action": "code-review",
+                    "reason_category": "tooling",
+                },
+                None,
+                budget_exhausted=False,
+                bug_ticket=None,
+            )
+        self.assertIn("--bug-ticket", refused.exception.remedy)
+
+    def test_a_block_bypass_needs_a_note(self) -> None:
+        with self.assertRaises(CoordinatorError):
+            auto_policy.inputs_from(argparse.Namespace(block_bypass=True, note="none"))
+        inputs = auto_policy.inputs_from(
+            argparse.Namespace(block_bypass=True, note="ran pytest through a wrapper")
+        )
+        self.assertTrue(inputs.block_bypass)
+
+    def test_a_stop_outside_the_closed_list_cannot_exist(self) -> None:
+        with self.assertRaises(CoordinatorError):
+            auto_policy.Stop("no-automatic-route", "operator-preference", {})
 
 
 if __name__ == "__main__":

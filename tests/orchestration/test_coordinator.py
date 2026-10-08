@@ -13293,6 +13293,220 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             (developer_id, "vertical-slice"),
         )
 
+    def _auto_decide(self, **inputs: object) -> JsonObject:
+        return coordinator.auto_decide(
+            self._args(
+                batch=self.batch_id,
+                **{
+                    "findings_file": None,
+                    "commit_plan_file": None,
+                    "bug_ticket": None,
+                    "block_bypass": False,
+                    "note": None,
+                    **inputs,
+                },
+            )
+        )
+
+    def _auto_developer_brief(self, **plan: object) -> JsonObject:
+        """The developer brief the chain dispatched after a clean architect report."""
+        self._auto_batch(**plan)
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(self.batch_id)["dispatches"][-1][
+            "dispatch_id"
+        ]
+        self._start(developer_id)
+        return coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+
+    def test_auto_decide_accepts_an_architect_report_with_risks_and_pins_its_plan(
+        self,
+    ) -> None:
+        self._auto_batch(definition_of_done=["one", "two"])
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        submitted = self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", risks="the schema grows"),
+        )
+        self.assertIn("batch auto-decide", submitted["next_coordinator_command"])
+        plan = self._plan_file(
+            [self._plan_entry("first", [1]), self._plan_entry("second", [2])]
+        )
+
+        decided = self._auto_decide(commit_plan_file=plan)
+
+        stored = self._batch_record(self.batch_id)
+        decision = stored["dispatches"][0]["decision"]
+        self.assertEqual(
+            (decided["decision"], decision["approved_by"], stored["next_action"]),
+            ("accept", "policy:auto", "developer"),
+        )
+        self.assertEqual(
+            [entry["id"] for entry in stored["commit_plan"]], ["first", "second"]
+        )
+        evidence = decided["auto_decision"]["evidence"]
+        self.assertEqual(
+            evidence["accepted_risks"],
+            [{"source": "report", "risks": "the schema grows"}],
+        )
+        self.assertEqual(evidence["commit_plan_sha256"], decision["commit_plan_sha256"])
+        self.assertEqual(
+            evidence["report_sha256"], stored["dispatches"][0]["report_sha256"]
+        )
+        audit = self._decision_audits(self.batch_id)[-1]
+        self.assertEqual(audit["approver"], {"kind": "policy", "name": "auto"})
+
+    def test_auto_decide_carries_findings_with_a_developer_accept(self) -> None:
+        developer = self._auto_developer_brief()
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer, candidate, changed, risk_triggers=["transactions"]
+            ),
+        )
+
+        decided = self._auto_decide(findings_file=self._findings_file())
+
+        routing = decided["auto_decision"]["evidence"]["route_preview"]
+        self.assertEqual(
+            (decided["decision"], routing["route"], decided["next_action"]),
+            ("accept", "carry-over", "risk-assessment"),
+        )
+        self.assertEqual(
+            decided["auto_decision"]["evidence"]["carried_item_ids"],
+            ["coordinator-finding-1"],
+        )
+        self.assertIn(
+            {"source": "risk_triggers", "triggers": ["transactions"]},
+            decided["auto_decision"]["evidence"]["accepted_risks"],
+        )
+
+    def test_batch_carry_over_under_auto_is_recorded_as_policy_auto(self) -> None:
+        developer = self._auto_developer_brief()
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer, candidate, changed, risk_triggers=["transactions"]
+            ),
+        )
+        self._auto_decide()
+
+        carried = self._carry_over(self.batch_id)
+
+        stored = self._batch_record(self.batch_id)
+        self.assertEqual(
+            stored["coordinator_decisions"][-1]["approved_by"], "policy:auto"
+        )
+        [record] = self._auto_records("carry-over")
+        self.assertEqual(
+            record["evidence"]["carried_item_ids"], carried["carried_item_ids"]
+        )
+
+    def test_auto_decide_needs_a_bug_ticket_for_a_tooling_retry(self) -> None:
+        developer = self._auto_developer_brief()
+        candidate, changed = self._developer_commit("tooled")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="a hook blocked a legitimate check command",
+                checks_run=self._checks(developer, "not-run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._auto_decide()
+        self.assertIn("--bug-ticket", refused.exception.remedy)
+        self.assertNotIn(
+            "decision", self._batch_record(self.batch_id)["dispatches"][-1]
+        )
+
+        decided = self._auto_decide(bug_ticket="#700")
+
+        self.assertEqual(decided["route"], "tooling-retry")
+        self.assertEqual(decided["auto_decision"]["evidence"]["bug_ticket"], "#700")
+        retry = self._auto_dispatch("developer")
+        self.assertEqual(retry["coordinator_approval"]["approved_by"], "policy:auto")
+
+    def test_auto_decide_narrows_a_retry_to_the_architect_items(self) -> None:
+        self._auto_batch()
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        item = {**INCOMPLETE_ITEM, "target_role": "architect"}
+        self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", incomplete_items=[item]),
+        )
+
+        decided = self._auto_decide()
+
+        self.assertEqual(
+            (decided["decision"], decided["route"]), ("retry", "narrowed-retry")
+        )
+        self.assertEqual(decided["next_action"], "architect")
+
+    def test_auto_decide_reruns_a_review_that_bypassed_a_block(self) -> None:
+        developer = self._auto_developer_brief()
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer, candidate, changed, risk_triggers=["transactions"]
+            ),
+        )
+        self._auto_decide()
+        self._assess(self.batch_id, candidate, changed)
+        review = self._auto_dispatch("code-review", candidate=candidate)
+        self.assertEqual(
+            self._auto_records("dispatch")[-1]["evidence"]["lifted_milestones"],
+            ["risk-trigger"],
+        )
+        self._start(review["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            review["dispatch_id"],
+            self._base_report(
+                review,
+                "code-review",
+                review={
+                    "candidate_commit": candidate,
+                    "scope": review["review_scope"],
+                    **self._axes(("clean", []), ("clean", [])),
+                },
+            ),
+        )
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._auto_decide(block_bypass=True)
+
+        decided = self._auto_decide(
+            block_bypass=True, note="the review ran pytest outside the hook wrapper"
+        )
+
+        self.assertEqual(decided["route"], "bypass-rerun")
+        rerun = self._auto_dispatch("code-review", candidate=candidate)
+        self.assertEqual(rerun["coordinator_approval"]["approved_by"], "policy:auto")
+        self.assertEqual(
+            self._auto_records("dispatch")[-1]["evidence"]["lifted_milestones"],
+            ["risk-trigger", "bypass-rerun"],
+        )
+
+    def test_auto_decide_refuses_a_batch_outside_the_auto_policy(self) -> None:
+        batch = self._create_batch()
+        self._reported_architect(batch["batch_id"])
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._auto_decide()
+        self.assertIn("approval_policy auto", refused.exception.message)
+
 
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""

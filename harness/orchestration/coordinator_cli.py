@@ -244,6 +244,36 @@ def build_parser(
         "re-run the same role on the same SHA with a brief that carries only those items",
     )
     decide.set_defaults(handler=handlers.decide_batch)
+    auto_decide = batch_commands.add_parser(
+        "auto-decide",
+        help="under approval_policy auto: take the policy decision on the pending report and "
+        "record it as policy:auto; a stop ends the automatic path of the batch",
+    )
+    _common(auto_decide)
+    auto_decide.add_argument("--batch", required=True)
+    auto_decide.add_argument(
+        "--findings-file",
+        help="a developer work report the policy accepts: coordinator findings carried into "
+        "code-review, as for batch decide --findings-file",
+    )
+    auto_decide.add_argument(
+        "--commit-plan-file",
+        help="an architect report the policy accepts: the architect's commit plan, pinned when "
+        "it lies inside allowed_paths and covers every definition-of-done item",
+    )
+    auto_decide.add_argument(
+        "--bug-ticket",
+        help="the tracker ticket of the tool that blocked the role; required for a tooling-retry",
+    )
+    auto_decide.add_argument(
+        "--block-bypass",
+        action="store_true",
+        help="the role worked around a hook or tool block; requires --note naming the violation",
+    )
+    auto_decide.add_argument(
+        "--note", help="added to the deterministic rationale of the decision"
+    )
+    auto_decide.set_defaults(handler=handlers.auto_decide)
     carry_over = batch_commands.add_parser(
         "carry-over",
         help="carry coordinator findings into review after the developer report was accepted, "

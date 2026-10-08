@@ -839,7 +839,7 @@ class AutoApprovalPolicyHealthTests(unittest.TestCase):
             return contract.health_problems(path, ROOT / "harness/orchestration/roles")
 
     def test_auto_needs_a_trusted_gate_and_worker_attestation(self) -> None:
-        for policy, expected in (
+        cases: tuple[tuple[dict[str, object], list[str]], ...] = (
             ({"approval_policy": "auto"}, [contract.AUTO_ATTESTATION_PROBLEM]),
             (
                 {"approval_policy": "auto", "worker_attestation_required": False},
@@ -865,7 +865,8 @@ class AutoApprovalPolicyHealthTests(unittest.TestCase):
                 },
                 [],
             ),
-        ):
+        )
+        for policy, expected in cases:
             with self.subTest(policy=policy):
                 self.assertEqual(self._problems(policy), expected)
 
