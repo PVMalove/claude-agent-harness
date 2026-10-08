@@ -843,7 +843,12 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
         # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
         # not consume CI time and coordinator context collecting unrelated failures afterwards.
         policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
+        from .infrastructure_retry import pinned
+
         config = ops._config(repo)
+        pinned_commands = pinned(dispatch)
+        if pinned_commands is not None:
+            config = {**config, **pinned_commands}
         preparation = _qa_preparation_commands(config)
         if preparation:
             staged = run_qa_stages(
