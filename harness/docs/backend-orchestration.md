@@ -1485,7 +1485,9 @@ python .harness/orchestration/coordinator.py --repo . qa clear-stale-lease \
 candidate SHA. Только developer publish отправляет этот SHA; ни QA, ни review, ни adapter не создают
 и не мержат PR. После publish человек вручную запускает `/to-pull-requests <ticket>`: этот шаг
 проверяет accepted QA evidence текущего SHA и ведёт обычный ручной PR workflow без повторного
-тяжёлого gate.
+тяжёлого gate. Хук `require-qa-gate.sh` принимает то же evidence сам: для чистого checkout с `HEAD`, равным
+accepted `candidate_commit`, и `pass` по каждой команде `qa_gate_commands` повторный gate и маркер не
+нужны; иначе остаётся прежний путь с маркером.
 
 Обычная точка входа — `/implement <ticket>`: эта сессия сама становится coordinator-ом и ведёт
 описанный цикл, останавливаясь на пяти approval-гейтах (architect, developer, code-review, qa,
