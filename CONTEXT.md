@@ -375,6 +375,13 @@ _Avoid_: сырые логи в Git, report с секретами, удален�
 не выполняет project checks и не мержит PR.
 _Avoid_: обязательная зависимость от конкретного provider, config-only ядро с командами provider.
 
+**Контейнерный исполнитель**:
+Встроенная реализация доступа worker-а, которая запускает один утверждённый external dispatch в
+отдельном контейнере: монтирует только ресурсы плана доступа, пропускает в сеть только хосты плана и
+передаёт только названные в плане переменные окружения. Не меняет флаги агента, не подтверждает
+действия за человека и не исполняет in-process роли.
+_Avoid_: Docker sandbox, песочница (занято `.harness/.sandboxes/`), постоянный dev-контейнер.
+
 **Role common contract** (`harness/orchestration/roles/_common.md`):
 Общий Markdown-контракт для всех ролей: handoff, completion report, branch/worktree, commit proof и
 escalation. Индивидуальный role manifest содержит только уникальные границы, trigger и доказательства.
