@@ -30,18 +30,13 @@ _HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
 _REPO_ROOT: Path = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-if _HARNESS_ROOT.name != "harness":
+if _HARNESS_ROOT.name != "harness" or not (_HARNESS_ROOT / "__init__.py").is_file():
+    import importlib.machinery
     import importlib.util
 
-    _spec = importlib.util.spec_from_file_location(
-        "harness",
-        _HARNESS_ROOT / "__init__.py",
-        submodule_search_locations=[str(_HARNESS_ROOT)],
-    )
-    assert _spec is not None and _spec.loader is not None
-    _pkg = importlib.util.module_from_spec(_spec)
-    sys.modules["harness"] = _pkg
-    _spec.loader.exec_module(_pkg)
+    _spec = importlib.machinery.ModuleSpec("harness", None, is_package=True)
+    _spec.submodule_search_locations = [str(_HARNESS_ROOT)]
+    sys.modules["harness"] = importlib.util.module_from_spec(_spec)
 
 from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.coordinator_cli import build_parser

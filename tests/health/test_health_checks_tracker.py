@@ -325,6 +325,92 @@ def test_online_github_authenticated_reports_ok(tmp_path: Path) -> None:
     assert checks["tracker.reachability"]["status"] == "ok"
 
 
+# --- reachability: the cause of a failed git ls-remote -------------------------------------------
+
+_SECRET = "fake-secret-0042"
+_SECRET_ORIGIN = (
+    f"https://ci-user:{_SECRET}@gitlab.example.test:4443/group/sub/project.git"
+)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "cause_words", "fix_words"),
+    [
+        (
+            "remote: HTTP Basic: Access denied\n"
+            f"fatal: Authentication failed for '{_SECRET_ORIGIN}/'\n",
+            "учётных данных",
+            ("credential helper", "SSH"),
+        ),
+        (
+            f"fatal: unable to access '{_SECRET_ORIGIN}/': SSL certificate problem: "
+            "unable to get local issuer certificate\n",
+            "TLS",
+            ("http.sslCAInfo", "gitlab.example.test:4443"),
+        ),
+        (
+            f"fatal: unable to access '{_SECRET_ORIGIN}/': "
+            "CONNECT tunnel failed, response 403\n",
+            "прокси или сети",
+            ("HTTPS_PROXY", "NO_PROXY"),
+        ),
+    ],
+)
+def test_online_reachability_names_the_cause_of_a_failed_ls_remote(
+    tmp_path: Path, stderr: str, cause_words: str, fix_words: tuple[str, ...]
+) -> None:
+    """Проверить, что health --online --json называет причину сбоя git ls-remote, даёт fix и не
+    выводит stderr, URL origin и userinfo."""
+    repo = _repo(tmp_path / "repo", remote=_SECRET_ORIGIN)
+    bin_dir = tmp_path / "bin"
+    _fake_git(bin_dir, {"ls-remote origin": (128, "", stderr)})
+
+    _, checks, data = _health_full(repo, bin_dir, online=True)
+
+    reachability = checks["tracker.reachability"]
+    assert reachability["status"] == "fail"
+    assert cause_words in str(reachability["message"])
+    fix = reachability["fix"]
+    assert isinstance(fix, dict)
+    for word in fix_words:
+        assert word in str(fix["text"])
+    output = json.dumps(data, ensure_ascii=False)
+    for leaked in ("ci-user", _SECRET, "gitlab.example.test:4443/group/sub/project"):
+        assert leaked not in output
+
+
+def test_online_reachability_unclassified_failure_keeps_the_generic_message(
+    tmp_path: Path,
+) -> None:
+    """Проверить, что нераспознанный сбой git ls-remote сохраняет прежнее сообщение и даёт fix
+    с командой git ls-remote origin."""
+    repo = _repo(tmp_path / "repo", remote=_SECRET_ORIGIN)
+    bin_dir = tmp_path / "bin"
+    _fake_git(
+        bin_dir,
+        {
+            "ls-remote origin": (
+                128,
+                "",
+                f"fatal: repository '{_SECRET_ORIGIN}/' not found\n",
+            )
+        },
+    )
+
+    _, checks, data = _health_full(repo, bin_dir, online=True)
+
+    reachability = checks["tracker.reachability"]
+    assert reachability["status"] == "fail"
+    assert (
+        reachability["message"]
+        == "origin недостижим: git ls-remote origin завершился с ошибкой"
+    )
+    fix = reachability["fix"]
+    assert isinstance(fix, dict)
+    assert fix["command"] == "git ls-remote origin"
+    assert _SECRET not in json.dumps(data, ensure_ascii=False)
+
+
 # --- permissions -----------------------------------------------------------------------------------
 
 
