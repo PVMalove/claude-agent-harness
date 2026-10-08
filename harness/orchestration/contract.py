@@ -42,6 +42,9 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "backend_zones",
     "developer_verification_commands",
     "review_verification_commands",
+    "qa_preparation",
+    "qa_environment_probes",
+    "qa_project_file_checks",
     "test_path_patterns",
     "adaptive_continuation_policy",
     "approval_policy",
@@ -1294,6 +1297,12 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         problems.append(
             "orchestration review_verification_commands must be a list of strings when provided"
         )
+    for qa_key in ("qa_preparation", "qa_environment_probes", "qa_project_file_checks"):
+        qa_commands = config.get(qa_key)
+        if qa_commands is not None and not string_list(qa_commands):
+            problems.append(
+                f"orchestration {qa_key} must be a list of strings when provided"
+            )
     approval_policy = config.get("approval_policy", "manual_all")
     if approval_policy not in APPROVAL_POLICIES:
         problems.append(
