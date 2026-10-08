@@ -23,9 +23,15 @@ from typing import Protocol, TypeGuard
 from ..errors import HarnessError
 from ..storage import storage_path
 from . import operation_access
-from .core.config import _execution_policy
-from .core.constants import QA_OWNER_FIELDS
-from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
+from .core.config import _execution_policy, _qa_preparation_commands
+from .core.constants import QA_NOT_RUN_RESULT, QA_OWNER_FIELDS
+from ..gate_runner.gate_runner import (
+    CleanRoomPolicy,
+    GateRunnerError,
+    parse_command_log,
+    run_gate,
+    run_qa_stages,
+)
 from .contract import JsonObject
 from .ledger import (
     BatchRecord,
@@ -471,15 +477,28 @@ def qa_evidence(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
 
 
 def _qa_report(
-    dispatch: JsonObject, checks: list[dict[str, str]], artifact: Path, checksum: str
+    dispatch: JsonObject,
+    checks: list[dict[str, str]],
+    artifact: Path,
+    checksum: str,
+    stages: JsonObject | None = None,
 ) -> JsonObject:
+    """The QA completion report.
+
+    Without ``stages`` (a verification-only configuration) it is the historical report. With them,
+    the failing stage decides the outcome: a failed gate or a confirmed project-file defect is a
+    ``failed`` report for the developer; an infrastructure or unknown preparation failure is a
+    ``blocked`` one, whose ``checks_run`` records the commands never reached as ``not-run`` rather
+    than as failed code checks.
+    """
     failed = any(check["result"] == "fail" for check in checks)
-    return {
+    reference = f"full sanitised output: {artifact.as_posix()} (sha256:{checksum})"
+    report: JsonObject = {
         "dispatch_id": dispatch["dispatch_id"],
         "ticket": dispatch["ticket"],
         "role": "qa",
         "outcome": "failed" if failed else "completed",
-        "output": f"QA gate {'failed' if failed else 'passed'}; full sanitised output: {artifact.as_posix()} (sha256:{checksum})",
+        "output": f"QA gate {'failed' if failed else 'passed'}; {reference}",
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
         "checks_run": checks,
@@ -490,6 +509,86 @@ def _qa_report(
         else "accept or continue",
         "report_language": "ru",
     }
+    if stages is None:
+        return report
+    reached = [check["command"] for check in checks]
+    report["checks_run"] = [
+        *checks,
+        *(
+            {
+                "command": command,
+                "result": QA_NOT_RUN_RESULT,
+                "evidence": "not run: an earlier QA stage failed before this command",
+            }
+            for command in dispatch["verification_commands"]
+            if command not in reached
+        ),
+    ]
+    report["qa_stages"] = stages
+    if stages["failed_stage"] != "preparation":
+        return report
+    broken = next(stage for stage in stages["stages"] if stage["result"] == "fail")
+    diagnosis = stages["diagnosis"]
+    category = diagnosis["category"]
+    report["output"] = (
+        f"QA environment preparation failed at `{broken['command']}` "
+        f"(exit {broken['exit_code']}, cause: {category}); code was not verified, "
+        f"no code check started; {reference}"
+    )
+    if category == "project-defect":
+        report.update(
+            outcome="failed",
+            risks="the candidate's project files break environment preparation; code was not verified",
+            blockers="new approved developer retry required to fix the project-file defect",
+            next_coordinator_action="create a new approved developer retry",
+        )
+    elif category == "infrastructure":
+        report.update(
+            outcome="blocked",
+            risks="infrastructure failure before code checks; the candidate code was not verified",
+            blockers="QA infrastructure failure; no developer retry is needed",
+            next_coordinator_action="restore the QA environment, then decide a same-SHA QA retry",
+        )
+    else:
+        report.update(
+            outcome="blocked",
+            risks="cause of the preparation failure is unknown; the candidate code was not verified",
+            blockers="coordinator triage required; no automatic retry",
+            next_coordinator_action="triage the preparation failure, then decide the retry route",
+        )
+    return report
+
+
+def _verify_stages_against_artifact(
+    stages: JsonObject, artifact: Path, checksum: str, ops: CoordinatorOps
+) -> None:
+    """Prove the recorded stages against the persisted immutable artifact, read back from disk.
+
+    The artifact must still hash to its recorded checksum, and its command blocks must be exactly
+    the stage entries' executed commands and exit codes, in order.
+    """
+    try:
+        data = artifact.read_bytes()
+    except OSError as exc:
+        raise ops.CoordinatorError(
+            f"could not read back the immutable QA evidence {artifact}: {exc}",
+            remedy="restore access to the ledger's QA evidence and run the QA runner again",
+        ) from exc
+    if hashlib.sha256(data).hexdigest() != checksum:
+        raise ops.CoordinatorError(
+            "immutable QA evidence does not match its recorded checksum",
+            remedy="the persisted evidence changed after it was written; run the QA runner again",
+        )
+    logged = parse_command_log(data.decode("utf-8").splitlines())
+    recorded = [
+        (stage.get("executed_command", stage["command"]), stage["exit_code"])
+        for stage in stages["stages"]
+    ]
+    if logged != recorded:
+        raise ops.CoordinatorError(
+            "the QA stage record does not match the immutable evidence",
+            remedy="the stage commands and exit codes must equal the artifact's command blocks; run the QA runner again",
+        )
 
 
 def _record_report(
@@ -743,11 +842,18 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     try:
         # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
         # not consume CI time and coordinator context collecting unrelated failures afterwards.
-        gate = run_gate(
-            dispatch["verification_commands"],
-            CleanRoomPolicy(repo, dispatch["candidate_commit"]),
-            stop_on_failure=True,
-        )
+        policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
+        preparation = _qa_preparation_commands(ops._config(repo))
+        if preparation:
+            staged = run_qa_stages(
+                preparation, dispatch["verification_commands"], policy
+            )
+            gate = None
+        else:
+            staged = None
+            gate = run_gate(
+                dispatch["verification_commands"], policy, stop_on_failure=True
+            )
     except GateRunnerError as exc:
         failure = ops.CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
@@ -757,7 +863,11 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     except BaseException as exc:
         _release_after_failure(ledger, root, dispatch, queue_path, exc, "gate-run", ops)
         raise
-    artifact_text, checks = gate.artifact, gate.checks
+    if staged is not None:
+        artifact_text, checks = staged.artifact, staged.gate_checks
+    else:
+        assert gate is not None
+        artifact_text, checks = gate.artifact, gate.checks
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
     artifact = _artifact_path(ledger, checksum, ops)
     try:
@@ -776,7 +886,16 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             ledger, root, dispatch, queue_path, exc, "artifact-persistence", ops
         )
         raise
-    report = _qa_report(dispatch, checks, artifact, checksum)
+    stages = staged.record() if staged is not None else None
+    if stages is not None:
+        try:
+            _verify_stages_against_artifact(stages, artifact, checksum, ops)
+        except ops.CoordinatorError as exc:
+            _recover_transient_failure(
+                ledger, root, dispatch, queue_path, exc, "stage-verification", ops
+            )
+            raise
+    report = _qa_report(dispatch, checks, artifact, checksum, stages)
     try:
         with _lock(ledger, ops):
             report_path = _record_report(ledger, root, repo, dispatch, report, ops)

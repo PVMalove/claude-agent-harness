@@ -295,7 +295,23 @@ REPORT_OPTIONAL_FIELDS = {
     "resolver",
     "incomplete_items",
     "carried_item_closure",
+    "qa_stages",
 }
+# Per-stage evidence of a clean-room QA run (issue #618): the preparation commands, then the gate, in
+# one checkout. ``qa_stages`` is present only when the project declares ``qa_preparation``; a report
+# without it is a verification-only run and keeps its earlier shape.
+QA_STAGES_FIELDS = frozenset({"stages", "failed_stage", "code_checks_started"})
+QA_STAGES_OPTIONAL_FIELDS = frozenset({"diagnosis"})
+QA_STAGE_ENTRY_FIELDS = frozenset({"stage", "command", "result", "exit_code"})
+QA_STAGE_ENTRY_OPTIONAL_FIELDS = frozenset({"executed_command", "diagnostics"})
+QA_STAGE_NAMES = ("preparation", "gate")
+# Whether any gate (code-check) command started: the runner states ``not_started`` only because the
+# gate stage was never reached; a reader that cannot confirm it must treat it as ``unknown``.
+QA_CODE_CHECKS_STARTED = ("started", "not_started", "unknown")
+QA_DIAGNOSIS_FIELDS = frozenset({"category", "signals", "basis"})
+QA_DIAGNOSIS_CATEGORIES = ("infrastructure", "project-defect", "unknown")
+# The result of a verification command the run never reached, so it is neither a pass nor a failure.
+QA_NOT_RUN_RESULT = "not-run"
 # One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
 # handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the
 # safety classifier, kept the role from it.

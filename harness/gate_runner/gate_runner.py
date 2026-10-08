@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -289,7 +289,7 @@ def concise_evidence(text: str) -> str:
 
 
 def _execute_commands(
-    commands: list[str | list[str]],
+    commands: Sequence[str | list[str]],
     checkout: Path,
     *,
     stop_on_failure: bool,
@@ -608,8 +608,8 @@ def _tracked_files(checkout: Path) -> tuple[str, ...]:
 
 
 def run_qa_stages(
-    preparation: list[str | list[str]],
-    gate: list[str | list[str]],
+    preparation: Sequence[str | list[str]],
+    gate: Sequence[str | list[str]],
     policy: ExecutionPolicy,
 ) -> QAStagesResult:
     """Run preparation, then the gate, in one checkout, stopping at the first failing stage.
