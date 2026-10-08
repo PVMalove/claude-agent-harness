@@ -13700,6 +13700,182 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             result, "budget-exhausted", "retry_policy.max_developer_retries"
         )
 
+    def test_auto_runs_from_batch_create_to_accepted_publish_without_a_human(
+        self,
+    ) -> None:
+        """End to end on real Git and a real ledger (issue #643): the architect report carries
+        risks and its own commit plan, the review findings lead to a fix-forward, QA runs through
+        the QA lane, and the publish is accepted -- every approval and decision is policy:auto."""
+        batch_id = self._auto_batch(definition_of_done=["add the marker", "pin it"])
+        architect = self._auto_dispatch("architect")
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"],
+            self._base_report(architect, "architect", risks="the marker is public"),
+        )
+        plan = self._plan_file(
+            [self._plan_entry("marker", [1]), self._plan_entry("pin", [2])]
+        )
+        self.assertEqual(
+            self._auto_decide(commit_plan_file=plan)["next_action"], "developer"
+        )
+
+        developer = self._auto_dispatch("developer")
+        self.assertEqual(
+            [entry["id"] for entry in developer["commit_plan"]], ["marker", "pin"]
+        )
+        self._start(developer["dispatch_id"])
+        first = self._commit_file(
+            "services/x.py", "feat: add the marker", "MARKER = 1\n"
+        )
+        second = self._commit_file("services/x.py", "feat: pin the marker", "PIN = 1\n")
+        base = self._batch_record(batch_id)["base_commit"]
+        changed = git_utils._changed_files_between(self.repo, base, second)
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                second,
+                changed,
+                commit_map=self._commit_map(
+                    [
+                        (first, developer["commit_plan"][0]),
+                        (second, developer["commit_plan"][1]),
+                    ]
+                ),
+                risk_triggers=["transactions"],
+            ),
+        )
+        self.assertEqual(self._auto_decide()["next_action"], "risk-assessment")
+        self._assess(batch_id, second, changed)
+
+        review = self._auto_dispatch("code-review", candidate=second)
+        self._start(review["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            review["dispatch_id"],
+            self._base_report(
+                review,
+                "code-review",
+                review={
+                    "candidate_commit": second,
+                    "scope": review["review_scope"],
+                    **self._axes(("clean", []), ("warning", [dict(self.SPEC_WARNING)])),
+                },
+            ),
+        )
+        self.assertEqual(self._auto_decide()["route"], "fix-forward")
+
+        retry = self._auto_dispatch("developer")
+        self._start(retry["dispatch_id"])
+        fix = self._commit_file("services/x.py", "fix: test the pinned marker")
+        fixed = git_utils._changed_files_between(self.repo, base, fix)
+        self._submit(
+            retry["dispatch_id"],
+            self._developer_report(
+                retry,
+                fix,
+                fixed,
+                commit_map=self._commit_map([(fix, retry["commit_plan"][0])]),
+                risk_triggers=["transactions"],
+            ),
+        )
+        self.assertEqual(self._auto_decide()["next_action"], "risk-assessment")
+        self._assess(batch_id, fix, fixed)
+
+        delta = self._auto_dispatch("code-review", candidate=fix)
+        self.assertEqual(delta["delta_review_scope"]["mode"], "delta")
+        self._start(delta["dispatch_id"], checkout=self.worktree)
+        reviewed = self._submit(
+            delta["dispatch_id"],
+            self._review_report(delta, {"review-finding-1": "closed"}),
+        )
+        self.assertNotIn("auto_accepted", reviewed)
+        self.assertEqual(self._auto_decide()["next_action"], "qa")
+
+        qa = self._auto_dispatch("qa", candidate=fix)
+        self._stage_report(
+            batch_id,
+            qa["dispatch_id"],
+            self._base_report(qa, "qa", checks_run=self._checks(qa, "pass")),
+            via_qa_lane=True,
+        )
+        report_path = self._records() / "reports" / f"{qa['dispatch_id']}.json"
+        with mock.patch.object(
+            qa_lane,
+            "run",
+            return_value={"state": "reported", "report": str(report_path)},
+        ):
+            ran = coordinator.run_qa(self._args(dispatch=qa["dispatch_id"]))
+        # The candidate matched a risk trigger, so the chain leaves QA to the policy table.
+        self.assertNotIn("auto_accepted", ran)
+        self.assertEqual(self._auto_decide()["next_action"], "publish")
+
+        publish = self._auto_dispatch("developer", purpose="publish", candidate=fix)
+        coordinator.publish_dispatch(
+            self._args(dispatch=publish["dispatch_id"], remote="origin")
+        )
+        finished = self._auto_decide()
+
+        stored = self._batch_record(batch_id)
+        self.assertEqual(
+            (finished["decision"], stored["state"]), ("accept", "completed")
+        )
+        self.assertEqual(stored["coordinator_approval"]["approved_by"], "policy:auto")
+        self.assertEqual(
+            {item["approved_by"] for item in stored["coordinator_decisions"]},
+            {"policy:auto"},
+        )
+        briefs = [
+            coordinator._read_object(
+                self._records() / "dispatches" / f"{entry['dispatch_id']}.json",
+                "dispatch",
+            )
+            for entry in stored["dispatches"]
+        ]
+        self.assertEqual(
+            {brief["coordinator_approval"]["approved_by"] for brief in briefs},
+            {"policy:auto"},
+        )
+        self.assertEqual(
+            {entry["decision"]["approved_by"] for entry in stored["dispatches"]},
+            {"policy:auto"},
+        )
+        self.assertEqual(
+            self._auto_records("dispatch")[-1]["evidence"]["lifted_milestones"],
+            ["publish", "risk-trigger"],
+        )
+        report = stored["auto_report"]
+        self.assertEqual(
+            (report["outcome"], report["stop"], report["candidate_commit"]),
+            ("completed", None, fix),
+        )
+        self.assertEqual(len(report["decisions"]), len(stored["auto_decisions"]))
+        self.assertIn(
+            {
+                "dispatch_id": architect["dispatch_id"],
+                "source": "report",
+                "risks": "the marker is public",
+            },
+            report["accepted_risks"],
+        )
+        self.assertEqual(
+            [(item["route"], item["reason_category"]) for item in report["retries"]],
+            [("fix-forward", "requirements")],
+        )
+        self.assertEqual(
+            [item["covered"] for item in report["dod_coverage"]], [True, True]
+        )
+        self.assertEqual(
+            [item["decision"] for item in report["review"]], ["retry", "accept"]
+        )
+        self.assertEqual([item["decision"] for item in report["qa"]], ["accept"])
+        history._validate_batch_integrity(
+            ledger_ops._state_root(self._args(), self.repo), stored
+        )
+        self.assertEqual(
+            coordinator.auto_report(self._args(batch=batch_id))["report"], report
+        )
+
     def test_auto_decide_refuses_a_batch_outside_the_auto_policy(self) -> None:
         batch = self._create_batch()
         self._reported_architect(batch["batch_id"])
