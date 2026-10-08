@@ -77,17 +77,20 @@ In this table and the Recovery route table, an operational reason is one of thes
 **QA preparation failures.** When the project declares `qa_preparation`, the QA report carries `qa_stages`
 (per-stage command, result, exit code, sanitised diagnostics, `failed_stage`, `code_checks_started`
 and, for a failed preparation, a `diagnosis`). A failed preparation stops the run before any gate
-command: the gate commands are recorded as `not-run`, never as failed checks. The runner confirms a
-cause only from agreeing signals: neither an exit code nor a log keyword decides alone, and the
-preparation stage alone proves no infrastructure cause.
+command: the gate commands are recorded as `not-run`, never as failed checks. Only after that failure
+the runner runs the project's `qa_environment_probes` and `qa_project_file_checks` in the same
+checkout, as independent facts recorded as `environment-probe` and `project-file-check` stages.
+Neither an exit code nor a log keyword decides a category alone, and the preparation stage alone
+proves no infrastructure cause; log signatures are only corroboration.
 
-- `infrastructure` (confirmed, no code check started): the report is `blocked` and says the code was
-  not verified. A `retry` needs no `--reason-category`: it routes `same-candidate-rerun` with
+- `infrastructure` (confirmed by a failed environment probe while every project-file check passes,
+  no code check started): the report is `blocked` and says the code was not verified. A `retry` needs no `--reason-category`: it routes `same-candidate-rerun` with
   `verification-infrastructure`, a new qa dispatch on the same SHA, and spends no
   `retry_policy.max_developer_retries`. The coordinator decides it by hand once the environment is ready.
-- `project-defect` (a defect in project files such as an incompatible lock file, confirmed against a
-  tracked project file): the report is `failed`; a `retry` routes `developer-retry` with `code`.
-- `unknown`: the report is `blocked` and needs coordinator triage. `retry` without
+- `project-defect` (a failing project-file check, or a defect log signature such as an incompatible
+  lock file that agrees with a tracked project file the output names): the report is `failed`; a `retry` routes `developer-retry` with `code`.
+- `unknown` (no probe or project-file check configured, contradicting facts, or no confirmation):
+  the report is `blocked` and needs coordinator triage. `retry` without
   `--reason-category` is refused and nothing is retried; the coordinator names the cause
   (`verification-infrastructure` for a same-SHA rerun, or a developer category) or blocks the batch.
 - A failing gate stage is an ordinary code-check failure: findings kept, route `developer-retry`.
@@ -640,6 +643,14 @@ The report must include:
   `unverified` or `open` item is a carried gap: the report is never clean, no policy accepts it, plain
   `accept` is refused, and only `override-warning` with a note other than `none` (recorded as
   `carried_items_gap`) or `retry` decides it. An `open` item is `code` evidence for the retry route;
+- for a qa report of a project that declares `qa_preparation`: `qa_stages`, written only by `qa run`
+  and never by hand: `stages` (one `{stage, command, result, exit_code}` per executed command, with
+  `diagnostics` on a failed one; `stage` is `preparation`, `environment-probe`, `project-file-check`
+  or `gate`), `failed_stage` (`preparation`, `gate` or `null`), `code_checks_started` (`started`,
+  `not_started` or `unknown`) and, for a failed preparation, a `diagnosis` (`category`, `signals`,
+  `basis`). A gate command the run never reached has the `checks_run` result `not-run`; it is
+  neither a pass nor a failed code check. A project that does not declare `qa_preparation` keeps the
+  earlier report shape without `qa_stages`;
 - for a role a tool blocked: `outcome: blocked` and `tooling_blocker`, exactly the non-empty strings
   `tool`, `command` (as invoked) and `message` (verbatim), each at most 1600 characters. It is valid
   only on a `blocked` report and is the only evidence of the `tooling` reason category. A developer
