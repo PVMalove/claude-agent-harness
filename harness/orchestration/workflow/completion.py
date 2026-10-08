@@ -133,6 +133,82 @@ def _run_policy_chain(
         state = _chain_state(root, dispatch_id)
         result["report"] = state["report_path"]
         result["report_sha256"] = state["entry"].get("report_sha256")
+        from harness.orchestration.infrastructure_retry import pinned
+
+        retry_policy = pinned(state["dispatch"])
+        prior_decision = state["entry"].get("decision", {})
+        if (
+            retry_policy
+            and retry_policy["enabled"]
+            and (
+                state["report"].get("outcome") == "blocked"
+                or prior_decision.get("approved_by") == "policy:infrastructure-retry"
+            )
+        ):
+            result["auto_accept_policy"] = "infrastructure-retry"
+            result["report_sha256"] = state["entry"].get("report_sha256")
+            if state["following"]:
+                steps.update(
+                    {
+                        "policy-decide": "already-done",
+                        "risk-assess": "not-applicable",
+                        "next-dispatch": "already-done",
+                    }
+                )
+                result["next_dispatch_id"] = state["following"][0]["dispatch_id"]
+                result["next_action"] = state["batch"].get("next_action")
+                return result
+            if (
+                prior_decision
+                and prior_decision.get("approved_by") != "policy:infrastructure-retry"
+            ):
+                steps.update(dict.fromkeys(POLICY_CHAIN_STEPS, "not-applicable"))
+                return result
+            if not prior_decision:
+                decide_batch(
+                    argparse.Namespace(
+                        repo=str(repo),
+                        state_dir=state_dir,
+                        batch=state["batch"]["batch_id"],
+                        decision="retry",
+                        approved_by=None,
+                        approved_at=None,
+                        note=None,
+                        reason=None,
+                        reason_category=None,
+                        retry_role=None,
+                        _policy_infrastructure_retry=True,
+                    )
+                )
+                steps["policy-decide"] = "done"
+            else:
+                steps["policy-decide"] = "already-done"
+            steps["risk-assess"] = "not-applicable"
+            step = "next-dispatch"
+            brief = state["dispatch"]
+            created = create_dispatch(
+                argparse.Namespace(
+                    repo=str(repo),
+                    state_dir=state_dir,
+                    batch=state["batch"]["batch_id"],
+                    role=brief["role"],
+                    runtime=brief["resolved_runtime"],
+                    purpose=brief["purpose"],
+                    candidate_commit=brief["candidate_commit"],
+                    delta_review_of=None,
+                    model=brief["resolved_model"],
+                    effort=brief["resolved_effort"],
+                    propose=False,
+                    transition_digest=None,
+                    approved_by=None,
+                    approved_at=None,
+                    _policy_infrastructure_retry=True,
+                )
+            )
+            steps[step] = "done"
+            result["next_dispatch_id"] = created["dispatch_id"]
+            result["next_action"] = brief["role"]
+            return result
         policy = state["status"].get("auto_accept_policy")
         result["auto_accept_policy"] = policy
         if policy is None:
@@ -239,6 +315,10 @@ def _run_policy_chain(
         else:
             steps[step] = "not-applicable"
     except CoordinatorError as exc:
+        if result["auto_accept_policy"] == "infrastructure-retry":
+            from harness.orchestration.infrastructure_retry import stop_attention
+
+            stop_attention(repo, root, dispatch_id, exc)
         steps[step] = "failed"
         result["failed_step"] = step
         result["error"] = {"message": exc.message, "remedy": exc.remedy}

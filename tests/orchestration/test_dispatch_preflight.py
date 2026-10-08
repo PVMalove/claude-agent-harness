@@ -122,7 +122,7 @@ class PrepareTests(_PreflightFixture):
         )
         self.assertEqual(
             prepared.decision_packet["options"],
-            ["accept", "retry", "block", "full review", "delta-review"],
+            ["accept", "retry", "block"],
         )
 
     def test_to_dict_round_trips_every_field(self) -> None:

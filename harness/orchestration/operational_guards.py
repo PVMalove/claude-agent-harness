@@ -36,6 +36,8 @@ OPTIONAL_TRANSITION_FIELDS = (
     "carried_items_sha256",
     "rebase_target_sha",
     "delta_review_sha256",
+    "infrastructure_retry_sha256",
+    "infrastructure_attempt_sha256",
 )
 # A new dispatch (issue #624) always binds the sha256 of its resolved runtime access plan.
 ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
@@ -110,6 +112,11 @@ def build_transition(
     if delta_review_sha256 is not None:
         transition["delta_review_sha256"] = delta_review_sha256
     return transition
+
+
+def policy_digest(value: Mapping[str, object]) -> str:
+    """Digest of an approval-bound policy snapshot."""
+    return _digest(dict(value))
 
 
 def carried_items_digest(section: Mapping[str, object]) -> str:

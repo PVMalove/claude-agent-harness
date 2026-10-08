@@ -12,7 +12,7 @@ import argparse
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration import qa_lane
+from harness.orchestration import operation_access, qa_lane
 from harness.orchestration.core.utils import JsonObject
 
 
@@ -28,7 +28,23 @@ def qa_evidence(args: argparse.Namespace) -> JsonObject:
 
 def run_qa(args: argparse.Namespace) -> JsonObject:
     """Run the repository-scoped QA lane without coupling it to CLI wiring."""
-    result = qa_lane.run(args, _ops())
+    try:
+        result = qa_lane.run(args, _ops())
+    except operation_access.OperationAccessError as exc:
+        from harness.orchestration.infrastructure_retry import (
+            pinned,
+            record_operation_failure,
+        )
+        from harness.orchestration.core.utils import _repo
+        from harness.orchestration.ledger.ledger_ops import _load_dispatch, _state_root
+
+        repo = _repo(args)
+        root = _state_root(args, repo)
+        dispatch = _load_dispatch(root, args.dispatch)
+        policy = pinned(dispatch)
+        if policy and policy["enabled"]:
+            record_operation_failure(repo, root, dispatch, "qa", exc.evidence)
+        raise
     if result.get("state") != "reported":
         return result
     from harness.orchestration.core import config as core_config
@@ -48,6 +64,18 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
     dispatch = _load_dispatch(root, args.dispatch)
     batch = _load_batch(root, dispatch["batch_id"])
     report = _read_object(Path(result["report"]), "QA completion report")
+    from harness.orchestration.infrastructure_retry import pinned
+    from harness.orchestration.workflow.completion import _run_policy_chain, _completion
+
+    policy = pinned(dispatch)
+    if policy and policy["enabled"] and report.get("outcome") == "blocked":
+        chain = _run_policy_chain(repo, getattr(args, "state_dir", None), args.dispatch)
+        result["next_dispatch_id"] = chain["next_dispatch_id"]
+        if chain["failed_step"] is not None:
+            result["completion"] = _completion(
+                chain, args.dispatch, getattr(args, "state_dir", None)
+            )
+        return result
     if _auto_accept_policy(core_config._config(repo), batch, dispatch, report) not in {
         "low_risk",
         "auto",

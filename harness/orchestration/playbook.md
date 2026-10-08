@@ -141,11 +141,31 @@ is not refused when that budget is exhausted; the human decision on every retry 
 `tooling-retry-repeated` attention bound it instead. `--retry-role developer` on a read-only stage
 still forces a budgeted `developer-retry`.
 A same-candidate retry is a new immutable dispatch: it gets a new dispatch ID, re-checks
-Context Package freshness, and needs its own explicit human approval under
+Context Package freshness, and, by default, needs its own explicit human approval under
 `manual_all`. The earlier brief, report and blocker stay untouched as audit evidence. A retry never
 uses an empty or fictitious commit, a changed candidate always needs a new risk assessment before
 review or QA, and `block` or `fail` never start a retry by themselves. `--retry-role developer`
 forces a developer retry where a same-candidate re-run would otherwise be routed.
+
+A separate project opt-in, `infrastructure_retry_policy: {"enabled": true}`, permits only a
+confirmed infrastructure retry. It preserves the role, operation, candidate SHA, commands, access,
+runtime/model/effort and scope. The opt-in, preparation/probe/file-check commands and
+`attention_policy.max_infrastructure_retries` (default 2, including explicit 0) are snapshot into
+the approval-bound brief. Historical briefs stay manual; live configuration cannot expand this
+approval. The policy spends no developer retry budget and never grants native permissions.
+
+For a blocked QA preparation report, both its independent diagnosis and fresh readiness checks
+must confirm infrastructure and the same candidate. `report complete --dispatch <id>` resumes the
+policy decision and the new dispatch after recovery; it returns the existing successor on replay.
+For an unsent QA/publish operation, `dispatch retry-infrastructure --dispatch <id>` requires the
+recorded probe-confirmed denial and fresh readiness, then cancels the unsent brief and creates a
+new dispatch. Each decision records `policy:infrastructure-retry` and preserves previous evidence.
+An unchanged denial does not launch work. Unknown causes, changed boundaries or exhausted budgets
+stop the policy and raise attention. Unsupported/unverified access and arbitrary Git failures
+require manual recovery. Git operations without an approved dispatch stay manual. An explicitly
+selected native access mode needs actual runtime-access proof; health and checkout attestation do
+not supply it. See the project guide for the smoke procedure, the verified native support row and
+the remaining unverified runtime matrix.
 
 `block-bypass` means a read-only role (code-review, qa or verification) worked around a hook or tool
 block instead of stopping with `tooling_blocker`. Only an approver names it, and none of that report
@@ -290,30 +310,31 @@ sent one leaves the defect to the decision on its report, and one whose report i
 takes the finding through `batch decide --findings-file` when the next developer report is accepted.
 
 After a fix-forward, the coordinator chooses the scope of the next code-review itself (issue #625).
-`dispatch create --role code-review` without `--delta-review-of` computes `delta_review_scope`
-when the candidate is the `commit_sha` of the batch's latest accepted developer work report, that
-report is a developer-retry whose chain of directly retried developer-retry attempts was routed
+`dispatch create --role code-review` without `--delta-review-of` computes `delta_review_scope` when
+the candidate is the `commit_sha` of the batch's latest accepted developer work report, that report
+is a developer-retry whose chain of directly retried developer-retry attempts was routed
 `fix-forward` or `rebase-fix-forward`, and the newest code-review before the chain completed its
 report on the chain's first `snapshot_commit` and was accepted or retried to a developer. That
-review is the prior review. The delta is `git diff <delta_base> <candidate_commit>`: `delta_base`
-is the prior review's candidate; after a rebase in the chain, it is the parent of the first commit
+review is the prior review. The delta is `git diff <delta_base> <candidate_commit>`: `delta_base` is
+the prior review's candidate; after a rebase in the chain, it is the parent of the first commit
 after the last rebase target that is not a reviewed copy. A reviewed copy resolves through the
 chain's `rebased_from` pairs, each with a matching `git patch-id`, to a commit the prior review
 judged. The scope is `full` with one or more `escalations`, each `{reason, evidence}`:
-`new-risk-trigger` (a trigger of the candidate's risk assessment or of the delta's commits and
-files that the prior review's assessment did not match), `file-outside-carried-items` (a delta file
+`new-risk-trigger` (a trigger of the candidate's risk assessment or of the delta's commits and files
+that the prior review's assessment did not match), `file-outside-carried-items` (a delta file
 outside the files of the developer-retry's carried items; a `review-finding` counts the
 `review_scope` of its review), `patch-id-mismatch` (a pair of a chain report's `rebase_check`),
 `dropped-commit` (a `dropped` entry of a chain report's `rebase_check`: the candidate lost a change
-the prior review judged), or `no-new-commits`. Otherwise it is `delta`: the brief also carries the developer-retry's
-`review-finding` items and its `incomplete-item` entries for the developer, and the review judges
-both axes on the delta and accounts for every carried item. A `full` brief is an ordinary full review with the
-section as audit evidence. Either way the brief keeps the full `review_scope`, the proposal shows
-the section and the transition binds it as `delta_review_sha256`; an explicit `--delta-review-of`
-keeps the test-only delta-review and records `delta_review_scope: null`. Accepting either review
-moves the batch to `qa`, and clean-room QA runs on the new candidate SHA with the full
-`verification_commands`. A retry of a delta-review hands on the carried items it did not mark
-`closed`, and its own findings take the next `review-finding` numbers.
+the prior review judged), or `no-new-commits`. Otherwise it is `delta`: the brief also carries the
+developer-retry's `review-finding` items and its `incomplete-item` entries for the developer, and
+the review judges both axes on the delta and accounts for every carried item. A `full` brief is an
+ordinary full review with the section as audit evidence. Either way the brief keeps the full
+`review_scope`, the proposal shows the section and the transition binds it as `delta_review_sha256`;
+an explicit `--delta-review-of` keeps the test-only delta-review and records
+`delta_review_scope: null`. Accepting either review moves the batch to `qa`, and clean-room QA runs
+on the new candidate SHA with the full `verification_commands`. A retry of a delta-review hands on
+the carried items it did not mark `closed`, and its own findings take the next `review-finding`
+numbers.
 
 A later recovery route adds its `RECOVERY_ROUTES` value and its row here in the same change.
 

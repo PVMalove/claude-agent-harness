@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
-from harness.orchestration import operational_guards, runtime_access
+from harness.orchestration import (
+    infrastructure_retry,
+    operational_guards,
+    runtime_access,
+)
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     low_risk_eligible,
@@ -50,6 +54,7 @@ from harness.orchestration.core.utils import (
     JsonObject,
     _canonical,
     _non_empty,
+    _read_object,
     _repo,
     _safe_id,
 )
@@ -69,6 +74,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_batch,
     _load_dispatch,
     _load_dispatch_status,
+    _records_root,
     _replace_record,
     _state_root,
     _write_record,
@@ -232,6 +238,8 @@ def _dispatch_approval_mode(
         getattr(args, "approved_at", None)
     ):
         return "explicit"
+    if getattr(args, "_policy_infrastructure_retry", False):
+        return "policy:infrastructure-retry"
     policy = batch.get("approval_policy", _approval_policy(config))
     if policy == approvals.AUTO_POLICY:
         if "auto_stop" in batch:
@@ -497,7 +505,8 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
     """
     repo = _repo(args)
     root = _state_root(args, repo)
-    approval = _approval(args)
+    policy_retry = getattr(args, "_policy_infrastructure_retry", False)
+    approval = {} if policy_retry else _approval(args)
     reason = args.reason.strip() if _non_empty(args.reason) else ""
     if not reason:
         raise CoordinatorError(
@@ -539,9 +548,21 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 "only an approved, unsent dispatch may be cancelled",
                 remedy="only cancel a dispatch that is approved and not yet sent",
             )
+        readiness = (
+            infrastructure_retry.authorize_unsent(repo, root, batch, dispatch)
+            if policy_retry
+            else None
+        )
+        if policy_retry:
+            approval = {
+                "approved_by": "policy:infrastructure-retry",
+                "approved_at": utils._now(),
+            }
         moment = utils._now()
         entry["state"] = "cancelled"
         entry["cancellation"] = {**approval, "cancelled_at": moment, "reason": reason}
+        if readiness is not None:
+            entry["cancellation"]["infrastructure_readiness"] = readiness
         batch["state"] = "awaiting-approval"
         batch.setdefault("coordinator_decisions", []).append(
             {
@@ -549,6 +570,18 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 "decision": "cancel",
                 **approval,
                 "note": reason,
+                **(
+                    {
+                        "routing": {
+                            "route": "same-candidate-rerun",
+                            "reason_category": "verification-infrastructure",
+                            "candidate_commit": dispatch["candidate_commit"],
+                            "infrastructure_readiness": readiness,
+                        }
+                    }
+                    if policy_retry
+                    else {}
+                ),
             }
         )
         _safe_id(dispatch["dispatch_id"], "dispatch")
@@ -560,6 +593,11 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                     "state": "cancelled",
                     "updated_at": moment,
                     "cancellation": entry["cancellation"],
+                    **(
+                        {"infrastructure_failure": status["infrastructure_failure"]}
+                        if policy_retry
+                        else {}
+                    ),
                 }
             ),
         )
@@ -880,6 +918,15 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 f"the coordinator requires a new {required_role} dispatch before this role",
                 remedy=f"dispatch a new {required_role} role before this one",
             )
+        retry_source = infrastructure_retry.source(root, batch)
+        if (
+            getattr(args, "_policy_infrastructure_retry", False)
+            and retry_source is None
+        ):
+            raise CoordinatorError(
+                "no infrastructure policy decision authorizes this dispatch",
+                remedy="use a manual dispatch approval",
+            )
         # A superseding batch's first developer-retry rebases its start commit (issue #506).
         supersede_target = supersede.rebase_target(
             repo, root, batch, next_action, role_name, purpose, candidate
@@ -1018,6 +1065,38 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"
         ]
+        orchestration_policy = _orchestration_policy(config)
+        transition[infrastructure_retry.TRANSITION_FIELD] = (
+            operational_guards.policy_digest(
+                orchestration_policy["infrastructure_retry"]
+            )
+        )
+        if getattr(args, "_policy_infrastructure_retry", False):
+            assert retry_source is not None
+            if _load_dispatch_status(root, retry_source["dispatch_id"]).get(
+                "cancellation"
+            ):
+                readiness = infrastructure_retry.authorize_unsent(
+                    repo, root, batch, retry_source
+                )
+                transition[infrastructure_retry.ATTEMPT_TRANSITION_FIELD] = readiness[
+                    "attempt"
+                ]["sha256"]
+                transition["previous_dispatch_id"] = retry_source["dispatch_id"]
+                transition["previous_role"] = retry_source["role"]
+                transition["reason_category"] = "verification-infrastructure"
+            else:
+                prior_entry = next(
+                    entry
+                    for entry in batch["dispatches"]
+                    if entry["dispatch_id"] == retry_source["dispatch_id"]
+                )
+                prior_report = _read_object(
+                    _records_root(root) / prior_entry["report"], "infrastructure report"
+                )
+                infrastructure_retry.authorize(
+                    repo, root, batch, retry_source, prior_report
+                )
         digest = operational_guards.transition_digest(transition)
         idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
         if idempotency_key is not None:
@@ -1034,6 +1113,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "needs_attention": bool(batch.get("needs_attention", False)),
                 "context_package_freshness": context_package_freshness,
                 "runtime_access": access_plan,
+                "orchestration_policy": orchestration_policy,
             }
             if context_package is not None:
                 warning = _context_package_quality_warning(context_package)
@@ -1044,7 +1124,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             return proposal
         assert approval_mode is not None  # only a proposal skips the approval mode
         approval = _bind_dispatch_approval(args, approval_mode, digest)
-        orchestration_policy = _orchestration_policy(config)
         stale_after = cast(
             int, orchestration_policy["attention"]["stale_dispatch_seconds"]
         )
@@ -1130,6 +1209,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]
             )
+        if getattr(args, "_policy_infrastructure_retry", False):
+            assert retry_source is not None
+            infrastructure_retry.require_same_contract(retry_source, brief)
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
         # top level lets any runtime-neutral adapter consume exactly the reviewed contract.

@@ -92,6 +92,7 @@ def _configured(repo: Path) -> bool:
         bool(value.get("backend_zones"))
         or bool(value.get("assignment_plans"))
         or "access_policy" in value
+        or "infrastructure_retry_policy" in value
     )
 
 
@@ -253,8 +254,11 @@ def _extension_names(config: JsonObject) -> dict[str, str]:
 def _orchestration_policy(config: JsonObject) -> JsonObject:
     """The operational policy this brief runs under. Recorded in the immutable brief so a later edit
     to `.harness/orchestration.json` never changes what an in-flight dispatch was approved under."""
+    from harness.orchestration.infrastructure_retry import snapshot
+
     adaptive = _adaptive_continuation_policy(config)
     return {
+        "infrastructure_retry": snapshot(config),
         "approval_ttl_seconds": _approval_ttl(config),
         "attention": dict(_attention_policy(config)),
         "context_pressure": {

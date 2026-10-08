@@ -420,6 +420,13 @@ def build_parser(
 
     dispatch = commands.add_parser("dispatch")
     dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
+    infrastructure = dispatch_commands.add_parser(
+        "retry-infrastructure",
+        help="retry a confirmed unsent operation refusal under its pinned opt-in",
+    )
+    _common(infrastructure)
+    infrastructure.add_argument("--dispatch", required=True)
+    infrastructure.set_defaults(handler=handlers.retry_infrastructure_dispatch)
     preflight = dispatch_commands.add_parser(
         "preflight", help="validate a future dispatch without creating it"
     )

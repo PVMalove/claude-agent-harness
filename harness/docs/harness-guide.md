@@ -1294,9 +1294,13 @@ Spec — Clean
 - Все user stories #102 покрыты; лишнего поведения нет.
 ```
 
-После `Warning` coordinator может создать delta-review только для нового candidate, изменившего
-исключительно тестовые файлы и не задевшего risk triggers: он повторно проверяет только
-Warning-ось, а Standards=Clean наследуется. Любое изменение production-кода требует полного review.
+После `Warning` coordinator может создать test-only delta-review (`delta_review_of`) для нового
+candidate, изменившего исключительно тестовые файлы и не задевшего risk triggers: он повторно
+проверяет только Warning-ось, а Standards=Clean наследуется. В таком brief любое изменение
+production-кода требует полного review. После fix-forward coordinator сам выбирает delta-review или
+полный review (`delta_review_scope`): delta проверяет обе оси на diff исправления, а полный review
+назначается при новом risk trigger, файле вне перенесённых пунктов, нарушенном `git patch-id`,
+потерянном коммите или отсутствии новых коммитов.
 
 **В этом репозитории:** язык отчёта — `language` из `.harness/project.json`.
 

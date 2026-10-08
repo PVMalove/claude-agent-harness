@@ -147,6 +147,9 @@ from harness.orchestration.workflow.batch import (
 from harness.orchestration.workflow.carried_items import (
     carry_over_findings as carry_over_findings,
 )
+from harness.orchestration.infrastructure_retry import (
+    retry_infrastructure_dispatch as retry_infrastructure_dispatch,
+)
 from harness.orchestration.workflow.completion import (
     complete_report as complete_report,
 )

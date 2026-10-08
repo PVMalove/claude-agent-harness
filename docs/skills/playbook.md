@@ -25,8 +25,12 @@ worker session под тем же dispatch ID без переноса истор
 
 Перед review и publish coordinator выполняет base-commit gate: после `git fetch origin <integration_ref>`
 актуальная вершина должна совпадать с batch base. Drift устраняется новым developer/rebase dispatch.
-Delta-review после Warning разрешён только для test-only diff и всегда является новым независимым
-review dispatch. Advisory tool call остаётся эфемерным non-role выводом и не может авторизовать работу.
+Delta-review бывает test-only (после Warning, только для test-only diff) и после fix-forward:
+coordinator выбирает delta-review или полный review сам, без отдельного решения человека; dispatch
+одобряется по `approval_policy` вместе с этим выбором. Условия полного review описаны в
+[`docs/skills/code-review.md`](code-review.md). Любой delta-review всегда является новым независимым
+review dispatch. Advisory tool call остаётся эфемерным non-role выводом и не может авторизовать
+работу.
 
 `approval_policy: auto` задаёт автоматический путь от `batch approve` до принятого publish.
 Политика согласует batch, каждый dispatch и плановое продолжение. `batch auto-decide` принимает

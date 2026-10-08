@@ -74,7 +74,7 @@ class ContractErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "ContractError"
         ]
-        self.assertEqual(len(sites), 43)
+        self.assertEqual(len(sites), 44)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [

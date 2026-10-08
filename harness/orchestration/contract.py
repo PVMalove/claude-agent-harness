@@ -64,6 +64,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "approval_ttl_seconds",
     "extensions",
     "access_policy",
+    "infrastructure_retry_policy",
 }
 # The working set a brief records for a role when the project states no `tool_policy`. It is the
 # role's own set, not a deny-list: global runtime tools stay available whatever a brief records.
@@ -447,6 +448,13 @@ def validate_brief_policy(
     try:
         validate_binding(brief)
     except AccessError as exc:
+        raise ContractError(exc.message, remedy=exc.remedy) from exc
+    from .infrastructure_retry import pinned
+    from .core.utils import CoordinatorError
+
+    try:
+        pinned(brief)
+    except CoordinatorError as exc:
         raise ContractError(exc.message, remedy=exc.remedy) from exc
     approval = brief.get("coordinator_approval")
     # `transition_digest` binds the approval to the exact transition it was given for; a brief
@@ -851,6 +859,16 @@ ATTENTION_POLICY_FIELDS = {
 def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
     """Валидировать параметры операционного цикла: attention_policy, approval_ttl_seconds и extensions."""
     problems: list[str] = []
+    if "infrastructure_retry_policy" in config:
+        retry = config["infrastructure_retry_policy"]
+        if (
+            not isinstance(retry, dict)
+            or set(retry) != {"enabled"}
+            or not isinstance(retry.get("enabled"), bool)
+        ):
+            problems.append(
+                "orchestration infrastructure_retry_policy must contain only enabled (boolean)"
+            )
     attention = config.get("attention_policy")
     if attention is not None:
         if not isinstance(attention, dict):
@@ -1008,7 +1026,9 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     if reject_error:
         problems.append(str(reject_error))
     # Access-only projects keep session assignments; validate authored values before defaults.
-    if "access_policy" in config and not any(
+    if (
+        "access_policy" in config or "infrastructure_retry_policy" in config
+    ) and not any(
         config.get(key)
         for key in ("assignment_plans", "backend_zones", "provider_profiles")
     ):
