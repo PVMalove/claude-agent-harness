@@ -7517,41 +7517,137 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch["batch_id"], "architect", "work", None
         ), source_path
 
-    def test_enabled_reuse_checks_its_sources_after_bypass_registration(self) -> None:
-        import sqlite3
+    def test_a_changed_memory_source_registers_a_new_package_instead_of_reuse(
+        self,
+    ) -> None:
+        from harness.memory import build
 
         fields, source_path = self._memory_dispatch_fixture()
-        with mock.patch.object(sqlite3, "connect", wraps=sqlite3.connect) as connects:
-            enabled = coordinator.create_dispatch(
-                self._args(propose=True, no_memory=False, **fields)
+        root = ledger_ops._state_root(self._args(), self.repo)
+        enabled = coordinator.create_dispatch(
+            self._args(propose=True, no_memory=False, **fields)
+        )
+        coordinator.create_dispatch(self._args(propose=True, no_memory=True, **fields))
+        stale_id = enabled["transition"]["context_package_id"]
+        stale_package = ledger_ops._load_context_package(root, stale_id)
+        source_path.write_text("# Changed source\nroute retries")
+        build(self.repo)
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "approval digest does not match"
+        ):
+            coordinator.create_dispatch(
+                self._args(
+                    no_memory=False,
+                    transition_digest=enabled["transition_digest"],
+                    **fields,
+                    **self._approval(),
+                )
             )
-            bypass = coordinator.create_dispatch(
-                self._args(propose=True, no_memory=True, **fields)
+
+        proposal = coordinator.create_dispatch(
+            self._args(propose=True, no_memory=False, **fields)
+        )
+        freshness = proposal["context_package_freshness"]
+        self.assertNotEqual(freshness["context_package_id"], stale_id)
+        self.assertEqual(freshness["status"], "fresh")
+        created = coordinator.create_dispatch(
+            self._args(
+                no_memory=False,
+                transition_digest=proposal["transition_digest"],
+                **fields,
+                **self._approval(),
             )
-            self.assertNotEqual(
-                enabled["transition"]["context_package_id"],
-                bypass["transition"]["context_package_id"],
-            )
-            source_path.write_text("# Changed source")
-            for propose in (True, False):
-                with self.subTest(propose=propose):
-                    with self.assertRaisesRegex(
-                        coordinator.CoordinatorError, "Context Package is stale"
-                    ):
-                        coordinator.create_dispatch(
-                            self._args(
-                                propose=propose,
-                                no_memory=False,
-                                transition_digest=enabled["transition_digest"],
-                                **fields,
-                                **self._approval(),
-                            )
-                        )
-            self.assertEqual(
-                connects.call_count,
-                1,
-                "freeze searches once; reused freshness does not query or refresh",
-            )
+        )
+
+        package = ledger_ops._load_context_package(
+            root, created["brief"]["context_package_id"]
+        )
+        self.assertEqual(package["context_package_id"], freshness["context_package_id"])
+        self.assertNotEqual(
+            package["memory"]["pointers"][0]["source_hash"],
+            stale_package["memory"]["pointers"][0]["source_hash"],
+        )
+        self.assertEqual(
+            ledger_ops._load_context_package(root, stale_id), stale_package
+        )
+
+    def test_developer_dispatch_survives_a_memory_source_change_after_architect(
+        self,
+    ) -> None:
+        """#636: the architect's shared package must not block the developer forever."""
+        from harness.memory import build
+
+        _, source_path = self._memory_dispatch_fixture()
+        root = ledger_ops._state_root(self._args(), self.repo)
+        architect = self._dispatch(self.batch_id, "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        self._decide(self.batch_id, "accept")
+        architect_package = ledger_ops._load_context_package(
+            root, architect["context_package_id"]
+        )
+        source_path.write_text("# Memory\nroute retries, revised")
+        build(self.repo)
+
+        developer = self._dispatch(self.batch_id, "developer")["brief"]
+
+        self.assertNotEqual(
+            developer["context_package_id"], architect["context_package_id"]
+        )
+        self.assertEqual(
+            ledger_ops._load_context_package(root, architect["context_package_id"]),
+            architect_package,
+        )
+
+    def test_unchanged_memory_sources_keep_reusing_the_shared_package(self) -> None:
+        _, _ = self._memory_dispatch_fixture()
+        architect = self._dispatch(self.batch_id, "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        self._decide(self.batch_id, "accept")
+
+        developer = self._dispatch(self.batch_id, "developer")["brief"]
+
+        self.assertEqual(
+            developer["context_package_id"], architect["context_package_id"]
+        )
+
+    def test_a_stale_fresh_registration_names_the_source_hashes_and_remedy(
+        self,
+    ) -> None:
+        fields, _ = self._memory_dispatch_fixture()
+        cases = {
+            "changed": ("b" * 64, "CONTEXT.md has source_hash " + "b" * 64),
+            "unavailable": (None, "CONTEXT.md is unavailable or revoked"),
+        }
+        for case, (actual, expected) in cases.items():
+            stale = {
+                "status": "stale",
+                "memory_mismatch": {
+                    "path": "CONTEXT.md",
+                    "expected_source_hash": "a" * 64,
+                    "actual_source_hash": actual,
+                },
+            }
+            with self.subTest(case=case):
+                with (
+                    mock.patch.object(
+                        dispatch, "_context_package_freshness", return_value=stale
+                    ),
+                    self.assertRaises(coordinator.CoordinatorError) as raised,
+                ):
+                    coordinator.create_dispatch(
+                        self._args(propose=True, no_memory=False, **fields)
+                    )
+                message = str(raised.exception)
+                self.assertIn(expected, message)
+                self.assertIn("a" * 64, message)
+                self.assertIn("harness memory rebuild", raised.exception.remedy)
+                self.assertIn("--no-memory", raised.exception.remedy)
 
     def test_bypass_reuse_is_not_blocked_by_a_later_stale_enabled_package(self) -> None:
         import sqlite3
