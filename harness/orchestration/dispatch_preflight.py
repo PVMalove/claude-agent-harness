@@ -453,7 +453,7 @@ def prepare(
         "checks": list(checks),
         "context_package": package,
         "approval_reason": "the immutable brief will bind this exact runtime, worktree and snapshot",
-        "options": ["accept", "retry", "block", "full review", "delta-review"],
+        "options": ["accept", "retry", "block"],
     }
     # Authored requirements follow the runtime's role manifest, including specialist writers.
     from .core.config import _role
