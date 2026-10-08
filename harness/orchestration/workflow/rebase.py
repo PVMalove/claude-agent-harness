@@ -27,7 +27,9 @@ from harness.orchestration.core.git_utils import (
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.core.workspace import _integration_ref
 from harness.orchestration.ledger.ledger_ops import _load_dispatch
+from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow.history import _pending_report
 
 
 def propose_target(repo: Path, batch: JsonObject, snapshot: str) -> str | None:
@@ -104,6 +106,47 @@ def report_base(
     if dispatch.get("role") == "developer" and isinstance(snapshot, str):
         return approved_target(repo, root, batch, snapshot) or base
     return base if isinstance(base, str) else None
+
+
+def pre_chain_copies(
+    repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject, report: JsonObject
+) -> set[str]:
+    """The rebased copies, in the retry chain of ``dispatch`` (``carried_items.closure_attempts``),
+    of commits that existed before the chain (issue #627): a closure never names them, as it does
+    not name their originals.
+
+    A copy is traced through the ``rebased_from`` of every rebase-fix-forward ``commit_map`` of the
+    chain (``report`` is the one of ``dispatch`` itself) back to its original; the copy is a
+    pre-chain copy when that original is not above the chain's first ``snapshot_commit``. A
+    stale-base rebase maps no ``rebased_from``, so it has no pre-chain copies: that route counts
+    closure commits from the batch target, as for #503. A recorded report of an earlier attempt
+    must pass its integrity check.
+    """
+    attempts = carried_items.closure_attempts(root, batch, dispatch)
+    resolve = partial(_candidate_commit, repo)
+    entries = {item.get("dispatch_id"): item for item in batch.get("dispatches", [])}
+    original_of: dict[str, str] = {}
+    for brief in attempts:
+        if plan_rules.rebase_target(brief) is None:
+            continue
+        source = (
+            report
+            if brief is dispatch
+            else _pending_report(root, batch, entries.get(brief["dispatch_id"], {}))
+        )
+        for original, copy in plan_rules.rebased_commits(source, resolve)[0]:
+            original_of[copy] = original
+    first = attempts[0]["snapshot_commit"] if attempts else ""
+
+    def origin(copy: str) -> str:
+        # Bounded: a malformed commit_map of a brief without commit_plan is not validated yet.
+        for _ in original_of:
+            if copy not in original_of:
+                break
+            copy = original_of[copy]
+        return copy
+
+    return {copy for copy in original_of if _git_is_ancestor(repo, origin(copy), first)}
 
 
 def previous_commits(repo: Path, dispatch: JsonObject) -> list[str]:

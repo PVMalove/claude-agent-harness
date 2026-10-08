@@ -1053,6 +1053,7 @@ def _revalidate_pending(
         rebase.report_base(repo, root, batch, dispatch),
         _rebase_target(batch, dispatch),
         _closure_base(repo, root, batch, dispatch),
+        partial(rebase.pre_chain_copies, repo, root, batch, dispatch, report),
     )
     resolver_state.validate_report(repo, root, batch, dispatch, report)
 

@@ -745,10 +745,16 @@ The report must include:
   attempts that handed it the same closed list (a retried developer report or a developer
   `tooling-retry`): its commits count from the `snapshot_commit` of the chain's first attempt that
   this dispatch's `snapshot_commit` still descends from (from the rebase target under one, and from
-  the target of a not yet accepted `rebase-fix-forward` attempt of the chain, whose rebased copies
-  and fix commits therefore count), so an item an earlier attempt closed names that attempt's
-  commit, or its rebased copy after a rebase. A completed report must carry it, a blocked or failed
-  one may, and no other report may. A missing, unknown or repeated item, an empty
+  the target of a not yet accepted `rebase-fix-forward` attempt of the chain), so an item an
+  earlier attempt closed names that attempt's commit, or its rebased copy after a rebase. After a
+  `rebase-fix-forward` attempt the chain owns two kinds of commits: the new commits of its attempts,
+  and the rebased copies whose `rebased_from` in the `commit_map` of the attempt's report names a
+  commit the chain created. A copy of a copy is traced through any earlier rebase to its original.
+  The rebased copy of a commit that existed before the chain (at or below the `snapshot_commit` of
+  its first attempt) is refused with the same remedy as its original. A legacy stale-base rebase
+  maps no `rebased_from`, so its closure still counts every commit above the batch target (the one
+  exception). A completed report must carry it, a blocked or failed one may, and no other report
+  may. A missing, unknown or repeated item, an empty
   reason, an empty commit list, an unresolvable SHA or a commit the chain did not create is refused,
   with or without a `commit_plan`. A completed report recorded before issue #503 without the field
   is still decided: every item is `omitted` and a carried gap.

@@ -853,9 +853,11 @@ def _retried_attempt(
     return previous
 
 
-def closure_snapshots(root: Path, batch: JsonObject, dispatch: JsonObject) -> list[str]:
-    """The snapshots of the retry chain whose commits a carried_item_closure may name (#503),
-    oldest first and ending with the dispatch's own ``snapshot_commit``; ``[]`` when none is owed.
+def closure_attempts(
+    root: Path, batch: JsonObject, dispatch: JsonObject
+) -> list[JsonObject]:
+    """The developer briefs of the retry chain whose commits a carried_item_closure may name (#503),
+    oldest first and ending with ``dispatch``; ``[]`` when no closure is owed.
 
     A retried developer report, or a developer tooling-retry, hands the same closed list to the
     next attempt, whose ``snapshot_commit`` is the retried attempt's HEAD. An item an earlier
@@ -865,12 +867,19 @@ def closure_snapshots(root: Path, batch: JsonObject, dispatch: JsonObject) -> li
     if not _closure_owed(dispatch):
         return []
     entries = batch.get("dispatches", [])
-    chain: list[str] = []
+    chain: list[JsonObject] = []
     brief: JsonObject | None = dispatch
     while brief is not None and isinstance(brief.get("snapshot_commit"), str):
-        chain.insert(0, brief["snapshot_commit"])
+        chain.insert(0, brief)
         brief = _retried_attempt(root, entries, brief)
     return chain
+
+
+def closure_snapshots(root: Path, batch: JsonObject, dispatch: JsonObject) -> list[str]:
+    """The ``snapshot_commit`` of every attempt of ``closure_attempts``, oldest first."""
+    return [
+        brief["snapshot_commit"] for brief in closure_attempts(root, batch, dispatch)
+    ]
 
 
 def check_closure_commits(
@@ -879,8 +888,9 @@ def check_closure_commits(
     """Every commit a carried_item_closure names was created by its retry chain (issue #503).
 
     ``created`` is the ordered list of commits after the chain's base (``closure_snapshots``; the
-    rebase target for a rebase) up to the reported HEAD; ``resolve`` turns a reported SHA into its
-    full form.
+    rebase target for a rebase) up to the reported HEAD, without the rebased copies of commits that
+    existed before the chain (``rebase.pre_chain_copies``); ``resolve`` turns a reported SHA into
+    its full form.
     """
     for item_id, record in _closure(report).items():
         commits = record.get("commits") or []
