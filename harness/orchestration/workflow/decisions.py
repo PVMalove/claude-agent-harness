@@ -84,6 +84,7 @@ from harness.orchestration.workflow.history import (
     _require_route,
     _risk_for_candidate,
     _settled,
+    _superseding_start_commit,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -728,7 +729,11 @@ def _discard_batch_leftovers(
 
 
 def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | None:
-    """The newest accepted stage of a batch: the point a fresh batch can be built from."""
+    """The newest accepted stage of a batch: the point a fresh batch can be built from.
+
+    Its candidate is the latest accepted developer candidate. A superseding batch without one
+    still holds the candidate it started from (``supersedes.start_commit``), so a batch that
+    supersedes it in turn resumes there too (issue #506)."""
     entry = next(
         (
             item
@@ -744,7 +749,7 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
     try:
         candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        candidate = None
+        candidate = _superseding_start_commit(batch)
     return {
         "dispatch_id": entry["dispatch_id"],
         "role": entry["role"],

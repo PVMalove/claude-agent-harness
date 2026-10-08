@@ -550,7 +550,12 @@ def _current_developer_candidate(
     try:
         return _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        pass
+        return _superseding_start_commit(batch)
+
+
+def _superseding_start_commit(batch: JsonObject) -> str | None:
+    """A superseding batch's ``start_commit``: the abandoned batch's last accepted candidate
+    (issue #506); ``None`` for any other batch or when only the architect was accepted."""
     link = batch.get("supersedes")
     start = link.get("start_commit") if isinstance(link, dict) else None
     return start if isinstance(start, str) else None

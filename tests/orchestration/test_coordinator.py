@@ -5274,6 +5274,51 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(third["next_action"], "developer")
 
+    def test_a_superseding_batch_with_only_its_architect_accepted_hands_on_its_start_commit(
+        self,
+    ) -> None:
+        first, candidate = self._abandoned_batch()
+        other = ["route retries by cause", "log the chosen route"]
+        second = cast(str, self._supersede(first, definition_of_done=other)["batch_id"])
+        coordinator.approve_batch(self._args(batch=second, **self._approval()))
+        self._accepted_architect(second)
+        blocked = self._abandon_after_a_blocked_developer(second)
+        self.assertEqual(blocked["snapshot_commit"], candidate)
+        architect = next(
+            item
+            for item in self._batch_record(second)["dispatches"]
+            if item["role"] == "architect"
+        )
+        self.assertEqual(
+            self._batch_record(second)["abandoned"]["last_accepted"],
+            {
+                "dispatch_id": architect["dispatch_id"],
+                "role": "architect",
+                "candidate_commit": candidate,
+            },
+        )
+
+        third = self._supersede(second, definition_of_done=other)
+        coordinator.approve_batch(
+            self._args(batch=third["batch_id"], **self._approval())
+        )
+
+        link = third["supersedes"]
+        self.assertEqual(
+            (
+                link["start_commit"],
+                link["rebase_target_commit"],
+                link["architect"]["batch_id"],
+                third["next_action"],
+            ),
+            (candidate, None, second, "developer"),
+        )
+        brief = self._dispatch(third["batch_id"], "developer")["brief"]
+        self.assertEqual(
+            (brief["snapshot_commit"], brief["transition"]["next_action"]),
+            (candidate, "developer"),
+        )
+
     def test_issue_443_an_abandoned_dead_end_resumes_in_a_superseding_batch(
         self,
     ) -> None:
