@@ -979,6 +979,66 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `batch abandon` для batch, у которого не будет ни одного report, остаётся прежней и завершает его
 в `failed`.
 
+#### Замещающий batch: `batch create --supersedes`
+
+Если batch закрыт решением `batch decide --decision abandon` после тупика (например, blocker
+code-review при исчерпанном бюджете retry), работу продолжает замещающий batch. Он создаётся для
+того же ticket и той же issue-ветки и начинает с `abandoned.last_accepted`, а не с нового architect
+и ручного cherry-pick принятых коммитов:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch create \
+  --ticket '#443' --branch feature/issue-443-<slug> --worktree <тот же worktree> \
+  --allowed-path '<scope>' --definition-of-done '<item>' --prohibited-change '<rule>' \
+  --supersedes <abandoned-batch-id> --approved-by 'имя утверждающего' \
+  --approved-at 2026-09-20T09:00:00Z
+```
+
+`--supersedes` требует approval человека. `--approved-by` и `--approved-at` проверяются так же, как
+у `batch abandon`: TTL approval и подтверждение в терминале при `human_approval_gate: tty`.
+Approver с префиксом `policy:` отклоняется. Флаги approval без `--supersedes` тоже отклоняются:
+обычный batch утверждается через `batch approve`. Замещающий batch после создания тоже проходит
+`batch approve`. Команда называет remedy и ничего не пишет, если источника нет в текущем поколении
+ledger, если его состояние не `abandoned`, если `abandoned.last_accepted` равен `null`, если ticket
+или issue-ветка отличаются или если последний принятый candidate не резолвится в коммит. Batch,
+закрытый `batch abandon`, остаётся в `failed` без `last_accepted`, а при `null` ничего не было
+принято: в обоих случаях нужен обычный batch. Abandoned batch не держит ticket, ветку и worktree,
+но другой незавершённый batch с тем же ticket, веткой или worktree по-прежнему блокирует создание.
+
+Новый batch и его immutable plan несут одну и ту же неизменяемую ссылку `supersedes`: `batch_id`,
+`approved_by`, `approved_at`, копию `last_accepted`, `definition_of_done_matches`, `architect`,
+`start_commit` и `rebase_target_commit`. Batch, чья ссылка разошлась с plan, не проходит проверку
+целостности. В `coordinator_decisions` нового batch одна запись `supersede`. Её routing record
+маршрута `supersede` называет `previous_role`, `next_role`, `next_action`, `candidate_commit`
+(`start_commit`), `rebase_target_commit`, `superseded_batch_id`, `rationale` и `decided_at`.
+
+Что переносится:
+
+- при том же Definition of Done (списки совпадают поэлементно) — принятый architect источника по
+  ссылке `supersedes.architect` (`batch_id`, `dispatch_id`, `report`, `report_sha256`,
+  `commit_plan_sha256`) и commit plan, закреплённый при его accept через `--commit-plan-file`
+  (#478). Если источник сам перенёс architect, передаётся та же ссылка. Batch начинает с
+  `next_action: developer`: developer dispatch создаётся сразу, а architect dispatch не допускается.
+  При другом Definition of Done не переносится ничего, и стадия architect проходит заново;
+- `start_commit` — candidate из `last_accepted` (`null`, если принят только architect). Первый
+  developer dispatch берёт его как `snapshot_commit`, и brief, preflight и проверка свежести Context
+  Package видят один и тот же SHA. Если `start_commit` — потомок integration base, закреплённой при
+  create, это обычный initial developer: его `commit_map` покрывает все коммиты после base, включая
+  коммиты `start_commit`;
+- `rebase_target_commit` — эта base, если `start_commit` её не содержит. Тогда первый developer —
+  developer-retry маршрута rebase внутри retry (#504): он перебазирует коммиты на target, исправляет
+  поверх и сдаёт пары `rebased_from`, а `report submit` возвращает `rebase_check`. Такой dispatch
+  всегда требует явного approval с transition digest. Target остаётся в brief, пока продолжаемый
+  snapshot его не содержит, например после retry ещё не перебазированного отчёта.
+
+Что не переносится никогда: risk assessment, code-review, QA, carried items, candidate registrations
+и решения оператора. Они остаются evidence abandoned batch и доступны только по
+`supersedes.batch_id`. Risk assessment, review и QA проходят заново на новом candidate. Запись
+`supersede` — не retry и не расходует `retry_policy.max_developer_retries`: у замещающего batch
+свой бюджет. Abandoned batch только читается. Worktree должен стоять на `start_commit`: если
+тупиковая попытка оставила выше непринятые коммиты, runtime attestation отклонит developer с
+remedy, а вернуть ветку назад решает человек. Источник ищется только в текущем поколении ledger.
+
 #### Поле `route`: routing record, decision packet и audit
 
 Каждое решение `retry` и `abandon` в `batch decide` записывает выбранный маршрут восстановления в
@@ -1001,7 +1061,9 @@ agent inbox и записи QA-очереди dispatch, которые уже н
 `developer-retry` с непустым закрытым списком перенесённых пунктов (см. выше). Двенадцатое,
 `rebase-fix-forward`, записывает `retry`, который ведёт в `developer-retry`, пока integration base
 ушла вперёд (см. выше); его routing record дополнительно называет `rebase_target_commit` и
-`integration_base_commit`. Каждый routing record с `next_action: developer-retry`
+`integration_base_commit`. Тринадцатое, `supersede`, `batch decide` не записывает: его записывает
+`batch create --supersedes` в `coordinator_decisions` нового batch (см. «Замещающий batch» выше).
+Каждый routing record с `next_action: developer-retry`
 (`developer-retry`, `fix-forward`, `rebase-fix-forward` и `tooling-retry` developer) дополнительно
 называет `retry_item_ids`. Маршрут ставится там же, где
 `next_action`, по тем же структурированным данным и никогда по свободному тексту. У `abandon`
@@ -1040,7 +1102,9 @@ developer report, а без такого report — `batch carry-over`, либо
 `approver` и `approved_at`. `approver` — `{"kind": "policy", "name": "low_risk" | "milestone" | "auto"}` для
 policy auto-accept или `{"kind": "human", "name": <--approved-by>}` для явного решения; решение
 `batch carry-over` пишет ту же деталь с `route: "carry-over"` и
-`{"kind": "policy", "name": "carry-over"}`; вид
+`{"kind": "policy", "name": "carry-over"}`; `batch create --supersedes` пишет деталь с
+`"dispatch_id": null`, `decision` и `route` `supersede`, ссылкой на abandoned batch в `evidence`
+(`batch_id`, `last_accepted`, `architect`) и `{"kind": "human", ...}`; вид
 определяется путём, которым решение утверждено, а не строкой имени. Деталь входит в ту же audit-запись
 и ту же контрольную сумму, что и переход batch. Маршрут вне `RECOVERY_ROUTES` отклоняется с remedy
 при записи и при чтении batch.
@@ -1145,7 +1209,9 @@ developer-retry, записанный до #503 без `carried_item_closure` д
 значение маршрута `rebase-fix-forward` (#504) тоже введены без смены версии ledger и без миграции:
 переход без target сохраняет прежний digest. Brief без `delta_review_scope` и transition без
 `delta_review_sha256` (#625) тоже валидны и введены без смены версии ledger и без миграции: переход
-code-review без раздела сохраняет прежний digest.
+code-review без раздела сохраняет прежний digest. Ссылка `supersedes` в batch и plan и значение
+маршрута `supersede` (#506) тоже введены без смены версии ledger и без миграции: batch и plan без
+ссылки читаются как прежде.
 
 Поле `route` в routing record и деталь `decision` в transition audit record batch тоже
 необязательны и введены без смены версии ledger (остаётся 3). Решение, записанное до них, читается

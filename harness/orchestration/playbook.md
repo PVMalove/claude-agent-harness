@@ -170,6 +170,22 @@ The batch records `abandoned.last_accepted` (the newest accepted stage and candi
 batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
 or `retry`.
 
+After a forced abandon, `batch create --supersedes <batch>` with `--approved-by` and
+`--approved-at` (a human; a `policy:` approver is refused) plans a superseding batch for the same
+ticket and issue branch. It refuses, with a remedy and without writing anything, a source that is
+not `abandoned`, one whose `abandoned.last_accepted` is `null`, and another ticket or issue branch.
+The new batch and its immutable plan carry the same `supersedes` link, and its
+`coordinator_decisions` hold one `supersede` decision with route `supersede`. With the same
+Definition of Done, the abandoned batch's accepted architect is carried by reference together with
+its pinned commit plan, and the batch starts at the developer stage; another Definition of Done
+carries nothing and runs the architect stage again. The first developer starts at the last accepted
+candidate (`start_commit`): as an initial developer when it descends from the integration base
+pinned at create, otherwise as a developer-retry with that base as `rebase_target_commit`, which
+always needs an explicit approval. Risk assessments, reviews, QA, carried items and operator
+decisions are never copied: they stay with the abandoned batch and are reached through
+`supersedes.batch_id`, and risk assessment, review and QA run again on the new candidate. The
+`supersede` decision spends no developer retry.
+
 ## Recovery route table
 
 Every `retry` and `abandon` decision of `batch decide` records its recovery route as

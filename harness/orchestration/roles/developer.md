@@ -87,6 +87,10 @@ field. A `not_covered` item is never accepted as clean.
 For initial work, including startup recovery, the map covers every commit after the batch base: the
 startup SHA can already include unfinished progress. For `developer-retry`, map only commits after
 `snapshot_commit`.
+The first developer of a superseding batch (`batch create --supersedes`) starts at the abandoned
+batch's last accepted candidate as its `snapshot_commit`: an initial brief maps the inherited
+commits after the batch base too, and a developer-retry brief with a non-null
+`rebase_target_commit` rebases them onto that target as described above.
 Do not report the candidate SHA alone when it hides multiple commits.
 
 A developer-retry brief whose `carried_items` is not empty hands on the closed list of items its
