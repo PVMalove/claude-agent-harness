@@ -8,9 +8,11 @@ lifecycle transition that needs a human goes through here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from datetime import UTC, datetime
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core.config import (
     _approval_ttl,
@@ -19,14 +21,84 @@ from harness.orchestration.core.config import (
 )
 from harness.orchestration.core.constants import (
     APPROVAL_CLOCK_SKEW_SECONDS,
+    AUTO_DECISION_KINDS,
+    AUTO_EVIDENCE_FIELDS,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
+    _canonical,
     _moment,
     _non_empty,
     _repo,
 )
+
+AUTO_POLICY = "auto"
+AUTO_APPROVER = f"policy:{AUTO_POLICY}"
+
+
+def auto_configured(config: JsonObject, batch: JsonObject) -> bool:
+    """Whether both the project config and the batch plan chose ``approval_policy: auto``.
+
+    A batch planned under another policy keeps it, and a project that left ``auto`` stops
+    approving by policy, so both must agree (issue #643).
+    """
+    return (
+        config.get("approval_policy") == AUTO_POLICY
+        and batch.get("approval_policy") == AUTO_POLICY
+    )
+
+
+def auto_active(config: JsonObject, batch: JsonObject) -> bool:
+    """Whether ``auto`` approves this batch's next step: configured and not stopped.
+
+    A recorded ``auto_stop`` is irreversible for the batch: every later step needs a human.
+    """
+    return auto_configured(config, batch) and "auto_stop" not in batch
+
+
+def sealed(body: JsonObject) -> JsonObject:
+    """``body`` with the ``record_sha256`` of its canonical form, as every hashed record has."""
+    return {
+        **body,
+        "record_sha256": hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest(),
+    }
+
+
+def record_auto(
+    batch: JsonObject,
+    *,
+    kind: str,
+    dispatch_id: str | None,
+    rationale: str,
+    evidence: JsonObject,
+    moment: str,
+) -> JsonObject:
+    """Append one hashed ``policy:auto`` approval to ``batch.auto_decisions`` and return it.
+
+    Only the in-memory batch changes; the caller persists it in the same ledger write as the
+    approval it records.
+    """
+    if kind not in AUTO_DECISION_KINDS or set(evidence) != AUTO_EVIDENCE_FIELDS[kind]:
+        raise CoordinatorError(
+            f"auto decision {kind!r} has an invalid evidence shape",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    records = batch.setdefault("auto_decisions", [])
+    record = sealed(
+        {
+            "sequence": len(records) + 1,
+            "kind": kind,
+            "dispatch_id": dispatch_id,
+            "approved_by": AUTO_APPROVER,
+            "approved_at": moment,
+            "rationale": rationale,
+            "evidence": evidence,
+        }
+    )
+    _reject_sensitive(record, "auto decision")
+    records.append(record)
+    return record
 
 
 def _confirm_on_terminal(

@@ -117,6 +117,12 @@ from harness.orchestration.workflow.attention import (
 from harness.orchestration.workflow.attention import (
     record_context_pressure as record_context_pressure,
 )
+from harness.orchestration.workflow.auto_policy import (
+    auto_decide as auto_decide,
+)
+from harness.orchestration.workflow.auto_report import (
+    auto_report as auto_report,
+)
 from harness.orchestration.workflow.batch import (
     abandon_batch as abandon_batch,
 )

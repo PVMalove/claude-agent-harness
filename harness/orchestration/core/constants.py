@@ -456,6 +456,104 @@ ZERO_ALLOWED_POLICY_FIELDS = {
     ("attention_policy", "max_infrastructure_retries"),
 }
 APPROVAL_CLOCK_SKEW_SECONDS = 300
+# `approval_policy: auto` (issue #643): every approval the policy gives is one hashed, append-only
+# record in `batch.auto_decisions`, with evidence fields fixed per kind.
+AUTO_DECISION_KINDS = (
+    "batch-approve",
+    "dispatch",
+    "continuation",
+    "decision",
+    "carry-over",
+)
+AUTO_DECISION_FIELDS = frozenset(
+    {
+        "sequence",
+        "kind",
+        "dispatch_id",
+        "approved_by",
+        "approved_at",
+        "rationale",
+        "evidence",
+        "record_sha256",
+    }
+)
+AUTO_EVIDENCE_FIELDS = {
+    "batch-approve": frozenset(
+        {"plan_sha256", "scope_preflight_status", "definition_of_done_items"}
+    ),
+    "dispatch": frozenset(
+        {
+            "transition_digest",
+            "brief_sha256",
+            "lifted_milestones",
+            "route_preview",
+            "reason_category",
+            "report_sha256",
+        }
+    ),
+    "continuation": frozenset(
+        {"trigger", "checkpoint_id", "continuations_spent", "max_continuations"}
+    ),
+    "decision": frozenset(
+        {
+            "decision",
+            "report_sha256",
+            "route_preview",
+            "reason_category",
+            "basis",
+            "accepted_risks",
+            "commit_plan_sha256",
+            "bug_ticket",
+            "carried_item_ids",
+        }
+    ),
+    "carry-over": frozenset({"report_sha256", "carried_item_ids"}),
+}
+# The closed list of conditions that halt the automatic path; nothing else stops it.
+AUTO_STOP_REASONS = {
+    "budget-exhausted": (
+        "retry_policy.max_developer_retries",
+        "continuation_policy.max_continuations",
+        "continuation_policy.max_rate_limit_resumes",
+        "attention_policy.max_infrastructure_retries",
+        "tooling-retry-repeated",
+    ),
+    "integrity-failure": (
+        "stale",
+        "model-mismatch",
+        "worktree-mismatch",
+        "harness-snapshot-changed",
+        "deterministic-gate-failed",
+        "ledger-validation-failed",
+    ),
+    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+}
+AUTO_STOP_FIELDS = frozenset(
+    {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}
+)
+AUTO_REPORT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "batch_id",
+        "ticket",
+        "branch",
+        "outcome",
+        "stop",
+        "candidate_commit",
+        "decisions",
+        "accepted_risks",
+        "findings",
+        "retries",
+        "budget",
+        "commit_plan",
+        "dod_coverage",
+        "review",
+        "qa",
+        "next_human_action",
+        "recorded_at",
+        "record_sha256",
+    }
+)
 # Only a value the provider or runtime observed is context telemetry; a model's own claim never is.
 CONTEXT_TELEMETRY_SOURCES = ("probe", "provider-usage", "runtime-adapter")
 CONTEXT_PRESSURE_FIELDS = {

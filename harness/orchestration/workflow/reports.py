@@ -112,6 +112,7 @@ from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -635,11 +636,13 @@ def _authorize_planned_continuation(
     dispatch: JsonObject,
     checkpoint: JsonObject,
     args: argparse.Namespace,
+    batch: JsonObject | None = None,
 ) -> JsonObject:
     """A planned trigger (context limit, N TDD cycles, a large failure log, or a completed
     vertical slice) is a safe-default-toward-approval path: it always requires the same explicit
     coordinator decision an accept/retry/block/fail already does, reusing that record type rather
-    than inventing a new one."""
+    than inventing a new one. Under ``approval_policy: auto`` the policy gives that decision when
+    no approval is passed (issue #643); the answer to a resolver's options stays a human's."""
     trigger = args.trigger.strip() if _non_empty(args.trigger) else ""
     if trigger not in PLANNED_TRIGGER_KINDS:
         raise CoordinatorError(
@@ -662,7 +665,16 @@ def _authorize_planned_continuation(
                 remedy=f"pass --measured-value >= {threshold} for planned trigger {trigger!r}",
             )
     _check_continuation_facts_unchanged(dispatch, checkpoint, args)
-    approval = _approval(args)
+    if (
+        batch is not None
+        and trigger != "human-decision"
+        and not _non_empty(getattr(args, "approved_by", None))
+        and not _non_empty(getattr(args, "approved_at", None))
+        and approvals.auto_active(config, batch)
+    ):
+        approval = {"approved_by": approvals.AUTO_APPROVER, "approved_at": utils._now()}
+    else:
+        approval = _approval(args)
     return {
         "decision": "continue",
         "approved_by": approval["approved_by"],
@@ -810,8 +822,23 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 root, batch, dispatch["dispatch_id"]
             )
             authorization = _authorize_planned_continuation(
-                config, dispatch, checkpoint, args
+                config, dispatch, checkpoint, args, batch
             )
+            if authorization["approved_by"] == approvals.AUTO_APPROVER:
+                approvals.record_auto(
+                    batch,
+                    kind="continuation",
+                    dispatch_id=dispatch["dispatch_id"],
+                    rationale=f"planned trigger {args.trigger.strip()} with unchanged "
+                    "continuation facts inside the continuation budget",
+                    evidence={
+                        "trigger": args.trigger.strip(),
+                        "checkpoint_id": checkpoint["checkpoint_id"],
+                        "continuations_spent": continuation_count,
+                        "max_continuations": continuation_policy["max_continuations"],
+                    },
+                    moment=authorization["approved_at"],
+                )
         entry["state"] = "dispatched"
         batch.setdefault("coordinator_decisions", []).append(
             {
@@ -1881,6 +1908,12 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         )
         response["decision_packet"] = packet
+        if approvals.auto_active(config, batch):
+            # Under `auto` the policy decides a report its chain does not accept (issue #643).
+            response["next_coordinator_command"] = (
+                "python .harness/orchestration/coordinator.py --repo . batch auto-decide "
+                f"--batch {batch['batch_id']}"
+            )
         return response
     # The policy decision, risk assessment and next dispatch run after the ledger lock is released,
     # each as an ordinary command revalidated against the persisted report.  The report is

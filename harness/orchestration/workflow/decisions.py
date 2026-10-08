@@ -66,6 +66,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -120,6 +121,9 @@ def _auto_accept_policy(
         "milestone",
         "auto",
     }:
+        return None
+    # A recorded auto stop is irreversible for the batch: a human decides every report after it.
+    if policy == "auto" and "auto_stop" in batch:
         return None
     if (
         report.get("outcome") != "completed"
@@ -882,9 +886,18 @@ def _pinned_commit_plan(
 def _read_commit_plan(
     repo: Path, batch: JsonObject, plan_file: str
 ) -> list[JsonObject]:
-    document = _read_object(
+    return _pin_commit_plan(batch, _commit_plan_document(repo, plan_file))
+
+
+def _commit_plan_document(repo: Path, plan_file: str) -> JsonObject:
+    """The commit plan file as a JSON object; a path, read or syntax error is an input error."""
+    return _read_object(
         _agent_authored_file(repo, plan_file, "a commit plan"), "commit plan"
     )
+
+
+def _pin_commit_plan(batch: JsonObject, document: JsonObject) -> list[JsonObject]:
+    """The plan in ``document``, validated against the batch Definition of Done."""
     _reject_sensitive(document, "commit plan")
     return plan_rules.pinned_plan(document, batch["definition_of_done"])
 
@@ -1022,13 +1035,46 @@ def _incomplete_carry_preview(
         return {"route": None, "refused": exc.message, "remedy": exc.remedy}
 
 
+def _revalidate_pending(
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+) -> None:
+    """Validate the pending report and its brief again, as every decision on them does."""
+    _validate_dispatch(repo, config, root, batch, dispatch)
+    _validate_report(
+        report,
+        dispatch,
+        _role(repo, dispatch["role"]),
+        repo,
+        rebase.report_base(repo, root, batch, dispatch),
+        _rebase_target(batch, dispatch),
+        _closure_base(repo, root, batch, dispatch),
+    )
+    resolver_state.validate_report(repo, root, batch, dispatch, report)
+
+
 def decide_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
+    # `batch auto-decide` (issue #643): the policy computes the decision under this lock and it
+    # then passes every check a human decision passes; a stop of the closed list is recorded.
+    auto_inputs = getattr(args, "_policy_auto", None)
+    auto_choice = None
+    if auto_inputs is not None:
+        from harness.orchestration.workflow import auto_policy
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
-        _validate_batch_integrity(root, batch)
+        try:
+            _validate_batch_integrity(root, batch)
+        except CoordinatorError as exc:
+            if auto_inputs is None:
+                raise
+            raise auto_policy.ledger_stop_error(exc) from exc
         pending = [
             item
             for item in batch.get("dispatches", [])
@@ -1042,17 +1088,36 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
         report = _pending_report(root, batch, pending[0])
         dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
         config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
-        _validate_report(
-            report,
-            dispatch,
-            _role(repo, dispatch["role"]),
-            repo,
-            rebase.report_base(repo, root, batch, dispatch),
-            _rebase_target(batch, dispatch),
-            _closure_base(repo, root, batch, dispatch),
-        )
-        resolver_state.validate_report(repo, root, batch, dispatch, report)
+        try:
+            _revalidate_pending(repo, root, config, batch, dispatch, report)
+        except CoordinatorError as exc:
+            if auto_inputs is None or not approvals.auto_active(config, batch):
+                raise
+            return auto_policy.persist_stop(
+                ledger,
+                repo,
+                root,
+                config,
+                batch,
+                auto_policy.validation_stop(repo, batch, exc),
+                detected_by="batch auto-decide",
+            )
+        if auto_inputs is not None:
+            resolution = auto_policy.resolve(
+                repo, root, config, batch, dispatch, report, auto_inputs
+            )
+            if resolution.stop is not None:
+                return auto_policy.persist_stop(
+                    ledger,
+                    repo,
+                    root,
+                    config,
+                    batch,
+                    resolution.stop,
+                    detected_by="batch auto-decide",
+                )
+            args = argparse.Namespace(**{**vars(args), **resolution.fields})
+            auto_choice = resolution.choice
         if report.get("outcome") != "completed" and args.decision in {
             "accept",
             "override-warning",
@@ -1165,7 +1230,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             )
         routing: JsonObject | None = None
         if args.decision == "retry":
-            routing = _decide_retry_route(repo, root, batch, dispatch, report, args)
+            routing = getattr(args, "_auto_routing", None) or _decide_retry_route(
+                repo, root, batch, dispatch, report, args
+            )
             bypass_named = (
                 getattr(args, "reason_category", None) == BLOCK_BYPASS_REASON_CATEGORY
             )
@@ -1216,7 +1283,13 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             )
         policy_auto_accept = getattr(args, "_policy_auto_accept", False)
         policy_retry = getattr(args, "_policy_infrastructure_retry", False)
-        if policy_retry:
+        if auto_inputs is not None:
+            approval = {
+                "approved_by": approvals.AUTO_APPROVER,
+                "approved_at": utils._now(),
+            }
+            approver = {"kind": "policy", "name": approvals.AUTO_POLICY}
+        elif policy_retry:
             from harness.orchestration.infrastructure_retry import authorize
 
             if args.decision != "retry":
@@ -1312,6 +1385,12 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             # each target role's brief reads the items back from the report.
             decision["routing"] = incomplete_carry
         pending[0]["decision"] = decision
+        if decision["approved_by"] == approvals.AUTO_APPROVER:
+            from harness.orchestration.workflow import auto_policy
+
+            auto_policy.record_decision(
+                batch, pending[0], dispatch, report, decision, auto_choice, auto_inputs
+            )
         decision_entry = {"dispatch_id": pending[0]["dispatch_id"], **decision}
         if routing is not None:
             decision_entry["next_role"] = routing["next_role"]
@@ -1375,6 +1454,19 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 _attention_findings(repo, root, config, batch, utils._now()),
                 utils._now(),
             )
+            if auto_inputs is not None:
+                # Under `auto` that attention is a stop of the closed list (issue #643).
+                stops = auto_policy.attention_stops(batch, [])
+                if stops:
+                    auto_policy.record_stop(
+                        repo,
+                        root,
+                        config,
+                        batch,
+                        stops[0],
+                        detected_by="batch auto-decide",
+                        moment=utils._now(),
+                    )
         abandoned: list[str] = []
         if args.decision in {"block", "fail", "abandon"}:
             # A terminal decision starts nothing: no next action is left behind to be picked up.
@@ -1398,6 +1490,11 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "open_dispatches": abandoned,
                 "last_accepted": _last_accepted(repo, root, batch),
             }
+        if auto_inputs is not None and batch.get("state") == "completed":
+            # The accepted publish ends the automatic path: its final report is recorded now.
+            from harness.orchestration.workflow import auto_report
+
+            auto_report.record(repo, root, config, batch, decision["approved_at"])
         _safe_id(batch["batch_id"], "batch")
         _replace_record(
             ledger,
