@@ -76,6 +76,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     PlanRecord,
 )
+from harness.orchestration.workflow import supersede
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -381,6 +382,8 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     scope_preflight = _scope_preflight(
         config, ticket.strip(), allowed_paths, dod, dependencies, args
     )
+    # A superseding batch is approved by a human before the lock (issue #506).
+    superseded = supersede.request(args)
     root = _state_root(args, repo)
     record: JsonObject = {
         "batch_id": f"batch-{uuid.uuid4()}",
@@ -430,16 +433,31 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         _reject_duplicate_work(
             root, record["ticket"], record["branch"], record["worktree"]
         )
+        audit = (
+            supersede.attach(repo, root, record, *superseded)
+            if superseded is not None
+            else None
+        )
         _write_record(
             ledger,
             PlanRecord.from_dict(
                 {
                     **{field: record[field] for field in PLAN_FIELDS},
                     "goal": record["goal"],
+                    # The link is immutable: integrity compares it with the batch's own copy.
+                    **(
+                        {"supersedes": record["supersedes"]}
+                        if "supersedes" in record
+                        else {}
+                    ),
                 }
             ),
         )
         _write_record(ledger, BatchRecord.from_dict(record))
+        if audit is not None:
+            # The supersede decision is stored on a batch transition audit record, as every
+            # `batch decide` decision is; the planned batch itself does not change.
+            _replace_record(ledger, BatchRecord.from_dict(record), decision=audit)
     return record
 
 

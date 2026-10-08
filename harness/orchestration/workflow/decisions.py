@@ -73,6 +73,7 @@ from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
+from harness.orchestration.workflow import supersede
 from harness.orchestration.workflow.attention import (
     _apply_attention,
     _attention_findings,
@@ -83,6 +84,7 @@ from harness.orchestration.workflow.history import (
     _require_route,
     _risk_for_candidate,
     _settled,
+    _superseding_start_commit,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -727,7 +729,11 @@ def _discard_batch_leftovers(
 
 
 def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | None:
-    """The newest accepted stage of a batch: the point a fresh batch can be built from."""
+    """The newest accepted stage of a batch: the point a fresh batch can be built from.
+
+    Its candidate is the latest accepted developer candidate. A superseding batch without one
+    still holds the candidate it started from (``supersedes.start_commit``), so a batch that
+    supersedes it in turn resumes there too (issue #506)."""
     entry = next(
         (
             item
@@ -743,7 +749,7 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
     try:
         candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        candidate = None
+        candidate = _superseding_start_commit(batch)
     return {
         "dispatch_id": entry["dispatch_id"],
         "role": entry["role"],
@@ -1179,7 +1185,9 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     ledger, repo, root, batch, report, config
                 )
             elif report["role"] == "architect":
-                batch["next_action"] = "developer"
+                # A superseding batch whose start commit needs a rebase starts with a
+                # developer-retry (issue #506); every other batch with the initial developer.
+                batch["next_action"] = supersede.developer_next_action(batch)
             elif report["role"] == "verification":
                 batch["next_action"] = "risk-assessment"
             elif report["role"] == "code-review":

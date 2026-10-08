@@ -70,6 +70,9 @@ RETRY_REASON_CATEGORIES = (
 # ``rebase-fix-forward`` (issue #504) is a ``developer-retry`` decided while ``origin/<integration_ref>``
 # moved ahead of the pinned integration base: its brief carries the human-approved rebase target,
 # and the developer rebases the candidate onto it and fixes on top in the same dispatch.
+# ``supersede`` (issue #506) is recorded by ``batch create --supersedes`` on the new batch: after a
+# forced abandon it resumes from the abandoned batch's ``last_accepted`` record instead of
+# repeating the architect stage and cherry-picking the accepted commits by hand.
 RECOVERY_ROUTES = (
     "developer-retry",
     "same-candidate-rerun",
@@ -83,6 +86,7 @@ RECOVERY_ROUTES = (
     "narrowed-retry",
     "fix-forward",
     "rebase-fix-forward",
+    "supersede",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

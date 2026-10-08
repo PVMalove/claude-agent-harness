@@ -170,6 +170,25 @@ The batch records `abandoned.last_accepted` (the newest accepted stage and candi
 batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
 or `retry`.
 
+After a forced abandon, `batch create --supersedes <batch>` with `--approved-by` and
+`--approved-at` (a human; a `policy:` approver is refused) plans a superseding batch for the same
+ticket and issue branch. It refuses, with a remedy and without writing anything, a source that is
+not `abandoned`, one whose `abandoned.last_accepted` is `null`, and another ticket or issue branch.
+For a `null` source that itself superseded a batch, the remedy names that batch to supersede again.
+The new batch and its immutable plan carry the same `supersedes` link, and its
+`coordinator_decisions` hold one `supersede` decision with route `supersede`. With the same
+Definition of Done, the abandoned batch's accepted architect is carried by reference together with
+its pinned commit plan, and the batch starts at the developer stage; another Definition of Done
+carries nothing and runs the architect stage again. The first developer starts at the last accepted
+candidate (`start_commit`): as an initial developer when it descends from the integration base
+pinned at create, otherwise as a developer-retry with that base as `rebase_target_commit`, which
+always needs an explicit approval. A superseding batch abandoned without an accepted developer
+records its own `start_commit` as the `abandoned.last_accepted` candidate, so a chain of
+superseding batches keeps the accepted candidate. Risk assessments, reviews, QA, carried items
+and operator decisions are never copied: they stay with the abandoned batch and are reached through
+`supersedes.batch_id`, and risk assessment, review and QA run again on the new candidate. The
+`supersede` decision spends no developer retry.
+
 ## Recovery route table
 
 Every `retry` and `abandon` decision of `batch decide` records its recovery route as
@@ -178,7 +197,9 @@ that sets `next_action`, from the same structured evidence, and never from free 
 (a batch that will never have a report) and `batch resume` record no route. `report-completion` is
 not recorded by `batch decide`: `report submit` names it in its `completion` object when the policy
 chain after a recorded report stops, and the coordinator completes that chain with
-`report complete --dispatch <dispatch-id>`. `carry-over` is recorded by an `accept` or
+`report complete --dispatch <dispatch-id>`. `supersede` is not recorded by `batch decide` either:
+`batch create --supersedes` records it once in the new batch's own `coordinator_decisions`.
+`carry-over` is recorded by an `accept` or
 `override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
 `carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
 any developer accept; `batch carry-over` itself moves a `next_action` of `qa`, set by an earlier
@@ -204,6 +225,7 @@ that stage. The coordinator chooses a route by this table:
 | A read-only report lists `incomplete_items` and none carries `tooling_blocker`, with no finding or warning/blocker severity, no open carried item, no failed check and an unchanged candidate | `narrowed-retry` | A human decides `batch decide --decision retry --narrowed`; the new dispatch of the same stage on the same SHA is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` of the retried report, the `carried_item_ids` the new brief carries, and the unchanged `candidate_commit` (none for an architect) |
 | A read-only report lists `incomplete_items` and at least one carries `tooling_blocker` (for example, the safety classifier interrupted the role on that item), with the same absence of structured evidence | `tooling-retry` | A human decides `batch decide --decision retry --narrowed` after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage on the same SHA is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, each item's `tooling_blocker`, the `carried_item_ids` and the unchanged `candidate_commit` |
 | `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
+| After a forced abandon (a dead end), the work resumes in a new batch for the same ticket and issue branch from the abandoned batch's `abandoned.last_accepted` record: `batch create --supersedes <batch>` | `supersede` | A human only, with `--approved-by` and `--approved-at` on `batch create`; a `policy:` approver is refused. The new batch still needs `batch approve`, its dispatches are approved under `approval_policy`, and a first developer-retry that carries a rebase target always needs an explicit approval; no `retry_policy.max_developer_retries` is spent | The superseded batch ID and its `abandoned.last_accepted`; for the same Definition of Done, the carried architect reference (`dispatch_id`, `report`, `report_sha256`, `commit_plan_sha256`); the `start_commit` and the `rebase_target_commit`. No risk, review, QA or operator decision evidence is copied |
 | `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
 | Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
 
@@ -503,9 +525,11 @@ It must contain, at minimum:
   `tooling-retry`), the `reason` and its `reason_category` (`tooling` for an item a tool blocked,
   otherwise `null`); its `summary` is the brief item and its `files` are empty. A non-empty section
   is bound into the transition as `carried_items_sha256`;
-- `rebase target`: `rebase_target_commit`, the integration tip a `rebase-fix-forward`
-  developer-retry rebases onto, bound into the transition as `rebase_target_sha`, or `null` on every
-  other brief, including the developer dispatch of a legacy stale-base record;
+- `rebase target`: `rebase_target_commit`, the commit a developer-retry rebases onto, bound into the
+  transition as `rebase_target_sha`: the integration tip of a `rebase-fix-forward` retry, or the
+  `supersedes.rebase_target_commit` of a superseding batch while the snapshot does not contain it
+  yet. It is `null` on every other brief, including the developer dispatch of a legacy stale-base
+  record;
 - `delta review scope` (code-review): `delta_review_scope`, the coordinator's delta or full choice
   after a fix-forward (`mode`, `route`, `prior_review`, `developer_dispatch_id`, `delta_base`,
   `delta_commits`, `reviewed_copies`, `closure`, `escalations`), bound into the transition as

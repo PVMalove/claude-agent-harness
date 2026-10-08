@@ -124,6 +124,38 @@ class PinnedPlanTests(unittest.TestCase):
         self.assertIsNone(commit_plan.accepted_plan_sha256(batch))
         self.assertIsNone(commit_plan.accepted_plan_sha256({"dispatches": []}))
 
+    def test_accepted_plan_sha256_falls_back_to_the_carried_architect_only(
+        self,
+    ) -> None:
+        carried = commit_plan.plan_sha256(commit_plan.default_plan(DOD, ["**"]))
+        own = commit_plan.plan_sha256(commit_plan.default_plan(DOD, ["src/**"]))
+        link: JsonObject = {"architect": {"commit_plan_sha256": carried}}
+        batch: JsonObject = {"dispatches": [], "supersedes": link}
+
+        self.assertEqual(commit_plan.accepted_plan_sha256(batch), carried)
+        batch["dispatches"].append(
+            {
+                "role": "architect",
+                "decision": {"decision": "accept", "commit_plan_sha256": own},
+            }
+        )
+        self.assertEqual(commit_plan.accepted_plan_sha256(batch), own)
+        batch["dispatches"][0]["decision"].pop("commit_plan_sha256")
+        self.assertIsNone(
+            commit_plan.accepted_plan_sha256(batch),
+            "an architect accept of the batch itself wins even when it pinned no plan",
+        )
+        for unpinned in (
+            {"architect": {"commit_plan_sha256": None}},
+            {"architect": None},
+        ):
+            with self.subTest(link=unpinned):
+                self.assertIsNone(
+                    commit_plan.accepted_plan_sha256(
+                        {"dispatches": [], "supersedes": unpinned}
+                    )
+                )
+
 
 FIVE = ["one", "two", "three", "four", "five"]
 C1, C2, C3 = "1" * 40, "2" * 40, "3" * 40

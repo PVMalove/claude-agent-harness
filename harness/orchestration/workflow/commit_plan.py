@@ -189,11 +189,18 @@ def decided_entries(
 
 
 def accepted_plan_sha256(batch: JsonObject) -> str | None:
-    """The plan digest recorded by the batch's accepted architect decision, if it pinned one."""
+    """The plan digest recorded by the batch's accepted architect decision, if it pinned one.
+
+    A superseding batch without an architect accept of its own falls back to the digest of the
+    architect it carried from the abandoned batch (issue #506).
+    """
     for item in decided_entries(batch, "architect", {"accept"}):
         digest = item["decision"].get("commit_plan_sha256")
         return digest if isinstance(digest, str) else None
-    return None
+    link = batch.get("supersedes")
+    carried = link.get("architect") if isinstance(link, dict) else None
+    digest = carried.get("commit_plan_sha256") if isinstance(carried, dict) else None
+    return digest if isinstance(digest, str) else None
 
 
 def is_developer_retry(dispatch: JsonObject) -> bool:

@@ -84,6 +84,7 @@ from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
 from harness.orchestration.workflow import resolver_state
+from harness.orchestration.workflow import supersede
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -186,13 +187,15 @@ def _dispatch_approval_mode(
     role: str,
     purpose: str,
     risk: JsonObject | None,
+    rebase_target: str | None = None,
 ) -> str:
     """How this dispatch is approved: ``explicit`` (a human) or ``policy:<name>``.
 
     A project-approved continuation is allowed only outside the preserved risk milestones. A
     re-run after a role worked around a block (``bypass-rerun``) is always one of them, and so is
-    the developer-retry that rebases onto a proposed target (``rebase-fix-forward``, issue #504):
-    no policy ever approves a rebase target.
+    the developer-retry that rebases onto a proposed target (``rebase-fix-forward``, issue #504)
+    or onto the ``rebase_target`` of a superseding batch (issue #506): no policy ever approves a
+    rebase target.
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
@@ -211,6 +214,7 @@ def _dispatch_approval_mode(
             isinstance(routing, dict)
             and routing.get("route") in {"bypass-rerun", "rebase-fix-forward"}
         )
+        or rebase_target is not None
     )
     if policy == "manual_all" or milestone:
         raise CoordinatorError(
@@ -345,6 +349,7 @@ def _proposed_transition(
     context_package: JsonObject | None,
     carried: JsonObject,
     delta_scope: JsonObject | None = None,
+    supersede_target: str | None = None,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
@@ -352,8 +357,9 @@ def _proposed_transition(
     still unsent (or was cancelled) does not change the transition it was created for. A non-empty
     carried-items section is bound by its digest, so a finding attached after the proposal needs a
     new approval. The developer-retry of a ``rebase-fix-forward`` decision binds the rebase target
-    its routing record proposed (issue #504), and a code-review brief after a fix-forward binds its
-    ``delta_review_scope`` (issue #625)."""
+    its routing record proposed (issue #504), else the ``supersede_target`` of a superseding batch
+    (issue #506), and a code-review brief after a fix-forward binds its ``delta_review_scope``
+    (issue #625)."""
     previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
@@ -365,6 +371,8 @@ def _proposed_transition(
         and (role_name, purpose) == ("developer", "work")
         else None
     )
+    if not isinstance(rebase_target, str):
+        rebase_target = supersede_target
     return operational_guards.build_transition(
         batch_id=batch["batch_id"],
         previous_dispatch_id=previous["dispatch_id"] if previous else None,
@@ -803,10 +811,16 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 f"the coordinator requires a new {required_role} dispatch before this role",
                 remedy=f"dispatch a new {required_role} role before this one",
             )
+        # A superseding batch's first developer-retry rebases its start commit (issue #506).
+        supersede_target = supersede.rebase_target(
+            repo, root, batch, next_action, role_name, purpose, candidate
+        )
         approval_mode = (
             None
             if propose
-            else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
+            else _dispatch_approval_mode(
+                args, batch, config, role_name, purpose, risk, supersede_target
+            )
         )
         context_package = None
         # A developer retry continues the candidate it retries: the unaccepted developer report's
@@ -902,6 +916,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             context_package,
             carried,
             delta_scope,
+            supersede_target,
         )
         access_plan = runtime_access.resolve_plan(
             repo,
