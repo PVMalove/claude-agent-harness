@@ -688,6 +688,17 @@ class RebaseMappingTests(unittest.TestCase):
         )
         self._refused(rebased, [R1, R2, N1], rf"unmapped: \['{N1}'\]")
 
+    def test_a_rebased_copy_is_never_its_own_original(self) -> None:
+        """Issue #625: after a merge of the target instead of a rebase, the previous-candidate
+        commit P1 lies after the target too; mapping it as its own copy would claim it reviewed
+        by patch-id and loop the delta-review's origin walk."""
+        refused = self._refused(
+            [*_rebased((P1, P1), (P2, R2)), *_pairs((N1, "step-1"))],
+            [P1, R2, N1],
+            rf"rebased copies of themselves: \['{P1}'\]",
+        )
+        self.assertIn("git rebase --onto", refused.remedy)
+
     def test_new_commits_keep_the_strict_retry_rule(self) -> None:
         rebased = _rebased((P1, R1), (P2, R2))
         for name, (planned, created) in {
