@@ -299,7 +299,7 @@ def _remote_checks(
             encoding="utf-8",
             check=False,
             timeout=REMOTE_PROBE_SECONDS,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            env=git_utils.git_environment(),
         )
     except subprocess.TimeoutExpired:
         entry.update(

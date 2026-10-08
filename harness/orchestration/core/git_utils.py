@@ -7,6 +7,7 @@ with the git output as the remedy hint.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -93,6 +94,14 @@ def git_failure(message: str, detail: str, *, remedy: str) -> CoordinatorError:
     )
 
 
+def git_environment() -> dict[str, str]:
+    """The environment of a Git command whose failure output is classified.
+
+    The classifier reads Git's English messages; a localized Git would hide a refusal from it.
+    """
+    return {**os.environ, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"}
+
+
 def _git(repo: Path, *arguments: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(repo), *arguments],
@@ -100,6 +109,7 @@ def _git(repo: Path, *arguments: str) -> str:
         text=True,
         encoding="utf-8",
         check=False,
+        env=git_environment(),
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
@@ -164,6 +174,7 @@ def _remote_branch_tip(
             encoding="utf-8",
             check=False,
             timeout=timeout,
+            env=git_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         raise CoordinatorError(

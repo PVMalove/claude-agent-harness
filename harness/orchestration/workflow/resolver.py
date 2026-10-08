@@ -13,6 +13,7 @@ import argparse
 import re
 from pathlib import Path
 
+from harness.orchestration import operation_access
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.git_utils import (
@@ -286,6 +287,14 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
         _validate_branch(repo, branch)
         source = _load_batch(root, identity["source_batch_id"])
         worktree = Path(source["worktree"])
+        operation_access.require(
+            repo,
+            config,
+            "git",
+            worktree=worktree,
+            checkout=worktree,
+            remote=remote,
+        )
         _git(worktree, "fetch", remote, "--", ref)
         pr_refresh._require_clean_own_branch(worktree, branch, pair["candidate_sha"])
         # A failed verification of a refreshed pair has no textual conflict to probe for: the
