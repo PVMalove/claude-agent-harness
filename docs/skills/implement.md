@@ -45,6 +45,18 @@ pre-flight, до `batch create` и до создания issue-ветки: пр�
 
 Предлагайте каждый handoff и останавливайтесь до явного approval разработчика перед созданием или отправкой dispatch. Report — evidence, а не authority продвигать batch. Architect обязателен перед developer dispatch; review хранит отдельные Standards и Spec evidence; независимый QA проверяет candidate commit; publish отправляет только accepted SHA. Final report предшествует отдельно одобренному publish dispatch. Write-role worker, остановившийся до изменений, возвращает честный отчёт с `outcome: blocked`, привязанный к проверенному checkout с пустыми `changed_files` и незапущенными проверками; coordinator возвращает явный recovery route (`retry`, `block`, `abandon`) без регистрации кандидата и без ослабления правил для completed reports.
 
+При `approval_policy: auto` координатор сам принимает каждое решение пути и пишет его как
+`policy:auto` (раздел «Automatic path» в playbook). Сессия не пишет `--approved-by` и
+`--approved-at`: `batch approve`, `dispatch create` и плановый `dispatch resume --trigger`
+выполняются без них. Для каждого отчёта, который цепочка `report submit` или `qa run` не приняла,
+включая отчёт publish, сессия запускает `batch auto-decide --batch <id>`. Сессия передаёт только
+входы, которые требуют суждения: `--commit-plan-file` с точной копией плана architect-а,
+`--findings-file`, `--bug-ticket` после заведения bug-тикета через CLI трекера и
+`--block-bypass --note`. Само решение сессия не выбирает. После отказа любой команды и после
+исхода `stopped` сессия запускает `batch auto-report --batch <id>`. Остановка окончательна для
+batch: каждый следующий шаг требует явного approval разработчика. Перед `/to-pull-requests` сессия
+показывает итоговый отчёт; PR открывается только после явного подтверждения, auto-merge запрещён.
+
 Дефект, найденный в чистом developer report, чей DoD выполнен внутри своих allowed paths, не повод для retry:
 примите report через `batch decide --findings-file <path>`, а после policy auto-accept выполните
 `batch carry-over --batch <id> --findings-file <path>`, пока code-review dispatch не создан. Находка

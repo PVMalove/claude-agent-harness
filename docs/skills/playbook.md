@@ -28,6 +28,13 @@ worker session под тем же dispatch ID без переноса истор
 Delta-review после Warning разрешён только для test-only diff и всегда является новым независимым
 review dispatch. Advisory tool call остаётся эфемерным non-role выводом и не может авторизовать работу.
 
+`approval_policy: auto` задаёт автоматический путь от `batch approve` до принятого publish.
+Политика согласует batch, каждый dispatch и плановое продолжение. `batch auto-decide` принимает
+решение по отчёту из фактов ledger: accept чистого отчёта с рисками или retry по `route_preview`.
+Каждое решение пишется как `policy:auto` с evidence. Закрытый список остановок (`budget-exhausted`,
+`integrity-failure`, `no-automatic-route`) останавливает путь и пишет итоговый отчёт. После
+остановки каждый шаг согласует человек. PR открывает только человек, auto-merge запрещён.
+
 ## 3. Контракты
 
 - **Вход (Input/Brief):** тикет, allowed paths, issue-ветка/worktree, DoD, запреты, команды проверки, назначение провайдера/модели и явное одобрение человека.

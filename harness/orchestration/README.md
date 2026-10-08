@@ -48,6 +48,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 4. **Решение.** Coordinator принимает report (`batch decide --decision accept`), отправляет на
    retry с маршрутизацией по структурным данным report, блокирует или завершает batch. При
    `approval_policy` `milestone`/`low_risk`/`auto` чистые report без рисков принимаются автоматически.
+   При `auto` остальные решения принимает `batch auto-decide` (раздел «Automatic path» в `playbook.md`).
 5. **QA и publish.** Clean-room QA выполняет `qa_preparation` (если задан), затем `verification_commands`
    на закреплённом candidate SHA в общей очереди; провал подготовки не считается провалом проверок кода. Publish выдаёт принятый SHA; PR открывает человек через `/to-pull-requests`.
 6. **Integration accounting.** После accepted publish `integration prepare` записывает связь
@@ -144,7 +145,7 @@ lifecycle — в [playbook.md](./playbook.md), границы ролей — в 
 | `manual_all` | Каждый report принимает человек. |
 | `milestone` | Чистый report (`completed`, без рисков, блокеров, risk triggers и упавших проверок) принимается автоматически, кроме QA, publish и batch с совпавшими risk triggers. |
 | `low_risk` | То же, но только для batch, чей `--allowed-path` целиком лежит в `low_risk_paths`. |
-| `auto` | Координатор сам принимает чистый report любого batch, включая чистый QA, и готовит следующий dispatch; `low_risk_zones` не применяются. Решение пишется как `policy:auto`. Ручными остаются publish, PR, batch с совпавшими risk triggers, findings, упавшие проверки и report с блокерами или рисками. |
+| `auto` | Автоматический путь от `batch approve` до принятого publish. Политика согласует batch, каждый dispatch (включая publish, risk triggers, `bypass-rerun` и rebase target) и плановое продолжение. Для отчёта, который цепочка не приняла, сессия запускает `batch auto-decide`: политика принимает отчёт или выбирает retry по `route_preview`. Каждое решение пишется как `policy:auto` с evidence в `batch.auto_decisions`. Закрытый список остановок пишется в `batch.auto_stop`; после остановки каждый шаг согласует человек. Итоговый отчёт выводит `batch auto-report`. PR открывает только человек, auto-merge запрещён. Требует `human_approval_gate: trusted` и `worker_attestation_required: true`. |
 
 Политика фиксируется в batch при создании; её смена не влияет на уже созданные batch.
 
