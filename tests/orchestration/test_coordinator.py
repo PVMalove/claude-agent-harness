@@ -4563,6 +4563,212 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertNotEqual(fresh["batch_id"], batch["batch_id"])
         self.assertEqual(fresh["state"], "planned")
 
+    # -- supersede (issue #506) ------------------------------------------------------------------
+
+    def _abandoned_batch(self, *, review: bool = True) -> tuple[str, str]:
+        """A batch abandoned after a dead end: architect and developer accepted, a code-review
+        that cannot be decided otherwise. Returns the batch and its last accepted candidate."""
+        batch_id = cast(str, self._create_batch()["batch_id"])
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id)
+        if review:
+            self._infra_review(batch_id, candidate)
+        self._decide(batch_id, "abandon", reason="review dead end")
+        return batch_id, candidate
+
+    def _superseding_plan(self, source: str | None, **overrides: object) -> JsonObject:
+        return {
+            **self._batch_plan(),
+            "supersedes": source,
+            **self._approval(),
+            **overrides,
+        }
+
+    def _supersede(self, source: str, **overrides: object) -> JsonObject:
+        batch = coordinator.create_batch(
+            self._args(**self._superseding_plan(source, **overrides))
+        )
+        self.batch_id = batch["batch_id"]
+        return batch
+
+    def _ledger_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file() and path.parent.name != "audit"
+        }
+
+    def test_batch_create_supersedes_requires_a_human_approval_and_writes_nothing(
+        self,
+    ) -> None:
+        source, _ = self._abandoned_batch()
+        before = self._ledger_bytes()
+        for label, plan, message in (
+            (
+                "no approval",
+                self._superseding_plan(source, approved_by=None, approved_at=None),
+                "requires a human approval",
+            ),
+            (
+                "half an approval",
+                self._superseding_plan(source, approved_at=None),
+                "requires a human approval",
+            ),
+            (
+                "a policy approver",
+                self._superseding_plan(source, approved_by="policy:auto"),
+                "never by a policy",
+            ),
+            (
+                "approval flags without --supersedes",
+                self._superseding_plan(None),
+                "approve only --supersedes",
+            ),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    coordinator.create_batch(self._args(**plan))
+                self.assertIn(message, refused.exception.message)
+                self.assertTrue(refused.exception.remedy)
+                self.assertEqual(self._ledger_bytes(), before)
+
+    def test_batch_create_supersedes_refuses_a_source_it_cannot_resume(self) -> None:
+        failed = cast(str, self._create_batch()["batch_id"])
+        coordinator.abandon_batch(
+            self._args(batch=failed, reason="worker died", **self._approval())
+        )
+        unaccepted = cast(
+            str, coordinator.create_batch(self._args(**self._batch_plan()))["batch_id"]
+        )
+        coordinator.approve_batch(self._args(batch=unaccepted, **self._approval()))
+        self._reported_architect(unaccepted)
+        self._decide(unaccepted, "abandon", reason="architect dead end")
+        source = cast(
+            str, coordinator.create_batch(self._args(**self._batch_plan()))["batch_id"]
+        )
+        coordinator.approve_batch(self._args(batch=source, **self._approval()))
+        self.batch_id = source
+        self._accepted_architect(source)
+        self._decide_abandon_after_candidate(source)
+        before = self._ledger_bytes()
+        for label, plan, message, remedy in (
+            (
+                "a batch closed with batch abandon",
+                self._superseding_plan(failed),
+                "'failed', not abandoned",
+                "batch decide",
+            ),
+            (
+                "nothing accepted",
+                self._superseding_plan(unaccepted),
+                "no abandoned.last_accepted record",
+                "ordinary batch",
+            ),
+            (
+                "another ticket",
+                self._superseding_plan(source, ticket="#245"),
+                "belongs to ticket '#244'",
+                "--ticket #244",
+            ),
+            (
+                "another issue branch",
+                self._superseding_plan(source, branch="feature/issue-244-other"),
+                f"belongs to branch {self.branch!r}",
+                f"--branch {self.branch}",
+            ),
+            (
+                "a missing batch",
+                self._superseding_plan(f"batch-{uuid.uuid4()}"),
+                "does not exist",
+                "batch list",
+            ),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(coordinator.CoordinatorError) as refused:
+                    coordinator.create_batch(self._args(**plan))
+                self.assertIn(message, refused.exception.message)
+                self.assertIn(remedy, refused.exception.remedy)
+                self.assertEqual(self._ledger_bytes(), before)
+
+    def _decide_abandon_after_candidate(self, batch_id: str) -> str:
+        candidate = self._accepted_candidate(batch_id)
+        self._infra_review(batch_id, candidate)
+        self._decide(batch_id, "abandon", reason="review dead end")
+        return candidate
+
+    def test_a_superseding_batch_links_its_abandoned_batch_and_records_the_route(
+        self,
+    ) -> None:
+        source, candidate = self._abandoned_batch()
+        source_bytes = (self._records() / "batches" / f"{source}.json").read_bytes()
+        abandoned = self._batch_record(source)["abandoned"]
+
+        batch = self._supersede(source)
+
+        link = batch["supersedes"]
+        self.assertEqual(
+            (
+                link["batch_id"],
+                link["approved_by"],
+                link["approved_at"],
+                link["last_accepted"],
+                link["definition_of_done_matches"],
+            ),
+            (
+                source,
+                "Malove",
+                self.APPROVED_AT,
+                abandoned["last_accepted"],
+                True,
+            ),
+        )
+        self.assertEqual(abandoned["last_accepted"]["candidate_commit"], candidate)
+        plan = coordinator._read_object(
+            self._records() / "plans" / f"{batch['batch_id']}.json", "plan"
+        )
+        self.assertEqual(plan["supersedes"], link)
+        (decision,) = batch["coordinator_decisions"]
+        self.assertEqual(
+            (
+                decision["decision"],
+                decision["approved_by"],
+                decision["routing"]["route"],
+            ),
+            ("supersede", "Malove", "supersede"),
+        )
+        self.assertEqual(decision["routing"]["superseded_batch_id"], source)
+        (audit,) = self._decision_audits(batch["batch_id"])
+        self.assertEqual(
+            (audit["decision"], audit["route"], audit["approver"]),
+            ("supersede", "supersede", {"kind": "human", "name": "Malove"}),
+        )
+        self.assertEqual(audit["evidence"]["batch_id"], source)
+        self.assertEqual(audit["evidence"]["last_accepted"], abandoned["last_accepted"])
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(
+            (stored["supersedes"], stored["coordinator_decisions"]),
+            (link, batch["coordinator_decisions"]),
+        )
+        self.assertEqual(
+            (stored["state"], stored["dispatches"], stored["risk_assessments"]),
+            ("planned", [], []),
+        )
+        for field in ("carried_items", "candidate_registrations", "abandoned"):
+            self.assertNotIn(field, stored)
+        self.assertEqual(
+            (self._records() / "batches" / f"{source}.json").read_bytes(), source_bytes
+        )
+        root = ledger_ops._state_root(self._args(), self.repo)
+        tampered = {**stored, "supersedes": {**link, "batch_id": "batch-other"}}
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "supersedes link does not match"
+        ):
+            history._validate_batch_integrity(root, tampered)
+        approved = coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+        self.assertEqual(approved["supersedes"], link)
+
     def test_a_forced_developer_retry_records_the_developer_retry_route(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
@@ -12840,6 +13046,50 @@ class CoordinatorCliParserTests(unittest.TestCase):
         self.assertIs(pinned.handler, coordinator.decide_batch)
         self.assertEqual(pinned.commit_plan_file, "plan.json")
         self.assertIsNone(parse(decide).commit_plan_file)
+
+    def test_batch_create_accepts_supersedes_with_its_approval(self) -> None:
+        create = [
+            "batch",
+            "create",
+            "--ticket",
+            "#506",
+            "--branch",
+            "feature/issue-506-x",
+            "--worktree",
+            "wt",
+            "--definition-of-done",
+            "resume",
+            "--prohibited-change",
+            "secrets",
+        ]
+        parse = coordinator.parser().parse_args
+
+        superseding = parse(
+            [
+                *create,
+                "--supersedes",
+                "batch-1",
+                "--approved-by",
+                "Malove",
+                "--approved-at",
+                "2026-09-17T00:00:00+00:00",
+            ]
+        )
+        ordinary = parse(create)
+
+        self.assertIs(superseding.handler, coordinator.create_batch)
+        self.assertEqual(
+            (
+                superseding.supersedes,
+                superseding.approved_by,
+                superseding.approved_at,
+            ),
+            ("batch-1", "Malove", "2026-09-17T00:00:00+00:00"),
+        )
+        self.assertEqual(
+            (ordinary.supersedes, ordinary.approved_by, ordinary.approved_at),
+            (None, None, None),
+        )
 
     def test_batch_decide_accepts_a_findings_file(self) -> None:
         decide = [

@@ -111,6 +111,15 @@ def build_parser(
         type=int,
         help="optional observed context estimate; never lowers the deterministic floor",
     )
+    create.add_argument(
+        "--supersedes",
+        help="abandoned batch of the same ticket and issue branch this batch resumes from its "
+        "abandoned.last_accepted record; requires --approved-by and --approved-at",
+    )
+    create.add_argument(
+        "--approved-by", help="human who approved --supersedes; never a policy"
+    )
+    create.add_argument("--approved-at", help="time of the --supersedes approval")
     create.set_defaults(handler=handlers.create_batch)
     batch_preflight = batch_commands.add_parser(
         "preflight", help="reject an oversized ticket before creating a batch"

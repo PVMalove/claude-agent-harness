@@ -760,6 +760,13 @@ def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
             "batch goal does not match its immutable plan",
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
+    # The link of a superseding batch (issue #506); a batch planned without one has none on both.
+    if batch.get("supersedes") != plan.get("supersedes"):
+        raise CoordinatorError(
+            "batch supersedes link does not match its immutable plan",
+            remedy="the batch supersedes link diverged from its immutable plan -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     for field in ("approval_policy", "communication_policy", "allowed_paths"):
         if (field in batch) != (field in plan):
             raise CoordinatorError(
