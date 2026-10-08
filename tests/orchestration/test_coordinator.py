@@ -3703,6 +3703,215 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             route="developer-retry",
         )
 
+    def _reported_qa_preparation_failure(
+        self,
+        batch_id: str,
+        candidate: str,
+        *,
+        category: str,
+        started: str = "not_started",
+    ) -> JsonObject:
+        """A real QA report whose preparation stage failed, validated like ``qa run`` validates it."""
+        brief: JsonObject = self._dispatch(batch_id, "qa", candidate=candidate)["brief"]
+        outcome = "failed" if category == "project-defect" else "blocked"
+        self._stage_report(
+            batch_id,
+            brief["dispatch_id"],
+            self._base_report(
+                brief,
+                "qa",
+                outcome=outcome,
+                output="QA environment preparation failed; code was not verified",
+                checks_run=self._checks(brief, "not-run"),
+                risks="the candidate code was not verified",
+                blockers="preparation failed before any code check",
+                qa_stages={
+                    "stages": [
+                        {
+                            "stage": "preparation",
+                            "command": "uv sync --locked",
+                            "result": "fail",
+                            "exit_code": 1,
+                            "diagnostics": "registry unreachable",
+                        }
+                    ],
+                    "failed_stage": "preparation",
+                    "code_checks_started": started,
+                    "diagnosis": {
+                        "category": category,
+                        "signals": ["exit-code:1"],
+                        "basis": "test",
+                    },
+                },
+            ),
+            via_qa_lane=True,
+        )
+        return brief
+
+    def _qa_batch(self) -> tuple[str, str]:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._reported_review(batch["batch_id"], candidate)
+        self._decide(batch["batch_id"], "accept")
+        return batch["batch_id"], candidate
+
+    def test_a_confirmed_qa_infrastructure_failure_reruns_qa_on_the_same_sha_for_free(
+        self,
+    ) -> None:
+        batch_id, candidate = self._qa_batch()
+        first = self._reported_qa_preparation_failure(
+            batch_id, candidate, category="infrastructure"
+        )
+
+        packet = coordinator.decision_packet(self._args(batch=batch_id, dispatch=None))
+        self.assertEqual(packet["qa_stages"]["failed_stage"], "preparation")
+        self.assertEqual(packet["options"], ["retry", "block", "abandon"])
+        self.assertEqual(
+            packet["route_preview"]["retry"]["route"], "same-candidate-rerun"
+        )
+
+        decided = self._decide(batch_id, "retry")
+
+        routing = self._assert_route(
+            decided,
+            role="qa",
+            action="qa",
+            category="verification-infrastructure",
+            candidate=candidate,
+            route="same-candidate-rerun",
+        )
+        self.assertIn("no code check started", routing["rationale"])
+        self.assertEqual(decisions._developer_retry_count(decided), 0)
+        second = self._dispatch(batch_id, "qa", candidate=candidate)
+        self.assertNotEqual(second["dispatch_id"], first["dispatch_id"])
+        self.assertEqual(second["brief"]["candidate_commit"], candidate)
+        self.assertEqual(
+            second["brief"]["verification_commands"], first["verification_commands"]
+        )
+        entries = {
+            item["dispatch_id"]: item
+            for item in self._batch_record(batch_id)["dispatches"]
+        }
+        self.assertEqual(entries[first["dispatch_id"]]["state"], "reported")
+        self.assertEqual(entries[first["dispatch_id"]]["decision"]["decision"], "retry")
+
+    def test_a_confirmed_project_defect_in_preparation_routes_to_the_developer(
+        self,
+    ) -> None:
+        batch_id, candidate = self._qa_batch()
+        self._reported_qa_preparation_failure(
+            batch_id, candidate, category="project-defect"
+        )
+
+        decided = self._decide(batch_id, "retry")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=candidate,
+            route="developer-retry",
+        )
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+
+    def test_an_unknown_preparation_cause_needs_triage_and_never_retries_by_itself(
+        self,
+    ) -> None:
+        batch_id, candidate = self._qa_batch()
+        self._reported_qa_preparation_failure(batch_id, candidate, category="unknown")
+        before = self._batch_record(batch_id)
+
+        with self.assertRaises(coordinator.CoordinatorError) as raised:
+            self._decide(batch_id, "retry")
+
+        self.assertIn("needs triage", raised.exception.message)
+        self.assertIn("--reason-category", raised.exception.remedy)
+        self.assertEqual(self._batch_record(batch_id), before)
+        packet = coordinator.decision_packet(self._args(batch=batch_id, dispatch=None))
+        self.assertIn("needs triage", packet["route_preview"]["retry"]["refused"])
+        # Triage names the cause: an environment confirmed ready reruns QA on the same SHA.
+        decided = self._decide(
+            batch_id, "retry", reason_category="verification-infrastructure"
+        )
+        self._assert_route(
+            decided,
+            role="qa",
+            action="qa",
+            category="verification-infrastructure",
+            candidate=candidate,
+            route="same-candidate-rerun",
+        )
+
+    def test_a_triaged_unknown_preparation_failure_can_go_to_the_developer(
+        self,
+    ) -> None:
+        batch_id, candidate = self._qa_batch()
+        self._reported_qa_preparation_failure(batch_id, candidate, category="unknown")
+
+        decided = self._decide(batch_id, "retry", reason_category="code")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=candidate,
+            route="developer-retry",
+        )
+
+    def test_an_infrastructure_diagnosis_without_the_not_started_fact_is_not_confirmed(
+        self,
+    ) -> None:
+        report: JsonObject = {
+            "outcome": "blocked",
+            "qa_stages": {
+                "failed_stage": "preparation",
+                "code_checks_started": "unknown",
+                "diagnosis": {"category": "infrastructure"},
+            },
+        }
+        with self.assertRaises(coordinator.CoordinatorError) as raised:
+            decisions._retry_routing(
+                "qa",
+                report,
+                dispatch_candidate="a",
+                current_candidate="a",
+                explicit_category=None,
+            )
+        self.assertIn("needs triage", raised.exception.message)
+
+    def test_a_qa_report_without_stages_keeps_its_unknown_route(self) -> None:
+        routing = decisions._retry_routing(
+            "qa",
+            {"outcome": "blocked", "checks_run": []},
+            dispatch_candidate="a",
+            current_candidate="a",
+            explicit_category=None,
+        )
+        self.assertEqual(
+            (routing["reason_category"], routing["route"]),
+            ("unknown", "developer-retry"),
+        )
+
+    def test_a_failing_gate_stage_keeps_its_findings_and_the_fix_route(self) -> None:
+        report: JsonObject = {
+            "outcome": "failed",
+            "checks_run": [{"command": "x", "result": "fail", "evidence": "e"}],
+            "qa_stages": {"failed_stage": "gate", "code_checks_started": "started"},
+        }
+        routing = decisions._retry_routing(
+            "qa",
+            report,
+            dispatch_candidate="a",
+            current_candidate="a",
+            explicit_category="verification-infrastructure",
+        )
+        self.assertEqual(
+            (routing["reason_category"], routing["route"]), ("code", "developer-retry")
+        )
+
     def test_publish_infrastructure_blocker_retries_a_new_publish_on_the_same_candidate(
         self,
     ) -> None:
