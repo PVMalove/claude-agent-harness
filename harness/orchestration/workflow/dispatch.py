@@ -121,7 +121,6 @@ from harness.orchestration.workflow.history import (
     _retry_handoff,
     _risk_for_candidate,
     _settled,
-    _transition_idempotency_key,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -448,7 +447,7 @@ def _proposed_transition(
     )
     if not isinstance(rebase_target, str):
         rebase_target = supersede_target
-    return operational_guards.build_transition(
+    transition = operational_guards.build_transition(
         batch_id=batch["batch_id"],
         previous_dispatch_id=previous["dispatch_id"] if previous else None,
         previous_role=previous["role"] if previous else None,
@@ -466,11 +465,16 @@ def _proposed_transition(
         if context_package
         else None,
         required_gates=batch["required_gates"],
-        carried_items_sha256=carried_items.section_sha256(carried),
-        rebase_target_sha=rebase_target if isinstance(rebase_target, str) else None,
-        delta_review_sha256=operational_guards.delta_review_digest(delta_scope)
-        if delta_scope is not None
-        else None,
+    )
+    return operational_guards.bind_transition(
+        transition,
+        {
+            "carried_items": carried,
+            "rebase_target_commit": rebase_target
+            if isinstance(rebase_target, str)
+            else None,
+            "delta_review_scope": delta_scope,
+        },
     )
 
 
@@ -1100,7 +1104,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     repo, root, batch, policy_source, prior_report
                 )
         digest = operational_guards.transition_digest(transition)
-        idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
+        idempotency_key = operational_guards.transition_key(transition)
         if idempotency_key is not None:
             _reject_active_duplicate(root, batch, idempotency_key)
         if propose:

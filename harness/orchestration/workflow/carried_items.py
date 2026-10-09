@@ -648,7 +648,7 @@ def _omits_closure(report: JsonObject | None, dispatch: JsonObject) -> bool:
         and report.get("role") == "developer"
         and report.get("outcome") == "completed"
         and CLOSURE_FIELD not in report
-        and _closure_owed(dispatch)
+        and owes_closure(dispatch)
     )
 
 
@@ -706,7 +706,7 @@ def carried_gap(report: JsonObject, dispatch: JsonObject) -> list[str]:
     return [row["item_id"] for row in rows if row["status"] in {"open", "omitted"}]
 
 
-def _closure_owed(dispatch: JsonObject) -> bool:
+def owes_closure(dispatch: JsonObject) -> bool:
     """Whether a brief is a developer-retry that carried items, so its report maps their closure."""
     return (
         dispatch.get("role") == "developer"
@@ -726,7 +726,7 @@ def check_closure(report: JsonObject, dispatch: JsonObject) -> None:
     """
     if CLOSURE_FIELD not in report:
         return
-    if not _closure_owed(dispatch):
+    if not owes_closure(dispatch):
         raise CoordinatorError(
             "completion report carried_item_closure belongs only to a developer-retry report "
             "whose brief carried items",
@@ -800,78 +800,14 @@ def require_closure(report: JsonObject, dispatch: JsonObject) -> None:
         )
 
 
-def _retried_attempt(
-    root: Path, entries: list[JsonObject], brief: JsonObject
-) -> JsonObject | None:
-    """The developer work brief whose retry created ``brief`` with the same carried items, or
-    ``None``. The retried entry is the last decided one before the brief's own entry."""
-    position = next(
-        (
-            index
-            for index, item in enumerate(entries)
-            if item.get("dispatch_id") == brief.get("dispatch_id")
-        ),
-        0,
-    )
-    retried = next(
-        (
-            item
-            for item in reversed(entries[:position])
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
-    if (
-        retried is None
-        or retried.get("role") != "developer"
-        or retried["decision"].get("decision") != "retry"
-    ):
-        return None
-    previous = _load_dispatch(root, retried["dispatch_id"])
-    if previous.get("purpose", "work") != "work" or previous.get(
-        "carried_items"
-    ) != brief.get("carried_items"):
-        return None
-    return previous
-
-
-def closure_attempts(
-    root: Path, batch: JsonObject, dispatch: JsonObject
-) -> list[JsonObject]:
-    """The developer briefs of the retry chain whose commits a carried_item_closure may name (#503),
-    oldest first and ending with ``dispatch``; ``[]`` when no closure is owed.
-
-    A retried developer report, or a developer tooling-retry, hands the same closed list to the
-    next attempt, whose ``snapshot_commit`` is the retried attempt's HEAD. An item an earlier
-    attempt closed stays closed by that attempt's commit, so the chain reaches back through every
-    retried developer work brief that carried the same list.
-    """
-    if not _closure_owed(dispatch):
-        return []
-    entries = batch.get("dispatches", [])
-    chain: list[JsonObject] = []
-    brief: JsonObject | None = dispatch
-    while brief is not None and isinstance(brief.get("snapshot_commit"), str):
-        chain.insert(0, brief)
-        brief = _retried_attempt(root, entries, brief)
-    return chain
-
-
-def closure_snapshots(root: Path, batch: JsonObject, dispatch: JsonObject) -> list[str]:
-    """The ``snapshot_commit`` of every attempt of ``closure_attempts``, oldest first."""
-    return [
-        brief["snapshot_commit"] for brief in closure_attempts(root, batch, dispatch)
-    ]
-
-
 def check_closure_commits(
     report: JsonObject, created: list[str], resolve: Callable[[str], str]
 ) -> None:
     """Every commit a carried_item_closure names was created by its retry chain (issue #503).
 
-    ``created`` is the ordered list of commits after the chain's base (``closure_snapshots``; the
+    ``created`` is the ordered list of commits after the chain's base (``FixForwardHistory``; the
     rebase target for a rebase) up to the reported HEAD, without the rebased copies of commits that
-    existed before the chain (``rebase.pre_chain_copies``); ``resolve`` turns a reported SHA into
+    existed before the chain (``FixForwardHistory``); ``resolve`` turns a reported SHA into
     its full form.
     """
     for item_id, record in _closure(report).items():

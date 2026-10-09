@@ -11,10 +11,8 @@ import argparse
 import hashlib
 import re
 import uuid
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
-from functools import partial
 from pathlib import Path, PurePosixPath
 from typing import cast
 
@@ -65,7 +63,6 @@ from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_changed_files,
-    _commits_between,
     _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
@@ -110,6 +107,7 @@ from harness.orchestration.runtime_attestation import (
     attest as attest_runtime_worktree,
 )
 from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow.fix_forward import FixForwardHistory
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
@@ -119,7 +117,6 @@ from harness.orchestration.workflow.approval import (
 )
 from harness.orchestration.workflow.history import (
     _dispatch_entry,
-    _initial_developer_work,
     _latest_checkpoint_for_dispatch,
     _latest_context_package,
     _live_status,
@@ -549,9 +546,9 @@ def _checkpoint_base(
 ) -> str | None:
     """The commit a checkpoint's ``changed_files`` are measured from: the one the dispatch's
     completion report is measured from (``rebase.report_base``), or the rebase target the report
-    must contain (``_rebase_target``) once the checkpointed commit contains it, so upstream files
+    must contain (``rebase.required_target``) once the checkpointed commit contains it, so upstream files
     a moved integration base brought in are never attributed to the ticket."""
-    target = _rebase_target(batch, dispatch)
+    target = rebase.required_target(batch, dispatch)
     if target is not None:
         try:
             if _git_is_ancestor(repo, target, _candidate_commit(repo, commit_sha)):
@@ -1044,60 +1041,6 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
     carried_items.validate_review_accounting(review, dispatch)
 
 
-def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
-    """The integration tip a developer dispatch must rebase onto: the human-approved target its
-    rebase-fix-forward brief carries (issue #504), else the batch target while a stale-base block
-    is open."""
-    approved = plan_rules.rebase_target(dispatch)
-    if approved is not None:
-        return approved
-    target = batch.get("rebase_target_commit")
-    if (
-        dispatch.get("role") == "developer"
-        and batch.get("base_rebase_required")
-        and isinstance(target, str)
-    ):
-        return target
-    return None
-
-
-def _closure_base(
-    repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject
-) -> str | None:
-    """The commit a developer-retry's carried_item_closure counts commits from (issue #503): the
-    oldest snapshot of its retry chain that its own ``snapshot_commit`` still descends from, so a
-    rebase inside the chain never lets a closure name upstream commits; ``None`` when none is owed.
-
-    When a rebase-fix-forward attempt of the chain rebased it onto a not yet accepted target (a
-    chain snapshot does not contain ``rebase.approved_target``), the chain's commits are those
-    after that target, as for ``changed_files`` (``rebase.report_base``) (issue #504).
-    """
-    chain = carried_items.closure_snapshots(root, batch, dispatch)
-    if not chain:
-        return None
-    target = rebase.approved_target(repo, root, batch, chain[-1])
-    for base in chain[:-1]:
-        if target is not None and not _git_is_ancestor(repo, target, base):
-            return target
-        if _git_is_ancestor(repo, base, chain[-1]):
-            return base
-    return chain[-1]
-
-
-def _require_fix_forward(repo: Path, dispatch: JsonObject, candidate: str) -> None:
-    """A developer-retry continues its ``snapshot_commit`` (issue #503): without an approved rebase
-    target, the reported candidate must descend from it, so the retry rewrote no history."""
-    snapshot = dispatch.get("snapshot_commit")
-    if isinstance(snapshot, str) and not _git_is_ancestor(repo, snapshot, candidate):
-        raise CoordinatorError(
-            f"developer-retry candidate {candidate} does not descend from snapshot_commit "
-            f"{snapshot}: the retry rewrote the history it continues (amend, squash or reset)",
-            remedy=f"a fix-forward adds new commits on top of snapshot_commit {snapshot}: recover "
-            "the rewritten commits from git reflog, re-apply the fix as new commits without "
-            "amend or squash, and report the new HEAD",
-        )
-
-
 def _validate_tooling_blocker(report: JsonObject, dispatch: JsonObject) -> None:
     """``tooling_blocker`` is the structured evidence of a tool that blocked a legitimate action
     (issue #500): exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string, on a
@@ -1403,15 +1346,10 @@ def _validate_report(
     role: JsonObject,
     repo: Path | None = None,
     base_commit: str | None = None,
-    rebase_target: str | None = None,
-    closure_base: str | None = None,
-    pre_chain_copies: Callable[[], set[str]] = set,
+    *,
+    history: FixForwardHistory | None = None,
 ) -> None:
-    """``rebase_target`` is set only for the developer report that clears a stale-base block: the
-    candidate must contain that tip, and its own commits and files are measured from it, so
-    upstream commits the rebase brought in are never attributed to the ticket. ``closure_base``
-    (``_closure_base``) is where a developer-retry's carried_item_closure counts commits from,
-    without the ``pre_chain_copies`` (``rebase.pre_chain_copies``) above it."""
+    """Validate report shape and its proof through the candidate's history module."""
     _reject_sensitive(report, "completion report")
     if (
         not REPORT_FIELDS <= set(report)
@@ -1557,79 +1495,10 @@ def _validate_report(
                 "completion report changed_files must remain inside the approved scope",
                 remedy="keep completion report changed_files inside the brief's write_paths",
             )
-        if repo is not None and changed_files:
-            resolved = _resolve_report_commit(repo, commit_sha)
-            if rebase_target is not None:
-                if not _git_is_ancestor(repo, rebase_target, resolved):
-                    raise CoordinatorError(
-                        f"rebase candidate does not contain the integration tip {rebase_target}",
-                        remedy=f"rebase the issue branch onto {rebase_target} and report the rebased HEAD",
-                    )
-                base_commit = rebase_target
-            elif plan_rules.is_developer_retry(dispatch):
-                _require_fix_forward(repo, dispatch, resolved)
-            actual_files = (
-                _changed_files_between(repo, base_commit, resolved)
-                if base_commit
-                else _commit_changed_files(repo, resolved)
+        if repo is not None:
+            (history or FixForwardHistory(repo)).validate_report(
+                report, dispatch, role, base_commit
             )
-            if actual_files != changed_files:
-                raise CoordinatorError(
-                    "completion report changed_files must exactly match commit_sha",
-                    remedy="regenerate completion report changed_files from the actual diff at commit_sha",
-                )
-        # The commit plan and the carried-item closure are verified against Git history, so they
-        # need the repository, like the changed_files check above.
-        planned = bool(dispatch.get("commit_plan"))
-        closure = carried_items.CLOSURE_FIELD in report
-        if (
-            role.get("name") == "developer"
-            and (planned or closure)
-            and repo is not None
-        ):
-            if not changed_files:
-                commit_map = report.get("commit_map")
-                if isinstance(commit_map, list) and commit_map:
-                    raise CoordinatorError(
-                        "early blocked developer report cannot claim commit_map entries without changed_files",
-                        remedy="report an empty commit_map when stopped before creating commits",
-                    )
-            else:
-                snapshot = dispatch.get("snapshot_commit")
-                if not isinstance(snapshot, str):
-                    raise CoordinatorError(
-                        "developer dispatch lacks snapshot_commit",
-                        remedy="create a new developer dispatch with an immutable snapshot",
-                    )
-                plan_base = (
-                    base_commit or snapshot
-                    if _initial_developer_work(dispatch)
-                    else snapshot
-                )
-                if planned:
-                    plan_rules.check_report(
-                        report,
-                        dispatch,
-                        _commits_between(repo, rebase_target or plan_base, resolved),
-                        partial(_candidate_commit, repo),
-                        previous=rebase.previous_commits(repo, dispatch),
-                    )
-                if closure:
-                    # An earlier attempt of the retry chain may have closed an item (issue #503).
-                    pre_chain = pre_chain_copies()
-                    carried_items.check_closure_commits(
-                        report,
-                        [
-                            sha
-                            for sha in _commits_between(
-                                repo,
-                                rebase_target or closure_base or snapshot,
-                                resolved,
-                            )
-                            if sha not in pre_chain
-                        ],
-                        partial(_candidate_commit, repo),
-                    )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",
@@ -1663,10 +1532,7 @@ def _validate_report_in_batch(
         dispatch,
         role,
         repo,
-        rebase.report_base(repo, root, batch, dispatch),
-        _rebase_target(batch, dispatch),
-        _closure_base(repo, root, batch, dispatch),
-        partial(rebase.pre_chain_copies, repo, root, batch, dispatch, report),
+        history=FixForwardHistory(repo, root, batch),
     )
     resolver_state.validate_report(repo, root, batch, dispatch, report)
 

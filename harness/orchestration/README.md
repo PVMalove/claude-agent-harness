@@ -22,9 +22,11 @@ lifecycle — в [playbook.md](./playbook.md). Границы ролей — в 
 | `ledger/` | Локальное хранилище state: поколения ledger, неизменяемые записи, audit, миграции. |
 | `workflow/` | По модулю на стадию batch: планирование, preflight, brief, dispatch, решения, отчёты, доставка. |
 | `contract.py` | Проверка конфига, role manifest'ов, brief и report; источник `harness health` для оркестрации. |
-| `qa_lane.py` | Очередь clean-room QA: один QA за раз, аренда с истечением. |
+| `qa_lane.py` | Очередь clean-room QA и аренда с истечением. Batch QA получает проверки и сохранение отчёта через адаптер `workflow/qa_integration.py`. |
+| `workflow/fix_forward.py` | История Fix-forward: retry-цепочка, основания диапазонов и происхождение rebased-копий для проверки report и delta-review. |
+| `operational_guards.py` | Чистая привязка transition к brief, дайджест approval и retry key; lifecycle и policy проверяет coordinator. |
 | `runtime_access.py`, `operation_access.py` | План доступа (`access_policy`) и его проверка перед QA, Git и publish. Эти операции выполняет сам coordinator. |
-| `dispatch_preflight.py`, `runtime_attestation.py`, `operational_guards.py` | Проверка worktree, ветки и SHA воркера; защитные проверки перед dispatch. |
+| `dispatch_preflight.py`, `runtime_attestation.py` | Проверка worktree, ветки и SHA воркера; защитные проверки перед dispatch. |
 | `advisory.py`, `extensions.py` | Advisory-вызовы и подключаемые extensions (health, классификатор retry, уведомления). |
 | `roles/` | Role manifest'ы: режим (`read-only`/`write`), требуемые capability, risk triggers. |
 | `playbook.md`, `pilot.md` | Полный lifecycle и форма наблюдения за первыми batch. |

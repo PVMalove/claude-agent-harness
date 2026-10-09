@@ -90,7 +90,6 @@ from harness.orchestration.workflow.history import (
     _validate_batch_integrity,
     _validate_dispatch,
 )
-from harness.orchestration.workflow.qa_integration import _ops
 from harness.orchestration.workflow.reports import (
     _validate_report_in_batch,
     report_scope_warnings,
@@ -824,7 +823,7 @@ def _discard_batch_leftovers(
         if staged.is_file():
             staged.unlink()
             removed.append(staged.name)
-    removed.extend(qa_lane.release_queue(ledger, abandoned, _ops()))
+    removed.extend(qa_lane.release_queue(ledger, abandoned))
     return removed
 
 

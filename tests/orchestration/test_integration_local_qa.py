@@ -374,7 +374,7 @@ class LocalQaContractTests(unittest.TestCase):
                 ledger = LifecycleLedger(self.branch.state_root())
                 with ledger.lock():
                     ordinary = qa_lane.acquire(
-                        ledger, "dispatch-abc123", coordinator, lease_seconds=1800
+                        ledger, "dispatch-abc123", lease_seconds=1800
                     )
                 self.assertEqual(ordinary["state"], "queued")
                 self.assertEqual(ordinary["position"], 3)
