@@ -291,21 +291,21 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
             data = json.loads(lock_path.read_text(encoding="utf-8"))
         except JSON_READ_ERRORS as exc:
             problems.append(
-                f"cannot read overlay lock {lock_path.relative_to(repo)}: {exc}"
+                f"cannot read overlay lock {lock_path.relative_to(repo).as_posix()}: {exc}"
             )
             continue
         if not isinstance(data, dict):
             problems.append(
-                f"invalid overlay lock header: {lock_path.relative_to(repo)}"
+                f"invalid overlay lock header: {lock_path.relative_to(repo).as_posix()}"
             )
             continue
         if data.get("schema") != 1 or not isinstance(data.get("overlay_id"), str):
             problems.append(
-                f"invalid overlay lock header: {lock_path.relative_to(repo)}"
+                f"invalid overlay lock header: {lock_path.relative_to(repo).as_posix()}"
             )
         source = data.get("source")
         if not isinstance(source, dict):
-            problems.append(f"missing overlay source: {lock_path.relative_to(repo)}")
+            problems.append(f"missing overlay source: {lock_path.relative_to(repo).as_posix()}")
         elif source.get("type") != "project-local":
             remote = source.get("remote")
             revision = source.get("revision")
@@ -316,25 +316,25 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
                 or not revision
             ):
                 problems.append(
-                    f"overlay source needs remote and revision: {lock_path.relative_to(repo)}"
+                    f"overlay source needs remote and revision: {lock_path.relative_to(repo).as_posix()}"
                 )
             elif "://" in remote and (
                 urlsplit(remote).username or urlsplit(remote).password
             ):
                 problems.append(
-                    f"overlay remote contains credentials: {lock_path.relative_to(repo)}"
+                    f"overlay remote contains credentials: {lock_path.relative_to(repo).as_posix()}"
                 )
 
         skills = data.get("skills")
         if not isinstance(skills, list):
             problems.append(
-                f"overlay skills must be a list: {lock_path.relative_to(repo)}"
+                f"overlay skills must be a list: {lock_path.relative_to(repo).as_posix()}"
             )
             continue
         for entry in skills:
             if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
                 problems.append(
-                    f"invalid overlay skill entry: {lock_path.relative_to(repo)}"
+                    f"invalid overlay skill entry: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             name = entry["name"]
@@ -372,7 +372,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
         for entry in data.get("notices", []):
             if not isinstance(entry, dict):
                 problems.append(
-                    f"invalid overlay notice: {lock_path.relative_to(repo)}"
+                    f"invalid overlay notice: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             try:
@@ -381,7 +381,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
                 )
             except ValueError:
                 problems.append(
-                    f"overlay notice target escapes project: {lock_path.relative_to(repo)}"
+                    f"overlay notice target escapes project: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             validate_hash(repo, target, entry.get("sha256"), problems, "overlay notice")
@@ -389,7 +389,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
         for entry in data.get("routing", []):
             if not isinstance(entry, dict):
                 problems.append(
-                    f"invalid overlay routing entry: {lock_path.relative_to(repo)}"
+                    f"invalid overlay routing entry: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             bundle = entry.get("bundle")
@@ -399,12 +399,12 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
                 )
             except ValueError:
                 problems.append(
-                    f"overlay routing target escapes project: {lock_path.relative_to(repo)}"
+                    f"overlay routing target escapes project: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             if not isinstance(bundle, str) or not bundle:
                 problems.append(
-                    f"overlay routing is missing bundle: {lock_path.relative_to(repo)}"
+                    f"overlay routing is missing bundle: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             target_path = repo / target

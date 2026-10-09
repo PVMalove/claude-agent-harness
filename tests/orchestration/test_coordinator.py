@@ -3661,6 +3661,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_publish_classifies_a_remote_that_refuses_the_push(self) -> None:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("a privileged process is not denied by file permissions")
+        if os.name == "nt":
+            self.skipTest("Windows does not deny writes by POSIX mode bits")
         _, brief, candidate = self._publish_brief_under(None)
         origin = self.tmp / "origin.git"
         paths = [origin, *origin.rglob("*")]

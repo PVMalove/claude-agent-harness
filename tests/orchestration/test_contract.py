@@ -727,7 +727,9 @@ class ZoneFreeConfigHealthTests(unittest.TestCase):
         import re
 
         schema = json.loads(
-            (Path(contract.__file__).parent / "orchestration.schema.json").read_text()
+            (Path(contract.__file__).parent / "orchestration.schema.json").read_text(
+                encoding="utf-8"
+            )
         )
         invalid: list[object] = [
             None,

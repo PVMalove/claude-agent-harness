@@ -440,6 +440,8 @@ class AccessRefusalTests(RefreshFixture):
 
     @contextlib.contextmanager
     def read_only(self, path: Path, *, tree: bool = False) -> Iterator[None]:
+        if os.name == "nt":
+            self.skipTest("Windows does not deny writes by POSIX mode bits")
         paths = [path, *path.rglob("*")] if tree else [path]
         modes = {item: item.stat().st_mode & 0o7777 for item in paths}
         for item in paths:

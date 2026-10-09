@@ -113,6 +113,7 @@ _needs_non_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="a privileged process is not denied by file permissions",
 )
+_needs_posix_modes = pytest.mark.skipif(os.name == "nt", reason="Windows does not deny writes by POSIX mode bits")
 
 
 def _project(tmp_path: Path) -> Path:
@@ -182,6 +183,7 @@ def test_an_inherited_plan_verifies_every_requirement_and_leaves_no_probe_behind
 
 
 @_needs_non_root
+@_needs_posix_modes
 def test_a_confirmed_metadata_write_denial_stops_with_structured_evidence_and_a_remedy(
     tmp_path: Path,
 ) -> None:
@@ -416,6 +418,7 @@ def test_one_classifier_names_the_git_access_failures(
 
 
 @_needs_non_root
+@_needs_posix_modes
 def test_a_git_command_refused_by_the_environment_raises_the_access_subclass(
     tmp_path: Path,
 ) -> None:

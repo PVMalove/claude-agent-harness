@@ -213,6 +213,10 @@ def main() -> int:
     parser.add_argument("--policy", type=Path)
     parser.add_argument("--cache-dir", type=Path)
     args = parser.parse_args()
+    # The context builder reads the map as UTF-8; a legacy Windows code page cannot encode a
+    # non-ASCII path.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     try:
         policy_path = args.policy or args.repo / ".harness" / "orchestration.json"
         policy = load_policy(policy_path, explicit=args.policy is not None)

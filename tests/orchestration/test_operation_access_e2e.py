@@ -34,6 +34,8 @@ INHERIT = {"defaults": {"mode": "inherit"}}
 @contextlib.contextmanager
 def read_only(*paths: Path, tree: bool = False) -> Iterator[None]:
     """Remove write permission, as a sandbox without that write root would, then restore it."""
+    if os.name == "nt":
+        raise unittest.SkipTest("Windows does not deny writes by POSIX mode bits")
     targets = [
         item
         for path in paths
