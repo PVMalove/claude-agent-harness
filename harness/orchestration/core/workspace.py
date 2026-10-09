@@ -317,8 +317,13 @@ def _validate_worktree(repo: Path, worktree: str) -> None:
             remedy="pass a non-empty worktree path",
         )
     try:
-        resolved = Path(worktree).resolve()
-    # ValueError: an embedded NUL byte; RuntimeError: a symlink loop (Python 3.12).
+        try:
+            # Non-strict resolution can suppress symlink loops instead of raising an error.
+            resolved = Path(worktree).resolve(strict=True)
+        except FileNotFoundError:
+            # An absent path still gets the existing Git registration diagnostic below.
+            resolved = Path(worktree).resolve()
+    # ValueError: an embedded NUL byte; RuntimeError/OSError: a symlink loop.
     except (OSError, RuntimeError, ValueError) as exc:
         raise CoordinatorError(
             "worktree is not a valid path",
