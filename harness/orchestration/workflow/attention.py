@@ -29,6 +29,7 @@ from harness.orchestration.core.constants import (
     LIVE_DISPATCH_STATES,
     OPERATIONAL_REASON_CATEGORIES,
     TERMINAL_BATCH_STATES,
+    TOOLING_REASON_CATEGORY,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -110,6 +111,19 @@ def _attention_findings(
                         subject,
                         last_safe_action=kept,
                         recommended_human_action=f"{repeated} operational retries ran for candidate {_short(candidate)}; verify the transport and verification environment before another re-run, then resolve this attention",
+                    )
+                )
+        if category == TOOLING_REASON_CATEGORY:
+            streak = operational_guards.tooling_retry_streak(
+                batch.get("coordinator_decisions", [])
+            )
+            if streak > operational_guards.MAX_CONSECUTIVE_TOOLING_RETRIES:
+                findings.append(
+                    operational_guards.attention_finding(
+                        "tooling-retry-repeated",
+                        subject,
+                        last_safe_action=kept,
+                        recommended_human_action=f"{streak} consecutive tooling retries ran for candidate {_short(candidate)}; fix the tool named by the tooling blocker (its bug ticket) before another re-run, then resolve this attention",
                     )
                 )
         queued_at = routing.get("decided_at")

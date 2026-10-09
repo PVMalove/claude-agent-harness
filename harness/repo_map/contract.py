@@ -6,6 +6,8 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 
 @lru_cache(maxsize=1)
 def _schema() -> dict[str, object]:
@@ -14,7 +16,10 @@ def _schema() -> dict[str, object]:
         Path(__file__).with_name("repo_map.schema.json").read_text(encoding="utf-8")
     )
     if not isinstance(value, dict):
-        raise TypeError("Repo Map schema must be a JSON object")
+        raise HarnessError(
+            "the shipped Repo Map schema must be a JSON object",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     return value
 
 

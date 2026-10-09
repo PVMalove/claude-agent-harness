@@ -8,9 +8,12 @@ lifecycle transition that needs a human goes through here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+from contextlib import ExitStack
 from datetime import UTC, datetime
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core.config import (
     _approval_ttl,
@@ -19,14 +22,84 @@ from harness.orchestration.core.config import (
 )
 from harness.orchestration.core.constants import (
     APPROVAL_CLOCK_SKEW_SECONDS,
+    AUTO_DECISION_KINDS,
+    AUTO_EVIDENCE_FIELDS,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
+    _canonical,
     _moment,
     _non_empty,
     _repo,
 )
+
+AUTO_POLICY = "auto"
+AUTO_APPROVER = f"policy:{AUTO_POLICY}"
+
+
+def auto_configured(config: JsonObject, batch: JsonObject) -> bool:
+    """Whether both the project config and the batch plan chose ``approval_policy: auto``.
+
+    A batch planned under another policy keeps it, and a project that left ``auto`` stops
+    approving by policy, so both must agree (issue #643).
+    """
+    return (
+        config.get("approval_policy") == AUTO_POLICY
+        and batch.get("approval_policy") == AUTO_POLICY
+    )
+
+
+def auto_active(config: JsonObject, batch: JsonObject) -> bool:
+    """Whether ``auto`` approves this batch's next step: configured and not stopped.
+
+    A recorded ``auto_stop`` is irreversible for the batch: every later step needs a human.
+    """
+    return auto_configured(config, batch) and "auto_stop" not in batch
+
+
+def sealed(body: JsonObject) -> JsonObject:
+    """``body`` with the ``record_sha256`` of its canonical form, as every hashed record has."""
+    return {
+        **body,
+        "record_sha256": hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest(),
+    }
+
+
+def record_auto(
+    batch: JsonObject,
+    *,
+    kind: str,
+    dispatch_id: str | None,
+    rationale: str,
+    evidence: JsonObject,
+    moment: str,
+) -> JsonObject:
+    """Append one hashed ``policy:auto`` approval to ``batch.auto_decisions`` and return it.
+
+    Only the in-memory batch changes; the caller persists it in the same ledger write as the
+    approval it records.
+    """
+    if kind not in AUTO_DECISION_KINDS or set(evidence) != AUTO_EVIDENCE_FIELDS[kind]:
+        raise CoordinatorError(
+            f"auto decision {kind!r} has an invalid evidence shape",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    records = batch.setdefault("auto_decisions", [])
+    record = sealed(
+        {
+            "sequence": len(records) + 1,
+            "kind": kind,
+            "dispatch_id": dispatch_id,
+            "approved_by": AUTO_APPROVER,
+            "approved_at": moment,
+            "rationale": rationale,
+            "evidence": evidence,
+        }
+    )
+    _reject_sensitive(record, "auto decision")
+    records.append(record)
+    return record
 
 
 def _confirm_on_terminal(
@@ -41,27 +114,24 @@ def _confirm_on_terminal(
     """
     bound = f" (transition {transition_digest[:12]})" if transition_digest else ""
     prompt = f"Type 'approve' to record this decision as {approved_by}{bound}: "
-    try:
-        if os.name == "nt":
-            stream = open("CONIN$", "r", encoding="utf-8")  # noqa: SIM115 - closed below
-            sink = open("CONOUT$", "w", encoding="utf-8")  # noqa: SIM115 - closed below
-        else:
-            stream = open("/dev/tty", "r", encoding="utf-8")  # noqa: SIM115 - closed below
-            sink = open("/dev/tty", "w", encoding="utf-8")  # noqa: SIM115 - closed below
-    except OSError as exc:
-        raise CoordinatorError(
-            "human_approval_gate is 'tty': this decision must be confirmed by a human on the "
-            "terminal, and this session has none. Show the decision packet and have the operator "
-            "run the same command in their own terminal.",
-            remedy="show the decision packet and have a human operator run this same command in their own terminal",
-        ) from exc
-    try:
+    reader, writer = (
+        ("CONIN$", "CONOUT$") if os.name == "nt" else ("/dev/tty", "/dev/tty")
+    )
+    # The stack closes the input handle as well when the output handle cannot be opened.
+    with ExitStack() as handles:
+        try:
+            stream = handles.enter_context(open(reader, "r", encoding="utf-8"))
+            sink = handles.enter_context(open(writer, "w", encoding="utf-8"))
+        except OSError as exc:
+            raise CoordinatorError(
+                "human_approval_gate is 'tty': this decision must be confirmed by a human on the "
+                "terminal, and this session has none. Show the decision packet and have the "
+                "operator run the same command in their own terminal.",
+                remedy="show the decision packet and have a human operator run this same command in their own terminal",
+            ) from exc
         sink.write(prompt)
         sink.flush()
         answer = stream.readline().strip().lower()
-    finally:
-        stream.close()
-        sink.close()
     if answer != "approve":
         raise CoordinatorError(
             "human approval was not confirmed on the terminal",

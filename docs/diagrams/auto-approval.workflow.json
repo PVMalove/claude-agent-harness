@@ -1,0 +1,514 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "output": "docs/diagrams/auto-approval.workflow.html",
+    "title": "Автоматический путь approval_policy: auto",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/PVMalove/claude-agent-harness.git",
+      "revision": "3806be5777032caa87653aafae70f357dc7b4f75"
+    },
+    "legend": {
+      "entries": {
+        "database": {
+          "label": "Конфигурация"
+        },
+        "security": {
+          "label": "Гейт политики"
+        },
+        "backend": {
+          "label": "Команда координатора"
+        },
+        "cloud": {
+          "label": "Роль и отчёт"
+        },
+        "messagebus": {
+          "label": "Запись в batch"
+        },
+        "external": {
+          "label": "Человек"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "coord",
+      "label": "Координатор: согласует policy:auto"
+    },
+    {
+      "id": "stop",
+      "label": "Остановка и итоговый отчёт",
+      "variant": "exception"
+    },
+    {
+      "id": "human",
+      "label": "Человек: ручные шаги"
+    }
+  ],
+  "phases": [
+    {
+      "id": "setup",
+      "label": "Конфигурация и batch",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "loop",
+      "label": "Цикл dispatch и решений",
+      "fromCol": 2,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "finish",
+      "label": "Итог и PR",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "security"
+    }
+  ],
+  "mainPath": [
+    "config",
+    "approve",
+    "dispatch",
+    "report",
+    "decide",
+    "published"
+  ],
+  "nodes": [
+    {
+      "id": "config",
+      "lane": "coord",
+      "col": 0,
+      "type": "database",
+      "label": "Конфигурация",
+      "sublabel": "approval_policy: auto",
+      "tag": "trusted, attestation",
+      "width": 128,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 341,
+          "end_line": 348,
+          "label": "Automatic path: config"
+        },
+        {
+          "path": "harness/orchestration/core/config.py",
+          "line": 392,
+          "end_line": 404,
+          "label": "auto + tty refused"
+        },
+        {
+          "path": "harness/orchestration/contract.py",
+          "line": 79,
+          "end_line": 82,
+          "label": "auto requires attestation"
+        }
+      ]
+    },
+    {
+      "id": "approve",
+      "lane": "coord",
+      "col": 1,
+      "type": "security",
+      "label": "batch approve",
+      "sublabel": "policy:auto",
+      "tag": "без --approved-by",
+      "width": 120,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 355,
+          "end_line": 361,
+          "label": "Approvals: batch approve"
+        },
+        {
+          "path": "harness/orchestration/workflow/approval.py",
+          "line": 36,
+          "end_line": 58,
+          "label": "auto_configured, auto_active"
+        }
+      ]
+    },
+    {
+      "id": "dispatch",
+      "lane": "coord",
+      "col": 2,
+      "type": "backend",
+      "label": "dispatch create",
+      "sublabel": "вехи publish, risk",
+      "tag": "kind: dispatch",
+      "width": 120,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 362,
+          "end_line": 365,
+          "label": "Approvals: dispatch"
+        },
+        {
+          "path": "harness/orchestration/workflow/approval.py",
+          "line": 68,
+          "end_line": 100,
+          "label": "record_auto"
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "lane": "coord",
+      "col": 3,
+      "type": "cloud",
+      "label": "Отчёт роли",
+      "sublabel": "report submit / qa run",
+      "tag": "чистый: accept",
+      "width": 132,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 369,
+          "end_line": 373,
+          "label": "chain accepts clean report"
+        },
+        {
+          "path": "harness/orchestration/workflow/decisions.py",
+          "line": 114,
+          "end_line": 145,
+          "label": "_auto_accept_policy"
+        },
+        {
+          "path": "harness/orchestration/workflow/reports.py",
+          "line": 1919,
+          "end_line": 1926,
+          "label": "next: batch auto-decide"
+        }
+      ]
+    },
+    {
+      "id": "decide",
+      "lane": "coord",
+      "col": 4,
+      "type": "security",
+      "label": "batch auto-decide",
+      "sublabel": "по фактам ledger",
+      "tag": "kind: decision",
+      "width": 132,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 382,
+          "end_line": 399,
+          "label": "decision table"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_policy.py",
+          "line": 569,
+          "end_line": 600,
+          "label": "resolve"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_policy.py",
+          "line": 207,
+          "end_line": 320,
+          "label": "category, finish"
+        }
+      ]
+    },
+    {
+      "id": "published",
+      "lane": "coord",
+      "col": 5,
+      "type": "backend",
+      "label": "Accept publish",
+      "sublabel": "batch completed",
+      "width": 120,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 386,
+          "end_line": 391,
+          "label": "publish accept completes"
+        }
+      ]
+    },
+    {
+      "id": "halt",
+      "lane": "stop",
+      "col": 4,
+      "type": "security",
+      "label": "Остановка",
+      "sublabel": "integrity → budget → route",
+      "tag": "batch.auto_stop",
+      "width": 150,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 401,
+          "end_line": 423,
+          "label": "Stops"
+        },
+        {
+          "path": "harness/orchestration/core/constants.py",
+          "line": 512,
+          "end_line": 530,
+          "label": "AUTO_STOP_REASONS"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_policy.py",
+          "line": 417,
+          "end_line": 452,
+          "label": "fact_stops, STOP_ORDER"
+        }
+      ]
+    },
+    {
+      "id": "final",
+      "lane": "stop",
+      "col": 5,
+      "type": "messagebus",
+      "label": "batch.auto_report",
+      "sublabel": "итоговый отчёт",
+      "tag": "один раз",
+      "width": 130,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 425,
+          "end_line": 435,
+          "label": "Final report"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_report.py",
+          "line": 229,
+          "end_line": 345,
+          "label": "build, record"
+        }
+      ]
+    },
+    {
+      "id": "resolver",
+      "lane": "human",
+      "col": 3,
+      "type": "external",
+      "label": "Решает человек",
+      "sublabel": "batch decide",
+      "tag": "conflict-resolver",
+      "width": 130,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 384,
+          "end_line": 385,
+          "label": "resolver outside path"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_policy.py",
+          "line": 590,
+          "end_line": 594,
+          "label": "resolver refused"
+        }
+      ]
+    },
+    {
+      "id": "manual",
+      "lane": "human",
+      "col": 4,
+      "type": "external",
+      "label": "Ручные шаги",
+      "sublabel": "только --approved-by",
+      "tag": "auto не вернётся",
+      "width": 130,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 420,
+          "end_line": 423,
+          "label": "after a stop"
+        },
+        {
+          "path": "harness/orchestration/workflow/approval.py",
+          "line": 52,
+          "end_line": 58,
+          "label": "auto_active"
+        }
+      ]
+    },
+    {
+      "id": "pr",
+      "lane": "human",
+      "col": 5,
+      "type": "external",
+      "label": "Открыть PR",
+      "sublabel": "/to-pull-requests",
+      "tag": "auto-merge запрещён",
+      "width": 124,
+      "sources": [
+        {
+          "path": "harness/orchestration/playbook.md",
+          "line": 436,
+          "end_line": 438,
+          "label": "no policy opens a PR"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_report.py",
+          "line": 48,
+          "end_line": 51,
+          "label": "PR_RULE"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "e-config-approve",
+      "from": "config",
+      "to": "approve",
+      "label": "план: auto"
+    },
+    {
+      "id": "e-approve-dispatch",
+      "from": "approve",
+      "to": "dispatch",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-dispatch-report",
+      "from": "dispatch",
+      "to": "report"
+    },
+    {
+      "id": "e-report-decide",
+      "from": "report",
+      "to": "decide",
+      "label": "прочие отчёты"
+    },
+    {
+      "id": "e-decide-published",
+      "from": "decide",
+      "to": "published",
+      "label": "accept",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-report-next",
+      "from": "report",
+      "to": "dispatch",
+      "label": "accept цепочкой",
+      "role": "return",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "e-decide-next",
+      "from": "decide",
+      "to": "dispatch",
+      "label": "accept или retry",
+      "role": "return",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top"
+    },
+    {
+      "id": "e-decide-halt",
+      "from": "decide",
+      "to": "halt",
+      "label": "найдена остановка",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e-halt-final",
+      "from": "halt",
+      "to": "final",
+      "label": "с отчётом",
+      "variant": "security"
+    },
+    {
+      "id": "e-published-final",
+      "from": "published",
+      "to": "final",
+      "label": "запись отчёта"
+    },
+    {
+      "id": "e-halt-manual",
+      "from": "halt",
+      "to": "manual",
+      "label": "далее человек",
+      "variant": "security"
+    },
+    {
+      "id": "e-final-pr",
+      "from": "final",
+      "to": "pr",
+      "label": "batch auto-report",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e-report-resolver",
+      "from": "report",
+      "to": "resolver",
+      "label": "conflict-resolver",
+      "role": "branch",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Требования конфигурации",
+      "items": [
+        "approval_policy: auto в конфигурации проекта и в плане batch",
+        "human_approval_gate: trusted, не tty",
+        "worker_attestation_required: true",
+        "Проверка конфигурации и harness health отклоняют другое сочетание"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Согласования policy:auto",
+      "items": [
+        "batch approve и dispatch create, вехи publish и risk тоже",
+        "dispatch resume --trigger, кроме human-decision; batch carry-over",
+        "Каждое согласование — хешируемая запись в batch.auto_decisions",
+        "Явный --approved-by при auto остаётся approval человека"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Таблица решений batch auto-decide",
+      "items": [
+        "Отчёт conflict-resolver: команда отказывает, решает человек",
+        "Чистый отчёт: accept, риски попадают в accepted_risks",
+        "Другой отчёт: retry по route_preview",
+        "Политика не выбирает override-warning, block, fail и abandon"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Чистый отчёт",
+      "items": [
+        "outcome: completed, blockers: none, все проверки проходят",
+        "Нет not_covered, carried gap, scope warning и находок review",
+        "Нет incomplete_items для своей роли и --block-bypass",
+        "Оси Standards и Spec не называют blockers",
+        "Отчёт review с blockers в оси останавливает путь до решения человека"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Закрытый список остановок",
+      "items": [
+        "1. integrity-failure: stale, model-mismatch, worktree-mismatch, harness-snapshot-changed, deterministic-gate-failed, ledger-validation-failed",
+        "2. budget-exhausted: лимиты retry_policy, continuation_policy и attention_policy; tooling-retry-repeated",
+        "3. no-automatic-route: unknown-reason, abandon-dead-end, supersede-dead-end",
+        "Координатор пишет остановку один раз в batch.auto_stop вместе с итоговым отчётом",
+        "ledger-validation-failed команда только выводит: ledger недостоверен"
+      ]
+    }
+  ]
+}

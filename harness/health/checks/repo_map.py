@@ -92,7 +92,7 @@ def repo_map_health(repo: Path) -> list[str]:
                 "release-parser-bundle (в репозитории харнесса — scripts/build_parser_bundle.py) "
                 "и повторите harness health"
             )
-    if degradation_reason is not None:
+    if isinstance(located, str) or degradation_reason is not None:
         return [
             f"Repo Map: tier=minimal ({degradation_reason})",
             f"Repo Map provenance: {degradation_reason}",
@@ -100,7 +100,6 @@ def repo_map_health(repo: Path) -> list[str]:
             "ПРЕДУПРЕЖДЕНИЕ: Repo Map работает в ограниченном режиме; команда health не загружает зависимости",
             remedy,
         ]
-    assert not isinstance(located, str)
     lock = located.lock
     grammars = ", ".join(
         f"{grammar.name}@{grammar.version} abi={grammar.abi} sha256={grammar.sha256}"

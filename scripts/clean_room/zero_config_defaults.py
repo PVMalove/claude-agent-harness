@@ -1,7 +1,8 @@
 """Значения coordinator по умолчанию без конфига: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ from scripts.clean_room.support import (
     HARNESS,
     ROOT,
     run_ok,
+    run_step,
 )
 
 
@@ -25,24 +27,24 @@ def run(ctx: SimpleNamespace) -> None:
     shared_worktree = ctx.shared_worktree
     sync_origin_base = ctx.sync_origin_base
     test_root = ctx.test_root
-    # Zero project configuration is a supported default: the whole repository is the zone and the
-    # invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
+    # Zero project configuration is a supported default: every batch states its own write scope and
+    # the invoking session supplies the role runtime, so an in-process pipeline needs no assignment plan.
     zero_config_state = test_root / "zero-config-state"
     saved_config = orchestration_config.read_text(encoding="utf-8")
-    # A config that declares no zones and no assignments states nothing, so it has to mean the same
-    # as no file: otherwise a project whose config was emptied takes the configured path, finds no
-    # zone and no assignment, and cannot start a batch at all — while deleting the file would fix
-    # it. `harness init` seeds the full example, so the empty variant is derived from it here.
+    # A config that declares no assignments states nothing, so it has to mean the same as no file:
+    # otherwise a project whose config was emptied takes the configured path, finds no assignment,
+    # and cannot start a batch at all — while deleting the file would fix it. `harness init` seeds
+    # the full example, so the empty variant is derived from it here.
     empty_seed = json.loads(
         (ROOT / "harness" / "orchestration.example.json").read_text(encoding="utf-8")
     )
-    for key in ("provider_profiles", "assignment_plans", "backend_zones"):
+    for key in ("provider_profiles", "assignment_plans"):
         empty_seed[key] = {}
-    empty_seed["low_risk_zones"] = []
+    empty_seed.pop("low_risk_paths", None)
     orchestration_config.write_text(
         json.dumps(empty_seed, indent=2) + "\n", encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-906-empty-seed"],
         cwd=orchestration_project,
         check=True,
@@ -59,6 +61,8 @@ def run(ctx: SimpleNamespace) -> None:
         "feature/issue-906-empty-seed",
         "--worktree",
         str(shared_worktree),
+        "--allowed-path",
+        "**",
         "--definition-of-done",
         "implement the requested change",
         "--prohibited-change",
@@ -69,14 +73,14 @@ def run(ctx: SimpleNamespace) -> None:
             "the seeded empty orchestration config blocks a batch instead of falling back: "
             + seeded.stderr
         )
-    if json.loads(seeded.stdout)["zone"] != "repository":
+    if json.loads(seeded.stdout)["allowed_paths"] != ["**"]:
         sys.exit(
-            "an empty orchestration config did not fall back to the whole-repository default"
+            "an empty orchestration config did not record the batch's explicit scope"
         )
 
     orchestration_config.unlink()
     run_ok(HARNESS + ["health", str(orchestration_project)])
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-903-zero-config"],
         cwd=orchestration_project,
         check=True,
@@ -93,6 +97,8 @@ def run(ctx: SimpleNamespace) -> None:
         "feature/issue-903-zero-config",
         "--worktree",
         str(shared_worktree),
+        "--allowed-path",
+        "**",
         "--definition-of-done",
         "implement the requested change",
         "--prohibited-change",
@@ -104,8 +110,11 @@ def run(ctx: SimpleNamespace) -> None:
             + zero_batch.stderr
         )
     zero_batch_id = json.loads(zero_batch.stdout)["batch_id"]
-    if json.loads(zero_batch.stdout)["zone"] != "repository":
-        sys.exit("zero-config batch did not default to the whole repository")
+    if (
+        json.loads(zero_batch.stdout)["allowed_paths"] != ["**"]
+        or json.loads(zero_batch.stdout)["zone"] is not None
+    ):
+        sys.exit("zero-config batch did not record its explicit scope and no zone")
     coordinator_run(
         "--state-dir",
         str(zero_config_state),

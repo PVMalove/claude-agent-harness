@@ -20,10 +20,6 @@ Code Review — независимая read-only роль, обязательн�
 - **Вход (Input/Brief):** immutable brief, fixed diff/commit range, исходная спецификация, стандарты проекта и перечень применимых риск-триггеров.
 - **Выход (Output/Report):** раздельные findings Standards и Spec с severity; зафиксированные доказательства diff и требования; остаточные риски, блокеры и отсутствие production changes.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [code-review.md](../../harness/orchestration/roles/code-review.md)

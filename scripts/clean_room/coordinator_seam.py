@@ -1,11 +1,14 @@
 """Coordinator как runtime-нейтральная граница: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+from scripts.clean_room.support import run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -24,7 +27,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not coordinator_path.is_file():
         sys.exit("backend-orchestration coordinator CLI missing")
 
-    trigger_probe = subprocess.run(
+    trigger_probe = run_step(
         [
             sys.executable,
             "-c",
@@ -105,7 +108,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
         def run_once(command_arguments):
             """Выполнить один запуск CLI координатора с переданными аргументами."""
-            return subprocess.run(
+            return run_step(
                 [
                     sys.executable,
                     str(coordinator_path),
@@ -150,7 +153,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
 
     def sync_origin_base(ref: str = "main") -> None:
         """Отправить HEAD в origin для синхронизации базовой ветки."""
-        subprocess.run(
+        run_step(
             ["git", "push", "-q", "-f", "origin", f"HEAD:refs/heads/{ref}"],
             cwd=orchestration_project,
             check=True,

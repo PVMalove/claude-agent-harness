@@ -1,6 +1,6 @@
 # Карта навыков и ролей
 
-Эта папка — короткая статическая память харнесса. Каждый документ фиксирует локализованное название, триггеры, ответственность, Input/Output-контракт и PNG-схему Archify. Подробные первоисточники остаются в `skills/first-party/pvmalove/`, `harness/orchestration/roles/`, `harness/orchestration/playbook.md` и `harness/orchestration/pilot.md`.
+Этот каталог — короткая статическая память харнесса. Каждый документ фиксирует локализованное название, триггеры, ответственность, Input/Output-контракт и PNG-схему Archify. Подробные первоисточники остаются в `skills/first-party/pvmalove/`, `harness/orchestration/roles/`, `harness/orchestration/playbook.md` и `harness/orchestration/pilot.md`.
 
 ## Командные навыки
 
@@ -16,24 +16,23 @@
 
 - [Coordinator](./coordinator.md), [Architect](./architect.md), [Developer](./developer.md)
 - [Code Review](./code-review-role.md), [QA](./qa.md)
-- [Messaging Integration](./messaging-integration.md), [Database Migrations](./database-migrations.md)
+- [Messaging Integration](./messaging-integration.md), [Database Migrations](./database-migrations.md), [Conflict Resolver](./conflict-resolver.md)
 - [Playbook](./playbook.md), [Pilot](./pilot.md)
 
 ## Закреплённые upstream skills
 
-Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в
-[vendor/](./vendor/). Их исходные `SKILL.md` закреплены в upstream snapshot и не правятся
-вручную. Совпадающие имена first-party overrides описаны здесь отдельно по действующей
-версии `pvmalove-suite`.
+Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в [vendor/](./vendor/).
+Их исходные `SKILL.md` закреплены в upstream snapshot и вручную не правятся, а first-party
+overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`.
 
 ## Связанные документы
 
-- Discovery Context начинается в `/grilling` через opt-in `Live Artifact`, проходит через
-  `Relevant Files` и ticket-specific Path inventory, а backend batch использует LLM-free
+- Discovery Context начинается в `/grilling` через opt-in `Live Artifact` и проходит через
+  `Relevant Files` и ticket-specific Path inventory. Backend batch использует LLM-free
   `Context Package`, checkpoint/continuation для write-роли и base-commit gate. Операционные
-  правила собраны в [backend-orchestration](../../harness/docs/backend-orchestration.md), актуальное
-  устройство — в [ADR 0003](../adr/0003-orchestration-core.md), конвейер записан в
+  правила собраны в [backend-orchestration](../backend-orchestration.md), актуальное устройство
+  описывает [ADR 0003](../adr/0003-orchestration-core.md), а конвейер —
   [ADR 0005](../adr/0005-implement-pipeline.md).
 - Внутренние агенты: [`docs/agents/`](../agents/)
 - Политики-хуки: [`docs/hooks/`](../hooks/)
-- Редактируемая Archify-спецификация: [`docs/diagrams/skill-contract-fill.workflow.json`](../diagrams/skill-contract-fill.workflow.json)
+- Схемы конкретных процессов (`/implement`, `/to-spec`, `/wayfinder`, `/triage` и др.): [`docs/diagrams/`](../diagrams/README.md)

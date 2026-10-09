@@ -9,12 +9,14 @@ them may widen scope, re-approve a transition or edit the brief.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import operation_access, runtime_access
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -26,12 +28,15 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     LIVE_DISPATCH_STATES,
     ROLE_TRANSPORTS,
-    SANDBOXES_REL,
+    RUNTIME_PATH_PREFIXES,
 )
 from harness.orchestration.core.git_utils import (
     _changed_files_between,
     _commit_changed_files,
     _git,
+    _remote_branch_tip,
+    git_environment,
+    git_failure,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -47,6 +52,7 @@ from harness.orchestration.core.workspace import (
     _agent_inbox,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    LedgerBusyError,
     _ledger_lock,
     _load_batch,
     _load_dispatch,
@@ -73,6 +79,9 @@ from harness.orchestration.workflow.history import (
 from harness.orchestration.workflow.reports import (
     _persist_report,
 )
+
+# A push of one already verified commit is bounded; the limit only stops a hung transport.
+PUBLISH_PUSH_TIMEOUT_SECONDS = 600
 
 
 def _validate_checkout(
@@ -101,11 +110,7 @@ def _validate_checkout(
     mutable_paths = []
     for line in status.splitlines():
         path = line[3:].split(" -> ", 1)[-1].replace("\\", "/")
-        sandboxes_prefix = f"{SANDBOXES_REL.as_posix()}/"
-        if not (
-            path.startswith(".harness/orchestration/state/")
-            or path.startswith(sandboxes_prefix)
-        ):
+        if not path.startswith(RUNTIME_PATH_PREFIXES):
             mutable_paths.append(path)
     if mutable_paths:
         raise CoordinatorError(
@@ -121,6 +126,37 @@ def _validate_checkout(
         raise CoordinatorError(
             "review checkout changed files do not match the immutable review scope",
             remedy="the review checkout's changed files must exactly match the immutable review scope; re-checkout the pinned candidate",
+        )
+
+
+def _run_adapter(command: list[str]) -> None:
+    """Hand the brief to a project runtime adapter.
+
+    The adapter contract bounds the call: the adapter returns after it starts the worker. A worker
+    session has no fixed duration, so no timeout is set here.
+    """
+    try:
+        # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
+        # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise CoordinatorError(
+            f"runtime adapter could not be started: {exc}",
+            remedy="make the runtime adapter executable (or pass a .py adapter) and send the "
+            "dispatch again; nothing was handed off",
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise CoordinatorError(
+            f"runtime adapter rejected dispatch: {detail}",
+            remedy=f"inspect the runtime adapter's rejection above: {detail}",
         )
 
 
@@ -211,6 +247,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             / DispatchRecord.directory
             / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
         )
+        command = None
         if adapter is not None:
             command = (
                 [str(adapter)]
@@ -230,42 +267,28 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
-            # Windows consoles default to a legacy ANSI codepage: without an explicit encoding a
-            # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
-            if result.returncode != 0:
-                detail = (result.stderr or result.stdout).strip()
-                raise CoordinatorError(
-                    f"runtime adapter rejected dispatch: {detail}",
-                    remedy=f"inspect the runtime adapter's rejection above: {detail}",
-                )
-        for entry in batch["dispatches"]:
-            if entry["dispatch_id"] == dispatch["dispatch_id"]:
-                entry["state"] = "dispatched"
-                break
-        else:
-            raise CoordinatorError(
-                "dispatch is not registered in its batch",
-                remedy="the dispatch is not registered in its batch -- "
-                + INTERNAL_INVARIANT_REMEDY,
-            )
+        access_evidence = runtime_access.apply_plan(
+            dispatch,
+            transport,
+            handoff=True,
+            command=tuple(command) if command is not None else None,
+        )
+        if command is not None and access_evidence["status"] == "legacy-inherit":
+            _run_adapter(command)
+        # The guard above proved this is the batch's own entry for the dispatch.
+        entry["state"] = "dispatched"
         sent_at = utils._now()
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(
             ledger,
             DispatchStatusRecord.from_dict(
                 {
+                    **status,
                     "dispatch_id": dispatch["dispatch_id"],
                     "state": "dispatched",
                     "updated_at": sent_at,
                     "heartbeat_at": sent_at,
+                    "runtime_access": access_evidence,
                 }
             ),
         )
@@ -274,6 +297,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
+        "runtime_access": access_evidence,
         "transport": transport,
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],
@@ -327,7 +351,10 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     deadline = time.monotonic() + timeout
     ledger = LifecycleLedger(root)
     while True:
-        with _ledger_lock(ledger):
+        # A ledger busy with another coordinator operation is a missed poll, not a failure: the
+        # next poll retries it until this wait's own timeout.  Only the lock acquisition is
+        # tolerated -- nothing below takes the lock again.
+        with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
@@ -393,8 +420,10 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
             remedy="pass --stale-after as a positive number of seconds",
         )
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
-        entries: list[JsonObject] = []
+    entries: list[JsonObject] | None = None
+    # A busy ledger answers with a structured retry instead of an error: the caller polls again.
+    with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
+        entries = []
         for path in sorted(
             (_records_root(root) / DispatchStatusRecord.directory).glob(
                 "dispatch-*.json"
@@ -434,6 +463,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "transport": dispatch.get("resolved_transport"),
                     "resolved_model": dispatch["resolved_model"],
                     "model_self_report": status.get("model_self_report"),
+                    "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
                     "silent_seconds": silent,
@@ -449,6 +479,17 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     ),
                 }
             )
+    if entries is None:
+        return {
+            "ledger_busy": True,
+            "retry_after_seconds": _execution_policy(config)[
+                "dispatch_poll_interval_seconds"
+            ],
+            "lock": ledger.lock_state(),
+            "remedy": "repeat dispatch status: another coordinator operation holds the ledger "
+            "lock. If it stays held, run 'coordinator.py ledger release-lock', which refuses a "
+            "lock whose owner process is alive",
+        }
     return {
         "stale_after_seconds": threshold,
         "stale": [entry["dispatch_id"] for entry in entries if entry["stale"]],
@@ -500,32 +541,79 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
                 "publish requires an approved, unsent publish-only dispatch",
                 remedy="approve a publish-only dispatch, and send it, before publishing",
             )
+        from harness.orchestration.infrastructure_retry import (
+            require_publish_destination,
+            stop_attention,
+        )
+
+        try:
+            require_publish_destination(repo, root, dispatch, remote)
+        except CoordinatorError as exc:
+            stop_attention(repo, root, args.dispatch, exc, locked=True)
+            raise
         candidate = dispatch["candidate_commit"]
         _accepted_qa_for_candidate(root, batch, candidate)
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(repo),
-                "push",
-                remote,
-                f"{candidate}:refs/heads/{dispatch['branch']}",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
+        # Only a candidate with accepted QA reaches this check, and nothing leaves the machine
+        # before the pinned plan of this brief is proven for Git metadata, storage and the remote.
+        try:
+            access = operation_access.require(
+                repo,
+                core_config._config(repo),
+                "publish",
+                brief=dispatch,
+                remote=remote,
+            )
+        except operation_access.OperationAccessError as exc:
+            from harness.orchestration.infrastructure_retry import (
+                pinned,
+                record_operation_failure,
+            )
+
+            policy = pinned(dispatch)
+            if policy and policy["enabled"]:
+                record_operation_failure(
+                    repo, root, dispatch, "publish", exc.evidence, remote, locked=True
+                )
+            raise
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "push",
+                    remote,
+                    f"{candidate}:refs/heads/{dispatch['branch']}",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+                env=git_environment(),
+                timeout=PUBLISH_PUSH_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # The ledger is unchanged, and a repeated push of the same commit is a no-op.
+            raise CoordinatorError(
+                f"git push to {remote!r} did not finish within "
+                f"{PUBLISH_PUSH_TIMEOUT_SECONDS} seconds",
+                remedy=f"check connectivity to {remote!r} and repeat dispatch publish; the "
+                "dispatch stays approved",
+            ) from exc
+        except OSError as exc:
+            raise CoordinatorError(
+                f"git push could not be started: {exc}",
+                remedy="make git available on PATH and repeat dispatch publish",
+            ) from exc
         if result.returncode != 0:
             detail = _sanitise((result.stderr or result.stdout).strip())
-            raise CoordinatorError(
+            raise git_failure(
                 f"could not publish the accepted candidate: {detail or 'unknown error'}",
+                detail,
                 remedy="inspect the git push error above and fix it before retrying publish",
             )
-        published = _git(
-            repo, "ls-remote", "--heads", remote, f"refs/heads/{dispatch['branch']}"
-        )
-        if not published or published.split()[0] != candidate:
+        # Bounded and exact: an ls-remote pattern also matches deeper names ending in the branch.
+        if _remote_branch_tip(repo, remote, dispatch["branch"]) != candidate:
             raise CoordinatorError(
                 "remote branch does not resolve to the accepted QA candidate",
                 remedy="push exactly the accepted QA candidate commit to the remote branch",
@@ -576,4 +664,5 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
         "state": "reported",
         "report": str(report_path),
         "candidate_commit": candidate,
+        "access": access,
     }

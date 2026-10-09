@@ -55,7 +55,11 @@ def checkouts(tmp_path: Path, request: pytest.FixtureRequest) -> tuple[Path, Pat
         source_types=["glossary", "task_archive"],
         allow_paths=["CONTEXT.md", "docs/tasks/**/*.md"],
     )
-    source(main, "docs/tasks/issue-1/issue-1-archive.md", "# Archived decision\ntransaction")
+    source(
+        main,
+        "docs/tasks/issue-1/issue-1-archive.md",
+        "# Archived decision\ntransaction",
+    )
     configure(linked, allow_paths=[])
     source(linked, "CONTEXT.md", "# Branch glossary\nunrelated")
     return main, linked

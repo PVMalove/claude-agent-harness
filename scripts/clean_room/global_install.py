@@ -1,8 +1,9 @@
 """Глобальная установка, overlay и совместимость: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import filecmp
 import os
-import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ from scripts.clean_room.support import (
     ROOT,
     run_fails,
     run_ok,
+    run_step,
 )
 
 
@@ -104,7 +106,7 @@ def run(ctx: SimpleNamespace) -> None:
     legacy = test_root / "legacy"
     (legacy / ".harness" / "skills" / "project-only").mkdir(parents=True)
     (legacy / ".harness" / "skills" / "ask-matt").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=legacy, check=True)
+    run_step(["git", "init", "-q"], cwd=legacy, check=True)
     (legacy / "AGENTS.md").write_text("# Legacy project\n", encoding="utf-8")
     (legacy / ".harness" / "skills" / "project-only" / "SKILL.md").write_text(
         "---\nname: project-only\ndescription: Use for the legacy project-only workflow.\n---\n\n# Project only\n",

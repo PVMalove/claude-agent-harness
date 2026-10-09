@@ -9,20 +9,11 @@ CLI трекера задач. Никакие данные никуда не о�
 
 from __future__ import annotations
 
-import argparse
-import importlib.util
-import json
-import re
-import subprocess
 import sys
-import uuid
-from collections.abc import Iterator
-from datetime import UTC, datetime
-from fnmatch import fnmatchcase
-from pathlib import Path
-from typing import Protocol, cast
 
-MIN_PYTHON = (3, 9)
+# Checked before every other import: `datetime.UTC` below already needs Python 3.11, so a later
+# guard would never print its message on an older interpreter.
+MIN_PYTHON = (3, 12)  # same floor as harness/bin/harness.py and bin/install-global.py
 if sys.version_info < MIN_PYTHON:
     sys.stderr.write(
         "[ERROR] delivery_stats requires Python {}+ (found {}).\n".format(
@@ -30,6 +21,21 @@ if sys.version_info < MIN_PYTHON:
         )
     )
     raise SystemExit(1)
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import uuid
+from collections.abc import Iterator
+from datetime import UTC, datetime
+from fnmatch import fnmatchcase
+from pathlib import Path
+from typing import NamedTuple, Protocol, cast
+from urllib.parse import quote
 
 # `harness/bin/harness.py`'s package_files() copies this file verbatim into target projects as
 # `.harness/reporting/delivery_stats.py` -- a different directory name than the source tree's
@@ -39,19 +45,14 @@ _HARNESS_ROOT = Path(__file__).resolve().parents[1]
 _REPO_ROOT = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
-if _HARNESS_ROOT.name != "harness":
-    _spec = importlib.util.spec_from_file_location(
-        "harness",
-        _HARNESS_ROOT / "__init__.py",
-        submodule_search_locations=[str(_HARNESS_ROOT)],
-    )
-    assert _spec is not None and _spec.loader is not None
-    _pkg = importlib.util.module_from_spec(_spec)
-    sys.modules["harness"] = _pkg
-    _spec.loader.exec_module(_pkg)
+if _HARNESS_ROOT.name != "harness" or not (_HARNESS_ROOT / "__init__.py").is_file():
+    _spec = importlib.machinery.ModuleSpec("harness", None, is_package=True)
+    _spec.submodule_search_locations = [str(_HARNESS_ROOT)]
+    sys.modules["harness"] = importlib.util.module_from_spec(_spec)
 
 # Keep these explicit re-exports for callers of the installed delivery_stats.py script.
 from harness.errors import HarnessError, print_and_exit  # noqa: I001
+from harness.health.project_tracker import ProjectTracker, resolve_project_tracker
 from harness.reporting.baseline import (
     _provider_delta as _provider_delta,  # noqa: PLC0414
     baseline_snapshot,
@@ -67,6 +68,7 @@ from harness.reporting.common import (
     JsonObject,
     StatsError as StatsError,  # noqa: PLC0414
     _int,
+    is_count,
 )
 from harness.reporting.cost import estimate_cost as estimate_cost  # noqa: PLC0414
 from harness.reporting.cost import load_rates as load_rates  # noqa: PLC0414
@@ -104,18 +106,32 @@ NON_BILLABLE_MODELS = {"<synthetic>"}
 # coordinator itself does, since a missing or unreadable record must degrade to "missing", not abort.
 ORCHESTRATION_STATE_REL = Path(".harness/orchestration/state")
 CONTINUATION_DECISIONS = {"continue", "continue-automatic"}
+# Upper bound for one git plumbing call or one gh/glab JSON query (paginated listings included).
+COMMAND_TIMEOUT_SECONDS = 120
+# Exit code `_run` reports for a command killed by COMMAND_TIMEOUT_SECONDS (as coreutils `timeout`).
+TIMEOUT_EXIT_CODE = 124
 
 
-def _run(command: list[str], cwd: Path | None = None) -> tuple[int, str, str]:
+def _run(
+    command: list[str], cwd: Path | None = None, env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
     """Выполнить внешнюю команду в подпроцессе и вернуть код завершения, stdout и stderr."""
     try:
         result = subprocess.run(
             command,
             cwd=str(cwd) if cwd else None,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
             check=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            TIMEOUT_EXIT_CODE,
+            "",
+            f"{command[0]} did not finish within {COMMAND_TIMEOUT_SECONDS} s",
         )
     except OSError as exc:
         return 127, "", str(exc)
@@ -200,6 +216,11 @@ def _project_config(repo: Path) -> JsonObject:
         return {}
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise StatsError(
+            f".harness/project.json is not readable: {exc}",
+            remedy="fix the file-system error above for .harness/project.json and retry",
+        ) from exc
     except ValueError as exc:
         raise StatsError(
             ".harness/project.json is not valid JSON",
@@ -228,6 +249,113 @@ def _gh(repo: Path, *arguments: str) -> JsonObject | list[JsonObject] | None:
             "gh returned output that is not valid JSON",
             remedy=f"retry 'gh {' '.join(arguments)}'; if it keeps failing, check the gh CLI version",
         ) from exc
+
+
+GLAB_AUTH_FAILURE = re.compile(r"auth login|\b401\b[^\n]*unauthorized", re.IGNORECASE)
+
+
+class GitLabProject(NamedTuple):
+    """Явная адресация проекта GitLab (docs/agents/issue-tracker.md → GitLab → Conventions)."""
+
+    host: str
+    # The `-R` value of every glab command.
+    url: str
+    # `projects/<URL-encoded project path>`, the REST path prefix of `GITLAB_HOST=<host> glab api`.
+    api_prefix: str
+
+
+def _gitlab_project(tracker: ProjectTracker) -> GitLabProject:
+    """Адресация проекта GitLab из тройки резолвера трекера проекта."""
+    if tracker.host is None or tracker.project is None:
+        raise StatsError(
+            "the GitLab tracker host or project is unknown",
+            remedy='set "tracker": {"type": "gitlab", "host": ..., "project": ...} in .harness/project.json',
+        )
+    return GitLabProject(
+        tracker.host,
+        f"https://{tracker.host}/{tracker.project}",
+        f"projects/{quote(tracker.project, safe='')}",
+    )
+
+
+def _glab(repo: Path, gitlab: GitLabProject, *arguments: str) -> object:
+    """Выполнить команду glab и распарсить её JSON-вывод; страницы `--paginate`, напечатанные
+    подряд, склеиваются в один список."""
+    # glab rejects a port in `api --hostname` ("invalid hostname"); GITLAB_HOST keeps the port
+    # and wins over the remote of the working directory.
+    env = (
+        {**os.environ, "GITLAB_HOST": gitlab.host}
+        if arguments[:1] == ("api",)
+        else None
+    )
+    prefix = f"GITLAB_HOST={gitlab.host} " if env else ""
+    command_text = f"{prefix}glab {' '.join(arguments)}"
+    code, out, err = _run(["glab", *arguments], cwd=repo, env=env)
+    if code == 127:
+        raise StatsError(
+            "the glab CLI is required for a GitLab project and is not available",
+            remedy="install the GitLab CLI (glab) and ensure it is on PATH, or pass --tickets to run offline",
+        )
+    if code != 0 and GLAB_AUTH_FAILURE.search(f"{err}\n{out}"):
+        raise StatsError(
+            f"glab is not authenticated on {gitlab.host}",
+            remedy=f"run 'glab auth login --hostname {gitlab.host}', or pass --tickets to run offline",
+        )
+    if code != 0:
+        raise StatsError(
+            f"{command_text} failed: {err or out or 'unknown error'}",
+            remedy=f"fix the cause named in the glab error (project access, host, glab version) before retrying '{command_text}', or pass --tickets to run offline",
+        )
+    decoder = json.JSONDecoder()
+    values: list[object] = []
+    index = 0
+    try:
+        while index < len(out):
+            value, index = decoder.raw_decode(out, index)
+            values.append(value)
+            index = len(out) - len(out[index:].lstrip())
+    except ValueError as exc:
+        raise StatsError(
+            "glab returned output that is not valid JSON",
+            remedy=f"retry '{command_text}'; if it keeps failing, check the glab CLI version",
+        ) from exc
+    if len(values) <= 1:
+        return values[0] if values else None
+    return [item for page in values if isinstance(page, list) for item in page]
+
+
+def _glab_issue(repo: Path, gitlab: GitLabProject, iid: object) -> JsonObject:
+    """Задача проекта GitLab по её iid."""
+    return cast(
+        JsonObject,
+        _glab(
+            repo,
+            gitlab,
+            "issue",
+            "view",
+            str(iid),
+            "-R",
+            gitlab.url,
+            "--output",
+            "json",
+        )
+        or {},
+    )
+
+
+def _glab_api_list(repo: Path, gitlab: GitLabProject, path: str) -> list[JsonObject]:
+    """Все страницы списка из REST API проекта GitLab."""
+    return cast(
+        list[JsonObject],
+        _glab(
+            repo,
+            gitlab,
+            "api",
+            "--paginate",
+            f"{gitlab.api_prefix}/{path}",
+        )
+        or [],
+    )
 
 
 ISSUE_BRANCH = re.compile(r"^[a-z]+/issue-(\d+)-")
@@ -288,6 +416,51 @@ def resolve_scope(repo: Path, epic: int) -> JsonObject:
             "url": parent.get("url", ""),
             "created_at": parent.get("createdAt"),
             "closed_at": parent.get("closedAt"),
+        },
+        "tickets": tickets,
+        "numbers": {ticket["number"] for ticket in tickets},
+    }
+
+
+def resolve_gitlab_scope(repo: Path, epic: int, gitlab: GitLabProject) -> JsonObject:
+    """Определить область охвата эпика на GitLab Free, где нет sub-issues.
+
+    Дочерний тикет — задача того же проекта, связанная с эпиком через `relates_to`, в описании
+    которой есть маркер `## Parent: #<epic>`: связь не имеет направления, поэтому маркер отсекает
+    посторонние связи (docs/agents/issue-tracker.md → Wayfinding operations).
+    """
+    parent = _glab_issue(repo, gitlab, epic)
+    marker = re.compile(rf"^## Parent: #{epic}\b", re.MULTILINE)
+    tickets = [
+        {
+            "number": parent["iid"],
+            "title": parent["title"],
+            "state": parent["state"],
+            "role": "epic",
+        }
+    ]
+    for link in _glab_api_list(repo, gitlab, f"issues/{epic}/links"):
+        if link.get("project_id") != parent.get("project_id"):
+            continue
+        child = _glab_issue(repo, gitlab, link["iid"])
+        if not marker.search(child.get("description") or ""):
+            continue
+        tickets.append(
+            {
+                "number": child["iid"],
+                "title": child.get("title", ""),
+                "state": child.get("state", ""),
+                "role": "child",
+            }
+        )
+    return {
+        "epic": {
+            "number": parent["iid"],
+            "title": parent["title"],
+            "state": parent["state"],
+            "url": parent.get("web_url", ""),
+            "created_at": parent.get("created_at"),
+            "closed_at": parent.get("closed_at"),
         },
         "tickets": tickets,
         "numbers": {ticket["number"] for ticket in tickets},
@@ -358,8 +531,94 @@ def pull_requests(repo: Path, numbers: set[int]) -> list[JsonObject]:
     for entry in listed:
         ticket = ticket_of_branch(entry.get("headRefName"))
         if ticket in numbers:
-            matched.append({**entry, "ticket": ticket})
+            matched.append(
+                {
+                    **entry,
+                    "ticket": ticket,
+                    **_pull_request_commits(repo, entry["number"]),
+                }
+            )
     return matched
+
+
+def _pull_request_commits(repo: Path, number: int) -> JsonObject:
+    """Число коммитов pull request и пути ADR, добавленных его собственными коммитами."""
+    detail = cast(
+        JsonObject,
+        _gh(repo, "pr", "view", str(number), "--json", "commits,files") or {},
+    )
+    commit_list = detail.get("commits") or []
+    oids = {item.get("oid") for item in commit_list if item.get("oid")}
+    adr = []
+    for item in detail.get("files") or []:
+        path = item.get("path", "")
+        if _is_adr(path) and _added_by(repo, path) in oids:
+            adr.append(path)
+    return {"commits": len(commit_list), "adr_added": adr}
+
+
+def gitlab_merge_requests(
+    repo: Path, gitlab: GitLabProject, numbers: set[int]
+) -> list[JsonObject]:
+    """Получить merge request GitLab, исходные ветки которых относятся к тикетам из области охвата,
+    в форме pull request из `pull_requests`."""
+    listed = cast(
+        list[JsonObject],
+        _glab(
+            repo,
+            gitlab,
+            "mr",
+            "list",
+            "-R",
+            gitlab.url,
+            "--all",
+            "--per-page",
+            "100",
+            "--output",
+            "json",
+        )
+        or [],
+    )
+    matched = []
+    for entry in listed:
+        ticket = ticket_of_branch(entry.get("source_branch"))
+        if ticket in numbers:
+            matched.append(
+                {
+                    "number": entry["iid"],
+                    "headRefName": entry["source_branch"],
+                    "state": entry.get("state"),
+                    "mergedAt": entry.get("merged_at"),
+                    "url": entry.get("web_url", ""),
+                    "ticket": ticket,
+                    **_merge_request_changes(repo, gitlab, entry["iid"]),
+                }
+            )
+    return matched
+
+
+def _merge_request_changes(repo: Path, gitlab: GitLabProject, iid: int) -> JsonObject:
+    """Коммиты, diffstat и добавленные ADR одного merge request по REST API GitLab.
+
+    Список MR не несёт diffstat, поэтому строки считаются по полю `diff` каждого файла: GitLab
+    отдаёт в нём только hunk'и, без заголовков `---`/`+++`.
+    """
+    commits = _glab_api_list(repo, gitlab, f"merge_requests/{iid}/commits")
+    diffs = _glab_api_list(repo, gitlab, f"merge_requests/{iid}/diffs")
+    diff_lines = [
+        line for item in diffs for line in (item.get("diff") or "").splitlines()
+    ]
+    return {
+        "commits": len(commits),
+        "additions": sum(1 for line in diff_lines if line.startswith("+")),
+        "deletions": sum(1 for line in diff_lines if line.startswith("-")),
+        "changedFiles": len(diffs),
+        "adr_added": [
+            item["new_path"]
+            for item in diffs
+            if item.get("new_file") and _is_adr(item.get("new_path", ""))
+        ],
+    }
 
 
 # ------------------------------------------------------------------------------------ git volume
@@ -381,17 +640,8 @@ def git_volume(
 
     adr: set[str] = set()
     for pr in prs:
-        detail = cast(
-            JsonObject,
-            _gh(repo, "pr", "view", str(pr["number"]), "--json", "commits,files") or {},
-        )
-        commit_list = detail.get("commits") or []
-        count = len(commit_list)
-        oids = {item.get("oid") for item in commit_list if item.get("oid")}
-        for item in detail.get("files") or []:
-            path = item.get("path", "")
-            if _is_adr(path) and _added_by(repo, path) in oids:
-                adr.add(path)
+        count = pr["commits"]
+        adr.update(pr["adr_added"])
         entries.append(
             {
                 "source": "pull-request",
@@ -645,9 +895,8 @@ def _is_billable_turn(record: JsonObject) -> bool:
 
 def _usage_complete(usage: object) -> bool:
     """Проверить, содержит ли словарь использования токенов все обязательные числовые поля Claude."""
-    return isinstance(usage, dict) and not any(
-        not isinstance(usage.get(field), int) or isinstance(usage.get(field), bool)
-        for field in CLAUDE_FIELDS
+    return isinstance(usage, dict) and all(
+        is_count(usage.get(field)) for field in CLAUDE_FIELDS
     )
 
 
@@ -859,6 +1108,8 @@ def codex_usage(
     rate_limits: JsonObject | None = None
     turns = 0
     incomplete_telemetry = False
+    # One resolve() per distinct recorded cwd, not per record of every rollout.
+    cwd_cache: dict[tuple[str, str], bool] = {}
 
     for transcript in sorted(sessions_root.rglob("rollout-*.jsonl")):
         current_model = "unknown"
@@ -870,7 +1121,7 @@ def codex_usage(
             payload = record.get("payload")
             payload = payload if isinstance(payload, dict) else {}
             cwd = payload.get("cwd") or record.get("cwd")
-            if _same_path(cwd, repo):
+            if _same_path(cwd, repo, cwd_cache):
                 in_repo = True
             if payload.get("model"):
                 current_model = payload["model"]
@@ -880,17 +1131,16 @@ def codex_usage(
             if moment is None or not (start <= moment <= end):
                 continue
             ordinal = record.get("ordinal")
-            if ordinal is not None:
+            # A list or object here is a damaged record: unhashable, it cannot be a dedup key.
+            if ordinal is not None and not isinstance(ordinal, (list, dict)):
                 if ordinal in counted:
                     continue
                 counted.add(ordinal)
             info = payload.get("info")
             info = info if isinstance(info, dict) else {}
             delta = info.get("last_token_usage")
-            if not isinstance(delta, dict) or any(
-                not isinstance(delta.get(field), int)
-                or isinstance(delta.get(field), bool)
-                for field in CODEX_FIELDS
+            if not isinstance(delta, dict) or not all(
+                is_count(delta.get(field)) for field in CODEX_FIELDS
             ):
                 transcript_incomplete = True
                 continue
@@ -1046,17 +1296,26 @@ def _dispatch_record(
     return _lenient_read_record(root / "dispatches" / f"{dispatch_id}.json", ledger_cls)
 
 
+def _record_list(record: JsonObject, key: str) -> list[object]:
+    """Получить список из поля записи журнала; значение другого типа читается как пустой список.
+
+    Записи читаются в мягком режиме, поэтому повреждённое поле не должно прерывать сбор метрик.
+    """
+    value = record.get(key)
+    return value if isinstance(value, list) else []
+
+
 def _developer_write_paths(
     root: Path, batch: JsonObject, ledger_cls: LedgerClass | None
 ) -> list[str] | None:
     """Определить объявленную зону путей записи разработчика (write_paths) для пакета задач."""
-    for entry in reversed(batch.get("dispatches", [])):
+    for entry in reversed(_record_list(batch, "dispatches")):
         if not isinstance(entry, dict) or entry.get("role") != "developer":
             continue
         dispatch = _dispatch_record(root, entry.get("dispatch_id"), ledger_cls)
         paths = dispatch.get("write_paths") if dispatch else None
         if isinstance(paths, list) and paths:
-            return paths
+            return [path for path in paths if isinstance(path, str)]
     return None
 
 
@@ -1077,7 +1336,7 @@ def _accumulate_batch_orchestration(
     """Накопить метрики оркестрации из одного пакета (batch) в структуру тикета."""
     bucket["batches"].append(batch.get("batch_id"))
     restarts_by_dispatch: dict[str, list[JsonObject]] = {}
-    for decision in batch.get("coordinator_decisions", []):
+    for decision in _record_list(batch, "coordinator_decisions"):
         if (
             not isinstance(decision, dict)
             or decision.get("decision") not in CONTINUATION_DECISIONS
@@ -1094,7 +1353,7 @@ def _accumulate_batch_orchestration(
             }
         )
     developer_paths = _developer_write_paths(root, batch, ledger_cls)
-    for entry in batch.get("dispatches", []):
+    for entry in _record_list(batch, "dispatches"):
         if not isinstance(entry, dict) or not isinstance(entry.get("dispatch_id"), str):
             continue
         dispatch_id = entry["dispatch_id"]
@@ -1231,8 +1490,16 @@ def build_report(args: argparse.Namespace) -> JsonObject:
     config = _project_config(repo)
     base = args.base or config.get("base_branch") or "main"
 
+    tracker = None if args.tickets else resolve_project_tracker(repo).effective
+    gitlab = (
+        _gitlab_project(tracker)
+        if tracker is not None and tracker.type == "gitlab"
+        else None
+    )
     if args.tickets:
         scope = offline_scope(args.epic, args.tickets)
+    elif gitlab is not None:
+        scope = resolve_gitlab_scope(repo, args.epic, gitlab)
     else:
         scope = resolve_scope(repo, args.epic)
     numbers = scope["numbers"]
@@ -1257,7 +1524,12 @@ def build_report(args: argparse.Namespace) -> JsonObject:
     )
     cost = estimate_cost(claude, codex, load_rates(rates_path))
 
-    prs = [] if scope.get("offline") else pull_requests(repo, numbers)
+    if scope.get("offline"):
+        prs = []
+    elif gitlab is not None:
+        prs = gitlab_merge_requests(repo, gitlab, numbers)
+    else:
+        prs = pull_requests(repo, numbers)
     local = {
         name
         for name in _local_issue_branches(repo)

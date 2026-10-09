@@ -45,6 +45,8 @@ PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {
     "shell",
     "memory",
     "memory_policy",
+    "tracker",
+    "ci_required_checks",
 }
 STORY_POINTS_REQUIRED_FIELDS = (
     "scale",
@@ -53,6 +55,29 @@ STORY_POINTS_REQUIRED_FIELDS = (
     "gray_zone",
 )
 STORY_POINTS_ALLOWED_FIELDS = frozenset(STORY_POINTS_REQUIRED_FIELDS)
+
+# The optional `tracker` field (docs/adr/0011): the single definition of its rules. The project
+# tracker resolver (project_tracker.py) imports them from here, and `project.schema.json` repeats
+# the same patterns verbatim - tests/health/test_health_checks_files.py keeps the two in step.
+TRACKER_FIELDS = ("type", "host", "project")
+TRACKER_TYPES = ("github", "gitlab", "local")
+TRACKER_HOSTED_TYPES = ("github", "gitlab")
+# A hostname with an optional :port - no scheme, path or userinfo.
+TRACKER_HOST_PATTERN = r"^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$"
+# The full project path including subgroups, at least two segments, no leading/trailing slash.
+TRACKER_PROJECT_PATTERN = r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$"
+# What a host or project value breaking its pattern must look like instead - never the value.
+TRACKER_HOST_RULE = (
+    "must be a hostname with an optional :port, without scheme, path or userinfo"
+)
+TRACKER_PROJECT_RULE = (
+    "must be the full project path with subgroups (group/sub/project), "
+    "without a leading or trailing slash"
+)
+# Bound of the `git ls-files` skill inventory.
+GIT_TIMEOUT_SECONDS = 30
+# A JSON file cannot be opened, decoded or parsed (too deep nesting included).
+JSON_READ_ERRORS = (OSError, ValueError, RecursionError)
 
 
 # --- Detection helpers moved unchanged from harness/bin/harness.py ----------------------------
@@ -221,20 +246,23 @@ def project_skill_files(repo: Path, directory: Path) -> list[Path]:
         relative = directory.relative_to(repo)
     except ValueError:
         fail(f"project skill path escapes repository: {directory}")
-    result = subprocess.run(
-        git_command(
-            repo,
-            "ls-files",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-            "-z",
-            "--",
-            relative.as_posix(),
-        ),
-        capture_output=True,
-        timeout=30,
-    )
+    try:
+        result = subprocess.run(
+            git_command(
+                repo,
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                relative.as_posix(),
+            ),
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail(f"cannot inventory project skill files: {directory}: {exc}")
     if result.returncode != 0:
         fail(f"cannot inventory project skill files: {directory}")
     return sorted(
@@ -261,18 +289,23 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
     for lock_path in lock_paths:
         try:
             data = json.loads(lock_path.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except JSON_READ_ERRORS as exc:
             problems.append(
-                f"cannot read overlay lock {lock_path.relative_to(repo)}: {exc}"
+                f"cannot read overlay lock {lock_path.relative_to(repo).as_posix()}: {exc}"
+            )
+            continue
+        if not isinstance(data, dict):
+            problems.append(
+                f"invalid overlay lock header: {lock_path.relative_to(repo).as_posix()}"
             )
             continue
         if data.get("schema") != 1 or not isinstance(data.get("overlay_id"), str):
             problems.append(
-                f"invalid overlay lock header: {lock_path.relative_to(repo)}"
+                f"invalid overlay lock header: {lock_path.relative_to(repo).as_posix()}"
             )
         source = data.get("source")
         if not isinstance(source, dict):
-            problems.append(f"missing overlay source: {lock_path.relative_to(repo)}")
+            problems.append(f"missing overlay source: {lock_path.relative_to(repo).as_posix()}")
         elif source.get("type") != "project-local":
             remote = source.get("remote")
             revision = source.get("revision")
@@ -283,25 +316,25 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
                 or not revision
             ):
                 problems.append(
-                    f"overlay source needs remote and revision: {lock_path.relative_to(repo)}"
+                    f"overlay source needs remote and revision: {lock_path.relative_to(repo).as_posix()}"
                 )
             elif "://" in remote and (
                 urlsplit(remote).username or urlsplit(remote).password
             ):
                 problems.append(
-                    f"overlay remote contains credentials: {lock_path.relative_to(repo)}"
+                    f"overlay remote contains credentials: {lock_path.relative_to(repo).as_posix()}"
                 )
 
         skills = data.get("skills")
         if not isinstance(skills, list):
             problems.append(
-                f"overlay skills must be a list: {lock_path.relative_to(repo)}"
+                f"overlay skills must be a list: {lock_path.relative_to(repo).as_posix()}"
             )
             continue
         for entry in skills:
             if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
                 problems.append(
-                    f"invalid overlay skill entry: {lock_path.relative_to(repo)}"
+                    f"invalid overlay skill entry: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             name = entry["name"]
@@ -339,7 +372,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
         for entry in data.get("notices", []):
             if not isinstance(entry, dict):
                 problems.append(
-                    f"invalid overlay notice: {lock_path.relative_to(repo)}"
+                    f"invalid overlay notice: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             try:
@@ -348,7 +381,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
                 )
             except ValueError:
                 problems.append(
-                    f"overlay notice target escapes project: {lock_path.relative_to(repo)}"
+                    f"overlay notice target escapes project: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             validate_hash(repo, target, entry.get("sha256"), problems, "overlay notice")
@@ -356,7 +389,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
         for entry in data.get("routing", []):
             if not isinstance(entry, dict):
                 problems.append(
-                    f"invalid overlay routing entry: {lock_path.relative_to(repo)}"
+                    f"invalid overlay routing entry: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             bundle = entry.get("bundle")
@@ -366,12 +399,12 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
                 )
             except ValueError:
                 problems.append(
-                    f"overlay routing target escapes project: {lock_path.relative_to(repo)}"
+                    f"overlay routing target escapes project: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             if not isinstance(bundle, str) or not bundle:
                 problems.append(
-                    f"overlay routing is missing bundle: {lock_path.relative_to(repo)}"
+                    f"overlay routing is missing bundle: {lock_path.relative_to(repo).as_posix()}"
                 )
                 continue
             target_path = repo / target
@@ -424,7 +457,7 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
         return 0
     try:
         data = json.loads(inventory.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         problems.append(f"cannot read {INTEGRATIONS_REL}: {exc}")
         return 0
     entries = (
@@ -488,6 +521,56 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
     return len(entries)
 
 
+def tracker_field_problems(value: object) -> list[str]:
+    """Problems of the `tracker` field value of .harness/project.json; empty when it is valid.
+
+    The `host` and `project` values never appear in a message: a pasted URL can carry userinfo
+    credentials, which must not reach a health report or the console.
+    """
+    prefix = ".harness/project.json tracker"
+    if not isinstance(value, dict):
+        return [f"{prefix} must be an object"]
+    problems: list[str] = []
+    extra = sorted(str(key) for key in set(value) - set(TRACKER_FIELDS))
+    if extra:
+        problems.append(f"{prefix} has unknown field(s): {', '.join(extra)}")
+    tracker_type = value.get("type")
+    if "type" not in value:
+        problems.append(f"{prefix} missing required field(s): type")
+    elif tracker_type not in TRACKER_TYPES:
+        problems.append(f"{prefix} type must be one of: {', '.join(TRACKER_TYPES)}")
+    elif tracker_type in TRACKER_HOSTED_TYPES:
+        missing = [field for field in ("host", "project") if field not in value]
+        if missing:
+            problems.append(
+                f"{prefix} of type {tracker_type} missing field(s): {', '.join(missing)}"
+            )
+    host = value.get("host")
+    if "host" in value and not (
+        isinstance(host, str) and re.fullmatch(TRACKER_HOST_PATTERN, host)
+    ):
+        problems.append(f"{prefix} host {TRACKER_HOST_RULE}")
+    project = value.get("project")
+    if "project" in value and not (
+        isinstance(project, str) and re.fullmatch(TRACKER_PROJECT_PATTERN, project)
+    ):
+        problems.append(f"{prefix} project {TRACKER_PROJECT_RULE}")
+    return problems
+
+
+def ci_required_checks_problems(value: object) -> list[str]:
+    """Problems of the `ci_required_checks` value: a list of unique non-empty CI check names
+    (empty list = not configured).  Names are shown by position, never echoed."""
+    prefix = ".harness/project.json ci_required_checks"
+    if not isinstance(value, list):
+        return [f"{prefix} must be a list of check names"]
+    if not all(isinstance(item, str) and item.strip() for item in value):
+        return [f"{prefix} must contain only non-empty strings"]
+    if len(set(value)) != len(value):
+        return [f"{prefix} must not contain duplicate names"]
+    return []
+
+
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
@@ -499,7 +582,7 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         problems.append(f".harness/project.json is not valid JSON: {exc}")
         return
     if not isinstance(data, dict):
@@ -544,6 +627,10 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         problems.append(
             f".harness/project.json shell must be 'bash' or 'powershell', got {data['shell']!r}"
         )
+    if "tracker" in data:
+        problems.extend(tracker_field_problems(data["tracker"]))
+    if "ci_required_checks" in data:
+        problems.extend(ci_required_checks_problems(data["ci_required_checks"]))
     if "story_points" in data:
         story_points = data["story_points"]
         if not isinstance(story_points, dict):
@@ -615,7 +702,7 @@ def verification_routing_health(repo: Path) -> list[str]:
     config_path = repo / ORCHESTRATION_CONFIG_REL
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except JSON_READ_ERRORS:
         return []
     if (
         not isinstance(config, dict)

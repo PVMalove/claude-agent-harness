@@ -130,10 +130,6 @@ description: Начать новый проект с идеи или созда�
 - **Процесс (Process):** Последовательно пройти Shape, Seed, Assemble и Finish; каждая долговечная запись требует отдельного подтверждения владельца.
 - **Выход (Output/Report):** Проверенный репозиторий, manifest и подключённый project harness либо точный следующий артефакт.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../global-skills/start-project/SKILL.md)

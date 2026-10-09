@@ -1,0 +1,261 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "/implement: маршруты восстановления",
+    "output": "docs/diagrams/recovery-routes.workflow.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/PVMalove/claude-agent-harness.git",
+      "revision": "3806be5777032caa87653aafae70f357dc7b4f75"
+    },
+    "legend": {
+      "entries": {
+        "external": { "label": "Триггер: evidence отчёта" },
+        "messagebus": { "label": "Тратит developer retry" },
+        "backend": { "label": "Без developer retry" },
+        "security": { "label": "Только человек" },
+        "cloud": { "label": "Approval от policy" }
+      }
+    }
+  },
+  "lanes": [
+    { "id": "req", "label": "Пробел в требованиях" },
+    { "id": "code", "label": "Дефект кода" },
+    { "id": "stale", "label": "Устаревшая база" },
+    { "id": "tool", "label": "Блокировка инструмента" },
+    { "id": "bypass", "label": "Обход блокировки" },
+    { "id": "incomplete", "label": "Неполные пункты" },
+    { "id": "infra", "label": "Инфраструктура" },
+    { "id": "dead", "label": "Тупик", "variant": "exception" }
+  ],
+  "groups": [
+    { "id": "g_coord", "label": "Чистый developer-отчёт", "lane": "code", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["t_code", "devretry", "fixfwd", "rebase"],
+  "nodes": [
+    {
+      "id": "t_req", "lane": "req", "col": 0, "type": "external",
+      "label": "Finding Spec", "sublabel": "или пункт DoD не выполнен", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 516, "end_line": 526, "label": "Spec → requirements" },
+        { "path": "harness/orchestration/playbook.md", "line": 298, "end_line": 300, "label": "retry без accept" }
+      ]
+    },
+    {
+      "id": "t_code", "lane": "code", "col": 0, "type": "external",
+      "label": "Finding Standards", "sublabel": "или failed check", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 507, "end_line": 542, "label": "_retry_evidence" },
+        { "path": "harness/orchestration/playbook.md", "line": 98, "end_line": 102, "label": "code → developer-retry" }
+      ]
+    },
+    {
+      "id": "devretry", "lane": "code", "col": 1, "type": "messagebus",
+      "label": "developer-retry", "sublabel": "человек · новый candidate", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 686, "end_line": 688, "label": "_retry_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 260, "label": "строка developer-retry" },
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 446, "end_line": 458, "label": "_developer_retry_count" }
+      ]
+    },
+    {
+      "id": "fixfwd", "lane": "code", "col": 2, "type": "messagebus",
+      "label": "fix-forward", "sublabel": "человек · поверх snapshot", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 1634, "end_line": 1653, "label": "_decide_retry_route" },
+        { "path": "harness/orchestration/playbook.md", "line": 261, "label": "строка fix-forward" },
+        { "path": "harness/orchestration/workflow/carried_items.py", "line": 474, "end_line": 484, "label": "retry_section" }
+      ]
+    },
+    {
+      "id": "t_coord", "lane": "code", "col": 4, "type": "external",
+      "label": "Дефект от coordinator", "sublabel": "DoD выполнен в зоне", "width": 170,
+      "sources": [
+        { "path": "docs/adr/0012-implement-recovery-routes.md", "line": 35, "label": "ADR 0012" },
+        { "path": "harness/orchestration/playbook.md", "line": 266, "label": "строка carry-over" }
+      ]
+    },
+    {
+      "id": "carry_c", "lane": "code", "col": 5, "type": "backend",
+      "label": "carry-over", "sublabel": "--findings-file или policy", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/carried_items.py", "line": 1012, "end_line": 1030, "label": "carry_over_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 266, "label": "строка carry-over" },
+        { "path": "harness/orchestration/playbook.md", "line": 304, "end_line": 306, "label": "retry review" }
+      ]
+    },
+    {
+      "id": "rebase", "lane": "stale", "col": 2, "type": "messagebus",
+      "label": "rebase-fix-forward", "sublabel": "явный approval · rebase на tip", "width": 190,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 1662, "end_line": 1691, "label": "_rebase_routing" },
+        { "path": "harness/orchestration/workflow/rebase.py", "line": 35, "end_line": 68, "label": "propose_target" },
+        { "path": "harness/orchestration/playbook.md", "line": 262, "label": "строка rebase-fix-forward" }
+      ]
+    },
+    {
+      "id": "t_tool", "lane": "tool", "col": 0, "type": "external",
+      "label": "tooling_blocker", "sublabel": "hook, классификатор, ledger", "width": 170,
+      "sources": [
+        { "path": "docs/adr/0012-implement-recovery-routes.md", "line": 38, "label": "ADR 0012" },
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 630, "end_line": 636, "label": "tooling из отчёта" }
+      ]
+    },
+    {
+      "id": "tooling", "lane": "tool", "col": 1, "type": "backend",
+      "label": "tooling-retry", "sublabel": "человек + bug · тот же SHA", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 651, "end_line": 662, "label": "_retry_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 264, "label": "строка tooling-retry" }
+      ]
+    },
+    {
+      "id": "t_bypass", "lane": "bypass", "col": 0, "type": "external",
+      "label": "Роль обошла hook", "sublabel": "approver: block-bypass", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/playbook.md", "line": 170, "end_line": 179, "label": "block-bypass" },
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 586, "end_line": 591, "label": "только read-only этап" }
+      ]
+    },
+    {
+      "id": "bypass", "lane": "bypass", "col": 1, "type": "backend",
+      "label": "bypass-rerun", "sublabel": "явный approval · тот же SHA", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 663, "end_line": 668, "label": "_retry_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 265, "label": "строка bypass-rerun" }
+      ]
+    },
+    {
+      "id": "t_inc", "lane": "incomplete", "col": 0, "type": "external",
+      "label": "incomplete_items", "sublabel": "отчёт read-only роли", "width": 170,
+      "sources": [
+        { "path": "docs/adr/0012-implement-recovery-routes.md", "line": 39, "label": "ADR 0012" },
+        { "path": "harness/orchestration/playbook.md", "line": 181, "end_line": 189, "label": "incomplete_items" }
+      ]
+    },
+    {
+      "id": "carry_i", "lane": "incomplete", "col": 1, "type": "backend", "yOffset": -44,
+      "label": "carry-over", "sublabel": "--carry-incomplete, не policy", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/carried_items.py", "line": 346, "end_line": 368, "label": "incomplete_carry_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 267, "label": "строка carry-over" }
+      ]
+    },
+    {
+      "id": "narrowed", "lane": "incomplete", "col": 1, "type": "backend", "yOffset": 44,
+      "label": "narrowed-retry", "sublabel": "человек · только пункты", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 703, "end_line": 766, "label": "_narrowed_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 268, "label": "строка narrowed-retry" }
+      ]
+    },
+    {
+      "id": "tooling_i", "lane": "incomplete", "col": 2, "type": "backend", "yOffset": 44,
+      "label": "tooling-retry", "sublabel": "человек + bug · тот же SHA", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 748, "end_line": 752, "label": "_narrowed_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 269, "label": "строка tooling-retry" }
+      ]
+    },
+    {
+      "id": "t_infra", "lane": "infra", "col": 0, "type": "external",
+      "label": "blocked без finding", "sublabel": "операционная причина", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/playbook.md", "line": 98, "end_line": 101, "label": "операционные категории" },
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 643, "end_line": 645, "label": "_retry_routing" }
+      ]
+    },
+    {
+      "id": "same", "lane": "infra", "col": 1, "type": "backend", "yOffset": -44,
+      "label": "same-candidate-rerun", "sublabel": "человек · review, qa, publish", "width": 190,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 680, "end_line": 685, "label": "_retry_routing" },
+        { "path": "harness/orchestration/playbook.md", "line": 256, "end_line": 257, "label": "строки same-candidate-rerun" }
+      ]
+    },
+    {
+      "id": "verif", "lane": "infra", "col": 1, "type": "backend", "yOffset": 44,
+      "label": "verification", "sublabel": "человек · candidate developer", "width": 190,
+      "sources": [
+        { "path": "harness/orchestration/workflow/decisions.py", "line": 1591, "end_line": 1608, "label": "_decide_retry_route" },
+        { "path": "harness/orchestration/playbook.md", "line": 255, "label": "строка verification" }
+      ]
+    },
+    {
+      "id": "policy", "lane": "infra", "col": 2, "type": "cloud", "yOffset": -44,
+      "label": "Policy-retry", "sublabel": "policy:infrastructure-retry", "width": 190,
+      "sources": [
+        { "path": "harness/orchestration/infrastructure_retry.py", "line": 160, "end_line": 249, "label": "authorize" },
+        { "path": "harness/orchestration/infrastructure_retry.py", "line": 27, "end_line": 50, "label": "_retry_budget" },
+        { "path": "harness/orchestration/playbook.md", "line": 150, "end_line": 155, "label": "infrastructure_retry_policy" }
+      ]
+    },
+    {
+      "id": "abandon", "lane": "dead", "col": 0, "type": "security",
+      "label": "abandon", "sublabel": "только человек · --reason", "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/playbook.md", "line": 270, "label": "строка abandon" },
+        { "path": "docs/adr/0012-implement-recovery-routes.md", "line": 28, "label": "ADR 0012" }
+      ]
+    },
+    {
+      "id": "supersede", "lane": "dead", "col": 1, "type": "security",
+      "label": "supersede", "sublabel": "только человек · --supersedes", "width": 190,
+      "sources": [
+        { "path": "harness/orchestration/workflow/supersede.py", "line": 43, "end_line": 80, "label": "request" },
+        { "path": "harness/orchestration/workflow/supersede.py", "line": 247, "end_line": 330, "label": "attach" },
+        { "path": "harness/orchestration/playbook.md", "line": 271, "label": "строка supersede" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "e_code_dev", "from": "t_code", "to": "devretry", "label": "retry", "variant": "emphasis" },
+    { "id": "e_req_dev", "from": "t_req", "to": "devretry", "label": "retry", "toSide": "top" },
+    { "id": "e_dev_fix", "from": "devretry", "to": "fixfwd", "label": "есть пункты", "variant": "emphasis" },
+    { "id": "e_fix_rebase", "from": "fixfwd", "to": "rebase", "label": "база ушла", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "e_dev_rebase", "from": "devretry", "to": "rebase", "label": "база ушла", "fromSide": "bottom", "toSide": "left" },
+    { "id": "e_coord_carry", "from": "t_coord", "to": "carry_c", "label": "accept" },
+    { "id": "e_tool", "from": "t_tool", "to": "tooling", "label": "retry" },
+    { "id": "e_bypass", "from": "t_bypass", "to": "bypass", "label": "retry --note", "variant": "security" },
+    { "id": "e_inc_carry", "from": "t_inc", "to": "carry_i", "label": "accept" },
+    { "id": "e_inc_narrow", "from": "t_inc", "to": "narrowed", "label": "retry --narrowed" },
+    { "id": "e_narrow_tool", "from": "narrowed", "to": "tooling_i", "label": "tooling_blocker" },
+    { "id": "e_infra_same", "from": "t_infra", "to": "same", "label": "retry" },
+    { "id": "e_infra_verif", "from": "t_infra", "to": "verif", "label": "developer" },
+    { "id": "e_same_policy", "from": "same", "to": "policy", "label": "QA preparation", "variant": "dashed" },
+    { "id": "e_abandon_super", "from": "abandon", "to": "supersede", "label": "новый batch", "variant": "security" }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Бюджет developer retry",
+      "items": [
+        "developer-retry, fix-forward и rebase-fix-forward тратят один max_developer_retries",
+        "Счётчик берёт retry с next_role developer, кроме tooling-retry",
+        "Retry review оставляет находку coordinator открытой; её несёт следующий fix-forward",
+        "decision-packet показывает маршрут без проверки бюджета; batch decide отказывает"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Кто утверждает",
+      "items": [
+        "Retry решает человек через batch decide; новый dispatch проходит approval_policy",
+        "rebase-fix-forward и bypass-rerun требуют явный --approved-by при любой политике, кроме auto",
+        "abandon и supersede утверждает только человек; approver policy: отклоняется",
+        "Policy-retry требует opt-in, свежую readiness и квоту max_infrastructure_retries"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "Остальные значения RECOVERY_ROUTES",
+      "items": [
+        "architect-retry: retry отчёта architect без --narrowed",
+        "report-completion: coordinator докатывает цепочку report complete без approval",
+        "Маршрут вычисляется из структурного evidence, не из свободного текста",
+        "Под approval_policy: auto раздел Automatic path заменяет колонку Who approves"
+      ]
+    }
+  ]
+}

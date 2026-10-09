@@ -14,7 +14,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 # Mirrors exactly what CAPABILITIES.json's pvmalove-suite capability copies into an installed
 # project's .harness/ for health and its runtime dependencies (file and directory entries).
-_FILE_RESOURCES = ("__init__.py", "errors.py", "storage.py", "token_estimator.py")
+_FILE_RESOURCES = ("errors.py", "json_types.py", "storage.py", "token_estimator.py")
 _DIR_RESOURCES = ("repo_map", "health", "memory", "gate_runner")
 
 
@@ -144,17 +144,24 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "environment.line_endings",
         "environment.python",
         "environment.uv",
+        "environment.glab",
         "environment.dev_env",
         "environment.output_encoding",
+        "environment.codex_sandbox",
+        "environment.claude_sandbox",
+        "environment.codex_uv_cache",
+        "environment.claude_uv_cache",
         "environment.long_paths",
         "environment.path_length",
         "environment.pytest_temp",
         "environment.symlinks",
         "environment.hook_bash",
+        "tracker.project",
         "tracker.auth",
         "tracker.reachability",
         "tracker.permissions",
         "tracker.labels",
+        "tracker.git_base",
         "orchestration.ledger_summary",
         "orchestration.unfinished_batches",
         "orchestration.blocked_batches",
@@ -162,3 +169,6 @@ def test_registry_runs_without_crashing_even_with_a_lock_file_present(
         "orchestration.orphaned_worktrees",
         "orchestration.disposable_data",
     }
+    # The project tracker resolver ships inside .harness/health/ and runs from the copied tree.
+    project = next(check for check in report.checks if check.id == "tracker.project")
+    assert project.status == "ok", project.message

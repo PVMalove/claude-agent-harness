@@ -1,30 +1,53 @@
-"""Group 'tracker': online checks of the tracker (GitHub/GitLab) this repository is hosted on
-(ticket #346) - authentication, effective permissions, network reachability, and repository labels
-against the canonical taxonomy in a target project's docs/agents/triage-labels.md.
+"""Group 'tracker': the resolved project tracker (`tracker.project`, local-only) and online checks
+of the tracker (GitHub/GitLab) this repository is hosted on (ticket #346) - authentication,
+effective permissions, network reachability, and repository labels against the canonical taxonomy
+in a target project's docs/agents/triage-labels.md.
 
-Every check here is a no-op without `harness health --online`: it reports `skipped` with reason
+`tracker.project` reads only `git remote -v` and .harness/project.json, never the network, so it
+runs without `--online` and is never skipped: it reports the tracker triple and its source, warns
+with a ready-to-paste `tracker` snippet when the field is absent, and warns when the field and
+origin disagree (the field wins). Every other check here is a no-op without
+`harness health --online`: it reports `skipped` with reason
 "offline" instead of making any network call, so a plain `harness health` stays local-only. A
 local (non-GitHub/GitLab) tracker is `skipped` the same way once detected, even online. Every
 external call gets a 10 second timeout (`_ONLINE_TIMEOUT_SECONDS`), separate from the 60 second
 budget checks/environment.py gives local tool invocations. A missing `gh`/`glab` executable is
 `warn`, never `fail`: it also makes every check that depends on it warn or skip in turn.
+
+Every `gh`/`glab` call addresses the resolved tracker explicitly, so neither another remote nor
+credentials for another host can redirect it: `auth status --hostname <host>`,
+`gh api --hostname <host>`, `GITLAB_HOST=<host> glab api` with a URL-encoded GitLab project path
+(glab rejects a port in `api --hostname`), and `-R <host>/<owner>/<repo>` (gh) or
+`-R https://<host>/<project>` (glab) for label creation.
+
+The tracker itself is resolved only through the project tracker resolver
+(health/project_tracker.py, docs/adr/0011): an explicit `tracker` field in .harness/project.json
+wins, otherwise the origin URL is parsed.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Literal
+from typing import Callable
 from urllib.parse import quote
+
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
 from ..context import HealthContext
 from ..labels_table import parse_canonical_labels
 from ..model import CheckResult, Fix
 from ..process import run_tool
+from ..project_tracker import (
+    ProjectTracker,
+    TrackerType,
+    resolve_project_tracker,
+)
 
 GROUP = "tracker"
 
@@ -37,45 +60,57 @@ _TRIAGE_LABELS_REL = Path("docs/agents/triage-labels.md")
 _GITLAB_PUSH_ACCESS_LEVEL = 30
 _GITLAB_LABELS_ACCESS_LEVEL = 20
 
-Tracker = Literal["github", "gitlab", "local"]
-
-_GITHUB_REMOTE = re.compile(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.\s]+)")
-_GITLAB_REMOTE = re.compile(r"gitlab\.[^/:\s]+[:/](?P<owner>[^/]+)/(?P<repo>[^/.\s]+)")
+Tracker = TrackerType
 
 
 def _run(
-    argv: list[str], *, cwd: Path | None = None
+    argv: list[str], *, cwd: Path | None = None, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str] | None:
     """Run one tracker CLI/git call with the tracker-check timeout; None when it cannot be
     started or does not finish in time."""
-    return run_tool(argv, timeout=_ONLINE_TIMEOUT_SECONDS, cwd=cwd)
+    return run_tool(argv, timeout=_ONLINE_TIMEOUT_SECONDS, cwd=cwd, env=env)
 
 
-def detect_tracker(context: HealthContext) -> tuple[Tracker, str | None]:
-    """Classify origin from `git remote -v`, the same GitHub/GitLab URL heuristic
-    docs/agents/issue-tracker.md and check-branch-name.sh use. Returns (tracker, "owner/repo") -
-    the slug is None whenever it cannot be parsed out of the URL, even for a recognized host."""
-    git = shutil.which("git")
-    if git is None:
-        return "local", None
-    result = _run([git, "remote", "-v"], cwd=context.repo)
-    if result is None or result.returncode != 0:
-        return "local", None
-    origin_url = None
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] == "origin":
-            origin_url = parts[1]
-            break
-    if not origin_url:
-        return "local", None
-    github_match = _GITHUB_REMOTE.search(origin_url)
-    if github_match:
-        return "github", f"{github_match['owner']}/{github_match['repo']}"
-    gitlab_match = _GITLAB_REMOTE.search(origin_url)
-    if gitlab_match:
-        return "gitlab", f"{gitlab_match['owner']}/{gitlab_match['repo']}"
-    return "local", None
+def _run_api(
+    executable: str, host: str, args: tuple[str, ...], cwd: Path
+) -> subprocess.CompletedProcess[str] | None:
+    """`<gh|glab> api <args>` addressed to `host`. glab rejects a port in `--hostname` ("invalid
+    hostname") and sends a host without one to port 443, so glab gets the host through
+    GITLAB_HOST, which keeps the port and wins over the remote of the working directory."""
+    if Path(executable).stem.lower() == "glab":
+        env = {**os.environ, "GITLAB_HOST": host}
+        return _run([executable, "api", *args], cwd=cwd, env=env)
+    return _run([executable, "api", "--hostname", host, *args], cwd=cwd)
+
+
+def detect_tracker(context: HealthContext) -> ProjectTracker:
+    """The effective project tracker from the project tracker resolver: the explicit `tracker`
+    field of .harness/project.json, otherwise the origin URL. Its project path keeps every
+    subgroup and is None whenever it is unknown."""
+    return resolve_project_tracker(context.repo).effective
+
+
+@dataclass(frozen=True)
+class _Target:
+    """The hosted tracker every online call addresses explicitly."""
+
+    tracker: Tracker
+    host: str
+    # The full project path with subgroups; None when origin does not name one.
+    project: str | None
+
+
+def _hosted(found: ProjectTracker) -> _Target | None:
+    """`found` as an online target; None for a local tracker."""
+    if found.type == "local":
+        return None
+    # A hosted tracker always has a host: the tracker field requires it, origin always yields one.
+    if found.host is None:
+        raise HarnessError(
+            f"hosted {found.type} project tracker without a host",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
+    return _Target(found.type, found.host, found.project)
 
 
 def _skip(check_id: str, message: str) -> CheckResult:
@@ -92,36 +127,142 @@ _SUBJECTS: dict[str, str] = {
     "tracker.reachability": "достижимость origin",
     "tracker.permissions": "права в репозитории",
     "tracker.labels": "лейблы трекера",
+    "tracker.git_base": "Git base тикетов",
 }
 
 
-def _offline_or_local(
-    check_id: str, context: HealthContext
-) -> tuple[Tracker, str | None, CheckResult | None]:
+def _offline_or_local(check_id: str, context: HealthContext) -> _Target | CheckResult:
     """Shared early-exit ladder every tracker.* check starts with: offline, then a non-hosted
-    (local) tracker. Returns the detected tracker/slug plus a skip result when the caller should
-    stop; the caller proceeds only when the third element is None."""
+    (local) tracker. Returns the skip result when the caller should stop, otherwise the target."""
     subject = _SUBJECTS.get(check_id, check_id)
     if not context.online:
-        return (
-            "local",
-            None,
-            _skip(
-                check_id,
-                f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)",
+        return _skip(
+            check_id,
+            f"{subject}: не проверено (офлайн — без --online проверки трекера не выполняются)",
+        )
+    target = _hosted(detect_tracker(context))
+    if target is None:
+        return _skip(
+            check_id,
+            f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)",
+        )
+    return target
+
+
+def _api_json(executable: str, host: str, *args: str, cwd: Path) -> object | None:
+    """Parsed JSON output of `<gh|glab> api <args>` addressed to `host`, or None on any failure
+    to run or parse it."""
+    result = _run_api(executable, host, args, cwd)
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        data: object = json.loads(result.stdout)
+    except ValueError:
+        return None
+    return data
+
+
+def _api_json_pages(
+    executable: str, host: str, *args: str, cwd: Path
+) -> list[object] | None:
+    """Items of a paginated `<gh|glab> api` listing, or None on any failure to run or parse it.
+
+    `--paginate` without `--slurp` prints one JSON array per page, back to back, which
+    `json.loads` rejects; this reads each array in turn and concatenates them."""
+    result = _run_api(executable, host, args, cwd)
+    if result is None or result.returncode != 0 or not result.stdout.strip():
+        return None
+    decoder = json.JSONDecoder()
+    text, index = result.stdout, 0
+    items: list[object] = []
+    while True:
+        index = len(text) - len(text[index:].lstrip()) if index < len(text) else index
+        if index >= len(text):
+            return items
+        try:
+            page, index = decoder.raw_decode(text, index)
+        except ValueError:
+            return None
+        if not isinstance(page, list):
+            return None
+        items.extend(page)
+
+
+# --- tracker.project ------------------------------------------------------------------------------
+
+_SOURCE_LABELS = {"config": "поле tracker", "origin": "origin", "default": "нет origin"}
+_MISMATCH_LABELS = {"type": "тип", "host": "хост", "project": "проект"}
+
+
+def _describe(tracker: ProjectTracker) -> str:
+    if tracker.host is None:
+        return tracker.type
+    return f"{tracker.type}, хост {tracker.host}, проект {tracker.project or 'не определён'}"
+
+
+def check_project(context: HealthContext) -> CheckResult:
+    """The resolved project tracker and its source, offline. Warns when .harness/project.json has no
+    tracker field (with a ready-to-paste snippet), when the field is not applied because it is
+    invalid, and when the field and origin disagree - the field wins."""
+    check_id = "tracker.project"
+    resolution = resolve_project_tracker(context.repo)
+    effective = resolution.effective
+    summary = (
+        f"трекер проекта: {_describe(effective)} "
+        f"(источник: {_SOURCE_LABELS[effective.source]})"
+    )
+    if resolution.project_json == "absent":
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="ok",
+            message=f"{summary}; .harness/project.json отсутствует",
+        )
+    if resolution.project_json == "invalid":
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message="поле tracker не применено: .harness/project.json или поле tracker "
+            f"некорректны (см. files.project_json); {summary}",
+        )
+    if resolution.project_json == "no_field":
+        hint = f"добавьте в .harness/project.json: {effective.snippet()}"
+        if effective.type == "local" and effective.host is not None:
+            hint += '; если это self-hosted GitLab, замените "local" на "gitlab"'
+        if effective.type != "local" and effective.project is None:
+            hint += "; путь проекта по origin не определён — допишите project"
+        origin = resolution.origin
+        if (
+            origin is not None
+            and not origin.web_port_known
+            and effective.type != "github"
+        ):
+            hint += (
+                "; origin задан по SSH — допишите в host порт веб-интерфейса, "
+                "если он нестандартный"
+            )
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"нет поля tracker в .harness/project.json; {summary}",
+            fix=Fix(text=hint),
+        )
+    if resolution.declared is not None and resolution.mismatches:
+        differing = ", ".join(_MISMATCH_LABELS[name] for name in resolution.mismatches)
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"поле tracker расходится с origin ({differing}): используется поле — "
+            f"{_describe(resolution.declared)}; origin — {_describe(resolution.from_origin)}",
+            fix=Fix(
+                text="приведите поле tracker в .harness/project.json и remote origin "
+                "к одному проекту"
             ),
         )
-    tracker, slug = detect_tracker(context)
-    if tracker == "local":
-        return (
-            tracker,
-            slug,
-            _skip(
-                check_id,
-                f"{subject}: не проверено (локальный трекер задач — онлайн-проверки не применимы)",
-            ),
-        )
-    return tracker, slug, None
+    return CheckResult(id=check_id, group=GROUP, status="ok", message=summary)
 
 
 @dataclass(frozen=True)
@@ -129,10 +270,16 @@ class _Host:
     """Everything that differs between GitHub (`gh`) and GitLab (`glab`) for these checks."""
 
     tool: str
-    permissions: Callable[[str, str, Path], tuple[bool, bool] | None]
+    # (executable, host, project, cwd) -> (push, labels), or None.
+    permissions: Callable[[str, str, str, Path], tuple[bool, bool] | None]
     labels_endpoint: Callable[[str], str]
+    # The project's open issues; the query has no `&`, which splits a command in a Windows `.cmd`
+    # launcher. `_api_json_pages` reads every page.
+    issues_endpoint: Callable[[str], str]
     # `gh label create <name>` takes the name positionally, `glab label create --name <name>`.
     label_name_args: Callable[[str], list[str]]
+    # The `-R` value from (host, project): `gh` takes host/owner/repo, `glab` a full project URL.
+    repo_flag: Callable[[str, str], str]
 
 
 # --- tracker.auth --------------------------------------------------------------------------------
@@ -140,19 +287,21 @@ class _Host:
 
 def check_auth(context: HealthContext) -> CheckResult:
     check_id = "tracker.auth"
-    tracker, _slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
-    tool = _tracker_tool(tracker)
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
+    tool = _tracker_tool(target.tracker)
     executable = shutil.which(tool)
     if executable is None:
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="warn",
-            message=f"{tool} не найден в PATH: авторизация и права {tracker} не проверены",
+            message=f"{tool} не найден в PATH: авторизация и права {target.tracker} не проверены",
         )
-    result = _run([executable, "auth", "status"], cwd=context.repo)
+    result = _run(
+        [executable, "auth", "status", "--hostname", target.host], cwd=context.repo
+    )
     if result is None:
         return CheckResult(
             id=check_id,
@@ -167,21 +316,90 @@ def check_auth(context: HealthContext) -> CheckResult:
             id=check_id,
             group=GROUP,
             status="fail",
-            message=f"{tool} не аутентифицирован (auth status вернул код {result.returncode})",
+            message=f"{tool} не аутентифицирован на {target.host} "
+            f"(auth status вернул код {result.returncode})",
         )
     return CheckResult(
-        id=check_id, group=GROUP, status="ok", message=f"{tool} аутентифицирован"
+        id=check_id,
+        group=GROUP,
+        status="ok",
+        message=f"{tool} аутентифицирован на {target.host}",
     )
 
 
 # --- tracker.reachability ------------------------------------------------------------------------
 
+# The cause of a failed `git ls-remote origin`, matched against its stderr. git runs with LC_ALL=C,
+# because it translates its own messages through gettext. The order is the priority: a proxy that
+# answers CONNECT with 403 is a network problem, not rejected credentials. Only the cause key
+# leaves this table: stderr can carry the origin URL with userinfo or a token, so it never reaches
+# a message or a fix.
+_REACHABILITY_CAUSES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "network",
+        re.compile(
+            r"connect tunnel failed|could not resolve host|connection refused",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "tls",
+        re.compile(
+            r"ssl certificate problem|server certificate verification failed",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "credentials",
+        re.compile(
+            r"could not read username|terminal prompts disabled|authentication failed"
+            r"|permission denied \(publickey|returned error: 40[13]\b"
+            r"|\bHTTP(?:/[0-9.]+)?\s+40[13]\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+_REACHABILITY_MESSAGES: dict[str, str] = {
+    "credentials": "origin недостижим: нет учётных данных или они отклонены (git ls-remote origin)",
+    "tls": "origin недостижим: ошибка проверки TLS-сертификата (git ls-remote origin)",
+    "network": "origin недостижим: ошибка прокси или сети (git ls-remote origin)",
+}
+
+
+def _reachability_cause(stderr: str) -> str | None:
+    """The cause key of a failed `git ls-remote origin` from its stderr; None when unknown."""
+    for cause, pattern in _REACHABILITY_CAUSES:
+        if pattern.search(stderr):
+            return cause
+    return None
+
+
+def _reachability_fix(cause: str, context: HealthContext, target: _Target) -> Fix:
+    if cause == "credentials":
+        return Fix(
+            "настройте credential helper (git config credential.helper) или SSH-доступ к origin "
+            "для неинтерактивных процессов: git в них не запрашивает учётные данные"
+        )
+    if cause == "tls":
+        # RemoteLocation.host has no scheme, userinfo or path, only a non-default port.
+        origin = resolve_project_tracker(context.repo).origin
+        host = origin.host if origin is not None else target.host
+        return Fix(
+            f"укажите CA-бандл для {host} в http.sslCAInfo: "
+            f"git config --global http.https://{host}/.sslCAInfo <путь к CA-бандлу>"
+        )
+    return Fix(
+        "проверьте HTTPS_PROXY/NO_PROXY в окружении неинтерактивных процессов (агенты, hooks, "
+        "CI): прокси из интерактивной оболочки туда может не попадать"
+    )
+
 
 def check_reachability(context: HealthContext) -> CheckResult:
     check_id = "tracker.reachability"
-    _tracker, _slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
     git = shutil.which("git")
     if git is None:
         return CheckResult(
@@ -190,7 +408,11 @@ def check_reachability(context: HealthContext) -> CheckResult:
             status="warn",
             message="git не найден в PATH: достижимость origin не проверена",
         )
-    result = _run([git, "ls-remote", "origin"], cwd=context.repo)
+    result = _run(
+        [git, "ls-remote", "origin"],
+        cwd=context.repo,
+        env={**os.environ, "LC_ALL": "C"},
+    )
     if result is None:
         return CheckResult(
             id=check_id,
@@ -199,11 +421,24 @@ def check_reachability(context: HealthContext) -> CheckResult:
             message=f"git ls-remote origin не завершился за {_ONLINE_TIMEOUT_SECONDS} с",
         )
     if result.returncode != 0:
+        cause = _reachability_cause(result.stderr or "")
+        if cause is None:
+            return CheckResult(
+                id=check_id,
+                group=GROUP,
+                status="fail",
+                message="origin недостижим: git ls-remote origin завершился с ошибкой",
+                fix=Fix(
+                    "выполните git ls-remote origin вручную, чтобы увидеть причину",
+                    command="git ls-remote origin",
+                ),
+            )
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="fail",
-            message="origin недостижим: git ls-remote origin завершился с ошибкой",
+            message=_REACHABILITY_MESSAGES[cause],
+            fix=_reachability_fix(cause, context, target),
         )
     return CheckResult(
         id=check_id, group=GROUP, status="ok", message="origin достижим (git ls-remote)"
@@ -214,17 +449,13 @@ def check_reachability(context: HealthContext) -> CheckResult:
 
 
 def _github_permissions(
-    executable: str, slug: str, cwd: Path
+    executable: str, host: str, slug: str, cwd: Path
 ) -> tuple[bool, bool] | None:
     """(push, triage-or-above) from `gh api repos/{owner}/{repo}`'s `.permissions`, or None on
     any failure to run/parse it. Only these two booleans ever leave this function."""
-    result = _run([executable, "api", f"repos/{slug}", "--jq", ".permissions"], cwd=cwd)
-    if result is None or result.returncode != 0:
-        return None
-    try:
-        permissions = json.loads(result.stdout)
-    except ValueError:
-        return None
+    permissions = _api_json(
+        executable, host, f"repos/{slug}", "--jq", ".permissions", cwd=cwd
+    )
     if not isinstance(permissions, dict):
         return None
     push = bool(permissions.get("push"))
@@ -238,31 +469,24 @@ def _github_permissions(
 
 
 def _gitlab_permissions(
-    executable: str, slug: str, cwd: Path
+    executable: str, host: str, slug: str, cwd: Path
 ) -> tuple[bool, bool] | None:
-    """(push, triage-equivalent) from `glab api projects/:id`'s `.permissions`, mapped from the
-    higher of project_access/group_access's access_level. Developer (30) and up ~ push; Reporter
-    (20) and up ~ labels-only. None on any failure to run/parse it."""
-    result = _run([executable, "api", f"projects/{quote(slug, safe='')}"], cwd=cwd)
-    if result is None or result.returncode != 0:
+    """(push, triage-equivalent) from the current user's effective access_level in the project,
+    read from `projects/:id/members/all/:user_id`: unlike `projects/:id`'s own `.permissions`, it
+    counts memberships inherited from ancestor groups and invited groups. Developer (30) and up ~
+    push; Reporter (20) and up ~ labels-only. None on any failure to run/parse it."""
+    user = _api_json(executable, host, "user", cwd=cwd)
+    if not isinstance(user, dict) or not isinstance(user.get("id"), int):
         return None
-    try:
-        project = json.loads(result.stdout)
-    except ValueError:
+    member = _api_json(
+        executable,
+        host,
+        f"projects/{quote(slug, safe='')}/members/all/{user['id']}",
+        cwd=cwd,
+    )
+    if not isinstance(member, dict) or not isinstance(member.get("access_level"), int):
         return None
-    if not isinstance(project, dict):
-        return None
-    permissions = project.get("permissions")
-    if not isinstance(permissions, dict):
-        return None
-    levels = []
-    for key in ("project_access", "group_access"):
-        access = permissions.get(key)
-        if isinstance(access, dict) and isinstance(access.get("access_level"), int):
-            levels.append(access["access_level"])
-    if not levels:
-        return None
-    access_level = max(levels)
+    access_level: int = member["access_level"]
     return (
         access_level >= _GITLAB_PUSH_ACCESS_LEVEL,
         access_level >= _GITLAB_LABELS_ACCESS_LEVEL,
@@ -271,10 +495,10 @@ def _gitlab_permissions(
 
 def check_permissions(context: HealthContext) -> CheckResult:
     check_id = "tracker.permissions"
-    tracker, slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
-    tool = _tracker_tool(tracker)
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
+    tool = _tracker_tool(target.tracker)
     executable = shutil.which(tool)
     if executable is None:
         return CheckResult(
@@ -283,14 +507,16 @@ def check_permissions(context: HealthContext) -> CheckResult:
             status="warn",
             message=f"{tool} не найден в PATH: права доступа не проверены",
         )
-    if slug is None:
+    if target.project is None:
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="warn",
             message="не удалось разобрать owner/repo из git remote -v: права доступа не проверены",
         )
-    permissions = _HOSTS[tracker].permissions(executable, slug, context.repo)
+    permissions = _HOSTS[target.tracker].permissions(
+        executable, target.host, target.project, context.repo
+    )
     if permissions is None:
         return CheckResult(
             id=check_id,
@@ -324,19 +550,23 @@ _HOSTS: dict[str, _Host] = {
         tool="gh",
         permissions=_github_permissions,
         labels_endpoint=lambda slug: f"repos/{slug}/labels",
+        issues_endpoint=lambda slug: f"repos/{slug}/issues?state=open",
         label_name_args=lambda name: [name],
+        repo_flag=lambda host, slug: f"{host}/{slug}",
     ),
     "gitlab": _Host(
         tool="glab",
         permissions=_gitlab_permissions,
         labels_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/labels",
+        issues_endpoint=lambda slug: f"projects/{quote(slug, safe='')}/issues?state=opened",
         label_name_args=lambda name: ["--name", name],
+        repo_flag=lambda host, slug: f"https://{host}/{slug}",
     ),
 }
 
 
 def _list_repo_labels(
-    tracker: Tracker, executable: str, slug: str, cwd: Path
+    target: _Target, executable: str, slug: str, cwd: Path
 ) -> list[tuple[str, str]] | None:
     """Existing repository labels as (name, "#rrggbb") pairs, or None on any failure.
 
@@ -345,14 +575,8 @@ def _list_repo_labels(
     single page too), so a repository with more labels than that default is not misread as
     missing them all past the cutoff - which would otherwise make `--fix` try to recreate labels
     that already exist."""
-    argv = [executable, "api", "--paginate", _HOSTS[tracker].labels_endpoint(slug)]
-    result = _run(argv, cwd=cwd)
-    if result is None or result.returncode != 0:
-        return None
-    try:
-        data = json.loads(result.stdout)
-    except ValueError:
-        return None
+    endpoint = _HOSTS[target.tracker].labels_endpoint(slug)
+    data = _api_json(executable, target.host, "--paginate", endpoint, cwd=cwd)
     if not isinstance(data, list):
         return None
     labels: list[tuple[str, str]] = []
@@ -377,14 +601,14 @@ def _canonical_labels(context: HealthContext) -> list[tuple[str, str]] | None:
 
 
 def _label_diff(
-    context: HealthContext, tracker: Tracker, executable: str, slug: str
+    context: HealthContext, target: _Target, executable: str, slug: str
 ) -> tuple[list[tuple[str, str]], list[str]] | None:
     """(missing, mismatched-by-color) against the canonical table, or None when the canonical
     table or the repository's own label list could not be read."""
     canonical = _canonical_labels(context)
     if not canonical:
         return None
-    existing = _list_repo_labels(tracker, executable, slug, context.repo)
+    existing = _list_repo_labels(target, executable, slug, context.repo)
     if existing is None:
         return None
     existing_by_name = {name.lower(): color for name, color in existing}
@@ -403,9 +627,9 @@ def _label_diff(
 
 def check_labels(context: HealthContext) -> CheckResult:
     check_id = "tracker.labels"
-    tracker, slug, early = _offline_or_local(check_id, context)
-    if early is not None:
-        return early
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
     if not (context.repo / _TRIAGE_LABELS_REL).is_file():
         return CheckResult(
             id=check_id,
@@ -413,7 +637,7 @@ def check_labels(context: HealthContext) -> CheckResult:
             status="warn",
             message=f"нет {_TRIAGE_LABELS_REL.as_posix()}: канонические метки не проверены",
         )
-    tool = _tracker_tool(tracker)
+    tool = _tracker_tool(target.tracker)
     executable = shutil.which(tool)
     if executable is None:
         return CheckResult(
@@ -422,14 +646,14 @@ def check_labels(context: HealthContext) -> CheckResult:
             status="warn",
             message=f"{tool} не найден в PATH: метки не проверены",
         )
-    if slug is None:
+    if target.project is None:
         return CheckResult(
             id=check_id,
             group=GROUP,
             status="warn",
             message="не удалось разобрать owner/repo из git remote -v: метки не проверены",
         )
-    diff = _label_diff(context, tracker, executable, slug)
+    diff = _label_diff(context, target, executable, target.project)
     if diff is None:
         return CheckResult(
             id=check_id,
@@ -471,27 +695,169 @@ def check_labels(context: HealthContext) -> CheckResult:
 def fix_labels(context: HealthContext, result: CheckResult) -> str | None:
     """`harness health --online --fix`: create every missing canonical label with its canonical
     color. An existing label with a mismatched color is never touched - only creation, never
-    `label edit`/`--force` (ticket #346)."""
+    `label edit`/`--force` (ticket #346). The project is addressed explicitly with `-R`, and
+    .harness/project.json - including its tracker field - is never written."""
     if result.status != "warn":
         return None
-    tracker, slug = detect_tracker(context)
-    if tracker == "local" or slug is None:
+    target = _hosted(detect_tracker(context))
+    if target is None or target.project is None:
         return None
-    tool = _tracker_tool(tracker)
-    executable = shutil.which(tool)
+    cli = _HOSTS[target.tracker]
+    executable = shutil.which(cli.tool)
     if executable is None:
         return None
-    diff = _label_diff(context, tracker, executable, slug)
+    diff = _label_diff(context, target, executable, target.project)
     if diff is None:
         return None
     missing, _mismatched = diff
+    repo_flag = cli.repo_flag(target.host, target.project)
     created = []
     for name, color in missing:
-        argv = [executable, "label", "create", *_HOSTS[tracker].label_name_args(name)]
-        argv += ["--color", color, "-R", slug]
+        argv = [executable, "label", "create", *cli.label_name_args(name)]
+        argv += ["--color", color, "-R", repo_flag]
         outcome = _run(argv, cwd=context.repo)
         if outcome is not None and outcome.returncode == 0:
             created.append(f"{name} ({color})")
     if not created:
         return None
     return "созданы метки: " + ", ".join(created)
+
+
+# --- tracker.git_base ------------------------------------------------------------------------------
+
+_IN_WORK_LABELS = frozenset({"status::ready", "status::in-progress"})
+_INTEGRATION_RE = re.compile(r"integration/[^\s`'\")]+")
+
+
+def _section(body: str, heading: str) -> str | None:
+    """The text under `## <heading>` up to the next `## ` heading, or None when absent."""
+    match = re.search(
+        rf"^##[ \t]+{re.escape(heading)}[ \t]*\n(.*?)(?=^##[ \t]|\Z)",
+        body,
+        re.MULTILINE | re.DOTALL | re.IGNORECASE,
+    )
+    return match.group(1) if match else None
+
+
+def _names_branch(text: str, branch: str) -> bool:
+    """True when `text` names `branch`, with or without an `origin/` prefix, as a whole token."""
+    pattern = rf"(?<![\w./-])(?:origin/)?{re.escape(branch)}(?![\w./-])"
+    return re.search(pattern, text) is not None
+
+
+def _in_work_issues(data: object) -> list[tuple[int, str]] | None:
+    """(number, body) of open issues in work (never pull requests) from a raw issues listing, or
+    None when the listing is not a list. Reads GitHub (`number`, `body`, label objects) and
+    GitLab (`iid`, `description`, label names)."""
+    if not isinstance(data, list):
+        return None
+    found: list[tuple[int, str]] = []
+    for item in data:
+        if not isinstance(item, dict) or "pull_request" in item:
+            continue
+        number = item.get("number", item.get("iid"))
+        raw_labels = item.get("labels")
+        if not isinstance(number, int) or not isinstance(raw_labels, list):
+            continue
+        names = {
+            label.get("name") if isinstance(label, dict) else label
+            for label in raw_labels
+        }
+        if names & _IN_WORK_LABELS:
+            body = item.get("body", item.get("description"))
+            found.append((number, body if isinstance(body, str) else ""))
+    return sorted(found)
+
+
+def _base_branch(repo: Path) -> str | None:
+    """`base_branch` of .harness/project.json, or None when it is absent or unreadable."""
+    try:
+        data = json.loads(
+            (repo / ".harness" / "project.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    value = data.get("base_branch") if isinstance(data, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _git_base_problem(body: str, base_branch: str | None) -> str | None:
+    """Why the ticket's `## Git base` disagrees with its integration branch; None when it agrees
+    (or cannot be judged)."""
+    integration = _section(body, "Integration Branch")
+    expected: str | None
+    if integration is not None:
+        found = _INTEGRATION_RE.search(integration)
+        expected = found.group(0) if found else None
+    else:
+        expected = base_branch
+    if expected is None:
+        return None
+    git_base = _section(body, "Git base")
+    if git_base is None:
+        return f"нет секции Git base (ожидалась {expected})"
+    if not _names_branch(git_base, expected):
+        return f"Git base не называет {expected}"
+    return None
+
+
+def check_git_base(context: HealthContext) -> CheckResult:
+    """Open tickets in work: `## Git base` must name the ticket's integration branch, or the
+    project's `base_branch` for a ticket without an epic. Read-only; ticket bodies never reach the
+    output."""
+    check_id = "tracker.git_base"
+    target = _offline_or_local(check_id, context)
+    if isinstance(target, CheckResult):
+        return target
+    tool = _tracker_tool(target.tracker)
+    executable = shutil.which(tool)
+    if executable is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"{tool} не найден в PATH: Git base тикетов не проверен",
+        )
+    if target.project is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message="не удалось разобрать owner/repo из git remote -v: Git base тикетов не проверен",
+        )
+    endpoint = _HOSTS[target.tracker].issues_endpoint(target.project)
+    issues = _in_work_issues(
+        _api_json_pages(
+            executable, target.host, "--paginate", endpoint, cwd=context.repo
+        )
+    )
+    if issues is None:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="warn",
+            message=f"не удалось получить список тикетов через {tool}: Git base не проверен",
+        )
+    base_branch = _base_branch(context.repo)
+    problems = [
+        f"#{number}: {problem}"
+        for number, body in issues
+        if (problem := _git_base_problem(body, base_branch)) is not None
+    ]
+    if not problems:
+        return CheckResult(
+            id=check_id,
+            group=GROUP,
+            status="ok",
+            message=f"Git base согласован у {len(issues)} тикетов в работе",
+        )
+    return CheckResult(
+        id=check_id,
+        group=GROUP,
+        status="warn",
+        message="расхождение Git base с integration-веткой: " + "; ".join(problems),
+        fix=Fix(
+            text="в каждом тикете из списка приведите секцию `## Git base` к его integration-ветке "
+            "(или к base_branch проекта для тикета без эпика); проверка не меняет тикеты"
+        ),
+    )

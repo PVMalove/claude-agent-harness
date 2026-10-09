@@ -37,7 +37,7 @@ def run_git(
 ) -> bytes:
     """Выполнить Git-команду в `repo` с таймаутом и вернуть stdout.
 
-    Ошибка или превышение таймаута поднимают `RepoMapGitError` с рекомендацией.
+    Ошибка, недоступный Git или превышение таймаута поднимают `RepoMapGitError` с рекомендацией.
     """
     try:
         result = subprocess.run(
@@ -51,6 +51,11 @@ def run_git(
         raise RepoMapGitError(
             f"git {' '.join(args)} timed out after {timeout_seconds} seconds",
             remedy="raise repo_map_policy.timeout_seconds or retry on a less loaded machine",
+        ) from exc
+    except OSError as exc:
+        raise RepoMapGitError(
+            f"could not run git {args[0]}: {exc}",
+            remedy="install Git or restore it on PATH for the Repo Map process, then retry",
         ) from exc
     if result.returncode:
         raise RepoMapGitError(

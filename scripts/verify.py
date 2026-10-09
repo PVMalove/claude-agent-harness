@@ -2,6 +2,9 @@
 """Проверка всего проекта: согласованность конфигурации и скиллов, целостность вендорного
 snapshot, затем mypy, pytest и полный clean-room прогон."""
 
+from __future__ import annotations
+
+import argparse
 import atexit
 import json
 import os
@@ -150,8 +153,29 @@ def _check_documentation() -> None:
     check_no_dispatch_specific_data_in_always_sent_files()
 
 
+def _check_private_terms(test_env: dict[str, str]) -> None:
+    """Проверить staged diff, непубликованные коммиты и ветку по приватному списку терминов (#438).
+
+    Без списка проверка печатает уведомление о пропуске и не падает: так в CI без секрета.
+    """
+    run_ok(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "check_private_terms.py"),
+            "--repo",
+            str(ROOT),
+            "--staged",
+            "--commits",
+            "--branch",
+        ],
+        env=test_env,
+    )
+
+
 def _static_checks(test_env: dict[str, str]) -> None:
-    """Быстрые проверки до тестов: JSON каталога, компиляция, скиллы, реестр и документация."""
+    """Быстрые проверки до тестов: приватные термины, JSON каталога, компиляция, скиллы, реестр
+    и документация."""
+    _check_private_terms(test_env)
     run_ok(
         [
             sys.executable,
@@ -216,8 +240,33 @@ def _run_stages(run_tmp: Path, test_env: dict[str, str]) -> None:
         remove_tree(run_tmp)
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
+    """Парсер CLI: опций нет, `--help` описывает стадии до их запуска."""
+    return argparse.ArgumentParser(
+        prog="scripts/verify.py",
+        description=(
+            "Full project verification. Takes no options: every run executes all stages\n"
+            "in order and stops at the first failure."
+        ),
+        epilog=(
+            "stages:\n"
+            "  1. static checks: private terms, CAPABILITIES.json syntax, Python compilation,\n"
+            "     global skills, documentation sync, vendor pin\n"
+            "  2. skills/REGISTRY.md: rebuilt in place, then must match the committed file\n"
+            "  3. mypy\n"
+            "  4. pytest\n"
+            "  5. clean-room install and update run\n"
+            "\n"
+            "Temporary files go to an isolated run root under the harness storage and are removed\n"
+            "at exit. Usually run as `make verify`."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
     """Точка входа: подготовить изолированный корень, выполнить проверки и стадии."""
+    build_parser().parse_args(argv)
     run_tmp, test_env = _prepare_run_root()
     _static_checks(test_env)
     _run_stages(run_tmp, test_env)

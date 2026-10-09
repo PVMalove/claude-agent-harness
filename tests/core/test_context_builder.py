@@ -601,6 +601,7 @@ def _patch_repo_map_call(
         encoding: str = "utf-8",
         errors: str = "replace",
         check: bool = False,
+        timeout: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Диспетчер вызовов subprocess для подмены процесса repo_map."""
         if any(str(item).endswith("repo_map.py") for item in args):
@@ -612,6 +613,7 @@ def _patch_repo_map_call(
             encoding=encoding,
             errors=errors,
             check=check,
+            timeout=timeout,
         )
 
     return patch(
@@ -867,6 +869,7 @@ class GuardHotPathTests(unittest.TestCase):
             encoding: str = "utf-8",
             errors: str = "replace",
             check: bool = False,
+            timeout: float | None = None,
         ) -> subprocess.CompletedProcess[str]:
             """Шпионская функция для перехвата и логирования вызовов subprocess.run."""
             if any(str(item).endswith("repo_map.py") for item in args):
@@ -878,6 +881,7 @@ class GuardHotPathTests(unittest.TestCase):
                 encoding=encoding,
                 errors=errors,
                 check=check,
+                timeout=timeout,
             )
 
         fixture = ContextBuilderFixture()
@@ -1134,6 +1138,7 @@ class MemoryPackageTests(ContextBuilderFixture):
 
     def test_workflow_freezes_local_memory_once_and_reuses_matching_query(self) -> None:
         from harness.memory import build
+        from harness.orchestration.ledger.ledger_ops import _load_context_package
         from harness.orchestration.ledger.lifecycle import LifecycleLedger
         from harness.orchestration.workflow.context_package import (
             _persist_context_package,
@@ -1169,7 +1174,6 @@ class MemoryPackageTests(ContextBuilderFixture):
         self.assertEqual(first["memory"]["pointers"][0]["title"], "Prior memory")
         self.assertEqual(first["memory"]["pointers"][0]["source_type"], "glossary")
         self.assertNotIn("private body", json.dumps(first["memory"]))
-        source(self.repo, "CONTEXT.md", "# Edited after freeze")
         second = _persist_context_package(
             self.repo,
             root,
@@ -1180,6 +1184,22 @@ class MemoryPackageTests(ContextBuilderFixture):
             inclusion_reason="test",
         )
         self.assertEqual(first, second)
+        source(self.repo, "CONTEXT.md", "# Edited after freeze")
+        refreshed = _persist_context_package(
+            self.repo,
+            root,
+            ledger,
+            batch,
+            role="shared",
+            snapshot=self.candidate_commit,
+            inclusion_reason="test",
+        )
+        self.assertNotEqual(
+            first["context_package_id"], refreshed["context_package_id"]
+        )
+        self.assertEqual(
+            _load_context_package(root, first["context_package_id"]), first
+        )
         batch["goal"] = "different query"
         third = _persist_context_package(
             self.repo,
@@ -1388,3 +1408,116 @@ class MemoryPackageTests(ContextBuilderFixture):
         self.assertLessEqual(
             estimate_tokens(json.dumps(package.memory, ensure_ascii=False)), 300
         )
+
+
+def _two_commit_repo(
+    root: Path, base_files: dict[str, str], change: dict[str, str]
+) -> tuple[Path, str, str]:
+    """Create a repository with a base commit and a candidate commit that writes `change`."""
+    repo = root / "repo"
+    repo.mkdir()
+    _run("init", "-q", cwd=repo)
+    _run("config", "user.email", "test@example.invalid", cwd=repo)
+    _run("config", "user.name", "Context Builder Test", cwd=repo)
+    for path, content in base_files.items():
+        _write(repo, path, content)
+    _run("add", ".", cwd=repo)
+    _run("commit", "-qm", "base", cwd=repo)
+    base = _head(repo)
+    for path, content in change.items():
+        _write(repo, path, content)
+    _run("add", ".", cwd=repo)
+    _run("commit", "-qm", "candidate", cwd=repo)
+    return repo, base, _head(repo)
+
+
+def test_a_non_ascii_changed_path_reaches_the_diff_and_the_starting_files(
+    tmp_path: Path,
+) -> None:
+    repo, base, candidate = _two_commit_repo(
+        tmp_path, {"pkg/base.py": "value = 1\n"}, {"pkg/модуль.py": "value = 2\n"}
+    )
+
+    package = build_context_package(repo, base, candidate, min_starting_files=1)
+
+    assert [item.path for item in package.starting_files] == ["pkg/модуль.py"]
+    assert "+value = 2" in package.diff
+
+
+def test_a_nested_adr_precedent_is_read_from_its_own_path(tmp_path: Path) -> None:
+    repo, base, candidate = _two_commit_repo(
+        tmp_path,
+        {
+            "pkg/base.py": "value = 1\n",
+            "docs/adr/archive/0001-base-module.md": "# Base module\n\nThe base contract.\n",
+        },
+        {"pkg/base.py": "value = 2\n"},
+    )
+
+    package = build_context_package(repo, base, candidate, min_starting_files=1)
+
+    assert [card.id for card in package.precedent_cards] == ["0001-base-module"]
+    assert "docs/adr/archive/0001-base-module.md" in package.file_hashes
+
+
+@pytest.mark.parametrize(
+    ("error", "message", "remedy"),
+    [
+        (
+            subprocess.TimeoutExpired(["git"], 60),
+            "did not finish within",
+            "held Git lock",
+        ),
+        (FileNotFoundError("git"), "could not run git", "restore Git"),
+    ],
+)
+def test_a_hung_or_unlaunchable_git_is_a_context_package_error(
+    tmp_path: Path, error: BaseException, message: str, remedy: str
+) -> None:
+    repo, base, candidate = _two_commit_repo(
+        tmp_path, {"pkg/base.py": "value = 1\n"}, {"pkg/base.py": "value = 2\n"}
+    )
+    with patch(
+        "harness.context_builder.context_builder.subprocess.run", side_effect=error
+    ):
+        with pytest.raises(ContextPackageError) as raised:
+            build_context_package(repo, base, candidate, min_starting_files=1)
+    assert message in raised.value.message
+    assert remedy in raised.value.remedy
+
+
+def test_an_unlaunchable_repo_map_is_a_context_package_error(tmp_path: Path) -> None:
+    repo, base, candidate = _two_commit_repo(
+        tmp_path, {"pkg/base.py": "value = 1\n"}, {"pkg/base.py": "value = 2\n"}
+    )
+    real_run = subprocess.run
+
+    def run(
+        args: list[str],
+        *,
+        capture_output: bool = True,
+        text: bool = True,
+        encoding: str = "utf-8",
+        errors: str = "replace",
+        check: bool = False,
+        timeout: float | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if any(str(item).endswith("repo_map.py") for item in args):
+            raise PermissionError("python")
+        return real_run(
+            args,
+            capture_output=capture_output,
+            text=text,
+            encoding=encoding,
+            errors=errors,
+            check=check,
+            timeout=timeout,
+        )
+
+    with patch(
+        "harness.context_builder.context_builder.subprocess.run", side_effect=run
+    ):
+        with pytest.raises(ContextPackageError) as raised:
+            build_context_package(repo, base, candidate, min_starting_files=1)
+    assert "could not start the Repo Map CLI" in raised.value.message
+    assert sys.executable in raised.value.remedy

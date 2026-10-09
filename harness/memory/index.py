@@ -121,14 +121,18 @@ def replace_documents(
 @contextmanager
 def writer_lock(path: Path) -> Iterator[None]:
     """Serialize build/rebuild publication with a bounded SQLite lock, released on process exit."""
-    lock = sqlite3.connect(path.parent / "writer.sqlite3", timeout=LOCK_TIMEOUT)
+    unavailable = (
+        "memory writer busy or lock unavailable; retry after the active writer finishes"
+    )
+    try:
+        lock = sqlite3.connect(path.parent / "writer.sqlite3", timeout=LOCK_TIMEOUT)
+    except sqlite3.Error:
+        raise ValueError(unavailable) from None
     try:
         try:
             lock.execute("BEGIN IMMEDIATE")
         except sqlite3.Error:
-            raise ValueError(
-                "memory writer busy or lock unavailable; retry after the active writer finishes"
-            ) from None
+            raise ValueError(unavailable) from None
         yield
     finally:
         lock.rollback()

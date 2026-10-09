@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from typing import cast
 
-from ..errors import HarnessError
+from ..errors import HarnessError, INTERNAL_INVARIANT_REMEDY
 
 # Everything an approval binds.  A dispatch that differs in any one of these needs a new approval.
 TRANSITION_FIELDS = (
@@ -29,16 +30,32 @@ TRANSITION_FIELDS = (
     "context_package_id",
     "required_gates",
 )
+# Bound only when a brief carries a non-empty carried-items section (issue #499), a human-approved
+# rebase target (issue #504) or a delta-review scope after a fix-forward (issue #625), so every
+# transition without one keeps the digest it always had.
+OPTIONAL_TRANSITION_FIELDS = (
+    "carried_items_sha256",
+    "rebase_target_sha",
+    "delta_review_sha256",
+    "infrastructure_retry_sha256",
+    "infrastructure_attempt_sha256",
+)
+# A new dispatch (issue #624) always binds the sha256 of its resolved runtime access plan.
+ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
 ATTENTION_REASONS = (
     "unknown-reason",
     "infrastructure-retry-repeated",
+    "tooling-retry-repeated",
     "retry-queued-too-long",
     "stale-evidence",
     "stale-dispatch",
 )
+# A tool that blocks the same candidate a third time in a row needs a fixed tool, not another re-run
+# (issue #500).
+MAX_CONSECUTIVE_TOOLING_RETRIES = 2
 CONTEXT_PRESSURE_LEVELS = ("ok", "warning", "critical")
 
 
@@ -69,9 +86,12 @@ def build_transition(
     verification_commands: Sequence[str],
     context_package_id: str | None,
     required_gates: Sequence[str],
+    carried_items_sha256: str | None = None,
+    rebase_target_sha: str | None = None,
+    delta_review_sha256: str | None = None,
 ) -> dict[str, object]:
     """Сконструировать словарь перехода между этапами жизненного цикла."""
-    return {
+    transition: dict[str, object] = {
         "batch_id": batch_id,
         "previous_dispatch_id": previous_dispatch_id,
         "previous_role": previous_role,
@@ -86,14 +106,42 @@ def build_transition(
         "context_package_id": context_package_id,
         "required_gates": list(required_gates),
     }
+    if carried_items_sha256 is not None:
+        transition["carried_items_sha256"] = carried_items_sha256
+    if rebase_target_sha is not None:
+        transition["rebase_target_sha"] = rebase_target_sha
+    if delta_review_sha256 is not None:
+        transition["delta_review_sha256"] = delta_review_sha256
+    return transition
+
+
+def policy_digest(value: Mapping[str, object]) -> str:
+    """Digest of an approval-bound policy snapshot."""
+    return _digest(dict(value))
+
+
+def carried_items_digest(section: Mapping[str, object]) -> str:
+    """Дайджест секции carried_items задания, который связывается с переходом (issue #499)."""
+    return _digest(dict(section))
+
+
+def delta_review_digest(section: Mapping[str, object]) -> str:
+    """Дайджест секции delta_review_scope задания code-review, связываемый с переходом (issue #625)."""
+    return _digest(dict(section))
 
 
 def transition_digest(transition: Mapping[str, object]) -> str:
     """Канонический дайджест, с которым связывается подтверждение; порядок ключей не имеет значения."""
-    if set(transition) != set(TRANSITION_FIELDS):
+    extra = {*OPTIONAL_TRANSITION_FIELDS, ACCESS_TRANSITION_FIELD}
+    if set(transition) - extra != set(TRANSITION_FIELDS):
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
-            remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}",
+            remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
+            "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
+            "when it carries an approved rebase target, delta_review_sha256 only when it "
+            "carries a delta-review scope, runtime_access_sha256 and "
+            "infrastructure_retry_sha256 for a new brief, and infrastructure_attempt_sha256 "
+            "only when a policy retry binds a recorded operation refusal",
         )
     return _digest(dict(transition))
 
@@ -125,6 +173,116 @@ def retry_idempotency_key(
             "verification_commands_digest": _digest(list(verification_commands)),
         }
     )
+
+
+def _brief_bindings(brief: Mapping[str, object]) -> dict[str, object]:
+    """Optional approval bindings, shared by proposal and persisted-brief verification."""
+    carried = brief.get("carried_items")
+    scope = brief.get("delta_review_scope")
+    return {
+        "carried_items_sha256": carried_items_digest(
+            cast(Mapping[str, object], carried)
+        )
+        if carried
+        else None,
+        "rebase_target_sha": brief.get("rebase_target_commit"),
+        "delta_review_sha256": delta_review_digest(scope)
+        if isinstance(scope, dict)
+        else None,
+    }
+
+
+def bind_transition(
+    transition: Mapping[str, object], brief: Mapping[str, object]
+) -> dict[str, object]:
+    """Bind the brief's optional evidence without adding absent fields to legacy digests."""
+    return {
+        **transition,
+        **{
+            field: value
+            for field, value in _brief_bindings(brief).items()
+            if value is not None
+        },
+    }
+
+
+def transition_key(transition: Mapping[str, object]) -> str | None:
+    """Derive the retry key from the same canonical transition creation and reads verify."""
+    keyed = keyed_role(
+        cast(str, transition["next_role"]), cast(str, transition["purpose"])
+    )
+    if keyed is None:
+        return None
+    return retry_idempotency_key(
+        role=keyed,
+        candidate_sha=cast(str | None, transition["candidate_sha"]),
+        base_sha=cast(str, transition["base_sha"]),
+        review_scope=cast(Sequence[str], transition["review_scope"]),
+        reason_category=cast(str, transition["reason_category"] or "none"),
+        verification_commands=cast(Sequence[str], transition["verification_commands"]),
+    )
+
+
+def validate_binding(dispatch: Mapping[str, object], batch_id: object) -> None:
+    """Verify the transition, digest, approval and retry key against the persisted brief.
+
+    Policy and lifecycle checks remain with the coordinator."""
+    transition = dispatch["transition"]
+    if not isinstance(transition, dict) or set(transition) - {
+        *OPTIONAL_TRANSITION_FIELDS,
+        ACCESS_TRANSITION_FIELD,
+    } != set(TRANSITION_FIELDS):
+        raise GuardError(
+            "dispatch transition schema mismatch",
+            remedy="the dispatch transition is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    digest = transition_digest(transition)
+    approval = dispatch.get("coordinator_approval")
+    if (
+        dispatch["transition_digest"] != digest
+        or not isinstance(approval, dict)
+        or approval.get("transition_digest") != digest
+    ):
+        raise GuardError(
+            "dispatch transition digest does not match its transition and approval",
+            remedy="the dispatch transition digest diverged from its transition or approval -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    bound = {
+        "batch_id": batch_id,
+        "next_role": dispatch["role"],
+        "purpose": dispatch["purpose"],
+        "candidate_sha": dispatch.get("candidate_commit"),
+        "verification_commands": dispatch["verification_commands"],
+        "context_package_id": dispatch.get("context_package_id"),
+        "required_gates": dispatch["required_gates"],
+    }
+    if any(transition[field] != value for field, value in bound.items()):
+        raise GuardError(
+            "dispatch transition does not match its brief",
+            remedy="the dispatch transition diverged from its brief -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    labels = {
+        "carried_items_sha256": ("carried items", "carried items"),
+        "rebase_target_sha": ("rebase target", "rebase_target_commit"),
+        "delta_review_sha256": ("delta-review scope", "delta_review_scope"),
+    }
+    for field, expected in _brief_bindings(dispatch).items():
+        if transition.get(field) != expected:
+            label, source = labels[field]
+            raise GuardError(
+                f"dispatch transition does not match its {label}",
+                remedy=f"the dispatch transition diverged from its {source} -- "
+                + INTERNAL_INVARIANT_REMEDY,
+            )
+    if dispatch["retry_idempotency_key"] != transition_key(transition):
+        raise GuardError(
+            "dispatch retry idempotency key does not match its transition",
+            remedy="the dispatch retry idempotency key diverged from its transition -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
 
 
 def level_for(observed_tokens: int, context_limit: int, warning_threshold: int) -> str:
@@ -163,6 +321,25 @@ def attention_finding(
         "last_safe_action": last_safe_action,
         "recommended_human_action": recommended_human_action,
     }
+
+
+def tooling_retry_streak(decisions: Sequence[Mapping[str, object]]) -> int:
+    """Число подряд идущих последних решений с маршрутом ``tooling-retry`` на одном candidate.
+
+    Серию обрывает первое другое решение (accept, другой маршрут) или другой ``candidate_commit``
+    в routing record; ``None`` равен ``None`` (у architect candidate нет).
+    """
+    streak = 0
+    candidate: object = None
+    for decision in reversed(decisions):
+        routing = decision.get("routing")
+        if not isinstance(routing, Mapping) or routing.get("route") != "tooling-retry":
+            break
+        if streak and routing.get("candidate_commit") != candidate:
+            break
+        candidate = routing.get("candidate_commit")
+        streak += 1
+    return streak
 
 
 def top_finding(findings: Sequence[dict[str, str]]) -> dict[str, str]:

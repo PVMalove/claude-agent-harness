@@ -168,7 +168,7 @@ class RepoRelativeTests(unittest.TestCase):
 
 
 class MainCoverageRunTests(unittest.TestCase):
-    def test_coverage_run_is_given_the_changed_file_directories_as_sources(
+    def test_coverage_is_given_the_changed_file_directories_as_sources(
         self,
     ) -> None:
         changed = {"harness/a.py": {1}, "scripts/tool.py": {2}}
@@ -190,9 +190,8 @@ class MainCoverageRunTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 3)
         command = run.call_args.args[0]
-        self.assertIn(
-            f"--source={','.join(diff_coverage.source_dirs(changed))}", command
-        )
+        for directory in diff_coverage.source_dirs(changed):
+            self.assertIn(f"--cov={directory}", command)
 
     def test_coverage_run_uses_pytest_so_function_style_tests_are_measured(
         self,
@@ -215,9 +214,10 @@ class MainCoverageRunTests(unittest.TestCase):
             diff_coverage.main()
 
         command = run.call_args.args[0]
-        module_index = command.index("-m", command.index("run"))
-        self.assertEqual(command[module_index + 1], "pytest")
+        self.assertEqual(command[1:3], ["-m", "pytest"])
         self.assertEqual(command[-1], str(diff_coverage.ROOT / "tests"))
+        # The suite runs in xdist workers, as in scripts/verify.py: one process exceeds the CI job limit.
+        self.assertGreaterEqual(int(command[command.index("-n") + 1]), 1)
 
 
 class ChangedLinesTests(unittest.TestCase):
@@ -288,6 +288,63 @@ class ChangedLinesTests(unittest.TestCase):
                 changed = diff_coverage._changed_lines(base)
 
         self.assertEqual(changed, {"other.py": {1}})
+
+    def test_a_non_ascii_python_path_is_gated(self) -> None:
+        # git quotes a non-ASCII path by default; a quoted `+++ "b/..."` line must not hide the file.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._git(root, "init", "-q")
+            self._git(root, "commit", "-q", "--allow-empty", "-m", "base")
+            base = self._git(root, "rev-parse", "HEAD")
+            (root / "модуль.py").write_text("a = 1\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "change")
+
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                changed = diff_coverage._changed_lines(base)
+
+        self.assertEqual(changed, {"модуль.py": {1}})
+
+
+class GitFailureTests(unittest.TestCase):
+    def test_a_hung_git_diff_stops_the_gate_with_a_message(self) -> None:
+        with (
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["git"], 1),
+            ) as run,
+            self.assertRaises(SystemExit) as raised,
+        ):
+            diff_coverage._changed_lines("base")
+
+        self.assertIn("git diff failed", str(raised.exception.code))
+        self.assertEqual(
+            run.call_args.kwargs["timeout"], diff_coverage.HELPER_TIMEOUT_SECONDS
+        )
+
+    def test_a_hung_merge_base_stops_the_gate_with_a_message(self) -> None:
+        with (
+            mock.patch.dict(diff_coverage.os.environ, {"DIFF_COVERAGE_BASE": ""}),
+            mock.patch.object(diff_coverage, "_base_branch", return_value="master"),
+            mock.patch.object(
+                diff_coverage.subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(["git"], 1),
+            ),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            diff_coverage._merge_base()
+
+        self.assertIn("git merge-base failed", str(raised.exception.code))
+
+    def test_a_non_object_project_json_falls_back_to_master(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".harness").mkdir()
+            (root / ".harness" / "project.json").write_text("[]", encoding="utf-8")
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                self.assertEqual(diff_coverage._base_branch(), "master")
 
 
 if __name__ == "__main__":

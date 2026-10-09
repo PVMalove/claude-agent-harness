@@ -12,17 +12,17 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "d2dd5522c6281517f5eea9801c122228c831ca7911409acbc3e0a11e117ba2c5",
   "source_hashes": {
-    "CONTEXT.md": "9eeddd16b0cb5ed943fe0f8925f409a734419e23cbfbbac7a878df56095f2e48",
+    "CONTEXT.md": "4cc40d8edeba5f4d6d82d3422833399e93b2788f530907f083038d79f8568b48",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
     "docs/adr/0003-orchestration-core.md": "eba04529bff1e9899409cba2434c2f423e9e29862e96ed16a334ec9b6dbb09bf",
     "docs/adr/0004-role-assignments.md": "3721543a888daea209f74e3ca92ea920074213b0b758cbc6c1497b53ba782bd0",
-    "docs/adr/0005-implement-pipeline.md": "27f08c077e8a4d0121b89ed5ad27b961037e253e472b768f155504ea930c724d",
+    "docs/adr/0005-implement-pipeline.md": "9d3692f8f10b67cf0b9e4b6ed1122c6ddfff3213db83ea23fcc4c7ce6af42453",
     "docs/adr/0006-scratch-artifacts.md": "99f53f8af2a319af5dd90b9e7ac97ef718f17aa63029545636035be8bab7e14b",
     "docs/adr/0007-python-quality.md": "866c0aa5cddae54238750e54733e281d0ed8cdd5e4c4336713c82ca4f30a6677",
     "docs/adr/0008-repo-map.md": "a1efc331e1f698c964b04593c8665595e667a0f24acc5a3bc8d0b447ccdc329e",
     "docs/adr/0009-harness-console.md": "3f9877cda4a63259bba0247ec199a24082a11515da63fdc6a826329d9d0fa459",
-    "docs/adr/0010-project-memory.md": "77806c8fa874bb36023df433db75a7320fe6250caacd08e42e3bd8c810242eaf",
+    "docs/adr/0010-project-memory.md": "0e4c5ff833443aacb95089d055fe2efd929ce69a38a9cefca7e39bf36d65f303",
     "docs/adr/template.md": "c6e731c451d5018f6c3000d4621dd7a4b6fe87fa0935363c78b2ac6620edf3fd"
   },
   "report": {
@@ -82,8 +82,8 @@
         "retrieved": [
           "CONTEXT.md",
           "docs/adr/0010-project-memory.md",
-          "docs/adr/0001-portable-capability-delivery.md",
           "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0001-portable-capability-delivery.md",
           "docs/adr/0004-role-assignments.md"
         ],
         "expected": [
@@ -252,7 +252,7 @@
           "CONTEXT.md",
           "docs/adr/0009-harness-console.md",
           "docs/adr/0003-orchestration-core.md",
-          "docs/adr/0008-repo-map.md"
+          "docs/adr/0005-implement-pipeline.md"
         ],
         "expected": [
           "docs/adr/0010-project-memory.md"

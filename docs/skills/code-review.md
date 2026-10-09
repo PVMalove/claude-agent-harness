@@ -28,13 +28,15 @@ description: Проверьте изменения после фиксирова
 
 Этот workflow не зависит от runtime. Язык вывода определяется `language` из `.harness/project.json`; используйте уже вручную настроенный механизм ревью. Workflow не должен запускать runtime-специфичный adapter, выбирать провайдера или модель либо изменять проверяемую ветку.
 
-Issue tracker должен быть предоставлен. Если `docs/agents/issue-tracker.md` отсутствует, скажите пользователю запустить `/setup-matt-pocock-skills`.
+Issue tracker должен быть предоставлен. Если `docs/agents/issue-tracker.md` отсутствует, скажите пользователю запустить `harness update` — он создаёт файл из шаблонов харнесса. В GitLab каждая команда `glab` получает `-R <project-url>`; `<project-url>` и другие плейсхолдеры GitLab (`<host>`, `<project-id>`) определены в `docs/agents/issue-tracker.md` → GitLab → Conventions.
 
 ## Процесс
 
 ### 1. Зафиксируйте точку отсчёта
 
 Всё, что назвал пользователь, является фиксированной точкой: SHA коммита, имя ветки, тег, `main`, `HEAD~5` и т. д. Если её не указали, спросите.
+
+Если пользователь назвал PR или MR, фиксированная точка — его целевая ветка. Прочитайте целевую и исходную ветки — GitHub: `gh pr view <n> --json baseRefName,headRefName`; GitLab: `glab mr view <iid> -R <project-url> -F json` (`target_branch`, `source_branch`). Затем выполните `git fetch origin <target>` и используйте `origin/<target>` как фиксированную точку. Текущий checkout должен быть исходной веткой; если это не так, сообщите пользователю, а не переключайте ветку (см. _Граница runtime_).
 
 Один раз зафиксируйте команду diff: `git diff <fixed-point>...HEAD` (три точки, поэтому сравнение идёт с merge-base). Также зафиксируйте список коммитов через `git log <fixed-point>..HEAD --oneline`.
 
@@ -43,15 +45,20 @@ Issue tracker должен быть предоставлен. Если `docs/age
 В coordinator-конвейере review получает candidate SHA и Context Package как evidence. Перед review
 и publish coordinator заново проверяет, что `base_commit` совпадает с актуальным
 `origin/<integration_ref>`; при drift нужен новый developer/rebase dispatch и новый risk assessment.
-После Warning допустим delta-review только для нового кандидата, чей diff затрагивает исключительно
-тестовые файлы и не совпадает с risk triggers: он запускается новым независимым dispatch, повторно
-проверяет только Warning-ось и наследует Standards=Clean.
+Delta-review бывает двух видов. Test-only delta-review допустим после Warning для нового кандидата,
+чей diff затрагивает исключительно тестовые файлы и не совпадает с risk triggers: он запускается
+новым независимым dispatch, повторно проверяет только Warning-ось и наследует Standards=Clean.
+Delta-review после fix-forward coordinator назначает сам; такой delta-review проверяет обе оси
+только на diff исправления и опирается на прежний отчёт review для остальной части кандидата. Полный
+review назначается вместо delta в пяти случаях: кандидат или новые коммиты совпадают с risk trigger,
+которого не видел прежний review; новые коммиты меняют файл вне перенесённых пунктов; у перенесённой
+копии не совпадает `git patch-id`; кандидат потерял коммит прежнего кандидата; новых коммитов нет.
 
 ### 2. Найдите источник спецификации
 
 Ищите исходную спецификацию в таком порядке:
 
-1. Ссылки на issue в сообщениях коммитов (`#123`, `Closes #45`, GitLab `!67` и т. п.) — получите их по workflow в `docs/agents/issue-tracker.md`.
+1. Ссылки на issue в сообщениях коммитов или в названном PR/MR (`#123`, `Closes #45`, `Related to #45` и т. п.) — получите их по workflow в `docs/agents/issue-tracker.md`: GitHub `gh issue view <n> --comments`; GitLab `glab issue view <n> -R <project-url> --comments`. GitLab `!67` — это merge request, а не issue: прочитайте его через `glab mr view 67 -R <project-url> --comments` (PR GitHub: `gh pr view <n> --comments`) и возьмите тикет из footer `Closes #<ID>`/`Related to #<ID>`.
 2. Путь, переданный пользователем аргументом.
 3. Файл спецификации под `docs/`, `specs/` или `.scratch/`, соответствующий имени ветки или функциональности.
 4. Если ничего не найдено, спросите пользователя, где спецификация. Если он скажет, что её нет, подагент **Spec** пропустит проверку и сообщит «спецификация недоступна».
@@ -120,10 +127,6 @@ Issue tracker должен быть предоставлен. Если `docs/age
 
 - **Вход (Input/Brief):** фиксированная точка, diff, стандарты проекта и исходная спецификация.
 - **Выход (Output/Report):** независимые отчёты `Standards` и `Spec`, затем краткая двухосевая сводка.
-
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
 
 ## Источник
 

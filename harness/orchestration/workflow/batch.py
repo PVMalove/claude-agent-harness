@@ -9,11 +9,19 @@ without a decision (abandon, not-required) live here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import uuid
+from collections.abc import Iterator
 from dataclasses import replace as _vo_replace
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration.contract import (
+    ContractError,
+    is_clean_path_pattern,
+    paths_inside,
+    role_write_ceiling,
+)
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -27,6 +35,7 @@ from harness.orchestration.core.config import (
 )
 from harness.orchestration.core.constants import (
     ATTENTION_STATE_FIELDS,
+    FINISHED_BATCH_STATES,
     LIVE_DISPATCH_STATES,
     PLAN_FIELDS,
     TERMINAL_BATCH_STATES,
@@ -38,6 +47,7 @@ from harness.orchestration.core.git_utils import (
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
+    _canonical,
     _non_empty,
     _read_object,
     _repo,
@@ -69,6 +79,8 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     PlanRecord,
 )
+from harness.orchestration.workflow import approval as approvals
+from harness.orchestration.workflow import supersede
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -82,7 +94,20 @@ from harness.orchestration.workflow.history import (
 )
 
 
+def _batch_records(root: Path) -> Iterator[JsonObject]:
+    """Every batch record of the ledger, in batch-id order."""
+    for path in sorted(
+        (_records_root(root) / BatchRecord.directory).glob("batch-*.json")
+    ):
+        yield _read_object(path, "batch record")
+
+
 def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) -> None:
+    """Admit another running batch only while the project's concurrency budget has room.
+
+    Batches run in their own issue branch and worktree, so overlapping files and a shared zone
+    label no longer exclude each other; the budget is the only limit on how many run at once.
+    """
     budget = config.get("concurrency_budget")
     if isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
         raise CoordinatorError(
@@ -90,24 +115,99 @@ def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) ->
             remedy="set concurrency_budget to a positive integer in the project orchestration config",
         )
     active = 0
-    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-        other = _read_object(path, "batch record")
+    for other in _batch_records(root):
         if other.get("batch_id") == batch.get("batch_id") or other.get("state") not in {
             "active",
             "awaiting-approval",
         }:
             continue
         active += 1
-        if other.get("zone") == batch.get("zone"):
-            raise CoordinatorError(
-                "another active batch already owns this backend zone",
-                remedy="wait for the other active batch in this backend zone to close before creating a new one",
-            )
     if active >= budget:
         raise CoordinatorError(
-            "concurrency_budget is exhausted",
-            remedy="wait for an active worker to finish, or raise concurrency_budget",
+            f"concurrency_budget ({budget}) is exhausted: {active} other batch(es) are already active",
+            remedy=f"wait for an active batch to finish or close it, or raise concurrency_budget (currently {budget}) in .harness/orchestration.json",
         )
+
+
+def _reject_duplicate_work(root: Path, ticket: str, branch: str, worktree: str) -> None:
+    """Refuse a batch that repeats the ticket, issue branch or worktree of unfinished work.
+
+    The guard is about the same work, not the same files: two tickets that touch one file are
+    independent batches, but a second batch for one unfinished ticket would double the writer.
+    Finished batches stay audit evidence and never block a fresh attempt. A batch a decision
+    blocked has nothing left to resume or abandon, so it is finished too; a blocked batch that
+    still holds an open dispatch keeps its work until ``batch resume`` or ``batch abandon``.
+    """
+    mine_worktree = str(Path(worktree).resolve())
+    for other in _batch_records(root):
+        if other.get("state") in FINISHED_BATCH_STATES or (
+            other.get("state") == "blocked"
+            and all(_settled(item) for item in other.get("dispatches", []))
+        ):
+            continue
+        other_worktree = other.get("worktree")
+        for label, mine, theirs in (
+            ("ticket", ticket, other.get("ticket")),
+            ("branch", branch, other.get("branch")),
+            (
+                "worktree",
+                mine_worktree,
+                str(Path(other_worktree).resolve())
+                if isinstance(other_worktree, str)
+                else None,
+            ),
+        ):
+            if mine == theirs:
+                raise CoordinatorError(
+                    f"batch {other.get('batch_id')} already holds unfinished work on this {label} ({mine})",
+                    remedy=f"continue or close batch {other.get('batch_id')} ('batch list --open', then 'batch resume' or 'batch abandon') instead of planning a second batch for the same work",
+                )
+
+
+def _reject_role_ceiling_overflow(
+    repo: Path, config: JsonObject, allowed_paths: list[str]
+) -> None:
+    """Refuse a scope wider than the developer role's write ceiling before a batch exists."""
+    plans = config.get("assignment_plans")
+    plan = plans.get("developer") if isinstance(plans, dict) else None
+    if not isinstance(plan, dict) or not core_config._configured(repo):
+        return
+    try:
+        ceiling = role_write_ceiling(config, plan, "developer")
+    except ContractError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    if not paths_inside(allowed_paths, ceiling):
+        raise CoordinatorError(
+            f"allowed_paths {allowed_paths} exceed the developer write ceiling {ceiling}",
+            remedy="narrow --allowed-path, or widen assignment_plans['developer'].write_paths in the project orchestration config",
+        )
+
+
+def _legacy_zone_paths(config: JsonObject, zone: object) -> list[str]:
+    """The scope a pre-scope invocation meant: ``--zone`` naming a zone the project still declares."""
+    zones = config.get("backend_zones")
+    declared = (
+        zones.get(zone.strip())
+        if isinstance(zones, dict) and _non_empty(zone)
+        else None
+    )
+    paths = declared.get("paths") if isinstance(declared, dict) else None
+    return list(paths) if isinstance(paths, list) and paths else []
+
+
+def _allowed_paths(args: argparse.Namespace) -> list[str]:
+    """The explicit write scope a batch pins for its writer: repo-relative paths or globs."""
+    value = getattr(args, "allowed_path", None)
+    if value is None:
+        return []
+    paths = _strings(value, "allowed_paths", allow_empty=True)
+    for path in paths:
+        if not is_clean_path_pattern(path):
+            raise CoordinatorError(
+                f"allowed_paths must hold relative paths or globs without a leading '/', a backslash, or a '.', '..' or empty segment (got {path!r})",
+                remedy="pass --allowed-path as a repo-relative path or glob such as 'src/orders/**'",
+            )
+    return sorted(set(paths))
 
 
 def _scope_values(args: argparse.Namespace, name: str) -> list[str]:
@@ -132,7 +232,7 @@ def _expected_positive(args: argparse.Namespace, name: str) -> int | None:
 def _scope_preflight(
     config: JsonObject,
     ticket: str,
-    zone: str,
+    allowed_paths: list[str],
     definition_of_done: list[str],
     dependencies: list[str],
     args: argparse.Namespace,
@@ -196,7 +296,7 @@ def _scope_preflight(
         )
     return {
         "ticket": ticket,
-        "zone": zone,
+        "allowed_paths": allowed_paths,
         "policy": policy,
         "definition_of_done_items": len(definition_of_done),
         "dependencies": real_dependencies,
@@ -213,11 +313,10 @@ def preflight_batch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     config = core_config._config(repo)
     ticket = getattr(args, "ticket", None)
-    zone = getattr(args, "zone", None)
-    if not _non_empty(ticket) or not _non_empty(zone):
+    if not _non_empty(ticket):
         raise CoordinatorError(
-            "ticket and zone must be non-empty strings",
-            remedy="pass a non-empty --ticket and --zone",
+            "ticket must be a non-empty string",
+            remedy="pass a non-empty --ticket",
         )
     definition_of_done = _strings(
         getattr(args, "definition_of_done", None), "definition_of_done"
@@ -226,7 +325,12 @@ def preflight_batch(args: argparse.Namespace) -> JsonObject:
         getattr(args, "dependency", None) or ["none"], "dependencies"
     )
     return _scope_preflight(
-        config, ticket.strip(), zone.strip(), definition_of_done, dependencies, args
+        config,
+        ticket.strip(),
+        _allowed_paths(args),
+        definition_of_done,
+        dependencies,
+        args,
     )
 
 
@@ -240,7 +344,7 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     worktree = cast(
         str, getattr(args, "worktree", None)
     )  # validated non-empty by _validate_worktree below
-    zone = getattr(args, "zone", None)
+    zone = getattr(args, "zone", None)  # legacy audit label; never a scheduling lock
     integration_ref = getattr(args, "integration_ref", None)
     dod = _strings(getattr(args, "definition_of_done", None), "definition_of_done")
     prohibited = _strings(
@@ -249,21 +353,25 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     dependencies = _strings(
         getattr(args, "dependency", None) or ["none"], "dependencies"
     )
-    if not _non_empty(ticket) or not _non_empty(zone):
+    if not _non_empty(ticket):
         raise CoordinatorError(
-            "ticket and zone must be non-empty strings",
-            remedy="pass a non-empty --ticket and --zone",
+            "ticket must be a non-empty string",
+            remedy="pass a non-empty --ticket",
+        )
+    if zone is not None and not _non_empty(zone):
+        raise CoordinatorError(
+            "zone, when passed, must be a non-empty string",
+            remedy="drop --zone (batches state their scope with --allowed-path) or pass a non-empty label",
         )
     _validate_branch(repo, branch)
-    _validate_worktree(repo, worktree)
-    if (
-        not isinstance(config.get("backend_zones"), dict)
-        or zone not in config["backend_zones"]
-    ):
+    allowed_paths = _allowed_paths(args) or _legacy_zone_paths(config, zone)
+    if not allowed_paths:
         raise CoordinatorError(
-            f"unknown backend zone {zone!r}",
-            remedy=f"declare backend zone {zone!r} in the project orchestration config, or pass a configured zone",
+            "a batch must pin the explicit write scope of its writer",
+            remedy="pass --allowed-path one or more times (for example --allowed-path 'src/orders/**', or '**' for the whole repository)",
         )
+    _validate_worktree(repo, worktree)
+    _reject_role_ceiling_overflow(repo, config, allowed_paths)
     # Nullable for epic-less tasks: falls back to the project's base_branch, the same field
     # `_validate_branch` falls back to, rather than inventing a second convention.
     fetch_ref = (
@@ -282,8 +390,11 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     _reject_non_english(dod, "definition_of_done")
     _reject_non_english(prohibited, "prohibited_changes")
     scope_preflight = _scope_preflight(
-        config, ticket.strip(), zone.strip(), dod, dependencies, args
+        config, ticket.strip(), allowed_paths, dod, dependencies, args
     )
+    # A superseding batch is approved by a human before the lock (issue #506).
+    superseded = supersede.request(args)
+    root = _state_root(args, repo)
     record: JsonObject = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": utils._now(),
@@ -297,7 +408,8 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "ticket": ticket.strip(),
         "branch": branch.strip(),
         "worktree": worktree.strip(),
-        "zone": zone.strip(),
+        "zone": zone.strip() if _non_empty(zone) else None,
+        "allowed_paths": allowed_paths,
         "definition_of_done": dod,
         "goal": getattr(args, "goal", None) or "",
         "prohibited_changes": prohibited,
@@ -318,7 +430,6 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "risk_reassessment_required": False,
     }
     _reject_sensitive(record, "batch")
-    root = _state_root(args, repo)
     _store_runtime_snapshot(
         root, _runtime_snapshot_root(repo).parent, record["harness_runtime_sha256"]
     )
@@ -329,17 +440,73 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         except LedgerError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
         _safe_id(record["batch_id"], "batch")
+        _reject_duplicate_work(
+            root, record["ticket"], record["branch"], record["worktree"]
+        )
+        audit = (
+            supersede.attach(repo, root, record, *superseded)
+            if superseded is not None
+            else None
+        )
         _write_record(
             ledger,
             PlanRecord.from_dict(
                 {
                     **{field: record[field] for field in PLAN_FIELDS},
                     "goal": record["goal"],
+                    # The link is immutable: integrity compares it with the batch's own copy.
+                    **(
+                        {"supersedes": record["supersedes"]}
+                        if "supersedes" in record
+                        else {}
+                    ),
                 }
             ),
         )
         _write_record(ledger, BatchRecord.from_dict(record))
+        if audit is not None:
+            # The supersede decision is stored on a batch transition audit record, as every
+            # `batch decide` decision is; the planned batch itself does not change.
+            _replace_record(ledger, BatchRecord.from_dict(record), decision=audit)
     return record
+
+
+def _auto_batch_approval(
+    repo: Path, root: Path, args: argparse.Namespace, record: JsonObject
+) -> JsonObject | None:
+    """The ``policy:auto`` planning approval of ``record``, recorded on it, or ``None`` when a
+    human must approve: an approval was passed, or ``auto`` does not apply (issue #643)."""
+    if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
+        getattr(args, "approved_at", None)
+    ):
+        return None
+    try:
+        config = core_config._config(repo)
+    except CoordinatorError:
+        return None
+    if not approvals.auto_active(config, record):
+        return None
+    plan = _read_object(
+        _records_root(root) / "plans" / f"{_safe_id(record['batch_id'], 'batch')}.json",
+        "immutable batch plan",
+    )
+    moment = utils._now()
+    preflight = record.get("scope_preflight")
+    approvals.record_auto(
+        record,
+        kind="batch-approve",
+        dispatch_id=None,
+        rationale="the immutable batch plan passed its scope preflight",
+        evidence={
+            "plan_sha256": hashlib.sha256(_canonical(plan).encode("utf-8")).hexdigest(),
+            "scope_preflight_status": preflight.get("status")
+            if isinstance(preflight, dict)
+            else None,
+            "definition_of_done_items": len(record["definition_of_done"]),
+        },
+        moment=moment,
+    )
+    return {"approved_by": approvals.AUTO_APPROVER, "approved_at": moment}
 
 
 def approve_batch(args: argparse.Namespace) -> JsonObject:
@@ -354,9 +521,10 @@ def approve_batch(args: argparse.Namespace) -> JsonObject:
                 "only a planned batch can receive its planning approval",
                 remedy="only approve a batch that is still in the planned state",
             )
+        approval = _auto_batch_approval(repo, root, args, record) or _approval(args)
         updated = _vo_replace(
             BatchRecord.from_dict(record),
-            coordinator_approval=_approval(args),
+            coordinator_approval=approval,
             state="awaiting-approval",
         )
         _safe_id(updated.batch_id, "batch")
@@ -376,8 +544,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         batches = []
-        for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-            batch = _read_object(path, "batch record")
+        for batch in _batch_records(root):
             dispatches = batch.get("dispatches", [])
             open_dispatches = [
                 item["dispatch_id"] for item in dispatches if not _settled(item)
@@ -395,6 +562,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
                     "ticket": batch.get("ticket"),
                     "branch": batch.get("branch"),
                     "zone": batch.get("zone"),
+                    "allowed_paths": batch.get("allowed_paths"),
                     "state": state,
                     "created_at": batch.get("created_at"),
                     "terminal": state in TERMINAL_BATCH_STATES,
@@ -468,6 +636,7 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
             "code-review",
             "qa",
             "publish",
+            "resolve-conflict",
         }:
             raise CoordinatorError(
                 "blocked batch has no resumable next action",

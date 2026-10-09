@@ -24,93 +24,82 @@
   },
   "assignment_plans": {
     "architect": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
-          "effort": "medium"
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     },
     "developer": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
-          "effort": "medium"
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     },
     "code-review": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
-          "effort": "medium"
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     },
     "qa": {
-      "zone": "repository",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-haiku-4-5-20251001",
-          "effort": "high"
+          "model": "claude-sonnet-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
           "model": "gpt-6-luna",
-          "effort": "high"
+          "effort": "xhigh"
         }
       }
     }
   },
-  "backend_zones": {
-    "repository": {
-      "paths": [
-        "**"
-      ]
-    }
-  },
   "concurrency_budget": 1,
   "approval_policy": "low_risk",
-  "low_risk_zones": [
-    "repository"
+  "low_risk_paths": [
+    "**"
   ],
   "worker_attestation_required": true,
   "communication_policy": {

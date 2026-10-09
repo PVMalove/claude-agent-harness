@@ -16,6 +16,8 @@ from typing import BinaryIO
 from pathlib import Path
 from urllib.parse import quote
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+
 from .adapters import sanitized, scalar
 from .index import context, refresh, writer_lock
 from .policy import Policy
@@ -35,8 +37,10 @@ TIMEOUT = 10
 MARKER = re.compile(r"^## Completion report\s*\n```json\s*\n(.*?)\n```\s*$", re.S)
 
 
-def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
-    """Bound subprocess time and output without retaining raw diagnostics."""
+def fetch_page(
+    argv: list[str], repo: Path, env: dict[str, str] | None = None
+) -> list[dict[str, object]]:
+    """Bound subprocess time (`TIMEOUT`) and output without retaining raw diagnostics."""
     cmd: list[str] | str = list(argv)
     if sys.platform == "win32":
         resolved = shutil.which(argv[0])
@@ -48,11 +52,17 @@ def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
             cmd = [resolved, *argv[1:]]
     try:
         process = subprocess.Popen(
-            cmd, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            cmd, cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
     except OSError:
         raise ValueError(f"memory sync: {argv[0]} unavailable") from None
-    assert process.stdout is not None and process.stderr is not None
+    if process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise HarnessError(
+            "memory sync: tracker process started without its stdout/stderr pipes",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     output = bytearray()
     exceeded = threading.Event()
     guard = threading.Lock()
@@ -106,9 +116,15 @@ def fetch_page(argv: list[str], repo: Path) -> list[dict[str, object]]:
 
 
 def inventory(
-    tool: str, endpoint: str, repo: Path, budget: list[int]
+    tool: str, host: str, endpoint: str, repo: Path, budget: list[int]
 ) -> list[dict[str, object]]:
-    """An empty final page proves the bounded inventory is complete."""
+    """An empty final page proves the bounded inventory is complete. Every call addresses the
+    tracker host explicitly, as harness health does: `gh api --hostname <host>`, while glab,
+    which rejects a port in `api --hostname`, gets the host through GITLAB_HOST."""
+    if tool == "glab":
+        prefix, env = [tool, "api"], {**os.environ, "GITLAB_HOST": host}
+    else:
+        prefix, env = [tool, "api", "--hostname", host], None
     records: list[dict[str, object]] = []
     for page in range(1, MAX_PAGES + 1):
         budget[0] += 1
@@ -116,7 +132,7 @@ def inventory(
             raise ValueError("memory sync: request budget exceeded")
         separator = "&" if "?" in endpoint else "?"
         batch = fetch_page(
-            [tool, "api", endpoint + f"{separator}per_page=100&page={page}"], repo
+            [*prefix, endpoint + f"{separator}per_page=100&page={page}"], repo, env
         )
         if not batch:
             return records
@@ -126,31 +142,22 @@ def inventory(
     raise ValueError("memory sync: inventory exceeds 20 pages")
 
 
-def tracker(repo: Path) -> tuple[str, str]:
-    """Use existing origin heuristics without importing optional health machinery."""
-    try:
-        result = subprocess.run(
-            ["git", "remote", "-v"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT,
-            check=True,
-        )
-    except (OSError, subprocess.SubprocessError):
-        raise ValueError("memory sync: cannot detect origin") from None
-    for line in result.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 2 or parts[0] != "origin":
-            continue
-        for host, tool in ((r"github\.com", "gh"), (r"gitlab\.[^/:\s]+", "glab")):
-            match = re.search(host + r"[:/]([^/]+)/([^/.\s]+)", parts[1])
-            if match:
-                slug = f"{match[1]}/{match[2]}"
-                if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_-]+", slug):
-                    break
-                return tool, slug
-        break
+def tracker(repo: Path) -> tuple[str, str, str]:
+    """(CLI, host, full project path) of the project tracker (docs/adr/0011): the `tracker` field
+    of .harness/project.json wins over origin. A local tracker, an unknown project and a GitHub
+    project that is not owner/repo are unsupported; host and project never reach a message."""
+    # The resolver is the only health module memory imports. It is imported here, not at the top:
+    # every consumer of harness.memory, the coordinator included, would otherwise load health.
+    from harness.health.project_tracker import resolve_project_tracker
+
+    found = resolve_project_tracker(repo).effective
+    if found.host is not None and found.project is not None:
+        if found.type == "gitlab":
+            return "glab", found.host, found.project
+        if found.type == "github" and re.fullmatch(
+            r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", found.project
+        ):
+            return "gh", found.host, found.project
     raise ValueError("memory sync: unsupported or local tracker")
 
 
@@ -221,7 +228,7 @@ def sync(repo: Path) -> dict[str, object]:
     if not permitted:
         return {"status": "disabled", "synced": 0}
     prior = snapshot_manifest(canonical)
-    tool, slug = tracker(canonical)
+    tool, host, slug = tracker(canonical)
     root = f"repos/{slug}" if tool == "gh" else f"projects/{quote(slug, safe='')}"
     records: dict[str, bytes] = {}
     skipped = 0
@@ -239,7 +246,7 @@ def sync(repo: Path) -> dict[str, object]:
         )
         for state in states:
             for item in inventory(
-                tool, f"{root}/{collection}?state={state}", canonical, budget
+                tool, host, f"{root}/{collection}?state={state}", canonical, budget
             ):
                 if tool == "gh" and collection == "issues" and "pull_request" in item:
                     continue
@@ -263,7 +270,7 @@ def sync(repo: Path) -> dict[str, object]:
                     if tool == "gh"
                     else f"{root}/{collection}/{identifier}/notes"
                 )
-                for comment in inventory(tool, comments, canonical, budget):
+                for comment in inventory(tool, host, comments, canonical, budget):
                     body = comment.get("body")
                     match = (
                         MARKER.fullmatch(body)

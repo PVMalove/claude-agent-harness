@@ -1,5 +1,7 @@
 """Проверка конфига оркестрации в health: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import sys
 from types import SimpleNamespace

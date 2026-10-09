@@ -36,10 +36,6 @@ risk_triggers:
 - **Процесс (Process):** независимо выполнить проверки через проектный интерфейс; не менять код, тесты или fixtures.
 - **Выход (Output/Report):** QA finding с командами, воспроизводимыми доказательствами, результатом, дефектами и остаточными рисками; `changed files: none`, `commit SHA: not applicable — read-only role`.
 
-## 4. Архитектурная схема
-
-![Контракт роли: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [qa.md](../../harness/orchestration/roles/qa.md)

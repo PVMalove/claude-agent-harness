@@ -1,0 +1,687 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "output": "docs/diagrams/harness-seams.architecture.html",
+    "title": "Швы модулей harness после рефакторинга",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/PVMalove/claude-agent-harness.git",
+      "revision": "3806be5777032caa87653aafae70f357dc7b4f75"
+    }
+  },
+  "components": [
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "harness CLI",
+      "sublabel": "cmd_* → код выхода",
+      "pos": [
+        40,
+        40
+      ],
+      "size": [
+        176,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/bin/harness.py",
+          "line": 1385,
+          "end_line": 1392,
+          "label": "main ловит HarnessError"
+        },
+        {
+          "path": "harness/bin/harness.py",
+          "line": 1107,
+          "end_line": 1121,
+          "label": "cmd_health → registry.run"
+        }
+      ]
+    },
+    {
+      "id": "health",
+      "type": "backend",
+      "label": "Health registry",
+      "sublabel": "явный реестр проверок",
+      "pos": [
+        326,
+        40
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/health/registry.py",
+          "line": 122,
+          "label": "run → Report"
+        }
+      ]
+    },
+    {
+      "id": "kernel",
+      "type": "backend",
+      "label": "Общее ядро",
+      "sublabel": "HarnessError + remedy · json_types",
+      "pos": [
+        40,
+        200
+      ],
+      "size": [
+        176,
+        76
+      ],
+      "sources": [
+        {
+          "path": "harness/errors.py",
+          "line": 14,
+          "end_line": 39,
+          "label": "HarnessError, print_and_exit"
+        },
+        {
+          "path": "docs/adr/0007-python-quality.md",
+          "label": "remedy обязателен"
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "type": "backend",
+      "label": "Context Builder",
+      "sublabel": "ContextPackage v3",
+      "pos": [
+        326,
+        150
+      ],
+      "size": [
+        200,
+        170
+      ],
+      "sources": [
+        {
+          "path": "harness/context_builder/context_builder.py",
+          "line": 193,
+          "end_line": 218,
+          "label": "_run_repo_map: подпроцесс"
+        },
+        {
+          "path": "harness/context_builder/context_builder.py",
+          "line": 536,
+          "label": "build_context_package"
+        }
+      ]
+    },
+    {
+      "id": "repomap",
+      "type": "backend",
+      "label": "Repo Map",
+      "sublabel": "сбой bundle → карта minimal",
+      "pos": [
+        680,
+        166
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/repo_map/repo_map.py",
+          "line": 82,
+          "end_line": 89,
+          "label": "degradation_reason"
+        },
+        {
+          "path": "harness/repo_map/parser_bundle.py",
+          "label": "деградация вместо сбоя"
+        }
+      ]
+    },
+    {
+      "id": "memory",
+      "type": "database",
+      "label": "Память проекта",
+      "sublabel": "кеш SQLite FTS5",
+      "pos": [
+        680,
+        260
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/memory/index.py",
+          "label": "SQLite FTS5"
+        },
+        {
+          "path": "harness/memory/search.py",
+          "line": 110,
+          "label": "select_pointers"
+        }
+      ]
+    },
+    {
+      "id": "coordinator",
+      "type": "backend",
+      "label": "coordinator.py",
+      "sublabel": "фасад: parser → handler → JSON",
+      "pos": [
+        40,
+        538
+      ],
+      "size": [
+        176,
+        70
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/coordinator.py",
+          "line": 280,
+          "end_line": 300,
+          "label": "main → args.handler"
+        },
+        {
+          "path": "harness/orchestration/coordinator_cli.py",
+          "line": 22,
+          "label": "build_parser"
+        }
+      ]
+    },
+    {
+      "id": "workflow",
+      "type": "backend",
+      "label": "workflow",
+      "sublabel": "модуль на стадию batch",
+      "tag": "decisions · dispatch · delivery",
+      "pos": [
+        326,
+        525
+      ],
+      "size": [
+        200,
+        110
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/workflow/decisions.py",
+          "line": 1107,
+          "label": "auto_policy.resolve"
+        },
+        {
+          "path": "harness/orchestration/workflow/delivery.py",
+          "line": 128,
+          "end_line": 256,
+          "label": "send_dispatch под lock"
+        },
+        {
+          "path": "harness/orchestration/workflow/context_package.py",
+          "line": 159,
+          "label": "build_context_package"
+        }
+      ]
+    },
+    {
+      "id": "auto",
+      "type": "backend",
+      "label": "auto_policy",
+      "sublabel": "approval_policy: auto + отчёт",
+      "pos": [
+        680,
+        418
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/workflow/auto_policy.py",
+          "line": 569,
+          "label": "resolve → Resolution"
+        },
+        {
+          "path": "harness/orchestration/workflow/auto_report.py",
+          "line": 229,
+          "label": "build: итоговый отчёт"
+        }
+      ]
+    },
+    {
+      "id": "ledger",
+      "type": "database",
+      "label": "LifecycleLedger",
+      "sublabel": "lock · неизменяемые записи",
+      "pos": [
+        680,
+        541
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/ledger/lifecycle.py",
+          "line": 562,
+          "label": "LifecycleLedger.lock"
+        },
+        {
+          "path": "harness/orchestration/ledger/ledger_ops.py",
+          "line": 86,
+          "label": "_ledger_lock"
+        }
+      ]
+    },
+    {
+      "id": "access",
+      "type": "security",
+      "label": "Runtime/operation access",
+      "sublabel": "access_policy: план и проверка",
+      "pos": [
+        40,
+        728
+      ],
+      "size": [
+        176,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/runtime_access.py",
+          "line": 195,
+          "label": "resolve_plan"
+        },
+        {
+          "path": "harness/orchestration/operation_access.py",
+          "line": 397,
+          "label": "require → проверка"
+        }
+      ]
+    },
+    {
+      "id": "qalane",
+      "type": "backend",
+      "label": "QA lane",
+      "sublabel": "один QA · lease с истечением",
+      "pos": [
+        680,
+        678
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/qa_lane.py",
+          "line": 756,
+          "label": "run"
+        },
+        {
+          "path": "harness/orchestration/qa_lane.py",
+          "line": 854,
+          "label": "run_qa_stages"
+        }
+      ]
+    },
+    {
+      "id": "core",
+      "type": "backend",
+      "label": "core: git и CI",
+      "sublabel": "git_utils · ci_source",
+      "pos": [
+        680,
+        808
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/core/git_utils.py",
+          "line": 111,
+          "label": "_git"
+        },
+        {
+          "path": "harness/orchestration/core/ci_source.py",
+          "line": 221,
+          "end_line": 230,
+          "label": "gh api, timeout 60"
+        }
+      ]
+    },
+    {
+      "id": "console",
+      "type": "frontend",
+      "label": "Пульт и отчёты",
+      "sublabel": "console · delivery_stats",
+      "pos": [
+        990,
+        541
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/console/reports.py",
+          "line": 167,
+          "end_line": 169,
+          "label": "records_root_lenient"
+        },
+        {
+          "path": "harness/reporting/delivery_stats.py",
+          "label": "статистика поставки"
+        }
+      ]
+    },
+    {
+      "id": "gate",
+      "type": "backend",
+      "label": "gate_runner",
+      "sublabel": "команды QA без таймаута",
+      "pos": [
+        990,
+        678
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/gate_runner/gate_runner.py",
+          "line": 291,
+          "end_line": 326,
+          "label": "_execute_commands"
+        },
+        {
+          "path": "harness/gate_runner/gate_runner.py",
+          "line": 52,
+          "label": "_run_git: чистый checkout"
+        }
+      ]
+    },
+    {
+      "id": "git",
+      "type": "external",
+      "label": "git и remote",
+      "sublabel": "внешний процесс",
+      "pos": [
+        990,
+        808
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/core/git_utils.py",
+          "line": 112,
+          "label": "subprocess git"
+        }
+      ]
+    },
+    {
+      "id": "adapter",
+      "type": "external",
+      "label": "Runtime adapter",
+      "sublabel": "запускает воркера",
+      "pos": [
+        326,
+        940
+      ],
+      "size": [
+        200,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/workflow/delivery.py",
+          "line": 244,
+          "end_line": 256,
+          "label": "subprocess без timeout"
+        }
+      ]
+    },
+    {
+      "id": "gh",
+      "type": "external",
+      "label": "gh / glab",
+      "sublabel": "CLI трекера",
+      "pos": [
+        680,
+        940
+      ],
+      "size": [
+        180,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/orchestration/workflow/integration.py",
+          "line": 872,
+          "label": "collect-ci: GitHubCiSource"
+        },
+        {
+          "path": "harness/memory/sync.py",
+          "label": "memory sync: gh или glab"
+        }
+      ]
+    },
+    {
+      "id": "hooks",
+      "type": "security",
+      "label": "Project hooks",
+      "sublabel": "direct_commits · qa-gate-state",
+      "pos": [
+        990,
+        940
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "harness/project/hooks/direct_commits.py",
+          "line": 323,
+          "label": "git с timeout"
+        },
+        {
+          "path": "harness/project/hooks/qa-gate-state.py",
+          "line": 26,
+          "label": "EVIDENCE_TIMEOUT_SECONDS"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "backend-orchestration (.harness/orchestration)",
+      "wraps": [
+        "coordinator",
+        "workflow",
+        "auto",
+        "ledger",
+        "access",
+        "qalane",
+        "core"
+      ],
+      "pad": 28
+    },
+    {
+      "kind": "security-group",
+      "label": "Автономно: .claude/hooks",
+      "wraps": [
+        "hooks"
+      ],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    {
+      "id": "cli-health",
+      "from": "cli",
+      "to": "health",
+      "label": "registry.run"
+    },
+    {
+      "id": "cli-kernel",
+      "from": "cli",
+      "to": "kernel",
+      "label": "HarnessError → код 2"
+    },
+    {
+      "id": "coordinator-kernel",
+      "from": "coordinator",
+      "to": "kernel",
+      "label": "HarnessError → код 2"
+    },
+    {
+      "id": "coordinator-workflow",
+      "from": "coordinator",
+      "to": "workflow",
+      "label": "args.handler",
+      "variant": "emphasis"
+    },
+    {
+      "id": "workflow-context",
+      "from": "workflow",
+      "to": "context",
+      "label": "build_context_package"
+    },
+    {
+      "id": "context-repomap",
+      "from": "context",
+      "to": "repomap",
+      "label": "подпроцесс, JSON v1"
+    },
+    {
+      "id": "context-memory",
+      "from": "context",
+      "to": "memory",
+      "label": "select_pointers"
+    },
+    {
+      "id": "workflow-auto",
+      "from": "workflow",
+      "to": "auto",
+      "label": "resolve(Inputs)"
+    },
+    {
+      "id": "workflow-ledger",
+      "from": "workflow",
+      "to": "ledger",
+      "label": "_ledger_lock, записи",
+      "variant": "emphasis"
+    },
+    {
+      "id": "workflow-access",
+      "from": "workflow",
+      "to": "access",
+      "label": "require → проверка"
+    },
+    {
+      "id": "workflow-qalane",
+      "from": "workflow",
+      "to": "qalane",
+      "label": "acquire / run"
+    },
+    {
+      "id": "workflow-core",
+      "from": "workflow",
+      "to": "core",
+      "label": "_git, collect-ci"
+    },
+    {
+      "id": "console-ledger",
+      "from": "console",
+      "to": "ledger",
+      "label": "чтение без lock",
+      "variant": "dashed"
+    },
+    {
+      "id": "qalane-gate",
+      "from": "qalane",
+      "to": "gate",
+      "label": "run_qa_stages"
+    },
+    {
+      "id": "core-git",
+      "from": "core",
+      "to": "git",
+      "label": "timeout 300 с"
+    },
+    {
+      "id": "gate-git",
+      "from": "gate",
+      "to": "git",
+      "label": "чистый checkout, 300 с"
+    },
+    {
+      "id": "core-gh",
+      "from": "core",
+      "to": "gh",
+      "label": "gh api GET, 60 с"
+    },
+    {
+      "id": "workflow-adapter",
+      "from": "workflow",
+      "to": "adapter",
+      "label": "send без таймаута, под lock",
+      "variant": "dashed"
+    },
+    {
+      "id": "hooks-git",
+      "from": "hooks",
+      "to": "git",
+      "label": "20–60 с, fail closed",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Общее ядро",
+      "items": [
+        "HarnessError несёт message и remedy (ADR 0007)",
+        "CLI и coordinator печатают ERROR и REMEDY, код выхода 2",
+        "JsonObject объявлен один раз в json_types"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Ограниченные вызовы",
+      "items": [
+        "git в core/git_utils и gate_runner: 300 с",
+        "Hooks: git 20–60 с, отказ блокирует (fail closed)",
+        "collect-ci: gh api 60 с; memory sync: 10 с на страницу"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Без таймаута (решение владельца)",
+      "items": [
+        "Команды QA gate: lease не останавливает процесс",
+        "Runtime adapter работает под lock ledger"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Читатели ledger",
+      "items": [
+        "Пульт, delivery_stats и health читают без lock",
+        "Повреждённая запись даёт пустое значение, не сбой"
+      ]
+    }
+  ]
+}

@@ -49,6 +49,48 @@
       ],
       "description": "Shell qa-gate wraps each qa_gate_commands entry in before running it. 'bash' (default when this field is absent) runs 'bash -lc <command>' - correct on Linux/macOS and inside WSL. 'powershell' runs 'powershell -NoProfile -NonInteractive -Command <command>' - use this on a native Windows checkout, where a bare 'bash' on PATH can resolve to the System32 WSL launcher stub ahead of Git Bash and fail if no WSL distro is configured, even for a command that needs no shell at all."
     },
+    "tracker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "description": "Optional explicit project tracker (docs/adr/0011): when present and valid it is the single source of the tracker for 'harness health'; without it the tracker is derived from the 'origin' URL and health warns with a ready-to-paste snippet. Example: {\"type\": \"gitlab\", \"host\": \"gitlab.example.test:4443\", \"project\": \"group/sub/project\"}. Certificate, proxy and credential settings belong in the tracker CLI's own personal configuration, never in this file.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["github", "gitlab", "local"],
+          "description": "Tracker kind: 'github', 'gitlab' (including self-hosted) or 'local' (markdown tracker, no online checks)."
+        },
+        "host": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?$",
+          "description": "Tracker web host with an optional port and no scheme, path or userinfo, e.g. gitlab.example.test:4443. Required for github and gitlab."
+        },
+        "project": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+$",
+          "description": "Full project path including subgroups, e.g. group/sub/project. Required for github and gitlab."
+        }
+      },
+      "if": {
+        "properties": {
+          "type": {
+            "enum": ["github", "gitlab"]
+          }
+        }
+      },
+      "then": {
+        "required": ["host", "project"]
+      }
+    },
+    "ci_required_checks": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional names of the CI checks that must all pass on a pull request's combined result before 'integration collect-ci' accepts CI evidence in place of a repeat of full local QA. Empty or absent means CI evidence is not configured and the local QA fallback applies."
+    },
     "story_points": {
       "type": "object",
       "additionalProperties": false,

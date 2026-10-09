@@ -1,0 +1,326 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Продолжение PR после принятого publish",
+    "output": "docs/diagrams/pr-continuation.workflow.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/PVMalove/claude-agent-harness.git",
+      "revision": "3806be5777032caa87653aafae70f357dc7b4f75"
+    },
+    "legend": {
+      "entries": {
+        "backend": { "label": "команда integration" },
+        "security": { "label": "read-only шаг" },
+        "database": { "label": "immutable evidence" },
+        "cloud": { "label": "трекер: PR" },
+        "external": { "label": "человек или coordinator" }
+      }
+    }
+  },
+  "lanes": [
+    { "id": "actors", "label": "Разработчик и coordinator-сессия" },
+    { "id": "record", "label": "Integration record" },
+    { "id": "pr", "label": "PR, CI и evidence" },
+    { "id": "update", "label": "Refresh и запасной QA" },
+    { "id": "resolution", "label": "Resolver и ручная привязка" }
+  ],
+  "phases": [
+    { "id": "after_publish", "label": "После accepted publish", "fromCol": 0, "toCol": 1 },
+    { "id": "before_pr", "label": "До PR", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "after_pr", "label": "После PR: проверка пары", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["prepare", "status", "next_pre", "confirm", "pr_open", "collect_ci", "evidence", "next_pr", "merge"],
+  "nodes": [
+    {
+      "id": "prepare",
+      "lane": "record",
+      "col": 0,
+      "type": "backend",
+      "label": "integration prepare",
+      "sublabel": "ticket · branch · batch",
+      "tag": "пара candidate/target",
+      "width": 136,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 365, "end_line": 431, "label": "integration_prepare" },
+        { "path": "harness/docs/backend-orchestration.md", "line": 1994, "end_line": 2004, "label": "prepare" }
+      ]
+    },
+    {
+      "id": "status",
+      "lane": "record",
+      "col": 1,
+      "type": "security",
+      "label": "integration status",
+      "sublabel": "current · stale · unavailable",
+      "tag": "без dispatch",
+      "width": 148,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 716, "end_line": 789, "label": "integration_status" },
+        { "path": "harness/orchestration/workflow/integration.py", "line": 287, "end_line": 301, "label": "_observe" },
+        { "path": "harness/docs/backend-orchestration.md", "line": 2009, "end_line": 2018, "label": "status" }
+      ]
+    },
+    {
+      "id": "next_pre",
+      "lane": "record",
+      "col": 2,
+      "type": "security",
+      "label": "integration next",
+      "sublabel": "шаг до PR",
+      "tag": "read-only",
+      "width": 136,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 1080, "end_line": 1156, "label": "integration_next" },
+        { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 15, "end_line": 24, "label": "шаги next" },
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 23, "end_line": 27, "label": "шаг 3" }
+      ]
+    },
+    {
+      "id": "stop_pre",
+      "lane": "actors",
+      "col": 1,
+      "type": "external",
+      "label": "Стоп или ожидание",
+      "sublabel": "unavailable · resolver-open",
+      "width": 148,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 1108, "end_line": 1128, "label": "unavailable, resolver-open" },
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 16, "end_line": 16, "label": "unavailable" },
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 25, "end_line": 25, "label": "resolver-open" }
+      ]
+    },
+    {
+      "id": "confirm",
+      "lane": "actors",
+      "col": 3,
+      "type": "external",
+      "label": "Подтверждение PR",
+      "sublabel": "candidate + target SHA",
+      "tag": "отдельный вопрос",
+      "width": 136,
+      "sources": [
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 31, "end_line": 32, "label": "шаги 5–6" },
+        { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 62, "end_line": 65, "label": "подтверждение пары" }
+      ]
+    },
+    {
+      "id": "pr_open",
+      "lane": "pr",
+      "col": 3,
+      "type": "cloud",
+      "label": "Открыть PR",
+      "sublabel": "gh pr create --base",
+      "tag": "--body-file",
+      "width": 136,
+      "sources": [
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 32, "end_line": 36, "label": "шаг 6" }
+      ]
+    },
+    {
+      "id": "collect_ci",
+      "lane": "pr",
+      "col": 4,
+      "type": "backend",
+      "label": "integration collect-ci",
+      "sublabel": "CI на merge commit пары",
+      "tag": "ci_required_checks",
+      "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 843, "end_line": 929, "label": "integration_collect_ci" },
+        { "path": "docs/adr/0016-ci-evidence.md", "line": 13, "end_line": 37, "label": "правило и вердикт" },
+        { "path": "harness/orchestration/workflow/integration.py", "line": 807, "end_line": 825, "label": "ci_next" }
+      ]
+    },
+    {
+      "id": "local_qa",
+      "lane": "update",
+      "col": 4,
+      "type": "backend",
+      "label": "integration local-qa",
+      "sublabel": "полный QA точной пары",
+      "tag": "QA lane · clean-room",
+      "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/local_qa.py", "line": 281, "end_line": 487, "label": "integration_local_qa" },
+        { "path": "harness/docs/backend-orchestration.md", "line": 2118, "end_line": 2137, "label": "local-qa" },
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 40, "end_line": 40, "label": "шаг 6a" }
+      ]
+    },
+    {
+      "id": "evidence",
+      "lane": "pr",
+      "col": 5,
+      "type": "database",
+      "label": "Pair-check evidence",
+      "sublabel": "immutable записи пары",
+      "width": 136,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 524, "end_line": 561, "label": "_store_evidence" },
+        { "path": "harness/docs/backend-orchestration.md", "line": 2195, "end_line": 2200, "label": "pair-check записи" }
+      ]
+    },
+    {
+      "id": "next_pr",
+      "lane": "record",
+      "col": 5,
+      "type": "security",
+      "label": "integration next",
+      "sublabel": "--pull-request N",
+      "tag": "read-only",
+      "width": 136,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 1139, "end_line": 1180, "label": "verify, handoff" },
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 42, "end_line": 43, "label": "шаги 6a–7" }
+      ]
+    },
+    {
+      "id": "route_stop",
+      "lane": "actors",
+      "col": 4,
+      "type": "external",
+      "label": "Coordinator-сессия",
+      "sublabel": "route: resolver | developer",
+      "tag": "передать данные",
+      "width": 170,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 1025, "end_line": 1077, "label": "_route_failure" },
+        { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 25, "end_line": 45, "label": "правило провала" },
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 26, "end_line": 26, "label": "route-failure" }
+      ]
+    },
+    {
+      "id": "merge",
+      "lane": "actors",
+      "col": 5,
+      "type": "external",
+      "label": "Ручной merge",
+      "sublabel": "никогда auto-merge",
+      "tag": "handoff пары",
+      "width": 136,
+      "sources": [
+        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 43, "end_line": 43, "label": "шаг 7" },
+        { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 66, "end_line": 72, "label": "ручной merge" }
+      ]
+    },
+    {
+      "id": "refresh",
+      "lane": "update",
+      "col": 2,
+      "type": "backend",
+      "label": "integration refresh",
+      "sublabel": "чистый rebase на target",
+      "tag": "--force-with-lease",
+      "width": 136,
+      "sources": [
+        { "path": "harness/orchestration/workflow/pr_refresh.py", "line": 348, "end_line": 435, "label": "integration_refresh" },
+        { "path": "docs/adr/0014-pr-prep-clean-rebase.md", "line": 20, "end_line": 36, "label": "refresh" }
+      ]
+    },
+    {
+      "id": "resolve",
+      "lane": "resolution",
+      "col": 2,
+      "type": "backend",
+      "label": "integration resolve",
+      "sublabel": "resolver batch, без Git",
+      "tag": "verification-failure",
+      "width": 136,
+      "sources": [
+        { "path": "harness/orchestration/workflow/resolver.py", "line": 241, "end_line": 406, "label": "integration_resolve" },
+        { "path": "docs/adr/0015-conflict-resolver.md", "line": 18, "end_line": 22, "label": "маршрут" },
+        { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 46, "end_line": 57, "label": "verification-failure" }
+      ]
+    },
+    {
+      "id": "resolver",
+      "lane": "resolution",
+      "col": 3,
+      "type": "external",
+      "label": "conflict-resolver",
+      "sublabel": "два target-цикла",
+      "tag": "бюджет из событий",
+      "width": 136,
+      "sources": [
+        { "path": "docs/adr/0015-conflict-resolver.md", "line": 14, "end_line": 34, "label": "роль и бюджет" },
+        { "path": "harness/docs/backend-orchestration.md", "line": 2061, "end_line": 2066, "label": "бюджет" }
+      ]
+    },
+    {
+      "id": "link_evidence",
+      "lane": "resolution",
+      "col": 4,
+      "type": "backend",
+      "label": "integration link-evidence",
+      "sublabel": "ручная привязка CI/QA",
+      "tag": "пару не закрывает",
+      "width": 176,
+      "sources": [
+        { "path": "harness/orchestration/workflow/integration.py", "line": 487, "end_line": 521, "label": "integration_link_evidence" },
+        { "path": "harness/docs/backend-orchestration.md", "line": 2195, "end_line": 2200, "label": "link-evidence" },
+        { "path": "docs/adr/0016-ci-evidence.md", "line": 38, "end_line": 39, "label": "unverified" }
+      ]
+    }
+  ],
+  "edges": [
+    { "id": "prepare_status", "from": "prepare", "to": "status", "label": "record_id", "role": "main" },
+    { "id": "status_next", "from": "status", "to": "next_pre", "label": "state", "role": "main" },
+    { "id": "next_confirm", "from": "next_pre", "to": "confirm", "label": "confirm-pr", "role": "main", "variant": "emphasis" },
+    { "id": "confirm_open", "from": "confirm", "to": "pr_open", "label": "да, та же пара", "role": "main", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "open_collect", "from": "pr_open", "to": "collect_ci", "label": "PR N", "role": "main" },
+    { "id": "collect_evidence", "from": "collect_ci", "to": "evidence", "label": "accepted | failed", "role": "main" },
+    { "id": "evidence_next", "from": "evidence", "to": "next_pr", "label": "pair checks", "role": "main" },
+    { "id": "next_merge", "from": "next_pr", "to": "merge", "label": "handoff", "role": "main", "variant": "emphasis" },
+    { "id": "next_stop", "from": "next_pre", "to": "stop_pre", "label": "стоп", "role": "error", "variant": "dashed" },
+    { "id": "next_refresh", "from": "next_pre", "to": "refresh", "label": "refresh", "role": "branch", "variant": "dashed" },
+    { "id": "refresh_next", "from": "refresh", "to": "next_pre", "label": "rebased", "role": "return" },
+    { "id": "refresh_resolve", "from": "refresh", "to": "resolve", "label": "conflict", "role": "branch", "variant": "security" },
+    { "id": "resolve_resolver", "from": "resolve", "to": "resolver", "label": "dispatch", "role": "branch" },
+    { "id": "collect_local", "from": "collect_ci", "to": "local_qa", "label": "local-qa", "role": "branch", "variant": "dashed" },
+    { "id": "local_evidence", "from": "local_qa", "to": "evidence", "label": "passed | failed", "role": "branch" },
+    { "id": "link_evidence_store", "from": "link_evidence", "to": "evidence", "label": "unverified", "role": "branch", "variant": "dashed" },
+    { "id": "next_verify", "from": "next_pr", "to": "collect_ci", "label": "verify", "role": "return", "variant": "dashed" },
+    { "id": "next_route", "from": "next_pr", "to": "route_stop", "label": "route-failure | human-decision", "role": "error", "variant": "security" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Пара SHA",
+      "items": [
+        "Подтверждение и проверка относятся к точной паре candidate_sha/target_sha",
+        "Перед открытием PR next повторяется; смена пары отменяет подтверждение",
+        "Старое QA разрешает только вход в подготовку PR",
+        "Evidence пары лежит в reports/integration-evidence/"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Провал проверки пары",
+      "items": [
+        "Провал: только collector-failed CI или failed local-QA текущей пары",
+        "Пара после refresh: route resolver, resolve с trigger verification-failure",
+        "Исходная пара: route developer, новый batch через /implement и новый prepare",
+        "Fallback CI и unavailable/exhausted local-QA — операционная остановка"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Бюджет resolver",
+      "items": [
+        "Два автоматических target SHA; третий требует human-decision с --extends-budget",
+        "Чистый rebase, ожидание CI и ответ человека цикл не тратят"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "После открытия PR",
+      "items": [
+        "collect-ci next.action wait: повтор до десяти раз",
+        "Шаг refresh после PR: refresh, обновление PR и повтор 6a",
+        "Перед merge next повторяется; новый target требует refresh и новой проверки",
+        "Branch protection и merge queue не включаются"
+      ]
+    }
+  ]
+}

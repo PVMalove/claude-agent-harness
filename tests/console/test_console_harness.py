@@ -225,3 +225,31 @@ def test_harness_section_shows_installation_state_and_pipeline_usage(
     text = asyncio.run(scenario())
     assert "Харнесс не установлен" in text
     assert "Использование пайплайна: запусков 2, тикетов 2" in text
+
+
+class _RaisingRunner(_RecordingRunner):
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> "subprocess.CompletedProcess[str]":
+        self.calls.append(list(argv))
+        raise ValueError("embedded null byte")
+
+
+def test_a_runner_failure_is_shown_instead_of_running_forever(tmp_path: Path) -> None:
+    runner = _RaisingRunner()
+
+    async def scenario() -> str:
+        app = _HostApp(HarnessScreen(tmp_path, command_runner=runner))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _choose(pilot, app, "diff", HARNESS_COMMANDS)
+            await _settle(pilot, app)
+            return str(app.screen.query_one("#command-output", Static).content)
+
+    output = asyncio.run(scenario())
+    assert len(runner.calls) == 1
+    assert output.startswith(f"$ {_entry('diff').cli_line(tmp_path)}")
+    assert "сбой запуска: ValueError('embedded null byte')" in output

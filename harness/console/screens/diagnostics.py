@@ -23,6 +23,7 @@ from .. import brand
 from .. import data as console_data
 from ...health.model import Report
 from ..export import MarkdownDocument, MarkdownSection
+from .commands import call_from_worker
 from .export import EXPORT_BINDING_KEY, export_document
 
 _STATUS_MARKERS = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skipped": "-"}
@@ -231,15 +232,18 @@ class DiagnosticsScreen(Screen[None]):
             """Фоновая задача выполнения проверки health и передачи отчёта в основной поток UI."""
             try:
                 report = run()
-            except Exception:
+            except Exception as exc:
+                # An unhandled worker error would exit the whole TUI; show it in the report instead.
+                failure = f"health не выполнен: {exc!r}"
+                call_from_worker(self, lambda: self._show_failure(failure))
                 return
-            if self.is_mounted and self.app.is_running:
-                try:
-                    self.app.call_from_thread(self._show, report)
-                except Exception:
-                    pass
+            call_from_worker(self, lambda: self._show(report))
 
         self.run_worker(work, thread=True, exclusive=True, group="diagnostics")
+
+    def _show_failure(self, text: str) -> None:
+        """Отображает причину, по которой отчёт health не построен."""
+        self.query_one("#diagnostics-report", Static).update(text)
 
     def _show(self, report: Report) -> None:
         """Отображает готовый отчёт health и обновляет строку эквивалента CLI на экране."""

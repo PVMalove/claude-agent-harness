@@ -11,9 +11,11 @@ import tomllib
 import unittest
 from pathlib import Path
 from typing import ClassVar
+from unittest import mock
 
 from harness.errors import HarnessError
 from harness.orchestration import contract
+from harness.orchestration.core import config
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -72,7 +74,7 @@ class ContractErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "ContractError"
         ]
-        self.assertEqual(len(sites), 43)
+        self.assertEqual(len(sites), 45)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [
@@ -239,23 +241,34 @@ class ResolveAssignmentTests(unittest.TestCase):
         runtime: object = "claude",
     ) -> contract.ContractError:
         with self.assertRaises(contract.ContractError) as ctx:
-            contract.resolve_assignment(config, role, "developer", "z", runtime)
+            contract.resolve_assignment(config, role, "developer", runtime)
         return ctx.exception
 
     def test_happy_path(self) -> None:
-        result = contract.resolve_assignment(
-            _config(), _role(), "developer", "z", "claude"
-        )
+        result = contract.resolve_assignment(_config(), _role(), "developer", "claude")
         self.assertEqual(result["profile_id"], "p")
         self.assertEqual(result["model"], "claude-x")
         self.assertEqual(result["effort"], "high")
         self.assertEqual(result["transport"], "in-process")
-        self.assertEqual(result["zone"], {"paths": ["src/**"]})
+        self.assertEqual(result["write_ceiling"], ["src/**"])
 
     def test_read_only_role_gets_no_paths(self) -> None:
         role = {**_role(), "mode": "read-only"}
-        result = contract.resolve_assignment(_config(), role, "developer", "z", None)
-        self.assertEqual(result["zone"], {"paths": []})
+        result = contract.resolve_assignment(_config(), role, "developer", None)
+        self.assertEqual(result["write_ceiling"], [])
+
+    def test_zone_free_plan_ceiling_is_the_whole_repository_or_its_write_paths(
+        self,
+    ) -> None:
+        config = _config()
+        plan = config["assignment_plans"]["developer"]
+        del plan["zone"]
+        del config["backend_zones"]
+        result = contract.resolve_assignment(config, _role(), "developer", "claude")
+        self.assertEqual(result["write_ceiling"], ["**"])
+        plan["write_paths"] = ["src/orders/**"]
+        result = contract.resolve_assignment(config, _role(), "developer", "claude")
+        self.assertEqual(result["write_ceiling"], ["src/orders/**"])
 
     def test_invalid_transport(self) -> None:
         config = _config()
@@ -266,9 +279,7 @@ class ResolveAssignmentTests(unittest.TestCase):
     def test_external_transport_resolves_for_project_adapter(self) -> None:
         config = _config()
         config["assignment_plans"]["developer"]["transport"] = "external"
-        result = contract.resolve_assignment(
-            config, _role(), "developer", "z", "claude"
-        )
+        result = contract.resolve_assignment(config, _role(), "developer", "claude")
         self.assertEqual(result["transport"], "external")
 
     def test_write_paths_outside_zone(self) -> None:
@@ -627,6 +638,366 @@ class ContextWindowPolicyTests(unittest.TestCase):
                 }
             ),
         )
+
+
+class LowRiskEligibilityTests(unittest.TestCase):
+    def test_nothing_is_eligible_until_the_project_names_low_risk_paths(self) -> None:
+        self.assertFalse(
+            contract.low_risk_eligible({}, {"allowed_paths": ["src/a.py"]})
+        )
+
+    def test_the_whole_scope_must_lie_inside_the_low_risk_paths(self) -> None:
+        config = {"low_risk_paths": ["docs/**", "src/orders/**"]}
+        for allowed, expected in (
+            (["docs/guide.md"], True),
+            (["docs/**", "src/orders/api/**"], True),
+            (["docs/guide.md", "src/billing/x.py"], False),
+            (["**"], False),
+            ([], False),
+        ):
+            with self.subTest(allowed=allowed):
+                self.assertIs(
+                    contract.low_risk_eligible(config, {"allowed_paths": allowed}),
+                    expected,
+                )
+
+    def test_a_boundary_matches_whole_path_segments_only(self) -> None:
+        for paths, boundaries, expected in (
+            (["docsecret/**"], ["docs/**"], False),
+            (["docs/guide.md"], ["docs/**"], True),
+            (["docs/**"], ["docs/**"], True),
+            (["README.md.d/**"], ["README.md"], False),
+            (["README.md"], ["README.md"], True),
+            (["src/a.py"], ["**"], True),
+            (["src/a.py"], ["src"], False),
+            (["docs"], ["docs/**"], False),
+        ):
+            with self.subTest(paths=paths, boundaries=boundaries):
+                self.assertIs(contract.paths_inside(paths, boundaries), expected)
+
+    def test_malformed_path_forms_are_never_inside_or_eligible(self) -> None:
+        for bad in ("./src/**", "src//x", "src/./x", "src/../x", "/src/x", "src\\x"):
+            with self.subTest(bad=bad):
+                self.assertFalse(contract.is_clean_path_pattern(bad))
+                self.assertFalse(contract.paths_inside([bad], ["**"]))
+                self.assertFalse(
+                    contract.low_risk_eligible(
+                        {"low_risk_paths": ["**"]}, {"allowed_paths": [bad]}
+                    )
+                )
+        self.assertFalse(contract.paths_inside(["src/a.py"], ["./src/**"]))
+        self.assertTrue(contract.is_clean_path_pattern("src/orders/**"))
+
+    def test_a_sibling_directory_is_not_low_risk(self) -> None:
+        config = {"low_risk_paths": ["docs/**", "README.md"]}
+        for allowed in (["docsecret/**"], ["README.md.d/**"]):
+            with self.subTest(allowed=allowed):
+                self.assertFalse(
+                    contract.low_risk_eligible(config, {"allowed_paths": allowed})
+                )
+
+    def test_legacy_low_risk_zones_map_to_their_paths(self) -> None:
+        config = {
+            "backend_zones": {
+                "docs": {"paths": ["docs/**"]},
+                "core": {"paths": ["src/**"]},
+            },
+            "low_risk_zones": ["docs"],
+        }
+        self.assertTrue(
+            contract.low_risk_eligible(config, {"allowed_paths": ["docs/a.md"]})
+        )
+        self.assertFalse(
+            contract.low_risk_eligible(config, {"allowed_paths": ["src/a.py"]})
+        )
+
+    def test_a_scope_free_batch_keeps_its_zone_rule_and_is_not_widened(self) -> None:
+        config = {
+            "backend_zones": {"docs": {"paths": ["docs/**"]}},
+            "low_risk_zones": ["docs"],
+            "low_risk_paths": ["**"],
+        }
+        self.assertTrue(contract.low_risk_eligible(config, {"zone": "docs"}))
+        self.assertFalse(contract.low_risk_eligible(config, {"zone": "core"}))
+        self.assertFalse(contract.low_risk_eligible(config, {"zone": None}))
+
+
+class ZoneFreeConfigHealthTests(unittest.TestCase):
+    def test_access_only_invalid_values_match_the_schema(self) -> None:
+        import re
+
+        schema = json.loads(
+            (Path(contract.__file__).parent / "orchestration.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        invalid: list[object] = [
+            None,
+            {"unknown": {}},
+            {"defaults": None},
+            {"defaults": {"mode": "external"}},
+            {"roles": {"unknown": {}}},
+            {"operations": {"deploy": {}}},
+            *(
+                {"defaults": {"network": {"hosts": [host]}}}
+                for host in (
+                    "https://github.com",
+                    "github.com:443",
+                    "*.github.com",
+                    "a..b",
+                    "a.-b",
+                    "a.b-",
+                )
+            ),
+            *(
+                {
+                    "defaults": {
+                        "filesystem": [
+                            {"resource": "cache", "access": "write", "path": path}
+                        ]
+                    }
+                }
+                for path in (None, "", " ", "cache\x00bad")
+            ),
+        ]
+        for policy in invalid:
+            value: dict[str, object] = {"access_policy": policy}
+            with self.subTest(policy=policy):
+                self.assertTrue(self._problems(value))
+        path_schema = schema["definitions"]["accessComponent"]["properties"][
+            "filesystem"
+        ]["items"]["properties"]["path"]
+        for path in ("", " ", "cache\x00bad"):
+            self.assertIsNone(re.search(path_schema["pattern"], path))
+
+    def _problems(self, config: dict[str, object]) -> list[str]:
+        directory = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(directory, ignore_errors=True))
+        path = directory / "orchestration.json"
+        path.write_text(
+            json.dumps(
+                {"concurrency_budget": 1, "verification_commands": ["x"], **config}
+            ),
+            encoding="utf-8",
+        )
+        return contract.health_problems(path, Path(contract.__file__).parent / "roles")
+
+    def _zone_problems(self, config: dict[str, object]) -> list[str]:
+        return [
+            item
+            for item in self._problems(config)
+            if "zone" in item or "low_risk" in item
+        ]
+
+    def test_a_config_without_zones_is_valid(self) -> None:
+        config = _config()
+        del config["backend_zones"]
+        del config["assignment_plans"]["developer"]["zone"]
+        self.assertEqual(
+            self._zone_problems({**config, "low_risk_paths": ["docs/**"]}), []
+        )
+
+    def test_a_legacy_zone_config_stays_valid(self) -> None:
+        self.assertEqual(
+            self._zone_problems({**_config(), "low_risk_zones": ["z"]}), []
+        )
+
+    def test_a_plan_zone_must_still_name_a_declared_zone_when_stated(self) -> None:
+        config = _config()
+        config["assignment_plans"]["developer"]["zone"] = "missing"
+        self.assertIn(
+            "unknown backend zone 'missing' for role 'developer'",
+            self._problems(config),
+        )
+
+    def test_low_risk_paths_must_be_a_non_empty_list_of_patterns(self) -> None:
+        for bad in ([], [""], "docs/**"):
+            with self.subTest(bad=bad):
+                self.assertIn(
+                    "orchestration low_risk_paths must be a non-empty list of path patterns when provided",
+                    self._problems({**_config(), "low_risk_paths": bad}),
+                )
+
+    def test_low_risk_paths_must_be_clean_repo_relative_patterns(self) -> None:
+        for bad in ("./src/**", "src//x/**", "../x/**", "/abs/**"):
+            with self.subTest(bad=bad):
+                self.assertIn(
+                    "orchestration low_risk_paths entries must be repo-relative patterns such as 'src/**' without './', '//' or '..' segments",
+                    self._problems({**_config(), "low_risk_paths": [bad]}),
+                )
+
+
+class AutoApprovalPolicyHealthTests(unittest.TestCase):
+    """``approval_policy: auto`` takes every path decision by policy (issue #643)."""
+
+    def _problems(self, policy: dict[str, object]) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orchestration.json"
+            path.write_text(
+                json.dumps(
+                    {"access_policy": {"defaults": {"mode": "sandbox"}}, **policy}
+                )
+            )
+            return contract.health_problems(path, ROOT / "harness/orchestration/roles")
+
+    def test_auto_needs_a_trusted_gate_and_worker_attestation(self) -> None:
+        cases: tuple[tuple[dict[str, object], list[str]], ...] = (
+            ({"approval_policy": "auto"}, [contract.AUTO_ATTESTATION_PROBLEM]),
+            (
+                {"approval_policy": "auto", "worker_attestation_required": False},
+                [contract.AUTO_ATTESTATION_PROBLEM],
+            ),
+            (
+                {
+                    "approval_policy": "auto",
+                    "worker_attestation_required": True,
+                    "human_approval_gate": "tty",
+                },
+                [contract.AUTO_TTY_PROBLEM],
+            ),
+            (
+                {"approval_policy": "auto", "human_approval_gate": "tty"},
+                [contract.AUTO_TTY_PROBLEM, contract.AUTO_ATTESTATION_PROBLEM],
+            ),
+            (
+                {
+                    "approval_policy": "auto",
+                    "worker_attestation_required": True,
+                    "human_approval_gate": "trusted",
+                },
+                [],
+            ),
+        )
+        for policy, expected in cases:
+            with self.subTest(policy=policy):
+                self.assertEqual(self._problems(policy), expected)
+
+    def test_other_policies_keep_their_gate_and_attestation_choice(self) -> None:
+        for policy in ("manual_all", "milestone", "low_risk"):
+            with self.subTest(policy=policy):
+                self.assertEqual(
+                    self._problems(
+                        {
+                            "approval_policy": policy,
+                            "human_approval_gate": "tty",
+                            "worker_attestation_required": False,
+                        }
+                    ),
+                    [],
+                )
+
+    def test_the_schema_documents_the_auto_contract(self) -> None:
+        schema = json.loads(
+            (Path(contract.__file__).parent / "orchestration.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        [rule] = schema["allOf"]
+        self.assertEqual(rule["if"]["properties"]["approval_policy"], {"const": "auto"})
+        self.assertEqual(
+            rule["then"]["properties"],
+            {
+                "human_approval_gate": {"const": "trusted"},
+                "worker_attestation_required": {"const": True},
+            },
+        )
+        self.assertEqual(rule["then"]["required"], ["worker_attestation_required"])
+        description = schema["properties"]["approval_policy"]["description"]
+        for term in ("policy:auto", "auto_stop", "auto_report", "batch auto-report"):
+            with self.subTest(term=term):
+                self.assertIn(term, description)
+
+
+class AccessPolicyContractTests(unittest.TestCase):
+    def test_modes_are_independent_of_transport(self) -> None:
+        for mode in ("inherit", "sandbox", "unsandboxed"):
+            problems = contract.access_policy_problems(
+                {"defaults": {"mode": mode}}, {"developer"}
+            )
+            self.assertEqual(problems, [])
+        for bad in (
+            None,
+            "external",
+            {"defaults": {"mode": "external"}},
+            {"defaults": {"network": {"hosts": ["https://github.com"]}}},
+        ):
+            with self.subTest(bad=bad):
+                self.assertTrue(contract.access_policy_problems(bad, {"developer"}))
+
+
+class AccessOnlyConfigTests(unittest.TestCase):
+    def test_access_only_configuration_validates_without_assignment_fields(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "orchestration.json"
+            path.write_text(
+                json.dumps({"access_policy": {"defaults": {"mode": "sandbox"}}})
+            )
+            self.assertEqual(
+                contract.health_problems(path, ROOT / "harness/orchestration/roles"), []
+            )
+
+
+class ConfigLoadingTests(unittest.TestCase):
+    def _repo(self, orchestration: dict[str, object], qa_gate: list[str]) -> Path:
+        repo = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, ignore_errors=True)
+        (repo / ".harness").mkdir()
+        (repo / ".harness/project.json").write_text(
+            json.dumps({"qa_gate_commands": qa_gate}), encoding="utf-8"
+        )
+        (repo / ".harness/orchestration.json").write_text(
+            json.dumps(orchestration), encoding="utf-8"
+        )
+        roles = mock.patch.object(
+            config, "_roles_dir", return_value=ROOT / "harness/orchestration/roles"
+        )
+        roles.start()
+        self.addCleanup(roles.stop)
+        return repo
+
+    def test_an_assigned_config_without_developer_commands_keeps_its_own_fallback(
+        self,
+    ) -> None:
+        example = json.loads(
+            (ROOT / "harness/orchestration.example.json").read_text(encoding="utf-8")
+        )
+        del example["developer_verification_commands"]
+        example["verification_commands"] = ["pytest -q"]
+        repo = self._repo(example, qa_gate=[])
+
+        loaded = config._config(repo)
+
+        self.assertNotIn("developer_verification_commands", loaded)
+        self.assertEqual(config._developer_verification_commands(loaded), ["pytest -q"])
+
+    def test_an_access_only_config_takes_zero_config_defaults_beneath_its_keys(
+        self,
+    ) -> None:
+        policy = {"defaults": {"mode": "sandbox"}}
+        repo = self._repo({"access_policy": policy}, qa_gate=["make qa"])
+
+        loaded = config._config(repo)
+
+        self.assertEqual(loaded["access_policy"], policy)
+        self.assertEqual(loaded["assignment_plans"], {})
+        self.assertEqual(config._developer_verification_commands(loaded), ["make qa"])
+
+    def test_an_access_only_config_keeps_its_own_verification_commands_for_developers(
+        self,
+    ) -> None:
+        repo = self._repo(
+            {
+                "access_policy": {"defaults": {"mode": "sandbox"}},
+                "verification_commands": ["pytest -q"],
+            },
+            qa_gate=["make qa"],
+        )
+
+        loaded = config._config(repo)
+
+        self.assertEqual(config._developer_verification_commands(loaded), ["pytest -q"])
 
 
 if __name__ == "__main__":

@@ -38,8 +38,13 @@ def _check_checksums() -> None:
         sys.exit(
             f"vendor file count mismatch: checksums={len(checksum_lines)} snapshot={len(vendor_files)}"
         )
-    for line in checksum_lines:
-        expected_hash, relative = line.split("  ", 1)
+    entries = [line.split("  ", 1) for line in checksum_lines]
+    # Equal counts alone let a duplicated or foreign line leave a snapshot file unverified.
+    if sorted(relative for _, relative in entries) != sorted(
+        path.relative_to(ROOT).as_posix() for path in vendor_files
+    ):
+        sys.exit("vendor snapshot files differ from the SHA256SUMS entries")
+    for expected_hash, relative in entries:
         actual_hash = hashlib.sha256((ROOT / relative).read_bytes()).hexdigest()
         if actual_hash != expected_hash:
             sys.exit(f"vendor checksum mismatch: {relative}")

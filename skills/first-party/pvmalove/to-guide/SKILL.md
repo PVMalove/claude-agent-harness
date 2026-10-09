@@ -6,15 +6,19 @@ disable-model-invocation: true
 
 # To Guide (Manual Implementation Prep)
 
-Transform a specification or a tracer-bullet ticket into a developer guide loaded with ready-to-use prompts for AI-assisted IDEs. This is the `hitl` counterpart to `/implement` — `/implement` takes `afk` tickets and writes the code itself; `/to-guide` takes `hitl` tickets and hands the human a navigator's checklist instead. After this skill runs, coding, code review, `qa-gate`, and the PR are entirely the human's own — this skill does not do them and is not invoked again afterward for this ticket (the guide it produces names the exact commands in its closing section).
+Transform a specification or a tracer-bullet ticket into a developer guide loaded with ready-to-use prompts for AI-assisted IDEs. This is the `hitl` counterpart to `/implement` and `/fast-implement` — they take `afk` tickets and have an agent write the code; `/to-guide` takes `hitl` tickets and hands the human a navigator's checklist instead. After this skill runs, coding, code review, `qa-gate`, and the PR are entirely the human's own — this skill does not do them and is not invoked again afterward for this ticket (the guide it produces names the exact commands in its closing section).
 
 ## Process
 
 1. **Read the source.** Fetch the ticket the user names — an issue number, URL, or a `.scratch/<feature>/issues/NN-*.md` path (see `docs/agents/issue-tracker.md`). If it carries `status::blocked`, check its blockers the same way `/implement` does — if any are still open, stop and tell the user which ones instead of drafting a guide for a ticket that isn't actually startable yet. If it carries `status::specs` instead of `status::ready`, or is missing `hitl`, tell the user and ask whether to proceed anyway — this skill expects a fully specified, human-routed ticket (see `docs/agents/triage-labels.md`).
 2. **Explore the codebase.** Identify the exact files that need creating or changing to fulfill the ticket — don't guess from the ticket text alone. Use the project's domain glossary and respect any ADRs in the area you're touching.
-3. **Claim it.** Assign the ticket to the maintainer (`gh issue edit <n> --add-assignee @me`, or the local tracker's equivalent) before any other write — the same convention `/wayfinder` and `/implement` use, so a concurrent session doesn't pick the same `hitl` ticket.
-4. **Mark it in progress.** Move the ticket from `status::ready` to `status::in-progress` (for a local-tracker ticket, set `**Workflow:** status::in-progress`).
-5. **Draft the guide** using `<guide-template>` below, in the language `.harness/project.json`'s `language` field configures (default `ru` if the file or field is absent). Unlike `/to-tickets`'s summary table, this scoping is not narrow — write the whole document, prompts included, in that language: it's a local artifact for the human maintainer to read, not a ticket published to an external tracker. Save it to `docs/tasks/` per `docs/agents/artifacts.md`'s naming convention (issue ID + descriptive slug) — if the ticket belongs to an epic, into that epic's `docs/tasks/issue-<epic-id>-<epic-slug>/` folder, alongside its own ticket file.
+3. **Claim it.** Assign the ticket to the maintainer (`gh issue edit <n> --add-assignee @me` on GitHub, `glab issue update <n> -R <project-url> --assignee @me` on GitLab, or the local tracker's equivalent) before any other write — the same convention `/wayfinder` and `/fast-implement` use, so a concurrent session doesn't pick the same `hitl` ticket. On GitLab, every `glab` command takes `-R <project-url>` and every `glab api` call is written `GITLAB_HOST=<host> glab api projects/<project-id>/...`; these placeholders are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions.
+4. **Mark it in progress.** A ticket carries exactly one `status::*` label (see `docs/agents/triage-labels.md`), so replace the current one — `status::ready`, a `status::blocked` whose blockers step 1 found closed, or a `status::specs` the user agreed to proceed with — instead of adding a second:
+    - **GitHub:** `gh issue edit <n> --remove-label status::ready --remove-label status::blocked --remove-label status::specs --add-label status::in-progress`, then confirm with `gh issue view <n> --json labels --jq '[.labels[].name]'` that `status::in-progress` is the only `status::*` label.
+    - **GitLab:** `glab issue update <n> -R <project-url> --unlabel status::ready,status::blocked,status::specs --label status::in-progress`, then confirm with `glab issue view <n> -R <project-url> -F json` that `status::in-progress` is the only `status::*` label in its `labels`.
+    - **Local tracker:** set the file's `**Workflow:**` line to `status::in-progress`.
+    - If the label write fails, stop and report it.
+5. **Draft the guide** using `<guide-template>` below. In its section 5, keep only the commands of this project's tracker and fill in `<project-url>`, `<host>`, `<project-id>`, `<target-branch>`, `<ID>`, `<title>` and `<slug>` with the real values (`<title>` stays in single quotes, each apostrophe written as `'\''`, or as `''` if the human's shell is PowerShell) — the human copies those commands without editing them; only the PR/MR number `<n>`/`<iid>` stays a placeholder until the PR/MR exists. Write the guide in the language `.harness/project.json`'s `language` field configures (default `ru` if the file or field is absent). Unlike `/to-tickets`'s summary table, this scoping is not narrow — write the whole document, prompts included, in that language: it's a local artifact for the human maintainer to read, not a ticket published to an external tracker. Save it to `docs/tasks/` per `docs/agents/artifacts.md`'s naming convention (issue ID + descriptive slug) — if the ticket belongs to an epic, into that epic's `docs/tasks/issue-<epic-id>-<epic-slug>/` folder, alongside its own ticket file.
 
 ## Rules for the prompts
 
@@ -57,46 +61,12 @@ This skill doesn't review the code, commit it, run `qa-gate`, or open the PR for
 1. Run `/code-review` (or ask this session to run it) — same two-axis Standards + Spec review `/implement` would run for you on an `afk` ticket. Nothing else triggers it on this path; skipping it means the diff never gets reviewed before the PR.
 2. Commit your work with a Semantic Commit Message (`feat:`, `fix:`, ...) and push, per `docs/agents/git-workflow.md` — don't let finished work sit uncommitted or unpushed.
 3. Run `/qa-gate` (or ask this session to run it).
-4. **GitHub/GitLab-tracked ticket:** open the PR/MR per `docs/agents/git-workflow.md` (`gh pr create` on GitHub, `glab mr create` on GitLab; choose `Closes #<ID>` only for the default-branch target and verify closure after merge, otherwise use `Related to #<ID>` and explicitly close the issue after the confirmed merge). Use the body template directly, or configure and run `pr-composer` manually in the coding application. If this ticket carries `task-report::required`, post the completion report when you open the PR.
+4. **GitHub/GitLab-tracked ticket:** open the PR/MR into `<target-branch>` per `docs/agents/git-workflow.md`. Write its body to `.harness/.sandboxes/pr_body/pr-body-<ID>-<slug>.md` from the body template directly, or configure and run `pr-composer` manually in the coding application.
+   - **Footer:** `Closes #<ID>` only when `<target-branch>` is the default branch (GitHub: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`; GitLab: the `default_branch` field of `GITLAB_HOST=<host> glab api projects/<project-id>`), otherwise `Related to #<ID>`. GitLab closes an issue by `Closes #<ID>` only when the MR lands in the default branch.
+   - **Open it.** GitHub: `gh pr create --base <target-branch> --title '<title>' --body-file .harness/.sandboxes/pr_body/pr-body-<ID>-<slug>.md`. GitLab: `glab mr create -R <project-url> --target-branch <target-branch> --title '<title>' --description-file .harness/.sandboxes/pr_body/pr-body-<ID>-<slug>.md --yes`; the MR is `!<iid>`, the last segment of the URL it prints.
+   - **Task report:** if this ticket carries `task-report::required`, post the completion report when you open the PR/MR. Write it to `.harness/.sandboxes/pr_body/issue-comment-<ID>-<slug>.md`, then GitHub: `gh issue comment <ID> --body-file .harness/.sandboxes/pr_body/issue-comment-<ID>-<slug>.md`; GitLab: `GITLAB_HOST=<host> glab api projects/<project-id>/issues/<ID>/notes -F body=@.harness/.sandboxes/pr_body/issue-comment-<ID>-<slug>.md`.
+   - **After you merge it:** check the merge (GitHub: `gh pr view <n> --json state,baseRefName`, `state` is `MERGED` and `baseRefName` is `<target-branch>`; GitLab: `glab mr view <iid> -R <project-url> -F json`, `state` is `merged` and `target_branch` is `<target-branch>`). For `Related to #<ID>`, close the issue — GitHub: `gh issue close <ID> --reason completed`; GitLab: `glab issue close <ID> -R <project-url>`. For `Closes #<ID>`, verify that it closed — GitHub: `gh issue view <ID> --json state` (`CLOSED`); GitLab: `glab issue view <ID> -R <project-url> -F json` (`state` is `closed`; GitLab closes it asynchronously, so read it once more if it still reads `opened`) — and close it with the same command if it did not.
+
    **Local-markdown-tracked ticket:** there's no PR/merge step — once the above all pass, set the ticket file's `**Workflow:**` line to `done` yourself; if it carries `**Task report:** required`, fold the completion summary into that same update.
 
 </guide-template>
-<!--
-# Руководство по реализации: <название/ID тикета>
-
-## 1. Контекст и ограничения
-
-Архитектурные правила (ADR), паттерны и границы, которые применимы здесь — кратко изложенные из тикета/спецификации и кодовой базы, а не пересказанные полностью.
-
-## 2. Карта файлов
-
-- `[Создать]` путь/к/новому/файлу
-- `[Обновить]` путь/к/существующему/файлу
-
-## 3. Шаги и промпты
-
-Разбейте реализацию на небольшие, компилируемые части. Для каждой:
-
-**Шаг N: <цель>**
-
-```text
-<полный, готовый к вставке промпт для ИИ-IDE человека — ссылается на конкретные существующие файлы для следования, формулирует критерий приемки, которому он удовлетворяет>
-```
-
-## 4. Проверка
-
-Как проверить, что эта часть работает — точная команда тестирования или `curl`/ручной шаг — взятые из критериев приемки тикета или Тестовых Решений (Testing Decisions) спецификации.
-
-## 5. Когда вы закончите
-
-Этот навык не рецензирует код, не коммитит его, не запускает `qa-gate` и не открывает PR за вас — нет ни одной команды для всего этого на пути `hitl`. Как только код будет написан, выполните их самостоятельно, по порядку:
-
-1. Запустите `/code-review` (или попросите эту сессию запустить его) — то же ревью по двум осям Стандарты + Спецификация, которое `/implement` выполнил бы за вас для `afk`-тикета. Ничто другое не запускает его на этом пути; пропуск этого шага означает, что diff (изменения) никогда не проходит ревью перед PR.
-2. Закоммитьте свою работу с Семантическим Сообщением Коммита (`feat:`, `fix:`, ...) и запушьте, согласно `docs/agents/git-workflow.md` — не позволяйте законченной работе оставаться незакоммиченной или незапушенной.
-3. Запустите `/qa-gate` (или попросите эту сессию запустить его).
-4. **Тикет, отслеживаемый в GitHub/GitLab:** откройте PR/MR согласно `docs/agents/git-workflow.md` (`gh pr create` на GitHub, `glab mr create` на GitLab; выбирайте `Closes #<ID>` только для целевой ветки по умолчанию и проверяйте закрытие после слияния (merge), в противном случае используйте `Related to #<ID>` и явно закройте issue (проблему) после подтвержденного слияния). Используйте шаблон тела напрямую или настройте и запустите `pr-composer` вручную в приложении для программирования. Если этот тикет имеет метку `task-report::required`, опубликуйте отчет о завершении при открытии PR.
-   **Тикет, отслеживаемый локально в markdown:** здесь нет шага PR/слияния — как только все вышеперечисленное будет пройдено, самостоятельно установите строку `**Workflow:**` в файле тикета на `done`; если он имеет метку `**Task report:** required`, включите сводку о завершении в то же самое обновление.
-
-</guide-template>
--->
-

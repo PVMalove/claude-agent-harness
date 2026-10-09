@@ -74,17 +74,23 @@ def _prepare_agent_inbox(repo: Path) -> Path:
     return inbox
 
 
+def _registered_worktrees(repo: Path) -> set[Path]:
+    """Every checkout `git worktree list` registers for this repository, resolved."""
+    listing = _git(repo, "worktree", "list", "--porcelain")
+    return {
+        Path(line.removeprefix("worktree ")).resolve()
+        for line in listing.splitlines()
+        if line.startswith("worktree ")
+    }
+
+
 def _worktree_roots(repo: Path) -> set[Path]:
     """Every checkout of this repository: the main one plus each linked worktree."""
     roots = {repo.resolve()}
     try:
-        listing = _git(repo, "worktree", "list", "--porcelain")
+        return roots | _registered_worktrees(repo)
     except CoordinatorError:
         return roots
-    for line in listing.splitlines():
-        if line.startswith("worktree "):
-            roots.add(Path(line[len("worktree ") :].strip()).resolve())
-    return roots
 
 
 def _agent_authored_file(repo: Path, value: str, label: str) -> Path:
@@ -311,20 +317,20 @@ def _validate_worktree(repo: Path, worktree: str) -> None:
             remedy="pass a non-empty worktree path",
         )
     try:
-        resolved = Path(worktree).resolve()
-    except Exception as exc:
+        try:
+            # Non-strict resolution can suppress symlink loops instead of raising an error.
+            resolved = Path(worktree).resolve(strict=True)
+        except FileNotFoundError:
+            # An absent path still gets the existing Git registration diagnostic below.
+            resolved = Path(worktree).resolve()
+    # ValueError: an embedded NUL byte; RuntimeError/OSError: a symlink loop.
+    except (OSError, RuntimeError, ValueError) as exc:
         raise CoordinatorError(
             "worktree is not a valid path",
             remedy="pass a worktree that is a valid filesystem path",
         ) from exc
 
-    output = _git(repo, "worktree", "list", "--porcelain")
-    paths: set[Path] = set()
-    for line in output.splitlines():
-        if line.startswith("worktree "):
-            paths.add(Path(line.removeprefix("worktree ")).resolve())
-
-    if resolved not in paths:
+    if resolved not in _registered_worktrees(repo):
         raise CoordinatorError(
             f"worktree {worktree!r} is not registered by git worktree",
             remedy=f"run 'git worktree add' for {worktree}, or pass a worktree already registered by git worktree",

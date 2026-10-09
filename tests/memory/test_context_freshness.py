@@ -81,9 +81,22 @@ def test_frozen_memory_source_freshness(
             result["memory_diagnostic"]
             == "frozen memory source changed, unavailable or revoked"
         )
+        pointer = package["memory"]["pointers"][0]
+        mismatch = result["memory_mismatch"]
+        assert mismatch["actual_source_hash"] != pointer["source_hash"]
+        if change == "symlink":
+            # A symlinked source breaks the allowlist walk itself, before any pointer is read.
+            assert mismatch["path"] is None
+        else:
+            assert mismatch["path"] == pointer["path"]
+            assert mismatch["expected_source_hash"] == pointer["source_hash"]
+    else:
+        assert "memory_mismatch" not in result
 
 
-@pytest.mark.parametrize("change", ["none", "bytes", "eligibility", "generation", "type"])
+@pytest.mark.parametrize(
+    "change", ["none", "bytes", "eligibility", "generation", "type"]
+)
 def test_completion_pointer_uses_projected_type_and_source_eligibility(
     tmp_path: Path, change: str
 ) -> None:
@@ -93,21 +106,58 @@ def test_completion_pointer_uses_projected_type_and_source_eligibility(
     git(tmp_path, "init", "-q")
     git(tmp_path, "config", "user.name", "Fixture")
     git(tmp_path, "config", "user.email", "fixture@example.invalid")
-    configure(tmp_path, min_similarity=0, source_types=["completion_report"],
-              allow_paths=[".harness/orchestration/state/generations/**/*.json"])
+    configure(
+        tmp_path,
+        min_similarity=0,
+        source_types=["completion_report"],
+        allow_paths=[".harness/orchestration/state/generations/**/*.json"],
+    )
     source(tmp_path, "README.md", "# Fixture")
     git(tmp_path, "add", "README.md")
     git(tmp_path, "commit", "-qm", "fixture")
-    snapshot = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True).strip()
+    snapshot = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
     prefix = ".harness/orchestration/state"
-    source(tmp_path, prefix + "/ledger.json", json.dumps({"version": 3, "generation": "generation-one", "selected_at": "fixture"}))
-    report = source(tmp_path, prefix + "/generations/generation-one/reports/report.json", json.dumps({"role": "developer", "ticket": "#1", "outcome": "completed", "lessons": ["transaction lesson"]}))
+    source(
+        tmp_path,
+        prefix + "/ledger.json",
+        json.dumps(
+            {"version": 3, "generation": "generation-one", "selected_at": "fixture"}
+        ),
+    )
+    report = source(
+        tmp_path,
+        prefix + "/generations/generation-one/reports/report.json",
+        json.dumps(
+            {
+                "role": "developer",
+                "ticket": "#1",
+                "outcome": "completed",
+                "lessons": ["transaction lesson"],
+            }
+        ),
+    )
     build(tmp_path)
     root = tmp_path / "state"
     ledger = LifecycleLedger(root)
     ledger.ensure()
-    batch = {"batch_id": "batch-memory", "base_commit": snapshot, "goal": "transaction", "definition_of_done": [], "context_packages": []}
-    package = _persist_context_package(tmp_path, root, ledger, batch, role="shared", snapshot=snapshot, inclusion_reason="test")
+    batch = {
+        "batch_id": "batch-memory",
+        "base_commit": snapshot,
+        "goal": "transaction",
+        "definition_of_done": [],
+        "context_packages": [],
+    }
+    package = _persist_context_package(
+        tmp_path,
+        root,
+        ledger,
+        batch,
+        role="shared",
+        snapshot=snapshot,
+        inclusion_reason="test",
+    )
     assert package["memory"]["pointers"][0]["source_type"] == "completion_report"
     if change in {"bytes", "eligibility"}:
         payload = json.loads(report.read_text())
@@ -118,9 +168,20 @@ def test_completion_pointer_uses_projected_type_and_source_eligibility(
         report.write_text(json.dumps(payload))
     elif change == "generation":
         (tmp_path / prefix / "generations/generation-two").mkdir()
-        source(tmp_path, prefix + "/ledger.json", json.dumps({"version": 3, "generation": "generation-two", "selected_at": "fixture"}))
+        source(
+            tmp_path,
+            prefix + "/ledger.json",
+            json.dumps(
+                {"version": 3, "generation": "generation-two", "selected_at": "fixture"}
+            ),
+        )
     elif change == "type":
-        configure(tmp_path, min_similarity=0, source_types=["qa_finding"], allow_paths=[prefix + "/generations/**/*.json"])
+        configure(
+            tmp_path,
+            min_similarity=0,
+            source_types=["qa_finding"],
+            allow_paths=[prefix + "/generations/**/*.json"],
+        )
     result = _context_package_freshness(tmp_path, root, batch)
     assert result is not None
     assert result["status"] == ("fresh" if change == "none" else "stale")

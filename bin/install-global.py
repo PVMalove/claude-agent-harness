@@ -2,6 +2,8 @@
 """Installs a minimal instruction profile plus start-project. It never installs MCP,
 models, plugins, credentials, or permissions."""
 
+from __future__ import annotations
+
 import argparse
 import filecmp
 import shutil

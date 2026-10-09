@@ -10,8 +10,11 @@ import pytest
 
 from harness.health.checks import tracker
 from harness.health.context import HealthContext
+from harness.health.project_tracker import ProjectTracker
 
 _SENSITIVE_MARKER = "gho_supersecrettoken1234567890"
+
+_GITHUB = ProjectTracker("github", "github.com", "acme/widgets", "origin")
 
 
 def _online_context(tmp_path: Path) -> HealthContext:
@@ -30,9 +33,7 @@ def test_failed_auth_status_never_echoes_its_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что при ошибке аутентификации stderr команды не попадает в сообщение."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         tracker,
@@ -52,9 +53,7 @@ def test_successful_auth_status_never_echoes_its_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что при успешной аутентификации stdout команды не попадает в сообщение."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         tracker,
@@ -74,9 +73,7 @@ def test_permissions_failure_never_echoes_the_raw_api_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что при сбое проверки прав сырой ответ API не попадает в сообщение."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
         tracker,

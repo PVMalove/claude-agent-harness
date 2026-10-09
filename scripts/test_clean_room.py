@@ -5,6 +5,8 @@
 одноразовых репозиториев; проверяется итоговое состояние файлов и реальное поведение hooks.
 """
 
+from __future__ import annotations
+
 import os
 import shutil
 import stat
@@ -30,6 +32,7 @@ from scripts.clean_room import (
     backend_orchestration,
     base_commit_gate,
     baseline_metrics,
+    branch_hooks,
     checkpoint_session,
     context_package,
     coordinator_seam,
@@ -42,6 +45,7 @@ from scripts.clean_room import (
     install_and_update,
     ledger_migration,
     orchestration_config,
+    parallel_batches,
     project_hooks,
     risk_aware_review,
     stuck_batch,
@@ -64,11 +68,13 @@ SCENARIOS = (
     base_commit_gate,
     dispatch_watchdog,
     stuck_batch,
+    parallel_batches,
     zero_config_defaults,
     delivery_stats,
     baseline_metrics,
     orchestration_config,
     project_hooks,
+    branch_hooks,
     global_install,
 )
 

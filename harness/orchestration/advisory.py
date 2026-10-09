@@ -39,11 +39,13 @@ def summarize_log(text: str, *, max_lines: int = 20) -> dict[str, object]:
     отчёт о завершении или замечание QA по-прежнему требуют ссылки на полный очищенный артефакт в качестве доказательства."""
     lines = text.splitlines()
     flagged = [line for line in lines if _LOG_MARKER.search(line)]
+    # A non-positive limit selects nothing; lines[-0:] would otherwise return the whole log.
+    limit = max(max_lines, 0)
     return {
         "line_count": len(lines),
-        "head": lines[:max_lines],
-        "tail": lines[-max_lines:],
-        "flagged": flagged[:max_lines],
+        "head": lines[:limit],
+        "tail": lines[-limit:] if limit else [],
+        "flagged": flagged[:limit],
     }
 
 
@@ -99,7 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rank-files":
         _emit("rank-files", rank_files(args.path, args.keyword))
     elif args.command == "summarize-log":
-        text = Path(args.file).read_text(encoding="utf-8")
+        try:
+            # A gate log may hold bytes that are not UTF-8; the summary is advisory only.
+            text = Path(args.file).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            parser.error(f"cannot read --file {args.file}: {exc}")
         _emit("summarize-log", summarize_log(text, max_lines=args.max_lines))
     elif args.command == "classify-risk":
         _emit("classify-risk", classify_risk(args.text, args.known_trigger))

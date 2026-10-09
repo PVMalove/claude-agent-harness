@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..repo_map.cache import read_cache
 from ..repo_map.contract import validation_error
 from ..storage import storage_path
@@ -111,7 +112,11 @@ def parse_map(payload: object, *, origin: str) -> RepoMapView | str:
     problem = validation_error(payload)
     if problem is not None:
         return f"карта не соответствует схеме v1: {problem}"
-    assert isinstance(payload, dict)
+    if not isinstance(payload, dict):
+        raise HarnessError(
+            f"validation_error accepted a non-object Repo Map payload: {type(payload).__name__}",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     files = tuple(
         MapFile(
             path=text(item.get("path")),

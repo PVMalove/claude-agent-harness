@@ -2,7 +2,7 @@
 
 Reads `.harness/project.json`, `.harness/orchestration.json` and the role manifests, and resolves
 every policy a batch or dispatch runs under.  Resolution is deliberately tolerant field by field: a
-project that authored no orchestration config still gets a working zone and the documented
+project that authored no orchestration config still gets a working setup and the documented
 defaults, and a partially specified policy keeps the defaults for the fields it omits.
 
 The module reads configuration only — it never opens the ledger and never advances state.
@@ -17,10 +17,14 @@ from typing import cast
 
 from harness.orchestration import extensions
 from harness.orchestration.contract import (
+    APPROVAL_POLICIES,
+    AUTO_TTY_PROBLEM,
     COMMUNICATION_POLICY_FIELDS,
+    HUMAN_APPROVAL_GATES,
     ContractError,
     health_problems,
     load_role_manifest,
+    reject_sensitive,
     resolve_assignment,
     resolve_runtime_name,
 )
@@ -35,8 +39,6 @@ from harness.orchestration.core.constants import (
     DEFAULT_PROFILE,
     DEFAULT_RETRY_POLICY,
     DEFAULT_TEST_PATH_PATTERNS,
-    DEFAULT_ZONE,
-    SENSITIVE_KEY,
     ZERO_ALLOWED_POLICY_FIELDS,
 )
 from harness.orchestration.core.utils import (
@@ -49,22 +51,10 @@ from harness.orchestration.core.utils import (
 
 
 def _reject_sensitive(value: object, location: str) -> None:
-    if isinstance(value, dict):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise CoordinatorError(
-                    f"{location} contains a non-string key",
-                    remedy=f"use only string keys in {location}",
-                )
-            if SENSITIVE_KEY.search(key):
-                raise CoordinatorError(
-                    f"{location} contains secret-shaped field {key!r}",
-                    remedy=f"remove the secret-shaped field {key!r} from {location}; credentials never belong in this config",
-                )
-            _reject_sensitive(child, f"{location}.{key}")
-    elif isinstance(value, list):
-        for index, child in enumerate(value):
-            _reject_sensitive(child, f"{location}[{index}]")
+    try:
+        reject_sensitive(value, location)
+    except ContractError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _project(repo: Path) -> JsonObject:
@@ -75,7 +65,7 @@ def _configured(repo: Path) -> bool:
     """Whether the project actually states an orchestration configuration.
 
     `harness init` seeds an intentionally empty template. A present-but-empty file states nothing,
-    yet taking the configured path on it makes every zone unknown and every role unassigned — a
+    yet taking the configured path on it leaves every role unassigned — a
     freshly initialised project would be unable to start a batch at all, while deleting the file
     would fix it. An empty template therefore means the same as no file: use the documented defaults.
     """
@@ -88,20 +78,24 @@ def _configured(repo: Path) -> bool:
         return True  # let the real loader report the parse failure
     if not isinstance(value, dict):
         return True
-    return bool(value.get("backend_zones")) or bool(value.get("assignment_plans"))
+    return (
+        bool(value.get("backend_zones"))
+        or bool(value.get("assignment_plans"))
+        or "access_policy" in value
+        or "infrastructure_retry_policy" in value
+    )
 
 
 def _default_config(repo: Path) -> JsonObject:
-    """Zero-configuration fallback.  A project that has not authored an orchestration config still
-    gets one working zone — the whole repository — and takes the role runtime from the invoking
-    session, so the gated pipeline is available before any assignment plan exists."""
+    """Zero-configuration fallback.  A project that has not authored an orchestration config takes
+    the role runtime from the invoking session and every batch states its own scope, so the gated
+    pipeline is available before any assignment plan exists."""
     commands = _project(repo).get("qa_gate_commands")
     if not isinstance(commands, list) or not all(_non_empty(item) for item in commands):
         commands = []
     return {
         "provider_profiles": {},
         "assignment_plans": {},
-        "backend_zones": {DEFAULT_ZONE: {"paths": ["**"]}},
         "concurrency_budget": 1,
         "developer_verification_commands": list(commands),
         "verification_commands": list(commands),
@@ -121,7 +115,14 @@ def _config(repo: Path) -> JsonObject:
             "invalid project orchestration config: " + "; ".join(problems),
             remedy="fix the listed project orchestration config problem(s) before retrying",
         )
-    return value
+    if value.get("assignment_plans"):
+        return value
+    # An access-only config (issue #624) states no assignment: it takes the zero-config defaults
+    # beneath its own keys. Its own verification_commands stay the developer fallback.
+    defaults = _default_config(repo)
+    if "developer_verification_commands" not in value:
+        del defaults["developer_verification_commands"]
+    return {**defaults, **value}
 
 
 def _adaptive_continuation_policy(config: JsonObject) -> JsonObject:
@@ -243,8 +244,11 @@ def _extension_names(config: JsonObject) -> dict[str, str]:
 def _orchestration_policy(config: JsonObject) -> JsonObject:
     """The operational policy this brief runs under. Recorded in the immutable brief so a later edit
     to `.harness/orchestration.json` never changes what an in-flight dispatch was approved under."""
+    from harness.orchestration.infrastructure_retry import snapshot
+
     adaptive = _adaptive_continuation_policy(config)
     return {
+        "infrastructure_retry": snapshot(config),
         "approval_ttl_seconds": _approval_ttl(config),
         "attention": dict(_attention_policy(config)),
         "context_pressure": {
@@ -326,6 +330,20 @@ def _review_verification_commands(config: JsonObject) -> list[str]:
     return _strings(commands, "review_verification_commands", allow_empty=True)
 
 
+def _qa_preparation_commands(
+    config: JsonObject, key: str = "qa_preparation"
+) -> list[str]:
+    """Commands of a QA preparation key the clean-room QA runs; none when absent.
+
+    ``qa_preparation`` is run before the gate. ``qa_environment_probes`` and
+    ``qa_project_file_checks`` are run only after a preparation failure, as independent facts.
+    """
+    commands = config.get(key)
+    if commands is None:
+        return []
+    return _strings(commands, key, allow_empty=True)
+
+
 def _worker_attestation_required(config: JsonObject) -> bool:
     value = config.get("worker_attestation_required", False)
     if not isinstance(value, bool):
@@ -353,7 +371,7 @@ def _communication_policy(config: JsonObject) -> dict[str, str]:
 
 def _human_approval_gate(config: JsonObject) -> str:
     gate = config.get("human_approval_gate", "trusted")
-    if gate not in {"trusted", "tty"}:
+    if gate not in HUMAN_APPROVAL_GATES:
         raise CoordinatorError(
             "human_approval_gate must be trusted or tty",
             remedy="set human_approval_gate to 'trusted' or 'tty' in the project orchestration config",
@@ -363,10 +381,16 @@ def _human_approval_gate(config: JsonObject) -> str:
 
 def _approval_policy(config: JsonObject) -> str:
     policy = config.get("approval_policy", "manual_all")
-    if policy not in {"manual_all", "milestone", "low_risk"}:
+    if policy not in APPROVAL_POLICIES:
         raise CoordinatorError(
-            "approval_policy must be manual_all, milestone or low_risk",
-            remedy="set approval_policy to 'manual_all', 'milestone' or 'low_risk' in the project orchestration config",
+            "approval_policy must be manual_all, milestone, low_risk or auto",
+            remedy="set approval_policy to 'manual_all', 'milestone', 'low_risk' or 'auto' in the project orchestration config",
+        )
+    if policy == "auto" and _human_approval_gate(config) == "tty":
+        # `auto` approves by policy, `tty` demands a human on a terminal: no step could ever run.
+        raise CoordinatorError(
+            AUTO_TTY_PROBLEM,
+            remedy="set human_approval_gate to 'trusted', or choose an approval_policy other than 'auto'",
         )
     return cast(str, policy)
 
@@ -375,19 +399,14 @@ def _resolve_assignment(
     repo: Path,
     config: JsonObject,
     role_name: str,
-    zone_name: str,
     runtime_name: str,
     *,
     session_model: object = None,
     session_effort: object = None,
-) -> tuple[JsonObject, JsonObject, str, str, str, str, str]:
+) -> tuple[JsonObject, list[str], str, str, str, str, str]:
+    """Resolve a role's assignment; the second element is the role's write ceiling."""
     role = _role(repo, role_name)
-    if not _configured(repo):
-        if zone_name != DEFAULT_ZONE:
-            raise CoordinatorError(
-                f"without .harness/orchestration.json the only backend zone is {DEFAULT_ZONE!r}",
-                remedy=f"create .harness/orchestration.json to declare backend zones other than {DEFAULT_ZONE!r}",
-            )
+    if not config.get("assignment_plans"):
         if not _non_empty(session_model) or not _non_empty(session_effort):
             raise CoordinatorError(
                 "without .harness/orchestration.json the invoking session must supply --model and --effort",
@@ -396,7 +415,7 @@ def _resolve_assignment(
         # No project-owned provider profile exists; the invoking session handles the role.
         return (
             role,
-            {"paths": ["**"]},
+            ["**"],
             DEFAULT_PROFILE,
             session_model.strip(),
             session_effort.strip(),
@@ -408,14 +427,12 @@ def _resolve_assignment(
         resolved_runtime = (
             resolve_runtime_name(plan, runtime_name) if isinstance(plan, dict) else ""
         )
-        assignment = resolve_assignment(
-            config, role, role_name, zone_name, resolved_runtime
-        )
+        assignment = resolve_assignment(config, role, role_name, resolved_runtime)
     except ContractError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return (
         assignment["role"],
-        assignment["zone"],
+        assignment["write_ceiling"],
         assignment["profile_id"],
         assignment["model"],
         assignment["effort"],

@@ -12,6 +12,7 @@ from harness.reporting.common import (
     JsonObject,
     StatsError,
     _int,
+    is_count,
 )
 
 
@@ -21,11 +22,7 @@ def _cache_tokens(
     """Подсчитать токены записи/чтения кэша по правилу общего ввода: только если у всех моделей есть оба поля."""
     if not models or any(
         not isinstance(bucket, dict)
-        or any(
-            not isinstance(bucket.get(field), int)
-            or isinstance(bucket.get(field), bool)
-            for field in (write_field, read_field)
-        )
+        or any(not is_count(bucket.get(field)) for field in (write_field, read_field))
         for bucket in models.values()
     ):
         return None
@@ -54,11 +51,7 @@ def _provider_snapshot(
     fields = (*input_fields, "output_tokens")
     if not models or any(
         not isinstance(bucket, dict)
-        or any(
-            not isinstance(bucket.get(field), int)
-            or isinstance(bucket.get(field), bool)
-            for field in fields
-        )
+        or any(not is_count(bucket.get(field)) for field in fields)
         for bucket in models.values()
     ):
         return {"status": MISSING, "reason": "в отчёте неполная telemetry по моделям"}
@@ -143,8 +136,7 @@ def load_baseline(path: Path) -> JsonObject:
                 remedy=f"regenerate {path} with --save-baseline so it has {provider} telemetry",
             )
         if telemetry.get("status") == "ok" and any(
-            not isinstance(telemetry.get(field), int)
-            or isinstance(telemetry.get(field), bool)
+            not is_count(telemetry.get(field))
             for field in ("input_tokens", "output_tokens", "total_tokens")
         ):
             raise StatsError(
@@ -173,14 +165,9 @@ def _cache_delta_field(
 ) -> str | int:
     """Вычислить разницу токенов кэша только если оба снимка содержат это поле."""
     before, after = baseline.get(field), current.get(field)
-    if (
-        not isinstance(before, int)
-        or isinstance(before, bool)
-        or not isinstance(after, int)
-        or isinstance(after, bool)
-    ):
-        return MISSING
-    return after - before
+    if is_count(before) and is_count(after):
+        return after - before
+    return MISSING
 
 
 def _provider_delta(baseline: object, current: object) -> str | JsonObject:

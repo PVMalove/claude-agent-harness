@@ -2,8 +2,8 @@
 
 The lane owns queueing, leasing and gate execution.  It constructs its own ``LifecycleLedger`` for
 the state root it is given and uses the ledger's own lock/write/replace/delete primitives directly;
-its injected facade (``ops``) still carries coordinator-owned things this module does not own, such
-as validation, loading and ``_now()``.
+its workflow adapter carries only batch validation, loading and report persistence. Queue and
+lease operations depend directly on the ledger and core primitives, never the CLI facade.
 """
 
 from __future__ import annotations
@@ -11,17 +11,42 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import socket
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol, TypeGuard
+from typing import Protocol
 
-from ..errors import HarnessError
-from .core.config import _execution_policy
-from ..gate_runner.gate_runner import CleanRoomPolicy, GateRunnerError, run_gate
+from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..storage import storage_path
+from . import operation_access
+from .core.config import _execution_policy, _qa_preparation_commands
+from .core.constants import (
+    QA_NOT_RUN_RESULT,
+    QA_OWNER_FIELDS,
+    QA_QUEUE_FIELDS,
+    QA_LEASE_FIELDS,
+    STATE_REL,
+)
+from .core.utils import (
+    CoordinatorError,
+    _read_object,
+    _safe_id,
+    _non_empty,
+    _now,
+    _moment,
+    _repo,
+)
+from ..gate_runner.gate_runner import (
+    CleanRoomPolicy,
+    GateRunnerError,
+    parse_command_log,
+    run_gate,
+    run_qa_stages,
+)
 from .contract import JsonObject
 from .ledger import (
     BatchRecord,
@@ -32,29 +57,13 @@ from .ledger import (
 )
 
 
-class CoordinatorOps(Protocol):
-    """The slice of ``coordinator.py`` this module calls; ``coordinator`` passes itself as ``ops``.
+class QaWorkflowOps(Protocol):
+    """Batch QA workflow adapter; queue and lease operations require no adapter."""
 
-    ``ledger.py`` and this module deliberately never import ``coordinator.py``, so the coordinator's
-    own error class and helpers arrive through this injected facade instead.
-    """
-
-    @property
-    def CoordinatorError(self) -> type[HarnessError]: ...
-    @property
-    def STATE_REL(self) -> Path: ...
-    @property
-    def QA_QUEUE_FIELDS(self) -> set[str]: ...
-    @property
-    def QA_LEASE_FIELDS(self) -> set[str]: ...
-
-    def _read_object(self, path: Path, label: str) -> JsonObject: ...
-    def _safe_id(self, value: object, label: str) -> str: ...
-    def _non_empty(self, value: object) -> TypeGuard[str]: ...
-    def _now(self) -> str: ...
-    def _moment(self, value: object, label: str) -> datetime: ...
     def _repo(self, args: argparse.Namespace) -> Path: ...
+
     def _candidate_commit(self, repo: Path, value: object) -> str: ...
+
     def _batch_for_ticket_branch(
         self,
         root: Path,
@@ -63,13 +72,19 @@ class CoordinatorOps(Protocol):
         candidate: str,
         requested_batch: object = None,
     ) -> JsonObject: ...
+
     def _accepted_qa_for_candidate(
         self, root: Path, batch: JsonObject, candidate: str
     ) -> JsonObject: ...
+
     def _load_batch(self, root: Path, batch_id: str) -> JsonObject: ...
+
     def _load_dispatch(self, root: Path, dispatch_id: str) -> JsonObject: ...
+
     def _load_dispatch_status(self, root: Path, dispatch_id: str) -> JsonObject: ...
+
     def _validate_batch_integrity(self, root: Path, batch: JsonObject) -> None: ...
+
     def _validate_dispatch(
         self,
         repo: Path,
@@ -78,8 +93,11 @@ class CoordinatorOps(Protocol):
         batch: JsonObject,
         dispatch: JsonObject,
     ) -> None: ...
+
     def _config(self, repo: Path) -> JsonObject: ...
+
     def _role(self, repo: Path, name: str) -> JsonObject: ...
+
     def _validate_report(
         self,
         report: JsonObject,
@@ -88,6 +106,7 @@ class CoordinatorOps(Protocol):
         repo: Path | None = None,
         base_commit: str | None = None,
     ) -> None: ...
+
     def _persist_report(
         self,
         ledger: LifecycleLedger,
@@ -96,121 +115,105 @@ class CoordinatorOps(Protocol):
         dispatch: JsonObject,
         report: JsonObject,
     ) -> Path: ...
+
     def _approval(self, args: argparse.Namespace) -> dict[str, str]: ...
 
 
-def _state_root(args: argparse.Namespace, repo: Path, ops: CoordinatorOps) -> Path:
+def _state_root(args: argparse.Namespace, repo: Path) -> Path:
     if getattr(args, "state_dir", None):
-        raise ops.CoordinatorError(
+        raise CoordinatorError(
             "QA lane is repository-scoped and does not support --state-dir",
             remedy="run the QA lane without --state-dir; it always uses the repository's .harness/orchestration/state",
         )
-    return repo / ops.STATE_REL
+    return repo / STATE_REL
 
 
 @contextmanager
-def _lock(ledger: LifecycleLedger, ops: CoordinatorOps) -> Iterator[None]:
-    """Exclusive ledger lock, translating ``LedgerError`` to ``ops.CoordinatorError`` at this call
-    site.  ``ledger.py`` deliberately never imports from ``coordinator.py``, and coordinator's CLI
-    boundary only catches ``CoordinatorError``, so every direct ledger call this module makes must
-    translate here (mirrors coordinator.py's own ``_ledger_lock``)."""
+def _ledger_errors() -> Iterator[None]:
+    """Translate ``LedgerError`` to ``CoordinatorError`` at this module's ledger call sites.
+
+    ``ledger.py`` deliberately never imports from ``coordinator.py``, and coordinator's CLI boundary
+    only catches ``CoordinatorError``, so every direct ledger call this module makes must translate
+    here (mirrors coordinator.py's own ``_ledger_lock``)."""
     try:
-        with ledger.lock():
-            yield
+        yield
     except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _records_root(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
-    try:
+@contextmanager
+def _lock(ledger: LifecycleLedger) -> Iterator[None]:
+    """Exclusive ledger lock; a ``LedgerError`` inside it becomes ``CoordinatorError``."""
+    with _ledger_errors(), ledger.lock():
+        yield
+
+
+def _records_root(ledger: LifecycleLedger) -> Path:
+    with _ledger_errors():
         return ledger.records_root()
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _write_immutable(
-    ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, value: JsonObject
-) -> None:
-    try:
+def _write_immutable(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
+    with _ledger_errors():
         ledger.write_immutable(path, value)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _write_artifact(
-    ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, value: str
-) -> None:
-    try:
+def _write_artifact(ledger: LifecycleLedger, path: Path, value: str) -> None:
+    with _ledger_errors():
         ledger.write_artifact(path, value)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _replace_path(
-    ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, value: JsonObject
-) -> None:
-    try:
+def _replace_path(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
+    with _ledger_errors():
         ledger.replace(path, value)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _replace_record(
-    ledger: LifecycleLedger, ops: CoordinatorOps, record: LedgerRecordVO
-) -> None:
-    try:
+def _replace_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
+    with _ledger_errors():
         ledger.replace_record(record)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _delete_record(
-    ledger: LifecycleLedger, ops: CoordinatorOps, path: Path, *, reason: str
-) -> None:
-    try:
+def _delete_record(ledger: LifecycleLedger, path: Path, *, reason: str) -> None:
+    with _ledger_errors():
         ledger.delete(path, reason=reason)
-    except LedgerError as exc:
-        raise ops.CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _lane_path(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
-    return _records_root(ledger, ops) / "qa-lane" / "lease.json"
+def _lane_path(ledger: LifecycleLedger) -> Path:
+    return _records_root(ledger) / "qa-lane" / "lease.json"
 
 
-def _queue_root(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
-    return _records_root(ledger, ops) / "qa-lane" / "queue"
+def _queue_root(ledger: LifecycleLedger) -> Path:
+    return _records_root(ledger) / "qa-lane" / "queue"
 
 
-def _counter_path(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
-    return _records_root(ledger, ops) / "qa-lane" / "sequence.json"
+def _counter_path(ledger: LifecycleLedger) -> Path:
+    return _records_root(ledger) / "qa-lane" / "sequence.json"
 
 
-def _artifact_path(ledger: LifecycleLedger, checksum: str, ops: CoordinatorOps) -> Path:
-    return _records_root(ledger, ops) / "qa-artifacts" / f"{checksum}.log"
+def _artifact_path(ledger: LifecycleLedger, checksum: str) -> Path:
+    return _records_root(ledger) / "qa-artifacts" / f"{checksum}.log"
 
 
-def _attempt_path(ledger: LifecycleLedger, ops: CoordinatorOps) -> Path:
-    return _records_root(ledger, ops) / "qa-lane" / "attempts" / f"{uuid.uuid4()}.json"
+def _attempt_path(ledger: LifecycleLedger) -> Path:
+    return _records_root(ledger) / "qa-lane" / "attempts" / f"{uuid.uuid4()}.json"
 
 
-def _queue_entries(
-    ledger: LifecycleLedger, ops: CoordinatorOps
-) -> list[tuple[Path, JsonObject]]:
+def _queue_entries(ledger: LifecycleLedger) -> list[tuple[Path, JsonObject]]:
     entries: list[tuple[Path, JsonObject]] = []
-    for path in _queue_root(ledger, ops).glob("*.json"):
-        entry = ops._read_object(path, "QA queue entry")
+    for path in _queue_root(ledger).glob("*.json"):
+        entry = _read_object(path, "QA queue entry")
         if (
-            set(entry) != ops.QA_QUEUE_FIELDS
+            not _valid_owner_schema(entry, QA_QUEUE_FIELDS)
             or not isinstance(entry["sequence"], int)
             or entry["sequence"] < 1
         ):
-            raise ops.CoordinatorError(
+            raise CoordinatorError(
                 "QA queue entry has an invalid schema",
                 remedy=f"fix {path}: it must hold exactly dispatch_id, sequence (an integer >= 1) and queued_at",
             )
-        ops._safe_id(entry["dispatch_id"], "QA queue dispatch")
-        if not ops._non_empty(entry["queued_at"]):
-            raise ops.CoordinatorError(
+        _validate_owner(entry)
+        if not _non_empty(entry["queued_at"]):
+            raise CoordinatorError(
                 "QA queue entry has an invalid queued_at value",
                 remedy=f"set a non-empty queued_at in {path}",
             )
@@ -218,15 +221,173 @@ def _queue_entries(
     return sorted(entries, key=lambda item: item[1]["sequence"])
 
 
+def _owner(value: JsonObject) -> tuple[str, str]:
+    """Normalize legacy dispatch records without rewriting their history."""
+    return (
+        str(value.get("owner_kind", "dispatch")),
+        str(value.get("owner_id", value.get("dispatch_id"))),
+    )
+
+
+def _owner_document(kind: str, identity: str) -> JsonObject:
+    return (
+        {"dispatch_id": identity}
+        if kind == "dispatch"
+        else {"owner_kind": kind, "owner_id": identity}
+    )
+
+
+def _valid_owner_schema(value: JsonObject, legacy_fields: set[str]) -> bool:
+    return (
+        set(value) == legacy_fields
+        or set(value) == (legacy_fields - {"dispatch_id"}) | QA_OWNER_FIELDS
+    )
+
+
+def _validate_owner(value: JsonObject) -> None:
+    kind, identity = _owner(value)
+    if kind not in {"dispatch", "local-qa"}:
+        raise CoordinatorError(
+            "QA owner kind is invalid", remedy="use a dispatch or local-qa owner"
+        )
+    if kind == "dispatch":
+        _safe_id(identity, "QA owner")
+    elif re.fullmatch(r"local-qa-[0-9a-f]{32}", identity) is None:
+        raise CoordinatorError(
+            "local QA owner ID is invalid",
+            remedy="use the request_id returned by integration local-qa",
+        )
+
+
+def _require_lease_seconds(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CoordinatorError(
+            "QA lease-seconds must be a positive integer",
+            remedy="pass --lease-seconds as an integer >= 1",
+        )
+    return value
+
+
+def _batch_entry(batch: JsonObject, dispatch_id: str) -> JsonObject | None:
+    """The batch's entry for one dispatch, or ``None`` when the batch does not list it."""
+    return next(
+        (
+            item
+            for item in batch.get("dispatches", [])
+            if item["dispatch_id"] == dispatch_id
+        ),
+        None,
+    )
+
+
+def acquire(
+    ledger: LifecycleLedger,
+    owner_id: str,
+    *,
+    owner_kind: str = "dispatch",
+    lease_seconds: int,
+) -> JsonObject:
+    """Enqueue and acquire the one FIFO lane. Caller holds the short ledger lock."""
+    _require_lease_seconds(lease_seconds)
+    _validate_owner(_owner_document(owner_kind, owner_id))
+    queue_path, _ = _enqueue(ledger, owner_id, owner_kind=owner_kind)
+    queue = _queue_entries(ledger)
+    position = next(
+        index
+        for index, (_, entry) in enumerate(queue, start=1)
+        if _owner(entry) == (owner_kind, owner_id)
+    )
+    lease = _lease(ledger)
+    if lease and _lease_expired(lease):
+        raise CoordinatorError(
+            "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
+            remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease, then run the QA runner again",
+        )
+    if lease or position != 1:
+        return {"state": "queued", "position": position}
+    lease = {
+        **_owner_document(owner_kind, owner_id),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "acquired_at": _now(),
+        "expires_at": (
+            datetime.now(UTC) + timedelta(seconds=lease_seconds)
+        ).isoformat(),
+    }
+    _write_immutable(ledger, _lane_path(ledger), lease)
+    return {
+        "state": "acquired",
+        "position": position,
+        "lease": lease,
+        "queue_path": str(queue_path),
+    }
+
+
+def release(ledger: LifecycleLedger, claimed: JsonObject) -> None:
+    """Release exactly the acquired lease and its queue entry. Caller holds the lock."""
+    current = _lease(ledger)
+    if current != claimed:
+        raise CoordinatorError(
+            "QA lease owner changed; refusing release",
+            remedy="inspect 'qa status' and retain the current owner's lease",
+        )
+    for path, entry in _queue_entries(ledger):
+        if _owner(entry) == _owner(claimed):
+            _delete_record(ledger, path, reason="complete QA queue entry")
+    _delete_record(ledger, _lane_path(ledger), reason="complete QA lease")
+
+
+def withdraw(ledger: LifecycleLedger, owner_id: str, *, owner_kind: str) -> None:
+    """Remove a waiting request whose pair became unusable; never remove a lease."""
+    current = _lease(ledger)
+    if current and _owner(current) == (owner_kind, owner_id):
+        return
+    for path, entry in _queue_entries(ledger):
+        if _owner(entry) == (owner_kind, owner_id):
+            _delete_record(ledger, path, reason="withdraw unavailable QA request")
+
+
+def running_owner(
+    ledger: LifecycleLedger, owner_id: str, *, owner_kind: str
+) -> JsonObject | None:
+    """Observe an already running owner without changing its admission or retry budget."""
+    current = _lease(ledger)
+    if not current or _owner(current) != (owner_kind, owner_id):
+        return None
+    if _lease_expired(current):
+        raise CoordinatorError(
+            "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
+            remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease",
+        )
+    position = next(
+        (
+            index
+            for index, (_, entry) in enumerate(_queue_entries(ledger), start=1)
+            if _owner(entry) == (owner_kind, owner_id)
+        ),
+        None,
+    )
+    if position is None:
+        # A release that failed between its queue and lease deletions leaves an orphan lease.
+        raise CoordinatorError(
+            "QA lease has no queue entry for its owner",
+            remedy="run 'qa status'; after the lease expires, have a coordinator run 'qa clear-stale-lease'",
+        )
+    return {"state": "queued", "position": position, "running": True}
+
+
 def _enqueue(
-    ledger: LifecycleLedger, dispatch_id: str, ops: CoordinatorOps
+    ledger: LifecycleLedger,
+    dispatch_id: str,
+    *,
+    owner_kind: str = "dispatch",
 ) -> tuple[Path, JsonObject]:
-    for path, entry in _queue_entries(ledger, ops):
-        if entry["dispatch_id"] == dispatch_id:
+    for path, entry in _queue_entries(ledger):
+        if _owner(entry) == (owner_kind, dispatch_id):
             return path, entry
-    counter_path = _counter_path(ledger, ops)
+    counter_path = _counter_path(ledger)
     counter = (
-        ops._read_object(counter_path, "QA queue sequence")
+        _read_object(counter_path, "QA queue sequence")
         if counter_path.exists()
         else {"next": 1}
     )
@@ -235,84 +396,83 @@ def _enqueue(
         or not isinstance(counter["next"], int)
         or counter["next"] < 1
     ):
-        raise ops.CoordinatorError(
+        raise CoordinatorError(
             "QA queue sequence is invalid",
             remedy=f"fix {counter_path}: it must be a JSON object holding only an integer 'next' >= 1",
         )
     entry = {
-        "dispatch_id": dispatch_id,
+        **_owner_document(owner_kind, dispatch_id),
         "sequence": counter["next"],
-        "queued_at": ops._now(),
+        "queued_at": _now(),
     }
-    path = _queue_root(ledger, ops) / f"{entry['sequence']:020d}-{dispatch_id}.json"
-    _write_immutable(ledger, ops, path, entry)
+    path = _queue_root(ledger) / f"{entry['sequence']:020d}-{dispatch_id}.json"
+    _write_immutable(ledger, path, entry)
     next_counter = {"next": counter["next"] + 1}
     if counter_path.exists():
-        _replace_path(ledger, ops, counter_path, next_counter)
+        _replace_path(ledger, counter_path, next_counter)
     else:
         # The first queue entry in a fresh ledger has no mutable counter yet.  Seed it as an
         # immutable record; subsequent enqueues may use the ledger transition primitive.
-        _write_immutable(ledger, ops, counter_path, next_counter)
+        _write_immutable(ledger, counter_path, next_counter)
     return path, entry
 
 
-def release_queue(
-    ledger: LifecycleLedger, dispatch_ids: list[str], ops: CoordinatorOps
-) -> list[str]:
+def release_queue(ledger: LifecycleLedger, dispatch_ids: list[str]) -> list[str]:
     """Drop the queue entries of dispatches that will never run, so they cannot hold up the lane.
 
     Only queue entries go: a lease is left to ``clear_stale_lease``, which refuses a live one.
     """
     released = []
-    for path, entry in _queue_entries(ledger, ops):
-        if entry["dispatch_id"] in dispatch_ids:
-            _delete_record(ledger, ops, path, reason="release abandoned QA queue entry")
-            released.append(entry["dispatch_id"])
+    for path, entry in _queue_entries(ledger):
+        kind, identity = _owner(entry)
+        if kind == "dispatch" and identity in dispatch_ids:
+            _delete_record(ledger, path, reason="release abandoned QA queue entry")
+            released.append(identity)
     return released
 
 
-def _lease(ledger: LifecycleLedger, ops: CoordinatorOps) -> JsonObject | None:
-    path = _lane_path(ledger, ops)
+def _lease(ledger: LifecycleLedger) -> JsonObject | None:
+    path = _lane_path(ledger)
     if not path.exists():
         return None
-    lease = ops._read_object(path, "QA lease")
+    lease = _read_object(path, "QA lease")
     if (
-        set(lease) != ops.QA_LEASE_FIELDS
-        or not ops._non_empty(lease.get("host"))
+        not _valid_owner_schema(lease, QA_LEASE_FIELDS)
+        or not _non_empty(lease.get("host"))
         or not isinstance(lease.get("pid"), int)
     ):
-        raise ops.CoordinatorError(
+        raise CoordinatorError(
             "QA lease has an invalid schema",
             remedy=f"fix {path}: it must hold exactly dispatch_id, host, pid (an integer), acquired_at and expires_at",
         )
-    ops._safe_id(lease.get("dispatch_id"), "QA lease dispatch")
+    _validate_owner(lease)
     for field in ("acquired_at", "expires_at"):
-        if not ops._non_empty(lease.get(field)):
-            raise ops.CoordinatorError(
+        if not _non_empty(lease.get(field)):
+            raise CoordinatorError(
                 f"QA lease has an invalid {field}",
                 remedy=f"set a non-empty {field} in {path}",
             )
     return lease
 
 
-def _lease_expired(lease: JsonObject, ops: CoordinatorOps) -> bool:
-    return ops._moment(lease["expires_at"], "QA lease expiry") <= datetime.now(UTC)
+def _lease_expired(lease: JsonObject) -> bool:
+    return _moment(lease["expires_at"], "QA lease expiry") <= datetime.now(UTC)
 
 
-def qa_evidence(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
+def qa_evidence(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     """Verify accepted green QA evidence for one current issue-branch candidate."""
     repo = ops._repo(args)
-    root = _state_root(args, repo, ops)
-    ticket = args.ticket.strip() if ops._non_empty(args.ticket) else ""
-    branch = args.branch.strip() if ops._non_empty(args.branch) else ""
+    root = _state_root(args, repo)
+    ticket = args.ticket.strip() if _non_empty(args.ticket) else ""
+    branch = args.branch.strip() if _non_empty(args.branch) else ""
     if not ticket or not branch:
-        raise ops.CoordinatorError(
+        raise CoordinatorError(
             "QA evidence requires non-empty ticket and branch",
             remedy="pass non-empty --ticket and --branch",
         )
     candidate = ops._candidate_commit(repo, args.candidate_commit)
     ledger = LifecycleLedger(root)
-    with _lock(ledger, ops):
+    with _lock(ledger):
         batch = ops._batch_for_ticket_branch(
             root, ticket, branch, candidate, getattr(args, "batch", None)
         )
@@ -327,15 +487,28 @@ def qa_evidence(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
 
 
 def _qa_report(
-    dispatch: JsonObject, checks: list[dict[str, str]], artifact: Path, checksum: str
+    dispatch: JsonObject,
+    checks: list[dict[str, str]],
+    artifact: Path,
+    checksum: str,
+    stages: JsonObject | None = None,
 ) -> JsonObject:
+    """The QA completion report.
+
+    Without ``stages`` (a verification-only configuration) it is the historical report. With them,
+    the failing stage decides the outcome: a failed gate or a confirmed project-file defect is a
+    ``failed`` report for the developer; an infrastructure or unknown preparation failure is a
+    ``blocked`` one, whose ``checks_run`` records the commands never reached as ``not-run`` rather
+    than as failed code checks.
+    """
     failed = any(check["result"] == "fail" for check in checks)
-    return {
+    reference = f"full sanitised output: {artifact.as_posix()} (sha256:{checksum})"
+    report: JsonObject = {
         "dispatch_id": dispatch["dispatch_id"],
         "ticket": dispatch["ticket"],
         "role": "qa",
         "outcome": "failed" if failed else "completed",
-        "output": f"QA gate {'failed' if failed else 'passed'}; full sanitised output: {artifact.as_posix()} (sha256:{checksum})",
+        "output": f"QA gate {'failed' if failed else 'passed'}; {reference}",
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
         "checks_run": checks,
@@ -346,6 +519,86 @@ def _qa_report(
         else "accept or continue",
         "report_language": "ru",
     }
+    if stages is None:
+        return report
+    reached = [check["command"] for check in checks]
+    report["checks_run"] = [
+        *checks,
+        *(
+            {
+                "command": command,
+                "result": QA_NOT_RUN_RESULT,
+                "evidence": "not run: an earlier QA stage failed before this command",
+            }
+            for command in dispatch["verification_commands"]
+            if command not in reached
+        ),
+    ]
+    report["qa_stages"] = stages
+    if stages["failed_stage"] != "preparation":
+        return report
+    broken = next(stage for stage in stages["stages"] if stage["result"] == "fail")
+    diagnosis = stages["diagnosis"]
+    category = diagnosis["category"]
+    report["output"] = (
+        f"QA environment preparation failed at `{broken['command']}` "
+        f"(exit {broken['exit_code']}, cause: {category}); code was not verified, "
+        f"no code check started; {reference}"
+    )
+    if category == "project-defect":
+        report.update(
+            outcome="failed",
+            risks="the candidate's project files break environment preparation; code was not verified",
+            blockers="new approved developer retry required to fix the project-file defect",
+            next_coordinator_action="create a new approved developer retry",
+        )
+    elif category == "infrastructure":
+        report.update(
+            outcome="blocked",
+            risks="infrastructure failure before code checks; the candidate code was not verified",
+            blockers="QA infrastructure failure; no developer retry is needed",
+            next_coordinator_action="restore the QA environment, then decide a same-SHA QA retry",
+        )
+    else:
+        report.update(
+            outcome="blocked",
+            risks="cause of the preparation failure is unknown; the candidate code was not verified",
+            blockers="coordinator triage required; no automatic retry",
+            next_coordinator_action="triage the preparation failure, then decide the retry route",
+        )
+    return report
+
+
+def _verify_stages_against_artifact(
+    stages: JsonObject, artifact: Path, checksum: str
+) -> None:
+    """Prove the recorded stages against the persisted immutable artifact, read back from disk.
+
+    The artifact must still hash to its recorded checksum, and its command blocks must be exactly
+    the stage entries' executed commands and exit codes, in order.
+    """
+    try:
+        data = artifact.read_bytes()
+    except OSError as exc:
+        raise CoordinatorError(
+            f"could not read back the immutable QA evidence {artifact}: {exc}",
+            remedy="restore access to the ledger's QA evidence and run the QA runner again",
+        ) from exc
+    if hashlib.sha256(data).hexdigest() != checksum:
+        raise CoordinatorError(
+            "immutable QA evidence does not match its recorded checksum",
+            remedy="the persisted evidence changed after it was written; run the QA runner again",
+        )
+    logged = parse_command_log(data.decode("utf-8").splitlines())
+    recorded = [
+        (stage.get("executed_command", stage["command"]), stage["exit_code"])
+        for stage in stages["stages"]
+    ]
+    if logged != recorded:
+        raise CoordinatorError(
+            "the QA stage record does not match the immutable evidence",
+            remedy="the stage commands and exit codes must equal the artifact's command blocks; run the QA runner again",
+        )
 
 
 def _record_report(
@@ -354,26 +607,19 @@ def _record_report(
     repo: Path,
     dispatch: JsonObject,
     report: JsonObject,
-    ops: CoordinatorOps,
+    ops: QaWorkflowOps,
 ) -> Path:
     batch = ops._load_batch(root, dispatch["batch_id"])
     ops._validate_batch_integrity(root, batch)
     ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
     status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
-    entry = next(
-        (
-            item
-            for item in batch.get("dispatches", [])
-            if item["dispatch_id"] == dispatch["dispatch_id"]
-        ),
-        None,
-    )
+    entry = _batch_entry(batch, dispatch["dispatch_id"])
     if (
         not entry
         or entry.get("state") != "dispatched"
         or status.get("state") != "working"
     ):
-        raise ops.CoordinatorError(
+        raise CoordinatorError(
             "QA report requires a running QA dispatch",
             remedy="the batch entry must be dispatched and the dispatch status working; if they are out of sync, abandon the batch and create a new QA dispatch",
         )
@@ -394,30 +640,31 @@ def _recover_transient_failure(
     queue_path: Path,
     failure: HarnessError,
     stage: str,
-    ops: CoordinatorOps,
+    ops: QaWorkflowOps,
 ) -> None:
     """Return one QA dispatch to its retryable state after a non-terminal failure."""
-    with _lock(ledger, ops):
+    with _lock(ledger):
         _write_immutable(
             ledger,
-            ops,
-            _attempt_path(ledger, ops),
+            _attempt_path(ledger),
             {
                 "dispatch_id": dispatch["dispatch_id"],
                 "stage": stage,
-                "failed_at": ops._now(),
+                "failed_at": _now(),
                 "message": failure.message,
                 "remedy": failure.remedy,
             },
         )
         if queue_path.exists():
             _delete_record(
-                ledger, ops, queue_path, reason="release transient QA queue entry"
+                ledger, queue_path, reason="release transient QA queue entry"
             )
-        lease_path = _lane_path(ledger, ops)
-        current = _lease(ledger, ops)
-        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
-            _delete_record(ledger, ops, lease_path, reason="release transient QA lease")
+        lease_path = _lane_path(ledger)
+        current = _lease(ledger)
+        # An expired lease may have been cleared and the lane taken by another owner, including a
+        # local QA run without a dispatch_id; only this dispatch's own lease is released.
+        if current and _owner(current) == ("dispatch", dispatch["dispatch_id"]):
+            _delete_record(ledger, lease_path, reason="release transient QA lease")
         batch = ops._load_batch(root, dispatch["batch_id"])
         entry = next(
             item
@@ -425,144 +672,207 @@ def _recover_transient_failure(
             if item["dispatch_id"] == dispatch["dispatch_id"]
         )
         entry["state"] = "approved"
-        ops._safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, ops, BatchRecord.from_dict(batch))
-        ops._safe_id(dispatch["dispatch_id"], "dispatch")
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+        _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(
             ledger,
-            ops,
             DispatchStatusRecord.from_dict(
                 {
                     "dispatch_id": dispatch["dispatch_id"],
                     "state": "approved",
-                    "updated_at": ops._now(),
+                    "updated_at": _now(),
                 }
             ),
         )
 
 
-def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
+def _release_after_failure(
+    ledger: LifecycleLedger,
+    root: Path,
+    dispatch: JsonObject,
+    queue_path: Path | None,
+    exc: BaseException,
+    stage: str,
+    ops: QaWorkflowOps,
+) -> None:
+    """Undo an acquired lane after any failure and raise a coordinator error for an unexpected one.
+
+    A held lease, a queue entry or a ``dispatched`` state that outlives a failed run would block
+    every later QA run until a human clears it. A harness error keeps its own message and remedy.
+    """
+    if queue_path is None:
+        return
+    if isinstance(exc, HarnessError):
+        failure: HarnessError = exc
+    elif isinstance(exc, Exception):
+        failure = CoordinatorError(
+            f"QA run failed unexpectedly at {stage}: {exc}",
+            remedy="inspect the cause above; the QA lane and the dispatch were released, so run the QA runner again",
+        )
+    else:
+        failure = CoordinatorError(
+            f"QA run was interrupted at {stage}",
+            remedy="the QA lane and the dispatch were released; run the QA runner again",
+        )
+    _recover_transient_failure(ledger, root, dispatch, queue_path, failure, stage, ops)
+    if failure is not exc and isinstance(exc, Exception):
+        raise failure from exc
+
+
+def _verify_access(
+    ledger: LifecycleLedger,
+    repo: Path,
+    dispatch: JsonObject,
+    ops: QaWorkflowOps,
+) -> None:
+    """Prove the QA operation's access before the lane is acquired; record a refusal as an attempt.
+
+    A refusal changes nothing else: there is no queue entry or lease to undo, the dispatch stays
+    approved, and every earlier attempt and artifact is untouched.
+    """
+    try:
+        operation_access.require(
+            repo,
+            ops._config(repo),
+            "qa",
+            brief=dispatch,
+            checkout=storage_path(repo, "runs", "qa"),
+        )
+    except operation_access.OperationAccessError as exc:
+        _write_immutable(
+            ledger,
+            _attempt_path(ledger),
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "stage": "access",
+                "failed_at": _now(),
+                "message": exc.message,
+                "remedy": exc.remedy,
+                "evidence": exc.evidence,
+            },
+        )
+        raise
+
+
+def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     repo = ops._repo(args)
-    root = _state_root(args, repo, ops)
-    lease_seconds = (
+    root = _state_root(args, repo)
+    lease_seconds = _require_lease_seconds(
         args.lease_seconds
         if args.lease_seconds is not None
-        else _execution_policy(ops._config(repo))["qa_lease_seconds"]
+        else _execution_policy(ops._config(repo))["qa_lease_seconds"],
     )
-    if (
-        isinstance(lease_seconds, bool)
-        or not isinstance(lease_seconds, int)
-        or lease_seconds < 1
-    ):
-        raise ops.CoordinatorError(
-            "QA lease-seconds must be a positive integer",
-            remedy="pass --lease-seconds as an integer >= 1",
-        )
     ledger = LifecycleLedger(root)
-    with _lock(ledger, ops):
+    held: BaseException | None = None
+    queue_path: Path | None = None
+    with _lock(ledger):
         dispatch = ops._load_dispatch(root, args.dispatch)
         batch = ops._load_batch(root, dispatch["batch_id"])
         ops._validate_batch_integrity(root, batch)
         ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
         if dispatch["role"] != "qa":
-            raise ops.CoordinatorError(
+            raise CoordinatorError(
                 "clean-room QA runner accepts only QA dispatches",
                 remedy="pass --dispatch the ID of a dispatch whose role is qa",
             )
         if not dispatch["verification_commands"]:
-            raise ops.CoordinatorError(
+            raise CoordinatorError(
                 "clean-room QA runner requires configured verification_commands",
                 remedy="configure verification_commands for the QA role in the project's orchestration config and create a new dispatch",
             )
         status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _batch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
             or entry.get("state") != "approved"
             or status.get("state") != "approved"
         ):
-            raise ops.CoordinatorError(
+            raise CoordinatorError(
                 "QA runner requires an approved, unsent dispatch",
                 remedy="approve the QA dispatch and run the QA runner before sending it to any agent",
             )
-        queue_path, _ = _enqueue(ledger, dispatch["dispatch_id"], ops)
-        queue = _queue_entries(ledger, ops)
-        position = next(
-            index
-            for index, (_, item) in enumerate(queue, start=1)
-            if item["dispatch_id"] == dispatch["dispatch_id"]
+        _verify_access(ledger, repo, dispatch, ops)
+        admission = acquire(
+            ledger, dispatch["dispatch_id"], lease_seconds=lease_seconds
         )
-        lease = _lease(ledger, ops)
-        if lease is not None:
-            if _lease_expired(lease, ops):
-                raise ops.CoordinatorError(
-                    "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
-                    remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease, then run the QA runner again",
-                )
-            return {
-                "dispatch_id": dispatch["dispatch_id"],
-                "state": "queued",
-                "position": position,
-            }
-        if position != 1:
-            return {
-                "dispatch_id": dispatch["dispatch_id"],
-                "state": "queued",
-                "position": position,
-            }
-        lease = {
-            "dispatch_id": dispatch["dispatch_id"],
-            "host": socket.gethostname(),
-            "pid": os.getpid(),
-            "acquired_at": ops._now(),
-            "expires_at": (
-                datetime.now(UTC) + timedelta(seconds=lease_seconds)
-            ).isoformat(),
-        }
-        _write_immutable(ledger, ops, _lane_path(ledger, ops), lease)
-        entry["state"] = "dispatched"
-        ops._safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(
-            ledger,
-            ops,
-            DispatchStatusRecord.from_dict(
-                {
-                    "dispatch_id": dispatch["dispatch_id"],
-                    "state": "working",
-                    "updated_at": ops._now(),
-                }
-            ),
+        if admission["state"] == "queued":
+            return {"dispatch_id": dispatch["dispatch_id"], **admission}
+        queue_path = Path(admission["queue_path"])
+        lease = admission["lease"]
+        try:
+            entry["state"] = "dispatched"
+            _safe_id(dispatch["dispatch_id"], "dispatch")
+            _replace_record(
+                ledger,
+                DispatchStatusRecord.from_dict(
+                    {
+                        "dispatch_id": dispatch["dispatch_id"],
+                        "state": "working",
+                        "updated_at": _now(),
+                    }
+                ),
+            )
+            _safe_id(batch["batch_id"], "batch")
+            _replace_record(ledger, BatchRecord.from_dict(batch))
+        except BaseException as exc:
+            # The lock is still held here; release it first, then undo the lane and the state.
+            held = exc
+    if held is not None:
+        _release_after_failure(
+            ledger, root, dispatch, queue_path, held, "state-transition", ops
         )
-        ops._safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, ops, BatchRecord.from_dict(batch))
+        raise held
+    if queue_path is None:  # an unqueued run returned above
+        raise CoordinatorError(
+            "QA run reached the gate without an acquired lane",
+            remedy=INTERNAL_INVARIANT_REMEDY,
+        )
     try:
         # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
         # not consume CI time and coordinator context collecting unrelated failures afterwards.
-        gate = run_gate(
-            dispatch["verification_commands"],
-            CleanRoomPolicy(repo, dispatch["candidate_commit"]),
-            stop_on_failure=True,
-        )
+        policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
+        from .infrastructure_retry import pinned
+
+        config = ops._config(repo)
+        pinned_commands = pinned(dispatch)
+        if pinned_commands is not None:
+            config = {**config, **pinned_commands}
+        preparation = _qa_preparation_commands(config)
+        if preparation:
+            staged = run_qa_stages(
+                preparation,
+                dispatch["verification_commands"],
+                policy,
+                environment_probes=_qa_preparation_commands(
+                    config, "qa_environment_probes"
+                ),
+                project_file_checks=_qa_preparation_commands(
+                    config, "qa_project_file_checks"
+                ),
+            )
+            artifact_text, checks = staged.artifact, staged.gate_checks
+        else:
+            staged = None
+            gate = run_gate(
+                dispatch["verification_commands"], policy, stop_on_failure=True
+            )
+            artifact_text, checks = gate.artifact, gate.checks
     except GateRunnerError as exc:
-        failure = ops.CoordinatorError(exc.message, remedy=exc.remedy)
+        failure = CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
             ledger, root, dispatch, queue_path, failure, "gate-run", ops
         )
         raise failure from exc
-    artifact_text, checks = gate.artifact, gate.checks
+    except BaseException as exc:
+        _release_after_failure(ledger, root, dispatch, queue_path, exc, "gate-run", ops)
+        raise
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
-    artifact = _artifact_path(ledger, checksum, ops)
     try:
-        _write_artifact(ledger, ops, artifact, artifact_text)
-    except ops.CoordinatorError as exc:
-        failure = ops.CoordinatorError(
+        artifact = _artifact_path(ledger, checksum)
+        _write_artifact(ledger, artifact, artifact_text)
+    except CoordinatorError as exc:
+        failure = CoordinatorError(
             "could not persist immutable QA evidence",
             remedy="resolve the underlying ledger error reported as its cause and run the QA runner again",
         )
@@ -570,23 +880,41 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
             ledger, root, dispatch, queue_path, failure, "artifact-persistence", ops
         )
         raise failure from exc
-    report = _qa_report(dispatch, checks, artifact, checksum)
+    except BaseException as exc:
+        _release_after_failure(
+            ledger, root, dispatch, queue_path, exc, "artifact-persistence", ops
+        )
+        raise
+    stages = staged.record() if staged is not None else None
+    if stages is not None:
+        try:
+            _verify_stages_against_artifact(stages, artifact, checksum)
+        except CoordinatorError as exc:
+            _recover_transient_failure(
+                ledger, root, dispatch, queue_path, exc, "stage-verification", ops
+            )
+            raise
+        except BaseException as exc:
+            _release_after_failure(
+                ledger, root, dispatch, queue_path, exc, "stage-verification", ops
+            )
+            raise
     try:
-        with _lock(ledger, ops):
+        report = _qa_report(dispatch, checks, artifact, checksum, stages)
+        with _lock(ledger):
             report_path = _record_report(ledger, root, repo, dispatch, report, ops)
-    except ops.CoordinatorError as exc:
+    except CoordinatorError as exc:
         _recover_transient_failure(
             ledger, root, dispatch, queue_path, exc, "report-persistence", ops
         )
         raise
-    with _lock(ledger, ops):
-        _queue_entries(ledger, ops)
-        if queue_path.exists():
-            _delete_record(ledger, ops, queue_path, reason="complete QA queue entry")
-        lease_path = _lane_path(ledger, ops)
-        current = _lease(ledger, ops)
-        if current and current["dispatch_id"] == dispatch["dispatch_id"]:
-            _delete_record(ledger, ops, lease_path, reason="complete QA lease")
+    except BaseException as exc:
+        _release_after_failure(
+            ledger, root, dispatch, queue_path, exc, "report-persistence", ops
+        )
+        raise
+    with _lock(ledger):
+        release(ledger, lease)
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
@@ -596,32 +924,32 @@ def run(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
     }
 
 
-def status(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
-    repo = ops._repo(args)
-    root = _state_root(args, repo, ops)
+def status(args: argparse.Namespace) -> JsonObject:
+    repo = _repo(args)
+    root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _lock(ledger, ops):
-        queue, lease = _queue_entries(ledger, ops), _lease(ledger, ops)
+    with _lock(ledger):
+        queue, lease = _queue_entries(ledger), _lease(ledger)
         return {
             "lease": lease,
-            "lease_stale": _lease_expired(lease, ops) if lease else False,
+            "lease_stale": _lease_expired(lease) if lease else False,
             "queue": [entry for _, entry in queue],
         }
 
 
-def clear_stale_lease(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObject:
+def clear_stale_lease(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     repo = ops._repo(args)
-    root = _state_root(args, repo, ops)
+    root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _lock(ledger, ops):
-        lease = _lease(ledger, ops)
+    with _lock(ledger):
+        lease = _lease(ledger)
         if lease is None:
-            raise ops.CoordinatorError(
+            raise CoordinatorError(
                 "there is no QA lease to clear",
                 remedy="run 'qa status' to confirm the lane holds no lease; there is nothing to clear",
             )
-        if not _lease_expired(lease, ops):
-            raise ops.CoordinatorError(
+        if not _lease_expired(lease):
+            raise CoordinatorError(
                 "a live QA lease cannot be force-unlocked",
                 remedy="wait until the lease expires (see 'qa status'), then run 'qa clear-stale-lease' again",
             )
@@ -631,39 +959,31 @@ def clear_stale_lease(args: argparse.Namespace, ops: CoordinatorOps) -> JsonObje
             "expires_at": args.expected_expiry,
         }
         if any(lease[field] != value for field, value in expected.items()):
-            raise ops.CoordinatorError(
+            raise CoordinatorError(
                 "QA lease changed; coordinator must validate the current owner again",
                 remedy="run 'qa status' and pass the current lease's host, pid and expiry as --expected-host, --expected-pid and --expected-expiry",
             )
         recovery = {
-            "cleared_dispatch_id": lease["dispatch_id"],
+            "cleared_dispatch_id": _owner(lease)[1],
             "lease": lease,
             "approval": ops._approval(args),
             "reason": args.reason.strip(),
-            "cleared_at": ops._now(),
+            "cleared_at": _now(),
         }
         _write_immutable(
             ledger,
-            ops,
-            _records_root(ledger, ops)
-            / "qa-lane"
-            / "recoveries"
-            / f"{uuid.uuid4()}.json",
+            _records_root(ledger) / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json",
             recovery,
         )
         owner = next(
             (
                 (path, entry)
-                for path, entry in _queue_entries(ledger, ops)
-                if entry["dispatch_id"] == lease["dispatch_id"]
+                for path, entry in _queue_entries(ledger)
+                if _owner(entry) == _owner(lease)
             ),
             None,
         )
         if owner is not None:
-            _delete_record(
-                ledger, ops, owner[0], reason="clear stale QA lease queue entry"
-            )
-        _delete_record(
-            ledger, ops, _lane_path(ledger, ops), reason="clear stale QA lease"
-        )
-    return {"state": "cleared", "dispatch_id": lease["dispatch_id"]}
+            _delete_record(ledger, owner[0], reason="clear stale QA lease queue entry")
+        _delete_record(ledger, _lane_path(ledger), reason="clear stale QA lease")
+    return {"state": "cleared", **_owner_document(*_owner(lease))}

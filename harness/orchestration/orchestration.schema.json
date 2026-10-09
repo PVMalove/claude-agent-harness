@@ -1,17 +1,103 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "backend orchestration project config",
-  "description": "Конфигурация оркестрации бэкенда проекта: профили провайдеров, планы назначения ролей, зоны доступа и политики согласования.",
+  "description": "Конфигурация оркестрации бэкенда проекта: профили провайдеров, планы назначения ролей, потолок записи ролей и политики согласования.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "provider_profiles",
-    "assignment_plans",
-    "backend_zones",
-    "concurrency_budget",
-    "verification_commands"
+  "anyOf": [
+    {"required": ["provider_profiles", "assignment_plans", "concurrency_budget", "verification_commands"]},
+    {"required": ["access_policy"], "properties": {
+      "provider_profiles": {"maxProperties": 0},
+      "assignment_plans": {"maxProperties": 0},
+      "backend_zones": {"maxProperties": 0}
+    }},
+    {
+      "required": [
+        "infrastructure_retry_policy"
+      ],
+      "properties": {
+    "infrastructure_retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "description": "Явное разрешение ограниченных инфраструктурных повторов в утверждённых границах; не выдаёт native права. Бюджет: attention_policy.max_infrastructure_retries."
+    },
+        "provider_profiles": {
+          "maxProperties": 0
+        },
+        "assignment_plans": {
+          "maxProperties": 0
+        },
+        "backend_zones": {
+          "maxProperties": 0
+        }
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"approval_policy": {"const": "auto"}},
+        "required": ["approval_policy"]
+      },
+      "then": {
+        "properties": {
+          "human_approval_gate": {"const": "trusted"},
+          "worker_attestation_required": {"const": true}
+        },
+        "required": ["worker_attestation_required"]
+      }
+    }
   ],
   "properties": {
+    "access_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "defaults": {
+          "$ref": "#/definitions/accessComponent"
+        },
+        "roles": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "architect",
+              "code-review",
+              "conflict-resolver",
+              "database-migrations",
+              "developer",
+              "messaging-integration",
+              "qa",
+              "verification"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/accessComponent"
+          }
+        },
+        "operations": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "qa",
+              "git",
+              "publish"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/definitions/accessComponent"
+          }
+        }
+      }
+    },
     "$schema": {
       "type": "string",
       "description": "Указатель на относительный путь к файлу схемы JSON Schema. Используется редакторами кода и IDE для автодополнения, валидации и отображения подсказок при редактировании конфигурации."
@@ -25,14 +111,14 @@
     },
     "assignment_plans": {
       "type": "object",
-      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют, какую область кода (zone) обрабатывает роль, какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('in-process' или 'external').",
+      "description": "Планы назначения ролей ('architect', 'developer', 'code-review', 'qa'). Определяют потолок записи роли (write_paths), какие рантаймы (например, 'claude', 'codex') доступны, с какой моделью, уровнем усилий ('effort') и транспортом ('in-process' или 'external').",
       "additionalProperties": {
         "$ref": "#/definitions/assignmentPlan"
       }
     },
     "backend_zones": {
       "type": "object",
-      "description": "Именованные зоны доступа к репозиторию. Задают границы чтения и записи (списки glob-шаблонов путей), к которым привязываются роли в assignment_plans.",
+      "description": "Устаревшее: именованные зоны доступа. Больше не нужны и не блокируют параллельные батчи; граница записи — явный allowed_paths батча в пределах write_paths роли. Существующая конфигурация с зонами остаётся валидной.",
       "additionalProperties": {
         "$ref": "#/definitions/backendZone"
       }
@@ -58,6 +144,30 @@
       },
       "description": "Цель: ускорение итераций разработки. За что отвечает: оптимизированное подмножество проверочных команд, запускаемых разработчиком. Варианты: массив строк; если не задан, используются полные verification_commands."
     },
+    "qa_preparation": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Цель: отделить подготовку окружения QA от проверок кода. За что отвечает: shell-команды подготовки (установка зависимостей и т.п.), которые clean-room QA выполняет в том же checkout кандидата до verification_commands и останавливается на первой упавшей. Варианты: массив строк; если не задан или пуст, QA сразу выполняет verification_commands."
+    },
+    "qa_environment_probes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Цель: независимо подтвердить, что окружение QA неисправно. За что отвечает: shell-команды (например, проверка доступности реестра пакетов), которые QA выполняет в том же checkout только после упавшей qa_preparation; упавшая проба при успешных qa_project_file_checks подтверждает инфраструктурную причину. Варианты: массив строк; если не задан, инфраструктурная причина не подтверждается и провал требует triage."
+    },
+    "qa_project_file_checks": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Цель: независимо проверить файлы проекта без сети. За что отвечает: shell-команды (например, проверка согласованности lock-файла), которые QA выполняет в том же checkout только после упавшей qa_preparation; упавшая проверка подтверждает дефект проекта, а успешные проверки вместе с упавшей пробой — инфраструктурную причину. Варианты: массив строк; если не задан, инфраструктурная причина не подтверждается."
+    },
     "review_verification_commands": {
       "type": "array",
       "items": {
@@ -75,19 +185,25 @@
       "description": "Цель: идентификация тестовых файлов. За что отвечает: glob-шаблоны путей к тестам для определения delta-review (оптимизация проверки при изменении только тестов). Варианты: массив glob-строк (например, ['tests/**', '**/test_*.py'])."
     },
     "approval_policy": {
-      "enum": ["manual_all", "milestone", "low_risk"],
+      "enum": ["manual_all", "milestone", "low_risk", "auto"],
       "default": "manual_all",
-      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для предсогласованных безопасных зон из low_risk_zones)."
+      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для батчей, чей allowed_paths целиком лежит в low_risk_paths), 'auto' (автоматический путь от batch approve до принятого publish: координатор сам согласует batch, каждый dispatch, включая publish, риск-триггеры, bypass-rerun и rebase target, плановое продолжение и решения batch auto-decide; каждое решение пишется как policy:auto с обоснованием и evidence в batch.auto_decisions; закрытый список остановок (budget-exhausted, integrity-failure, no-automatic-route) пишется в batch.auto_stop, после остановки каждый шаг снова согласует человек; итоговый отчёт пишется в batch.auto_report и выводится командой batch auto-report; PR открывает только человек, auto-merge запрещён; требует human_approval_gate 'trusted' и worker_attestation_required true)."
     },
     "human_approval_gate": {
       "enum": ["trusted", "tty"],
       "default": "trusted",
       "description": "Цель: проверка аутентичности аппрува. За что отвечает: способ валидации согласования человеком. Варианты: 'trusted' (принимает аргументы CLI --approved-by/--approved-at, по умолчанию), 'tty' (требует интерактивный ввод человека в TTY-терминале)."
     },
+    "low_risk_paths": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Цель: авто-согласование безопасных правок. За что отвечает: glob-шаблоны путей с низким риском в форме 'dir/**', '**' или точного файла, без сегментов '.', '..' и пустых, без ведущего '/' (сравнение по сегментам пути); батч продолжается без ручного аппрува при approval_policy = 'low_risk', только если весь его allowed_paths лежит внутри этих шаблонов. Без шаблонов ничто не считается низкорисковым. Варианты: массив шаблонов путей."
+    },
     "low_risk_zones": {
       "type": "array",
       "items": {"type": "string", "minLength": 1},
-      "description": "Цель: авто-согласование безопасных правок. За что отвечает: список именованных зон из backend_zones с низким риском, для которых разрешено автопродолжение при approval_policy = 'low_risk'. Варианты: массив имён зон."
+      "description": "Устаревшее: имена зон из backend_zones. Отображается на их пути, как если бы они были перечислены в low_risk_paths; батч, запланированный до явных областей, по-прежнему определяется своей зоной."
     },
     "worker_attestation_required": {
       "type": "boolean",
@@ -286,6 +402,87 @@
     }
   },
   "definitions": {
+    "accessComponent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "enum": [
+            "inherit",
+            "sandbox",
+            "unsandboxed"
+          ]
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hosts"
+          ],
+          "properties": {
+            "hosts": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 253,
+                "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$"
+              }
+            }
+          }
+        },
+        "filesystem": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "resource",
+              "access"
+            ],
+            "properties": {
+              "resource": {
+                "enum": [
+                  "checkout",
+                  "git_common",
+                  "shared_storage",
+                  "cache"
+                ]
+              },
+              "access": {
+                "enum": [
+                  "read",
+                  "write"
+                ]
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?=[^\\u0000]*\\S)[^\\u0000]+$"
+              }
+            },
+            "if": {
+              "properties": {
+                "resource": {
+                  "const": "cache"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "path"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
     "providerProfile": {
       "type": "object",
       "additionalProperties": false,
@@ -298,7 +495,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Поддерживаемые возможности провайдера. Варианты: 'architecture-analysis', 'backend-development', 'code-review', 'independent-verification'."
+          "description": "Поддерживаемые возможности провайдера. Варианты: 'architecture-analysis', 'backend-development', 'code-review', 'independent-verification', 'database-migrations', 'messaging-integration', 'conflict-resolution'."
         },
         "fallback": {
           "type": "array",
@@ -321,12 +518,12 @@
     "assignmentPlan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["zone", "runtimes"],
+      "required": ["runtimes"],
       "properties": {
         "zone": {
           "type": "string",
           "minLength": 1,
-          "description": "Имя зоны из backend_zones, за которую отвечает данная роль."
+          "description": "Устаревшее необязательное имя зоны из backend_zones; без него потолок записи роли — весь репозиторий или write_paths."
         },
         "write_paths": {
           "type": "array",
@@ -335,7 +532,7 @@
             "type": "string",
             "minLength": 1
           },
-          "description": "Уточнённый список путей для записи (находящийся внутри выделенной зоны)."
+          "description": "Потолок записи роли: пути, шире которых allowed_paths батча быть не может. По умолчанию — весь репозиторий (или пути зоны устаревшего плана)."
         },
         "transport": {
           "enum": ["in-process", "external"],
@@ -368,8 +565,8 @@
           "items": {"type": "string", "minLength": 1},
           "description": "Список используемых профилей провайдеров из provider_profiles."
         },
-        "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-sonnet-5', 'gpt-5.6-terra', 'gpt-5.6-luna', 'claude-haiku-4-5-20251001' и др."},
-        "effort": {"type": "string", "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'low', 'medium', 'high', 'max'."}
+        "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6.1-sol', 'gpt-6-luna' и др."},
+        "effort": {"type": "string", "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'low', 'medium', 'high', 'xhigh', 'max'."}
       }
     },
     "toolList": {

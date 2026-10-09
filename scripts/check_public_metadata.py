@@ -14,6 +14,7 @@ FORBIDDEN = re.compile(
     r"\bco-authored[- ]by\b|\bai[-_ ]?(agent|assistant|generated)\b",
     re.IGNORECASE,
 )
+GIT_TIMEOUT_SECONDS = 60
 
 
 def git_messages(commit_range: str) -> list[tuple[str, str]]:
@@ -23,6 +24,7 @@ def git_messages(commit_range: str) -> list[tuple[str, str]]:
         capture_output=True,
         text=True,
         check=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     fields = result.stdout.split("\x00")
     return list(zip(fields[0::2], fields[1::2]))
@@ -43,7 +45,10 @@ def main() -> int:
                 violations.append(
                     f"commit {commit}: forbidden metadata near {match.group(0)!r}"
                 )
-    if args.pr_body_file and args.pr_body_file.is_file():
+    if args.pr_body_file:
+        # An explicit body file that is missing must fail, not pass the check unread.
+        if not args.pr_body_file.is_file():
+            parser.error(f"PR body file not found: {args.pr_body_file}")
         body = args.pr_body_file.read_text(encoding="utf-8")
         match = FORBIDDEN.search(body)
         if match:

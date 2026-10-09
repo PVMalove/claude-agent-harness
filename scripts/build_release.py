@@ -31,6 +31,7 @@ CHANGELOG_CATEGORIES = frozenset(
     }
 )
 TAG_PATTERN = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\Z")
+GIT_TIMEOUT_SECONDS = 60
 
 
 def release_notes(changelog: str, version: str) -> str:
@@ -77,7 +78,11 @@ def release_notes(changelog: str, version: str) -> str:
 def tracked_installation_files(repo: Path) -> list[str]:
     """Получить список отслеживаемых git файлов, входящих в установочный архив релиза."""
     result = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=repo, check=True, capture_output=True
+        ["git", "ls-files", "-z"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        timeout=GIT_TIMEOUT_SECONDS,
     )
     tracked = [path.decode("utf-8") for path in result.stdout.split(b"\0") if path]
     included = [
@@ -129,24 +134,37 @@ def build_release(repo: Path, tag: str, output: Path) -> tuple[Path, Path, Path]
 def main() -> int:
     """Точка входа CLI: сборка или валидация релиза по переданным параметрам."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tag", required=True)
+    parser.add_argument(
+        "--tag",
+        required=False,
+        help="release tag, e.g. v1.3.0 (defaults to v<harness/VERSION> when checking)",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--check",
+        "--validate-only",
         action="store_true",
+        dest="check",
         help="only validate the tag, harness/VERSION, CHANGELOG and payload; build nothing",
     )
     arguments = parser.parse_args()
+    repo = Path(__file__).resolve().parent.parent
+    tag = arguments.tag
+    if tag is None:
+        if arguments.check:
+            version = (repo / "harness" / "VERSION").read_text(encoding="utf-8").strip()
+            tag = f"v{version}"
+        else:
+            parser.error("--tag is required unless --check or --validate-only is given")
     if not arguments.check and arguments.output is None:
         parser.error("--output is required unless --check is given")
-    repo = Path(__file__).resolve().parent.parent
     try:
         if arguments.check:
-            check_release(repo, arguments.tag)
-            print(f"{arguments.tag}: release checks passed")
+            check_release(repo, tag)
+            print(f"{tag}: release checks passed")
             return 0
-        archive, checksum, notes = build_release(repo, arguments.tag, arguments.output)
-    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        archive, checksum, notes = build_release(repo, tag, arguments.output)
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
         parser.error(str(exc))
     print(archive)
     print(checksum)

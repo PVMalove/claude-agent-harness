@@ -37,6 +37,24 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord as DispatchStatusRecord,
 )
 from harness.orchestration.ledger.lifecycle import (
+    IntegrationEvidenceRecord as IntegrationEvidenceRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
+    IntegrationLocalQaRecord as IntegrationLocalQaRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
+    IntegrationRecord as IntegrationRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
+    IntegrationRefreshRecord as IntegrationRefreshRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
+    ResolverEventRecord as ResolverEventRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
+    ResolverRecord as ResolverRecord,
+)
+from harness.orchestration.ledger.lifecycle import (
     JsonObject as JsonObject,
 )
 from harness.orchestration.ledger.lifecycle import (

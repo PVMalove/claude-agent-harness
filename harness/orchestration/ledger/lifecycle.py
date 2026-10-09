@@ -9,10 +9,14 @@ atomically switched.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
 import shutil
+import socket
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -20,7 +24,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import ClassVar, Protocol, cast
+from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
@@ -28,6 +32,10 @@ LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
 POINTER_NAME = "ledger.json"
 GENERATIONS = "generations"
+LOCK_DIRECTORY = ".coordinator.lock"
+LOCK_OWNER = "owner.json"
+# The operating-system file lock that lets one release at a time judge and remove the ledger lock.
+LOCK_RELEASE_GUARD = ".coordinator.lock.release"
 RECORD_DIRECTORIES = (
     "batches",
     "plans",
@@ -51,6 +59,37 @@ type JsonObject = dict[str, JsonValue]
 
 class LedgerError(HarnessError):
     """The durable lifecycle state cannot safely be selected or changed."""
+
+
+class LedgerLockBusy(LedgerError):
+    """Another operation holds the ledger lock."""
+
+
+def _lock_busy() -> LedgerLockBusy:
+    return LedgerLockBusy(
+        "ledger is locked by another operation",
+        remedy="repeat the command once the other operation finishes; if the lock stays held, "
+        "run 'coordinator.py ledger release-lock', which releases it only when its owner process "
+        "is gone",
+    )
+
+
+def _guard_byte(handle: BinaryIO, *, acquire: bool) -> None:
+    """Take without waiting, or drop, the operating-system lock on a file's first byte."""
+    handle.seek(0)
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.locking(
+            handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1
+        )
+    else:
+        import fcntl
+
+        fcntl.flock(
+            handle.fileno(),
+            (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN,
+        )
 
 
 @dataclass(frozen=True)
@@ -257,6 +296,226 @@ class CheckpointRecord:
         return cls(checkpoint_id=cast(str, data.get("checkpoint_id")), extra=extra)
 
 
+def _derived_id(prefix: str, members: JsonObject) -> str:
+    """A deterministic record id: the prefix and the first 32 hex digits of the canonical digest."""
+    digest = hashlib.sha256(_canonical(members).encode("utf-8")).hexdigest()
+    return f"{prefix}-{digest[:32]}"
+
+
+@dataclass(frozen=True)
+class IntegrationRecord:
+    """Value Object for a ``reports/integration/*.json`` record.
+
+    The record lives in a subdirectory of the already validated ``reports`` directory, so adding it
+    needs neither a schema bump nor a ``ledger migrate``.  Its id is derived from the identity it
+    links, so repeating a prepare finds the same record instead of writing a second one.
+    """
+
+    directory: ClassVar[str] = "reports/integration"
+    IDENTITY_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "ticket",
+        "branch",
+        "source_batch_id",
+        "candidate_sha",
+        "target_sha",
+    )
+
+    integration_record_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, identity: JsonObject) -> str:
+        return _derived_id(
+            "integration", {key: identity.get(key) for key in cls.IDENTITY_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.integration_record_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "integration_record_id": self.integration_record_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationRecord:
+        known = ("integration_record_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(
+            integration_record_id=cast(str, data.get("integration_record_id")),
+            extra=extra,
+        )
+
+
+@dataclass(frozen=True)
+class IntegrationEvidenceRecord:
+    """Value Object for a ``reports/integration-evidence/*.json`` record: one new check of a
+    candidate/target pair linked to an integration record.  The id excludes the recording time, so
+    linking the same evidence twice is idempotent."""
+
+    directory: ClassVar[str] = "reports/integration-evidence"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "integration_record_id",
+        "kind",
+        "candidate_sha",
+        "target_sha",
+        "result",
+        "reference",
+        "artifact_sha256",
+    )
+
+    evidence_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id(
+            "evidence", {key: members.get(key) for key in cls.ID_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.evidence_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "evidence_id": self.evidence_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationEvidenceRecord:
+        known = ("evidence_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(evidence_id=cast(str, data.get("evidence_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class IntegrationLocalQaRecord:
+    """Append-only request, attempt or result in the existing reports contract."""
+
+    directory: ClassVar[str] = "reports/integration-local-qa"
+    local_qa_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("local-qa", members)
+
+    @property
+    def record_id(self) -> str:
+        return self.local_qa_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "local_qa_id": self.local_qa_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationLocalQaRecord:
+        return cls(
+            local_qa_id=cast(str, data.get("local_qa_id")),
+            extra={key: value for key, value in data.items() if key != "local_qa_id"},
+        )
+
+
+@dataclass(frozen=True)
+class IntegrationRefreshRecord:
+    """Value Object for a ``reports/integration-refresh/*.json`` record (issue #533): one clean
+    rebase of an issue branch onto a new integration SHA, linking the candidate before and after,
+    the target SHA and the resulting history.  The id excludes the recording time, so repeating a
+    refresh that already happened finds the same record."""
+
+    directory: ClassVar[str] = "reports/integration-refresh"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "integration_record_id",
+        "previous_candidate_sha",
+        "previous_target_sha",
+        "new_candidate_sha",
+        "target_sha",
+    )
+
+    refresh_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id("refresh", {key: members.get(key) for key in cls.ID_MEMBERS})
+
+    @property
+    def record_id(self) -> str:
+        return self.refresh_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "refresh_id": self.refresh_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> IntegrationRefreshRecord:
+        known = ("refresh_id",)
+        extra = {key: value for key, value in data.items() if key not in known}
+        return cls(refresh_id=cast(str, data.get("refresh_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class ResolverRecord:
+    """Value Object for a ``reports/resolver/*.json`` record (issue #534): the conflict-resolver
+    route taken for one integration record.  Immutable; the cycle budget is never stored on it but
+    derived from the append-only ``ResolverEventRecord`` files, so a lost session cannot reset it."""
+
+    directory: ClassVar[str] = "reports/resolver"
+
+    resolver_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, integration_record_id: str) -> str:
+        return _derived_id("resolver", {"integration_record_id": integration_record_id})
+
+    @property
+    def record_id(self) -> str:
+        return self.resolver_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "resolver_id": self.resolver_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> ResolverRecord:
+        extra = {key: value for key, value in data.items() if key != "resolver_id"}
+        return cls(resolver_id=cast(str, data.get("resolver_id")), extra=extra)
+
+
+@dataclass(frozen=True)
+class ResolverEventRecord:
+    """Value Object for a ``reports/resolver-events/*.json`` record (issue #534): one immutable
+    audit event of the conflict-resolver route (``cycle-spent``, ``same-target-fix``,
+    ``human-decision``, ``scope-change``, ``exhausted``).  The id covers what makes an event the
+    same event, so repeating it finds the record instead of writing a second one."""
+
+    directory: ClassVar[str] = "reports/resolver-events"
+    ID_MEMBERS: ClassVar[tuple[str, ...]] = (
+        "kind",
+        "integration_record_id",
+        "target_sha",
+        "dispatch_id",
+        "discriminator",
+    )
+
+    event_id: str
+    extra: JsonObject = field(default_factory=dict)
+
+    @classmethod
+    def derive_id(cls, members: JsonObject) -> str:
+        return _derived_id(
+            "resolver-event", {key: members.get(key) for key in cls.ID_MEMBERS}
+        )
+
+    @property
+    def record_id(self) -> str:
+        return self.event_id
+
+    def to_dict(self) -> JsonObject:
+        return {**self.extra, "event_id": self.event_id}
+
+    @classmethod
+    def from_dict(cls, data: JsonObject) -> ResolverEventRecord:
+        extra = {key: value for key, value in data.items() if key != "event_id"}
+        return cls(event_id=cast(str, data.get("event_id")), extra=extra)
+
+
 class LedgerRecordVO(Protocol):
     """Structural shape a Value Object must have to be persisted via ``write_record``/
     ``replace_record`` -- satisfied by ``BatchRecord``, ``DispatchRecord``, and the other frozen
@@ -308,26 +567,162 @@ class LifecycleLedger:
 
     @contextmanager
     def lock(self) -> Iterator[None]:
-        """Non-blocking exclusive lock on ``self.root``, mirroring coordinator.py's own
-        ``_state_lock`` technique (same lock path, same mkdir/rmdir mechanism) but raising
-        ``LedgerError`` on contention so this module never imports an exception type from
-        coordinator.py."""
-        self.root.mkdir(parents=True, exist_ok=True)
-        lock_dir = self.root / ".coordinator.lock"
-        try:
-            lock_dir.mkdir()
-        except FileExistsError as exc:
-            raise LedgerError(
-                "ledger is locked by another operation",
-                remedy=f"wait for the other operation to finish, or remove a stale lock at {lock_dir} if no operation is actually running",
-            ) from exc
+        """Non-blocking exclusive lock on ``self.root``, raising ``LedgerLockBusy`` on contention
+        so this module never imports an exception type from coordinator.py.
+
+        The lock is held by whoever first creates its owner record, ``owner.json`` (pid, host,
+        acquired_at), exclusively inside the lock directory; creating the directory alone does
+        not hold it.  The record lets ``ledger release-lock`` judge a lock left behind by a dead
+        process.  Release removes the record and then the directory."""
+        lock_dir = self._take_lock_directory()
+        owner = self._record_lock_owner(lock_dir)
         try:
             yield
         finally:
             try:
+                owner.unlink(missing_ok=True)
                 lock_dir.rmdir()
             except OSError:
                 pass
+
+    def _take_lock_directory(self) -> Path:
+        """The first step of ``lock()``: create the lock directory, or be busy."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        lock_dir = self.root / LOCK_DIRECTORY
+        try:
+            lock_dir.mkdir()
+        except FileExistsError as exc:
+            raise _lock_busy() from exc
+        return lock_dir
+
+    def _record_lock_owner(self, lock_dir: Path) -> Path:
+        """The second step of ``lock()``: hold the lock by creating its owner record exclusively.
+
+        A directory that has no owner record yet can be released as stale and taken again before
+        its creator records itself, so taking the directory alone does not hold the lock: whoever
+        creates the record first does.  A later creator meets that record, or no directory at all,
+        and is busy; it never writes into, or removes, a lock it does not hold."""
+        owner = lock_dir / LOCK_OWNER
+        created = False
+        try:
+            with owner.open("x", encoding="utf-8") as stream:
+                created = True
+                stream.write(
+                    json.dumps(
+                        {
+                            "pid": os.getpid(),
+                            "host": socket.gethostname(),
+                            "acquired_at": _now(),
+                        }
+                    )
+                )
+        except (FileExistsError, FileNotFoundError) as exc:
+            raise _lock_busy() from exc
+        except OSError as exc:
+            with contextlib.suppress(OSError):
+                if created:
+                    owner.unlink()
+                lock_dir.rmdir()
+            raise LedgerError(
+                "ledger lock owner could not be recorded",
+                remedy=f"make {self.root} writable, then repeat the command",
+            ) from exc
+        return owner
+
+    def lock_state(self) -> JsonObject | None:
+        """The current lock as its owner recorded it, or ``None`` when nothing holds it.
+
+        ``owner_record`` says what the owner record is: ``readable``; ``unreadable``, when its
+        owner died before writing the record it created, so ``owner`` is ``None`` and the age is
+        measured from the record's mtime; or ``absent``, for a lock taken by an older runtime,
+        aged from the lock directory.  A readable record without a recorded ``acquired_at`` is
+        aged from the lock directory as well."""
+        lock_dir = self.root / LOCK_DIRECTORY
+        try:
+            age_origin = lock_dir.stat().st_mtime
+        except FileNotFoundError:
+            return None
+        record = lock_dir / LOCK_OWNER
+        owner = self.read_record_lenient(record)
+        owner_record = "readable"
+        if owner is None:
+            try:
+                age_origin = record.stat().st_mtime
+            except FileNotFoundError:
+                owner_record = "absent"
+            else:
+                owner_record = "unreadable"
+        recorded = owner.get("acquired_at") if owner is not None else None
+        try:
+            since = (
+                datetime.fromisoformat(recorded) if isinstance(recorded, str) else None
+            )
+        except ValueError:
+            since = None
+        if since is None or since.tzinfo is None:
+            since = datetime.fromtimestamp(age_origin, UTC)
+        held = (datetime.now(UTC) - since).total_seconds()
+        return {
+            "path": str(lock_dir),
+            "owner": owner,
+            "owner_record": owner_record,
+            "acquired_at": since.isoformat(),
+            "held_seconds": max(0, int(held)),
+        }
+
+    @contextmanager
+    def _release_guard(self) -> Iterator[None]:
+        """Let one ``break_lock`` at a time judge and remove the lock.
+
+        An operating-system file lock, not a lock directory: the system drops it when its holder
+        exits, so a release that dies never leaves a guard behind for anyone to remove."""
+        with (self.root / LOCK_RELEASE_GUARD).open("a+b") as handle:
+            try:
+                _guard_byte(handle, acquire=True)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise LedgerError(
+                        f"ledger release guard could not be taken: {exc.strerror}",
+                        remedy=f"make {self.root} support file locks, then run "
+                        "'coordinator.py ledger release-lock' again",
+                    ) from exc
+                raise LedgerError(
+                    "another ledger release-lock is releasing the ledger lock",
+                    remedy="run 'coordinator.py ledger release-lock' again once it finishes",
+                ) from exc
+            try:
+                yield
+            finally:
+                _guard_byte(handle, acquire=False)
+
+    def break_lock(self, observed: JsonObject) -> None:
+        """Remove the lock ``lock_state()`` returned as ``observed``, and only that lock.
+
+        The caller decides whether the lock may go; this only guarantees it removes the lock it
+        judged.  Under the release guard the lock is read again and must still be the observed
+        one, and nothing else can change it before it goes: a holder only creates an owner record
+        where none exists and removes only its own, and the observed owner was judged gone.  An
+        unreadable record goes only when it was observed unreadable; a lock observed without a
+        record goes by rmdir, which never removes a record created since."""
+        lock_dir = self.root / LOCK_DIRECTORY
+        owner = lock_dir / LOCK_OWNER
+        changed = LedgerError(
+            "ledger lock changed while it was being released",
+            remedy="run 'coordinator.py ledger release-lock' again",
+        )
+        with self._release_guard():
+            current = self.lock_state()
+            if current is None or any(
+                current[key] != observed.get(key)
+                for key in ("owner", "owner_record", "acquired_at")
+            ):
+                raise changed
+            try:
+                if current["owner_record"] != "absent":
+                    owner.unlink()
+                lock_dir.rmdir()
+            except OSError as exc:
+                raise changed from exc
 
     @property
     def pointer_path(self) -> Path:
@@ -354,10 +749,17 @@ class LifecycleLedger:
                 "ledger pointer has an unsupported version or generation",
                 remedy=f"fix {self.pointer_path}: version must be one of {SUPPORTED_LEDGER_VERSIONS} and generation a string",
             )
-        if not generation.startswith("generation-") or not isinstance(selected_at, str):
+        # The generation is joined under `generations/`: a separator would select a directory
+        # outside the state root.
+        if (
+            not generation.startswith("generation-")
+            or "/" in generation
+            or "\\" in generation
+            or not isinstance(selected_at, str)
+        ):
             raise LedgerError(
                 "ledger pointer has an invalid generation",
-                remedy=f"fix {self.pointer_path}: generation must start with 'generation-' and selected_at must be a string",
+                remedy=f"fix {self.pointer_path}: generation must be one directory name starting with 'generation-' and selected_at must be a string",
             )
         return pointer
 
@@ -365,7 +767,11 @@ class LifecycleLedger:
     def _pointer_generation(pointer: JsonObject) -> str:
         """Narrow a generation selected by ``pointer()``, which already validates this field."""
         generation = pointer["generation"]
-        assert isinstance(generation, str)
+        if not isinstance(generation, str):
+            raise LedgerError(
+                "ledger pointer generation is not a string after validation",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         return generation
 
     def records_root(self) -> Path:
@@ -571,28 +977,30 @@ class LifecycleLedger:
             if not self._legacy_records_present():
                 return {"version": 0, "generation": None, "cleaned": 0}
 
+        # A batch that cannot be read names no evidence, yet it may own some: deleting then would
+        # destroy referenced evidence irreversibly, so an unreadable batch stops the clean.
         referenced: set[str] = set()
         for batch_path in (root / "batches").glob("*.json"):
-            try:
-                batch = _read(batch_path, "batch record")
-                entries = batch.get("dispatches", [])
-                if isinstance(entries, list):
-                    for entry in entries:
-                        if isinstance(entry, dict) and isinstance(
-                            entry.get("dispatch_id"), str
-                        ):
-                            dispatch_id = entry["dispatch_id"]
-                            assert isinstance(dispatch_id, str)
-                            referenced.add(dispatch_id)
-            except LedgerError:
-                continue
+            batch = _read(batch_path, "batch record")
+            entries = batch.get("dispatches", [])
+            if not isinstance(entries, list):
+                raise LedgerError(
+                    f"batch dispatches are invalid: {batch_path.name}",
+                    remedy=f"fix {batch_path.name} so its dispatches field is a list, "
+                    "then run 'ledger clean' again",
+                )
+            for entry in entries:
+                if isinstance(entry, dict) and isinstance(
+                    dispatch_id := entry.get("dispatch_id"), str
+                ):
+                    referenced.add(dispatch_id)
 
         removed = 0
         for directory in ("dispatches", "dispatch-status", "reports", "checkpoints"):
             dir_path = root / directory
             if dir_path.exists():
                 for path in dir_path.glob("*.json"):
-                    if path.stem not in referenced:
+                    if not self._dispatch_evidence_referenced(path, referenced):
                         path.unlink()
                         removed += 1
 
@@ -601,6 +1009,18 @@ class LifecycleLedger:
             "generation": pointer["generation"] if pointer else None,
             "cleaned": removed,
         }
+
+    @classmethod
+    def _dispatch_evidence_referenced(cls, path: Path, referenced: set[str]) -> bool:
+        """Whether a dispatch evidence file belongs to a dispatch some batch references.
+
+        Dispatch, status and report files are named by their dispatch; a checkpoint file is named
+        by its own ``checkpoint-*`` id and names its dispatch inside the record."""
+        if path.parent.name != "checkpoints":
+            return path.stem in referenced
+        record = cls.read_record_lenient(path)
+        owner = record.get("dispatch_id") if record is not None else None
+        return isinstance(owner, str) and owner in referenced
 
     def _record_path(self, record: LedgerRecordVO) -> Path:
         self._check_record_id(record.record_id)
@@ -624,9 +1044,11 @@ class LifecycleLedger:
         """Persist a new Value-Object-backed record, deriving its path from the record itself."""
         self.write_immutable(self._record_path(record), record.to_dict())
 
-    def replace_record(self, record: LedgerRecordVO) -> None:
+    def replace_record(
+        self, record: LedgerRecordVO, *, decision: JsonObject | None = None
+    ) -> None:
         """Persist a Value-Object-backed record transition, deriving its path from the record."""
-        self.replace(self._record_path(record), record.to_dict())
+        self.replace(self._record_path(record), record.to_dict(), decision=decision)
 
     def write_immutable(
         self, path: Path, value: JsonObject, *, artifact: bool = False
@@ -668,8 +1090,14 @@ class LifecycleLedger:
             {"path": relative, "sha256": _digest(path)},
         )
 
-    def replace(self, path: Path, value: JsonObject) -> None:
-        """Atomically persist one allowed record transition and append its immutable audit event."""
+    def replace(
+        self, path: Path, value: JsonObject, *, decision: JsonObject | None = None
+    ) -> None:
+        """Atomically persist one allowed record transition and append its immutable audit event.
+
+        ``decision`` is the coordinator decision this transition records; it is stored in the same
+        audit event, under the same checksum, so the decision and its transition cannot diverge.
+        """
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
@@ -683,6 +1111,8 @@ class LifecycleLedger:
             transition.update({"from": before.get("state"), "to": value.get("state")})
         self._atomic_write(path, value)
         transition["sha256"] = _digest(path)
+        if decision is not None:
+            transition["decision"] = decision
         self._append_audit(generation, "transition", transition)
 
     def delete(self, path: Path, *, reason: str) -> None:
@@ -1011,14 +1441,12 @@ class LifecycleLedger:
                 )
             for entry in entries:
                 if not isinstance(entry, dict) or not isinstance(
-                    entry.get("dispatch_id"), str
+                    dispatch_id := entry.get("dispatch_id"), str
                 ):
                     raise LedgerError(
                         f"batch has an invalid dispatch entry: {batch_path.name}",
                         remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
                     )
-                dispatch_id = entry["dispatch_id"]
-                assert isinstance(dispatch_id, str)
                 referenced.add(dispatch_id)
                 dispatch_path = dispatches.get(dispatch_id)
                 status_path = statuses.get(dispatch_id)

@@ -7,7 +7,12 @@ background: false
 
 Run this project's quality gate and report the result. Nothing else — no restating the commands, no unrelated commentary.
 
-1. Read `qa_gate_commands` from `.harness/project.json` — an ordered list of shell commands (e.g. `["make check", "make test"]` or `["ruff check .", "mypy .", "pytest"]`). If the file or field is missing, tell the user to fill it in (run `harness init`/`update` again, or edit `.harness/project.json` directly) and stop.
+1. Find the harness root. It is the current checkout when it has `.harness/project.json`. A linked
+   worktree lacks the gitignored `.harness/`: when the file is absent there, use the main worktree —
+   the first `worktree` entry of `git worktree list --porcelain` — as the harness root. Take only
+   `.harness/project.json` and `.harness/skills/qa-gate/scripts/test_summary.py` from it; run every
+   command with the current checkout as the working directory, never the main worktree.
+   Read `qa_gate_commands` from that `.harness/project.json` — an ordered list of shell commands (e.g. `["make check", "make test"]` or `["ruff check .", "mypy .", "pytest"]`). If the file or field is missing, tell the user to fill it in (run `harness init`/`update` again, or edit `.harness/project.json` directly) and stop.
 2. Read the optional `shell` field from the same file — `"bash"` (or the field absent) means this
    checkout runs commands through bash (Linux, macOS, or a Windows checkout where `bash` on `PATH`
    is really Git Bash/WSL and not the System32 WSL launcher stub); `"powershell"` means run them
@@ -18,11 +23,14 @@ Run this project's quality gate and report the result. Nothing else — no resta
 
    ```bash
    # shell: "bash" (default)
-   python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<exact command from qa_gate_commands>'
+   python <harness-root>/.harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<exact command from qa_gate_commands>'
 
    # shell: "powershell"
-   python .harness/skills/qa-gate/scripts/test_summary.py -- powershell -NoProfile -NonInteractive -Command '<exact command from qa_gate_commands>'
+   python <harness-root>/.harness/skills/qa-gate/scripts/test_summary.py -- powershell -NoProfile -NonInteractive -Command '<exact command from qa_gate_commands>'
    ```
+
+   `<harness-root>` is `.` in a normal checkout and the absolute path of the main worktree in a
+   linked one.
 
    On the first failure, stop. Return the wrapper's bounded summary — status, pytest totals, failed
    node IDs, structured diagnostics (traceback endings, explicit error messages, and compiler/linter

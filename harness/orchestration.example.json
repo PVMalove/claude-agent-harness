@@ -6,7 +6,10 @@
         "architecture-analysis",
         "backend-development",
         "code-review",
-        "independent-verification"
+        "independent-verification",
+        "database-migrations",
+        "messaging-integration",
+        "conflict-resolution"
       ],
       "fallback": [],
       "known_limitations": []
@@ -16,7 +19,10 @@
         "architecture-analysis",
         "backend-development",
         "code-review",
-        "independent-verification"
+        "independent-verification",
+        "database-migrations",
+        "messaging-integration",
+        "conflict-resolution"
       ],
       "fallback": [],
       "known_limitations": []
@@ -24,93 +30,195 @@
   },
   "assignment_plans": {
     "architect": {
-      "zone": "repository",
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
-          "effort": "medium"
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     },
     "developer": {
-      "zone": "repository",
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
-          "effort": "medium"
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     },
     "code-review": {
-      "zone": "repository",
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-sonnet-5",
-          "effort": "medium"
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
-          "model": "gpt-6-sol",
-          "effort": "medium"
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     },
     "qa": {
-      "zone": "repository",
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
       "runtimes": {
         "claude": {
           "profiles": [
             "claude-profile"
           ],
-          "model": "claude-haiku-4-5-20251001",
-          "effort": "high"
+          "model": "claude-sonnet-5-5",
+          "effort": "xhigh"
         },
         "codex": {
           "profiles": [
             "codex-profile"
           ],
           "model": "gpt-6-luna",
-          "effort": "high"
+          "effort": "xhigh"
+        }
+      }
+    },
+    "verification": {
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-sonnet-5-5",
+          "effort": "xhigh"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6-luna",
+          "effort": "xhigh"
+        }
+      }
+    },
+    "conflict-resolver": {
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
+        }
+      }
+    },
+    "database-migrations": {
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
+        }
+      }
+    },
+    "messaging-integration": {
+      "transport": "in-process",
+      "write_paths": [
+        "**"
+      ],
+      "default_runtime": "claude",
+      "runtimes": {
+        "claude": {
+          "profiles": [
+            "claude-profile"
+          ],
+          "model": "claude-opus-5-5",
+          "effort": "xhigh"
+        },
+        "codex": {
+          "profiles": [
+            "codex-profile"
+          ],
+          "model": "gpt-6.1-sol",
+          "effort": "xhigh"
         }
       }
     }
   },
-  "backend_zones": {
-    "repository": {
-      "paths": [
-        "**"
-      ]
-    }
-  },
-  "concurrency_budget": 1,
-  "approval_policy": "low_risk",
-  "low_risk_zones": [
-    "repository"
+  "concurrency_budget": 5,
+  "approval_policy": "auto",
+  "human_approval_gate": "trusted",
+  "low_risk_paths": [
+    "**"
   ],
   "worker_attestation_required": true,
   "communication_policy": {
@@ -124,7 +232,8 @@
     "symbol_graph_depth": 2,
     "max_related_tests": 25,
     "min_starting_files": 5,
-    "max_starting_files": 10
+    "max_starting_files": 10,
+    "section_index_min_tokens": 20000
   },
   "adaptive_continuation_policy": {
     "context_limit": 200000,
@@ -144,7 +253,10 @@
     "max_signature_length": 2048,
     "timeout_seconds": 30,
     "max_tokens": 8000,
-    "tier": "full"
+    "tier": "full",
+    "min_tier": "minimal",
+    "parser_bundle_timeout_seconds": 30,
+    "parser_bundle_max_output_bytes": 10000000
   },
   "continuation_policy": {
     "max_continuations": 6,
@@ -171,7 +283,8 @@
     "verification_environment_health": "none",
     "retry_reason_classifier": "none",
     "context_telemetry_provider": "none",
-    "human_notifier": "none"
+    "human_notifier": "none",
+    "runtime_access": "none"
   },
   "preflight_policy": {
     "require_estimates": true,
@@ -186,5 +299,32 @@
   },
   "developer_verification_commands": [],
   "review_verification_commands": [],
-  "verification_commands": []
+  "verification_commands": [],
+  "test_path_patterns": [
+    "tests/**",
+    "**/tests/**",
+    "**/test_*.py",
+    "**/*_test.py"
+  ],
+  "tool_policy": {
+    "modes": {
+      "read-only": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash"
+      ],
+      "write": [
+        "Read",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Edit",
+        "Write"
+      ]
+    }
+  },
+  "qa_preparation": [],
+  "qa_environment_probes": [],
+  "qa_project_file_checks": []
 }

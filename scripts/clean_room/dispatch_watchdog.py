@@ -1,9 +1,12 @@
 """Self-report модели и watchdog dispatch: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
+
+from scripts.clean_room.support import run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -21,7 +24,7 @@ def run(ctx: SimpleNamespace) -> None:
     test_root = ctx.test_root
     # A mismatched model self-report is terminal for its batch, so it runs on its own state.
     mismatch_state = test_root / "mismatch-state"
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-902-model-mismatch"],
         cwd=orchestration_project,
         check=True,

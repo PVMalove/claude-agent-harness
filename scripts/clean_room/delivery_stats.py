@@ -1,11 +1,14 @@
 """Статистика доставки: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import re
 import shutil
-import subprocess
 import sys
 from types import SimpleNamespace
+
+from scripts.clean_room.support import run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -26,15 +29,13 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("delivery-stats CLI missing")
     stats_repo = test_root / "stats_project"
     stats_repo.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=stats_repo, check=True)
-    subprocess.run(
+    run_step(["git", "init", "-q"], cwd=stats_repo, check=True)
+    run_step(
         ["git", "config", "user.email", "test@example.invalid"],
         cwd=stats_repo,
         check=True,
     )
-    subprocess.run(
-        ["git", "config", "user.name", "Clean Room"], cwd=stats_repo, check=True
-    )
+    run_step(["git", "config", "user.name", "Clean Room"], cwd=stats_repo, check=True)
     (stats_repo / ".harness").mkdir()
     (stats_repo / ".harness" / "project.json").write_text(
         json.dumps(
@@ -49,12 +50,10 @@ def run(ctx: SimpleNamespace) -> None:
         encoding="utf-8",
     )
     (stats_repo / "app.py").write_text("print('base')\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=stats_repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "chore: baseline"], cwd=stats_repo, check=True
-    )
-    subprocess.run(["git", "branch", "-M", "main"], cwd=stats_repo, check=True)
-    subprocess.run(
+    run_step(["git", "add", "."], cwd=stats_repo, check=True)
+    run_step(["git", "commit", "-qm", "chore: baseline"], cwd=stats_repo, check=True)
+    run_step(["git", "branch", "-M", "main"], cwd=stats_repo, check=True)
+    run_step(
         ["git", "checkout", "-q", "-b", "feature/issue-7-widget"],
         cwd=stats_repo,
         check=True,
@@ -67,11 +66,9 @@ def run(ctx: SimpleNamespace) -> None:
     (stats_repo / "docs" / "adr" / "0001-widget.md").write_text(
         "# Widget\n", encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=stats_repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-qm", "feat: add widget"], cwd=stats_repo, check=True
-    )
-    subprocess.run(["git", "checkout", "-q", "main"], cwd=stats_repo, check=True)
+    run_step(["git", "add", "."], cwd=stats_repo, check=True)
+    run_step(["git", "commit", "-qm", "feat: add widget"], cwd=stats_repo, check=True)
+    run_step(["git", "checkout", "-q", "main"], cwd=stats_repo, check=True)
 
     claude_dir = test_root / "stats-home" / ".claude" / "projects" / "stats"
     claude_dir.mkdir(parents=True)
@@ -221,7 +218,7 @@ def run(ctx: SimpleNamespace) -> None:
 
     def stats_run(*arguments, claude_projects=claude_dir):
         """Выполнить CLI delivery_stats с переданными аргументами."""
-        return subprocess.run(
+        return run_step(
             [
                 sys.executable,
                 str(stats_cli),
@@ -473,7 +470,7 @@ def run(ctx: SimpleNamespace) -> None:
 
     empty_home = test_root / "stats-empty-home"
     empty_home.mkdir()
-    blind = subprocess.run(
+    blind = run_step(
         [
             sys.executable,
             str(stats_cli),
@@ -523,7 +520,7 @@ def run(ctx: SimpleNamespace) -> None:
     )
     (stale / "memory").mkdir(parents=True)
     (stale / "memory" / "MEMORY.md").write_text("leftover\n", encoding="utf-8")
-    discovered = subprocess.run(
+    discovered = run_step(
         [
             sys.executable,
             str(stats_cli),

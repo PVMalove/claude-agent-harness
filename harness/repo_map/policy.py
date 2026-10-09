@@ -245,6 +245,11 @@ def _read_policy_section(
             f"invalid policy JSON: {exc.msg}",
             "fix the JSON syntax in the policy file and retry",
         ) from exc
+    except UnicodeDecodeError as exc:
+        raise _policy_error(
+            f"policy file is not valid UTF-8: {path}",
+            "save the policy file as UTF-8 and retry",
+        ) from exc
     if not isinstance(decoded, dict):
         raise _policy_error(
             "policy JSON must be an object",

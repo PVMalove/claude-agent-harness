@@ -1,13 +1,15 @@
 """Фиксированная последовательность review: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     capture,
     commit_map_for,
+    run_step,
 )
 
 
@@ -27,7 +29,7 @@ def run(ctx: SimpleNamespace) -> None:
     # The long pipeline reviews every candidate.  Risk assessment decides when review is *mandatory*,
     # never when it is permitted, so a low-risk candidate can still be sent to code-review.
     low_risk_state = test_root / "low-risk-state"
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-904-low-risk"],
         cwd=orchestration_project,
         check=True,
@@ -172,10 +174,10 @@ def run(ctx: SimpleNamespace) -> None:
     )
     greeting_file = orchestration_project / "services" / "greeting.py"
     greeting_file.write_text('def greet():\n    return "hello"\n', encoding="utf-8")
-    subprocess.run(
+    run_step(
         ["git", "add", "services/greeting.py"], cwd=orchestration_project, check=True
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: add greeting helper"],
         cwd=orchestration_project,
         check=True,

@@ -70,11 +70,10 @@
       "cleanup.py",
       "storage.py",
       "repo_map",
-      "docs",
-      "storage.py",
+      "docs/project-memory.md",
       "token_estimator.py",
       "errors.py",
-      "__init__.py",
+      "json_types.py",
       "health",
       "memory"
     ]

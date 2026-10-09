@@ -1,9 +1,10 @@
 """Композитное review с учётом риска: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from scripts.clean_room.support import (
     capture,
     commit_map_for,
+    run_step,
 )
 
 
@@ -85,13 +87,13 @@ def run(ctx: SimpleNamespace) -> None:
     (orchestration_project / "developer_check.py").write_text(
         'print("focused developer check")\n', encoding="utf-8"
     )
-    subprocess.run(["git", "add", "."], cwd=orchestration_project, check=True)
-    subprocess.run(
+    run_step(["git", "add", "."], cwd=orchestration_project, check=True)
+    run_step(
         ["git", "commit", "-qm", "chore: create baseline"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-901-coordinator"],
         cwd=orchestration_project,
         check=True,
@@ -102,7 +104,7 @@ def run(ctx: SimpleNamespace) -> None:
     # membership in `git worktree list`, not that the worktree is checked out to the batch's own
     # branch, so every synthetic batch below can point at this one shared, detached worktree.
     shared_worktree = test_root / "shared-worktree"
-    subprocess.run(
+    run_step(
         ["git", "worktree", "add", "-q", "--detach", str(shared_worktree), "master"],
         cwd=orchestration_project,
         check=True,
@@ -118,7 +120,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(implicit_transport, indent=2) + "\n", encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-907-implicit-transport"],
         cwd=orchestration_project,
         check=True,
@@ -231,7 +233,7 @@ def run(ctx: SimpleNamespace) -> None:
     # The ticket title stays multilingual: it names the human's work item and is not the
     # agent-to-agent brief text the language contract governs.
     unicode_ticket = "#908 Проверить кодировку"
-    unicode_result = subprocess.run(
+    unicode_result = run_step(
         [
             sys.executable,
             str(coordinator_path),
@@ -308,6 +310,50 @@ def run(ctx: SimpleNamespace) -> None:
             "coordinator rejected a non-English brief without naming the language contract"
         )
 
+    # Historical abandoned plans can share the ticket and branch after a coordinator correction.
+    # They carry no QA report for this candidate and must not make PR evidence ambiguous. A second
+    # batch for unfinished work is refused, so they are planned and closed before the live batch.
+    sync_origin_base()
+    for history_index in range(2):
+        historical = coordinator_run(
+            "batch",
+            "create",
+            "--ticket",
+            "#901",
+            "--branch",
+            "feature/issue-901-coordinator",
+            "--worktree",
+            str(shared_worktree),
+            "--zone",
+            "backend",
+            "--definition-of-done",
+            "superseded planning attempt",
+            "--prohibited-change",
+            "do not merge",
+        )
+        if historical.returncode != 0:
+            sys.exit(
+                "clean-room fixture could not create a historical batch: "
+                + historical.stderr
+            )
+        historical_id = json.loads(historical.stdout)["batch_id"]
+        abandoned_history = coordinator_run(
+            "batch",
+            "abandon",
+            "--batch",
+            historical_id,
+            "--approved-by",
+            "project coordinator",
+            "--approved-at",
+            f"2026-09-09T12:05:{46 + history_index:02d}Z",
+            "--reason",
+            "superseded before any dispatch",
+        )
+        if abandoned_history.returncode != 0:
+            sys.exit(
+                "clean-room fixture could not abandon historical batch: "
+                + abandoned_history.stderr
+            )
     sync_origin_base("integration/test-901")
     planned = coordinator_run(
         "batch",
@@ -602,15 +648,13 @@ def run(ctx: SimpleNamespace) -> None:
         "def retry():\n    return True\n\n# queue consumer changed; transaction boundary changed\n",
         encoding="utf-8",
     )
-    subprocess.run(
-        ["git", "add", "services/retry.py"], cwd=orchestration_project, check=True
-    )
-    subprocess.run(
+    run_step(["git", "add", "services/retry.py"], cwd=orchestration_project, check=True)
+    run_step(
         ["git", "commit", "-qm", "feat: add retry path"],
         cwd=orchestration_project,
         check=True,
     )
-    candidate_sha = subprocess.run(
+    candidate_sha = run_step(
         ["git", "rev-parse", "HEAD"],
         cwd=orchestration_project,
         check=True,
@@ -776,13 +820,12 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("review brief did not preserve the immutable review scope")
 
     mismatched_checkout = test_root / "mismatched-checkout"
-    subprocess.run(
+    run_step(
         ["git", "clone", "-q", str(orchestration_project), str(mismatched_checkout)],
         check=True,
     )
-    subprocess.run(
-        ["git", "checkout", "-q", "HEAD^"], cwd=mismatched_checkout, check=True
-    )
+    run_step(["git", "checkout", "-q", "HEAD^"], cwd=mismatched_checkout, check=True)
+    fake_adapter_log.unlink(missing_ok=True)
     if (
         coordinator_run(
             "dispatch",
@@ -798,8 +841,8 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         sys.exit("coordinator accepted a review checkout at a mismatched commit")
     if fake_adapter_log.exists():
-        fake_adapter_log.unlink()
-    subprocess.run(
+        sys.exit("coordinator invoked the adapter for a mismatched review checkout")
+    run_step(
         ["git", "checkout", "-q", candidate_sha], cwd=mismatched_checkout, check=True
     )
 
@@ -819,6 +862,10 @@ def run(ctx: SimpleNamespace) -> None:
         == 0
     ):
         sys.exit("coordinator accepted a review checkout with mutable files")
+    if fake_adapter_log.exists():
+        sys.exit(
+            "coordinator invoked the adapter for a review checkout with mutable files"
+        )
     mutable_file.unlink()
 
     review_sent = coordinator_run(
@@ -1097,49 +1144,6 @@ def run(ctx: SimpleNamespace) -> None:
         )
     if json.loads(accepted_evidence.stdout).get("candidate_commit") != candidate_sha:
         sys.exit("QA evidence validation did not return the accepted candidate SHA")
-    # Historical abandoned plans can share the ticket and branch after a coordinator correction.
-    # They carry no QA report for this candidate and must not make PR evidence ambiguous.
-    sync_origin_base()
-    for history_index in range(2):
-        historical = coordinator_run(
-            "batch",
-            "create",
-            "--ticket",
-            "#901",
-            "--branch",
-            "feature/issue-901-coordinator",
-            "--worktree",
-            str(shared_worktree),
-            "--zone",
-            "backend",
-            "--definition-of-done",
-            "superseded planning attempt",
-            "--prohibited-change",
-            "do not merge",
-        )
-        if historical.returncode != 0:
-            sys.exit(
-                "clean-room fixture could not create a historical batch: "
-                + historical.stderr
-            )
-        historical_id = json.loads(historical.stdout)["batch_id"]
-        abandoned_history = coordinator_run(
-            "batch",
-            "abandon",
-            "--batch",
-            historical_id,
-            "--approved-by",
-            "project coordinator",
-            "--approved-at",
-            f"2026-09-09T12:05:{46 + history_index:02d}Z",
-            "--reason",
-            "superseded before any dispatch",
-        )
-        if abandoned_history.returncode != 0:
-            sys.exit(
-                "clean-room fixture could not abandon historical batch: "
-                + abandoned_history.stderr
-            )
     if coordinator_run(*qa_evidence).returncode != 0:
         sys.exit("QA evidence became ambiguous because of abandoned historical batches")
     state_before_evidence = {
@@ -1165,7 +1169,7 @@ def run(ctx: SimpleNamespace) -> None:
         == 0
     ):
         sys.exit("QA evidence validation accepted a non-repository state directory")
-    baseline_sha = subprocess.run(
+    baseline_sha = run_step(
         ["git", "rev-parse", "HEAD^"],
         cwd=orchestration_project,
         check=True,

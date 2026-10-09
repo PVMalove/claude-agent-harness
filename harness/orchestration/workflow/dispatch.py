@@ -2,8 +2,8 @@
 
 Creating a dispatch is the gated step of the lifecycle -- the batch must be clean of attention, its
 base must still be fresh, the transition must be approved, and the brief is written once and never
-edited.  Sending, cancelling, waiting on and publishing that brief all live here too, because they
-are the same object's later states.
+edited.  Cancelling that brief lives here too; sending, waiting on and publishing it live in
+``delivery.py``, which only carries the fixed brief.
 """
 
 from __future__ import annotations
@@ -11,13 +11,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import uuid
+from functools import partial
 from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
-from harness.orchestration import operational_guards
+from harness.orchestration import (
+    infrastructure_retry,
+    operational_guards,
+    runtime_access,
+)
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
+    low_risk_eligible,
+    paths_inside,
     resolve_allowed_tools,
     resolve_min_repo_map_tier,
     role_verification_commands,
@@ -36,14 +43,10 @@ from harness.orchestration.core.config import (
     _test_path_patterns,
     _worker_attestation_required,
 )
-from harness.orchestration.core.constants import (
-    TERMINAL_BATCH_STATES,
-)
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_evidence,
-    _fetch_ref_tip,
     _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
@@ -51,7 +54,6 @@ from harness.orchestration.core.utils import (
     JsonObject,
     _canonical,
     _non_empty,
-    _read_object,
     _repo,
     _safe_id,
 )
@@ -71,7 +73,6 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_batch,
     _load_dispatch,
     _load_dispatch_status,
-    _records_root,
     _replace_record,
     _state_root,
     _write_record,
@@ -82,6 +83,13 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import delta_review
+from harness.orchestration.workflow import resolver as resolver_route
+from harness.orchestration.workflow import resolver_state
+from harness.orchestration.workflow import supersede
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -110,9 +118,9 @@ from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _latest_registered_verification_candidate,
     _pending_report,
+    _retry_handoff,
     _risk_for_candidate,
     _settled,
-    _transition_idempotency_key,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -129,54 +137,79 @@ def _dispatch_verification_commands(
     return cast(list[str], role_verification_commands(batch, role_name, purpose))
 
 
-def _enforce_base_freshness(
-    repo: Path, root: Path, ledger: LifecycleLedger, batch: JsonObject
-) -> None:
-    """Mandatory re-check, immediately before a review or publish dispatch: the batch's pinned
-    integration base must still be the integration ref's current tip. A stale base is cleared only
-    by a new developer dispatch (a rebase), never by the coordinator moving this field directly."""
-    recorded = batch.get("integration_base_commit")
-    if not isinstance(recorded, str) or not recorded:
-        raise CoordinatorError(
-            "batch has no recorded integration base commit to check freshness against",
-            remedy="this batch predates integration-base freshness tracking; re-plan it to record one",
-        )
-    ref = _integration_ref(repo, batch)
-    current = _fetch_ref_tip(repo, ref)
-    if current == recorded:
-        return
-    batch["next_action"] = "developer"
-    batch["required_next_role"] = "developer"
-    batch["retry_candidate_required"] = True
-    batch["base_rebase_required"] = True
-    # The tip the rebase must land on: its report is measured from here and accept pins exactly it.
-    batch["rebase_target_commit"] = current
-    _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
-    raise CoordinatorError(
-        f"batch base is stale: origin/{ref} has moved from {recorded} to {current}; "
-        "only a new developer rebase dispatch can clear this block",
-        remedy="run a new developer rebase dispatch to bring the batch base up to date with origin, then retry",
-    )
-
-
 def _developer_commit_plan(
     batch: JsonObject, write_paths: list[str]
 ) -> list[JsonObject]:
-    """Turn the approved DoD into a compact, immutable commit-plan interface.
+    """The compact, immutable commit-plan interface of a developer brief.
 
-    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence.
-    This keeps plan construction out of every runtime adapter while making each logical
-    DoD item independently reviewable.
+    The coordinator owns the structure; a worker only supplies the SHA-to-entry evidence. A plan
+    the operator pinned on the architect accept is used as recorded; otherwise every DoD item gets
+    its own entry, which keeps each logical DoD item independently reviewable.
     """
-    return [
-        {
-            "id": f"step-{index}",
-            "summary": item,
-            "expected_paths": write_paths,
-        }
-        for index, item in enumerate(batch["definition_of_done"], start=1)
-    ]
+    pinned = batch.get("commit_plan")
+    if pinned is None:
+        return plan_rules.default_plan(batch["definition_of_done"], write_paths)
+    if not isinstance(pinned, list) or plan_rules.plan_sha256(
+        pinned
+    ) != plan_rules.accepted_plan_sha256(batch):
+        raise CoordinatorError(
+            "the batch commit plan does not match the plan pinned on the architect accept",
+            remedy="the batch commit_plan diverged from its architect accept -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    return [dict(entry) for entry in pinned]
+
+
+def _accepted_divergence(
+    repo: Path, root: Path, batch: JsonObject
+) -> JsonObject | None:
+    """The commit-plan divergence of the last accepted initial or rebase developer report.
+
+    A developer-retry builds on that history and keeps its strict commit_map, so the commit
+    boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
+    """
+    for item in plan_rules.decided_entries(
+        batch, "developer", {"accept", "override-warning"}
+    ):
+        developer = _load_dispatch(root, item["dispatch_id"])
+        if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
+            developer
+        ):
+            continue
+        return plan_rules.divergence(
+            _pending_report(root, batch, item),
+            developer,
+            partial(_candidate_commit, repo),
+        )
+    return None
+
+
+def _milestones(
+    batch: JsonObject,
+    policy: str,
+    role: str,
+    purpose: str,
+    risk: JsonObject | None,
+    rebase_target: str | None,
+) -> list[str]:
+    """The risk milestones this dispatch transition crosses, in a fixed order (no I/O).
+
+    Under every policy but ``auto`` any milestone needs an explicit approval; ``auto`` lifts them
+    and records them as ``lifted_milestones`` (issue #643).
+    """
+    previous = _newest_decided_dispatch(batch)
+    routing = previous["decision"].get("routing") if previous else None
+    route = routing.get("route") if isinstance(routing, dict) else None
+    crossed = {
+        "publish": purpose == "publish",
+        "qa": role == "qa" and policy not in {"low_risk", "auto"},
+        "risk-trigger": bool(risk and risk.get("matched_triggers")),
+        "risk-reassessment-required": bool(batch.get("risk_reassessment_required")),
+        "bypass-rerun": route == "bypass-rerun",
+        "rebase-fix-forward": route == "rebase-fix-forward",
+        "rebase-target": rebase_target is not None,
+    }
+    return [name for name, hit in crossed.items() if hit]
 
 
 def _dispatch_approval_mode(
@@ -186,36 +219,88 @@ def _dispatch_approval_mode(
     role: str,
     purpose: str,
     risk: JsonObject | None,
+    rebase_target: str | None = None,
 ) -> str:
     """How this dispatch is approved: ``explicit`` (a human) or ``policy:<name>``.
 
-    A project-approved continuation is allowed only outside the preserved risk milestones.
+    A project-approved continuation is allowed only outside the preserved risk milestones. A
+    re-run after a role worked around a block (``bypass-rerun``) is always one of them, and so is
+    the developer-retry that rebases onto a proposed target (``rebase-fix-forward``, issue #504)
+    or onto the ``rebase_target`` of a superseding batch (issue #506): no policy but ``auto``
+    ever approves a rebase target. ``auto`` approves every transition, milestones included, while
+    both the project config and the batch plan choose it and no stop is recorded (issue #643);
+    otherwise every transition of an ``auto`` batch needs a human.
     """
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
     ):
         return "explicit"
+    if getattr(args, "_policy_infrastructure_retry", False):
+        return "policy:infrastructure-retry"
     policy = batch.get("approval_policy", _approval_policy(config))
-    risk_triggered = bool(risk and risk.get("matched_triggers"))
-    milestone = (
-        purpose == "publish"
-        or (role == "qa" and policy != "low_risk")
-        or risk_triggered
-        or batch.get("risk_reassessment_required")
-    )
-    if policy == "manual_all" or milestone:
+    if policy == approvals.AUTO_POLICY:
+        if "auto_stop" in batch:
+            raise CoordinatorError(
+                "the automatic path of this batch stopped "
+                f"({batch['auto_stop']['category']}: {batch['auto_stop']['reason']}), so this "
+                "transition requires --approved-by and --approved-at",
+                remedy="show the final auto report (batch auto-report) to a human; every later "
+                "step of this batch needs --approved-by and --approved-at",
+            )
+        if not approvals.auto_configured(config, batch):
+            raise CoordinatorError(
+                "approval_policy auto approves only while the project config and the batch plan "
+                "both choose it, so this transition requires --approved-by and --approved-at",
+                remedy="pass --approved-by and --approved-at: a human approves every transition "
+                "of this batch while the project config and the batch plan disagree",
+            )
+        return approvals.AUTO_APPROVER
+    milestones = _milestones(batch, policy, role, purpose, risk, rebase_target)
+    if policy == "manual_all" or milestones:
         raise CoordinatorError(
             "this transition requires --approved-by and --approved-at under its approval policy",
             remedy="pass --approved-by and --approved-at, as required by this project's approval_policy",
         )
-    if policy == "low_risk":
-        zones = config.get("low_risk_zones", [])
-        if batch["zone"] not in zones:
-            raise CoordinatorError(
-                "low_risk continuation requires the batch zone in low_risk_zones",
-                remedy="add the batch's zone to low_risk_zones in the project orchestration config, or use a different approval_policy",
-            )
+    if policy == "low_risk" and not low_risk_eligible(config, batch):
+        raise CoordinatorError(
+            "low_risk continuation requires the batch allowed_paths to lie inside low_risk_paths",
+            remedy="add the batch's paths to low_risk_paths in the project orchestration config, narrow the batch's --allowed-path, or use a different approval_policy",
+        )
     return f"policy:{policy}"
+
+
+def _record_auto_dispatch(
+    batch: JsonObject,
+    dispatch_id: str,
+    approval: dict[str, str],
+    lifted: list[str],
+) -> None:
+    """Record the ``policy:auto`` approval of a new dispatch with the evidence it rests on: the
+    transition digest, the brief, the lifted milestones and the decision that led here."""
+    entry = next(
+        item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id
+    )
+    previous = _newest_decided_dispatch(batch)
+    routing = previous["decision"].get("routing") if previous else None
+    route = routing if isinstance(routing, dict) else None
+    approvals.record_auto(
+        batch,
+        kind="dispatch",
+        dispatch_id=dispatch_id,
+        rationale=(
+            f"the {entry['role']} dispatch is the transition the coordinator prepared"
+            + (f"; lifted milestones: {', '.join(lifted)}" if lifted else "")
+        ),
+        evidence={
+            "transition_digest": approval["transition_digest"],
+            "brief_sha256": entry["brief_sha256"],
+            "lifted_milestones": lifted,
+            "route_preview": route,
+            "reason_category": route.get("reason_category") if route else None,
+            "report_sha256": previous.get("report_sha256") if previous else None,
+        },
+        moment=approval["approved_at"],
+    )
 
 
 def _bind_dispatch_approval(
@@ -288,12 +373,14 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "config": config,
             "branch": batch["branch"],
             "worktree": batch["worktree"],
-            "zone": batch["zone"],
+            "zone": batch.get("zone"),
+            "allowed_paths": batch.get("allowed_paths"),
             "base_sha": batch["base_commit"],
             "candidate_sha": candidate,
             "snapshot_sha": snapshot,
             "integration_ref": _integration_ref(repo, batch),
             "runtime": args.runtime,
+            "purpose": args.purpose,
             "mandatory_checks": checks,
             "starting_files": package_pointer,
             "architecture_decision": batch.get("architecture_decision"),
@@ -301,12 +388,28 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
             "related_tests": package.get("related_tests", []) if package else [],
             "pinned_diff": package.get("diff", "") if package else "",
             "prior_findings": batch.get("prior_findings", []),
+            "retry_handoff": _retry_handoff(root, batch, package)
+            if args.role == "developer" and args.purpose == "work"
+            else None,
+            "retry_package": package,
         }
     try:
         prepared = prepare_dispatch(batch["ticket"], args.role, state)
     except PreflightError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     return prepared.to_dict()
+
+
+def _newest_decided_dispatch(batch: JsonObject) -> JsonObject | None:
+    """The newest dispatch entry that carries a coordinator decision."""
+    return next(
+        (
+            item
+            for item in reversed(batch.get("dispatches", []))
+            if isinstance(item.get("decision"), dict)
+        ),
+        None,
+    )
 
 
 def _proposed_transition(
@@ -318,22 +421,33 @@ def _proposed_transition(
     risk: JsonObject | None,
     verification_commands: list[str],
     context_package: JsonObject | None,
+    carried: JsonObject,
+    delta_scope: JsonObject | None = None,
+    supersede_target: str | None = None,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
     "What came before" is the newest dispatch a human decided on, so a brief that was created but is
-    still unsent (or was cancelled) does not change the transition it was created for."""
-    previous = next(
-        (
-            item
-            for item in reversed(batch.get("dispatches", []))
-            if isinstance(item.get("decision"), dict)
-        ),
-        None,
-    )
+    still unsent (or was cancelled) does not change the transition it was created for. A non-empty
+    carried-items section is bound by its digest, so a finding attached after the proposal needs a
+    new approval. The developer-retry of a ``rebase-fix-forward`` decision binds the rebase target
+    its routing record proposed (issue #504), else the ``supersede_target`` of a superseding batch
+    (issue #506), and a code-review brief after a fix-forward binds its ``delta_review_scope``
+    (issue #625)."""
+    previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
-    return operational_guards.build_transition(
+    rebase_target = (
+        routing.get("rebase_target_commit")
+        if isinstance(routing, dict)
+        and routing.get("route") == "rebase-fix-forward"
+        and next_action == "developer-retry"
+        and (role_name, purpose) == ("developer", "work")
+        else None
+    )
+    if not isinstance(rebase_target, str):
+        rebase_target = supersede_target
+    transition = operational_guards.build_transition(
         batch_id=batch["batch_id"],
         previous_dispatch_id=previous["dispatch_id"] if previous else None,
         previous_role=previous["role"] if previous else None,
@@ -352,28 +466,36 @@ def _proposed_transition(
         else None,
         required_gates=batch["required_gates"],
     )
+    return operational_guards.bind_transition(
+        transition,
+        {
+            "carried_items": carried,
+            "rebase_target_commit": rebase_target
+            if isinstance(rebase_target, str)
+            else None,
+            "delta_review_scope": delta_scope,
+        },
+    )
 
 
 def _reject_active_duplicate(root: Path, batch: JsonObject, key: str) -> None:
-    """At most one active read-only dispatch per idempotency key. A settled dispatch (decided,
-    cancelled or abandoned) never blocks a new one, which always gets a new immutable ID."""
-    for path in sorted((_records_root(root) / "batches").glob("batch-*.json")):
-        other = _read_object(path, "batch record")
-        if other.get("batch_id") == batch.get("batch_id"):
-            other = batch
-        elif other.get("state") in TERMINAL_BATCH_STATES:
+    """At most one active read-only dispatch per idempotency key within a batch. A settled dispatch
+    (decided, cancelled or abandoned) never blocks a new one, which always gets a new immutable ID.
+
+    The key names no batch, so another batch at the same base would collide with it by accident.
+    Repeating the work of an unfinished batch is refused at batch creation (ticket, branch and
+    worktree), which is what lets independent batches run in parallel."""
+    for entry in batch.get("dispatches", []):
+        if _settled(entry):
             continue
-        for entry in other.get("dispatches", []):
-            if _settled(entry):
-                continue
-            if (
-                _load_dispatch(root, entry["dispatch_id"]).get("retry_idempotency_key")
-                == key
-            ):
-                raise CoordinatorError(
-                    f"an active dispatch with the same retry idempotency key already exists: {entry['dispatch_id']}",
-                    remedy=f"let {entry['dispatch_id']} settle or cancel it before creating another dispatch for the same role, candidate, base, scope, reason and verification",
-                )
+        if (
+            _load_dispatch(root, entry["dispatch_id"]).get("retry_idempotency_key")
+            == key
+        ):
+            raise CoordinatorError(
+                f"an active dispatch with the same retry idempotency key already exists: {entry['dispatch_id']}",
+                remedy=f"let {entry['dispatch_id']} settle or cancel it before creating another dispatch for the same role, candidate, base, scope, reason and verification",
+            )
 
 
 def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -385,7 +507,8 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
     """
     repo = _repo(args)
     root = _state_root(args, repo)
-    approval = _approval(args)
+    policy_retry = getattr(args, "_policy_infrastructure_retry", False)
+    approval = {} if policy_retry else _approval(args)
     reason = args.reason.strip() if _non_empty(args.reason) else ""
     if not reason:
         raise CoordinatorError(
@@ -427,9 +550,21 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 "only an approved, unsent dispatch may be cancelled",
                 remedy="only cancel a dispatch that is approved and not yet sent",
             )
+        readiness = (
+            infrastructure_retry.authorize_unsent(repo, root, batch, dispatch)
+            if policy_retry
+            else None
+        )
+        if policy_retry:
+            approval = {
+                "approved_by": "policy:infrastructure-retry",
+                "approved_at": utils._now(),
+            }
         moment = utils._now()
         entry["state"] = "cancelled"
         entry["cancellation"] = {**approval, "cancelled_at": moment, "reason": reason}
+        if readiness is not None:
+            entry["cancellation"]["infrastructure_readiness"] = readiness
         batch["state"] = "awaiting-approval"
         batch.setdefault("coordinator_decisions", []).append(
             {
@@ -437,6 +572,18 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 "decision": "cancel",
                 **approval,
                 "note": reason,
+                **(
+                    {
+                        "routing": {
+                            "route": "same-candidate-rerun",
+                            "reason_category": "verification-infrastructure",
+                            "candidate_commit": dispatch["candidate_commit"],
+                            "infrastructure_readiness": readiness,
+                        }
+                    }
+                    if policy_retry
+                    else {}
+                ),
             }
         )
         _safe_id(dispatch["dispatch_id"], "dispatch")
@@ -448,6 +595,11 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                     "state": "cancelled",
                     "updated_at": moment,
                     "cancellation": entry["cancellation"],
+                    **(
+                        {"infrastructure_failure": status["infrastructure_failure"]}
+                        if policy_retry
+                        else {}
+                    ),
                 }
             ),
         )
@@ -597,6 +749,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "verification": {("verification", "work")},
             # A retried architect report gets a new architect, never a developer.
             "architect": {("architect", "work")},
+            # Issue #534: the conflict-resolver is reached only through `integration resolve`.
+            resolver_state.RESOLVER_NEXT_ACTION: {
+                (resolver_state.RESOLVER_ROLE, "work")
+            },
         }
         if next_action == "risk-assessment":
             raise CoordinatorError(
@@ -619,19 +775,28 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "a developer dispatch requires an accepted architect report for the same batch",
                 remedy="accept an architect completion report for this batch before dispatching a developer",
             )
-        role, zone, profile_id, model, effort, transport, resolved_runtime = (
+        role, ceiling, profile_id, model, effort, transport, resolved_runtime = (
             _resolve_assignment(
                 repo,
                 config,
                 role_name,
-                batch["zone"],
                 args.runtime,
                 session_model=getattr(args, "model", None),
                 session_effort=getattr(args, "effort", None),
             )
         )
+        # A writer's scope is the batch's explicit scope; a batch planned before scopes existed
+        # was bounded by the role's write ceiling alone.
+        write_paths = (
+            batch.get("allowed_paths", ceiling) if role["mode"] == "write" else []
+        )
+        if not paths_inside(write_paths, ceiling):
+            raise CoordinatorError(
+                f"batch allowed_paths {write_paths} exceed the {role_name} write ceiling {ceiling}",
+                remedy=f"widen assignment_plans[{role_name!r}].write_paths in the project orchestration config, or plan a new batch with a narrower --allowed-path",
+            )
         commit_plan = (
-            _developer_commit_plan(batch, zone["paths"])
+            _developer_commit_plan(batch, write_paths)
             if role_name == "developer" and purpose == "work"
             else []
         )
@@ -640,6 +805,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         review_scope: list[str] = []
         delta_review_of: str | None = None
         delta_review_axis: str | None = None
+        # The coordinator's own delta-or-full choice after a fix-forward (issue #625).
+        delta_scope: JsonObject | None = None
         requested_delta_review_of = getattr(args, "delta_review_of", None)
         if args.candidate_commit is not None:
             candidate = _candidate_commit(repo, args.candidate_commit)
@@ -666,8 +833,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="pass a recognized dispatch purpose",
             )
         is_review_work = role_name == "code-review" and purpose == "work"
-        if is_review_work or purpose == "publish":
-            _enforce_base_freshness(repo, root, ledger, batch)
         if candidate is not None:
             risk = _risk_for_candidate(root, batch, candidate)
         if role_name == "verification":
@@ -692,9 +857,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         if role_name == "code-review":
             # The risk assessment decides when review is *mandatory*, never when it is permitted:
             # the fixed pipeline reviews every candidate, high-risk or not.
-            assert (
-                risk is not None
-            )  # the guard above raised when a code-review dispatch has no risk
+            if risk is None:
+                # The guard above raised when a code-review dispatch has no risk.
+                raise CoordinatorError(
+                    "a code-review dispatch reached its scope without a risk assessment",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             review_scope = list(risk["review_scope"])
             if requested_delta_review_of is not None:
                 prior_entry = _prior_review_entry(batch, requested_delta_review_of)
@@ -714,6 +882,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     cast(str, candidate),
                 )
                 delta_review_of = requested_delta_review_of
+            else:
+                delta_scope = delta_review.scope_section(
+                    repo, root, batch, cast(str, candidate), risk, _risk_triggers(repo)
+                )
         elif requested_delta_review_of is not None:
             raise CoordinatorError(
                 "--delta-review-of is only valid for a code-review dispatch",
@@ -725,9 +897,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "QA is blocked until the candidate is risk-assessed again",
                     remedy="register a new risk assessment for this candidate before dispatching QA",
                 )
-            assert (
-                risk is not None
-            )  # the guard above raised when a qa dispatch has no risk
+            if risk is None:
+                # The guard above raised when a qa dispatch has no risk.
+                raise CoordinatorError(
+                    "a QA dispatch reached its review check without a risk assessment",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             if risk["review_required"]:
                 accepted_review = any(
                     item.get("role") == "code-review"
@@ -751,10 +926,25 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 f"the coordinator requires a new {required_role} dispatch before this role",
                 remedy=f"dispatch a new {required_role} role before this one",
             )
+        retry_source = infrastructure_retry.source(root, batch)
+        policy_retry = bool(getattr(args, "_policy_infrastructure_retry", False))
+        if policy_retry and retry_source is None:
+            raise CoordinatorError(
+                "no infrastructure policy decision authorizes this dispatch",
+                remedy="use a manual dispatch approval",
+            )
+        # Only a policy retry binds its source decision into the transition and the brief.
+        policy_source = retry_source if policy_retry else None
+        # A superseding batch's first developer-retry rebases its start commit (issue #506).
+        supersede_target = supersede.rebase_target(
+            repo, root, batch, next_action, role_name, purpose, candidate
+        )
         approval_mode = (
             None
             if propose
-            else _dispatch_approval_mode(args, batch, config, role_name, purpose, risk)
+            else _dispatch_approval_mode(
+                args, batch, config, role_name, purpose, risk, supersede_target
+            )
         )
         context_package = None
         # A developer retry continues the candidate it retries: the unaccepted developer report's
@@ -762,6 +952,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         # snapshot to that candidate too, so the worker keeps the ordered commit history instead
         # of rewinding HEAD and staging the whole diff.
         snapshot_commit = candidate or batch["base_commit"]
+        if role_name == resolver_state.RESOLVER_ROLE:
+            # The resolver starts where the conflicting candidate is, never at the target.
+            snapshot_commit = batch["resolver"]["candidate_sha"]
         if role_name in {"architect", "developer", "verification", "code-review"}:
             snapshot_commit = (
                 candidate
@@ -787,6 +980,26 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 batch,
                 context_package_id=context_package["context_package_id"],
             )
+            mismatch = (context_package_freshness or {}).get("memory_mismatch")
+            if mismatch is not None:
+                if mismatch["path"] is None:
+                    found = "memory sources cannot be read"
+                elif mismatch["actual_source_hash"] is None:
+                    found = (
+                        f"memory source {mismatch['path']} is unavailable or revoked, "
+                        f"expected source_hash {mismatch['expected_source_hash']}"
+                    )
+                else:
+                    found = (
+                        f"memory source {mismatch['path']} has source_hash "
+                        f"{mismatch['actual_source_hash']}, expected "
+                        f"{mismatch['expected_source_hash']}"
+                    )
+                raise CoordinatorError(
+                    f"newly registered Context Package is stale: frozen {found}",
+                    remedy="run `harness memory rebuild .` from the main checkout and retry, "
+                    "or dispatch with --no-memory",
+                )
             if (
                 context_package_freshness is None
                 or context_package_freshness["status"] != "fresh"
@@ -831,6 +1044,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                         )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
         dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
+        carried = delta_review.with_closure_items(
+            carried_items.brief_section(root, batch, role_name, purpose),
+            root,
+            delta_scope,
+        )
         transition = _proposed_transition(
             batch,
             next_action,
@@ -840,9 +1058,53 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             risk,
             dispatch_commands,
             context_package,
+            carried,
+            delta_scope,
+            supersede_target,
         )
+        access_plan = runtime_access.resolve_plan(
+            repo,
+            Path(batch["worktree"]),
+            config,
+            role_name,
+            role["mode"],
+            operation=runtime_access.dispatch_operation(role_name, purpose),
+        )
+        transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
+            "plan_digest"
+        ]
+        orchestration_policy = _orchestration_policy(config)
+        transition[infrastructure_retry.TRANSITION_FIELD] = (
+            operational_guards.policy_digest(
+                orchestration_policy["infrastructure_retry"]
+            )
+        )
+        if policy_source is not None:
+            if _load_dispatch_status(root, policy_source["dispatch_id"]).get(
+                "cancellation"
+            ):
+                readiness = infrastructure_retry.authorize_unsent(
+                    repo, root, batch, policy_source
+                )
+                transition[infrastructure_retry.ATTEMPT_TRANSITION_FIELD] = readiness[
+                    "attempt"
+                ]["sha256"]
+                transition["previous_dispatch_id"] = policy_source["dispatch_id"]
+                transition["previous_role"] = policy_source["role"]
+                transition["reason_category"] = "verification-infrastructure"
+            else:
+                prior_entry = next(
+                    entry
+                    for entry in batch["dispatches"]
+                    if entry["dispatch_id"] == policy_source["dispatch_id"]
+                )
+                # The decision rests on the immutable report: verify it against its digest.
+                prior_report = _pending_report(root, batch, prior_entry)
+                infrastructure_retry.authorize(
+                    repo, root, batch, policy_source, prior_report
+                )
         digest = operational_guards.transition_digest(transition)
-        idempotency_key = _transition_idempotency_key(role_name, purpose, transition)
+        idempotency_key = operational_guards.transition_key(transition)
         if idempotency_key is not None:
             _reject_active_duplicate(root, batch, idempotency_key)
         if propose:
@@ -856,15 +1118,23 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "retry_idempotency_key": idempotency_key,
                 "needs_attention": bool(batch.get("needs_attention", False)),
                 "context_package_freshness": context_package_freshness,
+                "runtime_access": access_plan,
+                "orchestration_policy": orchestration_policy,
             }
             if context_package is not None:
                 warning = _context_package_quality_warning(context_package)
                 if warning is not None:
                     proposal["context_package_quality_warning"] = warning
+            if delta_scope is not None:
+                proposal["delta_review_scope"] = delta_scope
             return proposal
-        assert approval_mode is not None  # only a proposal skips the approval mode
+        if approval_mode is None:
+            # Only a proposal skips the approval mode, and a proposal returned above.
+            raise CoordinatorError(
+                "a dispatch reached brief creation without an approval mode",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
         approval = _bind_dispatch_approval(args, approval_mode, digest)
-        orchestration_policy = _orchestration_policy(config)
         stale_after = cast(
             int, orchestration_policy["attention"]["stale_dispatch_seconds"]
         )
@@ -884,8 +1154,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "ticket": batch["ticket"],
             "role": role_name,
             "access": role["mode"],
-            "zone": batch["zone"],
-            "write_paths": zone["paths"] if role["mode"] == "write" else [],
+            "zone": batch.get("zone"),
+            "write_paths": write_paths,
             "branch": batch["branch"],
             "worktree": batch["worktree"],
             "definition_of_done": batch["definition_of_done"],
@@ -908,6 +1178,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "purpose": purpose,
             "delta_review_of": delta_review_of,
             "delta_review_axis": delta_review_axis,
+            # Delta or full review after a fix-forward, and why (issue #625); null otherwise.
+            "delta_review_scope": delta_scope,
             "context_package_id": context_package["context_package_id"]
             if context_package
             else None,
@@ -936,7 +1208,20 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 "stale_after_seconds": stale_after,
             },
             "commit_plan": commit_plan,
+            "commit_plan_divergence": _accepted_divergence(repo, root, batch)
+            if is_review_work
+            else None,
+            "carried_items": carried,
+            # The human-approved target a rebase-fix-forward developer-retry rebases onto.
+            "rebase_target_commit": transition.get("rebase_target_sha"),
+            "runtime_access": access_plan,
         }
+        if role_name == resolver_state.RESOLVER_ROLE:
+            brief["resolver"] = resolver_route.brief_section(
+                root, config, batch, dispatch_commands, brief["report_staging_path"]
+            )
+        if policy_source is not None:
+            infrastructure_retry.require_same_contract(policy_source, brief)
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
         # top level lets any runtime-neutral adapter consume exactly the reviewed contract.
@@ -968,6 +1253,20 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             ),
         )
+        if approval_mode == approvals.AUTO_APPROVER:
+            _record_auto_dispatch(
+                batch,
+                dispatch_id,
+                approval,
+                _milestones(
+                    batch,
+                    approvals.AUTO_POLICY,
+                    role_name,
+                    purpose,
+                    risk,
+                    supersede_target,
+                ),
+            )
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
         batch["state"] = "active"

@@ -11,9 +11,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 MODULE_ROOT = Path(__file__).resolve().parents[2] / "harness" / "orchestration"
 MODULE_PATH = MODULE_ROOT / "advisory.py"
-from harness.orchestration.advisory import classify_risk, rank_files, summarize_log
+from harness.orchestration.advisory import (
+    classify_risk,
+    main,
+    rank_files,
+    summarize_log,
+)
 
 
 def _imported_module_names(path: Path) -> set[str]:
@@ -127,6 +134,40 @@ class AdvisoryCliTests(unittest.TestCase):
         first = subprocess.run(args, check=True, capture_output=True, text=True).stdout
         second = subprocess.run(args, check=True, capture_output=True, text=True).stdout
         self.assertEqual(first, second)
+
+
+@pytest.mark.parametrize("max_lines", [0, -1])
+def test_a_non_positive_line_limit_selects_no_lines(max_lines: int) -> None:
+    summary = summarize_log("info\nERROR: boom\nlast", max_lines=max_lines)
+    assert summary == {"line_count": 3, "head": [], "tail": [], "flagged": []}
+
+
+def test_a_line_limit_above_the_log_length_keeps_every_line() -> None:
+    summary = summarize_log("a\nb", max_lines=5)
+    assert summary["head"] == summary["tail"] == ["a", "b"]
+
+
+def test_summarize_log_tolerates_bytes_that_are_not_utf8(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log = tmp_path / "gate.log"
+    log.write_bytes(b"ok\n\xff\xfe ERROR: boom\n")
+
+    assert main(["summarize-log", "--file", str(log)]) == 0
+
+    output = json.loads(capsys.readouterr().out)["output"]
+    assert output["line_count"] == 2
+    assert len(output["flagged"]) == 1
+
+
+def test_summarize_log_reports_an_unreadable_file_as_a_usage_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        main(["summarize-log", "--file", str(tmp_path / "missing.log")])
+
+    assert stopped.value.code == 2
+    assert "missing.log" in capsys.readouterr().err
 
 
 if __name__ == "__main__":

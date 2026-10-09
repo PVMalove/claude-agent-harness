@@ -41,6 +41,8 @@ _REPO_MAP_SCRIPT: Path = (
 )
 
 _REPO_MAP_CONTRACT_REMEDY = "inspect harness/repo_map/repo_map.schema.json and the Repo Map CLI output for a contract drift"
+# Bound for one Git plumbing read (`diff`, `show`) of the pinned commits.
+GIT_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -103,15 +105,27 @@ class ContextPackage:
 
 
 def _run_git(repository: Path, *args: str) -> str:
-    """Выполнить команду Git в репозитории и вернуть stdout."""
-    result: subprocess.CompletedProcess[str] = subprocess.run(
-        ["git", "-C", str(repository), *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    """Выполнить команду Git в репозитории с ограничением по времени и вернуть stdout."""
+    try:
+        result: subprocess.CompletedProcess[str] = subprocess.run(
+            ["git", "-C", str(repository), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ContextPackageError(
+            f"git {' '.join(args)} did not finish within {GIT_TIMEOUT_SECONDS} seconds",
+            remedy="check the repository for a held Git lock or an overloaded disk, then retry",
+        ) from exc
+    except OSError as exc:
+        raise ContextPackageError(
+            f"could not run git {' '.join(args)}: {exc}",
+            remedy="restore Git and its execution environment for the coordinator process, then retry",
+        ) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
         raise ContextPackageError(
@@ -155,21 +169,28 @@ def _redact_symbols(text: str, patterns: tuple[str, ...]) -> str:
 def _changed_files(
     repository: Path, base_commit: str, candidate_commit: str
 ) -> list[tuple[str, str]]:
-    """Получить список изменённых файлов и их статусов между base_commit и candidate_commit."""
+    """Получить список изменённых файлов и их статусов между base_commit и candidate_commit.
+
+    `-z` даёт пути без кавычек и escape-последовательностей (`core.quotePath`), поэтому путь с
+    не-ASCII символами совпадает с путём из Repo Map.
+    """
     output: str = _run_git(
-        repository, "diff", "--name-status", base_commit, candidate_commit
+        repository, "diff", "--name-status", "-z", base_commit, candidate_commit
     )
     statuses: dict[str, str] = {"A": "added", "M": "modified", "D": "deleted"}
     changes: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        parts: list[str] = line.split("\t")
-        code: str = parts[0]
+    fields: list[str] = output.split("\0")
+    index: int = 0
+    while index < len(fields) and fields[index]:
+        code: str = fields[index]
+        # A rename or copy names the source and then the destination path.
+        width: int = 2 if code[0] in "RC" else 1
+        path: str = fields[index + width]
+        index += width + 1
         if code.startswith("R"):
-            changes.append((parts[-1], "renamed"))
+            changes.append((path, "renamed"))
         else:
-            changes.append((parts[-1], statuses.get(code[0], code)))
+            changes.append((path, statuses.get(code[0], code)))
     return sorted(changes, key=lambda entry: entry[0])
 
 
@@ -206,14 +227,22 @@ def _run_repo_map(repository: Path, commit: str, seeds: list[str]) -> dict[str, 
     ]
     for seed in seeds:
         args.extend(["--seed", seed])
-    result: subprocess.CompletedProcess[str] = subprocess.run(
-        args,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    # No outer timeout: the CLI bounds every Git call by repo_map_policy.timeout_seconds and every
+    # parser bundle step by parser_bundle_timeout_seconds.
+    try:
+        result: subprocess.CompletedProcess[str] = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:
+        raise ContextPackageError(
+            f"could not start the Repo Map CLI: {exc}",
+            remedy=f"restore the Python interpreter {sys.executable} and {_REPO_MAP_SCRIPT}, then retry",
+        ) from exc
     if result.returncode != 0:
         raise _repo_map_error_from_stderr(result.stderr)
 
@@ -475,8 +504,12 @@ def _related_tests(
 
 def _precedent_cards(
     repository: Path, commit: str, files: list[str], keywords: set[str]
-) -> list[PrecedentCard]:
-    """Сформировать карточки релевантных прецедентов ADR на основе ключевых слов."""
+) -> list[tuple[str, PrecedentCard]]:
+    """Сформировать пары (путь ADR, карточка) релевантных прецедентов на основе ключевых слов.
+
+    Путь возвращается рядом с карточкой: ADR во вложенном каталоге `docs/adr/` не восстанавливается
+    из `id` карточки.
+    """
     adr_files: list[str] = sorted(
         path for path in files if path.startswith("docs/adr/") and path.endswith(".md")
     )
@@ -502,7 +535,7 @@ def _precedent_cards(
             (score, path, PrecedentCard(id=stem, title=title, summary=summary))
         )
     scored.sort(key=lambda entry: (-entry[0], entry[1]))
-    return [card for _, _, card in scored]
+    return [(path, card) for _, path, card in scored]
 
 
 def _markdown_sections(text: str) -> list[SectionPointer]:
@@ -619,7 +652,7 @@ def build_context_package(
             referenced_by.setdefault(target, set()).add(path)
 
     available_changed: list[tuple[str, str]] = [
-        entry for entry in changed if entry[0] in files
+        entry for entry in changed if entry[0] in files_set
     ]
     if available_changed:
         starting_files: list[StartingFile] = _select_starting_files(
@@ -695,14 +728,13 @@ def build_context_package(
         )
 
     keywords: set[str] = _keywords_for(starting_paths)
-    precedent_cards: list[PrecedentCard] = _precedent_cards(
+    precedents: list[tuple[str, PrecedentCard]] = _precedent_cards(
         repository, candidate_commit, files, keywords
     )
+    precedent_cards: list[PrecedentCard] = [card for _, card in precedents]
 
     included_paths: list[str] = sorted(
-        set(starting_paths)
-        | set(related_tests)
-        | {f"docs/adr/{card.id}.md" for card in precedent_cards}
+        set(starting_paths) | set(related_tests) | {path for path, _ in precedents}
     )
     contents: dict[str, str] = {
         path: _redact_symbols(

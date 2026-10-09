@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Sequence
+from typing import Callable, Sequence
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -21,6 +21,18 @@ from ..runner import CommandRunner
 from .. import brand
 
 _OUTPUT_TAIL_LINES = 200
+
+
+def call_from_worker(screen: Screen[None], callback: Callable[[], object]) -> None:
+    """Передаёт результат фонового потока в UI, если экран и приложение ещё работают."""
+    if not (screen.is_mounted and screen.app.is_running):
+        return
+    try:
+        screen.app.call_from_thread(callback)
+    except Exception:
+        # The screen or the app can close between the check above and the call (RuntimeError from
+        # a stopped loop, NoMatches from an unmounted widget): the result has no receiver then.
+        pass
 
 
 def render_result(cli_line: str, result: "CompletedProcess[str]") -> str:
@@ -145,15 +157,12 @@ class CommandMenuScreen(Screen[None]):
                 result = self._command_runner(argv, cwd=self.repo)
             except OSError as exc:
                 text = f"$ {cli_line}\nне удалось запустить: {exc}"
-            except Exception:
-                return
+            except Exception as exc:
+                # An unhandled worker error would exit the whole TUI; show it in the output instead.
+                text = f"$ {cli_line}\nсбой запуска: {exc!r}"
             else:
                 text = render_result(cli_line, result)
-            if self.is_mounted and self.app.is_running:
-                try:
-                    self.app.call_from_thread(self._show, text)
-                except Exception:
-                    pass
+            call_from_worker(self, lambda: self._show(text))
 
         self.run_worker(work, thread=True, exclusive=True, group="command")
 

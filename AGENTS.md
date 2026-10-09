@@ -22,7 +22,8 @@ logs.
   clean-room checks.
 - `docs/README.md` — documentation index; `docs/agents/` — operations, releases, and Russian
   agent descriptions; `docs/adr/` — architectural decisions; `docs/skills/`, `docs/hooks/` —
-  Russian descriptions; `docs/runtime-discovery.md` — runtime skill routes.
+  Russian descriptions; `docs/technical-russian.md` — Russian technical writing style guide;
+  `docs/runtime-discovery.md` — runtime skill routes.
 - `third_party/mattpocock-skills/` — upstream manifest, lock, license, and checksums;
   `.github/workflows/` — CI.
 - `harness/CAPABILITIES.json` is the capability source of truth. `.harness/` and root
@@ -81,3 +82,6 @@ subagents, return their results to the primary session after they finish.
 
 Codex only: when the user explicitly asks to launch or use subagents, run them with `gpt-5.6-luna`
 and `max` reasoning effort. Do not apply this rule outside Codex.
+
+Before the first English handoff, agents must read
+[Technical English](.harness/docs/technical-english.md).

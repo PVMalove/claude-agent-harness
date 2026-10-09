@@ -91,11 +91,19 @@ _Avoid_: рассинхронизация, устаревание.
 **Проектный конфиг** (`.harness/project.json`):
 Источник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch
 hooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,
-`story_points` и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
-умолчанию или `powershell` для native-Windows checkout). Форма описана в
+`story_points`, `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
+умолчанию или `powershell` для native-Windows checkout) и `tracker` (явный трекер проекта:
+`type`, `host`, `project`). Форма описана в
 `harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и
 отклоняет неизвестные поля.
 _Avoid_: конфигурация проекта, settings.
+
+**Трекер проекта** (project tracker):
+Система задач, через которую харнесс ведёт тикеты, ветки и PR/MR целевого репозитория: GitHub,
+GitLab (включая self-hosted) или локальный markdown-трекер. Определяется тройкой тип, хост (с портом)
+и путь проекта; внутренний таск-трекер команды, чьи ключи встречаются в именах веток, трекером
+проекта не является.
+_Avoid_: таск-трекер команды, remote, хостинг кода.
 
 **Интеграционная ветка эпика** (`integration/<service-or-team>`):
 Ветка, которую `/to-spec` создаёт от `base_branch` после публикации эпика. `/to-tickets` переносит
@@ -250,7 +258,7 @@ _Avoid_: специализация каждой сервисной правки
 Необязательная capability `backend-orchestration`, расширяющая `pvmalove-suite` и доставляющая
 role manifests, config contract, lifecycle, handoff и optional runtime adapter без изменения
 существующих проектов. Практический порядок включения и запуска —
-`harness/docs/backend-orchestration.md`.
+`docs/backend-orchestration.md`.
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:
@@ -339,6 +347,22 @@ Commit SHA, созданный developer dispatch, к которому прив�
 clean-room QA и publish. Новая версия кода возвращает batch к оценке риска; publish отправляет только
 принятый и проверенный SHA.
 _Avoid_: QA или publish произвольного HEAD, reuse evidence для другого commit.
+
+**Integration record**:
+Неизменяемая запись, которую `coordinator integration prepare` создаёт после accepted publish и
+которая связывает тикет, issue-ветку, source batch, опубликованный candidate SHA и target SHA
+integration ref вместе с ссылками на исходные QA и publish по digest. Лежит в `reports/integration*`
+рядом с историей, не переписывает завершённый batch и его reports; повтор `prepare` идемпотентен.
+Новые проверки пары (CI, local-QA, resolver) привязываются отдельными записями через
+`integration link-evidence` со статусом `unverified`.
+_Avoid_: переоткрытие completed batch, правка batch или reports вручную, перенос старого QA на
+другую пару candidate/target.
+
+**Stale integration record**:
+Состояние, которое `integration status` показывает, когда integration ref ушёл от записанного target
+SHA. Это только наблюдение (`refresh_required`): оно не создаёт dispatch, ничего не записывает и не
+принимает старое QA для новой пары; обновление идёт обычным путём (developer rebase и новое QA).
+_Avoid_: автоматический rebase или dispatch по факту сдвига ref, «QA всё ещё действует».
 
 **Санитизированный QA-артефакт**:
 Полный stdout/stderr clean-room gate, очищенный от secret-shaped значений, сохранённый локально вне
@@ -462,6 +486,50 @@ _Avoid_: `blocked` (терминальное состояние), автомат
 SHA-256 от роли, candidate SHA, base SHA, review scope, reason category и digest verification commands
 для `architect`/`code-review`/`qa`/publish. Два активных dispatch с одним ключом запрещены; завершённый
 retry не мешает новому dispatch с новым immutable ID.
+
+**Маршрут восстановления** (recovery route):
+Coordinator decision о том, как продолжить batch, когда после отчёта воркера что-то пошло не по
+плану: отчёт расходится с планом или содержит дефект, ушла integration base, инструмент (hook,
+ledger) помешал законному действию. Выбирается так, чтобы сохранить уже проверенное evidence и не
+перезапускать batch; переписывание истории кандидата допустимо только по явному решению человека.
+_Avoid_: retry (лишь один из маршрутов), обход блокировки инструмента воркером, abandon по умолчанию.
+
+**Находка координатора** (coordinator finding):
+Дефект, который coordinator сам заметил в чистом принятом отчёте. Это не причина для retry до
+review: находка уходит в brief code-review как перенесённый пункт, и её закрывает тот же
+developer-retry, что и findings ревьюера.
+_Avoid_: QA finding, review finding, retry без accept по умолчанию.
+
+**Fix-forward**:
+Developer-retry, который дописывает коммиты поверх candidate и закрывает закрытый список
+перенесённых пунктов, не переписывая историю. Если brief утверждает перенос на новую integration
+base, тот же retry переносит прежние коммиты, и каждый из них остаётся сопоставлен со своим
+оригиналом. Уже проверенные коммиты не ревьюятся заново, если не появились новые риски.
+_Avoid_: amend, squash, новый batch с cherry-pick, отдельный тип перехода.
+
+**Неполный пункт** (incomplete item):
+Пункт задания read-only роли, который она не выполнила, с причиной и ролью, которой его можно
+передать. Отчёт с неполными пунктами не принимается автоматически: человек выбирает перенос пункта
+в следующую роль или суженный retry той же роли.
+_Avoid_: blocker в свободном тексте, частичный checkpoint read-only роли.
+
+**Перенесённый пункт** (carried item):
+Пункт в immutable brief следующего dispatch, пришедший из предыдущего этапа: находка координатора,
+неполный пункт или finding к исправлению. Хранит источник и ожидаемое доказательство закрытия.
+_Avoid_: заметка в prompt, изменение DoD.
+
+**Сбой инструмента** (`tooling`):
+Причина retry, когда hook, классификатор безопасности или ledger помешал законному действию роли.
+Признаётся только по структурному evidence (инструмент, команда, сообщение), не расходует
+developer-бюджет и повторяет тот же этап. Обход блокировки другой формой команды — нарушение
+протокола, а не маршрут.
+_Avoid_: `verification-infrastructure`, `unknown`, обход hook-а.
+
+**Замещающий batch** (`--supersedes`):
+Новый batch, созданный на месте abandoned batch с approval человека. Переносит принятый отчёт
+architect, план коммитов и последний принятый candidate как snapshot; risk, review и QA проходят
+заново, решения оператора остаются ссылкой на прежний batch.
+_Avoid_: повторное открытие abandoned batch, копирование evidence.
 
 **Health-отчёт** (`harness health`):
 Сводка готовности проекта и машины к работе харнесса: файлы харнесса, окружение (ОС, git, uv, bash),

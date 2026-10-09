@@ -32,6 +32,7 @@ from .. import repo_map as console_repo_map
 from ..repo_map import RepoMapView
 from ..runner import CommandRunner, capturing_runner
 from .. import brand
+from .commands import call_from_worker
 from .export import (
     EXPORT_BINDING_KEY,
     EXPORT_JSON_BINDING_KEY,
@@ -284,15 +285,15 @@ class RepoMapScreen(Screen[None]):
         self._set_status(f"строится карта HEAD {head[:12]}…")
 
         def work() -> None:
+            outcome: RepoMapView | str
             try:
-                outcome = console_repo_map.build_map(self.repo, head, self._command_runner)
-            except Exception:
-                return
-            if self.is_mounted and self.app.is_running:
-                try:
-                    self.app.call_from_thread(self._apply_build, outcome)
-                except Exception:
-                    pass
+                outcome = console_repo_map.build_map(
+                    self.repo, head, self._command_runner
+                )
+            except Exception as exc:
+                # An unhandled worker error would exit the whole TUI; show it as the build outcome.
+                outcome = f"сбой построения: {exc!r}"
+            call_from_worker(self, lambda: self._apply_build(outcome))
 
         self.run_worker(work, thread=True, exclusive=True, group="repo-map-build")
 

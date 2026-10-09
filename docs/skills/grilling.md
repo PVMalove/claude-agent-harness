@@ -85,7 +85,7 @@ advisory модели.
 
 ## 4. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![Discovery Pipeline: от решения к Context Package](../diagrams/previews/discovery-pipeline.workflow.png)
 
 ## Источник
 

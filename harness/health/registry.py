@@ -27,6 +27,7 @@ from .checks import files as files_checks
 from .checks import memory as memory_checks
 from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
+from .checks import runtime_sandbox as runtime_sandbox_checks
 from .checks import tracker as tracker_checks
 from .checks import windows as windows_checks
 from .context import HealthContext
@@ -63,17 +64,24 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.line_endings", environment_checks.check_line_endings),
     ("environment.python", environment_checks.check_python),
     ("environment.uv", environment_checks.check_uv),
+    ("environment.glab", environment_checks.check_glab),
     ("environment.dev_env", environment_checks.check_dev_environment),
     ("environment.output_encoding", environment_checks.check_output_encoding),
+    ("environment.codex_sandbox", runtime_sandbox_checks.check_codex_sandbox),
+    ("environment.claude_sandbox", runtime_sandbox_checks.check_claude_sandbox),
+    ("environment.codex_uv_cache", runtime_sandbox_checks.check_codex_uv_cache),
+    ("environment.claude_uv_cache", runtime_sandbox_checks.check_claude_uv_cache),
     ("environment.long_paths", windows_checks.check_long_paths),
     ("environment.path_length", windows_checks.check_path_length),
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
     ("environment.symlinks", windows_checks.check_symlinks),
     ("environment.hook_bash", windows_checks.check_hook_bash),
+    ("tracker.project", tracker_checks.check_project),
     ("tracker.auth", tracker_checks.check_auth),
     ("tracker.reachability", tracker_checks.check_reachability),
     ("tracker.permissions", tracker_checks.check_permissions),
     ("tracker.labels", tracker_checks.check_labels),
+    ("tracker.git_base", tracker_checks.check_git_base),
     ("orchestration.ledger_summary", orchestration_checks.check_ledger_summary),
     ("orchestration.unfinished_batches", orchestration_checks.check_unfinished_batches),
     ("orchestration.blocked_batches", orchestration_checks.check_blocked_batches),

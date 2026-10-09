@@ -73,23 +73,15 @@ def check_docs_agents_mirror() -> None:
 
 
 def check_guide_diagram_previews() -> None:
-    """Проверить картинки справочника в harness/docs/diagrams/.
-
-    Справочник ставится в целевой проект без корневого docs/, поэтому его превью Archify лежат рядом
-    с ним. Каждая копия обязана совпадать с docs/diagrams/previews/, и каждая ссылка — существовать.
-    """
-    guide_dir = HARNESS_GUIDE.parent / "diagrams"
+    """Проверить, что каждая картинка справочника есть среди превью Archify в docs/diagrams/previews/."""
     previews = ROOT / "docs" / "diagrams" / "previews"
-    for copy in sorted(guide_dir.glob("*.png")):
-        source = previews / copy.name
-        if not source.is_file() or source.read_bytes() != copy.read_bytes():
-            sys.exit(f"{copy} differs from its Archify preview {source}")
     for name in re.findall(
-        r"\]\(\./diagrams/([^)]+\.png)\)", HARNESS_GUIDE.read_text(encoding="utf-8")
+        r"\]\(\./diagrams/previews/([^)]+\.png)\)",
+        HARNESS_GUIDE.read_text(encoding="utf-8"),
     ):
-        if not (guide_dir / name).is_file():
+        if not (previews / name).is_file():
             sys.exit(
-                f"harness-guide.md references a missing diagram preview: ./diagrams/{name}"
+                f"harness-guide.md references a missing diagram preview: ./diagrams/previews/{name}"
             )
 
 

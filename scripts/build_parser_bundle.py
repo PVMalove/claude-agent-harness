@@ -26,6 +26,8 @@ WORKER = ROOT / "harness" / "repo_map" / "tree_sitter_worker.py"
 CORE_DISTRIBUTION = "tree_sitter"
 CORE_VERSION = "0.26.0"
 CORE_ABI_RANGE = "13-15"
+# Bound for the interpreter probe that names the running cpXY-platform pair.
+PROBE_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -62,7 +64,9 @@ def _running_pair() -> str:
         "print(f'cp{sys.version_info[0]}{sys.version_info[1]}-'"
         " + sysconfig.get_platform().replace('-', '_').replace('.', '_'))"
     )
-    return subprocess.check_output([sys.executable, "-c", script], text=True).strip()
+    return subprocess.check_output(
+        [sys.executable, "-c", script], text=True, timeout=PROBE_TIMEOUT_SECONDS
+    ).strip()
 
 
 def _single_wheel(wheelhouse: Path, distribution: str, version: str) -> Path:

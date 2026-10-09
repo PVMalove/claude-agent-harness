@@ -278,7 +278,8 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
         if path.is_symlink():
             raise ValueError("memory source must not be a symlink")
         if path.is_dir():
-            if path.name in EXCLUDED:
+            # The repository root itself is walked for a pattern without a literal prefix.
+            if path != repo and path.name in EXCLUDED:
                 return
             if relative == ".harness" or relative.startswith(".harness/"):
                 if relative.startswith(SNAPSHOT):
@@ -320,7 +321,9 @@ def allowed_paths(repo: Path, policy: Policy) -> list[str]:
                 break
             prefix.append(part)
         start = repo.joinpath(*prefix)
-        safe_source(repo, start.relative_to(repo).as_posix())
+        if prefix:
+            # A pattern such as `*.md` or `**/*.md` starts at the root, which needs no check.
+            safe_source(repo, "/".join(prefix))
         if start.exists():
             walk(start)
     if generation and selected_generation(repo) != generation:

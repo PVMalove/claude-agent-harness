@@ -72,10 +72,6 @@ python .harness/reporting/delivery_stats.py --repo . --epic <current-epic> \\
 - **Вход (Input/Brief):** номер завершённого эпика либо дочернего тикета; необязательные параметры `--json`, `--rates` и `--base`.
 - **Выход (Output/Report):** HTML-панель в `docs/reports/` и краткий отчёт с закрытыми тикетами, объёмом кода, токенами, кэшем, стоимостью (если она рассчитана) и оговорками достоверности.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/delivery-stats/SKILL.md)

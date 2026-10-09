@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import importlib.util
 import json
 import sys
@@ -15,16 +16,10 @@ def main() -> int:
     harness_root = Path(__file__).resolve().parents[1]
     if str(harness_root.parent) not in sys.path:
         sys.path.insert(0, str(harness_root.parent))
-    if harness_root.name != "harness":
-        spec = importlib.util.spec_from_file_location(
-            "harness",
-            harness_root / "__init__.py",
-            submodule_search_locations=[str(harness_root)],
-        )
-        assert spec is not None and spec.loader is not None
-        package = importlib.util.module_from_spec(spec)
-        sys.modules["harness"] = package
-        spec.loader.exec_module(package)
+    if harness_root.name != "harness" or not (harness_root / "__init__.py").is_file():
+        spec = importlib.machinery.ModuleSpec("harness", None, is_package=True)
+        spec.submodule_search_locations = [str(harness_root)]
+        sys.modules["harness"] = importlib.util.module_from_spec(spec)
 
     from harness.memory.search import search
 

@@ -26,38 +26,49 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchRecord,
     DispatchStatusRecord,
     LedgerError,
+    LedgerLockBusy,
     LedgerRecordVO,
     LifecycleLedger,
     RiskAssessmentRecord,
 )
 
 
-def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
+class LedgerBusyError(CoordinatorError):
+    """Another coordinator operation holds the ledger lock."""
+
+
+@contextmanager
+def _ledger_errors() -> Iterator[None]:
+    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``."""
     try:
-        ledger.write_immutable(path, value)
+        yield
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+
+
+def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
+    with _ledger_errors():
+        ledger.write_immutable(path, value)
 
 
 def _write_text_exclusive(ledger: LifecycleLedger, path: Path, value: str) -> None:
-    try:
+    with _ledger_errors():
         ledger.write_artifact(path, value)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
-    try:
+    with _ledger_errors():
         ledger.write_record(record)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
-def _replace_record(ledger: LifecycleLedger, record: LedgerRecordVO) -> None:
-    try:
-        ledger.replace_record(record)
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+def _replace_record(
+    ledger: LifecycleLedger,
+    record: LedgerRecordVO,
+    *,
+    decision: JsonObject | None = None,
+) -> None:
+    with _ledger_errors():
+        ledger.replace_record(record, decision=decision)
 
 
 def _state_root(args: argparse.Namespace, repo: Path) -> Path:
@@ -66,10 +77,8 @@ def _state_root(args: argparse.Namespace, repo: Path) -> Path:
 
 
 def _records_root(root: Path) -> Path:
-    try:
+    with _ledger_errors():
         return LifecycleLedger(root).records_root()
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 @contextmanager
@@ -78,10 +87,14 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
     ``CoordinatorError`` for this call site -- the same translation ``_write_exclusive`` and
     ``_replace_record`` already apply on every write.  Centralising the translation here (rather than
     repeating a ``try/except`` at every one of this module's lock sites) removes the risk of a lock
-    site forgetting it and leaking an uncaught ``LedgerError`` into the CLI."""
+    site forgetting it and leaking an uncaught ``LedgerError`` into the CLI.  Contention becomes
+    the ``LedgerBusyError`` marker, so a call site that may wait out a busy ledger can tell it from
+    every other refusal."""
     try:
         with ledger.lock():
             yield
+    except LedgerLockBusy as exc:
+        raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 

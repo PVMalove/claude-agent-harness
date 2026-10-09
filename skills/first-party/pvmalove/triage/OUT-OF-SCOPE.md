@@ -83,7 +83,7 @@ The maintainer may:
 
 ## When to write to `.out-of-scope/`
 
-Only when a **feature or behavior request** (not a bug-shaped report) is *rejected* and closed with the `out-of-scope` label. This applies to enhancement PRs exactly as it does to issues — a rejected PR is recorded here so the same request doesn't return as fresh code.
+Only when a **feature or behavior request** (not a bug-shaped report) is *rejected* and closed with `resolution::wontfix`. This applies to enhancement PRs exactly as it does to issues — a rejected PR is recorded here so the same request doesn't return as fresh code.
 
 Do **not** write here when something is closed because it's **already implemented**. That's a built feature, not a rejected one; recording it would poison the dedup checks with false rejections. Instead, the closing comment points to where the feature already lives. Also skip it for a bug-shaped report that turns out invalid — that's not a scope decision, just a closed report.
 
@@ -94,7 +94,7 @@ The flow:
 3. If yes: append the new issue to the "Prior requests" list
 4. If no: create a new file with the concept name, decision, reason, and first prior request
 5. Post a comment on the issue explaining the decision and mentioning the `.out-of-scope/` file
-6. Close the issue with the `out-of-scope` label (this project's `wontfix` equivalent — see `docs/agents/triage-labels.md`)
+6. Apply `resolution::wontfix`, remove any `status::*` label, and close the issue (see `docs/agents/triage-labels.md`)
 
 ## Updating or removing out-of-scope files
 

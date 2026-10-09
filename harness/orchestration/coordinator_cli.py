@@ -50,6 +50,11 @@ def build_parser(
             handlers.clean_ledger,
             "Safely remove orphaned dispatch evidence to fix migration errors",
         ),
+        (
+            "release-lock",
+            handlers.release_ledger_lock,
+            "Release a stuck ledger lock after checking its owner; a live owner is refused",
+        ),
     ):
         command = ledger_commands.add_parser(name, help=help_text)
         _common(command)
@@ -71,9 +76,13 @@ def build_parser(
     create.add_argument("--branch", required=True)
     create.add_argument("--worktree", required=True)
     create.add_argument(
+        "--allowed-path",
+        action="append",
+        help="repo-relative path or glob the batch's writer may change; repeated; the batch's explicit write scope",
+    )
+    create.add_argument(
         "--zone",
-        default=defaults.DEFAULT_ZONE,
-        help="backend zone; defaults to the whole repository",
+        help="legacy audit label recorded in the batch; it neither locks nor scopes anything",
     )
     create.add_argument(
         "--integration-ref",
@@ -102,13 +111,22 @@ def build_parser(
         type=int,
         help="optional observed context estimate; never lowers the deterministic floor",
     )
+    create.add_argument(
+        "--supersedes",
+        help="abandoned batch of the same ticket and issue branch this batch resumes from its "
+        "abandoned.last_accepted record; requires --approved-by and --approved-at",
+    )
+    create.add_argument(
+        "--approved-by", help="human who approved --supersedes; never a policy"
+    )
+    create.add_argument("--approved-at", help="time of the --supersedes approval")
     create.set_defaults(handler=handlers.create_batch)
     batch_preflight = batch_commands.add_parser(
         "preflight", help="reject an oversized ticket before creating a batch"
     )
     _common(batch_preflight)
     batch_preflight.add_argument("--ticket", required=True)
-    batch_preflight.add_argument("--zone", default=defaults.DEFAULT_ZONE)
+    batch_preflight.add_argument("--allowed-path", action="append")
     batch_preflight.add_argument("--definition-of-done", action="append", required=True)
     batch_preflight.add_argument("--dependency", action="append")
     batch_preflight.add_argument("--expected-file", action="append")
@@ -119,8 +137,15 @@ def build_parser(
     approve = batch_commands.add_parser("approve")
     _common(approve)
     approve.add_argument("--batch", required=True)
-    approve.add_argument("--approved-by", required=True)
-    approve.add_argument("--approved-at", required=True)
+    approve.add_argument(
+        "--approved-by",
+        help="human who approved the batch plan; omitted only under approval_policy auto, "
+        "which records the approval as policy:auto",
+    )
+    approve.add_argument(
+        "--approved-at",
+        help="time of the approval; omitted only under approval_policy auto",
+    )
     approve.set_defaults(handler=handlers.approve_batch)
     batch_list = batch_commands.add_parser("list")
     _common(batch_list)
@@ -193,7 +218,83 @@ def build_parser(
         choices=["developer"],
         help="force a developer retry where the coordinator would re-run the same candidate",
     )
+    decide.add_argument(
+        "--commit-plan-file",
+        help="only with --decision accept on an architect report: a JSON file "
+        '{"commit_plan": [{"id", "summary", "expected_paths", "covers"}, ...]} pinned as the '
+        "batch's developer commit plan",
+    )
+    decide.add_argument(
+        "--findings-file",
+        help="only with --decision accept or override-warning on a developer work report: a "
+        'JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]} of coordinator '
+        "findings every later code-review brief carries until a review settles them",
+    )
+    decide.add_argument(
+        "--carry-incomplete",
+        action="store_true",
+        help="only with --decision accept or override-warning on a read-only report that lists "
+        "incomplete_items: carry each item into the work brief of its target role until an "
+        "accepted dispatch of that role carried it",
+    )
+    decide.add_argument(
+        "--narrowed",
+        action="store_true",
+        help="only with --decision retry on a read-only report that lists incomplete_items: "
+        "re-run the same role on the same SHA with a brief that carries only those items",
+    )
     decide.set_defaults(handler=handlers.decide_batch)
+    auto_decide = batch_commands.add_parser(
+        "auto-decide",
+        help="under approval_policy auto: take the policy decision on the pending report and "
+        "record it as policy:auto; a stop ends the automatic path of the batch",
+    )
+    _common(auto_decide)
+    auto_decide.add_argument("--batch", required=True)
+    auto_decide.add_argument(
+        "--findings-file",
+        help="a developer work report the policy accepts: coordinator findings carried into "
+        "code-review, as for batch decide --findings-file",
+    )
+    auto_decide.add_argument(
+        "--commit-plan-file",
+        help="an architect report the policy accepts: the architect's commit plan, pinned when "
+        "it lies inside allowed_paths and covers every definition-of-done item",
+    )
+    auto_decide.add_argument(
+        "--bug-ticket",
+        help="the tracker ticket of the tool that blocked the role; required for a tooling-retry",
+    )
+    auto_decide.add_argument(
+        "--block-bypass",
+        action="store_true",
+        help="the role worked around a hook or tool block; requires --note naming the violation",
+    )
+    auto_decide.add_argument(
+        "--note", help="added to the deterministic rationale of the decision"
+    )
+    auto_decide.set_defaults(handler=handlers.auto_decide)
+    auto_report = batch_commands.add_parser(
+        "auto-report",
+        help="render the final report of an approval_policy auto batch; records a stop the "
+        "ledger shows, else renders the live report",
+    )
+    _common(auto_report)
+    auto_report.add_argument("--batch", required=True)
+    auto_report.set_defaults(handler=handlers.auto_report)
+    carry_over = batch_commands.add_parser(
+        "carry-over",
+        help="carry coordinator findings into review after the developer report was accepted, "
+        "before its code-review dispatch is created",
+    )
+    _common(carry_over)
+    carry_over.add_argument("--batch", required=True)
+    carry_over.add_argument(
+        "--findings-file",
+        required=True,
+        help='a JSON file {"findings": [{"summary", "files", "expected_evidence"}, ...]}',
+    )
+    carry_over.set_defaults(handler=handlers.carry_over_findings)
     attention = batch_commands.add_parser(
         "attention", help="operational-loop attention state of a batch"
     )
@@ -226,6 +327,31 @@ def build_parser(
     packet.add_argument("--batch", required=True)
     packet.add_argument(
         "--dispatch", help="approved or reported dispatch in this batch"
+    )
+    packet.add_argument(
+        "--reason-category",
+        choices=defaults.RETRY_REASON_CATEGORIES,
+        help="preview the retry route as batch decide computes it with this --reason-category; the preview does not check the developer-retry budget",
+    )
+    packet.add_argument(
+        "--retry-role",
+        choices=["developer"],
+        help="preview the retry route as batch decide computes it with --retry-role developer; the preview does not check the developer-retry budget",
+    )
+    packet.add_argument(
+        "--commit-plan-file",
+        help="preview the scope_warnings batch decide --commit-plan-file records when it pins "
+        "this commit plan on the pending architect report",
+    )
+    packet.add_argument(
+        "--findings-file",
+        help="preview the carry-over route that batch decide --findings-file on the pending "
+        "developer report, or else batch carry-over, records with this findings file",
+    )
+    packet.add_argument(
+        "--narrowed",
+        action="store_true",
+        help="preview the retry route as batch decide --decision retry --narrowed computes it",
     )
     packet.set_defaults(handler=handlers.decision_packet)
 
@@ -294,6 +420,13 @@ def build_parser(
 
     dispatch = commands.add_parser("dispatch")
     dispatch_commands = dispatch.add_subparsers(dest="dispatch_command", required=True)
+    infrastructure = dispatch_commands.add_parser(
+        "retry-infrastructure",
+        help="retry a confirmed unsent operation refusal under its pinned opt-in",
+    )
+    _common(infrastructure)
+    infrastructure.add_argument("--dispatch", required=True)
+    infrastructure.set_defaults(handler=handlers.retry_infrastructure_dispatch)
     preflight = dispatch_commands.add_parser(
         "preflight", help="validate a future dispatch without creating it"
     )
@@ -523,10 +656,172 @@ def build_parser(
     qa_clear.add_argument("--reason", required=True)
     qa_clear.set_defaults(handler=handlers.clear_qa_lease)
 
+    integration = commands.add_parser(
+        "integration",
+        help="record and observe the integration link of a published ticket branch",
+    )
+    integration_commands = integration.add_subparsers(
+        dest="integration_command", required=True
+    )
+    local_qa = integration_commands.add_parser(
+        "local-qa",
+        help="run full local QA when combined-result CI cannot verify the pair",
+    )
+    _common(local_qa)
+    local_qa.add_argument("--record", required=True)
+    local_qa.add_argument(
+        "--ci-condition", choices=defaults.LOCAL_QA_CI_CONDITIONS, required=True
+    )
+    local_qa.add_argument("--reason", required=True)
+    local_qa.add_argument("--request", help="resume only this pinned request ID")
+    local_qa.add_argument(
+        "--retry", action="store_true", help="explicitly retry an operational attempt"
+    )
+    local_qa.add_argument("--lease-seconds", type=int)
+    local_qa.set_defaults(handler=handlers.integration_local_qa)
+    integration_prepare = integration_commands.add_parser(
+        "prepare",
+        help="record the link between ticket, branch, source batch, published candidate and target SHA; idempotent",
+    )
+    _common(integration_prepare)
+    integration_prepare.add_argument("--ticket", required=True)
+    integration_prepare.add_argument("--branch", required=True)
+    integration_prepare.add_argument(
+        "--batch",
+        help="source batch ID; required when several batches published the branch",
+    )
+    integration_prepare.add_argument(
+        "--candidate-commit",
+        help="optional published SHA to check against the accepted publish report",
+    )
+    integration_prepare.add_argument("--remote", default="origin")
+    integration_prepare.set_defaults(handler=handlers.integration_prepare)
+    integration_status = integration_commands.add_parser(
+        "status",
+        help="read-only: observe whether a record's candidate/target pair is still current",
+    )
+    _common(integration_status)
+    integration_status.add_argument("--record", help="integration record ID")
+    integration_status.add_argument("--ticket")
+    integration_status.add_argument("--branch")
+    integration_status.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_status.set_defaults(handler=handlers.integration_status)
+    integration_next = integration_commands.add_parser(
+        "next",
+        help="read-only: the next step of a PR continuation (refresh, resolver, route a failed check, confirm, verify, hand over)",
+    )
+    _common(integration_next)
+    integration_next.add_argument("--record", help="integration record ID")
+    integration_next.add_argument("--ticket")
+    integration_next.add_argument("--branch")
+    integration_next.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_next.add_argument(
+        "--pull-request",
+        type=int,
+        help="the opened pull request; without it the step is the one before the pull request",
+    )
+    integration_next.set_defaults(handler=handlers.integration_next)
+    integration_link = integration_commands.add_parser(
+        "link-evidence",
+        help="register a new CI, local-QA or resolver check of a candidate/target pair; idempotent",
+    )
+    _common(integration_link)
+    integration_link.add_argument("--record", required=True)
+    integration_link.add_argument(
+        "--kind", required=True, choices=defaults.INTEGRATION_EVIDENCE_KINDS
+    )
+    integration_link.add_argument("--candidate-commit", required=True)
+    integration_link.add_argument("--target-commit", required=True)
+    integration_link.add_argument(
+        "--result", required=True, choices=defaults.INTEGRATION_EVIDENCE_RESULTS
+    )
+    integration_link.add_argument(
+        "--reference", required=True, help="where the check result can be inspected"
+    )
+    integration_link.add_argument(
+        "--artifact-sha256", help="digest of the artifact the reference points to"
+    )
+    integration_link.set_defaults(handler=handlers.integration_link_evidence)
+    integration_collect = integration_commands.add_parser(
+        "collect-ci",
+        help="collect CI evidence for the combined result of a pull request; records only accepted or failed evidence",
+    )
+    _common(integration_collect)
+    integration_collect.add_argument("--record", help="integration record ID")
+    integration_collect.add_argument("--ticket")
+    integration_collect.add_argument("--branch")
+    integration_collect.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_collect.add_argument("--pull-request", required=True, type=int)
+    integration_collect.set_defaults(handler=handlers.integration_collect_ci)
+    integration_refresh = integration_commands.add_parser(
+        "refresh",
+        help="PR preparation: rebase the own issue branch onto the current integration SHA when it moved",
+    )
+    _common(integration_refresh)
+    integration_refresh.add_argument("--record", help="integration record ID")
+    integration_refresh.add_argument("--ticket")
+    integration_refresh.add_argument("--branch")
+    integration_refresh.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_refresh.set_defaults(handler=handlers.integration_refresh)
+    integration_resolve = integration_commands.add_parser(
+        "resolve",
+        help="a textual conflict with the integration tip: create the conflict-resolver batch (nothing is written to Git)",
+    )
+    _common(integration_resolve)
+    integration_resolve.add_argument("--record", help="integration record ID")
+    integration_resolve.add_argument("--ticket")
+    integration_resolve.add_argument("--branch")
+    integration_resolve.add_argument(
+        "--batch",
+        help="source batch ID when --ticket and --branch match several records",
+    )
+    integration_resolve.set_defaults(handler=handlers.integration_resolve)
+    resolver_event = integration_commands.add_parser(
+        "resolver-event",
+        help="record a human decision or a scope change of a conflict-resolver dispatch as its own audit event",
+    )
+    _common(resolver_event)
+    resolver_event.add_argument("--record", help="integration record ID")
+    resolver_event.add_argument("--ticket")
+    resolver_event.add_argument("--branch")
+    resolver_event.add_argument("--batch", help="source batch ID")
+    resolver_event.add_argument(
+        "--kind", required=True, choices=["human-decision", "scope-change"]
+    )
+    resolver_event.add_argument("--dispatch", required=True)
+    resolver_event.add_argument("--decided-by", required=True)
+    resolver_event.add_argument("--note", required=True)
+    resolver_event.add_argument("--option", help="the option id a human chose")
+    resolver_event.add_argument(
+        "--extends-budget",
+        action="store_true",
+        help="grant one more automatic resolver target after the two spent ones",
+    )
+    resolver_event.set_defaults(handler=handlers.resolver_event)
+
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
     report_submit = report_commands.add_parser("submit", aliases=["record"])
     _common(report_submit)
     report_submit.add_argument("--file", required=True)
     report_submit.set_defaults(handler=handlers.submit_report)
+    report_complete = report_commands.add_parser(
+        "complete",
+        help="run the pending steps of a recorded report's policy chain; idempotent",
+    )
+    _common(report_complete)
+    report_complete.add_argument("--dispatch", required=True)
+    report_complete.set_defaults(handler=handlers.complete_report)
     return root

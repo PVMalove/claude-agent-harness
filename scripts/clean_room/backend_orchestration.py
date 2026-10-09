@@ -1,21 +1,99 @@
 """Установка backend-orchestration, Repo Map и health: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
 import re
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from harness.orchestration.core.constants import RECOVERY_ROUTES
 from harness.storage import storage_path
 from scripts.clean_room.support import (
+    assert_contract_link,
+    check_technical_english,
     HARNESS,
     ROOT,
     capture_json,
     fill_agents,
     find_check,
+    run_health,
     run_ok,
+    run_step,
 )
+
+
+RETRY_ROUTING_HEADING = "## Retry routing and abandon"
+RECOVERY_ROUTE_TABLE_HEADING = "## Recovery route table"
+RECOVERY_ROUTE_TABLE_HEADER = ("Situation", "Route", "Who approves", "Evidence")
+
+
+def _require_worker_protocol(skill: str) -> None:
+    """Проверить lifecycle внутри поставленного промпта, а не в соседнем тексте skill."""
+    section = skill.partition("## Worker prompt\n")[2]
+    match = re.search(r"```text\n(.*?)```", section, re.DOTALL)
+    if match is None:
+        sys.exit("installed implement skill is missing the worker prompt template")
+    prompt = match.group(1)
+    positions = []
+    for command in ("dispatch self-report", "dispatch heartbeat", "report submit"):
+        line = re.search(
+            rf"^<coordinator CLI> {re.escape(command)}\b", prompt, re.MULTILINE
+        )
+        if line is None:
+            sys.exit(
+                f"installed worker prompt is missing the protocol command: {command}"
+            )
+        positions.append(line.start())
+    if positions != sorted(positions):
+        sys.exit(
+            "installed worker prompt must attest, heartbeat, then submit its report"
+        )
+
+
+def _require_recovery_route_table(playbook: str) -> None:
+    """Обязательное правило playbook: таблица маршрутов восстановления (#497).
+
+    Раздел `## Recovery route table` идёт сразу после `## Retry routing and abandon`, содержит
+    таблицу `Situation | Route | Who approves | Evidence` и хотя бы одну строку на каждое значение
+    `RECOVERY_ROUTES` во второй колонке (у маршрута может быть несколько ситуаций); маршрут вне
+    enum в таблице тоже ошибка.
+    """
+    missing = "backend-orchestration playbook missing rule: recovery route table"
+    headings = [
+        line.strip() for line in playbook.splitlines() if line.startswith("## ")
+    ]
+    if RECOVERY_ROUTE_TABLE_HEADING not in headings:
+        sys.exit(f"{missing} ({RECOVERY_ROUTE_TABLE_HEADING})")
+    position = headings.index(RECOVERY_ROUTE_TABLE_HEADING)
+    if position == 0 or headings[position - 1] != RETRY_ROUTING_HEADING:
+        sys.exit(
+            f"{missing}: {RECOVERY_ROUTE_TABLE_HEADING} must directly follow "
+            f"{RETRY_ROUTING_HEADING}"
+        )
+    section = playbook.split(RECOVERY_ROUTE_TABLE_HEADING, 1)[1].split("\n## ", 1)[0]
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in section.splitlines()
+        if line.strip().startswith("|")
+    ]
+    if not rows or tuple(rows[0]) != RECOVERY_ROUTE_TABLE_HEADER:
+        sys.exit(
+            f"{missing}: header must be | {' | '.join(RECOVERY_ROUTE_TABLE_HEADER)} |"
+        )
+    routes = [
+        row[1].strip("`")
+        for row in rows[2:]
+        if len(row) == len(RECOVERY_ROUTE_TABLE_HEADER)
+    ]
+    unknown = sorted(set(routes) - set(RECOVERY_ROUTES))
+    absent = [route for route in RECOVERY_ROUTES if route not in routes]
+    if len(routes) != len(rows) - 2 or unknown or absent:
+        sys.exit(
+            f"{missing}: every row needs four cells and one route of RECOVERY_ROUTES "
+            f"(missing: {absent}, unknown: {unknown})"
+        )
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -57,12 +135,10 @@ def run(ctx: SimpleNamespace) -> None:
         return path
 
     orchestration_project.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    run_step(["git", "init", "-q"], cwd=orchestration_project, check=True)
     orchestration_remote = test_root / "orchestration-remote.git"
-    subprocess.run(
-        ["git", "init", "--bare", "-q", str(orchestration_remote)], check=True
-    )
-    subprocess.run(
+    run_step(["git", "init", "--bare", "-q", str(orchestration_remote)], check=True)
+    run_step(
         ["git", "remote", "add", "origin", str(orchestration_remote)],
         cwd=orchestration_project,
         check=True,
@@ -87,13 +163,15 @@ def run(ctx: SimpleNamespace) -> None:
         ]
     )
     fill_agents(orchestration_project)
-    run_ok(HARNESS + ["health", str(orchestration_project)])
+    check_technical_english(orchestration_project)
+    run_health(orchestration_project)
     orchestration_root = orchestration_project / ".harness" / "orchestration"
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")
+    _require_worker_protocol(installed_implement)
     if "This session **is** the coordinator" not in installed_implement:
         sys.exit(
             "opted-in project implement skill does not drive the coordinator pipeline"
@@ -106,6 +184,8 @@ def run(ctx: SimpleNamespace) -> None:
         "module-owned guidance",
         ".harness/orchestration/playbook.md",
         ".harness/orchestration/roles/",
+        "Recovery route table",
+        "route_preview",
     ):
         if required_contract.casefold() not in installed_implement.casefold():
             sys.exit(
@@ -134,10 +214,31 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("installed project is missing the to-pull-requests PR step")
     if (orchestration_project / ".harness" / "skills" / "to-pr").exists():
         sys.exit("installed project retains the removed to-pr PR step")
-    if "qa evidence" not in installed_pr_step.read_text(encoding="utf-8"):
+    installed_pr_text = installed_pr_step.read_text(encoding="utf-8")
+    if "qa evidence" not in installed_pr_text:
         sys.exit(
             "installed to-pull-requests step does not validate accepted QA evidence"
         )
+    if installed_pr_text.find("record-qa-gate-pass.sh") < installed_pr_text.find(
+        "qa evidence"
+    ):
+        sys.exit("installed to-pull-requests step does not record accepted QA evidence")
+    # Issue #537: the installed PR step carries the whole continuation (next step, separate
+    # confirmation bound to the SHA pair, CI wait, local-QA fallback, merge handoff) and still keeps
+    # the plain /qa-gate branch for a project without the optional orchestration.
+    for required_pr_phrase in (
+        "integration next",
+        "integration collect-ci",
+        "integration local-qa",
+        "separate confirmation",
+        "qa_source",
+        "Never merge it",
+        "/qa-gate",
+    ):
+        if required_pr_phrase not in installed_pr_text:
+            sys.exit(
+                f"installed to-pull-requests step lacks the PR-continuation rule: {required_pr_phrase}"
+            )
     orchestration_config = orchestration_project / ".harness" / "orchestration.json"
     if not orchestration_config.is_file():
         sys.exit("backend-orchestration config seed missing")
@@ -146,8 +247,11 @@ def run(ctx: SimpleNamespace) -> None:
     # snapshot-only repair must not turn a configured project back into the empty seed.
     original_orchestration_config = orchestration_config.read_text(encoding="utf-8")
     project_owned_config = original_orchestration_config.replace(
-        '"concurrency_budget": 1', '"concurrency_budget": 3'
+        '"concurrency_budget": 5', '"concurrency_budget": 3'
     )
+    if project_owned_config == original_orchestration_config:
+        # Otherwise the overwrite check below compares the seed with itself and cannot fail.
+        sys.exit("orchestration config seed no longer has concurrency_budget 5 to edit")
     orchestration_config.write_text(project_owned_config, encoding="utf-8")
     coordinator_path = (
         orchestration_project / ".harness" / "orchestration" / "coordinator.py"
@@ -176,7 +280,7 @@ def run(ctx: SimpleNamespace) -> None:
             "FIFO",
             "санитизирован",
         ),
-        ROOT / "harness" / "docs" / "backend-orchestration.md": (
+        ROOT / "docs" / "backend-orchestration.md": (
             "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
             "`reported`",
             "детерминирован",
@@ -186,12 +290,15 @@ def run(ctx: SimpleNamespace) -> None:
             "санитизирован",
             "stale",
             "/to-pull-requests",
+            "integration next",
+            "verification-failure",
         ),
-        ROOT / "harness" / "docs" / "harness-guide.md": (
+        ROOT / "docs" / "harness-guide.md": (
             "строго opt-in маршрут",
             "candidate commit",
             "`reported`",
             "/to-pull-requests",
+            "integration next",
         ),
         ROOT / "docs" / "agents" / "git-workflow.md": ("/to-pull-requests",),
     }
@@ -205,15 +312,9 @@ def run(ctx: SimpleNamespace) -> None:
                     f"public documentation missing hybrid coordinator contract {phrase!r}: {path}"
                 )
     for source_path, required_phrases in public_documentation.items():
-        if source_path == ROOT / "README.md" or source_path == ROOT / "CONTEXT.md":
+        if source_path.parent != ROOT / "docs" / "agents":
             continue
-        # Harness guides are part of the managed snapshot (.harness/docs/); project guides are seeds.
-        installed_dir = (
-            orchestration_project / ".harness" / "docs"
-            if source_path.parent == ROOT / "harness" / "docs"
-            else orchestration_project / "docs" / "agents"
-        )
-        installed_path = installed_dir / source_path.name
+        installed_path = orchestration_project / "docs" / "agents" / source_path.name
         if not installed_path.is_file():
             sys.exit(
                 f"installed project is missing documentation seed: {source_path.name}"
@@ -228,17 +329,14 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(
                 f"installed documentation retains removed /to-pr route: {source_path.name}"
             )
-    source_orchestration_guide = (
-        ROOT / "harness" / "docs" / "backend-orchestration.md"
-    ).read_text(encoding="utf-8")
-    installed_orchestration_guide = (
-        orchestration_project / ".harness" / "docs" / "backend-orchestration.md"
-    ).read_text(encoding="utf-8")
-    if installed_orchestration_guide != source_orchestration_guide:
-        sys.exit("installed backend-orchestration guidance differs from its source")
+    # Developer guides stay in the source repository's docs/; only agent contracts are delivered.
+    for human_guide in ("harness-guide.md", "backend-orchestration.md"):
+        if (orchestration_project / ".harness" / "docs" / human_guide).exists():
+            sys.exit(f"developer guide leaked into the target project: {human_guide}")
     expected_role_files = {
         "architect.md",
         "code-review.md",
+        "conflict-resolver.md",
         "database-migrations.md",
         "developer.md",
         "messaging-integration.md",
@@ -257,6 +355,25 @@ def run(ctx: SimpleNamespace) -> None:
             "backend-orchestration role set changed: "
             f"expected {sorted(expected_role_files)}, found {sorted(actual_role_files)}"
         )
+    installed_resolver = (
+        orchestration_project
+        / ".harness"
+        / "orchestration"
+        / "roles"
+        / "conflict-resolver.md"
+    ).read_text(encoding="utf-8")
+    if "resolving-merge-conflicts" not in installed_resolver:
+        sys.exit(
+            "conflict-resolver role lacks its resolving-merge-conflicts skill pointer"
+        )
+    if not (
+        orchestration_project
+        / ".harness"
+        / "skills"
+        / "resolving-merge-conflicts"
+        / "SKILL.md"
+    ).is_file():
+        sys.exit("the skill the conflict-resolver role points to is not installed")
     for name in ("_common.md", *sorted(expected_role_files)):
         if not (
             orchestration_project / ".harness" / "orchestration" / "roles" / name
@@ -267,6 +384,14 @@ def run(ctx: SimpleNamespace) -> None:
     if not playbook_path.is_file():
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
+    contract = orchestration_project / ".harness/docs/technical-english.md"
+    for continuation_rule in ("integration next", "verification-failure"):
+        if continuation_rule not in playbook:
+            sys.exit(
+                f"installed playbook lacks the PR-continuation rule: {continuation_rule}"
+            )
+    for entry in (playbook_path, orchestration_root / "roles/_common.md"):
+        assert_contract_link(entry, contract, entry.name)
     pilot_path = orchestration_root / "pilot.md"
     if not pilot_path.is_file():
         sys.exit("backend-orchestration pilot guide missing")
@@ -330,7 +455,7 @@ def run(ctx: SimpleNamespace) -> None:
         "failed",
         "## Immutable handoff brief",
         "ticket",
-        "zone IDs",
+        "allowed paths",
         "branch/worktree",
         "Definition of Done",
         "prohibited changes",
@@ -379,6 +504,7 @@ def run(ctx: SimpleNamespace) -> None:
     ):
         if required_rule not in normalized_playbook:
             sys.exit(f"backend-orchestration playbook missing rule: {required_rule}")
+    _require_recovery_route_table(playbook)
 
     code_review_role = (
         orchestration_project
@@ -468,6 +594,7 @@ def run(ctx: SimpleNamespace) -> None:
         "qa",
         "database-migrations",
         "messaging-integration",
+        "conflict-resolver",
         "code-review",
     )
     valid_orchestration = {
@@ -480,6 +607,7 @@ def run(ctx: SimpleNamespace) -> None:
                     "independent-verification",
                     "database-migrations",
                     "messaging-integration",
+                    "conflict-resolution",
                     "code-review",
                 ],
                 "fallback": [],
@@ -508,7 +636,7 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
-    run_ok(HARNESS + ["health", str(orchestration_project)])
+    run_health(orchestration_project)
     minimal_repo_map_policy = json.loads(json.dumps(valid_orchestration))
     minimal_repo_map_policy["repo_map_policy"] = {"tier": "minimal"}
     orchestration_config.write_text(
@@ -527,22 +655,22 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_config.write_text(
         json.dumps(valid_orchestration, indent=2) + "\n", encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "config", "user.email", "test@example.invalid"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "config", "user.name", "Clean Room"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "--allow-empty", "-qm", "chore: initialize adapter fixture"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-900-approved-dispatch"],
         cwd=orchestration_project,
         check=True,

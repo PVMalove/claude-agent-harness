@@ -1,13 +1,15 @@
 """Delta-review кандидата: сценарий clean-room из `scripts/test_clean_room.py`."""
 
+from __future__ import annotations
+
 import json
-import subprocess
 import sys
 from types import SimpleNamespace
 
 from scripts.clean_room.support import (
     capture,
     commit_map_for,
+    run_step,
 )
 
 
@@ -29,7 +31,7 @@ def run(ctx: SimpleNamespace) -> None:
     # the Standards/Spec axis that was Clean is inherited without re-analysis, only the axis that
     # was Warning is re-checked, and the follow-up is always a new independent dispatch.
     delta_state = test_root / "delta-review-state"
-    subprocess.run(
+    run_step(
         ["git", "branch", "feature/issue-906-delta-review"],
         cwd=orchestration_project,
         check=True,
@@ -181,12 +183,12 @@ def run(ctx: SimpleNamespace) -> None:
     formatter_file.write_text(
         'def format_summary():\n    return "summary"\n', encoding="utf-8"
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/delta_formatter.py"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "feat: add summary formatter helper"],
         cwd=orchestration_project,
         check=True,
@@ -370,12 +372,12 @@ def run(ctx: SimpleNamespace) -> None:
         "def test_format_summary():\n    assert True  # tighten flaky assertion timing\n",
         encoding="utf-8",
     )
-    subprocess.run(
+    run_step(
         ["git", "add", "services/tests/test_delta_formatter.py"],
         cwd=orchestration_project,
         check=True,
     )
-    subprocess.run(
+    run_step(
         ["git", "commit", "-qm", "test: cover summary formatter edge case"],
         cwd=orchestration_project,
         check=True,
@@ -392,6 +394,10 @@ def run(ctx: SimpleNamespace) -> None:
             "changed_files": [
                 "services/delta_formatter.py",
                 "services/tests/test_delta_formatter.py",
+            ],
+            # The fix-forward closes the retried review's finding (issue #503).
+            "carried_item_closure": [
+                {"item_id": "review-finding-1", "commits": [delta_second_sha]}
             ],
         },
     )

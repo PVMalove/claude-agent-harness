@@ -71,7 +71,10 @@ files и ждать writer до 2 секунд. Raw API `harness.memory.search` 
 ## Операционные последствия
 
 Срез #428 реализует явный `harness memory sync <repo>` только из main checkout через `gh api`
-или `glab api` по существующему origin routing. Санитизированные immutable records живут отдельно
+или `glab api`. Трекер определяет резолвер трекера проекта (ADR 0011): поле `tracker`
+побеждает `origin`. Хост адресуется явно: `gh api --hostname <host>` и
+`GITLAB_HOST=<host> glab api` с URL-кодированным путём проекта, включая подгруппы.
+Санитизированные immutable records живут отдельно
 от индекса в `.harness/.sandboxes/memory/snapshot/`; atomic manifest выбирает активный корпус.
 Закрытые тикеты и PR/MR используют существующий `task_archive` с `record_kind`, удалённые отчёты —
 отдельный opt-in `completion_report` и точный marker из project-memory guide; lessons для них

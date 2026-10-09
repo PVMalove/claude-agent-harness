@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Captured before the forced UTF-8 below so `harness health` can still warn about the console's
@@ -44,6 +46,8 @@ from harness.cleanup import apply_cleanup, plan_cleanup
 from harness.uninstall import (
     CLAUDE_MD_SEED,
     CONFIRM_WORD,
+    GITIGNORE_LINES as RUNTIME_GITIGNORE_LINES,
+    SEED_FOLDERS,
     apply_uninstall,
     plan_uninstall,
 )
@@ -55,6 +59,7 @@ from harness.memory import (
     sync as memory_sync,
 )
 from harness.storage import storage_path
+from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
@@ -63,8 +68,16 @@ from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
     DISCOVERY_LINKS,
     INTEGRATIONS_REL,
+    JSON_READ_ERRORS,
     LOCK_REL,
     REGISTRY_REL,
+    TRACKER_FIELDS,
+    TRACKER_HOST_PATTERN,
+    TRACKER_HOST_RULE,
+    TRACKER_HOSTED_TYPES,
+    TRACKER_PROJECT_PATTERN,
+    TRACKER_PROJECT_RULE,
+    TRACKER_TYPES,
     digest,
     fail,
     file_digest,
@@ -74,13 +87,17 @@ from harness.health.project_files import (
     project_skill_files,
     public_skill_names,
     skill_inventory,
+    tracker_field_problems,
 )
+from harness.health.project_tracker import resolve_project_tracker
 
 CAPABILITIES_FILE = PACKAGE / "CAPABILITIES.json"
 VERSION_FILE = PACKAGE / "VERSION"
 # How printed remedies invoke this CLI: the running interpreter and this script, runnable as shown.
 HARNESS_CLI = (sys.executable, str(Path(__file__).resolve()))
 DEFAULT_CAPABILITY = "project-foundation"
+# Bound of each local git probe (`rev-parse`); git that does not answer counts as unavailable.
+GIT_TIMEOUT_SECONDS = 10
 
 
 def write_registry(repo: Path) -> None:
@@ -107,24 +124,34 @@ def version() -> str:
     return VERSION_FILE.read_text(encoding="utf-8").strip()
 
 
+def _run_git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str] | None:
+    """Выполнить git в `repo`; None — git не запустился или не ответил за GIT_TIMEOUT_SECONDS."""
+    try:
+        return subprocess.run(
+            git_command(repo, *arguments),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def source_revision() -> str:
     """Получить ревизию Git исходного репозитория harness."""
-    result = subprocess.run(
-        git_command(ROOT, "rev-parse", "HEAD"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
-    return result.stdout.strip() if result.returncode == 0 else "uncommitted"
+    result = _run_git(ROOT, "rev-parse", "HEAD")
+    if result is None or result.returncode != 0:
+        return "uncommitted"
+    return result.stdout.strip()
 
 
 def capabilities() -> dict[str, JsonObject]:
     """Загрузить и распарсить каталог возможностей из CAPABILITIES.json."""
     try:
         data: object = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         fail(f"cannot read {CAPABILITIES_FILE}: {exc}")
     if not isinstance(data, dict):
         fail("CAPABILITIES.json must contain an object")
@@ -271,7 +298,13 @@ def _packageable(path: Path) -> bool:
 
 def package_files(names: list[str]) -> dict[str, bytes]:
     """Сформировать словарь относительных целевых путей и байтового содержимого файлов пакета."""
-    result: dict[str, bytes] = {}
+    # Общий контракт технического английского ставится в любую установку, вне каталога capability:
+    # он не зависит от optional backend-orchestration.
+    result: dict[str, bytes] = {
+        ".harness/docs/technical-english.md": (
+            PACKAGE / "docs/technical-english.md"
+        ).read_bytes(),
+    }
     for source in selected_skills(names):
         for path in sorted(source.rglob("*")):
             if not _packageable(path):
@@ -308,7 +341,7 @@ def load_lock(repo: Path) -> JsonObject | None:
         return None
     try:
         data: object = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except JSON_READ_ERRORS as exc:
         fail(f"cannot read {path}: {exc}")
     if not isinstance(data, dict):
         fail(f"cannot read {path}: expected a JSON object")
@@ -317,14 +350,12 @@ def load_lock(repo: Path) -> JsonObject | None:
 
 def ensure_git_repo(repo: Path) -> None:
     """Убедиться, что целевая директория является репозиторием Git."""
-    result = subprocess.run(
-        git_command(repo, "rev-parse", "--show-toplevel"),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=10,
-    )
+    result = _run_git(repo, "rev-parse", "--show-toplevel")
+    if result is None:
+        fail(
+            f"cannot run git in {repo}: git is missing or did not answer in "
+            f"{GIT_TIMEOUT_SECONDS}s (install git or check the repository, then retry)"
+        )
     if result.returncode != 0:
         fail(f"not a Git repository: {repo} (run 'git init' there first)")
 
@@ -448,14 +479,23 @@ def record_integration(
 ) -> None:
     """Зарегистрировать или обновить запись интеграции в .harness/integrations.json."""
     path = repo / INTEGRATIONS_REL
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-    except Exception:
-        data = {}
+    data: object = {}
+    if path.is_file():
+        # Never rewrite an inventory that cannot be read: it holds the project's own entries.
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except JSON_READ_ERRORS as exc:
+            fail(f"cannot read {path}: {exc} (fix or remove it, then retry)")
+    existing = (data.get("integrations") if isinstance(data, dict) else None) or []
+    if not isinstance(data, dict) or not isinstance(existing, list):
+        fail(
+            f"cannot read {path}: expected an object with an integrations list "
+            "(fix or remove it, then retry)"
+        )
     entries = [
         entry
-        for entry in (data.get("integrations") or [])
-        if entry.get("id") != identifier
+        for entry in existing
+        if not (isinstance(entry, dict) and entry.get("id") == identifier)
     ]
     entries.append(
         {
@@ -557,14 +597,9 @@ def print_diff(result: JsonObject) -> None:
 
 PVMALOVE_CAPABILITY = "pvmalove-suite"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
-DOCS_TASKS_GITIGNORE_LINE = "/docs/tasks/"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
 """
-RUNTIME_GITIGNORE_LINES = (
-    DOCS_TASKS_GITIGNORE_LINE,
-    "/.harness/.sandboxes/",
-)
 
 
 def missing_runtime_gitignore_lines(content: str) -> list[str]:
@@ -579,15 +614,87 @@ def missing_runtime_gitignore_lines(content: str) -> list[str]:
     ]
 
 
+def _stdin_is_terminal() -> bool:
+    """Определить, подключён ли stdin к терминалу пользователя.
+
+    На Windows `isatty()` истинен для любого символьного устройства, включая NUL, поэтому
+    терминалом считается только дескриптор консоли.
+    """
+    if not sys.stdin.isatty():
+        return False
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    import msvcrt
+
+    mode = ctypes.c_ulong()
+    handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+    return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+
+
 def _prompt(label: str, default: str) -> str:
     """Запросить строковое значение у пользователя с дефолтным вариантом."""
-    if not sys.stdin.isatty():
+    if not _stdin_is_terminal():
         return default
     try:
         answer = input(f"{label} [{default}]: ").strip()
     except EOFError:
         return default
     return answer or default
+
+
+def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
+    """Собрать запись `tracker` нового project.json для шаблона; "" — поле не пишется.
+
+    Флаги --tracker-* важнее всего; в терминале остальное спрашивается с дефолтами из origin
+    (docs/adr/0011). Ответ или флаг — явный выбор, он пишется даже как `local`; без них пишется
+    только полностью выведенный трекер GitHub/GitLab.
+    """
+    origin = resolve_project_tracker(repo).from_origin
+    flags = {name: getattr(args, f"tracker_{name}", None) for name in TRACKER_FIELDS}
+    explicit = _stdin_is_terminal() or any(flags.values())
+    tracker_type = flags["type"] or _prompt(
+        "tracker type (github/gitlab/local)", origin.type
+    )
+    field = {"type": tracker_type}
+    for name, label in (
+        ("host", "tracker host[:port]"),
+        ("project", "tracker project (group/sub/project)"),
+    ):
+        value = flags[name]
+        if value is None and tracker_type in TRACKER_HOSTED_TYPES:
+            # The host and project of origin are no default for a tracker of another hosted type.
+            default = (
+                getattr(origin, name)
+                if origin.type in (tracker_type, "local")
+                else None
+            )
+            value = _prompt(label, default or "")
+        if value:
+            field[name] = value
+    problems = tracker_field_problems(field)
+    if problems:
+        # The problems never quote a value: a pasted URL can carry credentials.
+        if explicit:
+            print(
+                f"harness: tracker field left out: {'; '.join(problems)}",
+                file=sys.stderr,
+            )
+        return ""
+    if tracker_type not in TRACKER_HOSTED_TYPES and not explicit:
+        return ""
+    return '\n  "tracker": ' + json.dumps(field, ensure_ascii=False) + ","
+
+
+def _matching_arg(pattern: str, rule: str) -> Callable[[str], str]:
+    """Создать argparse-тип, принимающий значение по `pattern`; ошибка не цитирует значение."""
+
+    def parse(value: str) -> str:
+        if not re.fullmatch(pattern, value):
+            raise argparse.ArgumentTypeError(rule)
+        return value
+
+    return parse
 
 
 def _copy_if_absent(
@@ -621,45 +728,19 @@ def scaffold_pvmalove_extras(
         args, "force", False
     )
 
-    for doc in sorted((PROJECT_TEMPLATE_DIR / "docs-agents").glob("*.md")):
-        result = _copy_if_absent(
-            doc, repo / "docs/agents" / doc.name, force=force_seed, differing=differing
-        )
-        if result:
-            written.append(result)
-
-    for hook in sorted((PROJECT_TEMPLATE_DIR / "hooks").iterdir()):
-        if not hook.is_file() or hook.suffix not in {".sh", ".py"}:
-            continue
-        result = _copy_if_absent(
-            hook,
-            repo / ".claude/hooks" / hook.name,
-            executable=True,
-            force=force_seed,
-            differing=differing,
-        )
-        if result:
-            written.append(result)
-
-    for rule in sorted((PROJECT_TEMPLATE_DIR / "rules").glob("*.md")):
-        result = _copy_if_absent(
-            rule,
-            repo / ".claude/rules" / rule.name,
-            force=force_seed,
-            differing=differing,
-        )
-        if result:
-            written.append(result)
-
-    for agent in sorted((PROJECT_TEMPLATE_DIR / "agents").glob("*.md")):
-        result = _copy_if_absent(
-            agent,
-            repo / ".claude/agents" / agent.name,
-            force=force_seed,
-            differing=differing,
-        )
-        if result:
-            written.append(result)
+    for folder, target, suffixes in SEED_FOLDERS:
+        for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
+            if not source.is_file() or source.suffix not in suffixes:
+                continue
+            result = _copy_if_absent(
+                source,
+                repo / target / source.name,
+                executable=folder == "hooks",
+                force=force_seed,
+                differing=differing,
+            )
+            if result:
+                written.append(result)
 
     scratch_gitignore_result = _copy_if_absent(
         PROJECT_TEMPLATE_DIR / "scratch/.gitignore",
@@ -726,7 +807,7 @@ def scaffold_pvmalove_extras(
             "branch_pattern (regex)", "^feature/issue-[0-9]+-.+"
         )
         commands = list(getattr(args, "qa_gate_command", None) or [])
-        if not commands and sys.stdin.isatty():
+        if not commands and _stdin_is_terminal():
             print(
                 "qa_gate_commands (по одной команде на строку, пустая строка — конец):"
             )
@@ -735,6 +816,7 @@ def scaffold_pvmalove_extras(
                 if not line:
                     break
                 commands.append(line)
+        tracker_field = _seed_tracker_field(repo, args)
         template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
             encoding="utf-8"
         )
@@ -745,6 +827,7 @@ def scaffold_pvmalove_extras(
                 "PR_BASE_BRANCH": base_branch,
                 "BRANCH_PATTERN": branch_pattern,
                 "QA_GATE_COMMANDS": json.dumps(commands, ensure_ascii=False),
+                "TRACKER_FIELD": tracker_field,
             },
         )
         project_json.parent.mkdir(parents=True, exist_ok=True)
@@ -782,6 +865,22 @@ def scaffold_pvmalove_extras(
         )
 
     return written
+
+
+def seed_capability_extras(
+    repo: Path, args: argparse.Namespace, selected: list[str]
+) -> list[str]:
+    """Развернуть seed-файлы pvmalove-suite или backend-orchestration; [] — ни одна не выбрана."""
+    if (
+        PVMALOVE_CAPABILITY not in selected
+        and BACKEND_ORCHESTRATION_CAPABILITY not in selected
+    ):
+        return []
+    return scaffold_pvmalove_extras(
+        repo,
+        args,
+        orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
+    )
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -832,14 +931,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "project already has its own skills there",
         )
     )
-    if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
-        written.extend(
-            scaffold_pvmalove_extras(
-                repo,
-                args,
-                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
-            )
-        )
+    written.extend(seed_capability_extras(repo, args, selected))
     print(f"installed agent-harness {version()} in {repo}")
     print(f"capabilities: {', '.join(selected)}")
     print(f"managed files: {len(written)}")
@@ -850,10 +942,13 @@ def cmd_diff(args: argparse.Namespace) -> int:
     """Сравнить текущее состояние проекта с эталонным снимком и вывести различия."""
     repo = Path(args.repo).expanduser().resolve()
     result = snapshot_diff(repo, args.capability)
+    proposals = propose_contract_links(repo, PROJECT_TEMPLATE_DIR)
     if args.json:
+        result["seed_link_proposals"] = proposals
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
+        print_contract_proposals(proposals)
     return 0 if result["state"] == "clean" else 1
 
 
@@ -881,14 +976,7 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     ensure_links(
         repo, replace=args.replace_conflicts, fix_hint="re-run with --replace-conflicts"
     )
-    if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
-        written.extend(
-            scaffold_pvmalove_extras(
-                repo,
-                args,
-                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
-            )
-        )
+    written.extend(seed_capability_extras(repo, args, selected))
     print(f"adopted agent-harness {version()} in {repo}")
     print(f"preserved project-owned skill names outside: {', '.join(selected_names)}")
     print(f"managed files: {len(written)}")
@@ -934,16 +1022,10 @@ def cmd_update(args: argparse.Namespace) -> int:
         replace=force_managed,
         fix_hint="re-run with --force or --force-managed-files",
     )
-    if PVMALOVE_CAPABILITY in selected or BACKEND_ORCHESTRATION_CAPABILITY in selected:
-        written.extend(
-            scaffold_pvmalove_extras(
-                repo,
-                args,
-                orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
-            )
-        )
+    written.extend(seed_capability_extras(repo, args, selected))
     print(f"updated agent-harness to {version()} in {repo}")
     print(f"managed files: {len(written)}")
+    print_contract_proposals(propose_contract_links(repo, PROJECT_TEMPLATE_DIR))
     return 0
 
 
@@ -973,9 +1055,15 @@ def cmd_lock_project_skills(args: argparse.Namespace) -> int:
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception as exc:
+            except JSON_READ_ERRORS as exc:
                 fail(f"cannot read existing overlay lock {path}: {exc}")
-            for entry in payload.get("skills", []):
+            skills = payload.get("skills", []) if isinstance(payload, dict) else None
+            if not isinstance(skills, list):
+                fail(
+                    f"cannot read existing overlay lock {path}: "
+                    "expected an object with a skills list"
+                )
+            for entry in skills:
                 if isinstance(entry, dict) and isinstance(entry.get("name"), str):
                     claimed.add(entry["name"])
     selected = []
@@ -1065,6 +1153,24 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         action="append",
         default=None,
         help="pvmalove-suite: repeatable, in run order",
+    )
+    sub.add_argument(
+        "--tracker-type",
+        choices=TRACKER_TYPES,
+        default=None,
+        help="pvmalove-suite: .harness/project.json tracker type (default: derived from origin)",
+    )
+    sub.add_argument(
+        "--tracker-host",
+        type=_matching_arg(TRACKER_HOST_PATTERN, TRACKER_HOST_RULE),
+        default=None,
+        help="pvmalove-suite: tracker web host with an optional :port (default: from origin)",
+    )
+    sub.add_argument(
+        "--tracker-project",
+        type=_matching_arg(TRACKER_PROJECT_PATTERN, TRACKER_PROJECT_RULE),
+        default=None,
+        help="pvmalove-suite: full tracker project path with subgroups (default: from origin)",
     )
 
 

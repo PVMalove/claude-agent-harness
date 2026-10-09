@@ -7,7 +7,7 @@ disable-model-invocation: true
 **Objective:** Synthesize the current conversation context and codebase understanding into a final specification.
 **Strict Rule:** Do NOT interview the user or start a new grilling round. If information feels missing, it means the previous grilling was incomplete; synthesize the spec using only the known facts and explicit assumptions.
 
-The issue tracker and triage label vocabulary should have been provided to you. If not, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker and triage label vocabulary should have been provided to you in `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md`. If either file is missing, tell the user to run `harness update`, which seeds both from the harness templates.
 
 ## Execution in Two Phases
 
@@ -27,25 +27,66 @@ You must execute this skill in two distinct phases to ensure the user agrees wit
 1. **Draft the File:** Write the spec using the `<spec-template>` below, at the root of its own folder under `docs/tasks/` — that folder also reserves `tickets/` (one file per child ticket, filled in later by `/to-tickets`) and `artifacts/` (the `/grilling` Live Artifact).
     - *Naming convention:* If the issue ID is known, use it. If not, use a descriptive slug (e.g., `docs/tasks/add-user-auth/add-user-auth.md`) and rename both the folder and file later once the ID is generated — see `docs/agents/artifacts.md` for the full convention, including the epic-folder grouping and the `tickets/`/`artifacts/` subfolders.
     - Take the final Discovery Context file list from that same folder's `artifacts/discovery-context.md` (written by `/grilling`'s Persisted List step); if that file doesn't exist because artifact tracking never ran, take the approved-paths list from the final Trunk summary instead. Append it in the template's final `## Relevant Files (Discovery Context)` section. Preserve every path and any supplied context; do not rediscover or replace that list while drafting.
-2. **Publish to Tracker:** Publish the issue using the CLI: `gh issue create --body-file <path>`.
-    - **CRITICAL:** Do NOT use an inline `--body` heredoc. Spec bodies contain characters (nested quotes, backticks, etc.) that break heredoc quoting. Always use `--body-file`.
+2. **Publish to Tracker:** Publish the issue with the configured tracker's CLI:
+    - **GitHub:** `gh issue create --body-file <path>`.
+    - **GitLab:** `glab issue create -R <project-url> --title '<title>' --description-file <path> --yes`. Keep `<title>` in single quotes and write each apostrophe in it as `'\''` in a POSIX shell or as `''` in PowerShell. `<project-url>` and the other GitLab placeholders (`<host>`, `<project-id>`) are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions. The epic's number is the last segment of the issue URL the command prints.
+    - Do not pass the body inline with `--body`/`--description` or a heredoc: spec bodies contain nested quotes and backticks that break shell quoting.
 3. **Apply Labels:** This published issue acts as the feature's **epic**. Apply the following labels (see `docs/agents/triage-labels.md` for the full taxonomy):
     - `type::bug` OR `type::feature`
     - `status::specs` (Do NOT use `status::ready` as it requires decomposition first).
     - `task-report::required` (unless told to skip).
-    - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` will handle linking sub-tasks natively later, as GitHub sub-issues — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
+    - **GitLab:** `glab issue update <epic> -R <project-url> --label 'type::feature,status::specs,task-report::required'` (`type::bug` for a bug; drop `task-report::required` when told to skip it). A label the project doesn't have yet is silently created with GitLab's default color instead of failing, so run `/setup-labels` before the first epic.
+    - *Note:* Do NOT create ad-hoc `epic::<slug>` labels. `/to-tickets` links the tickets to this epic later through the tracker's parent link — GitHub sub-issues, or on GitLab a `## Parent: #<epic>` section plus a `relates_to` issue link — see `docs/agents/issue-tracker.md#wayfinding-operations` for the mechanism.
 4. **Ensure the selected integration branch exists after the epic issue succeeds:**
-    - Read `base_branch` from `.harness/project.json` (default `main`). This is the release/base
-      branch from which the epic integration branch starts.
-    - Fetch the base ref. Create `integration/<service-or-team>` from `origin/<base_branch>` when
-      a remote exists, otherwise from the local base branch. Do not switch the current worktree;
-      it may contain unrelated changes.
+    - Read the required `base_branch` from `.harness/project.json`; if it is absent, stop and report
+      the invalid project config. This is the release/base branch from which the epic integration
+      branch starts.
+    - Record the grill docs that changed in the current worktree:
+      `git status --porcelain --untracked-files=all -- CONTEXT-MAP.md ':(glob)**/CONTEXT.md' ':(glob)**/docs/adr/**'`.
+      `/grill-with-docs` and `/domain-modeling` write these files. Record each path; for a
+      rename (`old -> new`), record both paths. The list can be empty.
+    - Fetch the base ref. Create `integration/<service-or-team>` with `git branch` from
+      `origin/<base_branch>` when a remote exists, otherwise from the local base branch. Do not
+      use `git switch -c` or `git checkout -b`: the branch-name hook allows them only for names
+      that match `branch_pattern`.
     - If the integration branch already exists locally or remotely, reuse it without resetting,
       force-updating, or deleting it. If publication succeeds but branch creation fails, report
       the partial state and the exact recovery action; do not recreate the epic issue.
-    - Push a newly created remote branch with `git push -u origin integration/<service-or-team>`.
-      For a local tracker or a repository without a remote, create the local branch and report
-      that it was not pushed.
+    - If the branch already exists on the remote, do not commit to it and do not switch the
+      current worktree. If the grill docs list is not empty, report that these docs stay
+      uncommitted in the current worktree. Give the recovery action: commit them on an issue
+      branch from `integration/<service-or-team>`, for example the first child ticket's branch,
+      and merge them through its PR.
+    - If the branch is absent on the remote and the grill docs list is empty, do not switch the
+      current worktree; it may contain unrelated changes.
+    - If the branch is absent on the remote and the grill docs list is not empty, commit the docs
+      to the branch before you push it. Do not create a separate worktree:
+        1. Switch the current worktree with `git switch integration/<service-or-team>`.
+           Uncommitted changes move with the worktree. If `git switch` refuses because of a
+           conflict with uncommitted changes, stop. Do not use `--force`, `--discard-changes`,
+           `--merge`, or a reset: they can overwrite changes. Report the git error and the
+           recovery action: put the changes aside with `git stash push --include-untracked`, run
+           `git switch integration/<service-or-team>`, restore them with `git stash pop`, resolve
+           any conflict, and continue from sub-step 2.
+        2. Stage only the recorded grill docs, each path named explicitly:
+           `git add -- <path>...`. Do not use `git add -A`, `git add .`, or `git commit -a`. Other
+           changes stay uncommitted in the working tree.
+        3. Run the commit as a standalone command, without `&&`, `;`, a pipe, or a variable:
+           `git commit -m 'docs: <short epic summary>'`. Write the message by the commit rules in
+           `docs/agents/git-workflow.md`. The `block-direct-master` hook allows a commit on an
+           `integration/*` branch only in this form, only when the index contains only grill docs
+           paths, and only when the branch is absent on `origin`.
+        4. If the hook blocks the commit, stop and do not push. Report the hook message and that
+           the docs stay staged in the current worktree. Give the recovery action: remove the
+           cause, for example a staged path outside the grill docs or no access to `origin`, and
+           repeat sub-step 3.
+    - Push a branch that is absent on the remote with
+      `git push -u origin integration/<service-or-team>`. After a grill docs commit, the current
+      worktree stays on the integration branch, with unrelated changes uncommitted.
+    - For a local tracker, make the grill docs commit as above, but do not push; report that the
+      branch was not pushed. In a repository without a remote, create the local branch and do not
+      commit or push. Report that the branch was not pushed and that the grill docs stay
+      uncommitted.
 
 ---
 
@@ -58,7 +99,7 @@ The problem that the user is facing, from the user's perspective.
 The solution to the problem, from the user's perspective.
 
 ## User Stories
-A LONG, numbered list of user stories covering all aspects of the feature.
+A numbered list of user stories that covers every behavior of the feature.
 Format: `1. As an <actor>, I want a <feature>, so that <benefit>`
 *(Example: As a bank customer, I want to see my balance, so that I can make informed spending decisions).*
 
@@ -88,39 +129,3 @@ Any remaining context or constraints.
 The final Discovery Context file list captured in the session's `Live Artifact`, or in the final Trunk summary when artifact publishing is unavailable, including each path and any supplied context.
 
 </spec-template>
-<!--
-## Problem Statement (Постановка проблемы)
-Проблема, с которой сталкивается пользователь, с точки зрения пользователя.
-
-## Solution (Решение)
-Решение проблемы с точки зрения пользователя.
-
-## User Stories (Пользовательские истории)
-ДЛИННЫЙ, пронумерованный список пользовательских историй, охватывающий все аспекты фичи.
-Формат: `1. Как <actor>, я хочу <feature>, чтобы <benefit>` (1. Как <субъект>, я хочу <функцию>, чтобы <выгода>)
-*(Пример: Как клиент банка, я хочу видеть свой баланс, чтобы принимать обоснованные решения о расходах).*
-
-## Implementation Decisions (Решения по реализации)
-Список модулей для создания/изменения, изменения интерфейсов, технические уточнения, архитектурные решения, изменения схемы, контракты API и конкретные взаимодействия.
-- **НЕ** включайте конкретные пути к файлам или общие фрагменты кода (они быстро устаревают).
-- **Исключение:** Если прототип создал фрагмент, который идеально кодирует решение (конечный автомат, схема, форма типа), встройте его и отметьте, что он взят из прототипа. Обрежьте его только до частей, богатых решениями.
-
-## Testing Decisions (Решения по тестированию)
-- Описание того, что делает тест хорошим здесь (тестирование внешнего поведения, а не деталей реализации).
-- Какие модули будут тестироваться.
-- Предшествующий уровень техники / Prior art (похожие существующие тесты в кодовой базе).
-
-## Out of Scope (Вне рамок)
-Строгий список вещей, которые НЕ будут сделаны. Это ваш страховой полис от переусложнения (over-engineering). Четко определите границы, чтобы будущие агенты не создавали больше, чем запрашивалось.
-
-## Integration Branch (Интеграционная ветка)
-
-- Ветка: `integration/<service-or-team>`
-- Создана из: `base_branch` в `.harness/project.json`
-- Дочерние ветки задач начинаются из этой интеграционной ветки и открывают PR к ней.
-
-## Further Notes (Дополнительные заметки)
-Любой оставшийся контекст или ограничения.
-
-</spec-template>
--->

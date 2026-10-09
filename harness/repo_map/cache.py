@@ -107,8 +107,13 @@ def write_cache(cache_dir: Path, key: str, payload: str) -> None:
         descriptor, temporary = tempfile.mkstemp(
             dir=cache_dir, prefix=f".{key}.", suffix=".tmp"
         )
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(envelope)
-        Path(temporary).replace(cache_dir / f"{key}.json")
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(envelope)
+            Path(temporary).replace(cache_dir / f"{key}.json")
+        except OSError:
+            # A failed write or replace must not leave an orphaned temporary file behind.
+            Path(temporary).unlink(missing_ok=True)
+            raise
     except OSError:
         return

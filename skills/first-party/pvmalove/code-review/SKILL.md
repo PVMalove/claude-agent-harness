@@ -17,7 +17,7 @@ This workflow is runtime-neutral. Keep the output language driven by `language` 
 must not launch a runtime-specific adapter, choose a provider or model, or change the reviewed
 branch.
 
-The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `/setup-matt-pocock-skills`.
+The issue tracker should have been provided to you. If `docs/agents/issue-tracker.md` is missing, tell the user to run `harness update`, which seeds it from the harness templates. On GitLab, every `glab` command takes `-R <project-url>`; `<project-url>` and the other GitLab placeholders (`<host>`, `<project-id>`) are defined in `docs/agents/issue-tracker.md` → GitLab → Conventions.
 
 ## Process
 
@@ -25,21 +25,29 @@ The issue tracker should have been provided to you. If `docs/agents/issue-tracke
 
 Whatever the user said is the fixed point — a commit SHA, branch name, tag, `main`, `HEAD~5`, etc. If they didn't specify one, ask for it.
 
+If the user names a PR or MR, its target branch is the fixed point. Read the target and source branches — GitHub: `gh pr view <n> --json baseRefName,headRefName`; GitLab: `glab mr view <iid> -R <project-url> -F json` (`target_branch`, `source_branch`). Then run `git fetch origin <target>` and use `origin/<target>` as the fixed point. The current checkout must be the source branch; if it is not, tell the user instead of switching branches (see _Runtime boundary_).
+
 Capture the diff command once: `git diff <fixed-point>...HEAD` (three-dot, so the comparison is against the merge-base). Also note the list of commits via `git log <fixed-point>..HEAD --oneline`.
 
 Before going further, confirm the fixed point resolves (`git rev-parse <fixed-point>`) and the diff is non-empty. A bad ref or empty diff should fail here — not inside two parallel sub-agents.
 
-For the gated `/implement` route, review also consumes the coordinator's pinned Context Package
-and candidate SHA. The coordinator must verify the integration base freshness before review and
-publish; stale base is handled by a new developer/rebase dispatch. A post-Warning delta-review is
-permitted only for a new candidate with a test-only diff and remains an independent review
-dispatch, never an in-place replacement of the original evidence.
+For the gated `/implement` route, review also consumes the coordinator's pinned Context Package and
+candidate SHA. The coordinator must verify the integration base freshness before review and publish;
+stale base is handled by a new developer/rebase dispatch. A delta-review is either test-only (after
+a Warning: a new candidate with a test-only diff, brief field `delta_review_of`) or after a
+fix-forward (brief section `delta_review_scope`, chosen by the coordinator). A fix-forward
+delta-review reviews both axes on the delta alone and relies on the prior review's report for the
+rest of the candidate. The coordinator escalates it to a full review when the candidate or the new
+commits match a risk trigger the prior review did not see, change a file outside the carried items,
+break a rebased copy's `git patch-id`, drop a previous-candidate commit, or add no commits. Either
+delta-review is an independent review dispatch, never an in-place replacement of the original
+evidence.
 
 ### 2. Identify the spec source
 
 Look for the originating spec, in this order:
 
-1. Issue references in the commit messages (`#123`, `Closes #45`, GitLab `!67`, etc.) — fetch via the workflow in `docs/agents/issue-tracker.md`.
+1. Issue references in the commit messages or the named PR/MR (`#123`, `Closes #45`, `Related to #45`, etc.) — fetch via the workflow in `docs/agents/issue-tracker.md`: GitHub `gh issue view <n> --comments`; GitLab `glab issue view <n> -R <project-url> --comments`. A GitLab `!67` is a merge request, not an issue: read it with `glab mr view 67 -R <project-url> --comments` (GitHub PR: `gh pr view <n> --comments`) and take its ticket from the `Closes #<ID>`/`Related to #<ID>` footer.
 2. A path the user passed as an argument.
 3. A spec file under `docs/`, `specs/`, or `.scratch/` matching the branch name or feature.
 4. If nothing is found, ask the user where the spec is. If they say there isn't one, the **Spec** sub-agent will skip and report "no spec available".

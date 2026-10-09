@@ -55,13 +55,9 @@ risk_triggers:
 
 ## 3. Контракты
 
-- **Вход (Input/Brief):** неизменяемый brief координатора: тикет, backend-зона, критерии приёмки, запреты, issue-ветка, worktree и требуемые команды проверки.
+- **Вход (Input/Brief):** неизменяемый brief координатора: тикет, явные allowed paths, критерии приёмки, запреты, issue-ветка, worktree и требуемые команды проверки.
 - **Процесс (Process):** выбрать только доказательства, различающие решение; подготовить brief решения; эскалировать неустранимую неопределённость или необходимость широкой базовой проверки.
 - **Выход (Output/Report):** decision brief и completion report со ссылкой на него; `changed files: none`, `commit SHA: not applicable — read-only role`.
-
-## 4. Архитектурная схема
-
-![Контракт роли: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
 
 ## Источник
 

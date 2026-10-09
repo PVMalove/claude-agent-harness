@@ -1,5 +1,7 @@
 """Общий консервативный контракт оценки размера полезной нагрузки для переносимых ресурсов."""
 
+from __future__ import annotations
+
 TOKEN_ESTIMATOR_VERSION = "utf8-bytes-per-2-v1"
 
 

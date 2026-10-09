@@ -1,11 +1,12 @@
 # Руководства и агенты
 
 Операционные руководства исходного репозитория и русские описания проектных агентов. Руководства,
-кроме `releases.md`, совпадают с шаблонами `harness/project/docs-agents/`, которые `harness init`
-разворачивает в `docs/agents/` целевого проекта; этот `README.md` и описания агентов в целевой
-проект не копируются. Справочник харнесса и руководство по backend-оркестрации лежат в
-[`harness/docs/`](../../harness/docs/) и устанавливаются в `.harness/docs/` как часть управляемого
-снимка.
+кроме `releases.md`, совпадают с шаблонами `harness/project/docs-agents/`, и `harness init`
+разворачивает эти шаблоны в `docs/agents/` целевого проекта — это документы для работы агентов.
+Сам `README.md` и описания агентов в целевой проект не попадают. Справочник харнесса
+([`harness-guide.md`](../harness-guide.md)) и руководство по backend-оркестрации
+([`backend-orchestration.md`](../backend-orchestration.md)) предназначены для разработчика и тоже
+остаются только в этом репозитории.
 
 ## Руководства
 
@@ -25,6 +26,6 @@
 
 | Агент | Назначение |
 | --- | --- |
-| [code-review-standards](./code-review-standards.md) | Ось Standards скила `code-review`: соответствие стандартам репозитория и «запахи» Фаулера. |
-| [code-review-spec](./code-review-spec.md) | Ось Spec скила `code-review`: полнота реализации и выход за рамки задачи. |
+| [code-review-standards](./code-review-standards.md) | Ось Standards скилла `code-review`: соответствие стандартам репозитория и «запахи» Фаулера. |
+| [code-review-spec](./code-review-spec.md) | Ось Spec скилла `code-review`: полнота реализации и выход за рамки задачи. |
 | [pr-composer](./pr-composer.md) | Заполняет тело PR по шаблону проекта и возвращает путь к файлу. |

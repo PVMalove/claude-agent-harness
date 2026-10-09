@@ -12,19 +12,15 @@ import html
 import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Any
+
+from harness.reporting.common import CLAUDE_FIELDS, compact_count
+from harness.reporting.common import MISSING as MISSING  # noqa: PLC0414
+from harness.json_types import JsonObject
 
 # Dynamic JSON boundary: the report is the output of delivery_stats' json-derived builders, its shape
 # validated at runtime, not statically.
-JsonObject = dict[str, Any]  # type: ignore[explicit-any]
 
-MISSING = "нет данных"
-
-CLAUDE_INPUT_FIELDS = (
-    "input_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-)
+CLAUDE_INPUT_FIELDS = CLAUDE_FIELDS[:3]
 
 STYLE = """
 :root{--bg:#0d0f12;--panel:#14171c;--line:#2a2f38;--ink:#e8e6e1;--dim:#8b93a1;
@@ -99,13 +95,7 @@ def _compact(value: object) -> str:
     """Форматировать число в компактном виде с русскими суффиксами и неразрывными пробелами."""
     if not isinstance(value, int):
         return _esc(value)
-    for limit, suffix in ((1_000_000_000, "млрд"), (1_000_000, "млн"), (1_000, "тыс")):
-        if value >= limit:
-            return (
-                f"{value / limit:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-                + f" {suffix}"
-            )
-    return str(value)
+    return compact_count(value, "\u00a0")
 
 
 def _bars(rows: Sequence[tuple[str, float, str]], css: str = "") -> str:
@@ -448,7 +438,7 @@ def _session_stats_panel(claude: JsonObject) -> str:
         )
     return _panel(
         "Самые затратные сессии",
-        "<div class='table-wrap'><table>"
+        "<div class='scroll'><table>"
         "<thead><tr><th>Ветка</th><th>Тип</th><th class='num'>Ходов</th><th class='num'>Макс. контекст</th><th class='num'>Всего токенов</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>",
     )

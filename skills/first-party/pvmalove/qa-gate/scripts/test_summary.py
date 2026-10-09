@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.machinery
 import importlib.util
 import os
 import re
@@ -12,6 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 from types import ModuleType
+from typing import IO
 
 COUNT_RE = re.compile(
     r"(?P<count>\d+)\s+(?P<kind>passed|failed|errors?|skipped|xfailed|xpassed)\b"
@@ -79,17 +81,13 @@ def _gate_runner() -> ModuleType:
             repo_root = harness_root.parent
             if str(repo_root) not in sys.path:
                 sys.path.insert(0, str(repo_root))
-            if harness_root.name != "harness":
-                spec = importlib.util.spec_from_file_location(
-                    "harness",
-                    harness_root / "__init__.py",
-                    submodule_search_locations=[str(harness_root)],
-                )
-                if spec is None or spec.loader is None:
-                    break
-                package = importlib.util.module_from_spec(spec)
-                sys.modules["harness"] = package
-                spec.loader.exec_module(package)
+            if (
+                harness_root.name != "harness"
+                or not (harness_root / "__init__.py").is_file()
+            ):
+                spec = importlib.machinery.ModuleSpec("harness", None, is_package=True)
+                spec.submodule_search_locations = [str(harness_root)]
+                sys.modules["harness"] = importlib.util.module_from_spec(spec)
             _GATE_RUNNER = importlib.import_module("harness.gate_runner.gate_runner")
             return _GATE_RUNNER
     raise RuntimeError("shared gate-runner is missing; run harness update")
@@ -156,6 +154,16 @@ def collect_diagnostics(lines: list[str], max_diagnostics: int) -> list[str]:
     return diagnostics
 
 
+def _start_failure(capture: IO[str], error: BaseException) -> int:
+    """Remove the unused log and print the summary of a command that could not start."""
+    # Windows cannot delete a file that is still open.
+    capture.close()
+    Path(capture.name).unlink(missing_ok=True)
+    print("=== TEST SUMMARY ===")
+    print(f"Status: ERROR (could not start command: {error})")
+    return 127
+
+
 def summarize(
     command: list[str], log_dir: Path, max_failures: int, max_diagnostics: int
 ) -> int:
@@ -171,14 +179,16 @@ def summarize(
     ) as capture:
         temporary_log = Path(capture.name)
         try:
-            result = _gate_runner().run_gate(
-                [command], _gate_runner().LocalPolicy(Path.cwd()), stop_on_failure=True
+            runner = _gate_runner()
+        except RuntimeError as error:
+            return _start_failure(capture, error)
+        try:
+            result = runner.run_gate(
+                [command], runner.LocalPolicy(Path.cwd()), stop_on_failure=True
             )
-        except (OSError, RuntimeError) as error:
-            temporary_log.unlink(missing_ok=True)
-            print("=== TEST SUMMARY ===")
-            print(f"Status: ERROR (could not start command: {error})")
-            return 127
+        # run_gate reports a command that cannot be launched as GateRunnerError, not OSError.
+        except (OSError, RuntimeError, runner.GateRunnerError) as error:
+            return _start_failure(capture, error)
 
         counts: dict[str, int] = {}
         pytest_duration: str | None = None

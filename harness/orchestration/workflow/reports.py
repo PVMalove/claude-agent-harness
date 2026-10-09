@@ -13,7 +13,7 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
@@ -33,22 +33,36 @@ from harness.orchestration.core.constants import (
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTINUATION_FACTS_FIELDS,
     FINDING_SEVERITIES,
+    INCOMPLETE_ITEM_FIELDS,
+    INCOMPLETE_ITEM_OPTIONAL_FIELDS,
+    INCOMPLETE_ITEM_TARGET_ROLES,
     LIVE_DISPATCH_STATES,
     MAX_CHECK_EVIDENCE_CHARS,
     PLANNED_TRIGGER_KINDS,
     PLANNED_TRIGGER_THRESHOLD_KEY,
+    QA_CODE_CHECKS_STARTED,
+    QA_DIAGNOSIS_CATEGORIES,
+    QA_DIAGNOSIS_FIELDS,
+    QA_NOT_RUN_RESULT,
+    QA_STAGE_ENTRY_FIELDS,
+    QA_STAGE_ENTRY_OPTIONAL_FIELDS,
+    QA_PRIMARY_STAGE_NAMES,
+    QA_STAGE_NAMES,
+    QA_STAGES_FIELDS,
+    QA_STAGES_OPTIONAL_FIELDS,
     RATE_LIMIT_TERMINATION_REASONS,
     REPORT_FIELDS,
     REPORT_OPTIONAL_FIELDS,
     REPORT_OUTCOMES,
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
+    TOOLING_BLOCKER_FIELDS,
+    TOOLING_BLOCKER_UNCOMMITTED_FIELD,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_changed_files,
-    _commits_between,
     _git_is_ancestor,
 )
 from harness.orchestration.core.utils import (
@@ -65,6 +79,7 @@ from harness.orchestration.core.utils import (
 )
 from harness.orchestration.core.workspace import (
     _agent_authored_file,
+    _reject_non_english,
 )
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
@@ -91,10 +106,17 @@ from harness.orchestration.runtime_attestation import (
 from harness.orchestration.runtime_attestation import (
     attest as attest_runtime_worktree,
 )
+from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow.fix_forward import FixForwardHistory
+from harness.orchestration.workflow import commit_plan as plan_rules
+from harness.orchestration.workflow import rebase
+from harness.orchestration.workflow import resolver_state
+from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
 from harness.orchestration.workflow.history import (
+    _dispatch_entry,
     _latest_checkpoint_for_dispatch,
     _latest_context_package,
     _live_status,
@@ -105,6 +127,9 @@ from harness.orchestration.workflow.risk import (
     _risk_triggers,
     _validate_trigger_names,
 )
+
+# The one write role whose change outside write_paths is a warning, not a rejection (issue #633).
+SCOPE_WARNING_ROLE = "developer"
 
 
 def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]:
@@ -150,9 +175,22 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             else:
                 try:
+                    startup = dispatch
+                    if status.get("last_event") == "resumed":
+                        batch = _load_batch(root, dispatch["batch_id"])
+                        _validate_batch_integrity(root, batch)
+                        checkpoint = _latest_checkpoint_for_dispatch(
+                            root, batch, dispatch["dispatch_id"]
+                        )
+                        # The approved continuation starts at recorded progress. Keep the
+                        # original snapshot for the full dispatch's commit-plan evidence.
+                        startup = {
+                            **dispatch,
+                            "snapshot_commit": checkpoint["commit_sha"],
+                        }
                     attestation = {
                         "match": True,
-                        **attest_runtime_worktree(repo, dispatch, supplied_worktree),
+                        **attest_runtime_worktree(repo, startup, supplied_worktree),
                     }
                 except AttestationError as exc:
                     worktree_matched = False
@@ -187,9 +225,11 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
                 f"running {reported!r} but approved brief resolved {expected!r}"
             )
         if not worktree_matched:
-            assert (
-                attestation is not None
-            )  # a mismatched worktree always sets the attestation
+            if attestation is None:
+                raise CoordinatorError(
+                    "a mismatched worktree recorded no attestation",
+                    remedy=INTERNAL_INVARIANT_REMEDY,
+                )
             mismatch.append(str(attestation["error"]))
         raise CoordinatorError(
             "dispatch "
@@ -274,14 +314,7 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
         _validate_batch_integrity(root, batch)
         _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch["dispatches"]
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
             or entry.get("state") != "checkpointed"
@@ -441,8 +474,8 @@ def _validate_checkpoint(
             or not any(fnmatchcase(normalized, pattern) for pattern in paths)
         ):
             raise CoordinatorError(
-                "checkpoint changed_files must remain inside the approved zone",
-                remedy="keep checkpoint changed_files inside the role's approved write zone",
+                "checkpoint changed_files must remain inside the approved scope",
+                remedy="keep checkpoint changed_files inside the brief's write_paths",
             )
     resolved = _candidate_commit(repo, commit_sha)
     actual_files = (
@@ -508,6 +541,24 @@ def _validate_checkpoint(
         )
 
 
+def _checkpoint_base(
+    repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject, commit_sha: object
+) -> str | None:
+    """The commit a checkpoint's ``changed_files`` are measured from: the one the dispatch's
+    completion report is measured from (``rebase.report_base``), or the rebase target the report
+    must contain (``rebase.required_target``) once the checkpointed commit contains it, so upstream files
+    a moved integration base brought in are never attributed to the ticket."""
+    target = rebase.required_target(batch, dispatch)
+    if target is not None:
+        try:
+            if _git_is_ancestor(repo, target, _candidate_commit(repo, commit_sha)):
+                return target
+        except CoordinatorError:
+            # An unresolvable commit_sha keeps the report base: _validate_checkpoint refuses it.
+            pass
+    return rebase.report_base(repo, root, batch, dispatch)
+
+
 def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     """Record a non-terminal checkpoint for an in-flight write-role dispatch so its worker session
     can end here and a fresh session can resume the same dispatch later.
@@ -528,14 +579,7 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
         role = _role(repo, dispatch["role"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if not entry or entry.get("state") != "dispatched":
             raise CoordinatorError(
                 "a checkpoint requires a dispatched role",
@@ -548,7 +592,13 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="pass --model naming the model actually running this session before checkpointing",
             )
         _validate_checkpoint(
-            checkpoint, dispatch, role, repo, batch.get("base_commit"), root, batch
+            checkpoint,
+            dispatch,
+            role,
+            repo,
+            _checkpoint_base(repo, root, batch, dispatch, checkpoint.get("commit_sha")),
+            root,
+            batch,
         )
         record = {
             "checkpoint_id": f"checkpoint-{uuid.uuid4()}",
@@ -597,11 +647,13 @@ def _authorize_planned_continuation(
     dispatch: JsonObject,
     checkpoint: JsonObject,
     args: argparse.Namespace,
+    batch: JsonObject | None = None,
 ) -> JsonObject:
     """A planned trigger (context limit, N TDD cycles, a large failure log, or a completed
     vertical slice) is a safe-default-toward-approval path: it always requires the same explicit
     coordinator decision an accept/retry/block/fail already does, reusing that record type rather
-    than inventing a new one."""
+    than inventing a new one. Under ``approval_policy: auto`` the policy gives that decision when
+    no approval is passed (issue #643); the answer to a resolver's options stays a human's."""
     trigger = args.trigger.strip() if _non_empty(args.trigger) else ""
     if trigger not in PLANNED_TRIGGER_KINDS:
         raise CoordinatorError(
@@ -624,7 +676,16 @@ def _authorize_planned_continuation(
                 remedy=f"pass --measured-value >= {threshold} for planned trigger {trigger!r}",
             )
     _check_continuation_facts_unchanged(dispatch, checkpoint, args)
-    approval = _approval(args)
+    if (
+        batch is not None
+        and trigger != "human-decision"
+        and not _non_empty(getattr(args, "approved_by", None))
+        and not _non_empty(getattr(args, "approved_at", None))
+        and approvals.auto_active(config, batch)
+    ):
+        approval = {"approved_by": approvals.AUTO_APPROVER, "approved_at": utils._now()}
+    else:
+        approval = _approval(args)
     return {
         "decision": "continue",
         "approved_by": approval["approved_by"],
@@ -675,7 +736,7 @@ def _check_continuation_facts_unchanged(
     )
     if not unchanged:
         raise CoordinatorError(
-            "continuation facts differ from the checkpointed scope, Definition of Done, risks, blockers "
+            "continuation facts differ from the checkpointed remaining Definition of Done, risks "
             "or dependencies; close this dispatch and open a new one through ordinary approval instead "
             "of resuming it",
             remedy="open a new dispatch through ordinary approval instead of resuming one whose scope has drifted",
@@ -709,14 +770,7 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         resumable_rate_limit = (
             entry
             and entry.get("state") == "rate_limited"
@@ -756,12 +810,39 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             authorization = _authorize_rate_limit_continuation(termination_reason)
         else:
+            if _non_empty(args.trigger) and args.trigger.strip() == "human-decision":
+                # The answer to the options a resolver listed is its own audit event; the same
+                # dispatch continues only once it is recorded, and nothing else is spent.
+                if not resolver_state.is_resolver_brief(
+                    dispatch
+                ) or not resolver_state.human_decision_recorded(
+                    root, batch, dispatch["dispatch_id"]
+                ):
+                    raise CoordinatorError(
+                        "a human-decision continuation resumes a conflict-resolver whose latest checkpoint has a recorded human decision",
+                        remedy="record the decision first with 'integration resolver-event --kind human-decision --dispatch <id>', then resume",
+                    )
             checkpoint = _latest_checkpoint_for_dispatch(
                 root, batch, dispatch["dispatch_id"]
             )
             authorization = _authorize_planned_continuation(
-                config, dispatch, checkpoint, args
+                config, dispatch, checkpoint, args, batch
             )
+            if authorization["approved_by"] == approvals.AUTO_APPROVER:
+                approvals.record_auto(
+                    batch,
+                    kind="continuation",
+                    dispatch_id=dispatch["dispatch_id"],
+                    rationale=f"planned trigger {args.trigger.strip()} with unchanged "
+                    "continuation facts inside the continuation budget",
+                    evidence={
+                        "trigger": args.trigger.strip(),
+                        "checkpoint_id": checkpoint["checkpoint_id"],
+                        "continuations_spent": continuation_count,
+                        "max_continuations": continuation_policy["max_continuations"],
+                    },
+                    moment=authorization["approved_at"],
+                )
         entry["state"] = "dispatched"
         batch.setdefault("coordinator_decisions", []).append(
             {
@@ -799,8 +880,13 @@ def _persist_report(
     batch: JsonObject,
     dispatch: JsonObject,
     report: JsonObject,
+    *,
+    auto_accept_policy: str | None = None,
 ) -> Path:
-    """Persist a role report and advance its batch atomically under the coordinator lock."""
+    """Persist a role report and advance its batch atomically under the coordinator lock.
+
+    ``auto_accept_policy`` is the policy ``report submit`` found authorized to decide the report; it
+    is kept on the dispatch status so a stopped policy chain is completed with that same policy."""
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
@@ -821,14 +907,7 @@ def _persist_report(
             "refusing to overwrite immutable Markdown report",
             remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",
         ) from exc
-    entry = next(
-        (
-            item
-            for item in batch["dispatches"]
-            if item["dispatch_id"] == dispatch["dispatch_id"]
-        ),
-        None,
-    )
+    entry = _dispatch_entry(batch, dispatch["dispatch_id"])
     if entry is None:
         raise CoordinatorError(
             "dispatch is not registered in its batch",
@@ -849,6 +928,8 @@ def _persist_report(
             "updated_at": utils._now(),
         }
     )
+    if auto_accept_policy is not None:
+        closed["auto_accept_policy"] = auto_accept_policy
     _safe_id(dispatch["dispatch_id"], "dispatch")
     _replace_record(ledger, DispatchStatusRecord.from_dict(closed))
     _safe_id(batch["batch_id"], "batch")
@@ -857,7 +938,8 @@ def _persist_report(
 
 
 def _validate_review(review: object, dispatch: JsonObject) -> None:
-    if not isinstance(review, dict) or set(review) != {
+    # ``carried_items`` (issue #499) is optional: the review's account of the brief's carried items.
+    if not isinstance(review, dict) or set(review) - {"carried_items"} != {
         "candidate_commit",
         "scope",
         "standards",
@@ -956,18 +1038,306 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
                 f"composite review {axis} must state risks and blockers",
                 remedy=f"composite review {axis} must state its risks and blockers explicitly",
             )
+    carried_items.validate_review_accounting(review, dispatch)
 
 
-def _rebase_target(batch: JsonObject, dispatch: JsonObject) -> str | None:
-    """The integration tip a developer dispatch must rebase onto, when a stale-base block is open."""
-    target = batch.get("rebase_target_commit")
+def _validate_tooling_blocker(report: JsonObject, dispatch: JsonObject) -> None:
+    """``tooling_blocker`` is the structured evidence of a tool that blocked a legitimate action
+    (issue #500): exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string, on a
+    ``blocked`` report only. It alone lets the coordinator classify a retry as ``tooling``.
+
+    A developer whose commit the tool blocked also lists the files it left uncommitted (issue #502),
+    each inside its write zone; the restart's preflight holds the worktree to exactly that list."""
+    if "tooling_blocker" not in report:
+        return
+    if report["outcome"] != "blocked":
+        raise CoordinatorError(
+            "completion report tooling_blocker is allowed only on a blocked report",
+            remedy="set outcome to blocked for a tool that blocked the role, or drop tooling_blocker",
+        )
+    blocker = report["tooling_blocker"]
+    if isinstance(blocker, dict) and TOOLING_BLOCKER_UNCOMMITTED_FIELD in blocker:
+        if report["role"] != "developer":
+            raise CoordinatorError(
+                f"completion report tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD} is allowed only on a developer report",
+                remedy=f"drop tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}: only a developer whose commit a tool blocked lists them",
+            )
+        _validate_uncommitted_files(
+            blocker[TOOLING_BLOCKER_UNCOMMITTED_FIELD], dispatch["write_paths"]
+        )
+        blocker = {
+            key: value
+            for key, value in blocker.items()
+            if key != TOOLING_BLOCKER_UNCOMMITTED_FIELD
+        }
+    _check_tooling_blocker_shape(
+        blocker,
+        "completion report tooling_blocker",
+        "tooling_blocker",
+    )
+
+
+def _validate_uncommitted_files(value: object, write_paths: list[str]) -> None:
+    label = f"completion report tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}"
+    files = _strings(value, label)
+    if len(set(files)) != len(files):
+        raise CoordinatorError(
+            f"{label} must not repeat a path",
+            remedy=f"list each uncommitted path once in tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD}",
+        )
+    for path in files:
+        # The restart compares each path verbatim with Git's own output, so it must be in that form.
+        if (
+            path != PurePosixPath(path).as_posix()
+            or "\\" in path
+            or path.startswith("/")
+            or ".." in PurePosixPath(path).parts
+            or not any(fnmatchcase(path, pattern) for pattern in write_paths)
+        ):
+            raise CoordinatorError(
+                f"{label} must be normalized paths inside the approved zone: {path}",
+                remedy=f"list in tooling_blocker {TOOLING_BLOCKER_UNCOMMITTED_FIELD} only normalized repository-relative paths (as git status prints them) inside the role's write zone",
+            )
+
+
+def _check_tooling_blocker_shape(blocker: object, label: str, name: str) -> None:
+    """Exactly ``tool``, ``command`` and ``message``, each a bounded non-empty string. ``label``
+    opens the refusal and ``name`` is the field its remedy tells the role to fix."""
+    fields = ", ".join(sorted(TOOLING_BLOCKER_FIELDS))
+    if not isinstance(blocker, dict) or set(blocker) != TOOLING_BLOCKER_FIELDS:
+        raise CoordinatorError(
+            f"{label} must carry exactly: {fields}",
+            remedy=f"set {name} to an object with exactly {fields}",
+        )
+    for field in sorted(TOOLING_BLOCKER_FIELDS):
+        if not _non_empty(blocker[field]):
+            raise CoordinatorError(
+                f"{label} {field} must be a non-empty string",
+                remedy=f"set {name} {field} to the tool's exact text",
+            )
+        if len(blocker[field]) > MAX_CHECK_EVIDENCE_CHARS:
+            raise CoordinatorError(
+                f"{label} {field} exceeds the bounded summary limit",
+                remedy=f"truncate {name} {field} to at most {MAX_CHECK_EVIDENCE_CHARS} characters",
+            )
+
+
+def _validate_incomplete_items(report: JsonObject, role: JsonObject) -> None:
+    """``incomplete_items`` lists the brief items a read-only role left undone (issue #501).
+
+    Each entry names the ``brief_item``, the ``reason`` and the ``target_role`` it can be handed to
+    (the reporting stage itself or a later role of the pipeline), and may carry the item's own
+    ``tooling_blocker``. The text reaches a later brief as agent-to-agent protocol text, so it is
+    English and bounded like check evidence.
+    """
+    if "incomplete_items" not in report:
+        return
+    stage = report["role"]
+    if role["mode"] != "read-only" or stage not in INCOMPLETE_ITEM_TARGET_ROLES:
+        raise CoordinatorError(
+            f"completion report incomplete_items is allowed only on a "
+            f"{', '.join(INCOMPLETE_ITEM_TARGET_ROLES)} report, not a {stage} report",
+            remedy="drop incomplete_items; a writing role reports unfinished work as a blocker "
+            "or a not_covered dod_coverage record",
+        )
+    items = report["incomplete_items"]
+    required = ", ".join(sorted(INCOMPLETE_ITEM_FIELDS))
+    shape = (
+        f"set each incomplete_items entry to an object with exactly {required}, "
+        "plus an optional tooling_blocker"
+    )
+    if not isinstance(items, list):
+        raise CoordinatorError(
+            "completion report incomplete_items must be a list", remedy=shape
+        )
+    targets = INCOMPLETE_ITEM_TARGET_ROLES[stage]
+    for position, item in enumerate(items, start=1):
+        label = f"completion report incomplete_items entry {position}"
+        if (
+            not isinstance(item, dict)
+            or not INCOMPLETE_ITEM_FIELDS <= set(item)
+            or set(item) - INCOMPLETE_ITEM_FIELDS - INCOMPLETE_ITEM_OPTIONAL_FIELDS
+        ):
+            raise CoordinatorError(f"{label} has an invalid schema", remedy=shape)
+        for field in ("brief_item", "reason"):
+            if not _non_empty(item[field]):
+                raise CoordinatorError(
+                    f"{label} {field} must be a non-empty string",
+                    remedy=f"set incomplete_items entry {position} {field}: name the brief "
+                    "item and why it was left undone",
+                )
+            if len(item[field]) > MAX_CHECK_EVIDENCE_CHARS:
+                raise CoordinatorError(
+                    f"{label} {field} exceeds the bounded summary limit",
+                    remedy=f"shorten incomplete_items entry {position} {field} to at most "
+                    f"{MAX_CHECK_EVIDENCE_CHARS} characters",
+                )
+        try:
+            _reject_non_english([item["brief_item"], item["reason"]], label)
+        except CoordinatorError as exc:
+            raise CoordinatorError(
+                f"{label} is handed to a later brief as agent-to-agent protocol text and must "
+                "be written in English",
+                remedy=exc.remedy,
+            ) from exc
+        if item["target_role"] not in targets:
+            raise CoordinatorError(
+                f"{label} target_role {item['target_role']!r} is not a role a {stage} report "
+                "can hand an item to",
+                remedy=f"set incomplete_items entry {position} target_role to one of: "
+                f"{', '.join(targets)}",
+            )
+        if "tooling_blocker" in item:
+            _check_tooling_blocker_shape(
+                item["tooling_blocker"],
+                f"{label} tooling_blocker",
+                f"incomplete_items entry {position} tooling_blocker",
+            )
+
+
+def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
+    """Shape and consistency of a QA report's ``qa_stages`` against its checks and outcome (issue #618).
+
+    The stage list is the evidence: its gate entries must be the leading approved verification
+    commands with the same results as ``checks_run``, every later command is ``not-run``, and the
+    failed stage, the code-check fact, the diagnosis and the outcome must follow from the entries.
+    """
+    if "qa_stages" not in report:
+        return
+    stages = report["qa_stages"]
+
+    def refuse(problem: str) -> CoordinatorError:
+        return CoordinatorError(
+            f"completion report qa_stages {problem}",
+            remedy="resubmit qa_stages exactly as the clean-room QA runner records it; "
+            "QA reports are produced by 'qa run', not by hand",
+        )
+
+    if dispatch.get("role") != "qa":
+        raise refuse("belongs only to a QA report")
     if (
-        dispatch.get("role") == "developer"
-        and batch.get("base_rebase_required")
-        and isinstance(target, str)
+        not isinstance(stages, dict)
+        or not QA_STAGES_FIELDS <= set(stages)
+        or set(stages) - QA_STAGES_FIELDS - QA_STAGES_OPTIONAL_FIELDS
     ):
-        return target
-    return None
+        raise refuse("has an invalid schema")
+    entries = stages["stages"]
+    if not isinstance(entries, list) or not entries:
+        raise refuse("stages must be a non-empty list")
+    for entry in entries:
+        if (
+            not isinstance(entry, dict)
+            or not QA_STAGE_ENTRY_FIELDS <= set(entry)
+            or set(entry) - QA_STAGE_ENTRY_FIELDS - QA_STAGE_ENTRY_OPTIONAL_FIELDS
+            or entry["stage"] not in QA_STAGE_NAMES
+            or not _non_empty(entry["command"])
+            or isinstance(entry["exit_code"], bool)
+            or not isinstance(entry["exit_code"], int)
+            or entry["result"] != ("pass" if entry["exit_code"] == 0 else "fail")
+        ):
+            raise refuse("has an invalid stage entry")
+        diagnostics = entry.get("diagnostics")
+        if (diagnostics is not None) != (entry["exit_code"] != 0) or (
+            diagnostics is not None
+            and (
+                not _non_empty(diagnostics)
+                or len(diagnostics) > MAX_CHECK_EVIDENCE_CHARS
+            )
+        ):
+            raise refuse(
+                "carries sanitised, bounded diagnostics for a failed stage and none otherwise"
+            )
+    names = [entry["stage"] for entry in entries]
+    if names != sorted(names, key=QA_STAGE_NAMES.index):
+        raise refuse("lists the gate stage before the preparation stage")
+    # Probes and project-file checks run only to diagnose a failed preparation, so their own
+    # failures are facts, not stage failures.
+    primary = [entry for entry in entries if entry["stage"] in QA_PRIMARY_STAGE_NAMES]
+    failed = [entry for entry in primary if entry["result"] == "fail"]
+    if failed and failed[0] is not primary[-1]:
+        raise refuse("continues past the first failing stage")
+    facts = [entry for entry in entries if entry["stage"] not in QA_PRIMARY_STAGE_NAMES]
+    if facts and not (failed and failed[0]["stage"] == "preparation"):
+        raise refuse(
+            "records environment probes or project-file checks without a failed preparation"
+        )
+    failed_stage = stages["failed_stage"]
+    if failed_stage != (failed[0]["stage"] if failed else None):
+        raise refuse("failed_stage does not match the failing stage entry")
+    gate = [entry for entry in entries if entry["stage"] == "gate"]
+    started = stages["code_checks_started"]
+    if started not in QA_CODE_CHECKS_STARTED:
+        raise refuse(
+            f"code_checks_started must be one of: {', '.join(QA_CODE_CHECKS_STARTED)}"
+        )
+    if bool(gate) != (started == "started"):
+        raise refuse("code_checks_started contradicts the gate stage entries")
+    diagnosis = stages.get("diagnosis")
+    if failed_stage == "preparation":
+        if (
+            not isinstance(diagnosis, dict)
+            or set(diagnosis) != QA_DIAGNOSIS_FIELDS
+            or diagnosis["category"] not in QA_DIAGNOSIS_CATEGORIES
+            or not isinstance(diagnosis["signals"], list)
+            or not all(_non_empty(item) for item in diagnosis["signals"])
+            or not _non_empty(diagnosis["basis"])
+        ):
+            raise refuse("needs a valid diagnosis for a failed preparation stage")
+        if diagnosis["category"] != "unknown" and started != "not_started":
+            raise refuse(
+                "confirms a cause although it does not confirm that no code check started"
+            )
+        probes_failed = [
+            e
+            for e in facts
+            if e["stage"] == "environment-probe" and e["result"] == "fail"
+        ]
+        file_checks = [e for e in facts if e["stage"] == "project-file-check"]
+        if diagnosis["category"] == "infrastructure" and not (
+            probes_failed
+            and file_checks
+            and all(e["result"] == "pass" for e in file_checks)
+        ):
+            raise refuse(
+                "confirms an infrastructure cause without a failed environment probe "
+                "and passing project-file checks"
+            )
+    elif diagnosis is not None:
+        raise refuse("carries a diagnosis although preparation did not fail")
+    approved = dispatch["verification_commands"]
+    commands = [entry["command"] for entry in gate]
+    if commands != approved[: len(commands)]:
+        raise refuse("gate entries are not the leading approved verification commands")
+    checks = report["checks_run"]
+    expected = [(entry["command"], entry["result"]) for entry in gate] + [
+        (command, QA_NOT_RUN_RESULT) for command in approved[len(gate) :]
+    ]
+    if [(check["command"], check["result"]) for check in checks] != expected:
+        raise refuse(
+            "does not agree with checks_run (a command never reached is not-run)"
+        )
+    if failed_stage is None:
+        expected_outcome = "completed"
+    elif (
+        failed_stage == "gate" or (diagnosis or {}).get("category") == "project-defect"
+    ):
+        expected_outcome = "failed"
+    else:
+        expected_outcome = "blocked"
+    if report["outcome"] != expected_outcome:
+        raise refuse(
+            f"requires outcome {expected_outcome} for failed_stage {failed_stage}"
+        )
+
+
+def _resolve_report_commit(repo: Path, commit_sha: str) -> str:
+    try:
+        return _candidate_commit(repo, commit_sha)
+    except CoordinatorError as exc:
+        raise CoordinatorError(
+            f"completion report commit_sha {commit_sha} does not resolve to a commit",
+            remedy="report a commit_sha that resolves to a real commit in this repository",
+        ) from exc
 
 
 def _validate_report(
@@ -976,11 +1346,10 @@ def _validate_report(
     role: JsonObject,
     repo: Path | None = None,
     base_commit: str | None = None,
-    rebase_target: str | None = None,
+    *,
+    history: FixForwardHistory | None = None,
 ) -> None:
-    """``rebase_target`` is set only for the developer report that clears a stale-base block: the
-    candidate must contain that tip, and its own commits and files are measured from it, so
-    upstream commits the rebase brought in are never attributed to the ticket."""
+    """Validate report shape and its proof through the candidate's history module."""
     _reject_sensitive(report, "completion report")
     if (
         not REPORT_FIELDS <= set(report)
@@ -1018,6 +1387,8 @@ def _validate_report(
             "completion report outcome is invalid",
             remedy="set outcome to one of the accepted completion-report outcomes",
         )
+    _validate_tooling_blocker(report, dispatch)
+    _validate_incomplete_items(report, role)
     for field in ("output", "risks", "blockers", "next_coordinator_action"):
         if not _non_empty(report[field]):
             raise CoordinatorError(
@@ -1067,119 +1438,67 @@ def _validate_report(
             f"(expected {dispatch['verification_commands']}, got {commands_run})",
             remedy="re-run exactly the approved verification_commands and report those results",
         )
+    _validate_qa_stages(report, dispatch)
+    plan_rules.check_fields_allowed(report, dispatch)
+    carried_items.check_closure(report, dispatch)
     commit_sha = report["commit_sha"]
-    if role["mode"] == "write" and (
-        not isinstance(commit_sha, str)
-        or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None
-        or not changed_files
-    ):
-        raise CoordinatorError(
-            "write-role completion reports require commit_sha and changed_files",
-            remedy="a write role's completion report must include commit_sha and changed_files",
-        )
+    if role["mode"] == "write":
+        if (
+            not isinstance(commit_sha, str)
+            or re.fullmatch(r"[0-9a-fA-F]{7,64}", commit_sha) is None
+            or (report.get("outcome") == "completed" and not changed_files)
+        ):
+            raise CoordinatorError(
+                "write-role completion reports require commit_sha and changed_files",
+                remedy="a write role's completion report must include commit_sha and changed_files",
+            )
+        if not changed_files:
+            expected_checkout = dispatch.get("snapshot_commit") or dispatch.get(
+                "base_commit"
+            )
+            mismatch = False
+            if repo is not None:
+                resolved = _resolve_report_commit(repo, commit_sha)
+                expected_resolved = (
+                    _candidate_commit(repo, expected_checkout)
+                    if expected_checkout
+                    else None
+                )
+                mismatch = resolved != expected_resolved
+            elif expected_checkout and commit_sha != expected_checkout:
+                mismatch = True
+
+            if mismatch:
+                raise CoordinatorError(
+                    f"early blocked write-role report commit_sha {commit_sha} does not match checkout snapshot {expected_checkout}",
+                    remedy=f"report the checked-out checkout commit {expected_checkout} when stopped before making changes",
+                )
     if role["mode"] == "read-only" and changed_files:
         raise CoordinatorError(
             "read-only completion reports cannot claim changed files",
             remedy="a read-only role's completion report must not claim changed_files",
         )
     if role["mode"] == "write":
-        paths = dispatch["write_paths"]
         for changed_file in changed_files:
             normalized = changed_file.replace("\\", "/")
-            if (
-                normalized.startswith("/")
-                or ".." in Path(normalized).parts
-                or not any(fnmatchcase(normalized, pattern) for pattern in paths)
-            ):
+            if normalized.startswith("/") or ".." in Path(normalized).parts:
                 raise CoordinatorError(
-                    "completion report changed_files must remain inside the approved zone",
-                    remedy="keep completion report changed_files inside the role's approved write zone",
+                    "completion report changed_files must remain inside the repository",
+                    remedy="report changed_files as repository-relative paths without '..'",
                 )
-        if repo is not None:
-            resolved = _candidate_commit(repo, commit_sha)
-            if rebase_target is not None:
-                if not _git_is_ancestor(repo, rebase_target, resolved):
-                    raise CoordinatorError(
-                        f"rebase candidate does not contain the integration tip {rebase_target}",
-                        remedy=f"rebase the issue branch onto {rebase_target} and report the rebased HEAD",
-                    )
-                base_commit = rebase_target
-            actual_files = (
-                _changed_files_between(repo, base_commit, resolved)
-                if base_commit
-                else _commit_changed_files(repo, resolved)
+        # A developer's change outside write_paths is recorded and shown as a scope warning that
+        # only an explicit override-warning accepts (issue #633); other write roles stay strict.
+        if role.get("name") != SCOPE_WARNING_ROLE and plan_rules.outside_scope(
+            (path.replace("\\", "/") for path in changed_files), dispatch["write_paths"]
+        ):
+            raise CoordinatorError(
+                "completion report changed_files must remain inside the approved scope",
+                remedy="keep completion report changed_files inside the brief's write_paths",
             )
-            if actual_files != changed_files:
-                raise CoordinatorError(
-                    "completion report changed_files must exactly match commit_sha",
-                    remedy="regenerate completion report changed_files from the actual diff at commit_sha",
-                )
-        commit_plan = dispatch.get("commit_plan", [])
-        commit_map = report.get("commit_map")
-        # The commit plan is verified against Git history, so it needs the repository, like the
-        # changed_files check above.
-        if role.get("name") == "developer" and commit_plan and repo is not None:
-            if not isinstance(commit_map, list) or not commit_map:
-                raise CoordinatorError(
-                    "developer completion report requires commit_map for the immutable commit plan",
-                    remedy="map every commit created after snapshot_commit to exactly one commit_plan entry",
-                )
-            plan_ids = [
-                entry.get("id") for entry in commit_plan if isinstance(entry, dict)
-            ]
-            if len(plan_ids) != len(commit_plan) or not all(
-                isinstance(item, str) for item in plan_ids
-            ):
-                raise CoordinatorError(
-                    "dispatch commit_plan is malformed",
-                    remedy="create a new developer dispatch with a valid immutable commit plan",
-                )
-            pairs: list[tuple[str, str]] = []
-            for entry in commit_map:
-                if not isinstance(entry, dict) or set(entry) != {
-                    "commit_sha",
-                    "plan_entry_id",
-                }:
-                    raise CoordinatorError(
-                        "commit_map entries must contain only commit_sha and plan_entry_id",
-                        remedy="report one SHA-to-plan-entry mapping for every created commit",
-                    )
-                sha, plan_id = entry["commit_sha"], entry["plan_entry_id"]
-                if not isinstance(sha, str) or not isinstance(plan_id, str):
-                    raise CoordinatorError(
-                        "commit_map entries must use string SHA and plan entry id",
-                        remedy="report canonical commit SHA strings and commit plan entry ids",
-                    )
-                pairs.append((sha, plan_id))
-            snapshot = dispatch.get("snapshot_commit")
-            if not isinstance(snapshot, str):
-                raise CoordinatorError(
-                    "developer dispatch lacks snapshot_commit",
-                    remedy="create a new developer dispatch with an immutable snapshot",
-                )
-            if repo is not None:
-                mapped = {
-                    _candidate_commit(repo, sha): plan_id for sha, plan_id in pairs
-                }
-                created = _commits_between(repo, rebase_target or snapshot, resolved)
-                transition = dispatch.get("transition")
-                is_retry = (
-                    isinstance(transition, dict)
-                    and transition.get("next_action") == "developer-retry"
-                )
-                mapped_plan_ids = set(mapped.values())
-                if (
-                    set(mapped) != set(created)
-                    or not mapped_plan_ids.issubset(plan_ids)
-                    or len(mapped) != len(created)
-                    or len(mapped) != len(pairs)
-                    or len(mapped_plan_ids) != len(mapped)
-                    or (not is_retry and mapped_plan_ids != set(plan_ids))
-                ):
-                    raise CoordinatorError(
-                        "commit_map must map each created commit to one distinct immutable plan entry",
-                        remedy="report every new commit once against a distinct commit_plan entry; the initial dispatch must cover the full plan",
-                    )
+        if repo is not None:
+            (history or FixForwardHistory(repo)).validate_report(
+                report, dispatch, role, base_commit
+            )
     if role["mode"] == "read-only" and commit_sha != "not applicable — read-only role":
         raise CoordinatorError(
             "read-only completion reports must not claim a commit SHA",
@@ -1196,6 +1515,39 @@ def _validate_report(
             "only the code-review role may submit composite review evidence",
             remedy="only the code-review role may submit composite review evidence",
         )
+
+
+def _validate_report_in_batch(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    role: JsonObject,
+) -> None:
+    """Validate ``report`` against its brief and the batch's Git history, as ``report submit``
+    and every decision on the report do: each base it is measured from comes from the batch."""
+    _validate_report(
+        report,
+        dispatch,
+        role,
+        repo,
+        history=FixForwardHistory(repo, root, batch),
+    )
+    resolver_state.validate_report(repo, root, batch, dispatch, report)
+
+
+def report_scope_warnings(report: JsonObject, dispatch: JsonObject) -> list[str]:
+    """The ``changed_files`` of a developer report that lie outside the brief's write_paths.
+
+    Only a developer report carries them as a warning (issue #633); any other report has none.
+    """
+    if report.get("role") != SCOPE_WARNING_ROLE:
+        return []
+    return plan_rules.outside_scope(
+        (path.replace("\\", "/") for path in report["changed_files"]),
+        dispatch["write_paths"],
+    )
 
 
 def _report_markdown(report: JsonObject) -> str:
@@ -1229,6 +1581,39 @@ def _report_markdown(report: JsonObject) -> str:
         if field in report:
             lines.append(f"- {label}:")
             lines.extend(f"  - {item}" for item in report[field])
+    qa_stages = report.get("qa_stages")
+    if isinstance(qa_stages, dict):
+        lines.append(
+            f"- QA stages: failed stage {qa_stages['failed_stage'] or 'none'}, "
+            f"code checks started: {qa_stages['code_checks_started']}"
+        )
+        for entry in qa_stages["stages"]:
+            lines.append(
+                f"  - [{entry['stage']}] `{entry['command']}` — {entry['result']}, exit {entry['exit_code']}"
+            )
+        diagnosis = qa_stages.get("diagnosis")
+        if isinstance(diagnosis, dict):
+            lines.append(
+                f"  - Diagnosis: {diagnosis['category']} ({diagnosis['basis']}; "
+                f"signals: {', '.join(diagnosis['signals']) or 'none'})"
+            )
+    tooling = report.get("tooling_blocker")
+    if isinstance(tooling, dict):
+        lines.append(
+            f"- Tooling blocker: {tooling['tool']} — `{tooling['command']}`: {tooling['message']}"
+        )
+        uncommitted = tooling.get(TOOLING_BLOCKER_UNCOMMITTED_FIELD)
+        if uncommitted:
+            lines.append(f"- Uncommitted files: {', '.join(uncommitted)}")
+    incomplete = report.get("incomplete_items")
+    if incomplete:
+        lines.append("- Incomplete items:")
+        for item in incomplete:
+            line = f"  - [{item['target_role']}] {item['brief_item']}: {item['reason']}"
+            blocker = item.get("tooling_blocker")
+            if isinstance(blocker, dict):
+                line += f" (tooling blocker: {blocker['tool']} — `{blocker['command']}`: {blocker['message']})"
+            lines.append(line)
     review = report.get("review")
     if isinstance(review, dict):
         lines.extend(
@@ -1279,14 +1664,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="run QA through the clean-room QA runner (qa run), not by hand",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        entry = next(
-            (
-                item
-                for item in batch.get("dispatches", [])
-                if item["dispatch_id"] == dispatch["dispatch_id"]
-            ),
-            None,
-        )
+        entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
             or entry.get("state") != "dispatched"
@@ -1311,20 +1689,20 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
         role = _role(repo, dispatch["role"])
-        _validate_report(
-            report,
-            dispatch,
-            role,
-            repo,
-            batch.get("integration_base_commit") or batch.get("base_commit"),
-            _rebase_target(batch, dispatch),
-        )
+        _validate_report_in_batch(repo, root, batch, dispatch, report, role)
+        rebase_check = rebase.rebase_check(repo, report, dispatch)
+        # Only a new report must carry its closure: one recorded earlier is decided as a gap.
+        carried_items.require_closure(report, dispatch)
         from harness.orchestration.workflow.decisions import _auto_accept_policy
 
         auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
         retry_candidate: str | None = None
         was_retry = False
-        if role["name"] == "developer" and batch.get("retry_candidate_required"):
+        if (
+            role["name"] == "developer"
+            and report.get("outcome") == "completed"
+            and batch.get("retry_candidate_required")
+        ):
             retry_candidate = _candidate_commit(repo, report["commit_sha"])
             was_retry = True
             prior_candidates = {
@@ -1338,7 +1716,11 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                     remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch",
                 )
             batch["retry_candidate_required"] = False
-        if "risk_triggers" in report and role["name"] == "developer":
+        if (
+            "risk_triggers" in report
+            and role["name"] == "developer"
+            and report.get("outcome") == "completed"
+        ):
             triggers = _validate_trigger_names(
                 report["risk_triggers"],
                 "completion report risk_triggers",
@@ -1383,83 +1765,58 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 batch["risk_reassessment_required"] = False
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
-        report_json = _persist_report(ledger, root, batch, dispatch, report)
-    if auto_accept_policy is not None:
-        # Reuse the ordinary decision transition and its audit record after releasing the
-        # ledger lock. A policy decision is revalidated against the persisted report there.
-        from harness.orchestration.workflow.decisions import decide_batch
-
-        decided = decide_batch(
-            argparse.Namespace(
-                repo=str(repo),
-                state_dir=getattr(args, "state_dir", None),
-                batch=batch["batch_id"],
-                decision="accept",
-                approved_by=None,
-                approved_at=None,
-                note=None,
-                reason=None,
-                reason_category=None,
-                retry_role=None,
-                _policy_auto_accept=True,
-            )
+        report_json = _persist_report(
+            ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
         )
-        next_action = decided.get("next_action")
-        candidate = report.get("commit_sha")
-        risk = None
-        if next_action == "risk-assessment" and isinstance(candidate, str):
-            from harness.orchestration.workflow.risk import assess_risk
-
-            risk = assess_risk(
-                argparse.Namespace(
-                    repo=str(repo),
-                    state_dir=getattr(args, "state_dir", None),
-                    batch=batch["batch_id"],
-                    candidate_commit=candidate,
-                    base_commit=None,
-                    changed_file=report["changed_files"],
-                    developer_trigger=report.get("risk_triggers", []),
-                )
-            )
-            next_action = "code-review" if risk["review_required"] else "qa"
-        next_dispatch_id = None
-        if next_action == "developer" or (
-            next_action == "qa"
-            and auto_accept_policy == "low_risk"
-            and risk is not None
-            and not risk["matched_triggers"]
-        ):
-            from harness.orchestration.workflow.dispatch import create_dispatch
-
-            prepared = create_dispatch(
-                argparse.Namespace(
-                    repo=str(repo),
-                    state_dir=getattr(args, "state_dir", None),
-                    batch=batch["batch_id"],
-                    role=next_action,
-                    runtime=dispatch.get("resolved_runtime"),
-                    purpose="work",
-                    candidate_commit=candidate if next_action == "qa" else None,
-                    delta_review_of=None,
-                    model=dispatch.get("resolved_model"),
-                    effort=dispatch.get("resolved_effort"),
-                    propose=False,
-                    transition_digest=None,
-                    approved_by=None,
-                    approved_at=None,
-                )
-            )
-            next_dispatch_id = prepared["dispatch_id"]
-        return {
-            "dispatch_id": dispatch["dispatch_id"],
-            "state": "reported",
-            "report": str(report_json),
-            "auto_accepted": True,
-            "next_action": next_action,
-            "next_dispatch_id": next_dispatch_id,
-        }
-    return {
+        if resolver_state.is_resolver_brief(dispatch):
+            resolver_state.record_report(ledger, root, batch, dispatch, report)
+    response: JsonObject = {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
         "report": str(report_json),
     }
+    if rebase_check is not None:
+        # The patch-id comparison of a rebase-fix-forward report (issue #504), for delta-review.
+        response["rebase_check"] = rebase_check
+    if auto_accept_policy is None:
+        from harness.orchestration.workflow.decisions import decision_packet
+
+        packet = decision_packet(
+            argparse.Namespace(
+                repo=str(repo),
+                state_dir=getattr(args, "state_dir", None),
+                batch=batch["batch_id"],
+                dispatch=dispatch["dispatch_id"],
+            )
+        )
+        response["decision_packet"] = packet
+        if approvals.auto_active(config, batch):
+            # Under `auto` the policy decides a report its chain does not accept (issue #643).
+            response["next_coordinator_command"] = (
+                "python .harness/orchestration/coordinator.py --repo . batch auto-decide "
+                f"--batch {batch['batch_id']}"
+            )
+        return response
+    # The policy decision, risk assessment and next dispatch run after the ledger lock is released,
+    # each as an ordinary command revalidated against the persisted report.  The report is
+    # recorded whatever happens next, so a stopped chain is answered with its completion route
+    # instead of an error that would invite submitting the report again.
+    from harness.orchestration.workflow.completion import _completion, _run_policy_chain
+
+    state_dir = getattr(args, "state_dir", None)
+    chain = _run_policy_chain(repo, state_dir, dispatch["dispatch_id"])
+    response.update(
+        {
+            "auto_accepted": chain["auto_accepted"],
+            "next_action": chain["next_action"],
+            "next_dispatch_id": chain["next_dispatch_id"],
+        }
+    )
+    if chain["failed_step"] is not None:
+        response["report_sha256"] = next(
+            item["report_sha256"]
+            for item in batch["dispatches"]
+            if item["dispatch_id"] == dispatch["dispatch_id"]
+        )
+        response["completion"] = _completion(chain, dispatch["dispatch_id"], state_dir)
+    return response

@@ -1,5 +1,7 @@
 """Real offline #431 probe. Run only in the separately locked experiment runtime."""
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -19,6 +21,8 @@ import numpy as np
 import onnxruntime as ort
 import sqlite_vec
 from tokenizers import Tokenizer
+
+GIT_TIMEOUT_SECONDS = 60
 
 
 def run(artifacts: Path) -> dict:
@@ -120,7 +124,10 @@ def run(artifacts: Path) -> dict:
     with tempfile.TemporaryDirectory(dir=run_dir) as temporary:
         repo = Path(temporary)
         subprocess.run(
-            ["git", "init", "-q", str(repo)], check=True, capture_output=True
+            ["git", "init", "-q", str(repo)],
+            check=True,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
         configure(repo)
         for path, digest in baseline["source_hashes"].items():

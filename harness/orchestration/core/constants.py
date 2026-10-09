@@ -19,6 +19,9 @@ SENSITIVE_KEY = re.compile(
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
 TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
+# A blocked batch that still has an open dispatch can be resumed or abandoned, so it holds its work
+# until one of those happens; with every dispatch settled it is finished like the other states.
+FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES - {"blocked"}
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
@@ -28,10 +31,62 @@ OPERATIONAL_REASON_CATEGORIES = (
     "context-pressure",
 )
 DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
+# A tool (a hook, the safety classifier, the ledger) blocked a legitimate role action (issue #500).
+# It is operational too, but only a blocked report's structured ``tooling_blocker`` proves it, and it
+# has a route of its own (``tooling-retry``): the same stage on the same SHA, a developer from its
+# last commit, without spending ``retry_policy.max_developer_retries``. It is deliberately not one
+# of ``OPERATIONAL_REASON_CATEGORIES``, whose routes and attention count it must not join.
+TOOLING_REASON_CATEGORY = "tooling"
+TOOLING_BLOCKER_FIELDS = frozenset({"tool", "command", "message"})
+# A developer whose ``git commit`` a tool blocked reverts nothing and lists the files it left
+# uncommitted in its report's ``tooling_blocker``; the restart inherits exactly them (issue #502).
+TOOLING_BLOCKER_UNCOMMITTED_FIELD = "uncommitted_files"
+# A read-only role worked around a hook or tool block (issue #560). Only an approver names it, and
+# none of that report is evidence: the same stage re-runs on the same SHA (``bypass-rerun``) under an
+# explicit approval, since there is nothing for a developer to fix. A writing role that worked around
+# a block is still retried with a developer category or blocked.
+BLOCK_BYPASS_REASON_CATEGORY = "block-bypass"
+BLOCK_BYPASS_STAGES = ("code-review", "qa", "verification")
 RETRY_REASON_CATEGORIES = (
     *OPERATIONAL_REASON_CATEGORIES,
+    TOOLING_REASON_CATEGORY,
+    BLOCK_BYPASS_REASON_CATEGORY,
     *DEVELOPER_REASON_CATEGORIES,
     "unknown",
+)
+# The recovery route a ``retry`` or ``abandon`` decision records in its routing record. Each value
+# names a route the coordinator already computes; a new route adds its value here and its row to
+# the playbook "Recovery route table" in the same change. ``report-completion`` is not a
+# ``batch decide`` route: ``report submit`` names it when the policy chain after a recorded report
+# stops, and the coordinator completes that chain with ``report complete``. ``carry-over`` is
+# recorded by an ``accept`` with ``--findings-file`` and by ``batch carry-over`` (issue #499): a
+# coordinator finding goes into review instead of costing a developer retry before it.
+# ``tooling-retry`` (issue #500) re-runs the stage a tool blocked, for the ``tooling`` category only.
+# ``bypass-rerun`` (issue #560) re-runs a read-only stage whose role worked around a block.
+# ``narrowed-retry`` (issue #501) re-runs a read-only stage on the incomplete items its report
+# listed, and only on them; an item a tool kept the role from makes that retry ``tooling-retry``.
+# ``fix-forward`` (issue #503) is a ``developer-retry`` whose brief carries a non-empty closed list
+# of carried items: new commits on top of the candidate close them without rewriting history.
+# ``rebase-fix-forward`` (issue #504) is a ``developer-retry`` decided while ``origin/<integration_ref>``
+# moved ahead of the pinned integration base: its brief carries the human-approved rebase target,
+# and the developer rebases the candidate onto it and fixes on top in the same dispatch.
+# ``supersede`` (issue #506) is recorded by ``batch create --supersedes`` on the new batch: after a
+# forced abandon it resumes from the abandoned batch's ``last_accepted`` record instead of
+# repeating the architect stage and cherry-picking the accepted commits by hand.
+RECOVERY_ROUTES = (
+    "developer-retry",
+    "same-candidate-rerun",
+    "verification",
+    "architect-retry",
+    "abandon",
+    "report-completion",
+    "carry-over",
+    "tooling-retry",
+    "bypass-rerun",
+    "narrowed-retry",
+    "fix-forward",
+    "rebase-fix-forward",
+    "supersede",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
@@ -41,16 +96,24 @@ NEXT_ACTION_DISPATCH_ROLE = {
     "code-review": "code-review",
     "qa": "qa",
     "publish": "developer",
+    # Issue #534: a textual integration conflict is handed to the conflict-resolver writer.
+    "resolve-conflict": "conflict-resolver",
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
 ROLE_TRANSPORTS = {"in-process", "external"}
-DEFAULT_ZONE = "repository"
+ACCESS_MODES = ("inherit", "sandbox", "unsandboxed")
+ACCESS_RESOURCES = ("checkout", "git_common", "shared_storage", "cache")
+ACCESS_OPERATIONS = ("qa", "git", "publish")
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.
 # Keep the default long enough for that work, while the handoff still requires frequent, explicit
 # heartbeats so an actually lost worker is eventually surfaced.
 DEFAULT_STALE_AFTER_SECONDS = 3_600
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 300
+# `ledger release-lock` releases a lock without an owner record (taken by an older runtime) only
+# once it is this old. `dispatch publish` legitimately holds the lock across `git push`, so the
+# bound stays generous; a lock that records its owner is judged by that owner's process instead.
+LEDGER_LOCK_STALE_SECONDS = 3_600
 DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",
@@ -60,6 +123,7 @@ REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
+QA_OWNER_FIELDS = {"owner_kind", "owner_id"}
 PLAN_FIELDS = (
     "batch_id",
     "created_at",
@@ -70,6 +134,7 @@ PLAN_FIELDS = (
     "branch",
     "worktree",
     "zone",
+    "allowed_paths",
     "definition_of_done",
     "prohibited_changes",
     "developer_verification_commands",
@@ -81,11 +146,20 @@ PLAN_FIELDS = (
     "scope_preflight",
     "harness_runtime_sha256",
 )
+# A plan written before batches carried an explicit scope: its zone alone bounded the writer.
+PRE_SCOPE_PLAN_FIELDS = tuple(
+    field for field in PLAN_FIELDS if field != "allowed_paths"
+)
 LEGACY_PLAN_FIELDS = tuple(
     field
     for field in PLAN_FIELDS
     if field
-    not in {"scope_preflight", "harness_runtime_sha256", "communication_policy"}
+    not in {
+        "allowed_paths",
+        "scope_preflight",
+        "harness_runtime_sha256",
+        "communication_policy",
+    }
 )
 PRE_APPROVAL_LEGACY_PLAN_FIELDS = tuple(
     field for field in LEGACY_PLAN_FIELDS if field != "approval_policy"
@@ -135,7 +209,61 @@ DISPATCH_FIELDS = {
     "orchestration_policy",
     "liveness",
     "commit_plan",
+    "commit_plan_divergence",
+    "carried_items",
+    "rebase_target_commit",
+    "runtime_access",
+    "delta_review_scope",
 }
+# A code-review brief after an accepted fix-forward developer-retry records whether the coordinator
+# scoped it to the new commits (``delta``) or escalated it to a full review (``full``), and why
+# (issue #625). An escalation reason is one of a closed set.
+DELTA_REVIEW_MODES = ("delta", "full")
+DELTA_REVIEW_ESCALATIONS = (
+    "new-risk-trigger",
+    "file-outside-carried-items",
+    "patch-id-mismatch",
+    "dropped-commit",
+    "no-new-commits",
+)
+# The carried-items brief section (issue #499) is one shared channel keyed by the kind of source
+# that raised an item; a later kind adds its value here without changing the section's shape.
+CARRIED_ITEM_SOURCES = ("coordinator-finding", "review-finding", "incomplete-item")
+# The roles whose work brief may carry each kind. An incomplete item (issue #501) reaches the role
+# a read-only report handed it to, or the same read-only stage again in a narrowed retry.
+CARRIED_ITEM_BRIEF_ROLES = {
+    "coordinator-finding": ("developer", "code-review"),
+    "review-finding": ("developer", "code-review"),
+    "incomplete-item": ("architect", "developer", "verification", "code-review", "qa"),
+}
+# One carried item as a brief hands it to a role.
+CARRIED_ITEM_FIELDS = frozenset(
+    {"item_id", "source", "summary", "files", "expected_evidence"}
+)
+# How a code-review report accounts for one carried item; only ``closed`` settles it as clean.
+CARRIED_ITEM_STATUSES = ("closed", "open", "unverified")
+CARRIED_ITEM_ACCOUNTING_FIELDS = frozenset({"item_id", "status", "evidence"})
+# One coordinator finding as the batch records it, append-only and hash-checked.
+CARRIED_ITEM_RECORD_FIELDS = CARRIED_ITEM_FIELDS | {
+    "attached_at",
+    "attached_by",
+    "record_sha256",
+}
+# One entry of a developer brief's commit plan; ``covers`` names definition-of-done items 1..n.
+COMMIT_PLAN_ENTRY_FIELDS = frozenset({"id", "summary", "expected_paths", "covers"})
+# The commit_map entry shapes. A developer-retry under an approved rebase target (issue #504) also
+# maps a rebased copy of a previous-candidate commit, which inherits that commit's plan entry, and
+# a previous-candidate commit the rebase dropped, with the reason.
+COMMIT_MAP_PLANNED_FIELDS = frozenset({"commit_sha", "plan_entry_id"})
+COMMIT_MAP_REBASED_FIELDS = frozenset({"commit_sha", "rebased_from"})
+COMMIT_MAP_DROPPED_FIELDS = frozenset({"rebased_from", "dropped"})
+# One record of a developer report's dod_coverage: the covering commits, or why the item is open.
+DOD_COVERED_FIELDS = frozenset({"dod_item", "commits"})
+DOD_NOT_COVERED_FIELDS = frozenset({"dod_item", "not_covered"})
+# One record of a developer-retry report's carried_item_closure (issue #503): the commits that
+# close a carried item of the brief, or why it is not closed.
+CARRIED_ITEM_CLOSED_FIELDS = frozenset({"item_id", "commits"})
+CARRIED_ITEM_NOT_CLOSED_FIELDS = frozenset({"item_id", "not_closed"})
 # The four fields of the transition-bound approval contract (issue #250) are all present or all absent.
 POLICY_BRIEF_FIELDS = frozenset(
     {"transition", "transition_digest", "retry_idempotency_key", "orchestration_policy"}
@@ -159,8 +287,47 @@ REPORT_OPTIONAL_FIELDS = {
     "review",
     "report_language",
     "commit_map",
+    "dod_coverage",
+    "divergence_justification",
     "lessons",
     "used_memory",
+    "tooling_blocker",
+    "resolver",
+    "incomplete_items",
+    "carried_item_closure",
+    "qa_stages",
+}
+# Per-stage evidence of a clean-room QA run (issue #618): the preparation commands, then the gate, in
+# one checkout. ``qa_stages`` is present only when the project declares ``qa_preparation``; a report
+# without it is a verification-only run and keeps its earlier shape.
+QA_STAGES_FIELDS = frozenset({"stages", "failed_stage", "code_checks_started"})
+QA_STAGES_OPTIONAL_FIELDS = frozenset({"diagnosis"})
+QA_STAGE_ENTRY_FIELDS = frozenset({"stage", "command", "result", "exit_code"})
+QA_STAGE_ENTRY_OPTIONAL_FIELDS = frozenset({"executed_command", "diagnostics"})
+# ``environment-probe`` and ``project-file-check`` stages exist only after a failed preparation stage:
+# they are the independent facts its diagnosis rests on.
+QA_PRIMARY_STAGE_NAMES = ("preparation", "gate")
+QA_STAGE_NAMES = ("preparation", "environment-probe", "project-file-check", "gate")
+# Whether any gate (code-check) command started: the runner states ``not_started`` only because the
+# gate stage was never reached; a reader that cannot confirm it must treat it as ``unknown``.
+QA_CODE_CHECKS_STARTED = ("started", "not_started", "unknown")
+QA_DIAGNOSIS_FIELDS = frozenset({"category", "signals", "basis"})
+QA_DIAGNOSIS_CATEGORIES = ("infrastructure", "project-defect", "unknown")
+# The result of a verification command the run never reached, so it is neither a pass nor a failure.
+QA_NOT_RUN_RESULT = "not-run"
+# One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
+# handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the
+# safety classifier, kept the role from it.
+INCOMPLETE_ITEM_FIELDS = frozenset({"brief_item", "reason", "target_role"})
+INCOMPLETE_ITEM_OPTIONAL_FIELDS = frozenset({"tooling_blocker"})
+# The roles an incomplete item of each read-only stage may target: the stage itself (a narrowed
+# retry) or a later pipeline role. Verification is a target of no other stage: it runs only on a
+# registered blocked developer candidate.
+INCOMPLETE_ITEM_TARGET_ROLES = {
+    "architect": ("architect", "developer", "code-review", "qa"),
+    "verification": ("verification", "code-review", "qa"),
+    "code-review": ("code-review", "qa"),
+    "qa": ("qa",),
 }
 RISK_ASSESSMENT_FIELDS = {
     "risk_assessment_id",
@@ -230,7 +397,13 @@ CHECKPOINT_FIELDS = CHECKPOINT_INPUT_FIELDS | {
 # Fixed runtime-adapter termination vocabulary, not a project policy value -- a rate-limit signal
 # always authorizes a continuation automatically, whatever project a batch belongs to.
 RATE_LIMIT_TERMINATION_REASONS = {"rate_limit", "rate-limit", "429"}
-PLANNED_TRIGGER_KINDS = {"context-limit", "tdd-cycles", "failure-log", "vertical-slice"}
+PLANNED_TRIGGER_KINDS = {
+    "context-limit",
+    "tdd-cycles",
+    "failure-log",
+    "vertical-slice",
+    "human-decision",
+}
 PLANNED_TRIGGER_THRESHOLD_KEY = {
     "context-limit": "context_limit",
     "tdd-cycles": "tdd_cycle_count",
@@ -283,6 +456,104 @@ ZERO_ALLOWED_POLICY_FIELDS = {
     ("attention_policy", "max_infrastructure_retries"),
 }
 APPROVAL_CLOCK_SKEW_SECONDS = 300
+# `approval_policy: auto` (issue #643): every approval the policy gives is one hashed, append-only
+# record in `batch.auto_decisions`, with evidence fields fixed per kind.
+AUTO_DECISION_KINDS = (
+    "batch-approve",
+    "dispatch",
+    "continuation",
+    "decision",
+    "carry-over",
+)
+AUTO_DECISION_FIELDS = frozenset(
+    {
+        "sequence",
+        "kind",
+        "dispatch_id",
+        "approved_by",
+        "approved_at",
+        "rationale",
+        "evidence",
+        "record_sha256",
+    }
+)
+AUTO_EVIDENCE_FIELDS = {
+    "batch-approve": frozenset(
+        {"plan_sha256", "scope_preflight_status", "definition_of_done_items"}
+    ),
+    "dispatch": frozenset(
+        {
+            "transition_digest",
+            "brief_sha256",
+            "lifted_milestones",
+            "route_preview",
+            "reason_category",
+            "report_sha256",
+        }
+    ),
+    "continuation": frozenset(
+        {"trigger", "checkpoint_id", "continuations_spent", "max_continuations"}
+    ),
+    "decision": frozenset(
+        {
+            "decision",
+            "report_sha256",
+            "route_preview",
+            "reason_category",
+            "basis",
+            "accepted_risks",
+            "commit_plan_sha256",
+            "bug_ticket",
+            "carried_item_ids",
+        }
+    ),
+    "carry-over": frozenset({"report_sha256", "carried_item_ids"}),
+}
+# The closed list of conditions that halt the automatic path; nothing else stops it.
+AUTO_STOP_REASONS = {
+    "budget-exhausted": (
+        "retry_policy.max_developer_retries",
+        "continuation_policy.max_continuations",
+        "continuation_policy.max_rate_limit_resumes",
+        "attention_policy.max_infrastructure_retries",
+        "tooling-retry-repeated",
+    ),
+    "integrity-failure": (
+        "stale",
+        "model-mismatch",
+        "worktree-mismatch",
+        "harness-snapshot-changed",
+        "deterministic-gate-failed",
+        "ledger-validation-failed",
+    ),
+    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+}
+AUTO_STOP_FIELDS = frozenset(
+    {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}
+)
+AUTO_REPORT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "batch_id",
+        "ticket",
+        "branch",
+        "outcome",
+        "stop",
+        "candidate_commit",
+        "decisions",
+        "accepted_risks",
+        "findings",
+        "retries",
+        "budget",
+        "commit_plan",
+        "dod_coverage",
+        "review",
+        "qa",
+        "next_human_action",
+        "recorded_at",
+        "record_sha256",
+    }
+)
 # Only a value the provider or runtime observed is context telemetry; a model's own claim never is.
 CONTEXT_TELEMETRY_SOURCES = ("probe", "provider-usage", "runtime-adapter")
 CONTEXT_PRESSURE_FIELDS = {
@@ -305,6 +576,18 @@ ATTENTION_STATE_FIELDS = (
     "last_safe_action",
     "recommended_human_action",
 )
+# Integration accounting (issue #532): the routes whose evidence may be linked to an integration
+# record, the results a registered check may carry, and the shape of the ids and SHAs involved.
+INTEGRATION_EVIDENCE_KINDS = ("ci", "local-qa", "resolver")
+LOCAL_QA_CI_CONDITIONS = ("absent", "unavailable", "unusable")
+INTEGRATION_EVIDENCE_RESULTS = ("passed", "failed")
+INTEGRATION_RECORD_ID_PATTERN = re.compile(r"integration-[0-9a-f]{32}")
+INTEGRATION_SHA_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+INTEGRATION_REFERENCE_MAX_CHARS = 2_048
+# Issue #535: the ``verification`` marks only 'integration collect-ci' writes; a CI check linked by
+# hand stays 'unverified' and never satisfies verification.
+INTEGRATION_CI_COLLECTED = "collector-accepted"
+INTEGRATION_CI_COLLECTED_FAILURE = "collector-failed"
 MAX_CHECK_EVIDENCE_CHARS = 1_600
 CONTINUATION_FACTS_FIELDS = {
     "dispatch_id",
@@ -331,5 +614,7 @@ TELEMETRY_FIELDS = {
 SANDBOXES_REL = Path(".harness") / ".sandboxes"
 SCRATCH_REL = SANDBOXES_REL / "scratch"
 AGENT_INBOX_REL = SCRATCH_REL / "inbox"
+# Coordinator state and tool sandboxes are runtime files: they never make a worktree dirty.
+RUNTIME_PATH_PREFIXES = (f"{STATE_REL.as_posix()}/", f"{SANDBOXES_REL.as_posix()}/")
 # Cyrillic in a brief means the coordinator leaked its own report language into an agent handoff.
 NON_ENGLISH_BRIEF_PATTERN = re.compile(r"[\u0400-\u04FF\u0500-\u052F]")

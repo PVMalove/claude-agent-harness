@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
+
+import pytest
 
 from harness.errors import HarnessError
 from harness.orchestration import dispatch_preflight
@@ -41,7 +44,7 @@ class PreflightErrorInvariantTests(unittest.TestCase):
             and isinstance(node.exc.func, ast.Name)
             and node.exc.func.id == "PreflightError"
         ]
-        self.assertEqual(len(sites), 11)
+        self.assertEqual(len(sites), 14)
         for site in sites:
             assert isinstance(site.exc, ast.Call)
             remedies = [
@@ -52,7 +55,7 @@ class PreflightErrorInvariantTests(unittest.TestCase):
             self.assertEqual(len(remedies), 1, f"line {site.lineno} has no remedy")
 
 
-class PrepareTests(unittest.TestCase):
+class _PreflightFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -99,6 +102,8 @@ class PrepareTests(unittest.TestCase):
         self.assertIn(remedy_part, ctx.exception.remedy)
         return ctx.exception
 
+
+class PrepareTests(_PreflightFixture):
     def test_prepares_a_dispatch_from_valid_state(self) -> None:
         prepared = self._prepare()
         self.assertEqual(
@@ -120,7 +125,7 @@ class PrepareTests(unittest.TestCase):
         )
         self.assertEqual(
             prepared.decision_packet["options"],
-            ["accept", "retry", "block", "full review", "delta-review"],
+            ["accept", "retry", "block"],
         )
 
     def test_to_dict_round_trips_every_field(self) -> None:
@@ -249,6 +254,355 @@ class PrepareTests(unittest.TestCase):
             )
         )
         self.assertIn("git rev-parse", ctx.exception.remedy)
+
+
+class RetryStartTests(_PreflightFixture):
+    """Issue #524: a developer retry starts from a compact handoff inside the smart zone."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.worktree / "big.py").write_text("x" * 8000, encoding="utf-8")
+        for name in ("changed.py", "named.py", "d.py", "guide.md"):
+            (self.worktree / name).write_text("y", encoding="utf-8")
+        section: JsonObject = {
+            "heading": "A",
+            "level": 2,
+            "start_line": 1,
+            "end_line": 9,
+        }
+        self.package: JsonObject = {
+            "context_package_id": "pkg-1",
+            "estimated_tokens": 5000,
+            "starting_files": [
+                {"path": "big.py", "reason": "seed", "sections": []},
+                {"path": "changed.py", "reason": "seed", "sections": []},
+                {"path": "named.py", "reason": "seed", "sections": []},
+                {"path": "d.py", "reason": "seed", "sections": []},
+                {"path": "guide.md", "reason": "index", "sections": [section]},
+            ],
+        }
+        self.handoff: JsonObject = {
+            "context_package_id": "pkg-1",
+            "commit_plan": [
+                {
+                    "id": "c1",
+                    "summary": "s",
+                    "expected_paths": ["changed.py"],
+                    "covers": [1],
+                }
+            ],
+            "developer_report": {
+                "dispatch_id": "d-1",
+                "outcome": "completed",
+                "commit_sha": "abc",
+                "changed_files": ["changed.py"],
+                "commit_map": [{"commit_sha": "abc", "plan_entry_id": "c1"}],
+                "output": "o" * 4000,
+            },
+            "retry_decision": {
+                "dispatch_id": "d-2",
+                "role": "code-review",
+                "route": "developer-retry",
+                "reason_category": "code",
+                "rationale": "r" * 400,
+                "findings": [
+                    {
+                        "axis": "spec",
+                        "severity": "warning",
+                        "summary": "named.py misses a case",
+                        "evidence": "quoted log " * 200,
+                    }
+                ],
+            },
+        }
+
+    def _retry(self, limit: int) -> JsonObject:
+        return self._prepared_retry(limit).retry_start or {}
+
+    def _prepared_retry(self, limit: int) -> dispatch_preflight.PreparedDispatch:
+        config: JsonObject = {
+            "assignment_plans": {"developer": {"runtimes": {"claude": {}}}},
+            "adaptive_continuation_policy": {
+                "context_limit": limit,
+                "context_warn_ratio": 0.5,
+            },
+        }
+        return self._prepare(
+            config=config, retry_handoff=self.handoff, retry_package=self.package
+        )
+
+    def test_no_retry_start_without_a_developer_retry_handoff(self) -> None:
+        self.assertIsNone(self._prepare().retry_start)
+        config: JsonObject = {"assignment_plans": {"qa": {"runtimes": {"claude": {}}}}}
+        qa = self._prepare("qa", config=config, retry_handoff=self.handoff)
+        self.assertIsNone(qa.retry_start)
+
+    def test_below_the_threshold_the_handoff_and_starting_files_pass_unchanged(
+        self,
+    ) -> None:
+        start = self._retry(200000)
+        estimate = cast(JsonObject, start["context_estimate"])
+        self.assertEqual(estimate["threshold"], 100000)
+        self.assertFalse(estimate["compacted"])
+        self.assertEqual(estimate["before"], estimate["after"])
+        self.assertEqual(start["handoff"], self.handoff)
+        self.assertEqual(start["starting_files"], self.package["starting_files"])
+        self.assertIsNone(start["warning"])
+
+    def test_above_the_threshold_the_compact_reduces_the_start_into_the_smart_zone(
+        self,
+    ) -> None:
+        start = self._retry(10000)
+        estimate = cast(dict[str, int], start["context_estimate"])
+        self.assertTrue(estimate["compacted"])
+        self.assertGreater(estimate["before"], estimate["threshold"])
+        self.assertLessEqual(estimate["after"], estimate["threshold"])
+        self.assertIsNone(start["warning"])
+        self.assertEqual(
+            [item["path"] for item in cast(list[JsonObject], start["starting_files"])],
+            ["changed.py", "named.py", "guide.md"],
+        )
+        handoff = cast(JsonObject, start["handoff"])
+        self.assertEqual(handoff["context_package_id"], "pkg-1")
+        self.assertEqual(handoff["commit_plan"], self.handoff["commit_plan"])
+        self.assertNotIn("output", cast(JsonObject, handoff["developer_report"]))
+        decision = cast(JsonObject, handoff["retry_decision"])
+        self.assertNotIn("rationale", decision)
+        self.assertEqual(
+            decision["findings"],
+            [
+                {
+                    "axis": "spec",
+                    "severity": "warning",
+                    "summary": "named.py misses a case",
+                }
+            ],
+        )
+
+    def test_a_compact_short_of_the_threshold_warns_without_blocking(self) -> None:
+        prepared = self._prepared_retry(1000)
+        start = prepared.retry_start or {}
+        estimate = cast(dict[str, int], start["context_estimate"])
+        self.assertTrue(estimate["compacted"])
+        self.assertLess(estimate["after"], estimate["before"])
+        self.assertGreater(estimate["after"], estimate["threshold"])
+        self.assertIn("above the smart-zone threshold", cast(str, start["warning"]))
+        self.assertEqual(
+            (
+                prepared.decision_packet["retry_context_estimate"],
+                prepared.decision_packet["retry_context_warning"],
+            ),
+            (estimate, start["warning"]),
+        )
+
+
+class ToolingRestartWorktreeTests(_PreflightFixture):
+    """Issue #502: a tooling restart inherits exactly the changes a blocked commit left behind."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.uncommitted = ["src/a.py"]
+        self.config: JsonObject = {
+            "assignment_plans": {"developer": {"runtimes": {"claude": {}}}},
+            "backend_zones": {"core": {"paths": ["src/*"]}},
+        }
+
+    def _handoff(self, route: str = "tooling-retry") -> JsonObject:
+        blocker: JsonObject = {
+            "tool": "PreToolUse:Bash hook",
+            "command": "git commit -m 'feat: a'",
+            "message": "Blocked",
+        }
+        if self.uncommitted:
+            blocker["uncommitted_files"] = list(self.uncommitted)
+        return {
+            "context_package_id": "pkg-1",
+            "commit_plan": None,
+            "developer_report": {
+                "dispatch_id": "d-1",
+                "outcome": "blocked",
+                "commit_sha": self.sha,
+                "changed_files": ["src/done.py"],
+                "commit_map": [],
+                "tooling_blocker": blocker,
+            },
+            "retry_decision": {
+                "dispatch_id": "d-1",
+                "role": "developer",
+                "route": route,
+                "reason_category": "tooling" if route == "tooling-retry" else "code",
+                "findings": [],
+            },
+        }
+
+    def _write(self, *paths: str) -> None:
+        for path in paths:
+            target = self.worktree / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("wip", encoding="utf-8")
+
+    def _restart(
+        self, route: str = "tooling-retry"
+    ) -> dispatch_preflight.PreparedDispatch:
+        return self._prepare(config=self.config, retry_handoff=self._handoff(route))
+
+    def _rejected(self) -> PreflightError:
+        with self.assertRaises(PreflightError) as ctx:
+            self._restart()
+        return ctx.exception
+
+    def test_the_listed_uncommitted_changes_inside_the_zone_pass(self) -> None:
+        self._write("src/a.py")
+        start = self._restart().retry_start or {}
+        handoff = cast(JsonObject, start["handoff"])
+        report = cast(JsonObject, handoff["developer_report"])
+        blocker = cast(JsonObject, report["tooling_blocker"])
+        self.assertEqual(blocker["uncommitted_files"], ["src/a.py"])
+
+    def test_a_modified_tracked_file_counts_as_an_uncommitted_change(self) -> None:
+        (self.worktree / "a.txt").write_text("changed", encoding="utf-8")
+        self.uncommitted = ["a.txt"]
+        error = self._rejected()
+        self.assertIn("outside the batch zone 'core': a.txt", error.message)
+        self.assertIn("a.txt", error.remedy)
+
+    def test_a_clean_worktree_without_listed_changes_passes_as_before(self) -> None:
+        self.uncommitted = []
+        self.assertIsNotNone(self._restart().retry_start)
+
+    def test_an_extra_file_is_rejected_by_name(self) -> None:
+        self._write("src/a.py", "src/b.py")
+        error = self._rejected()
+        self.assertIn("not listed in the blocked report: src/b.py", error.message)
+        self.assertIn("src/b.py", error.remedy)
+        self.assertNotIn("src/a.py", error.message)
+
+    def test_a_missing_file_is_rejected_by_name(self) -> None:
+        self.uncommitted = ["src/a.py", "src/c.py"]
+        self._write("src/a.py")
+        error = self._rejected()
+        self.assertIn("missing from the worktree: src/c.py", error.message)
+        self.assertIn("src/c.py", error.remedy)
+
+    def test_a_clean_worktree_misses_every_listed_file(self) -> None:
+        error = self._rejected()
+        self.assertIn("missing from the worktree: src/a.py", error.message)
+
+    def test_a_file_outside_the_zone_is_rejected_by_name(self) -> None:
+        self._write("src/a.py", "docs/x.md")
+        error = self._rejected()
+        self.assertIn("outside the batch zone 'core': docs/x.md", error.message)
+        self.assertIn("docs/x.md", error.remedy)
+
+    def test_a_restart_without_zone_paths_is_rejected(self) -> None:
+        self._write("src/a.py")
+        self.config = {"assignment_plans": self.config["assignment_plans"]}
+        error = self._rejected()
+        self.assertIn("backend_zones", error.remedy)
+
+    def test_a_dirty_worktree_of_another_developer_retry_is_not_checked(self) -> None:
+        self._write("src/a.py", "docs/x.md")
+        self.assertIsNotNone(self._restart("developer-retry").retry_start)
+
+    def test_the_compacted_handoff_keeps_only_the_uncommitted_files(self) -> None:
+        self._write("src/a.py")
+        self.config["adaptive_continuation_policy"] = {
+            "context_limit": 10,
+            "context_warn_ratio": 0.5,
+        }
+        package: JsonObject = {
+            "context_package_id": "pkg-1",
+            "estimated_tokens": 50,
+            "starting_files": [
+                {"path": "src/a.py", "reason": "seed", "sections": []},
+                {"path": "src/other.py", "reason": "seed", "sections": []},
+            ],
+        }
+        prepared = self._prepare(
+            config=self.config, retry_handoff=self._handoff(), retry_package=package
+        )
+        start = prepared.retry_start or {}
+        self.assertTrue(cast(JsonObject, start["context_estimate"])["compacted"])
+        report = cast(
+            JsonObject, cast(JsonObject, start["handoff"])["developer_report"]
+        )
+        self.assertEqual(report["tooling_blocker"], {"uncommitted_files": ["src/a.py"]})
+        self.assertEqual(
+            [item["path"] for item in cast(list[JsonObject], start["starting_files"])],
+            ["src/a.py"],
+        )
+
+
+class RuntimeAccessPreflightTests(_PreflightFixture):
+    def test_authored_access_is_visible_and_unverified_without_worker_proof(
+        self,
+    ) -> None:
+        config = self.state["config"]
+        assert isinstance(config, dict)
+        config["access_policy"] = {
+            "defaults": {"mode": "sandbox", "network": {"hosts": ["github.com"]}}
+        }
+        result = self._prepare()
+        access = cast(JsonObject, result.decision_packet["runtime_access"])
+        plan = cast(JsonObject, access["plan"])
+        verification = cast(JsonObject, access["verification"])
+        self.assertEqual(plan["mode"], "sandbox")
+        self.assertEqual(verification["status"], "unverified")
+        self.assertIn("new runtime session", str(verification["remedy"]))
+
+    def test_publish_preview_resolves_the_publish_operation_like_the_brief(
+        self,
+    ) -> None:
+        config = self.state["config"]
+        assert isinstance(config, dict)
+        config["access_policy"] = {
+            "defaults": {"mode": "sandbox", "network": {"hosts": ["github.com"]}},
+            "operations": {"publish": {"network": {"hosts": ["pypi.org"]}}},
+        }
+
+        def plan(purpose: str) -> JsonObject:
+            access = self._prepare(purpose=purpose).decision_packet["runtime_access"]
+            return cast(JsonObject, cast(JsonObject, access)["plan"])
+
+        work = plan("work")
+        publish = plan("publish")
+
+        self.assertEqual(cast(JsonObject, work["network"])["hosts"], ["github.com"])
+        self.assertEqual(cast(JsonObject, publish["network"])["hosts"], ["pypi.org"])
+        self.assertEqual(
+            cast(JsonObject, publish["sources"])["network"], "operations.publish"
+        )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.TimeoutExpired(["git"], 60),
+        FileNotFoundError(2, "No such file or directory", "git"),
+    ],
+)
+def test_a_git_command_that_hangs_or_cannot_start_is_a_preflight_error(
+    tmp_path: Path, failure: Exception
+) -> None:
+    timeouts: list[object] = []
+
+    def stalled(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        timeouts.append(kwargs.get("timeout"))
+        raise failure
+
+    with (
+        patch.object(subprocess, "run", side_effect=stalled),
+        pytest.raises(PreflightError) as caught,
+    ):
+        dispatch_preflight._git(tmp_path, "worktree", "list", "--porcelain")
+
+    assert caught.value.__cause__ is failure
+    assert caught.value.message.startswith("git worktree list --porcelain ")
+    assert "git worktree list --porcelain" in caught.value.remedy
+    assert len(timeouts) == 1
+    assert isinstance(timeouts[0], int) and timeouts[0] > 0
 
 
 if __name__ == "__main__":

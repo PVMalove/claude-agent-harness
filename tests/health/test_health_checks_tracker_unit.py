@@ -14,6 +14,9 @@ import pytest
 
 from harness.health.checks import tracker
 from harness.health.context import HealthContext
+from harness.health.project_tracker import ProjectTracker
+
+_GITHUB = ProjectTracker("github", "github.com", "acme/widgets", "origin")
 
 
 def _online_context(tmp_path: Path) -> HealthContext:
@@ -68,6 +71,7 @@ def test_run_passes_the_online_timeout_to_subprocess(
         (tracker.check_auth, "tracker.auth"),
         (tracker.check_permissions, "tracker.permissions"),
         (tracker.check_labels, "tracker.labels"),
+        (tracker.check_git_base, "tracker.git_base"),
     ],
 )
 def test_missing_tracker_tool_warns_instead_of_failing(
@@ -77,9 +81,7 @@ def test_missing_tracker_tool_warns_instead_of_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Проверить, что отсутствие утилиты трекера приводит к предупреждению вместо ошибки."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     context = _online_context(tmp_path)
 
@@ -93,9 +95,7 @@ def test_missing_git_warns_reachability_instead_of_failing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что отсутствие git приводит к предупреждению в проверке доступности."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     context = _online_context(tmp_path)
 
@@ -108,9 +108,7 @@ def test_a_stalled_git_call_fails_reachability(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Проверить, что зависший вызов git приводит к ошибке проверки доступности."""
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: ("github", "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
     monkeypatch.setattr(tracker, "_run", lambda *_args, **_kwargs: None)
     context = _online_context(tmp_path)
@@ -119,6 +117,167 @@ def test_a_stalled_git_call_fails_reachability(
 
     assert result.status == "fail"
     assert str(tracker._ONLINE_TIMEOUT_SECONDS) in result.message
+
+
+_ORIGIN_WITH_SECRET = (
+    "https://ci-user:fake-secret-0042@gitlab.example.test:4443/group/sub/project.git"
+)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "cause"),
+    [
+        (
+            "fatal: could not read Username for 'https://gitlab.example.test:4443': "
+            "terminal prompts disabled\n",
+            "credentials",
+        ),
+        (
+            "remote: HTTP Basic: Access denied\n"
+            f"fatal: Authentication failed for '{_ORIGIN_WITH_SECRET}/'\n",
+            "credentials",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "The requested URL returned error: 403\n",
+            "credentials",
+        ),
+        ("error: RPC failed; HTTP 401 curl 22 Unauthorized\n", "credentials"),
+        ("git@gitlab.example.test: Permission denied (publickey).\n", "credentials"),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': SSL certificate problem: "
+            "unable to get local issuer certificate\n",
+            "tls",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "server certificate verification failed. CAfile: none CRLfile: none\n",
+            "tls",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "CONNECT tunnel failed, response 403\n",
+            "network",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "Could not resolve host: gitlab.example.test\n",
+            "network",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': Failed to connect to "
+            "gitlab.example.test port 4443 after 0 ms: Connection refused\n",
+            "network",
+        ),
+        (f"fatal: repository '{_ORIGIN_WITH_SECRET}/' not found\n", None),
+        ("", None),
+    ],
+)
+def test_reachability_cause_classifies_git_ls_remote_stderr(
+    stderr: str, cause: str | None
+) -> None:
+    """Проверить, что stderr git ls-remote сводится к ключу причины, а не к своему тексту."""
+    assert tracker._reachability_cause(stderr) == cause
+
+
+def test_reachability_runs_git_in_the_c_locale_and_keeps_the_success_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверить, что git ls-remote запускается с LC_ALL=C, а успешный результат не изменился."""
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
+    seen: dict[str, object] = {}
+
+    def _fake_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        """Зафиксировать argv и окружение вызова git."""
+        seen["argv"] = argv
+        seen["env"] = kwargs.get("env")
+        return subprocess.CompletedProcess(argv, 0, "abc\tHEAD\n", "")
+
+    monkeypatch.setattr(tracker, "_run", _fake_run)
+
+    result = tracker.check_reachability(_online_context(tmp_path))
+
+    assert seen["argv"] == ["/usr/bin/git", "ls-remote", "origin"]
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert env["LC_ALL"] == "C"
+    assert result.status == "ok"
+    assert result.message == "origin достижим (git ls-remote)"
+    assert result.fix is None
+
+
+@pytest.mark.parametrize(
+    ("stderr", "cause_words"),
+    [
+        (
+            f"fatal: Authentication failed for '{_ORIGIN_WITH_SECRET}/'\n",
+            "учётных данных",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': SSL certificate problem: "
+            "self-signed certificate\n",
+            "TLS",
+        ),
+        (
+            f"fatal: unable to access '{_ORIGIN_WITH_SECRET}/': "
+            "Could not resolve host: gitlab.example.test\n",
+            "прокси или сети",
+        ),
+    ],
+)
+def test_a_classified_failure_names_its_cause_without_echoing_stderr(
+    stderr: str,
+    cause_words: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Проверить, что сбой с распознанной причиной называет её, даёт fix и не выводит stderr."""
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        tracker,
+        "_run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 128, "", stderr),
+    )
+
+    result = tracker.check_reachability(_online_context(tmp_path))
+
+    assert result.status == "fail"
+    assert cause_words in result.message
+    assert result.fix is not None
+    for leaked in ("ci-user", "fake-secret-0042", "group/sub/project"):
+        assert leaked not in result.message
+        assert leaked not in result.fix.text
+        assert leaked not in (result.fix.command or "")
+
+
+def test_an_unclassified_failure_keeps_the_generic_message_with_a_manual_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проверить, что сбой без распознанной причины сохраняет прежнее сообщение и советует
+    выполнить git ls-remote origin вручную."""
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: _GITHUB)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(
+        tracker,
+        "_run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 128, "", f"fatal: repository '{_ORIGIN_WITH_SECRET}/' not found\n"
+        ),
+    )
+
+    result = tracker.check_reachability(_online_context(tmp_path))
+
+    assert result.status == "fail"
+    assert (
+        result.message == "origin недостижим: git ls-remote origin завершился с ошибкой"
+    )
+    assert result.fix is not None
+    assert result.fix.command == "git ls-remote origin"
+    assert "fake-secret-0042" not in result.fix.text
 
 
 # --- tracker.labels: pagination beyond gh/glab's own default page size -------------------------
@@ -153,16 +312,30 @@ def _many_labels(count: int) -> list[dict[str, str]]:
 
 
 @pytest.mark.parametrize(
-    "tracker_name,tool,api_path",
+    "target,tool,api_args,api_host",
     [
-        ("github", "gh", "repos/acme/widgets/labels"),
-        ("gitlab", "glab", "projects/acme%2Fwidgets/labels"),
+        (
+            _GITHUB,
+            "gh",
+            ["--hostname", "github.com", "--paginate", "repos/acme/widgets/labels"],
+            None,
+        ),
+        (
+            ProjectTracker(
+                "gitlab", "gitlab.example.test:4443", "acme/widgets", "origin"
+            ),
+            "glab",
+            ["--paginate", "projects/acme%2Fwidgets/labels"],
+            # glab rejects a port in `api --hostname`; GITLAB_HOST carries it.
+            "gitlab.example.test:4443",
+        ),
     ],
 )
 def test_list_repo_labels_reads_every_page_past_the_default_cap(
-    tracker_name: tracker.Tracker,
+    target: ProjectTracker,
     tool: str,
-    api_path: str,
+    api_args: list[str],
+    api_host: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -176,13 +349,13 @@ def test_list_repo_labels_reads_every_page_past_the_default_cap(
     bin_dir.mkdir()
     calls_log = tmp_path / "calls.log"
     fake_script = f"""
-import json, sys
+import json, os, sys
 args = sys.argv[1:]
 with open({str(calls_log)!r}, "a", encoding="utf-8") as log:
     log.write(" ".join(args) + "\\n")
 if args[:1] == ["api"]:
-    if args[2:3] != [{api_path!r}]:
-        sys.stderr.write("unexpected api path: " + " ".join(args[2:3]) + "\\n")
+    if args[1:] != {api_args!r} or os.environ.get("GITLAB_HOST") != {api_host!r}:
+        sys.stderr.write("unexpected api arguments: " + " ".join(args[1:]) + "\\n")
         sys.exit(1)
     sys.stdout.write({json.dumps(all_labels)!r})
     sys.exit(0)
@@ -193,11 +366,14 @@ sys.exit(1)
 """
     _write_fake_tool(bin_dir, tool, fake_script)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.delenv("GITLAB_HOST", raising=False)
     executable = shutil.which(tool)
     assert executable is not None
 
+    online_target = tracker._hosted(target)
+    assert online_target is not None
     labels = tracker._list_repo_labels(
-        tracker_name, executable, "acme/widgets", tmp_path
+        online_target, executable, "acme/widgets", tmp_path
     )
 
     assert labels is not None
@@ -217,9 +393,7 @@ sys.exit(1)
         encoding="utf-8",
     )
     context = HealthContext(repo=tmp_path, lock=None, online=True)
-    monkeypatch.setattr(
-        tracker, "detect_tracker", lambda _context: (tracker_name, "acme/widgets")
-    )
+    monkeypatch.setattr(tracker, "detect_tracker", lambda _context: target)
 
     result = tracker.check_labels(context)
 
@@ -241,3 +415,9 @@ sys.exit(1)
     assert len(create_calls) == 1
     assert late_label["name"] not in create_calls[0]
     assert "brand-new" in create_calls[0]
+
+
+@pytest.mark.parametrize("host", ["github", "gitlab"])
+def test_the_issues_endpoint_has_no_ampersand(host: str) -> None:
+    """`&` splits a command in a Windows `.cmd` launcher, so the query must not carry it."""
+    assert "&" not in tracker._HOSTS[host].issues_endpoint("acme/widgets")

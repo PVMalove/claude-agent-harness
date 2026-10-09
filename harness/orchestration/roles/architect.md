@@ -25,6 +25,16 @@ repository and requirement evidence sufficient for the coordinator to make the d
 required only for a substantial irreversible trade-off. The completion report links to this brief and
 does not repeat its narrative.
 
+Propose the commit plan in `output` as ordered entries `{id, summary, expected_paths, covers}`, one
+entry per independently reviewable commit, where `covers` lists the Definition of Done item numbers
+(counted from one) the entry implements and every item is covered at least once. The coordinator's
+default plan is one entry per item. When the proposed plan differs from it, say so in `risks`: the
+report then waits for a manual accept, where the operator can pin the plan with
+`batch decide --decision accept --commit-plan-file`. Under `approval_policy: auto`, the policy
+pins the plan through `batch auto-decide --commit-plan-file` if every `expected_paths` entry lies
+inside the batch `allowed_paths` and the plan covers every Definition of Done item; otherwise the
+automatic path stops. Keep the plan as one exact JSON object so the coordinator can copy it.
+
 Escalate a blocker naming the missing ADR or precedent card when the Context Package lacks one the
 decision needs, rather than reading the repository at large to reconstruct it.
 
@@ -33,3 +43,8 @@ full verification suite merely to establish a baseline: the developer and indepe
 that evidence. Escalate if a broad baseline is the only way to establish a material premise.
 The architect brief therefore approves no verification commands: report `checks_run` as an empty
 list and name each decision-specific check with its result in `output`.
+
+When part of the brief stays undone, list each undone item in `incomplete_items` under the common
+contract. Its `target_role` is `architect` (a narrowed architect retry), `developer`, `code-review`
+or `qa`. A narrowed architect retry decides only the carried items; it repeats the commit plan only
+when an item changes that plan.

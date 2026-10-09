@@ -12,12 +12,11 @@ import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeGuard
+from typing import TypeGuard
 
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import concise_evidence, sanitise
-
-JsonObject = dict[str, Any]  # type: ignore[explicit-any]  # dynamic JSON boundary: ledger/config/report payloads are json.loads output validated at runtime by the *_FIELDS sets
+from harness.json_types import JsonObject as JsonObject
 
 
 class CoordinatorError(HarnessError):
@@ -35,7 +34,8 @@ def _non_empty(value: object) -> TypeGuard[str]:
 def _read_object(path: Path, label: str) -> JsonObject:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    # UnicodeDecodeError: a payload written in a legacy code page, never valid UTF-8 JSON.
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CoordinatorError(
             f"{label} is not valid JSON", remedy=f"fix the JSON syntax in {label}"
         ) from exc
@@ -83,13 +83,16 @@ def _repo(args: argparse.Namespace) -> Path:
 
 
 def _moment(value: object, label: str) -> datetime:
+    unreadable = CoordinatorError(
+        f"{label} is not a readable timestamp",
+        remedy=f"pass {label} as an ISO-8601 timestamp",
+    )
+    if not isinstance(value, str):
+        raise unreadable
     try:
-        parsed = datetime.fromisoformat(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as exc:
-        raise CoordinatorError(
-            f"{label} is not a readable timestamp",
-            remedy=f"pass {label} as an ISO-8601 timestamp",
-        ) from exc
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise unreadable from exc
     if parsed.tzinfo is None:
         raise CoordinatorError(
             f"{label} must include a timezone",
