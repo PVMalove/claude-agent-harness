@@ -124,7 +124,7 @@ def _repo_relative(path: str) -> str:
 
 
 def source_dirs(changed: Mapping[str, set[int]]) -> list[str]:
-    """Каталоги изменившихся файлов для передачи в coverage run --source."""
+    """Каталоги изменившихся файлов — источники покрытия (`--cov`) для pytest."""
     return sorted({str(ROOT / Path(rel_path).parent) for rel_path in changed})
 
 
@@ -197,15 +197,17 @@ def main() -> int:
     run = subprocess.run(
         [
             sys.executable,
-            "-m",
-            "coverage",
-            "run",
-            f"--source={','.join(source_dirs(changed))}",
             # pytest, not `unittest discover`: it also collects the function-style tests that
             # unittest silently skips, which left their code counted as uncovered.
             "-m",
             "pytest",
             "-q",
+            # xdist workers, as in scripts/verify.py: one process under coverage exceeds the CI
+            # job limit. pytest-cov combines the workers' data into COVERAGE_DATA_FILE.
+            "-n",
+            str(min(4, os.cpu_count() or 1)),
+            *(f"--cov={directory}" for directory in source_dirs(changed)),
+            "--cov-report=",
             str(ROOT / "tests"),
         ],
         cwd=ROOT,

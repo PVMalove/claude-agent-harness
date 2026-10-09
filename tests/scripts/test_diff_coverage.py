@@ -168,7 +168,7 @@ class RepoRelativeTests(unittest.TestCase):
 
 
 class MainCoverageRunTests(unittest.TestCase):
-    def test_coverage_run_is_given_the_changed_file_directories_as_sources(
+    def test_coverage_is_given_the_changed_file_directories_as_sources(
         self,
     ) -> None:
         changed = {"harness/a.py": {1}, "scripts/tool.py": {2}}
@@ -190,9 +190,8 @@ class MainCoverageRunTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 3)
         command = run.call_args.args[0]
-        self.assertIn(
-            f"--source={','.join(diff_coverage.source_dirs(changed))}", command
-        )
+        for directory in diff_coverage.source_dirs(changed):
+            self.assertIn(f"--cov={directory}", command)
 
     def test_coverage_run_uses_pytest_so_function_style_tests_are_measured(
         self,
@@ -215,9 +214,10 @@ class MainCoverageRunTests(unittest.TestCase):
             diff_coverage.main()
 
         command = run.call_args.args[0]
-        module_index = command.index("-m", command.index("run"))
-        self.assertEqual(command[module_index + 1], "pytest")
+        self.assertEqual(command[1:3], ["-m", "pytest"])
         self.assertEqual(command[-1], str(diff_coverage.ROOT / "tests"))
+        # The suite runs in xdist workers, as in scripts/verify.py: one process exceeds the CI job limit.
+        self.assertGreaterEqual(int(command[command.index("-n") + 1]), 1)
 
 
 class ChangedLinesTests(unittest.TestCase):
