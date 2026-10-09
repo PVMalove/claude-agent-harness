@@ -314,6 +314,8 @@ class InfrastructureRetryTests(preparation.PreparationFixture):
     def test_same_denied_qa_directory_does_not_cancel_or_retry(self) -> None:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root is not refused by filesystem mode bits")
+        if os.name == "nt":
+            self.skipTest("Windows does not deny writes by POSIX mode bits")
         from harness.storage import storage_path
 
         self.configure_policy()
@@ -352,6 +354,8 @@ class CoordinatorOperationRetryTests(unittest.TestCase):
     ) -> None:
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root is not refused by filesystem mode bits")
+        if os.name == "nt":
+            self.skipTest("Windows does not deny writes by POSIX mode bits")
         fx = self.fx
         batch = fx._create_batch()
         fx._accepted_architect(batch["batch_id"])

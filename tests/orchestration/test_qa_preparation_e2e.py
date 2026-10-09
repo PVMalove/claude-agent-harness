@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import textwrap
 import unittest
 from pathlib import Path
@@ -115,7 +114,8 @@ class PreparationFixture(unittest.TestCase):
     def _script(self, name: str, body: str) -> str:
         path = self.scripts / f"{name}.py"
         path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
-        return f'{Path(sys.executable).name} "{path}"'
+        # A bare `python` is always the launcher the gate runner pins; `python.exe` is not.
+        return f'python "{path}"'
 
     def configure(self, *, preparation: list[str] | None, facts: bool = True) -> None:
         config: JsonObject = {

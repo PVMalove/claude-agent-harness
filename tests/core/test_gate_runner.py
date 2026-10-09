@@ -400,6 +400,7 @@ def _committed_repo(root: Path) -> tuple[Path, str]:
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="a privileged process is not denied by file permissions",
 )
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not deny writes by POSIX mode bits")
 def test_an_unwritable_checkout_storage_is_a_gate_error_not_an_os_error(
     tmp_path: Path,
 ) -> None:
