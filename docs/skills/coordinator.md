@@ -72,7 +72,7 @@ Coordinator записывает ровно одно текущее состоя
   не считаются. Результат `collect-ci` несёт подсказку `next` (`wait` либо `local-qa`).
 
 Записи лежат в `reports/integration*` существующего каталога `reports`: схема ledger и
-`ledger migrate` не меняются. Подробности — `harness/docs/backend-orchestration.md`.
+`ledger migrate` не меняются. Подробности — `docs/backend-orchestration.md`.
 
 ## Память в Context Package
 
@@ -113,7 +113,7 @@ allowlist и eligibility проекции. Изменение, удаление,
 
 ## 5. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![Последовательность gated dispatch в /implement](../diagrams/previews/implement-dispatch.sequence.png)
 
 ## Источник
 

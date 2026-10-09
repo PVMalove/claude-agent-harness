@@ -70,7 +70,7 @@
       "cleanup.py",
       "storage.py",
       "repo_map",
-      "docs",
+      "docs/project-memory.md",
       "token_estimator.py",
       "errors.py",
       "json_types.py",

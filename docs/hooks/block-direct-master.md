@@ -30,9 +30,6 @@
 ## 3. Контракты
 - **Вход (Input/Brief):** JSON-объект вызова инструмента Bash, передаваемый через стандартный ввод (`stdin`). Используются поля `tool_input.command` и `cwd`. Переменная окружения `CLAUDE_PROJECT_DIR` (по умолчанию `.`) задает корень проекта: каталог запуска по умолчанию и место `.harness/project.json`.
 - **Выход (Output/Report):** Возвращает код выхода `0`, если нарушения не найдены (разрешает выполнение команды). При попытке коммита/пуша в защищенную ветку, неразобранной команде с commit/push или неопределенном checkout возвращает код выхода `2` и выводит причину в стандартный поток ошибок (`stderr`), прерывая выполнение инструмента.
-## 4. Архитектурная схема
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [block-direct-master.sh](../../harness/project/hooks/block-direct-master.sh), [direct_commits.py](../../harness/project/hooks/direct_commits.py), [pr_commands.py](../../harness/project/hooks/pr_commands.py)

@@ -19,8 +19,8 @@ worktrees (`worktrees/`). Execute hard cleanup with `--apply --confirm HARD`. Bo
 ledger-referenced worktrees, dirty trees, and branches with commits absent from `origin` are preserved.
 Remote branches are never deleted.
 
-System-wide architecture and the boundary between source documents and local evidence are described
-in [harness-guide.md](../../.harness/docs/harness-guide.md). This guide defines only task artifacts and scratchpads.
+This guide defines only task artifacts and scratchpads. Orchestration contracts are in
+`.harness/orchestration/playbook.md`; run `harness --help` for the CLI.
 
 * **Storage Location:** Save specifications, scratchpads, and intermediate files inside the project repository, not in system temporary directories (`AppData/Local/Temp`, `/tmp`): `block-scratch-outside-docs-tasks.sh` rejects writes there.
 * **Project Directory:** Save intermediate task documents in `docs/tasks/` (create it if it doesn't exist).

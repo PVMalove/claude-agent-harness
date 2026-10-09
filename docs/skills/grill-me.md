@@ -26,10 +26,6 @@ disable-model-invocation: true
 - **Вход (Input/Brief):** план, решение или дизайн, которые нужно проверить интервью.
 - **Выход (Output/Report):** уточнённые факты, открытые решения и следующий шаг.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/grill-me/SKILL.md)

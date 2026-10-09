@@ -12,17 +12,17 @@ Agent Harness — переносимый набор скиллов, правил
 > lifecycle coordinator, роли, clean-room QA и локальный state целиком описывает
 > [backend-orchestration.md](./backend-orchestration.md).
 
-![Навигация по Agent Harness: установка, работа, проверка](./diagrams/harness-guide-navigation.workflow.png)
+![Навигация по Agent Harness: установка, работа, проверка](./diagrams/previews/harness-guide-navigation.workflow.png)
 
 Редактируемая спецификация и интерактивная версия схемы:
 [Archify JSON](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.json)
 и [HTML](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.html).
 
 Любая стандартная установка ставит обязательный общий контракт
-[Technical English](./technical-english.md). Он описывает английскую координацию агентов и языковые
-исключения. Ещё он описывает проверку при review: сохранились ли условия и точные токены. Новые
-AGENTS.md и CLAUDE.md ведут к этому источнику. Установка не перезаписывает существующий AGENTS.md
-проекта: ссылку на контракт в него добавляют вручную.
+[Technical English](../harness/docs/technical-english.md). Он описывает английскую координацию агентов,
+языковые исключения и проверку при review: сохранились ли условия и точные токены. Новые AGENTS.md и
+CLAUDE.md ведут к этому источнику, а в существующий AGENTS.md проекта установка ссылку не добавляет,
+потому что не перезаписывает его, — её вносят вручную.
 
 ## Навигация по разделам
 
@@ -58,21 +58,21 @@ AGENTS.md и CLAUDE.md ведут к этому источнику. Устано
 
 ### Шаг 1 — клонирование харнесса
 
-Харнесс — не зависимость целевого проекта. Его CLI работает **над** целевым репозиторием по пути и
-копирует в него нужные файлы. Клонируйте инструмент в любой каталог:
+Харнесс не является зависимостью целевого проекта: его CLI работает **над** целевым репозиторием по
+пути и копирует в него нужные файлы. Клонируйте инструмент в любой каталог:
 
 ```bash
 git clone https://github.com/PVMalove/claude-agent-harness.git
 cd claude-agent-harness
 ```
 
-После установки клон можно удалить: в проекте остаётся независимый снимок `.harness/`. Харнесс не
-применяет обновления автоматически: их ставит отдельная команда `update`.
+После установки клон можно удалить, потому что в проекте остаётся независимый снимок `.harness/`.
+Обновления харнесс не применяет автоматически — их ставит отдельная команда `update`.
 
 ### Шаг 2 — команды CLI
 
-Все команды имеют вид `harness/bin/harness.py <command> <repo> [флаги]`. Здесь `<repo>` — путь к
-целевому проекту (не обязательно текущий каталог). CLI поддерживает такие подкоманды:
+Все команды имеют вид `harness/bin/harness.py <command> <repo> [флаги]`, где `<repo>` — путь к
+целевому проекту (необязательно текущий каталог). CLI поддерживает такие подкоманды:
 
 | Команда | Что делает | Пишет на диск |
 |---|---|---|
@@ -91,7 +91,7 @@ cd claude-agent-harness
 
 #### Какую команду выбрать
 
-[![Какую команду установки выбрать](./diagrams/harness-install-choice.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-install-choice.workflow.html)
+[![Какую команду установки выбрать](./diagrams/previews/harness-install-choice.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-install-choice.workflow.html)
 
 | | `init` | `adopt` |
 |---|---|---|
@@ -116,22 +116,22 @@ cd claude-agent-harness
 | Проектные файлы | Нет | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` | То же + `.harness/orchestration.json` |
 
 Без `--capability` CLI ставит `project-foundation`. `backend-orchestration` расширяет
-`pvmalove-suite`. Поэтому её выбирают одной capability: `--capability backend-orchestration`, а не
-вместе с `pvmalove-suite`. Она добавляет role manifests, `.harness/orchestration.json` и playbook.
-Без явно одобренного dispatch она не запускает воркеры. Полный порядок действий, пример конфигурации
-и immutable brief — в [отдельном руководстве](./backend-orchestration.md).
+`pvmalove-suite`, поэтому её выбирают одной capability (`--capability backend-orchestration`), а не
+вместе с `pvmalove-suite`. Она добавляет role manifests, `.harness/orchestration.json` и playbook,
+но без явно одобренного dispatch воркеры не запускает. Полный порядок действий, пример конфигурации
+и immutable brief описаны в [отдельном руководстве](./backend-orchestration.md).
 
-Это строго opt-in маршрут: он включается только при выбранной capability. Файл
+Это строго opt-in маршрут: он включается только при выбранной capability, а файл
 `.harness/orchestration.json` не обязателен. Без него потолок записи — весь репозиторий (границу
 задаёт `--allowed-path` batch), а роль берёт `model`/`effort` из вызывающей сессии. Без capability
 `/implement` отправляет на `/fast-implement`. Один batch хранит ticket, issue-ветку, worktree и
-history evidence. Каждый его dispatch имеет собственный immutable brief, terminal report и новое
-явное человеческое approval. Developer создаёт candidate commit. Coordinator детерминированно
-оценивает риск по DoD, diff и developer trigger. При необходимости он назначает независимые оси
-Standards и Spec. Затем он обязательно запускает полный clean-room QA для того же SHA. Report
-остаётся `reported` до решения человека. Только developer публикует принятый SHA. После этого
-`/to-pull-requests` вручную ведёт PR workflow. Adapter только транспортирует уже утверждённый
-dispatch. Он не принимает report, не запускает следующий шаг, не создаёт и не мержит PR.
+history evidence, а каждый его dispatch получает собственный immutable brief, terminal report и
+новое явное человеческое approval. Developer создаёт candidate commit; coordinator детерминированно
+оценивает риск по DoD, diff и developer trigger, при необходимости назначает независимые оси
+Standards и Spec и затем обязательно запускает полный clean-room QA для того же SHA. Report
+остаётся `reported` до решения человека, принятый SHA публикует только developer, после чего
+`/to-pull-requests` вручную ведёт PR workflow. Adapter лишь транспортирует уже утверждённый
+dispatch: он не принимает report, не запускает следующий шаг и не создаёт и не мержит PR.
 
 | | `mattpocock-suite` как есть | Своя capability по образцу `pvmalove-suite` |
 |---|---|---|
@@ -141,79 +141,86 @@ dispatch. Он не принимает report, не запускает след�
 
 #### Политика памяти проекта
 
-[project-memory.md](./project-memory.md) описывает интерактивных потребителей и трактовку
-указателей. Без внешнего CLI установленный проект запускает тот же поиск командой
+[project-memory.md](../harness/docs/project-memory.md) описывает интерактивных потребителей и
+трактовку указателей. Без внешнего CLI установленный проект запускает тот же поиск командой
 `python -B .harness/memory/search_cli.py . "<запрос>"`.
 
-Память включает только `memory: {"enabled": true}` в `.harness/project.json`.
-Отдельный `memory_policy` содержит все шесть полей: `source_types` (список `adr`/`glossary`/`task_archive`/`qa_finding`/`ledger`/`completion_report`),
-`allow_paths` (явные относительные POSIX glob-пути), `redact_rules` (regex),
-`min_similarity` (конечное число 0..1), `top_k` и `max_tokens` (целые >=1).
-Отсутствующая политика и пустой любой allowlist не разрешают ни одного источника. Старые конфиги
-без памяти остаются валидными. Шаблон выключает память и задаёт пустые списки. Харнесс отклоняет
-неизвестные поля, абсолютные/Windows-пути, `..`, неверные regex и bool вместо числа.
-Regex имеют длину 1..512 символов. Используйте простые шаблоны. Ограничение длины и размера
-источника снижает риск. Но оно не ограничивает время исполнения произвольного project-owned regex.
-Харнесс заменяет совпадения на `[REDACTED]` до сохранения заголовка, статуса и текста.
-`min_similarity` сохраняется, но пока не фильтрует FTS5: cosine-порог включит следующий
-векторный срез ADR 0010. `top_k` и `max_tokens` ограничивают окончательный список указателей.
-Харнесс оценивает токены консервативно по UTF-8, без привязки к tokenizer модели.
+Память включает только `memory: {"enabled": true}` в `.harness/project.json`. Отдельный
+`memory_policy` содержит все шесть полей: `source_types` (список из `adr`, `glossary`,
+`task_archive`, `qa_finding`, `ledger`, `completion_report`), `allow_paths` (явные относительные
+POSIX glob-пути), `redact_rules` (regex), `min_similarity` (конечное число 0..1), `top_k` и
+`max_tokens` (целые >=1). Если политики нет или любой allowlist пуст, ни один источник не
+разрешён; старые конфиги без памяти остаются валидными, а шаблон выключает память и задаёт пустые
+списки. Харнесс отклоняет неизвестные поля, абсолютные и Windows-пути, `..`, неверные regex и bool
+вместо числа.
 
-Источник — только UTF-8 файл до 1 MiB. Лимиты: максимум 1000 кандидатов и 10 000 посещённых
-entries. Обход пропускает symlink и dependency/cache/log пространства. ADR и glossary разрешают
-обычный Markdown. `task_archive` разрешает только `docs/tasks/issue-*/issue-*.md`,
-`tickets/*.md` и `artifacts/*.md` внутри этого каталога. Attachments/transcripts исключены.
-`qa_finding` читает только `reports/*.json` с `role=qa` выбранной generation ledger v3:
-короткие outcome/output/risks/blockers и result/evidence проверок. Индекс не включает commands,
-unknown keys, полные логи и абсолютные artifact paths. `ledger` читает только scalar
-ID/ticket/role/state и явные даты из `batches`, `dispatches`, `dispatch-status` той же generation.
-Память проверяет selector read-only. Она не мигрирует ledger и не требует backend-orchestration.
-`completion_report` разрешает только `lessons` из `reports/*.json` выбранной generation:
-список непустых строк, максимум первые 20 и до 2048 символов каждой, общий projection до 16 KiB.
-Статус указателя — «не подтверждено человеком», даже если отчёт объявляет `accepted`. Явно
+Regex имеют длину 1..512 символов, и лучше использовать простые шаблоны: ограничения длины regex и
+размера источника снижают риск, но не ограничивают время исполнения произвольного project-owned
+regex. Совпадения харнесс заменяет на `[REDACTED]` до сохранения заголовка, статуса и текста.
+`min_similarity` сохраняется, но пока не фильтрует FTS5 — cosine-порог появится в следующем
+векторном срезе ADR 0010. `top_k` и `max_tokens` ограничивают окончательный список указателей, а
+токены харнесс оценивает консервативно по UTF-8, без привязки к tokenizer модели.
+
+Источник — только UTF-8 файл до 1 MiB; обход ограничен 1000 кандидатов и 10 000 посещённых entries,
+пропускает symlink и dependency/cache/log пространства. ADR и glossary допускают обычный Markdown.
+`task_archive` разрешает только `docs/tasks/issue-*/issue-*.md`, `tickets/*.md` и `artifacts/*.md`
+внутри этого каталога, а attachments и transcripts исключает. `qa_finding` читает только
+`reports/*.json` с `role=qa` выбранной generation ledger v3: короткие outcome/output/risks/blockers и
+result/evidence проверок. В индекс не попадают commands, unknown keys, полные логи и абсолютные
+artifact paths. `ledger` читает только scalar ID/ticket/role/state и явные даты из `batches`,
+`dispatches`, `dispatch-status` той же generation. Selector память проверяет read-only: она не
+мигрирует ledger и не требует backend-orchestration.
+
+`completion_report` разрешает только `lessons` из `reports/*.json` выбранной generation: список
+непустых строк, не больше первых 20 и до 2048 символов каждая, общий projection до 16 KiB. Статус
+такого указателя — «не подтверждено человеком», даже если отчёт объявляет `accepted`; явно
 superseded отчёты в индекс не входят. Поиск использует обычный FTS ranking без повышенного веса.
-`used_memory` — опциональный список идентификаторов использованных хитов: только слабый сигнал,
-не гейт coordinator-а, не поисковый текст и не причина увеличивать вес хита.
-Старые отчёты без новых полей остаются валидными. Если разрешены оба источника, `qa_finding` и
-`completion_report`, QA evidence остаётся поисковым. Наличие lessons делает весь указатель
-непроверенной историей. Без `completion_report` существующий QA projection не меняется.
-Оба allowlist обязательны. QA/ledger проходят baseline secret sanitization и project regex. Все
-сохраняемые текстовые поля проходят project redaction до SQL. Если sanitization изменила relative
-path, refresh отказывает целиком и сохраняет предыдущий кэш.
+`used_memory` — опциональный список идентификаторов использованных хитов; это только слабый сигнал,
+а не гейт coordinator-а, не поисковый текст и не причина увеличивать вес хита. Старые отчёты без
+новых полей остаются валидными. Если разрешены оба источника, `qa_finding` и `completion_report`,
+QA evidence остаётся поисковым, но наличие lessons делает весь указатель непроверенной историей;
+без `completion_report` существующий QA projection не меняется.
 
-Заголовок Markdown — первый H1, без него `untitled`. Харнесс принимает явные `Status:`/`Статус:`,
-`Date:`/`Дата:`, `Superseded-by:`/`Заменён на:` как строковые поля (включая простой front
-matter). Ещё он принимает первую строку одноимённой H2-секции. Поле приоритетнее секции.
-Нет status/date — `unknown`, нет superseded_by — пустая строка. Для JSON харнесс берёт status из
-явного status, иначе из QA outcome или ledger state. Дату он берёт из date, иначе из created_at,
-иначе из updated_at. Дата QA без явного поля остаётся unknown: харнесс не использует mtime. Явные
+Оба allowlist обязательны. QA и ledger проходят baseline secret sanitization и project regex, а все
+сохраняемые текстовые поля — project redaction до SQL. Если sanitization изменила relative path,
+refresh отказывает целиком и сохраняет предыдущий кэш.
+
+Заголовок Markdown — первый H1, а без него `untitled`. Харнесс принимает явные `Status:`/`Статус:`,
+`Date:`/`Дата:` и `Superseded-by:`/`Заменён на:` как строковые поля (включая простой front matter)
+и первую строку одноимённой H2-секции; поле приоритетнее секции. Если status или date нет, значение
+`unknown`, если нет superseded_by — пустая строка. Для JSON харнесс берёт status из явного status,
+иначе из QA outcome или ledger state, а дату — из date, иначе из created_at, иначе из updated_at.
+Дата QA без явного поля остаётся unknown, потому что mtime харнесс не использует. Явные
 `superseded`, `superseded by ADR-NNNN`, `заменён`, `заменен` исключают источник до кэширования.
-Остальные pointers всегда имеют `history_to_verify: true`. Непустой superseded_by не подтверждает
-актуальность источника.
+Остальные pointers всегда имеют `history_to_verify: true`, а непустой superseded_by актуальность
+источника не подтверждает.
 
-Команды: `harness memory build <repo>`, `harness memory search <repo> "запрос"`,
-`harness memory rebuild <repo>` (через `python harness/bin/harness.py`). Общий кэш находится
-в `.harness/.sandboxes/cache/memory/index.sqlite3` главного checkout. **CLI search в main
-лениво обновляет производный кэш перед read-only query**: hash исходных bytes определяет
-изменения. Неизменённые источники повторно не проходят project/FTS-index, а удалённые/отозванные
-CLI удаляет. Смена policy пересанитизирует корпус. Смена schema вызывает verified atomic
-replacement. Raw API `harness.memory.search` и CLI/facade в linked worktree всегда read-only. Они
-используют конфиг/источники main и не создают missing index. `search_with_refresh` — отдельный
-facade. JSON `status`/`pointers` содержит только title/status/date/superseded_by/path/source_hash/
-history_to_verify, без body/snippet. BM25 ранжирование использует path для tie-break. Лимиты
-действуют на полные pointers. Query — литеральные Unicode-слова, без операторов FTS. Перед выдачей
-поиск перепроверяет allowlists/hash. Disabled/invalid/empty main search ничего не создаёт. Refresh
-failure даёт пустые pointers и явную диагностику и сохраняет прежний кэш. Corrupt cache харнесс
-автоматически не ремонтирует: нужен явный rebuild. Raw query не ремонтирует
-missing/incompatible/corrupt cache. SQLite должна поддерживать FTS5. SQLite writer-lock с
-таймаутом 2 секунды сериализует build/refresh/rebuild. После busy можно повторить команду.
-Публикация corpus/metadata/hash manifest атомарна, rollback journal без WAL. Rebuild проверяет
-соседнюю базу и атомарно заменяет индекс. Ошибка сохраняет прежний кэш.
+Команды: `harness memory build <repo>`, `harness memory search <repo> "запрос"` и
+`harness memory rebuild <repo>` (через `python harness/bin/harness.py`). Общий кэш лежит в
+`.harness/.sandboxes/cache/memory/index.sqlite3` главного checkout. **CLI search в main лениво
+обновляет производный кэш перед read-only query**: изменения определяет hash исходных bytes,
+неизменённые источники повторно не проходят project/FTS-index, а удалённые и отозванные CLI удаляет.
+Смена policy пересанитизирует корпус, смена schema вызывает verified atomic replacement.
+
+Raw API `harness.memory.search` и CLI/facade в linked worktree всегда read-only: они используют
+конфиг и источники main и не создают отсутствующий index. `search_with_refresh` — отдельный facade.
+JSON `status`/`pointers` содержит только title/status/date/superseded_by/path/source_hash/
+history_to_verify, без body и snippet. BM25 ранжирование использует path для tie-break, лимиты
+действуют на полные pointers, а query — это литеральные Unicode-слова без операторов FTS. Перед
+выдачей поиск перепроверяет allowlists и hash. Disabled, invalid или empty main search ничего не
+создаёт; при ошибке refresh поиск возвращает пустые pointers с явной диагностикой и сохраняет прежний
+кэш. Corrupt cache харнесс автоматически не ремонтирует, поэтому нужен явный rebuild, а raw query
+не ремонтирует missing, incompatible или corrupt cache.
+
+SQLite должна поддерживать FTS5. Writer-lock SQLite с таймаутом 2 секунды сериализует
+build/refresh/rebuild, и после busy команду можно повторить. Публикация corpus, metadata и hash
+manifest атомарна (rollback journal без WAL). Rebuild проверяет соседнюю базу и атомарно заменяет
+индекс; при ошибке прежний кэш сохраняется.
 
 #### `init` — первая установка
 
-Требует, чтобы `<repo>` уже был git-репозиторием. Если `.harness/harness.lock` уже есть, команда
-завершается ошибкой «already exists; use update».
+Команда требует, чтобы `<repo>` уже был git-репозиторием; если `.harness/harness.lock` существует,
+она завершается ошибкой «already exists; use update».
 
 ```bash
 python3 harness/bin/harness.py init /path/to/repository \
@@ -251,14 +258,14 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--qa-gate-command` | Команда полного гейта качества; повторяем, порядок сохраняется ([раздел 6](#qa-gate-skill-context-fork)) |
 | `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
 
-Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`. CLI пишет их в
-`.harness/project.json`. Их можно опустить — `init` спросит интерактивно.
+Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`, и CLI пишет их в
+`.harness/project.json`. Их можно опустить — тогда `init` спросит интерактивно.
 
 **Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
 ([ADR 0011](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0011-explicit-project-tracker.md)).
-Это объект из трёх ключей: `type` — `github`, `gitlab` (включая self-hosted) или `local`;
-`host` — веб-хост с необязательным портом, без схемы, пути и userinfo; `project` — полный путь
-проекта с подгруппами. Для `github` и `gitlab` обязательны `host` и `project`. Другие ключи внутри
+Это объект из трёх ключей: `type` — `github`, `gitlab` (включая self-hosted) или `local`; `host` —
+веб-хост с необязательным портом, без схемы, пути и userinfo; `project` — полный путь проекта с
+подгруппами. Для `github` и `gitlab` `host` и `project` обязательны, а другие ключи внутри
 `tracker` харнесс отклоняет:
 
 ```json
@@ -286,10 +293,10 @@ python harness\bin\harness.py init C:\path\to\repository `
 - `.harness/project.schema.json` в установленном проекте — тоже seed: после обновления харнесса
   старая копия схемы может не знать о поле `tracker`. Авторитетен валидатор `harness health`.
 
-**Поле `ci_required_checks`** (необязательное) — список уникальных непустых имён CI-проверок. Они
-должны пройти на комбинированном результате pull request. Тогда `integration collect-ci` принимает
-CI-доказательство вместо повторного полного локального QA. Пустой список или отсутствие поля
-означает «не настроено»: действует запасной путь с локальным QA.
+**Поле `ci_required_checks`** (необязательное) — список уникальных непустых имён CI-проверок,
+которые должны пройти на комбинированном результате pull request. В этом случае
+`integration collect-ci` принимает CI-доказательство вместо повторного полного локального QA.
+Пустой список или отсутствие поля означает «не настроено», и действует запасной путь с локальным QA.
 
 Команда `integration collect-ci --record <id> --pull-request <n>` (backend-оркестрация, ADR 0016)
 принимает CI только для трекера `github`. Кроме того, все проверки из `ci_required_checks` должны
@@ -299,14 +306,14 @@ CI-доказательство вместо повторного полного
 (`wait` для ещё идущей проверки, иначе `local-qa` с `ci_condition`). Read-only команда
 `integration next --ticket <T> --branch <B> [--pull-request <n>]` (ADR 0017) называет следующий шаг
 продолжения PR: refresh, resolver, маршрут провала проверки, подтверждение, проверку или handoff для
-ручного merge. Подробности — в `.harness/docs/backend-orchestration.md`.
+ручного merge. Подробности — в [руководстве по backend-оркестрации](./backend-orchestration.md).
 
 При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
 
-- Этот справочник, руководство по backend-оркестрации и контракт интерактивного поиска памяти —
-  **не** seed-файлы. Они входят в управляемый снимок `pvmalove-suite` как
-  `.harness/docs/{harness-guide,backend-orchestration,project-memory}.md`, и каждый `update`
-  их обновляет.
+- Этот справочник и руководство по backend-оркестрации — документация для разработчика: они лежат
+  в `docs/` исходного репозитория и в целевой проект **не** попадают. Контракт интерактивного поиска
+  памяти — агентский документ, а не seed-файл. Он входит в управляемый снимок `pvmalove-suite` как
+  `.harness/docs/project-memory.md`, и каждый `update` его обновляет.
 - Только `backend-orchestration` создаёт `.harness/orchestration/` и управляемый пример
   `.harness/orchestration.example.json` (входит в снимок, обновляется при каждом
   `init`/`adopt`/`update`). Ещё она один раз, если файла ещё нет, создаёт `.harness/orchestration.json`
@@ -340,14 +347,15 @@ python3 harness/bin/harness.py update /path/to/repository --force-managed-files 
 python3 harness/bin/harness.py update /path/to/repository --force-seed-files      # перезаписать seed-файлы
 ```
 
-- Без флага `update` отказывается перезаписывать локально изменённые managed files: показывает их
+- Без флага `update` отказывается перезаписывать локально изменённые managed files: он показывает их
   (как `diff`) и останавливается.
-- `--force-managed-files` перезаписывает только managed snapshot. Он также удаляет файлы, которых
+- `--force-managed-files` перезаписывает только managed snapshot и заодно удаляет файлы, которых
   больше нет в текущей версии capability.
-- Команда сохраняет seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.schema.json`,
-  `.harness/orchestration.json`). `--force-seed-files` разрешает их перезапись. `--force` объединяет
-  оба действия и может потерять project-owned настройки. Существующий `.harness/project.json`
-  сохраняется даже с force-флагами: новые поля в него добавляют вручную.
+- Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.schema.json`,
+  `.harness/orchestration.json`) команда сохраняет; `--force-seed-files` разрешает их перезапись, а
+  `--force` объединяет оба действия и может потерять project-owned настройки. Существующий
+  `.harness/project.json` сохраняется даже с force-флагами, поэтому новые поля в него добавляют
+  вручную.
 - `update` не проверяет и не трогает `.harness/overlays/project-local.lock` и
   `.harness/integrations.json` — это отдельная подсистема.
 
@@ -357,14 +365,12 @@ python3 harness/bin/harness.py update /path/to/repository --force-seed-files    
 
 `diff` и `update` показывают предложения для `AGENTS.md`, `CLAUDE.md` и уже установленных
 agent seeds из `.claude/agents/`: короткий обязательный абзац с относительной ссылкой на контракт.
-Предложение — отдельный unified diff. CLI сохраняет содержимое этих файлов. `diff --json`
-возвращает предложения в `seed_link_proposals` с полями `path`, `reason`, `diff`. Состояние и код
-выхода managed diff от этих предложений не зависят.
-Уже подключённые прямые ссылки и переходы между известными входами, например `@AGENTS.md`,
-не требуют второй ссылки. Если существующая ссылка не содержит распознанного обязательства,
-вывод объясняет: нужно согласовать обязательный абзац без дублирования ссылки.
-CLI распознаёт только явные локальные ссылки и инструкцию `must read` до English handoff.
-Нестандартную формулировку проверьте при просмотре предложения.
+Предложение оформлено отдельным unified diff, содержимое самих файлов CLI не меняет. `diff --json`
+возвращает предложения в `seed_link_proposals` с полями `path`, `reason`, `diff`; состояние и код
+выхода managed diff от них не зависят. Уже подключённые прямые ссылки и переходы между известными
+входами, например `@AGENTS.md`, второй ссылки не требуют. Если существующая ссылка не содержит
+распознанного обязательства, вывод объясняет, что нужно согласовать обязательный абзац без
+дублирования ссылки.
 
 Просмотрите diff и явно согласуйте нужные добавления. Затем человек или уполномоченный агент
 применяет только согласованные добавления обычным редактированием или patch. Полная замена seed
@@ -375,7 +381,7 @@ completion reports и правила полномочий проекта ост�
 
 #### Обновление существующего проекта и включение памяти
 
-Сначала обновите checkout исходного харнесса до нужного релиза. Запускайте следующие команды из
+Сначала обновите checkout исходного харнесса до нужного релиза и запускайте следующие команды из
 него. `/path/to/repository` — основной checkout целевого проекта, а не linked worktree:
 
 ```bash
@@ -385,10 +391,11 @@ python3 harness/bin/harness.py update /path/to/repository
 ```
 
 `diff` показывает локальный дрейф установленного snapshot относительно его lock, а не список
-изменений нового релиза. При дрейфе сначала сохраните и перенесите локальные изменения. Только
-после этого используйте `--force-managed-files`. Обычный `update` обновляет managed skills,
-memory payload и `.harness/docs/`. Но он не переносит новые поля в существующий `project.json` и
-не заменяет существующую seed-схему. Не используйте `--force-seed-files` ради одного поля памяти.
+изменений нового релиза. При дрейфе сначала сохраните и перенесите локальные изменения и только
+после этого используйте `--force-managed-files`. Обычный `update` обновляет managed skills, memory
+payload и агентские контракты в `.harness/docs/`, но не переносит новые поля в существующий
+`project.json` и не заменяет существующую seed-схему. Поэтому `--force-seed-files` не стоит
+использовать ради одного поля памяти.
 
 Сравните `.harness/project.schema.json` целевого проекта с `harness/project/project.schema.json`
 исходного харнесса. Перенесите новые свойства `memory` и `memory_policy` и сохраните локальные
@@ -410,11 +417,11 @@ QA-команды и остальные настройки сохраните:
 }
 ```
 
-Это фрагмент для объединения, не замена всего конфига. Укажите только существующие и разрешённые
-пути своего проекта. Для первого запуска достаточно локальных ADR и глоссария. Tracker snapshot
-и lessons требуют отдельных grants: их описывает [project-memory.md](./project-memory.md).
-Пустой allowlist не разрешает источники. В FTS5 `min_similarity` не отсекает слабые совпадения.
-Векторный слой в поставку не входит.
+Это фрагмент для объединения, а не замена всего конфига: укажите только существующие и разрешённые
+пути своего проекта. Для первого запуска достаточно локальных ADR и глоссария, а tracker snapshot и
+lessons требуют отдельных grants, которые описывает
+[project-memory.md](../harness/docs/project-memory.md). Пустой allowlist не разрешает источники, в
+FTS5 `min_similarity` слабые совпадения не отсекает, а векторный слой в поставку не входит.
 
 ```bash
 python3 harness/bin/harness.py health /path/to/repository
@@ -424,10 +431,10 @@ python3 harness/bin/harness.py memory search /path/to/repository "решение
 
 После правок схема и `health` должны принимать конфиг. Проверьте статус и пути поиска на своих
 источниках. Без packager CLI поиск доступен из целевого проекта через
-`python -B .harness/memory/search_cli.py . "решение архитектуры"`. В основном checkout он
-лениво обновляет локальный кэш. В worktree он читает общий индекс без записи. Tracker sync
-запускают только явно. Чтобы отключить память, установите `memory.enabled: false`. Источники
-остаются на месте.
+`python -B .harness/memory/search_cli.py . "решение архитектуры"`: в основном checkout он лениво
+обновляет локальный кэш, а в worktree читает общий индекс без записи. Tracker sync запускают только
+явно. Чтобы отключить память, установите `memory.enabled: false` — источники при этом остаются на
+месте.
 
 #### `registry` и `lock-project-skills` — скиллы проекта
 
@@ -436,17 +443,17 @@ python3 harness/bin/harness.py registry /path/to/repository
 python3 harness/bin/harness.py lock-project-skills /path/to/repository
 ```
 
-- `registry` перегенерирует `.harness/skills/REGISTRY.md` без полного `update`. `init`/`adopt`/
-  `update` пишут этот файл сами. Отдельная команда нужна, например, сразу после
-  `lock-project-skills`. Команда строит таблицу сканированием `.harness/skills/*/SKILL.md` с диска.
-  В таблицу попадают и capability-скиллы, и project-owned.
-- `lock-project-skills` обходит каталоги под `.harness/skills` вне выбранных capability. Для каждого
-  он пересчитывает sha256 всех git-видимых файлов (`git ls-files --cached --others
-  --exclude-standard` — gitignore'нутые артефакты вроде `node_modules` в лок не попадают). Затем он
-  переписывает `.harness/overlays/project-local.lock` целиком — полная регенерация, не merge. Заодно
-  команда обновляет `REGISTRY.md`.
+- `registry` перегенерирует `.harness/skills/REGISTRY.md` без полного `update`. `init`, `adopt` и
+  `update` пишут этот файл сами, поэтому отдельная команда нужна, например, сразу после
+  `lock-project-skills`. Таблицу команда строит сканированием `.harness/skills/*/SKILL.md` с
+  диска, так что в неё попадают и capability-скиллы, и project-owned.
+- `lock-project-skills` обходит каталоги под `.harness/skills` вне выбранных capability и для
+  каждого пересчитывает sha256 всех git-видимых файлов (`git ls-files --cached --others
+  --exclude-standard`, поэтому gitignore'нутые артефакты вроде `node_modules` в лок не попадают).
+  Затем он целиком переписывает `.harness/overlays/project-local.lock` — это полная регенерация, а
+  не merge — и заодно обновляет `REGISTRY.md`.
 - Если скилл под `.harness/skills` не подтверждён ни capability, ни этим локом, `harness health`
-  выдаёт ошибку с сообщением `project skills missing provenance lock`.
+  выдаёт ошибку `project skills missing provenance lock`.
 
 #### `health` — диагностика
 
@@ -474,12 +481,12 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
    git config --global user.email "you@example.com"
 ```
 
-Команда выполняет все проверки без раннего выхода: сломанная проверка не скрывает остальные. Код
-возврата `1`, только если хотя бы одна проверка `fail`. `warn` и `skipped` на код не влияют. Маркеры —
-`✅`/`⚠️`/`❌`. Если stdout не может закодировать эмодзи, действует ASCII-фолбэк
-`[OK]`/`[WARN]`/`[FAIL]`. У `skipped` маркер `-`. Health-отчёт печатает команды в строке
-`-> Как исправить` с абсолютными путями репозитория и интерпретатора. Их можно запускать из любого
-каталога.
+Команда выполняет все проверки без раннего выхода, так что сломанная проверка не скрывает остальные.
+Код возврата `1` означает, что хотя бы одна проверка имеет статус `fail`; `warn` и `skipped` на код
+не влияют. Маркеры — `✅`/`⚠️`/`❌`, а если stdout не может закодировать эмодзи, действует
+ASCII-фолбэк `[OK]`/`[WARN]`/`[FAIL]`; у `skipped` маркер `-`. Строка `-> Как исправить` в
+health-отчёте содержит команды с абсолютными путями репозитория и интерпретатора, которые можно
+запускать из любого каталога.
 
 | Группа | Что проверяет |
 |---|---|
@@ -535,7 +542,7 @@ network_access = true
 
 - Codex при `sandbox_mode = "workspace-write"`: каталог должен лежать в
   `[sandbox_workspace_write] writable_roots` или под одним из его путей. Другой `sandbox_mode`
-  не ограничивает запись этой проверкой.
+  запись этой проверкой не ограничивает.
 - Claude Code при `sandbox.enabled = true`: каталог должен лежать в `sandbox.filesystem.allowWrite`
   или под одним из его абсолютных путей. `sandbox.filesystem.disabled = true` или выключенная
   песочница ограничений записи не создают.
@@ -581,10 +588,10 @@ dry-run план очистки. Они не вызывают `ledger migrate`/`
 | `orchestration.disposable_data` | Информация: размер того, что удалил бы `harness cleanup --mode hard`; ошибка построения плана — `fail` |
 
 **`--fix`** чинит только локальные заготовки `.harness`: создаёт отсутствующие каталоги группы
-`directories` и пересобирает отсутствующий или устаревший `REGISTRY.md`. Затем он перепроверяет
-исправленное. Каждое действие попадает в `fixes_applied` (в тексте — блок `== Исправлено (--fix) ==`).
-`--fix` не трогает реестр Windows, Developer Mode, глобальный git config, права доступа и worktree.
-Для них отчёт даёт только команду.
+`directories`, пересобирает отсутствующий или устаревший `REGISTRY.md` и затем перепроверяет
+исправленное. Каждое действие попадает в `fixes_applied` (в тексте — блок
+`== Исправлено (--fix) ==`). Реестр Windows, Developer Mode, глобальный git config, права доступа и
+worktree `--fix` не трогает: для них отчёт даёт только команду.
 
 **`--online`** включает онлайн-проверки группы `tracker`. По умолчанию они выключены, чтобы обычный
 `health` оставался локальным. Без флага каждая проверка `tracker.*`, кроме `tracker.project`, — `skipped` «офлайн».
@@ -633,9 +640,8 @@ python3 harness/bin/harness.py cleanup /path/to/repository --mode hard         #
 python3 harness/bin/harness.py cleanup /path/to/repository --mode hard --apply --confirm HARD
 ```
 
-`cleanup` выводит план в формате JSON. Без `--apply` команда ничего не удаляет. `--min-age-hours`
-(по умолчанию 24) задаёт минимальный возраст удаляемых данных. Hard-очистка требует
-`--confirm HARD`.
+`cleanup` выводит план в формате JSON и без `--apply` ничего не удаляет. `--min-age-hours` (по
+умолчанию 24) задаёт минимальный возраст удаляемых данных, а hard-очистка требует `--confirm HARD`.
 
 #### `uninstall` — полное удаление харнесса
 
@@ -647,13 +653,13 @@ python3 harness/bin/harness.py uninstall /path/to/repository --apply --confirm U
 Команда удаляет всё, что устанавливают `init` и `adopt`: каталог `.harness/`, discovery-ссылки
 `.agents/skills` и `.claude/skills`, seed-файлы (`docs/agents/*`, `.claude/hooks/*`,
 `.claude/rules/*`, `.claude/agents/*`, `.claude/settings.local.json`, `AGENTS.md`, `CLAUDE.md`) и строки
-харнесса в корневом `.gitignore`. Опустевшие каталоги она тоже убирает. Перед удалением команда
-копирует в `.harness-uninstall-backup/<время>/` seed-файлы, отличающиеся от шаблона, и проектные
-данные внутри `.harness/` (`project.json`, `orchestration.json`, `integrations.json`, собственные
-скиллы, состояние ledger). Каталог или посторонняя ссылка на месте discovery-пути
-остаётся без изменений и попадает в `skipped`. При активных batch оркестрации команда отказывает в
-удалении. После удаления она выполняет `git worktree prune`. Применение сверяет свежий
-план с показанным и при расхождении требует повторного предпросмотра.
+харнесса в корневом `.gitignore`, а затем убирает опустевшие каталоги. Перед удалением она копирует в
+`.harness-uninstall-backup/<время>/` seed-файлы, отличающиеся от шаблона, и проектные данные внутри
+`.harness/` (`project.json`, `orchestration.json`, `integrations.json`, собственные скиллы, состояние
+ledger). Каталог или посторонняя ссылка на месте discovery-пути остаётся без изменений и попадает в
+`skipped`. При активных batch оркестрации команда отказывает в удалении, а после удаления выполняет
+`git worktree prune`. Применение сверяет свежий план с показанным и при расхождении требует
+повторного предпросмотра.
 
 #### `console` — интерактивный пульт
 
@@ -697,27 +703,27 @@ checks» пересчитывает счётчики с `--online` и показ
 
 Правила безопасности пульта:
 
-- Пульт показывает CLI-эквивалент рядом с каждой командой. Он запускает тот же CLI-процесс и не
-  повторяет его логику и инварианты coordinator (approvals, idempotency keys).
+- Пульт показывает CLI-эквивалент рядом с каждой командой и запускает тот же CLI-процесс, не
+  повторяя его логику и инварианты coordinator (approvals, idempotency keys).
 - Команды из «Как исправить» пульт отображает, но не выполняет.
-- Пульт выполняет обратимые команды сразу. Перед необратимыми командами он запрашивает
-  подтверждение. Необратимые: удаление данных, терминальные решения coordinator
-  (`batch approve/abandon/decide`, `batch attention resolve`, `dispatch create/cancel`), внешние
-  изменения (`dispatch send`), перезапись управляемых файлов. При отмене пульт команду не выполняет.
-  `ledger reset`, hard cleanup и удаление харнесса требуют ввести `RESET` / `HARD` / `UNINSTALL`.
-- Пульт получает поля форм Orchestration обходом реального `coordinator.parser()`. Поэтому новый
+- Обратимые команды пульт выполняет сразу, а перед необратимыми запрашивает подтверждение.
+  Необратимые — это удаление данных, терминальные решения coordinator (`batch approve/abandon/decide`,
+  `batch attention resolve`, `dispatch create/cancel`), внешние изменения (`dispatch send`) и
+  перезапись управляемых файлов; при отмене команда не выполняется. `ledger reset`, hard cleanup и
+  удаление харнесса требуют ввести `RESET` / `HARD` / `UNINSTALL`.
+- Поля форм Orchestration пульт получает обходом реального `coordinator.parser()`, поэтому новый
   обязательный аргумент или `choices` отражается без ручной правки каталога (дрейф-тест).
 - Если скрипта команды в проекте нет, пульт не показывает её в меню (verify и сборка parser bundle
-  есть только в репозитории харнесса). Пульт запускает `verify` интерпретатором `.harness/.venv`.
-- Пульт экспортирует отчёт или хронологию в `docs/tasks/<папка тикета>/artifacts/` (каталог
-  `issue-<N>-*`, каталог эпика или новый `issue-<N>-console-export/`). Без тикета — в
-  `docs/tasks/console-exports/`. Имя файла содержит дату, существующие файлы пульт не перезаписывает.
-- Reports и Orchestration только читают леджер (lenient-чтение): они пропускают повреждённую запись.
-  Без леджера они показывают «не найден или не инициализирован».
+  есть только в репозитории харнесса). `verify` он запускает интерпретатором `.harness/.venv`.
+- Отчёт или хронологию пульт экспортирует в `docs/tasks/<папка тикета>/artifacts/` (каталог
+  `issue-<N>-*`, каталог эпика или новый `issue-<N>-console-export/`), а без тикета — в
+  `docs/tasks/console-exports/`. Имя файла содержит дату, существующие файлы не перезаписываются.
+- Reports и Orchestration только читают леджер (lenient-чтение) и пропускают повреждённую запись;
+  если леджера нет, они показывают «не найден или не инициализирован».
 - Repo Map открывает карту для HEAD, если в `.harness/.sandboxes/cache/repo_map/results` есть
   проверенная запись. Иначе «Построить карту» (`b`) после предупреждения запускает
   `python -B .harness/repo_map/repo_map.py --repo <repo> --commit <HEAD>`. Раздел читает только поля
-  схемы v1 и принимает карту только после `harness.repo_map.contract.validation_error`.
+  схемы v1 и принимает карту лишь после `harness.repo_map.contract.validation_error`.
 
 Код разложен по шву stdlib/textual. Модули `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text,stats}.py`
 не импортируют `textual`, и тесты проверяют их без него. `harness/console/app.py` и
@@ -759,15 +765,15 @@ python bin\install-global.py --target-home $HOME --runtime codex --runtime claud
 | `--skills-only` | Пропускает instruction-файл, ставит только symlink на `start-project` |
 
 Заодно команда снимает entry-скиллы прошлых версий (`project-harness-bootstrap`, `skill-library`),
-если по этому имени лежит symlink именно на них. Чужой файл с тем же именем — конфликт: команда его
-не трогает. Скрипт запускается одинаково на Linux, macOS и Windows (`python3 …` или `python …`/`py …`).
-Он требует Python 3.12+. На Windows символьные ссылки на каталоги требуют Developer Mode или
-терминала от имени администратора. Без этого команда завершается ошибкой с подсказкой.
+если по этому имени лежит symlink именно на них; чужой файл с тем же именем считается конфликтом, и
+команда его не трогает. Скрипт запускается одинаково на Linux, macOS и Windows (`python3 …`,
+`python …` или `py …`) и требует Python 3.12+. На Windows символьные ссылки на каталоги требуют
+Developer Mode или терминала от имени администратора, иначе команда завершается ошибкой с подсказкой.
 
 #### Как это подключено
 
-Скиллы физически лежат в `.harness/skills/*/SKILL.md`. Ими управляет `.harness/harness.lock` (хэши
-файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне проекта:
+Скиллы физически лежат в `.harness/skills/*/SKILL.md`, а управляет ими `.harness/harness.lock`
+(хэши файлов, версия, `source_revision`). Claude Code и Codex находят их через symlink'и в корне проекта:
 
 ```text
 .agents/skills  -> .harness/skills
@@ -810,7 +816,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 
 ## Общая схема пайплайна
 
-[![Пайплайн доставки от идеи до merge](./diagrams/delivery-pipeline.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/delivery-pipeline.workflow.html)
+[![Пайплайн доставки от идеи до merge](./diagrams/previews/delivery-pipeline.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/delivery-pipeline.workflow.html)
 
 Схема показывает путь целиком, для точки входа 3 (самый большой случай). С других точек входа
 пайплайн пропускает часть шагов совсем, а не проходит их «без действия».
@@ -818,7 +824,7 @@ MCP/plugin/hook/runtime-конфигов) — в
 Шаг 5 в `/implement` — конвейер из пяти ролевых гейтов, а не одна сессия
 ([раздел 4](#implement-ссылка_или_номер_тикета)):
 
-[![Gated dispatch /implement](./diagrams/implement-dispatch.sequence.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/implement-dispatch.sequence.html)
+[![Gated dispatch /implement](./diagrams/previews/implement-dispatch.sequence.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/implement-dispatch.sequence.html)
 
 Поперёк всех гейтов работают две проверки живости. Каждый dispatch первым делом подтверждает
 фактически активную модель (model self-report). Coordinator-сессия следит за heartbeat и выносит
@@ -848,7 +854,7 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 ## 1. Этап проектирования и устранения неопределённости (Grilling)
 
 Цель этапа — устранить неопределённость до начала реализации. `/grill-me` и `/grill-with-docs` —
-тонкие обёртки над одним примитивом `/grilling`. Обе обёртки вызывают только вручную
+тонкие обёртки над одним примитивом `/grilling`, и обе вызываются только вручную
 (`disable-model-invocation: true`).
 
 | Скилл | Когда | Что остаётся после |
@@ -859,14 +865,14 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 ### Механика `/grilling` (ядро обоих)
 
 1. **Дерево решений.** Агент моделирует план как дерево: каждое решение может порождать зависимые.
-2. **Раунды и фронтир.** *Frontier* — вопросы, чьи предпосылки уже закрыты. Их задают сейчас.
-   Агент не задаёт зависимые вопросы раньше их предпосылок.
+2. **Раунды и фронтир.** *Frontier* — вопросы, чьи предпосылки уже закрыты; их задают сейчас, а
+   зависимые вопросы агент не задаёт раньше их предпосылок.
 3. **Трекинг состояния.** Каждый раунд начинается с краткой сводки того, что только что устоялось.
 4. **Форма вопросов.** Если доступен инструмент `AskUserQuestion`, категориальные вопросы идут через
    него. Формат: один вопрос — одна вкладка, короткий `header`, 2–4 взаимоисключающих варианта
-   (рекомендованный первым, с пометкой «(Recommended)») и свободный ответ через «Other». В одном вызове не больше
-   четырёх вопросов. Открытые вопросы (например, про нейминг) — обычным текстом. Без тула агент
-   один раз предупреждает об этом и продолжает текстом:
+   (рекомендованный первым, с пометкой «(Recommended)») и свободный ответ через «Other»; в одном
+   вызове не больше четырёх вопросов. Открытые вопросы (например, про нейминг) задаются обычным
+   текстом. Если тула нет, агент один раз предупреждает об этом и продолжает текстом:
 
    ```text
    🤔 Хранение истории экспорта: храним ли мы, кто и когда выгружал отчёт? Влияет на схему БД
@@ -876,12 +882,12 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 
 5. **Пересчёт фронтира.** Закрытые решения раскрывают следующий слой. Если вопрос зависит от другого
    открытого вопроса того же раунда, агент его откладывает.
-6. **Факты — работа агента.** Агент сам получает данные из окружения (файлы, API) — через субагента
-   или инструменты. Сведения, доступные для проверки, он у пользователя не запрашивает. Незавершённый
+6. **Факты — работа агента.** Данные из окружения (файлы, API) агент получает сам, через субагента
+   или инструменты, и не запрашивает у пользователя сведения, которые можно проверить. Незавершённый
    поиск блокирует только зависящие от него вопросы.
-7. **Завершение.** Фронтир пуст — агент показывает сводку решений и спрашивает **«Подтверждаешь
-   итоговый план?»** с вариантами **«Да, перейти к `/to-spec`»** и **«Нет, нужны правки»**. При
-   подтверждении агент сообщает, что следующим шагом пользователь вызывает `/to-spec` вручную.
+7. **Завершение.** Когда фронтир пуст, агент показывает сводку решений и спрашивает **«Подтверждаешь
+   итоговый план?»** с вариантами **«Да, перейти к `/to-spec`»** и **«Нет, нужны правки»**. После
+   подтверждения агент сообщает, что следующим шагом пользователь вызывает `/to-spec` вручную.
 
 **Discovery Context (Live Artifact).** Во время раундов агент может собирать кандидатные пути файлов.
 В видимый `Live Artifact` он добавляет их только после явного согласия. Новых кандидатов агент
@@ -908,10 +914,10 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 только вручную.
 
 **Plan, don't do.** Каждый тикет фиксирует решение, а не часть реализации. Карта завершена, когда
-открытых решений не остаётся. На этом этапе работа уходит в реализацию. Иное поведение нужно явно
-задать в `## Notes` карты.
+открытых решений не остаётся, и тогда работа уходит в реализацию; иное поведение нужно явно задать
+в `## Notes` карты.
 
-[![Карта решений /wayfinder](./diagrams/wayfinder-map.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/wayfinder-map.workflow.html)
+[![Карта решений /wayfinder](./diagrams/previews/wayfinder-map.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/wayfinder-map.workflow.html)
 
 **Устройство карты:**
 
@@ -953,11 +959,11 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 ### `/to-spec`
 
 **Назначение:** синтез уже обсуждённого в единый источник правды, в той же сессии после Grilling.
-Это **не интервью**: агент не задаёт повторных вопросов. Недостаток данных означает, что этап
-grilling был неполным. Тогда агент синтезирует по известным фактам с явными допущениями. Его
+Это **не интервью**: повторных вопросов агент не задаёт. Если данных не хватает, значит, этап
+grilling был неполным, и агент синтезирует по известным фактам с явными допущениями. Скилл
 вызывают только вручную.
 
-[![/to-spec: от обсуждения к эпику](./diagrams/to-spec-flow.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/to-spec-flow.workflow.html)
+[![/to-spec: от обсуждения к эпику](./diagrams/previews/to-spec-flow.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/to-spec-flow.workflow.html)
 
 1. **Исследование и seam'ы.** Изучить словарь домена (`CONTEXT.md`) и ADR затрагиваемой области.
    Наметить **seam'ы** — точки, где фича будет тестироваться: существующие лучше новых, уровень —
@@ -1020,8 +1026,8 @@ issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (
 связь `relates_to`.
 
 В конец спецификации `/to-spec` переносит утверждённый список из `Live Artifact` в секцию
-`## Relevant Files (Discovery Context)` с исходными пояснениями. Без artifact publishing источник —
-финальная Trunk summary. Заменять список новым blind discovery нельзя.
+`## Relevant Files (Discovery Context)` с исходными пояснениями; без artifact publishing источником
+служит финальная Trunk summary. Заменять список новым blind discovery нельзя.
 
 ---
 
@@ -1029,13 +1035,13 @@ issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (
 
 ### `/to-tickets`
 
-**Назначение:** преобразовать спецификацию, план или обсуждение в набор **тикетов** — tracer-bullet вертикальных
-слайсов с блокирующими рёбрами. До явного одобрения разбивки скилл ничего не публикует. Его вызывают
-только вручную.
+**Назначение:** преобразовать спецификацию, план или обсуждение в набор **тикетов** — tracer-bullet
+вертикальных слайсов с блокирующими рёбрами. До явного одобрения разбивки скилл ничего не
+публикует, а вызывают его только вручную.
 
 **Вертикальный слайс, а не слой:**
 
-[![Вертикальные слайсы вместо слоёв](./diagrams/vertical-slices.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/vertical-slices.workflow.html)
+[![Вертикальные слайсы вместо слоёв](./diagrams/previews/vertical-slices.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/vertical-slices.workflow.html)
 
 1. **Черновик и ревью.** Собрать контекст (обсуждение или ссылка на спецификацию/issue). При
    необходимости выявить возможности префакторинга («Make the change easy, then make the easy
@@ -1105,30 +1111,30 @@ GitLab — секция `## Parent: #<N>` и связь `relates_to`), а не �
 
 ### `/implement [ссылка_или_номер_тикета]`
 
-Сессия `/implement` становится coordinator-ом. Она ведёт `.harness/orchestration/coordinator.py`
-(batch / dispatch / report / decide) и останавливается на пяти явных approval-гейтах. Реализацию
-пишут dispatched-роли. Скилл запускают в новой чистой сессии, только вручную.
+Сессия `/implement` становится coordinator-ом: она ведёт `.harness/orchestration/coordinator.py`
+(batch / dispatch / report / decide) и останавливается на пяти явных approval-гейтах, а реализацию
+пишут dispatched-роли. Скилл запускают в новой чистой сессии и только вручную.
 
-Маршрут требует capability `backend-orchestration`. Проверка — одна команда. Она же показывает, что
-уже в работе:
+Маршрут требует capability `backend-orchestration`. Проверка выполняется одной командой, которая
+заодно показывает, что уже в работе:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . dispatch status
 ```
 
-Exit 0 — маршрут доступен. **Не используйте для этой проверки команду `harness`**: packager CLI
-находится в репозитории харнесса, а не в проекте. Если команды нет или она завершается с ошибкой,
-агент не восстанавливает и не достраивает opt-in. Он направляет пользователя к
-`/fast-implement`.
+Exit 0 означает, что маршрут доступен. **Не используйте для этой проверки команду `harness`**:
+packager CLI находится в репозитории харнесса, а не в проекте. Если команды нет или она
+завершается с ошибкой, агент не восстанавливает и не достраивает opt-in, а направляет пользователя
+к `/fast-implement`.
 
-**`.harness/orchestration.json` не обязателен**: без него потолок записи — весь репозиторий
-(границу задаёт `--allowed-path` batch). Тогда coordinator берёт `model`/`effort` роли из сессии и
-передаёт их в `dispatch create --model/--effort`. Для coordinator и architect рекомендуется
-`medium` effort. Повышать его можно только по явному решению разработчика.
+**`.harness/orchestration.json` не обязателен**: без него потолок записи — весь репозиторий (границу
+задаёт `--allowed-path` batch), а coordinator берёт `model`/`effort` роли из сессии и передаёт их в
+`dispatch create --model/--effort`. Для coordinator и architect рекомендуется `medium` effort;
+повысить его можно только по явному решению разработчика.
 
 **Жизненный цикл batch:**
 
-[![Жизненный цикл batch](./diagrams/backend-batch.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/backend-batch.lifecycle.html)
+[![Жизненный цикл batch](./diagrams/previews/backend-batch.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/backend-batch.lifecycle.html)
 
 Какая команда переводит batch в какое состояние:
 
@@ -1165,45 +1171,45 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 Ключевые свойства конвейера:
 
 - **Порядок жёсткий.** Coordinator отклоняет `dispatch create --role developer`, пока у batch нет
-  принятого architect-отчёта. Правило живёт в `coordinator.py`, его не обойти ручным вызовом.
-- **Model self-report.** Роль первым действием подтверждает активную модель
-  (`dispatch self-report --dispatch <id> --model <model>`). Расхождение с `resolved_model` brief
-  переводит dispatch в `blocked`, и coordinator не принимает его report.
-- **Dispatch watchdog.** Роль шлёт `dispatch heartbeat`. Coordinator опрашивает
-  `dispatch status --batch <id> [--stale-after <sec>]`. `stale` — блокер для разработчика.
-- **Транспорт — выбор проекта.** `assignment_plans.<role>.transport`: `external` (worker через
-  adapter) или `in-process` (субагент текущей сессии в worktree того же batch). Без поля —
-  `in-process`. Для `in-process` `dispatch send` лишь фиксирует handoff. Coordinator сразу
-  запускает субагента по brief и не читает старые dispatch/report/template.
+  принятого architect-отчёта. Правило живёт в `coordinator.py`, поэтому ручным вызовом его не обойти.
+- **Model self-report.** Первым действием роль подтверждает активную модель
+  (`dispatch self-report --dispatch <id> --model <model>`). Если она расходится с `resolved_model`
+  brief, dispatch переходит в `blocked`, и coordinator не принимает его report.
+- **Dispatch watchdog.** Роль шлёт `dispatch heartbeat`, а coordinator опрашивает
+  `dispatch status --batch <id> [--stale-after <sec>]`; `stale` — блокер для разработчика.
+- **Транспорт — выбор проекта.** `assignment_plans.<role>.transport` принимает `external` (worker
+  через adapter) или `in-process` (субагент текущей сессии в worktree того же batch); без поля
+  действует `in-process`. Для `in-process` `dispatch send` лишь фиксирует handoff, а coordinator
+  сразу запускает субагента по brief и не читает старые dispatch/report/template.
 - **Discovery Context.** Coordinator может зарегистрировать Context Package через
   `context-package register`: без LLM, из pinned commits — diff, стартовые файлы, bounded graph,
   тесты, ADR cards и hashes. Прямые импорты раскрываются на один уровень, а неизвестные форматы
-  получают первые 30 строк. Coordinator проверяет freshness перед каждым dispatch в shadow-режиме.
-- **Checkpoint/continuation.** Только write-роли могут сохранить checkpoint и продолжить тот же
-  dispatch в новой worker session. Checkpoint не заменяет report и не переносит chat history. После
-  rate limit resume автоматичен. Плановые причины требуют coordinator decision.
+  получают первые 30 строк. Freshness coordinator проверяет перед каждым dispatch в shadow-режиме.
+- **Checkpoint/continuation.** Сохранить checkpoint и продолжить тот же dispatch в новой worker
+  session могут только write-роли. Checkpoint не заменяет report и не переносит chat history; после
+  rate limit resume автоматичен, а плановые причины требуют coordinator decision.
 - **Base-commit gate.** `batch create` и каждый review/publish dispatch сверяют base с актуальным
   `origin/<integration_ref>`. Drift требует нового developer/rebase dispatch и повторного risk
   assessment.
 - **Один тикет за раз.** Coordinator доводит batch до терминального состояния до старта следующего.
-- **Незакрытое — человеку.** Coordinator не переиспользует, не удаляет и не обходит вторым batch
-  остаток прошлой попытки (`ticket`, `batch_id`, `state`, `stale` в `dispatch status`).
+- **Незакрытое — человеку.** Остаток прошлой попытки (`ticket`, `batch_id`, `state`, `stale` в
+  `dispatch status`) coordinator не переиспользует, не удаляет и не обходит вторым batch.
 - **Тупиковый batch закрывает команда.** Воркер, завершившийся до self-report, отчёт не предоставит.
-  `batch abandon` требует approval и причины. Команда переводит batch в `failed`, закрывает открытые
-  dispatch и **ничего не удаляет**. Инвентарь — `batch list --open [--ticket <id>]`. Не меняйте
-  `.harness/orchestration/state/` вручную — это аудиторский след.
+  `batch abandon` требует approval и причины: команда переводит batch в `failed`, закрывает открытые
+  dispatch и **ничего не удаляет**. Инвентарь даёт `batch list --open [--ticket <id>]`.
+  `.harness/orchestration/state/` вручную менять нельзя — это аудиторский след.
 - **Неверный brief отменяют до запуска.** `dispatch cancel` требует approval и причины, оставляет
   brief в audit trail и возвращает batch в `awaiting-approval`.
-- **Уже выполненная задача не имитирует работу.** `batch not-required` требует approval и evidence.
-  Команда терминально фиксирует, что snapshot уже соответствует DoD. Ещё она рекомендует закрыть
-  issue с `resolution::wontfix`.
-- **Последовательность фиксированная.** Полный путь включает architect, developer,
-  code-review и qa. Risk assessment решает, когда review *обязателен*, а не когда *разрешён*.
-  Сокращённый путь — `/fast-implement`.
+- **Уже выполненная задача не имитирует работу.** `batch not-required` требует approval и evidence:
+  команда терминально фиксирует, что snapshot уже соответствует DoD, и рекомендует закрыть issue с
+  `resolution::wontfix`.
+- **Последовательность фиксированная.** Полный путь включает architect, developer, code-review и
+  qa; risk assessment решает, когда review *обязателен*, а не когда он *разрешён*. Сокращённый
+  путь — `/fast-implement`.
 - **PR остаётся за человеком.** После green QA сессия отдаёт отчёт, публикует SHA через
   `dispatch publish` и останавливается.
-- **Coordinator передаёт роли требование TDD через DoD.** Dispatched developer не имеет `/tdd`.
-  Поэтому coordinator записывает требование TDD из `docs/agents/git-workflow.md` отдельным пунктом
+- **Coordinator передаёт роли требование TDD через DoD.** У dispatched developer нет `/tdd`,
+  поэтому coordinator записывает требование TDD из `docs/agents/git-workflow.md` отдельным пунктом
   `--definition-of-done`. Отсутствие тестов в `changed_files` — повод для `decide retry`, а не для
   accept.
 
@@ -1221,28 +1227,29 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 **В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов))
 добавляет три фазы. Ту же Phase 1 выполняет и `/implement` перед `batch create`.
 
-[![/fast-implement: одна сессия от тикета до push](./diagrams/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
+[![/fast-implement: одна сессия от тикета до push](./diagrams/previews/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
 
 **Phase 1 — Pre-flight:**
 
 1. **Разрешить тикет.**
-   - Передан конкретный тикет с `hitl` — агент сразу прекращает работу и направляет пользователя к
-     `/to-guide`. `afk`-тикет без `pipeline::fast` (метки или поля `**Pipeline:**` нет, либо там
-     `pipeline::full`) — агент прекращает работу и направляет пользователя к `/implement`.
-   - Передан эпик — агент выбирает тикет автоматически, `hitl`-тикеты он не выбирает. На
-     GitHub/GitLab — тот же frontier-запрос, что у `/wayfinder`, в границах дочерних тикетов эпика,
-     отфильтрованный по `pipeline::fast` + `afk`: открытые, неблокированные, незанятые, первые по
-     порядку. Назначение (`gh issue edit <n> --add-assignee @me` на GitHub,
-     `glab issue update <n> -R <project-url> --assignee @me` на GitLab) — первая операция записи. На
-     GitLab каждая команда `glab` адресует проект явно через `-R <project-url>`. Плейсхолдеры определены в `docs/agents/issue-tracker.md` → GitLab →
-     Conventions. При пустом фронтире агент останавливает работу с пояснением (остались только
-     `hitl` — назвать их и указать на `/to-guide`; остались `afk` без `pipeline::fast` — указать на
-     `/implement`). Локальный трекер — линейный проход по `.scratch/<feature>/issues/NN-*.md` с тем
-     же фильтром по `**Execution:** afk` и `**Pipeline:** pipeline::fast`.
-   - Тикет не указан, и в проекте действует правило Issue First — агент останавливает работу. Он
+   - Если передан конкретный тикет с `hitl`, агент сразу прекращает работу и направляет пользователя
+     к `/to-guide`. Если это `afk`-тикет без `pipeline::fast` (метки или поля `**Pipeline:**` нет,
+     либо там `pipeline::full`), агент прекращает работу и направляет пользователя к `/implement`.
+   - Если передан эпик, агент выбирает тикет автоматически и `hitl`-тикеты не выбирает. На
+     GitHub/GitLab он использует тот же frontier-запрос, что и `/wayfinder`, в границах дочерних
+     тикетов эпика, отфильтрованный по `pipeline::fast` + `afk`: открытые, неблокированные,
+     незанятые, первые по порядку. Первая операция записи — назначение (`gh issue edit <n>
+     --add-assignee @me` на GitHub, `glab issue update <n> -R <project-url> --assignee @me` на
+     GitLab). На GitLab каждая команда `glab` адресует проект явно через `-R <project-url>`;
+     плейсхолдеры определены в `docs/agents/issue-tracker.md` → GitLab → Conventions. При пустом
+     фронтире агент останавливает работу с пояснением: остались только `hitl` — назвать их и указать
+     на `/to-guide`; остались `afk` без `pipeline::fast` — указать на `/implement`. Локальный трекер
+     проходит линейно по `.scratch/<feature>/issues/NN-*.md` с тем же фильтром по
+     `**Execution:** afk` и `**Pipeline:** pipeline::fast`.
+   - Если тикет не указан и в проекте действует правило Issue First, агент останавливает работу и
      запрашивает тикет либо запуск `/to-spec`/`/to-tickets`.
 2. **Проверить блокеры** при любой метке `status::*`: если есть открытый блокер, агент
-   останавливает работу. Тикет должен иметь метку `status::blocked`.
+   останавливает работу, а тикет должен иметь метку `status::blocked`.
 3. **Пометить в работе — до ветки и правок:**
 
    ```bash
@@ -1256,20 +1263,20 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
    Неудачная запись — стоп.
 
 **Phase 2 — Coding:** `/tdd` на согласованных швах → регулярный тайпчек и тесты, полный набор один
-раз в конце → спросить, проводить ли `/code-review`. «Да» — две оси Standards и Spec через вручную
-настроенный механизм субагентов. Агент собирает отчёты в основной сессии и устраняет замечания.
-«Нет» — агент фиксирует отказ. Затем — явное согласие на commit и push. Ветка соответствует
-`branch_pattern` и не совпадает с `base_branch`/`integration/*`. Дальше semantic commit и push, а
-хеш и результат push — разработчику.
+раз в конце → вопрос, проводить ли `/code-review`. При ответе «Да» запускаются две оси, Standards и
+Spec, через вручную настроенный механизм субагентов: агент собирает отчёты в основной сессии и
+устраняет замечания. При «Нет» агент фиксирует отказ. Затем нужно явное согласие на commit и push;
+ветка соответствует `branch_pattern` и не совпадает с `base_branch`/`integration/*`. После этого
+агент делает semantic commit и push и сообщает разработчику хеш и результат push.
 
 **Phase 3 — PR & Wrap-up:** после push предложить `/to-pull-requests <тикет>`. Не запускать его
 автоматически, не открывать PR, не вызывать `qa-gate`/`pr-composer` и не закрывать тикет.
 
-**Как это сцепляется с соседями.** `/to-pull-requests` запускают вручную. Он ведёт PR & Wrap-up по
-`docs/agents/git-workflow.md`. В orchestration-проекте он проверяет accepted QA evidence текущего
-SHA, иначе использует `qa-gate`. `pr-composer` работает внутри него. `/fast-implement` и `/implement`
-оставляют `status::in-progress`. После merge `/to-pull-requests` закрывает тикет и переводит
-зависимые с закрытыми блокерами из `status::blocked` в `status::ready`.
+**Как это сцепляется с соседями.** `/to-pull-requests` запускают вручную: он ведёт PR & Wrap-up по
+`docs/agents/git-workflow.md`, а `pr-composer` работает внутри него. В orchestration-проекте скилл
+проверяет accepted QA evidence текущего SHA, иначе использует `qa-gate`. `/fast-implement` и
+`/implement` оставляют `status::in-progress`; после merge `/to-pull-requests` закрывает тикет и
+переводит зависимые тикеты с закрытыми блокерами из `status::blocked` в `status::ready`.
 
 **Субагенты** настраивают вручную в используемой программе. Файлы `.claude/agents/*.md` (в том
 числе `pr-composer`) — markdown-спецификации задач.
@@ -1282,7 +1289,7 @@ SHA, иначе использует `qa-gate`. `pr-composer` работает �
 
 ### `/tdd` (TDD Loop)
 
-[![Цикл /tdd](./diagrams/tdd-loop.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/tdd-loop.lifecycle.html)
+[![Цикл /tdd](./diagrams/previews/tdd-loop.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/tdd-loop.lifecycle.html)
 
 Цикл идёт на заранее согласованных швах. Рефакторинг идёт на шаге Refactor, а не внутри
 red → green.
@@ -1371,12 +1378,11 @@ coordinator назначает при новом risk trigger, файле вне
 
 ### `/to-pull-requests` (skill)
 
-Ручной PR & Wrap-up для уже запушенной issue-ветки. Скилл проверяет ветку и push. В
-orchestration-проекте он проверяет accepted QA evidence ровно для текущего SHA и записывает по нему
-QA-маркер через `record-qa-gate-pass.sh`. Вне orchestration-проекта он запускает `qa-gate`. Затем
-скилл готовит тело PR/MR и получает отдельное согласие на `gh pr create`/`glab mr create`. Он
-публикует отчёт `task-report::required`. После подтверждённого merge он закрывает тикет или
-проверяет его закрытие.
+Ручной PR & Wrap-up для уже запушенной issue-ветки. Скилл проверяет ветку и push; в
+orchestration-проекте проверяет accepted QA evidence ровно для текущего SHA и записывает по нему
+QA-маркер через `record-qa-gate-pass.sh`, а вне него запускает `qa-gate`. Затем он готовит тело PR/MR
+и получает отдельное согласие на `gh pr create`/`glab mr create`, публикует отчёт `task-report::required` и после
+подтверждённого merge закрывает тикет или проверяет его закрытие.
 
 - **Default branch** определяет явная команда: `gh repo view --json defaultBranchRef --jq .defaultBranchRef.name`
   на GitHub, поле `default_branch` из `GITLAB_HOST=<host> glab api projects/<project-id>` на GitLab.
@@ -1416,11 +1422,11 @@ QA-маркер через `record-qa-gate-pass.sh`. Вне orchestration-про
 
 ### `/to-guide` (skill)
 
-Ветвь для `hitl`-тикетов после `/to-tickets`. Реализацию выполняет разработчик (Cursor, Copilot
-Chat). `/to-guide` готовит для него пошаговое руководство.
+Ветвь для `hitl`-тикетов после `/to-tickets`: реализацию выполняет разработчик (Cursor, Copilot
+Chat), а `/to-guide` готовит для него пошаговое руководство.
 
-1. **Читает источник** — issue, URL или файл тикета. `status::blocked` — проверяет блокеры. Не
-   `status::ready`/`hitl` — предупреждает и просит подтверждения.
+1. **Читает источник** — issue, URL или файл тикета. При `status::blocked` проверяет блокеры, а если
+   метка не `status::ready`/`hitl`, предупреждает и просит подтверждения.
 2. **Исследует кодовую базу** — определяет конкретные файлы по коду, а не по тексту тикета.
 3. **Назначает тикет на себя** (`gh issue edit <n> --add-assignee @me` или
    `glab issue update <n> -R <project-url> --assignee @me`) первой операцией записи.
@@ -1443,8 +1449,8 @@ branch, иначе `Related to #ID`; после merge — явное закры�
 > Образец структуры теста — tests/config/test_loader_yaml.py. Тест должен упасть.
 ```
 
-`/to-guide` не запускает `/implement`, `qa-gate` и `pr-composer`. Его не вызывают повторно для того
-же тикета. Его вызывают только вручную.
+`/to-guide` не запускает `/implement`, `qa-gate` и `pr-composer`, не вызывается повторно для того же
+тикета и запускается только вручную.
 
 ### `/setup-labels` (skill)
 
@@ -1460,9 +1466,9 @@ branch, иначе `Related to #ID`; после merge — явное закры�
 
 ### `/delivery-stats <номер эпика>` (skill)
 
-Сколько стоил закрытый эпик. Скилл читает только локальные данные — транскрипты Claude Code, сессии
-Codex, историю git и трекер. Он пишет автономный HTML-дашборд в
-`.harness/.sandboxes/reports/delivery-stats/`. Наружу ничего не отправляет.
+Скилл показывает, сколько стоил закрытый эпик. Он читает только локальные данные — транскрипты
+Claude Code, сессии Codex, историю git и трекер — и пишет автономный HTML-дашборд в
+`.harness/.sandboxes/reports/delivery-stats/`, ничего не отправляя наружу.
 
 ```bash
 python .harness/reporting/delivery_stats.py --repo . --epic 81 \
@@ -1474,19 +1480,22 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
   --baseline .harness/.sandboxes/reports/delivery-stats/epic-81.baseline.json
 ```
 
-- **Область** — от эпика: sub-issues дают номера. Скилл матчит ветки `feature/issue-<ID>-*` по номеру
-  в имени. Поэтому отчёт работает и после удаления слитых веток. Объём кода скилл берёт из PR.
+- **Область** — от эпика: sub-issues дают номера, а скилл матчит ветки `feature/issue-<ID>-*` по
+  номеру в имени, поэтому отчёт работает и после удаления слитых веток. Объём кода скилл берёт из PR.
 - **Точность привязки:** Claude Code — точно (`gitBranch` в каждой записи); Codex — оценочно (только
-  `cwd` и время), в дашборде помечено «оценка».
-- **Цен в инструменте нет:** стоимость — только по `.harness/reporting/rates.json` (шаблон
-  `rates.example.json`). Нет файла — «нет данных», модель без ставки — в `unpriced_models`.
-- **Отсутствующее не зануляется:** нет сессий, `quotaLimits` или тарифа — везде «нет данных».
+  `cwd` и время), в дашборде это помечено «оценка».
+- **Цен в инструменте нет:** стоимость считается только по `.harness/reporting/rates.json` (шаблон
+  `rates.example.json`). Если файла нет, выводится «нет данных», а модель без ставки попадает в
+  `unpriced_models`.
+- **Отсутствующее не зануляется:** если нет сессий, `quotaLimits` или тарифа, везде показывается
+  «нет данных».
 - **ADR засчитывается**, только если создавший его коммит входит в PR эпика (при squash-merge
   значение может быть занижено).
 - **Каталог транскриптов** скилл ищет по содержимому (непустые `*.jsonl`, записанный `cwd`), а не
-  только по имени. Найденные пути видны в `claude.sources` при `--json`.
-- Для backend-orchestration — cache read/write tokens, worker sessions на dispatch, причины
-  compaction/restart, доля review diff вне scope и QA failure rate — только из telemetry и ledger.
+  только по имени; найденные пути видны в `claude.sources` при `--json`.
+- Для backend-orchestration учитываются cache read/write tokens, worker sessions на dispatch,
+  причины compaction/restart, доля review diff вне scope и QA failure rate — только из telemetry и
+  ledger.
 - `--tickets 7,8` — offline-режим; `--json` — машиночитаемый отчёт; `--claude-projects` повторяем.
 
 ---
@@ -1514,10 +1523,11 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 ### `/triage` подробнее
 
 Точка входа в основной конвейер. Скилл обрабатывает issue и PR, пришедшие *извне* (баг-репорты,
-фича-реквесты), а не тикеты из `/to-tickets` — те уже agent-ready. Его вызывают только вручную.
+фича-реквесты), а не тикеты из `/to-tickets` — те уже agent-ready. Вызывают его только вручную.
 
-**State machine:** непомеченный issue неявно «нужен триаж». На триаженном issue — ровно один
-`bug`/`enhancement` и ровно один `status::*`. Пока стоит `status::specs`, ось `hitl`/`afk` не ставят.
+**State machine:** непомеченный issue неявно считается «нужен триаж». На триаженном issue должен
+стоять ровно один `bug`/`enhancement` и ровно один `status::*`, а пока стоит `status::specs`, ось
+`hitl`/`afk` не ставят.
 
 1. **Собрать контекст** — тело, комментарии, лейблы, прошлые триаж-заметки, для PR — diff. Два
    прохода по коду: **redundancy** (уже реализовано? искать по доменному понятию) и **prior
@@ -1551,13 +1561,13 @@ status::ready»). Тогда скилл пропускает этап grilling. 
 | `task-report::required` | — | `/to-spec`, `/to-tickets` по умолчанию: при закрытии обязателен отчёт о завершении |
 | `out-of-scope` | — | `/triage`: замена апстримного `wontfix` |
 
-[![Метки status::* по пути тикета](./diagrams/triage-labels.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/triage-labels.lifecycle.html)
+[![Метки status::* по пути тикета](./diagrams/previews/triage-labels.lifecycle.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/triage-labels.lifecycle.html)
 
-Дочерний тикет связывается с эпиком родительской связью трекера: на GitHub — native sub-issue, на
+Дочерний тикет связывается с эпиком родительской связью трекера: на GitHub это native sub-issue, на
 GitLab — секция `## Parent: #<N>` и связь `relates_to`
-(`docs/agents/issue-tracker.md#wayfinding-operations`). Тот же механизм `wayfinder` использует для
-своей карты. Цвета и локальный markdown-трекер — в `docs/agents/triage-labels.md`. Правила поставки —
-в [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md).
+(`docs/agents/issue-tracker.md#wayfinding-operations`). Тот же механизм использует `wayfinder` для
+своей карты. Цвета и локальный markdown-трекер описаны в `docs/agents/triage-labels.md`, а правила
+поставки — в [ADR 0002](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0002-controlled-delivery.md).
 
 ---
 
@@ -1586,16 +1596,16 @@ $ git commit -m "wip"        # текущая ветка — integration/reports
 Zero Direct Commits: коммит/push в защищённую ветку 'integration/reports' запрещён — работай на issue-ветке (docs/agents/git-workflow.md).
 ```
 
-Файл `.claude/settings.local.json` личный (в `.gitignore`): hooks защищают только локальные сессии.
-Харнесс не устанавливает в целевой проект CI-проверку PR/MR. Серверную проверку до merge проект
-добавляет сам.
+Файл `.claude/settings.local.json` личный (он в `.gitignore`), поэтому hooks защищают только
+локальные сессии. CI-проверку PR/MR харнесс в целевой проект не устанавливает — серверную проверку
+до merge проект добавляет сам.
 
 ### Атрибуция коммитов
 
-`.claude/settings.local.json` оставляет встроенную атрибуцию пустой. Это дополнительный слой.
-Сам запрет в целевом проекте обеспечивает `block-public-attribution.sh` до команды.
-`scripts/check_public_metadata.py` проверяет только сам репозиторий харнесса. Харнесс не ставит его
-в целевой проект.
+`.claude/settings.local.json` оставляет встроенную атрибуцию пустой, но это лишь дополнительный слой:
+сам запрет в целевом проекте обеспечивает `block-public-attribution.sh` до выполнения команды.
+`scripts/check_public_metadata.py` проверяет только репозиторий харнесса и в целевой проект не
+ставится.
 
 Hook строго разбирает JSON payload и смотрит только `tool_input.command`:
 
@@ -1645,8 +1655,9 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 
 ## 10. Параллельная работа: worktrees
 
-Для нескольких фич одновременно — нативные `EnterWorktree`/`ExitWorktree`, только по явной просьбе.
-Имя ветки проверяет `check-worktree-branch-name.sh`. Подробности — `docs/agents/worktrees.md`.
+Для нескольких фич одновременно предназначены нативные `EnterWorktree`/`ExitWorktree`, но их
+используют только по явной просьбе. Имя ветки проверяет `check-worktree-branch-name.sh`, а
+подробности описаны в `docs/agents/worktrees.md`.
 
 ---
 
@@ -1724,7 +1735,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 <repo>/
 ├── .git/
 ├── .harness/            # управляемый снимок, lock, registry и optional overlays
-│   ├── docs/            # этот файл и backend-orchestration.md
+│   ├── docs/            # агентские контракты: technical-english.md и project-memory.md
 │   ├── skills/          # скиллы, видимые через .agents/skills и .claude/skills
 │   └── project.json     # язык, ветки, qa_gate_commands (pvmalove-suite)
 ├── .claude/             # rules, agents, hooks и локальные настройки Claude
@@ -1745,8 +1756,9 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 
 ## 14. Примеры целиком, по точкам входа
 
-По одному сквозному примеру на [точку входа](#точки-входа). Эпик про CSV-экспорт (точка входа 2)
-показан в двух ветках — `afk` и `hitl`. Так можно сравнить финал `/implement` с финалом `/to-guide`.
+Ниже по одному сквозному примеру на каждую [точку входа](#точки-входа). Эпик про CSV-экспорт (точка
+входа 2) показан в двух ветках, `afk` и `hitl`, чтобы можно было сравнить финал `/implement` с
+финалом `/to-guide`.
 
 ### Точка входа 1 — отдельный тикет через `/triage`
 
@@ -1776,7 +1788,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 
 Фичу прорабатывают за одну сессию grilling, но она требует декомпозиции. Wayfinder здесь не нужен.
 
-[![Пример: эпик CSV-экспорта через /implement](./diagrams/example-epic-afk.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-epic-afk.workflow.html)
+[![Пример: эпик CSV-экспорта через /implement](./diagrams/previews/example-epic-afk.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-epic-afk.workflow.html)
 
 1. **`/grill-with-docs`** — требуется экспорт отчётов в CSV. Раунды: какие отчёты (только текущий вид
    таблицы), кто инициирует (кнопка на странице, не API), формат чисел (locale проекта). В
@@ -1832,7 +1844,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 Задача: перевести авторизацию на внешнего OAuth-провайдера вместо собственных паролей. Затрагиваемые
 модули и порядок решений на старте не определены.
 
-[![Пример: переход на внешний OAuth через /wayfinder](./diagrams/example-wayfinder-oauth.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-wayfinder-oauth.workflow.html)
+[![Пример: переход на внешний OAuth через /wayfinder](./diagrams/previews/example-wayfinder-oauth.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/example-wayfinder-oauth.workflow.html)
 
 **Chart the map** (одна сессия, решения на этом этапе не принимаются):
 

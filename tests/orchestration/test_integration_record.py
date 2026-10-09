@@ -1058,7 +1058,7 @@ class IntegrationGuidanceTests(unittest.TestCase):
     with the public command group."""
 
     MENTIONS = {
-        "harness/docs/backend-orchestration.md": (
+        "docs/backend-orchestration.md": (
             "integration prepare",
             "integration status",
             "integration link-evidence",
@@ -1133,7 +1133,7 @@ class IntegrationGuidanceTests(unittest.TestCase):
                 "several integration records match",
                 "`--record <новая запись>` заменяет `<ticket-branch>`",
             ),
-            "harness/docs/backend-orchestration.md": (
+            "docs/backend-orchestration.md": (
                 "several integration records match",
                 "`--record <новая запись>` заменяет `<ticket-branch>`",
             ),
@@ -1155,7 +1155,7 @@ class IntegrationGuidanceTests(unittest.TestCase):
         rule = "независимо от порядка записи"
         for relative in (
             "docs/adr/0017-pr-continuation-routing.md",
-            "harness/docs/backend-orchestration.md",
+            "docs/backend-orchestration.md",
         ):
             text = (REPO / relative).read_text(encoding="utf-8")
             with self.subTest(file=relative):

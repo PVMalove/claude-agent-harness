@@ -75,7 +75,7 @@ disable-model-invocation: true
 
 ## 4. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![/fast-implement: одна сессия от тикета до push](../diagrams/previews/fast-implement.workflow.png)
 
 ## Источник
 

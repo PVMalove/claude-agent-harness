@@ -26,10 +26,6 @@ disable-model-invocation: true
 - **Вход (Input/Brief):** идея, план или решение в рабочем каталоге.
 - **Выход (Output/Report):** уточнённый план и обновлённые ADR/глоссарий при необходимости.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/grill-with-docs/SKILL.md)

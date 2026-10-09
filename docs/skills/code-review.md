@@ -128,10 +128,6 @@ review назначается вместо delta в пяти случаях: к�
 - **Вход (Input/Brief):** фиксированная точка, diff, стандарты проекта и исходная спецификация.
 - **Выход (Output/Report):** независимые отчёты `Standards` и `Spec`, затем краткая двухосевая сводка.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/code-review/SKILL.md)

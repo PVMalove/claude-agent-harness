@@ -247,11 +247,11 @@ def run(ctx: SimpleNamespace) -> None:
     # snapshot-only repair must not turn a configured project back into the empty seed.
     original_orchestration_config = orchestration_config.read_text(encoding="utf-8")
     project_owned_config = original_orchestration_config.replace(
-        '"concurrency_budget": 1', '"concurrency_budget": 3'
+        '"concurrency_budget": 5', '"concurrency_budget": 3'
     )
     if project_owned_config == original_orchestration_config:
         # Otherwise the overwrite check below compares the seed with itself and cannot fail.
-        sys.exit("orchestration config seed no longer has concurrency_budget 1 to edit")
+        sys.exit("orchestration config seed no longer has concurrency_budget 5 to edit")
     orchestration_config.write_text(project_owned_config, encoding="utf-8")
     coordinator_path = (
         orchestration_project / ".harness" / "orchestration" / "coordinator.py"
@@ -280,7 +280,7 @@ def run(ctx: SimpleNamespace) -> None:
             "FIFO",
             "санитизирован",
         ),
-        ROOT / "harness" / "docs" / "backend-orchestration.md": (
+        ROOT / "docs" / "backend-orchestration.md": (
             "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
             "`reported`",
             "детерминирован",
@@ -293,7 +293,7 @@ def run(ctx: SimpleNamespace) -> None:
             "integration next",
             "verification-failure",
         ),
-        ROOT / "harness" / "docs" / "harness-guide.md": (
+        ROOT / "docs" / "harness-guide.md": (
             "строго opt-in маршрут",
             "candidate commit",
             "`reported`",
@@ -312,15 +312,9 @@ def run(ctx: SimpleNamespace) -> None:
                     f"public documentation missing hybrid coordinator contract {phrase!r}: {path}"
                 )
     for source_path, required_phrases in public_documentation.items():
-        if source_path == ROOT / "README.md" or source_path == ROOT / "CONTEXT.md":
+        if source_path.parent != ROOT / "docs" / "agents":
             continue
-        # Harness guides are part of the managed snapshot (.harness/docs/); project guides are seeds.
-        installed_dir = (
-            orchestration_project / ".harness" / "docs"
-            if source_path.parent == ROOT / "harness" / "docs"
-            else orchestration_project / "docs" / "agents"
-        )
-        installed_path = installed_dir / source_path.name
+        installed_path = orchestration_project / "docs" / "agents" / source_path.name
         if not installed_path.is_file():
             sys.exit(
                 f"installed project is missing documentation seed: {source_path.name}"
@@ -335,14 +329,10 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(
                 f"installed documentation retains removed /to-pr route: {source_path.name}"
             )
-    source_orchestration_guide = (
-        ROOT / "harness" / "docs" / "backend-orchestration.md"
-    ).read_text(encoding="utf-8")
-    installed_orchestration_guide = (
-        orchestration_project / ".harness" / "docs" / "backend-orchestration.md"
-    ).read_text(encoding="utf-8")
-    if installed_orchestration_guide != source_orchestration_guide:
-        sys.exit("installed backend-orchestration guidance differs from its source")
+    # Developer guides stay in the source repository's docs/; only agent contracts are delivered.
+    for human_guide in ("harness-guide.md", "backend-orchestration.md"):
+        if (orchestration_project / ".harness" / "docs" / human_guide).exists():
+            sys.exit(f"developer guide leaked into the target project: {human_guide}")
     expected_role_files = {
         "architect.md",
         "code-review.md",

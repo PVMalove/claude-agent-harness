@@ -91,10 +91,6 @@ disable-model-invocation: true
 - **Вход (Input/Brief):** тикет `hitl` или спецификация, критерии приёмки, состояние блокировок и репозиторные соглашения.
 - **Выход (Output/Report):** локальное пошаговое руководство в `docs/tasks/` с картой файлов, TDD-промптами, проверками и ручным маршрутом до PR.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/to-guide/SKILL.md)

@@ -109,10 +109,6 @@ disable-model-invocation: true
 - **Вход (Input/Brief):** описание текущей ситуации, проблемы или следующего этапа разработки.
 - **Выход (Output/Report):** рекомендация конкретного навыка или потока и объяснение, почему он подходит.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/ask-matt/SKILL.md)

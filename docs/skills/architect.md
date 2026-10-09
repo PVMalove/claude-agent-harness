@@ -59,10 +59,6 @@ risk_triggers:
 - **Процесс (Process):** выбрать только доказательства, различающие решение; подготовить brief решения; эскалировать неустранимую неопределённость или необходимость широкой базовой проверки.
 - **Выход (Output/Report):** decision brief и completion report со ссылкой на него; `changed files: none`, `commit SHA: not applicable — read-only role`.
 
-## 4. Архитектурная схема
-
-![Контракт роли: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [architect.md](../../harness/orchestration/roles/architect.md)

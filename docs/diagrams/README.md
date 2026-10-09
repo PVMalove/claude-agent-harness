@@ -1,7 +1,7 @@
 # Диаграммы харнесса
 
-Двадцать восемь автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
-Archify (`*.json`). В `previews/` лежит статичное PNG той же диаграммы для Markdown, который не умеет
+Двадцать семь автономных интерактивных HTML-диаграмм. Рядом с каждой лежит редактируемая спецификация
+Archify (`*.json`), а в `previews/` — статичный PNG той же диаграммы для Markdown, который не умеет
 рендерить HTML (например, README на GitHub).
 
 | Диаграмма | О чём |
@@ -16,7 +16,6 @@ Archify (`*.json`). В `previews/` лежит статичное PNG той же
 | [Жизненный цикл batch](./backend-batch.lifecycle.html) | Состояния batch: `planned → awaiting-approval ↔ active → completed`, плюс выходы `blocked` и `failed`. Соседняя Discovery/implement схема и operational docs описывают checkpoint/resume и base gate. |
 | [QA и создание PR](./qa-call-path.workflow.html) | Где `test_summary.py` вызывается в `/qa-gate`, какие QA-маршруты обходят обёртку и как явное подтверждение приводит к `gh`/`glab pr create`. |
 | [Продолжение PR](./pr-continuation.workflow.html) | Маршрут `/to-pull-requests` после принятого publish: `integration prepare` → `status` → `next` → подтверждение пары SHA → PR → `collect-ci` или запасной `local-qa` → `handoff` и ручной merge. Ветки `refresh`/`resolve` с conflict-resolver и остановки `unavailable`, `resolver-open`, `route-failure`, `human-decision`. |
-| [Контракт скилла](./skill-contract-fill.workflow.html) | Нормализованный поток статической документации: входной brief → работа в границах роли → доказательства, отчёт и следующее состояние. |
 | [Архитектура переносимого harness](./harness-topology.architecture.html) | **Architecture:** границы исходного harness и целевого проекта, capability-каталог, CLI, единый snapshot и runtime discovery. |
 | [Швы модулей harness](./harness-seams.architecture.html) | **Architecture:** модули harness и их связи после рефакторинга: CLI, coordinator и workflow, LifecycleLedger, QA lane, Context Builder, внешние git, gh и runtime adapter. Схема показывает общее ядро ошибок и вызовы с таймаутом и без него. |
 | [Gated dispatch `/implement`](./implement-dispatch.sequence.html) | **Sequence:** участники и порядок взаимодействий: brief, approvals, candidate SHA, review, clean-room QA и публикация. |
@@ -37,10 +36,10 @@ Archify (`*.json`). В `previews/` лежит статичное PNG той же
 
 ## Как обновлять
 
-Скилл [archify](https://github.com/tt-a1i/archify) собирает эти диаграммы. Ранние схемы собраны
-версией 2.17 (кандидат релиза 3.0.0), новые — версией 3.0.1. Правьте только
-`*.json` (в `meta.output` — `docs/diagrams/<spec>.html`). Затем одна команда из корня репозитория
-перегенерирует и проверяет диаграмму:
+Диаграммы собирает скилл [archify](https://github.com/tt-a1i/archify), и все схемы собраны его
+последним стабильным релизом 3.0.1. Правьте только `*.json` (в `meta.output` указан
+`docs/diagrams/<spec>.html`), после чего одна команда из корня репозитория перегенерирует и
+проверяет диаграмму:
 
 ```bash
 ARCHIFY_CHROME=<путь к Chrome/Chromium> \
@@ -51,16 +50,16 @@ ARCHIFY_CHROME=<путь к Chrome/Chromium> \
 Если Chrome не запускается в своей песочнице, добавьте в окружение `ARCHIFY_CHROME_NO_SANDBOX=1`.
 
 `<type>` — `workflow`, `architecture`, `sequence`, `dataflow` или `lifecycle`, в зависимости от
-смысла схемы. `finalize` проходит `validate`, `deliver`, `check` и `browser-check`. Команда обязана
-завершиться `status: pass`. Не коммитьте в репозиторий квитанции (`*.finalize*.json`,
-`*.delivery.json`, `*.browser-check.json`).
+смысла схемы. `finalize` последовательно проходит `validate`, `deliver`, `check` и `browser-check` и
+обязана завершиться `status: pass`. Квитанции (`*.finalize*.json`, `*.delivery.json`,
+`*.browser-check.json`) в репозиторий не коммитятся.
 
 PNG в `previews/` — светлый снимок HTML шириной 1440 px: диаграмма вместе с блоками пояснений под
-ней (высота — до нижнего края блоков; окно расширяется до этой высоты перед снимком). После
-перегенерации HTML обновите снимок, иначе README покажет устаревшую картинку. Копии превью для
-справочника `harness/docs/harness-guide.md` лежат в `harness/docs/diagrams/`. Причина: справочник
-ставится в целевой проект без корневого `docs/`. `scripts/verify.py` сверяет эти копии с `previews/`.
+ней, без блока «Node index», который Archify 3.0 добавляет ниже (окно расширяется до нижнего края
+блоков пояснений перед снимком). После перегенерации HTML обновите
+снимок, иначе README покажет устаревшую картинку. Справочник [`harness-guide.md`](../harness-guide.md)
+ссылается на эти же файлы, и `scripts/verify.py` проверяет, что каждая такая ссылка существует.
 
 Содержимое диаграмм ведётся на русском. Интерфейс самого просмотрщика (`Light`/`Dark`, `Present`,
-`Export`, `Legend`) и подписи легенды в lifecycle остаются английскими. Это фиксированный UI
-рендерера. Его не переводят, и он не влияет на семантику диаграммы.
+`Export`, `Legend`) и подписи легенды в lifecycle остаются английскими: это фиксированный UI
+рендерера, он не переводится и не влияет на семантику диаграммы.

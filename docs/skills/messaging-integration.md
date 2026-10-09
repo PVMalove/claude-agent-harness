@@ -20,10 +20,6 @@ Messaging Integration — write-роль для границ outbox, message sch
 - **Вход (Input/Brief):** immutable brief с allowed paths сообщений, контрактом, правилами маршрутизации и retry/DLQ, DoD и required checks.
 - **Выход (Output/Report):** commit SHA совместимого изменения; перечень файлов и проверок; последствия delivery/failure, риски, блокеры и следующий gate.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [messaging-integration.md](../../harness/orchestration/roles/messaging-integration.md)

@@ -47,7 +47,7 @@ background: false
 
 ## 4. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![QA и создание PR: маршруты вызовов](../diagrams/previews/qa-call-path.workflow.png)
 
 ## Источник
 

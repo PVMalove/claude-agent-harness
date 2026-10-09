@@ -78,6 +78,6 @@ Delta-review проверяет новые коммиты и закрытие п
 - ADR 0005 сужается в двух пунктах. Rebase больше не обязан идти отдельным developer-dispatch.
   Delta-review разрешён не только для test-only исправления.
 - Нормативная таблица маршрутов живёт в `harness/orchestration/playbook.md`, CLI-уровень — в
-  `harness/docs/backend-orchestration.md`. `/implement` ссылается на таблицу, а контракты ролей
+  `docs/backend-orchestration.md`. `/implement` ссылается на таблицу, а контракты ролей
   запрещают обход hook-а и описывают неполные пункты.
 - Контракт реализуют тикеты, нарезанные из #479. До их слияния coordinator работает по ADR 0005.

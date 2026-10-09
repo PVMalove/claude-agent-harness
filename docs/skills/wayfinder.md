@@ -144,7 +144,7 @@ disable-model-invocation: true
 
 ## 4. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![/wayfinder: карта решений](../diagrams/previews/wayfinder-map.workflow.png)
 
 ## Источник
 

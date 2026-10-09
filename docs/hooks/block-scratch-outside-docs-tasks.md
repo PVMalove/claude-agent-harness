@@ -21,9 +21,6 @@
 ## 3. Контракты
 - **Вход (Input/Brief):** JSON через STDIN, содержащий информацию о вызове инструмента, в том числе аргумент `file_path`.
 - **Выход (Output/Report):** Код возврата `0` (разрешить выполнение инструмента), либо `2` (заблокировать) с выводом сообщения об ошибке в STDERR с указанием нарушенного правила из документации.
-## 4. Архитектурная схема
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [block-scratch-outside-docs-tasks.sh](../../harness/project/hooks/block-scratch-outside-docs-tasks.sh)

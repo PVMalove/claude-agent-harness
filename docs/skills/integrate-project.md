@@ -57,10 +57,6 @@ description: Аудит существующей, уже значительно�
 - **Процесс (Process):** Read-only audit, согласование manifest, затем Assemble/Finish из `start-project` и при выборе владельца reconstruction истории.
 - **Выход (Output/Report):** Подтверждённый manifest, интегрированный harness и отчёт об открытых вопросах.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../global-skills/integrate-project/SKILL.md)

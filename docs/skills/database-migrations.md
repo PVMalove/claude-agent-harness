@@ -20,10 +20,6 @@ Database Migrations — write-роль только для schema и data bounda
 - **Вход (Input/Brief):** immutable brief с изменением схемы/данных, разрешёнными путями, стратегией совместимости, DoD, запретами и migration checks.
 - **Выход (Output/Report):** commit SHA миграции; changed files; результаты migration/compatibility checks; условия rollout/rollback, риски, блокеры и следующий gate.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [database-migrations.md](../../harness/orchestration/roles/database-migrations.md)

@@ -19,9 +19,6 @@
 ## 3. Контракты
 - **Вход (Input/Brief):** JSON-данные из `stdin`, содержащие поле `"skill"` с именем вызываемого навыка. Опциональная переменная окружения `CLAUDE_PROJECT_DIR`.
 - **Выход (Output/Report):** Всегда возвращает `exit 0`. Создает или обновляет файл `.claude/.skill-usage.json`, сохраняя обновленную статистику по навыкам.
-## 4. Архитектурная схема
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [count-skill-usage.sh](../../harness/project/hooks/count-skill-usage.sh)

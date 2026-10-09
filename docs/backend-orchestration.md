@@ -5,18 +5,18 @@
 назначенная им управляющая сессия) планирует batch и ведёт переходы по настроенной политике
 approval. Роли не расширяют свой scope, не выбирают модель и не мержат pull request.
 
-Целостный действующий контракт capability приведён в [backend-orchestration.md](./backend-orchestration.md).
-Контракт описывает её место в системе, роли, clean-room QA и локальное state-хранилище. Этот
-документ содержит подробную процедуру настройки и запуска.
+Место capability в системе, её роли, clean-room QA и локальное state-хранилище описывают
+[архитектура](./ARCHITECTURE.md) и [ADR 0003](./adr/0003-orchestration-core.md). Этот документ
+содержит подробную процедуру настройки и запуска.
 
 Используйте её, когда у задачи есть независимые backend-границы или обязательная независимая
 проверка. Для обычной одной задачи достаточно стандартного pipeline `pvmalove-suite`.
 
 ## Владение правилами
 
-`/implement` — короткий контракт coordinator-а. Он сохраняет порядок handoff
-`architect → developer → code-review → qa → publish`, approval по политике,
-model self-report и watchdog. Это не вторая копия процедуры.
+`/implement` — короткий контракт coordinator-а, а не вторая копия процедуры. Он сохраняет порядок
+handoff `architect → developer → code-review → qa → publish`, approval по политике, model self-report
+и watchdog.
 
 Полные правила принадлежат устанавливаемым модулям: `playbook.md` — lifecycle, authority,
 immutable brief, evidence, параллелизм и метрики; `roles/` — границы и доказательство каждой роли;
@@ -53,7 +53,7 @@ coordinator-а пишется на русском и содержит `"report_l
 разными runtime и сохраняет отчёт читаемым для человека.
 
 Перед первым английским handoff coordinator и workers обязаны прочитать общий контракт
-[Technical English](./technical-english.md). Он также доступен через playbook и `roles/_common.md`.
+[Technical English](../harness/docs/technical-english.md). Он также доступен через playbook и `roles/_common.md`.
 Источник сам описывает свою область, языковые исключения и примеры review. Действующие правила
 языка, authority, scope, привязки evidence к candidate SHA и human approval сохраняются.
 
@@ -90,7 +90,7 @@ python3 harness/bin/harness.py update /path/to/repository --capability backend-o
 ```
 
 `update` не перезаписывает изменённые managed files без явного флага. `--force-managed-files`
-обновляет только managed snapshot и сохраняет seed-документы. `--force-seed-files` перезаписывает
+обновляет только managed snapshot и сохраняет seed-документы, `--force-seed-files` перезаписывает
 только seed, а `--force` объединяет оба действия. После любого включения или изменения конфигурации
 выполните:
 
@@ -100,45 +100,47 @@ python3 harness/bin/harness.py health /path/to/repository
 
 ## 2. Настройка `.harness/orchestration.json`
 
-Конфиг **не обязателен**. Без него coordinator работает на дефолтах: потолок записи ролей —
-весь репозиторий, границу даёт `--allowed-path` batch, `verification_commands` берутся из
+Конфиг **не обязателен**. Без него coordinator работает на дефолтах: потолок записи ролей — весь
+репозиторий (границу даёт `--allowed-path` batch), `verification_commands` берутся из
 `qa_gate_commands` в `.harness/project.json`, `concurrency_budget` равен 1, а `model`/`effort` роли
 приходят из вызывающей сессии (`dispatch create --model <model> --effort <effort>`). Транспорт в
-этом режиме всегда `in-process`. Provider profile нет, значит внешний worker запускать нечем.
-`harness health` принимает такой проект. Конфиг нужен, когда проекту нужен более узкий потолок
-записи, разные модели по ролям, внешний транспорт или бюджет параллелизма больше единицы.
-Справочник всех полей с дефолтами — [`.harness/orchestration/README.md`](../orchestration/README.md).
+этом режиме всегда `in-process`; provider profile нет, поэтому внешний worker запускать нечем.
+`harness health` принимает такой проект. Конфиг нужен, когда проекту требуется более узкий потолок
+записи, разные модели по ролям, внешний транспорт или бюджет параллелизма больше единицы. Справочник
+всех полей с дефолтами — [`.harness/orchestration/README.md`](../harness/orchestration/README.md).
 
-Запускайте coordinator-сессию с `medium` effort по умолчанию. Для architect в assignment plan также
-выбирайте `medium`. Более высокий effort — не дефолт каждого ticket. Он требует явного решения
+По умолчанию запускайте coordinator-сессию с `medium` effort, и для architect в assignment plan
+тоже выбирайте `medium`. Более высокий effort — не дефолт каждого ticket: он требует явного решения
 разработчика для названного труднообратимого вопроса.
 
 `init` создаёт конфиг как копию управляемого примера `.harness/orchestration.example.json`. Пример
-содержит provider profiles `claude-profile` и `codex-profile`, назначения
-architect/developer/code-review/qa на двух runtime, потолок записи на весь репозиторий и
-`approval_policy: low_risk` с `low_risk_paths: ["**"]`. Модели и effort в примере — ориентир,
-замените их на свои. Списки проверок в примере пустые. Впишите реальные project checks в
-`verification_commands` (и при желании в `developer_verification_commands` и
-`review_verification_commands`). У ролей два runtime без `default_runtime`. Поэтому
-`dispatch create` требует `--runtime`, пока вы не зададите `default_runtime`. CLI обновляет пример
+содержит provider profiles `claude-profile` и `codex-profile`, назначения всех восьми ролей на двух
+runtime (`default_runtime: claude`, `transport: in-process`), потолок записи на весь репозиторий,
+`concurrency_budget: 5` и `approval_policy: auto` с `human_approval_gate: trusted` и
+`worker_attestation_required: true`. Модели и effort в примере — ориентир, замените их на свои.
+Списки проверок в примере пустые, потому что команды зависят от стека. Впишите реальные project
+checks в `verification_commands`, `developer_verification_commands`, `review_verification_commands`
+и, чтобы работали подготовка QA и ограниченный инфраструктурный повтор, в `qa_preparation`,
+`qa_environment_probes` и `qa_project_file_checks`. Если вам не нужен полностью автоматический
+путь, выберите другую `approval_policy`. Чтобы выбрать другой runtime для роли, передайте
+`--runtime` в `dispatch create` или смените `default_runtime`. CLI обновляет пример
 при каждом `update`/`adopt`, но никогда не обновляет ваш `.harness/orchestration.json`. Новые поля и
 значения переносите из примера вручную. Правьте provider profiles, `write_paths` ролей, назначение
 для **каждой** используемой роли и project checks под свой проект. Всегда назначайте `code-review`.
 Validator требует его, когда в конфиге есть назначения: это обязательный gate для high-risk работы.
 
-Ниже минимальный полный пример. Имена model и effort принадлежат конкретному проекту.
+Ниже приведён минимальный полный пример; имена model и effort принадлежат конкретному проекту.
 Fallback задаётся в provider profile. Assignment plan каждой роли содержит именованные
-runtime-наборы (`codex`, `claude` и т.п.); в каждом обязательны `profiles`, `model` и `effort`.
-Выбранный runtime фиксируется в immutable brief и не меняется при failover profile.
+runtime-наборы (`codex`, `claude` и т.п.), в каждом из которых обязательны `profiles`, `model` и
+`effort`. Выбранный runtime фиксируется в immutable brief и не меняется при failover profile.
 
-Если у роли несколько runtime, задайте `default_runtime` в её assignment plan. Иначе каждый
-`dispatch create` обязан явно передать `--runtime`. Скрытого fallback на Codex нет. Пример: проект
-всегда хочет запускать review через Claude. Тогда это выглядит как
-`"default_runtime": "claude"` рядом с `runtimes`. Пример также включает
-`"worker_attestation_required": true`: до любой работы worker подтверждает свой фактический Git
-worktree, branch и SHA. Legacy projects могут включить это поле постепенно. `approval_policy: auto`
-требует `worker_attestation_required: true` и `human_approval_gate: trusted`. Проверка конфигурации и
-`harness health` отклоняют другое сочетание.
+Если у роли несколько runtime, задайте `default_runtime` в её assignment plan, иначе каждый
+`dispatch create` обязан явно передать `--runtime`: скрытого fallback на Codex нет. Например, если
+проект всегда хочет запускать review через Claude, рядом с `runtimes` указывается
+`"default_runtime": "claude"`. Пример также включает `"worker_attestation_required": true`: до любой
+работы worker подтверждает свой фактический Git worktree, branch и SHA. Legacy projects могут
+включать это поле постепенно. `approval_policy: auto` требует `worker_attestation_required: true` и
+`human_approval_gate: trusted`; проверка конфигурации и `harness health` отклоняют другое сочетание.
 
 ```json
 {
@@ -187,35 +189,37 @@ worktree, branch и SHA. Legacy projects могут включить это по
 }
 ```
 
-`transport` — необязательное поле assignment plan. Его выбирают для каждой роли отдельно.
+`transport` — необязательное поле assignment plan, которое выбирают для каждой роли отдельно.
 `in-process` (по умолчанию) исполняет роль как субагента текущей coordinator-сессии в worktree того
-же batch. Оба варианта получают один и тот же immutable brief. Оба обязаны пройти model
-self-report и вернуть completion report по общим правилам. Поэтому логика coordinator-а не зависит
-от транспорта. `harness health` проверяет допустимость значения. Для внешнего worker явно укажите
-`"transport": "external"` и передайте проектный adapter. Для `in-process` `dispatch send` только
-фиксирует handoff. Следующим действием coordinator немедленно запускает субагента по уже immutable
-brief, до любого поиска старых report/template или конфигурации. Architect собирает только targeted
-evidence для решения. Его brief не содержит команд проверки, а его отчёт содержит пустой
-`checks_run`. Полный набор `verification_commands` выполняет clean-room QA, а developer получает
-`developer_verification_commands`. Это необязательное поле. Без него сохраняется совместимый режим:
-developer получает полный список. Задавайте в нём быстрые task-scoped проверки, а в
-`verification_commands` — независимый полный gate. `review_verification_commands` тоже необязателен и
-управляет только code-review. Без него review получает полный список. Если
-`developer_verification_commands` не задан, `harness health` предупреждает: developer будет гонять
-полный gate на каждой итерации. Code-review запускает каждую полученную команду через
-`test_summary.py`. В report остаются исходная команда и bounded summary. Санитизированный полный лог
-доступен только для упавшей проверки.
+же batch. Оба варианта получают один и тот же immutable brief, обязаны пройти model self-report и
+вернуть completion report по общим правилам, поэтому логика coordinator-а от транспорта не зависит.
+`harness health` проверяет допустимость значения. Для внешнего worker явно укажите
+`"transport": "external"` и передайте проектный adapter.
+
+Для `in-process` `dispatch send` только фиксирует handoff, а следующим действием coordinator
+немедленно запускает субагента по уже immutable brief — до любого поиска старых report/template или
+конфигурации. Architect собирает только targeted evidence для решения: его brief не содержит команд
+проверки, а отчёт содержит пустой `checks_run`. Полный набор `verification_commands` выполняет
+clean-room QA, а developer получает `developer_verification_commands`. Это необязательное поле; без
+него сохраняется совместимый режим, и developer получает полный список. Задавайте в нём быстрые
+task-scoped проверки, а в `verification_commands` — независимый полный gate. Если
+`developer_verification_commands` не задан, `harness health` предупреждает, что developer будет
+гонять полный gate на каждой итерации. Необязательный `review_verification_commands` управляет
+только code-review, а без него review получает полный список. Code-review запускает каждую
+полученную команду через `test_summary.py`; в report остаются исходная команда и bounded summary, а
+санитизированный полный лог доступен только для упавшей проверки.
 
 Граница записи — не подсказка. Write-роль изменяет только пути, явно закреплённые за batch
-(`--allowed-path`, они попадают в `write_paths` brief), и только внутри потолка роли. Потолок задаёт
-`write_paths` роли в assignment plan (по умолчанию весь репозиторий). Coordinator не создаёт batch
+(`--allowed-path`, они попадают в `write_paths` brief), и только внутри потолка роли, который задаёт
+`write_paths` роли в assignment plan (по умолчанию — весь репозиторий). Coordinator не создаёт batch
 шире потолка и проверяет brief и completion report по scope batch. Model должен быть CLI-алиасом
-или ID без пробелов (например, `sonnet`), а не отображаемым названием. Параллельным batch зоны не
-нужны. У каждого batch свои issue-ветка и worktree. Число одновременно активных batch ограничивает
-`concurrency_budget`. Увеличивайте его только после явного решения coordinator-а. Устаревшие
-`backend_zones`, `zone` в плане роли и `low_risk_zones` остаются валидными и отображаются на пути, но
-новому проекту они не нужны. Сначала прогоните `harness health`. Он проверит JSON, существование
-profile, совместимость capability, fallback и режим `code-review`.
+или ID без пробелов (например, `sonnet`), а не отображаемым названием.
+
+У каждого batch свои issue-ветка и worktree, а число
+одновременно активных batch ограничивает `concurrency_budget`. Увеличивайте его только после
+явного решения coordinator-а. Сначала прогоните
+`harness health`: он проверит JSON, существование profile, совместимость capability, fallback и режим
+`code-review`.
 
 ### Бюджет контекста и preflight
 
@@ -289,9 +293,9 @@ manifests), а значением — непустой список уникал
 ### Политика операционных циклов: attention, approval TTL и extensions
 
 Три необязательных раздела `.harness/orchestration.json` управляют тем, как coordinator останавливает
-зацикленные retry и как проверяет approval. Пропущенное поле берёт дефолт. Coordinator записывает
-resolved-значения в каждый brief как `orchestration_policy`. Поэтому правка файла посреди dispatch
-не меняет условия, под которыми dispatch был утверждён:
+зацикленные retry и как проверяет approval. Пропущенное поле берёт дефолт, а resolved-значения
+coordinator записывает в каждый brief как `orchestration_policy`, поэтому правка файла посреди
+dispatch не меняет условия, под которыми dispatch был утверждён:
 
 ```json
 "attention_policy": {"retry_queue_seconds": 3600, "max_infrastructure_retries": 2, "stale_dispatch_seconds": 3600},
@@ -339,30 +343,29 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 - Компоненты `mode` (`inherit`, `sandbox`, `unsandboxed`), `network.hosts` и `filesystem`
   выбираются независимо от транспорта роли: `in-process` или `external`.
 - Override роли (`roles`) или операции (`operations`: `qa`, `git`, `publish`) заменяет только те
-  компоненты, которые в нём указаны. Остальные берутся из `defaults`. Операции `qa`, `git` и
-  `publish` выполняет сам coordinator, а не worker. Поэтому к ним применяются только `defaults` и
-  собственный override операции. `roles` к ним не применяется никогда. Операцию выбирает сама команда:
-  `publish` для `--purpose publish`, `qa` для роли `qa` и `integration local-qa`, `git` для
-  `integration refresh` и `integration resolve`. Что именно проверяется, описывает раздел
-  «Доступ QA, Git и publish» ниже.
+  компоненты, которые в нём указаны, а остальные берутся из `defaults`. Операции `qa`, `git` и
+  `publish` выполняет сам coordinator, а не worker, поэтому к ним применяются только `defaults` и
+  собственный override операции, а `roles` — никогда. Операцию выбирает сама команда: `publish` для
+  `--purpose publish`, `qa` для роли `qa` и `integration local-qa`, `git` для `integration refresh`
+  и `integration resolve`. Что именно проверяется, описывает раздел «Доступ QA, Git и publish» ниже.
 - `filesystem` называет ресурс: `checkout`, `git_common`, `shared_storage` или `cache` (только `cache`
   требует `path`). Coordinator превращает их в реальные пути worktree, общего Git-каталога и
   хранилища. Корень диска и домашний каталог целиком отклоняются.
-- Права на запись не расширяют `write_paths` brief, tool policy и нативные подтверждения. Read-only
-  роль не получает запись в `checkout`, `git_common` и `shared_storage`.
-- Coordinator записывает разрешённый план (`runtime_access`) в brief. Его sha256 входит в transition
-  digest утверждения. Правка конфига после `dispatch propose` не расширяет утверждённый dispatch:
-  новый доступ требует нового `propose` и нового approval. Briefs без этого поля остаются валидными и
-  читаются как `inherit`.
+- Права на запись не расширяют `write_paths` brief, tool policy и нативные подтверждения, а
+  read-only роль не получает запись в `checkout`, `git_common` и `shared_storage`.
+- Coordinator записывает разрешённый план (`runtime_access`) в brief, и его sha256 входит в
+  transition digest утверждения. Правка конфига после `dispatch propose` не расширяет
+  утверждённый dispatch: новый доступ требует нового `propose` и нового approval. Briefs без этого
+  поля остаются валидными и читаются как `inherit`.
 - `dispatch preflight` показывает разрешённый план и сверку с `runtime_access`. Настройки пользователя
   и аттестация Git-checkout не считаются доказательством текущих прав сети и файловой системы.
 - Расширение `runtime_access` — это нативная реализация, которая наблюдает окружение именно этого
   worker, применяет план и выполняет handoff (`observe`, `apply`, `handoff`). Значение `none` ничего
-  не доказывает. Поэтому без нативной реализации coordinator блокирует `dispatch send` для плана с
-  `sandbox`, `unsandboxed`, хостами или путями. Блокировка наступает до передачи работы. Тихой
-  подмены и отката на `inherit` нет. Нативное подтверждение ничто не заменяет. Харнесс не поставляет
-  такую реализацию. `my_runtime:factory` в примере выше — модуль вашего проекта. До его подключения
-  любой `access_policy`, даже `mode: inherit`, блокирует `dispatch send`. `dispatch status`
+  не доказывает, поэтому без нативной реализации coordinator блокирует `dispatch send` для плана с
+  `sandbox`, `unsandboxed`, хостами или путями. Блокировка наступает до передачи работы: тихой
+  подмены и отката на `inherit` нет, а нативное подтверждение ничем не заменяется. Харнесс такую
+  реализацию не поставляет, и `my_runtime:factory` в примере выше — модуль вашего проекта. Пока он не
+  подключён, любой `access_policy`, даже `mode: inherit`, блокирует `dispatch send`. `dispatch status`
   сохраняет статус и доказательство worker (`runtime_access`).
 
 Если `dispatch send` остановлен, ошибка называет причину. Remedy одинаковый: подготовить указанные
@@ -449,17 +452,17 @@ python .harness/orchestration/coordinator.py --repo . context-package register \
 точный diff, 5–10 стартовых файлов с причинами, bounded symbol/dependency graph, связанные тесты,
 краткие карточки ADR/precedent, SHA-256 каждого включённого файла, byte size и консервативную token
 estimate. Побайтно идентичные файлы (например, зеркало `docs/agents/*` ↔
-`harness/project/docs-agents/*`) остаются стартовыми файлами. Но оценка учитывает их содержимое
-один раз. Причина второй копии называет оригинал и требует держать копии идентичными. Markdown-файл
+`harness/project/docs-agents/*`) остаются стартовыми файлами, но оценка учитывает их содержимое один
+раз; причина второй копии называет оригинал и требует держать копии идентичными. Markdown-файл
 входит в пакет как оглавление, если его оценка не меньше
 `context_package_policy.section_index_min_tokens` (по умолчанию 20000). `sections` перечисляет
-заголовки уровней 1–3 (вне fenced code) с `start_line`/`end_line`. Оценка учитывает только это
+заголовки уровней 1–3 (вне fenced code) с `start_line`/`end_line`; оценка учитывает только это
 оглавление, а роль читает лишь нужные ей диапазоны строк. Файл без заголовков учитывается целиком.
-Для Python AST извлекает сигнатуры прямых локальных зависимостей. Текущий Discovery-контракт
-ограничивает разворачивание одним уровнем. Неподдержанный формат получает первые 30 строк как
-deterministic fallback. При превышении token limit сборка завершается ошибкой и не обрезает пакет
-молча. Legacy `--max-package-size-bytes` можно задать как дополнительную диагностику, но он не
-заменяет token limit.
+Для Python AST извлекает сигнатуры прямых локальных зависимостей, при этом текущий
+Discovery-контракт ограничивает разворачивание одним уровнем. Неподдержанный формат получает первые
+30 строк как deterministic fallback. При превышении token limit сборка завершается ошибкой и не
+обрезает пакет молча. Legacy `--max-package-size-bytes` можно задать как дополнительную диагностику,
+но он не заменяет token limit.
 
 Запись package immutable, versioned и hash-проверяема. Она shared внутри batch. Один и тот же
 base/candidate переиспользует один package ID между architect, developer и continuation sessions.
@@ -536,25 +539,25 @@ QA, publish и рискованные переходы остаются ручн
    ```
 
    `batch create` сначала выполняет `git fetch origin <ref>` — `--integration-ref`, если он передан,
-   иначе `base_branch` проекта (для epic-less задач). Затем он фиксирует полученную вершину как
-   `base_commit`/`integration_base_commit`. Необновлённый локальный HEAD никогда не заменяет её.
+   иначе `base_branch` проекта (для epic-less задач) — и фиксирует полученную вершину как
+   `base_commit`/`integration_base_commit`; необновлённый локальный HEAD её никогда не заменяет.
    Полный маршрут `/implement` требует явно указать `--required-gate review --required-gate qa`
-   (независимые Standards/Spec review и full clean-room QA). Coordinator сверяет их наличие в
+   (независимые Standards/Spec review и full clean-room QA), и coordinator сверяет их наличие в
    `required_gates` до отправки write-role (`developer`) worker-а. В допустимых прямых CLI-сценариях
    `--required-gate` можно опустить (по умолчанию `["none"]`). Дальше review, QA и publish проверяют
-   закреплённый candidate, даже если `origin/<ref>` ушёл вперёд. Обязательной проверки свежести базы
-   и принудительного developer-перезапуска нет. Другие batch это не останавливает. Финальное
+   закреплённый candidate, даже если `origin/<ref>` ушёл вперёд: обязательной проверки свежести базы
+   и принудительного developer-перезапуска нет, и другие batch это не останавливает. Финальное
    обновление базы выполняет `integration refresh` при подготовке PR (раздел «Integration accounting
    после publish»).
 2. Сверить активные batch, `concurrency_budget`, writer и quality-gate lane. Пересечение файлов
-   другого batch не повод откладывать запуск. Занятая serialized quality-gate lane не мешает
+   другого batch не повод откладывать запуск, а занятая serialized quality-gate lane не мешает
    параллельной реализации. Если batch упёрся в бюджет, дождитесь завершения активного batch или
    поднимите `concurrency_budget`.
-3. Создать и отдельно утвердить architect dispatch, принять его отчёт, и только потом — developer
-   dispatch. Порядок жёсткий. Coordinator отклоняет `dispatch create --role developer`, пока для
-   того же batch нет architect-отчёта, принятого через `batch decide --decision accept`. Правило
-   живёт в `coordinator.py`, поэтому действует и для ручного CLI, и для `/implement`. CLI сохраняет
-   immutable brief до передачи:
+3. Создать и отдельно утвердить architect dispatch, принять его отчёт и только потом создать
+   developer dispatch. Порядок жёсткий: coordinator отклоняет `dispatch create --role developer`,
+   пока для того же batch нет architect-отчёта, принятого через `batch decide --decision accept`.
+   Правило живёт в `coordinator.py`, поэтому действует и для ручного CLI, и для `/implement`. CLI
+   сохраняет immutable brief до передачи:
 
    ```bash
    # сначала dry run: показывает канонический переход и его digest, brief не пишет
@@ -630,15 +633,15 @@ QA, publish и рискованные переходы остаются ручн
    python .harness/orchestration/coordinator.py --repo . report complete --dispatch <dispatch-id>
    ```
 
-   `report complete` идемпотентна. Каждый шаг выводится из ledger. Поэтому уже записанное решение,
+   `report complete` идемпотентна: каждый шаг выводится из ledger, поэтому уже записанное решение,
    risk assessment или следующий dispatch не повторяются, а повторный запуск ничего не пишет.
    Команда повторяет только policy, записанную при `report submit` (`auto_accept_policy` в статусе
-   dispatch). Она никогда не записывает report заново и не создаёт dispatch для роли, сдавшей report.
-   Шаг `risk-assess` оценивает candidate report-а. У developer это его `commit_sha` и
-   `changed_files`. У read-only verification это candidate, закреплённый в её dispatch, с файлами из
-   diff от base batch, как их считает `risk assess`.
-   Шаг, которому нужен человек, останавливается с remedy этого шага. Для report, оставленного
-   человеку, все шаги — `not-applicable`. Повторно отправлять report нельзя: он уже записан.
+   dispatch), никогда не записывает report заново и не создаёт dispatch для роли, сдавшей report.
+   Шаг `risk-assess` оценивает candidate report-а: у developer это его `commit_sha` и
+   `changed_files`, а у read-only verification — candidate, закреплённый в её dispatch, с файлами из
+   diff от base batch, как их считает `risk assess`. Шаг, которому нужен человек, останавливается с
+   remedy этого шага. Для report, оставленного человеку, все шаги — `not-applicable`. Повторно
+   отправлять report нельзя: он уже записан.
 
    Ручное решение выглядит так:
 
@@ -754,11 +757,11 @@ QA, publish и рискованные переходы остаются ручн
    Отчёт code-review отчитывается по каждому пункту brief в необязательном `review.carried_items`:
    `[{"item_id": ..., "status": "closed" | "open" | "unverified", "evidence": ...}]`. `report submit`
    отклоняет пункт, которого brief не нёс, повтор пункта, неизвестный статус и пустое evidence.
-   Пропуск пункта структурно допустим. Но пропуск, как и `unverified` и `open`, — это carried gap.
-   Такой отчёт не clean: policy его автоматически не принимает, `--decision accept` отклоняется.
+   Пропуск пункта структурно допустим, но пропуск, как и `unverified` и `open`, — это carried gap, и
+   такой отчёт не clean: policy его автоматически не принимает, а `--decision accept` отклоняется.
    `override-warning` требует `--note`, отличный от `none`, и записывает в решение
    `carried_items_gap`. Отчёт можно и вернуть через `retry`. Правила blocker и warning сохраняют
-   приоритет. Пункт `open` — структурное evidence категории `code`. Поэтому такой retry ведёт в
+   приоритет. Пункт `open` — структурное evidence категории `code`, поэтому такой retry ведёт в
    developer-retry маршрутом `fix-forward`. `batch decision-packet` показывает `carried_items`
    (каждый пункт с `source`, `summary`, `status` — у отчёта code-review `omitted` для пропущенного
    пункта — и `evidence`) и `carried_items_gap`.
@@ -811,7 +814,7 @@ QA, publish и рискованные переходы остаются ручн
    `target_role` (роль, чей brief несёт пункт), `route` (`carry-over`, `narrowed-retry` или
    `tooling-retry`), `reason` и `reason_category` (`tooling` у пункта с `tooling_blocker`, иначе
    `null`). `summary` — это `brief_item`, `files` пуст. `batch decision-packet` показывает
-   `incomplete_items` отчёта. Без `--findings-file` он добавляет `route_preview["carry-over"]` —
+   `incomplete_items` отчёта; без `--findings-file` он добавляет `route_preview["carry-over"]` —
    запись, которую сделает `--carry-incomplete`, либо отказ. `batch decision-packet --narrowed`
    показывает маршрут суженного retry.
 
@@ -826,7 +829,7 @@ coordinator принимает честный отчёт с `outcome: blocked`, 
 candidate он не регистрирует. Для read-only роли вместо SHA указывается
 `not applicable — read-only role`.
 
-Новые факты не меняют отправленный brief. Coordinator добавляет отдельное решение с evidence. Если
+Новые факты не меняют отправленный brief: coordinator добавляет отдельное решение с evidence. Если
 изменились scope, DoD, assignment или proof, текущий dispatch заканчивается и создаётся новый.
 Повтор после `blocked` или `failed` — тоже новый dispatch с новым ID и brief.
 
@@ -852,15 +855,15 @@ code finding. Context limit даёт `context-pressure`, только если �
 | qa | publish | новый qa на том же SHA при том же условии (QA остаётся read-only); defect или новый candidate — `developer-retry` | terminal | `abandoned` |
 | publish | `completed` | новый publish на том же принятом SHA при `verification-infrastructure`/`transport`/`context-pressure`; `developer-retry`, если candidate должен измениться | terminal | `abandoned` |
 
-`code`, `requirements`, `candidate-change` и `unknown` всегда ведут в `developer-retry`. Только три
-operational-категории могут повторить read-only стадию на том же SHA. Это допустимо лишь при пустых
-findings, неизменном candidate и отсутствии scope/requirement blocker. Противоречивая или
-неподтверждённая причина всегда даёт безопасный маршрут `developer-retry`. Повтор на том же SHA —
-это новый immutable dispatch: новый dispatch ID, повторная проверка свежести Context Package и
-собственное явное approval при `manual_all`. Прежние brief, report и blocker остаются audit
-evidence. Фиктивные и пустые commit не используются. Новый candidate всегда требует новой risk
-assessment. `block` и `fail` сами retry не запускают. `--retry-role developer` принудительно
-выбирает developer retry там, где coordinator иначе повторил бы ту же роль на том же SHA.
+`code`, `requirements`, `candidate-change` и `unknown` всегда ведут в `developer-retry`. Повторить
+read-only стадию на том же SHA могут только три operational-категории, и лишь при пустых findings,
+неизменном candidate и отсутствии scope/requirement blocker. Противоречивая или неподтверждённая
+причина всегда даёт безопасный маршрут `developer-retry`. Повтор на том же SHA — это новый
+immutable dispatch: новый dispatch ID, повторная проверка свежести Context Package и собственное
+явное approval при `manual_all`, а прежние brief, report и blocker остаются audit evidence.
+Фиктивные и пустые commit не используются, и новый candidate всегда требует новой risk assessment.
+`block` и `fail` сами retry не запускают. `--retry-role developer` принудительно выбирает developer
+retry там, где coordinator иначе повторил бы ту же роль на том же SHA.
 
 `tooling` — отдельная операционная категория: hook, классификатор безопасности или ledger
 заблокировал законное действие роли. Coordinator присваивает её только по структурному полю
@@ -873,27 +876,27 @@ assessment. `block` и `fail` сами retry не запускают. `--retry-r
 `candidate_commit` routing record. В таблице выше «три operational-категории» по-прежнему означают
 `verification-infrastructure`, `transport` и `context-pressure`.
 
-Если hook заблокировал именно `git commit` developer, developer ничего не откатывает. В
-`tooling_blocker` он добавляет `uncommitted_files`. Это непустой список без повторов. Каждый путь в
-нём записан так, как его печатает Git, и лежит внутри зоны записи. `commit_sha` указывает на
-последний коммит developer. Перезапуск `tooling-retry` наследует эти изменения. `dispatch preflight`
-пинит HEAD на последний коммит developer. Кроме того, он допускает грязный worktree, только если
-его незакоммиченные пути (без состояния coordinator и sandbox-ов инструментов) точно совпадают со
-списком из report и лежат в зоне batch. Preflight отклоняет лишний, недостающий или лежащий вне
-зоны файл. Сообщение и remedy называют каждое расхождение. Чистый worktree без списка проходит, как
-раньше. Для остальных dispatch preflight не проверяет worktree на незакоммиченные изменения.
+Если hook заблокировал именно `git commit` developer, developer ничего не откатывает, а добавляет в
+`tooling_blocker` поле `uncommitted_files` — непустой список без повторов, где каждый путь записан
+так, как его печатает Git, и лежит внутри зоны записи. `commit_sha` при этом указывает на последний
+коммит developer, и перезапуск `tooling-retry` наследует эти изменения. `dispatch preflight`
+пинит HEAD на последний коммит developer и допускает грязный worktree, только если его
+незакоммиченные пути (без состояния coordinator и sandbox-ов инструментов) точно совпадают со
+списком из report и лежат в зоне batch. Лишний, недостающий или лежащий вне зоны файл preflight
+отклоняет, а сообщение и remedy называют каждое расхождение. Чистый worktree без списка проходит, как
+раньше, а для остальных dispatch preflight не проверяет worktree на незакоммиченные изменения.
 
-`block-bypass` — read-only роль (code-review, qa или verification) обошла блокировку hook-а или
-инструмента вместо остановки с `tooling_blocker`. Эту категорию называет только approver. Report с
-нарушением — не evidence: его findings, failed checks и outcome не влияют на маршрут. Лишь
-сдвинутый candidate по-прежнему ведёт в `developer-retry`. Маршрут — `bypass-rerun`: новый dispatch
-той же стадии на том же SHA (verification — на её зарегистрированном candidate) без нового candidate
-commit. `batch decide` требует `--note` с описанием нарушения. Report не принимается и не
-закрывается через override-warning. Новый dispatch всегда требует явного approval
-(`--approved-by`) при любой `approval_policy`, кроме `auto`. `bypass-rerun` не расходует
-`retry_policy.max_developer_retries`. Для architect, developer и publish `block-bypass` отклоняется.
-Такой report по-прежнему получает `retry` с developer-категорией (`code`, `requirements`,
-`candidate-change`) или `block`.
+`block-bypass` означает, что read-only роль (code-review, qa или verification) обошла блокировку
+hook-а или инструмента вместо остановки с `tooling_blocker`. Эту категорию называет только
+approver. Report с нарушением не считается evidence: его findings, failed checks и outcome не влияют
+на маршрут, и лишь сдвинутый candidate по-прежнему ведёт в `developer-retry`. Маршрут —
+`bypass-rerun`: новый dispatch той же стадии на том же SHA (для verification — на её
+зарегистрированном candidate) без нового candidate commit. `batch decide` требует `--note` с
+описанием нарушения, а сам report не принимается и не закрывается через override-warning. Новый
+dispatch всегда требует явного approval (`--approved-by`) при любой `approval_policy`, кроме `auto`,
+и `bypass-rerun` не расходует `retry_policy.max_developer_retries`. Для architect, developer и
+publish `block-bypass` отклоняется: такой report по-прежнему получает `retry` с developer-категорией
+(`code`, `requirements`, `candidate-change`) или `block`.
 
 Retry непринятого developer report продолжает его историю. Пока batch ждёт этот `developer-retry`,
 coordinator берёт candidate из immutable report (`commit_sha`, сверенный по hash) и пинит на него
@@ -911,40 +914,41 @@ transition digest, передайте `--candidate-commit <commit_sha>`. Тог�
 publish по-прежнему пинит `snapshot_commit` на последний принятый developer candidate.
 
 Fix-forward (#503) — маршрут существующего developer-retry, а не новый переход. Решение `retry`,
-ведущее в `developer-retry`, записывает в routing record `retry_item_ids`. Это закрытый список
-перенесённых пунктов, который понесёт brief developer-retry. Список может быть пустым. При retry
-code-review в него входят открытые `coordinator-finding`, находки осей Standards и Spec этого review
+ведущее в `developer-retry`, записывает в routing record `retry_item_ids` — закрытый, возможно
+пустой список перенесённых пунктов, который понесёт brief developer-retry. При retry code-review в
+него входят открытые `coordinator-finding`, находки осей Standards и Spec этого review
 (`review-finding`) и открытые `incomplete-item` для developer. При retry qa, publish или
-verification в него входят те же пункты без находок review. При retry developer work report в него
-входят пункты его собственного brief, ни один из которых не принят. Непустой список делает маршрут
-`fix-forward`. `tooling-retry` developer сохраняет свой маршрут и пишет тот же список. Brief
-developer-retry несёт ровно эти пункты. Расхождение с `retry_item_ids` отклоняется как нарушение
-инварианта. Developer продолжает от `snapshot_commit` новыми коммитами поверх него. В completion
-report он отчитывается полем `carried_item_closure` — по одной записи на каждый пункт brief:
+verification входят те же пункты без находок review, а при retry developer work report — пункты его
+собственного brief, ни один из которых не принят. Непустой список делает маршрут `fix-forward`;
+`tooling-retry` developer сохраняет свой маршрут и пишет тот же список. Brief developer-retry несёт
+ровно эти пункты, а расхождение с `retry_item_ids` отклоняется как нарушение инварианта.
+
+Developer продолжает от `snapshot_commit` новыми коммитами поверх него и в completion report
+отчитывается полем `carried_item_closure` — по одной записи на каждый пункт brief:
 `{"item_id": <id>, "commits": [<sha>, ...]}` с коммитами цепочки retry, которые закрывают пункт,
 или `{"item_id": <id>, "not_closed": "<причина>"}`. Цепочка retry — это этот dispatch и предыдущие
 попытки, передавшие ему тот же закрытый список. Retry developer-отчёта и `tooling-retry` developer
-передают следующей попытке пункты своего brief. У следующей попытки `snapshot_commit` — HEAD
-предыдущей попытки.
-Коммиты отсчитываются от `snapshot_commit` первой попытки цепочки, от которого ещё происходит
-`snapshot_commit` этого dispatch. При утверждённом rebase target отсчёт идёт от него. После ещё не
-принятой попытки `rebase-fix-forward` в цепочке отсчёт идёт от её target. Поэтому пункт, закрытый
-предыдущей попыткой, указывает её коммит, а после rebase — его перенесённую копию. После попытки
-`rebase-fix-forward` цепочке принадлежат два вида коммитов. Первый вид — новые коммиты её попыток.
-Второй вид — перенесённые копии, у которых `rebased_from` в `commit_map` отчёта попытки указывает
-на коммит цепочки. Более ранний rebase учитывается: копия копии ведёт к исходному коммиту.
-Перенесённая копия коммита, который существовал до цепочки, отклоняется. Такой коммит лежит в
-`snapshot_commit` первой попытки или ниже. Remedy тот же, что у оригинала. Есть одно исключение:
-старый rebase stale-base не пишет `rebased_from`. Его closure по-прежнему считает все коммиты выше
-batch target. Completed-отчёт такого brief обязан нести поле. Blocked или failed отчёт может его
-нести. Отчёты остальных brief не могут его нести. `report submit` отклоняет с remedy пропущенный,
-неизвестный или повторный пункт, пустую причину, пустой список коммитов, неразрешимый SHA и
-коммит, который не создала цепочка retry. Коммиты сверяются с Git и у brief без `commit_plan`.
-Пункт `not_closed` — carried gap. Такой отчёт не clean: policy его автоматически не принимает,
-`--decision accept` отклоняется. `override-warning` требует `--note`, отличный от `none`, и
-записывает в решение `carried_items_gap`. `commit_map`
-retry-отчёта сохраняет строгое правило #478. `batch decision-packet` показывает у пунктов
-developer-retry статус `closed` с SHA коммитов или `open` с причиной.
+передают следующей попытке пункты своего brief, а `snapshot_commit` следующей попытки — это HEAD
+предыдущей. Коммиты отсчитываются от `snapshot_commit` первой попытки цепочки, от которого ещё
+происходит `snapshot_commit` этого dispatch; при утверждённом rebase target отсчёт идёт от него, а
+после ещё не принятой попытки `rebase-fix-forward` в цепочке — от её target. Поэтому пункт, закрытый
+предыдущей попыткой, указывает её коммит, а после rebase — его перенесённую копию.
+
+После попытки `rebase-fix-forward` цепочке принадлежат коммиты двух видов: новые коммиты её попыток
+и перенесённые копии, у которых `rebased_from` в `commit_map` отчёта попытки указывает на коммит
+цепочки. Более ранний rebase учитывается: копия копии ведёт к исходному коммиту. Перенесённая копия
+коммита, который существовал до цепочки (он лежит в `snapshot_commit` первой попытки или ниже),
+отклоняется с тем же remedy, что и оригинал. Исключение одно: старый rebase stale-base не пишет
+`rebased_from`, и его closure по-прежнему считает все коммиты выше batch target. Completed-отчёт
+такого brief обязан нести поле, blocked или failed отчёт может его нести, а отчёты остальных brief —
+не могут. `report submit` отклоняет с remedy пропущенный, неизвестный или повторный пункт, пустую
+причину, пустой список коммитов, неразрешимый SHA и коммит, который не создала цепочка retry;
+коммиты сверяются с Git, в том числе у brief без `commit_plan`. Пункт `not_closed` — carried gap, и
+такой отчёт не clean: policy его автоматически не принимает, а `--decision accept` отклоняется.
+`override-warning` требует `--note`, отличный от `none`, и записывает в решение
+`carried_items_gap`. `commit_map` retry-отчёта сохраняет строгое правило #478, а
+`batch decision-packet` показывает у пунктов developer-retry статус `closed` с SHA коммитов или
+`open` с причиной.
 
 Без утверждённого rebase target `commit_sha` retry-отчёта обязан быть потомком `snapshot_commit`.
 Отчёт после amend, squash или reset отклоняется с сообщением `developer-retry candidate <sha> does
@@ -1000,13 +1004,13 @@ Developer переносит коммиты над старой базой ро�
 
 `report submit`, `batch decision-packet` и решение `accept`/`override-warning` возвращают
 `rebase_check`: `rebase_target_commit`, `previous_base_commit`, пары `rebased` с `patch_id_match`
-(сравнение `git patch-id --stable`), `dropped` и `patch_id_mismatches`. Расхождение patch-id —
-конфликт, разрешённый с изменениями. Отчёт не отклоняется и не теряет clean-статус. Пара
-показывается для delta-review. Accept такого отчёта закрепляет `integration_base_commit` = target.
-Так же действует accept более позднего retry, чей candidate уже стоит на этом target. Retry ещё не
+(сравнение `git patch-id --stable`), `dropped` и `patch_id_mismatches`. Расхождение patch-id
+означает конфликт, разрешённый с изменениями: отчёт не отклоняется и не теряет clean-статус, а пара
+показывается для delta-review. Accept такого отчёта закрепляет `integration_base_commit` = target,
+и так же действует accept более позднего retry, чей candidate уже стоит на этом target. Retry ещё не
 принятого rebase-отчёта, как и его `tooling-retry`, считает от target и `changed_files`, и коммиты
-`carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate.
-Ветку обновляет `integration refresh` при подготовке PR (ADR 0014).
+`carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate, а ветку
+обновляет `integration refresh` при подготовке PR (ADR 0014).
 
 Delta-review после fix-forward (#625) — тоже не новый переход и не новое решение. Coordinator сам
 выбирает объём следующего code-review в `dispatch propose` и `dispatch create --role code-review`
@@ -1024,11 +1028,11 @@ Delta-review после fix-forward (#625) — тоже не новый пере
 `--delta-review-of`: test-only delta-review работает как раньше.
 
 Delta — это `git diff <delta_base> <candidate_commit>`. Без rebase `delta_base` — candidate прежнего
-review. После rebase в цепочке берутся коммиты после последнего rebase target. Ведущие перенесённые
-копии считаются проверенными (`reviewed_copies`), если по парам `rebased_from` из `rebase_check`
-отчётов цепочки они ведут к коммиту из диапазона прежнего review. На каждом шаге должен совпасть
-`git patch-id`. `delta_base` — родитель первого другого коммита. Coordinator выбирает режим `full`
-автоматически, без ручного выбора, если найдена хотя бы одна эскалация `{reason, evidence}`:
+review, а после rebase в цепочке берутся коммиты после последнего rebase target. Ведущие
+перенесённые копии считаются проверенными (`reviewed_copies`), если по парам `rebased_from` из
+`rebase_check` отчётов цепочки они ведут к коммиту из диапазона прежнего review и на каждом шаге
+совпадает `git patch-id`; `delta_base` — родитель первого другого коммита. Coordinator выбирает режим
+`full` автоматически, без ручного выбора, если найдена хотя бы одна эскалация `{reason, evidence}`:
 
 - `new-risk-trigger` — триггер risk assessment candidate (вместе с триггерами developer) или
   коммитов и файлов delta, которого не было в assessment прежнего review;
@@ -1039,15 +1043,15 @@ review. После rebase в цепочке берутся коммиты пос
   изменение, которое проверял прежний review, а delta оставшихся коммитов этого не показывает;
 - `no-new-commits` — новых коммитов для проверки нет.
 
-Тогда brief — обычный полный review, а раздел остаётся audit evidence. В режиме `delta`
+В этом случае brief — обычный полный review, а раздел остаётся audit evidence. В режиме `delta`
 `carried_items` brief дополнительно несёт `review-finding` и `incomplete-item` для developer из
-brief принятого developer-retry. Reviewer проверяет обе оси только на delta. Для остального
-candidate он опирается на отчёт прежнего review. Каждый пункт он учитывает в `review.carried_items`.
-Пропуск, `open` или `unverified` — carried gap. `review_scope` и `review.scope` остаются полными.
-Accept любого review, delta или полного, ведёт в `qa`. Clean-room QA идёт на новом SHA с полными
-`verification_commands`. Retry delta-review передаёт следующему developer-retry перенесённые пункты,
-которые review не отметил `closed`. Собственные findings этого review получают следующие номера
-`review-finding-N`.
+brief принятого developer-retry. Reviewer проверяет обе оси только на delta, а для остального
+candidate опирается на отчёт прежнего review; каждый пункт он учитывает в `review.carried_items`, и
+пропуск, `open` или `unverified` — это carried gap. `review_scope` и `review.scope` остаются
+полными. Accept любого review, delta или полного, ведёт в `qa`, а clean-room QA идёт на новом SHA с
+полными `verification_commands`. Retry delta-review передаёт следующему developer-retry
+перенесённые пункты, которые review не отметил `closed`, а собственные findings этого review
+получают следующие номера `review-finding-N`.
 
 Code-review `blocker` никогда не принимается. Пока `retry_policy.max_developer_retries` ещё допускает
 developer retry, для него доступны `retry` или `abandon`. После исчерпания budget `retry`
@@ -1147,33 +1151,39 @@ ledger.
 Каждое решение `retry` и `abandon` в `batch decide` записывает выбранный маршрут восстановления в
 `routing.route` — одно значение закрытого набора `RECOVERY_ROUTES`: `developer-retry`,
 `same-candidate-rerun` (новый code-review, qa или publish на том же SHA), `verification`,
-`architect-retry` и `abandon`. Шестое значение, `report-completion`, `batch decide` не записывает.
-Его называет `completion` у `report submit`, когда policy-цепочка после записанного report
-остановилась (см. шаг 4 выше и «Занятый ledger» ниже). Седьмое, `carry-over`, записывают `accept`
-или `override-warning` с `--findings-file` и `batch carry-over` (см. шаг 4). Это routing record с
-`previous_role: developer`, `next_role` и `next_action` `code-review`, `candidate_commit`,
-`carried_item_ids` и `rationale`, без `reason_category` и `decided_at`. К `next_action` он не
-применяется: следующий шаг идёт через risk assessment, как при любом accept developer. Тот же
-маршрут записывает `accept` или `override-warning` read-only отчёта с `--carry-incomplete`
-(см. шаг 4). Тогда `previous_role` — стадия отчёта, а `next_role` и `next_action` — обычный
-следующий шаг её accept. Восьмое, `tooling-retry`, записывает `retry` с категорией `tooling`
-(см. выше), а также `retry --narrowed`, если пункт несёт `tooling_blocker`. Девятое, `bypass-rerun`, записывает `retry`
-с категорией `block-bypass` (см. выше). Десятое, `narrowed-retry`, записывает `retry --narrowed` по
-невыполненным пунктам read-only отчёта (см. шаг 4). Его routing record дополнительно называет
-`carried_item_ids`. Одиннадцатое, `fix-forward`, записывает `retry`, который ведёт в
-`developer-retry` с непустым закрытым списком перенесённых пунктов (см. выше). Двенадцатое,
-`rebase-fix-forward`, записывает `retry`, который ведёт в `developer-retry`, пока integration base
-ушла вперёд (см. выше). Его routing record дополнительно называет `rebase_target_commit` и
-`integration_base_commit`. Тринадцатое, `supersede`, `batch decide` не записывает. Его записывает
-`batch create --supersedes` в `coordinator_decisions` нового batch (см. «Замещающий batch» выше).
-Каждый routing record с `next_action: developer-retry`
-(`developer-retry`, `fix-forward`, `rebase-fix-forward` и `tooling-retry` developer) дополнительно
-называет `retry_item_ids`. Маршрут ставится там же, где `next_action`, по тем же
-структурированным данным и никогда по свободному тексту. У `abandon` routing record той же формы.
-Но `reason_category`, `next_role`, `next_action` и `candidate_commit` равны `null`, а `rationale`
-содержит только структурные факты (`--reason` остаётся в `note`). Нормативная таблица «ситуация →
-маршрут → кто утверждает → evidence» — раздел «Recovery route table» в
-`.harness/orchestration/playbook.md`.
+`architect-retry` и `abandon`. Остальные значения `batch decide` либо записывает при особых
+условиях, либо не записывает вовсе:
+
+- `report-completion` `batch decide` не записывает. Его называет `completion` у `report submit`,
+  когда policy-цепочка после записанного report остановилась (см. шаг 4 выше и «Занятый ledger»
+  ниже).
+- `carry-over` записывают `accept` или `override-warning` с `--findings-file` и `batch carry-over`
+  (см. шаг 4). Это routing record с `previous_role: developer`, `next_role` и `next_action`
+  `code-review`, `candidate_commit`, `carried_item_ids` и `rationale`, без `reason_category` и
+  `decided_at`; к `next_action` он не применяется, а следующий шаг идёт через risk assessment, как
+  при любом accept developer. Тот же маршрут записывает `accept` или `override-warning` read-only
+  отчёта с `--carry-incomplete` (см. шаг 4): тогда `previous_role` — стадия отчёта, а `next_role` и
+  `next_action` — обычный следующий шаг её accept.
+- `tooling-retry` записывает `retry` с категорией `tooling` (см. выше), а также `retry --narrowed`,
+  если пункт несёт `tooling_blocker`.
+- `bypass-rerun` записывает `retry` с категорией `block-bypass` (см. выше).
+- `narrowed-retry` записывает `retry --narrowed` по невыполненным пунктам read-only отчёта (см.
+  шаг 4); его routing record дополнительно называет `carried_item_ids`.
+- `fix-forward` записывает `retry`, который ведёт в `developer-retry` с непустым закрытым списком
+  перенесённых пунктов (см. выше).
+- `rebase-fix-forward` записывает `retry`, который ведёт в `developer-retry`, пока integration base
+  ушла вперёд (см. выше); его routing record дополнительно называет `rebase_target_commit` и
+  `integration_base_commit`.
+- `supersede` `batch decide` не записывает: его записывает `batch create --supersedes` в
+  `coordinator_decisions` нового batch (см. «Замещающий batch» выше).
+
+Каждый routing record с `next_action: developer-retry` (`developer-retry`, `fix-forward`,
+`rebase-fix-forward` и `tooling-retry` developer) дополнительно называет `retry_item_ids`. Маршрут
+ставится там же, где `next_action`, по тем же структурированным данным и никогда по свободному
+тексту. У `abandon` routing record той же формы, но `reason_category`, `next_role`, `next_action` и
+`candidate_commit` равны `null`, а `rationale` содержит только структурные факты (`--reason`
+остаётся в `note`). Нормативная таблица «ситуация → маршрут → кто утверждает → evidence» — раздел
+«Recovery route table» в `.harness/orchestration/playbook.md`.
 
 `batch decision-packet` показывает маршрут до записи решения: поле `route_preview` содержит
 `retry` — routing record, вычисленный так же, как в `batch decide` (без `decided_at`), и `abandon` —
@@ -1276,8 +1286,8 @@ python .harness/orchestration/coordinator.py --repo . batch auto-report --batch 
 ```
 
 Без записанного отчёта команда записывает остановку, которую показывает ledger, или выводит
-live-отчёт с `recorded: false`. Политика не открывает и не мерджит PR. PR открывается только после
-явного подтверждения человека. Auto-merge запрещён.
+live-отчёт с `recorded: false`. Политика не открывает и не мерджит PR: PR открывается только после
+явного подтверждения человека, а auto-merge запрещён.
 
 ### Approval, привязанный к digest перехода
 
@@ -1337,8 +1347,9 @@ blocker. Read-only роль возвращает blocker. Continuation созд�
 ### Attention state
 
 `needs_attention` — флаг batch, а не lifecycle-состояние: он не меняет `state`, `next_action`,
-candidate и evidence, но запрещает создание следующего dispatch. Поля: `needs_attention`,
-`attention_reason`, `attention_since`, `last_safe_action`, `recommended_human_action`. Причины:
+candidate и evidence, но запрещает создание следующего dispatch. Флаг описывают поля
+`needs_attention`, `attention_reason`, `attention_since`, `last_safe_action` и
+`recommended_human_action`. Причины:
 
 | `attention_reason` | Когда |
 | --- | --- |
@@ -1399,10 +1410,10 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 python .harness/orchestration/coordinator.py --repo . batch list --ticket '#123'
 ```
 
-Обычный путь к терминальному состоянию — `batch decide`. Но он требует ровно один отчёт, ожидающий
-решения, а отчёт требует живой dispatch с подтверждённой моделью. Worker, умерший до self-report,
-никогда не отчитается. Такой batch не закрыть ни `fail`, ни `block`. Для этого случая есть
-отдельная команда:
+Обычный путь к терминальному состоянию — `batch decide`, но он требует ровно один отчёт,
+ожидающий решения, а отчёт требует живой dispatch с подтверждённой моделью. Worker, умерший до
+self-report, никогда не отчитается, и такой batch не закрыть ни `fail`, ни `block`. Для этого
+случая есть отдельная команда:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . batch abandon \
@@ -1550,7 +1561,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch status \
 `dispatch status` показывает для каждого dispatch роль, транспорт, `resolved_model`, результат
 self-report, время последнего heartbeat, `silent_seconds` и признак `stale`. Это обобщение
 QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
-coordinator выносит человеку. Сам coordinator не меняет состояние по таймауту.
+coordinator выносит человеку, а сам по таймауту состояние не меняет.
 
 `dispatch heartbeat` принимает необязательную пару `--context-tokens <N> --context-source probe`.
 Это число токенов, измеренное coordinator-ом в live-пробе контекста (см. «Отчётность и мониторинг
@@ -1560,8 +1571,8 @@ coordinator выносит человеку. Сам coordinator не меняе�
 событие в `dispatch wait` не вводится.
 
 `dispatch status` дополнительно отдаёт для каждого dispatch последнюю запись `telemetry`
-(`dispatch telemetry`, см. ниже) и `context_advisory`. Это чистое чтение. Отсутствие телеметрии не
-считается ошибкой. Тогда `telemetry` и `context_advisory.observed` равны `null`, а
+(`dispatch telemetry`, см. ниже) и `context_advisory`. Это чистое чтение, и отсутствие телеметрии
+ошибкой не считается: `telemetry` и `context_advisory.observed` тогда равны `null`, а
 `context_advisory.level` остаётся `"ok"`.
 
 ### Занятый ledger, `report complete` и `ledger release-lock`
@@ -1610,9 +1621,9 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock
 моложе порога, владелец может ещё записывать себя, поэтому команда отказывает. Владелец, который за
 `LEDGER_LOCK_STALE_SECONDS` так и не записал созданную запись, считается завершившимся.
 
-Успех — `{"released": true, "reason": ..., "lock": {...}}`. Если lock нет —
-`{"released": false, "lock": null}`. Отказ — ошибка с причиной, владельцем и `held_seconds`; lock
-при этом не трогается. Объект `lock` описывает снятый lock:
+Успех возвращает `{"released": true, "reason": ..., "lock": {...}}`, а если lock нет —
+`{"released": false, "lock": null}`. Отказ — это ошибка с причиной, владельцем и `held_seconds`, и
+lock при этом не трогается. Объект `lock` описывает снятый lock:
 
 | Поле | Значение |
 | --- | --- |
@@ -1622,10 +1633,10 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock
 | `acquired_at` | `acquired_at` из записи, иначе mtime `owner.json` для нечитаемой записи или каталога lock |
 | `held_seconds` | сколько секунд lock держится к моменту проверки |
 
-Команда снимает только тот lock, который проверила. Если владелец сменился во время снятия, она
-отказывает и просит повторить. Запуски `ledger release-lock` не пересекаются. Их сериализует
-файловая блокировка ОС (`.coordinator.lock.release` в каталоге state). Система снимает её сама при
-выходе процесса. Второй параллельный запуск получает отказ
+Команда снимает только тот lock, который проверила: если владелец сменился во время снятия, она
+отказывает и просит повторить. Запуски `ledger release-lock` не пересекаются, потому что их
+сериализует файловая блокировка ОС (`.coordinator.lock.release` в каталоге state), которую система
+снимает сама при выходе процесса. Второй параллельный запуск получает отказ
 `another ledger release-lock is releasing the ledger lock` и повторяется после первого. Удалять lock
 или другие файлы state вручную нельзя.
 
@@ -1638,9 +1649,9 @@ python .harness/orchestration/coordinator.py --repo . dispatch telemetry --file 
 Команда записывает source-observed метрики (worker- или coordinator-сессии) в audit trail batch-а:
 `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `max_context_tokens`,
 `tool_calls`, `tool_output_bytes`, `poll_turns`, `restart_reason`, `recorded_at`. Недостающее
-provider-поле остаётся `null`, а не оценочным нулём. Команда **intentionally data-only**: она не
-может изменить состояние роли, планирование, approvals или model routing. Она только пишет запись
-телеметрии.
+provider-поле остаётся `null`, а не оценочным нулём. Команда **intentionally data-only**: она только
+пишет запись телеметрии и не может изменить состояние роли, планирование, approvals или model
+routing.
 
 В **возвращаемом значении** (не в сохранённой ledger-записи) команда добавляет
 `context_advisory: {"level": "ok"|"warn"|"over", "limit", "warn_at", "observed"}`. Это
@@ -1729,9 +1740,9 @@ checkpoint или completion report будет принят. Круг замык
 ### Clean-room QA lane
 
 Coordinator сам выполняет одобренный `qa` dispatch в отдельном temporary Git worktree,
-отсоединённом ровно на `candidate_commit`. Команды берутся буквально из
-`verification_commands` immutable brief. Несовпадение HEAD или грязный worktree останавливает
-проверку. Запуск не передают runtime adapter:
+отсоединённом ровно на `candidate_commit`. Команды берутся буквально из `verification_commands`
+immutable brief, а несовпадение HEAD или грязный worktree останавливает проверку. Запуск не
+передают runtime adapter:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . qa run \
@@ -1739,7 +1750,7 @@ python .harness/orchestration/coordinator.py --repo . qa run \
 ```
 
 В репозитории существует одна FIFO-полоса тяжёлых проверок. Если она занята, команда сохраняет
-запрос и возвращает `state: queued` с позицией. Повторный вызов для того же dispatch запустит его,
+запрос и возвращает `state: queued` с позицией, а повторный вызов для того же dispatch запустит его,
 только когда он станет первым. Состояние и текущий owner видны без запуска gate:
 
 ```bash
@@ -1774,10 +1785,10 @@ exit code и санитизированная диагностика упавш�
 артефактом: команды и exit codes должны совпасть с его блоками. Если подготовка упала, команды gate
 в `checks_run` записываются как `not-run`. Это не выдуманная упавшая проверка кода.
 
-Причину провала подготовки подтверждают независимые факты. Ни exit code, ни ключевое слово в
-логе не решают в одиночку. Сама стадия подготовки не доказывает инфраструктурную причину.
-Сигнатуры лога лишь подкрепляют диагноз. Без настроенных проб и проверок файлов проекта
-инфраструктурная причина не подтверждается. Тогда провал требует triage:
+Причину провала подготовки подтверждают независимые факты: ни exit code, ни ключевое слово в логе
+не решают в одиночку, а сама стадия подготовки инфраструктурную причину не доказывает. Сигнатуры
+лога лишь подкрепляют диагноз, и без настроенных проб и проверок файлов проекта инфраструктурная
+причина не подтверждается. Тогда провал требует triage:
 
 | Диагноз | Подтверждение | Report | Маршрут `batch decide --decision retry` |
 | --- | --- | --- | --- |
@@ -1814,19 +1825,19 @@ Developer retry budget не расходуется. Opt-in, бюджет и ко
 повтор для старого approval и не меняет команды нового уже утверждённого brief.
 
 После QA preparation failure policy продолжает только маршрут `same-candidate-rerun` с
-подтверждённым `infrastructure`, `code_checks_started: not_started` и неизменным SHA.
-Перед решением coordinator проверяет доступ и заново выполняет закреплённые независимые пробы
-окружения и проверки файлов проекта в чистом checkout. Если среда ещё не готова, нового dispatch
-нет. После устранения причины в прежних границах выполните:
+подтверждённым `infrastructure`, `code_checks_started: not_started` и неизменным SHA. Перед
+решением coordinator проверяет доступ и заново выполняет закреплённые независимые пробы окружения и
+проверки файлов проекта в чистом checkout; если среда ещё не готова, нового dispatch нет. После
+устранения причины в прежних границах выполните:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . report complete --dispatch <qa-dispatch-id>
 ```
 
 Каждый состоявшийся повтор получает новый immutable dispatch и источник решения
-`policy:infrastructure-retry`. Прежние brief/report/artifact сохраняются. Повтор `report complete`
-возвращает уже созданный dispatch. Прерывание после решения докатывает недостающий шаг.
-Команда не запускает worker и не открывает PR.
+`policy:infrastructure-retry`, а прежние brief/report/artifact сохраняются. Повтор `report complete`
+возвращает уже созданный dispatch, а прерывание после решения докатывает недостающий шаг. Команда
+не запускает worker и не открывает PR.
 
 Отказ доступа до запуска QA или publish не создаёт report о проверке кода. Для opt-in dispatch
 coordinator сохраняет structured access attempt и checksum. Когда тот же ресурс стал доступен,
@@ -1837,12 +1848,12 @@ python .harness/orchestration/coordinator.py --repo . dispatch retry-infrastruct
 ```
 
 Этот путь разрешён только для отказа, подтверждённого probe (`denied`), при свежем подтверждении
-готовности. Старый unsent brief отменяется с audit причины. Новый brief сохраняет этап,
-SHA, команды, runtime/model/effort, scope и доступ. Повтор команды возвращает прежний результат.
-Publish remote также должен остаться тем же. Затем запускайте `qa run` или `dispatch publish`
-с новым ID. Неподтверждённый сетевой отказ (`unverified`), неподдержанный режим (`unsupported`),
-отказ самим планом и произвольная ошибка Git требуют ручного разбора. Git-операции без
-утверждённого dispatch сохраняют ручной маршрут. Opt-in не разрешает произвольную команду Git.
+готовности. Старый unsent brief отменяется с audit причины, а новый сохраняет этап, SHA, команды,
+runtime/model/effort, scope и доступ; повтор команды возвращает прежний результат. Publish remote
+тоже должен остаться тем же. Затем запускайте `qa run` или `dispatch publish` с новым ID.
+Неподтверждённый сетевой отказ (`unverified`), неподдержанный режим (`unsupported`), отказ самим
+планом и произвольная ошибка Git требуют ручного разбора. Git-операции без утверждённого dispatch
+сохраняют ручной маршрут: opt-in не разрешает произвольную команду Git.
 
 Смена candidate, команд или доступа, неизвестная причина и исчерпание бюджета останавливают
 policy и поднимают `needs_attention`. Снимает attention человек. Это не увеличивает бюджет
@@ -1853,12 +1864,12 @@ policy и поднимают `needs_attention`. Снимает attention чел�
 локальный bare remote и новый пустой cache внутри разрешённого shared storage. Зафиксируйте полный
 SHA harness и candidate, чистоту checkout и точные preparation/gate команды. Через публичный CLI
 пройдите batch/dispatch approval, native handoff роли, preparation/clean-room QA и publish
-accepted SHA. Подтвердите отказ доступа, отсутствие retry до готовности, ограниченный повтор
-и сохранение evidence. Dynamic IDs и digest берите из JSON команд. Native approval принимает
-coding-runtime согласно действующей политике пользователя. Orchestration policy её не заменяет.
+accepted SHA, а затем подтвердите отказ доступа, отсутствие retry до готовности, ограниченный
+повтор и сохранение evidence. Dynamic IDs и digest берите из JSON команд. Native approval принимает
+coding-runtime согласно действующей политике пользователя, и orchestration policy её не заменяет.
 Не меняйте machine/global профили, не очищайте пользовательский cache, не создавайте PR и не
-выполняйте merge. Внешний push требует разрешения на конкретный smoke remote. Push в локальный bare
-remote проверяет Git/publish, но не внешний Git-доступ.
+выполняйте merge. Внешний push требует разрешения на конкретный smoke remote, а push в локальный
+bare remote проверяет Git/publish, но не внешний Git-доступ.
 
 Первые шаги из source checkout (пути и actual model задаёт человек):
 
@@ -1877,22 +1888,22 @@ python "$SMOKE_REPO/.harness/orchestration/coordinator.py" --repo "$SMOKE_REPO" 
 
 Перед этим локальный `origin` должен содержать `integration/smoke`, а checkout — чистую issue branch.
 Создайте tracked `smoke.py`, manifest/lock и реальные project-owned команды подготовки, независимой
-пробы сети/cache и offline проверки файлов. Настройте opt-in до proposal. Создайте отдельный cache
-и зафиксируйте его пустоту. Для QA используется, например,
-`UV_CACHE_DIR=<новый-cache> UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked`. Developer
+пробы сети/cache и offline проверки файлов. Настройте opt-in до proposal, создайте отдельный cache и
+зафиксируйте его пустоту. Для QA используется, например,
+`UV_CACHE_DIR=<новый-cache> UV_PROJECT_ENVIRONMENT=.harness/.venv uv sync --locked`, а developer
 использует другой cache. Runner выбирает Python из `.harness/.venv` текущего clean-room checkout.
-Команда gate должна проверять фактическое изменение в `smoke.py`, расположение `sys.prefix` и
-импортируемого пакета в этом checkout. Сохраните фактический `executed_command` из stage evidence.
+Команда gate должна проверять фактическое изменение в `smoke.py`, а также расположение `sys.prefix`
+и импортируемого пакета в этом checkout. Сохраните фактический `executed_command` из stage evidence.
 
 Выберите transport до создания batch. Для отдельной native CLI-сессии задайте
 `assignment_plans.<role>.transport: "external"` и реальные `runtimes`, `provider_profiles` и команды
-проверок. У authored assignment plan обязательны architect, developer, code-review и qa. Health
-проверяет этот набор. Подготовьте project-owned adapter, который получает `dispatch --repo --brief`
-и действительно запускает coding CLI в approved worktree с моделью и effort из brief. Adapter
+проверок. В authored assignment plan обязательны architect, developer, code-review и qa, и health
+проверяет этот набор. Подготовьте project-owned adapter, который получает `dispatch --repo --brief` и
+действительно запускает coding CLI в approved worktree с моделью и effort из brief; он
 возвращается после запуска worker и не управляет ledger. Для `in-process` роль запускают как
-субагента текущей coordinator-сессии. Отдельную CLI-сессию нельзя считать таким субагентом.
+субагента текущей coordinator-сессии, и отдельную CLI-сессию таким субагентом считать нельзя.
 
-Из JSON `batch create` возьмите `batch_id`. Затем человек или явно назначенный им coordinator
+Из JSON `batch create` возьмите `batch_id`, после чего человек или явно назначенный им coordinator
 выполняет `batch approve` с `--approved-by` и фактическим `--approved-at`. В том же smoke checkout:
 
 ```bash
@@ -1912,16 +1923,16 @@ python .harness/orchestration/coordinator.py --repo . dispatch send \
 ```
 
 `DIGEST` берётся из просмотренного proposal, `DISPATCH` — из create. Handoff выводит путь brief,
-report staging path и ожидаемую модель. При `external` роль запускает adapter. При `in-process`
-роль запускает coordinator в своей coding-сессии. Роль выполняет
+report staging path и ожидаемую модель. При `external` роль запускает adapter, при `in-process` —
+coordinator в своей coding-сессии. Роль выполняет
 `dispatch self-report --dispatch "$DISPATCH" --model "$ACTUAL_MODEL" --worktree "$SMOKE_REPO"`,
 затем `dispatch heartbeat --dispatch "$DISPATCH"` и настоящий `report submit --file <report>`.
 Architect не меняет код и не запускает full gate. После проверки report coordinator сохраняет
 его план как `{"commit_plan": [...]}` в `$COMMIT_PLAN` и выполняет
 `batch decide --batch "$BATCH" --decision accept --commit-plan-file "$COMMIT_PLAN" --approved-by "$APPROVER" --approved-at "$APPROVED_AT"`.
-Повторите proposal/create/send для developer. Его commit/report задают полный candidate SHA.
+Повторите proposal/create/send для developer: его commit/report задают полный candidate SHA.
 `risk assess --batch "$BATCH" --candidate-commit "$SHA" --changed-file smoke.py` определяет,
-нужен ли review. Требуемый review нельзя пропустить. Его send использует checkout точного SHA.
+нужен ли review, и требуемый review пропустить нельзя; его send использует checkout точного SHA.
 
 Для нового qa proposal/create добавьте `--candidate-commit "$SHA"` и используйте `qa run`,
 не `dispatch send`. Устройте отказ записи только в созданном cache (в POSIX fixture —
@@ -1937,25 +1948,25 @@ Publish proposal/create задаёт `--role developer --purpose publish --candi
 а не разрешение продолжать сценарий. Авторизованный inherit coordinator операций не доказывает
 применение authored прав worker. Запускайте только режим, подтверждённый действующим extension.
 
-В evidence сохраняйте runtime/версию/transport/режим, полные SHA, native параметры и proof
-фактического доступа, команды/exit codes, readiness, dispatch IDs и checksum. Удалите secrets.
-Health-конфиг и checkout attestation не доказывают сетевые права.
+В evidence сохраняйте runtime, версию, transport и режим, полные SHA, native параметры и proof
+фактического доступа, команды с exit codes, readiness, dispatch IDs и checksum, предварительно
+удалив secrets. Health-конфиг и checkout attestation сетевые права не доказывают.
 
 Проверки этой реализации покрывают настоящие Git/ledger, preparation/gate, same-SHA retry,
-budget, attention, metadata refusal и локальный publish. Это контролируемые проверки. Они не
+budget, attention, metadata refusal и локальный publish. Это контролируемые проверки: они не
 доказывают native handoff и всю runtime-матрицу. Для native handoff с authored планом доступа нужна
-реализация `extensions.runtime_access`. Она должна наблюдать и применять фактический доступ worker.
-`none` не предоставляет такого proof. Явно выбранный непроверенный режим блокируется.
-`legacy-inherit` сохраняет прежнюю передачу задания, но не подтверждает права worker.
+реализация `extensions.runtime_access`, которая наблюдает и применяет фактический доступ worker;
+`none` такого proof не даёт, а явно выбранный непроверенный режим блокируется. `legacy-inherit`
+сохраняет прежнюю передачу задания, но права worker не подтверждает.
+
 Проверенный 2026-10-08 native smoke установлен из harness
 `cca45e172c7b3685c012e7e6c077356d6cbd6722`: Linux, Codex CLI 0.160.1, настоящий project adapter и
-две отдельные роли `architect`/`developer`. Candidate
-`1dba1785bc809971981129c747e85bffd9b29c51` прошёл preparation и gate в новом clean-room checkout
-с пустым QA cache, свежей `.harness/.venv` и скачанными зависимостями. Затем candidate опубликован
-в local bare remote. Отказ cache и отказ записи `.git` остановили продолжение до readiness.
-Восстановление израсходовало два общих infrastructure retry. Replay сохранил successor IDs, прежние
-records сохранили checksum.
-Batch завершён через публичный CLI. Это подтверждает только следующие границы:
+две отдельные роли `architect`/`developer`. Candidate `1dba1785bc809971981129c747e85bffd9b29c51`
+прошёл preparation и gate в новом clean-room checkout с пустым QA cache, свежей `.harness/.venv` и
+скачанными зависимостями, после чего был опубликован в local bare remote. Отказ cache и отказ записи
+`.git` остановили продолжение до readiness. Восстановление израсходовало два общих infrastructure
+retry, replay сохранил successor IDs, а прежние records сохранили checksum. Batch завершён через
+публичный CLI. Это подтверждает только следующие границы:
 
 | Runtime / transport / режим | Результат native smoke | Граница evidence |
 | --- | --- | --- |
@@ -1974,12 +1985,12 @@ CLI flags, host execution coordinator и POSIX `chmod` fixture не доказы
 код и не перезапускает проверку самостоятельно.
 
 После accepted QA evidence coordinator создаёт, но не запускает, publish dispatch для того же
-candidate SHA. Только developer publish отправляет этот SHA. Ни QA, ни review, ни adapter не
-создают и не мержат PR. После publish человек вручную запускает `/to-pull-requests <ticket>`. Этот
-шаг проверяет accepted QA evidence текущего SHA и ведёт обычный ручной PR workflow без повторного
-тяжёлого gate. Хук `require-qa-gate.sh` принимает то же evidence сам. Повторный gate и маркер не
-нужны для чистого checkout с `HEAD`, равным accepted `candidate_commit`, и с `pass` по каждой
-команде `qa_gate_commands`. Иначе остаётся прежний путь с маркером.
+candidate SHA. Этот SHA отправляет только developer publish, а ни QA, ни review, ни adapter не
+создают и не мержат PR. После publish человек вручную запускает `/to-pull-requests <ticket>`: он
+проверяет accepted QA evidence текущего SHA и ведёт обычный ручной PR workflow без повторного
+тяжёлого gate. Хук `require-qa-gate.sh` принимает то же evidence сам, поэтому повторный gate и
+маркер не нужны для чистого checkout с `HEAD`, равным accepted `candidate_commit`, и с `pass` по
+каждой команде `qa_gate_commands`. Иначе остаётся прежний путь с маркером.
 
 Обычная точка входа — `/implement <ticket>`. Эта сессия сама становится coordinator-ом и ведёт
 описанный цикл. Она останавливается на пяти approval-гейтах (architect, developer, code-review, qa,
@@ -2046,25 +2057,26 @@ python .harness/orchestration/coordinator.py --repo . integration refresh \
   --ticket '#123' --branch feature/issue-123-short-name
 ```
 
-Он читает текущий SHA integration ref. Если он равен target пары, rebase не запускается
-(`state: unchanged`, ничего не пишется). Иначе команда перебазирует issue-ветку в worktree своего
-batch на этот точный SHA. Затем она публикует ветку через `--force-with-lease` с ожидаемым старым
-SHA: чужой коммит на remote не теряется. Команда отказывает с remedy в таких случаях: worktree не
-на issue-ветке на записанном candidate; worktree имеет незакоммиченные изменения или операцию в
-процессе; remote-ветка уже не равна записанному candidate. Stash, reset и обход не применяются.
-Protected и `integration/*` ветки целью записи не бывают. Чужие worktree не затрагиваются. Чистый
-rebase возвращает `state: rebased`, `new_candidate_sha` и `verification_required: true`, не
+Команда читает текущий SHA integration ref. Если он равен target пары, rebase не запускается
+(`state: unchanged`, ничего не пишется). Иначе она перебазирует issue-ветку в worktree своего batch
+на этот точный SHA и публикует ветку через `--force-with-lease` с ожидаемым старым SHA, так что
+чужой коммит на remote не теряется. Команда отказывает с remedy, если worktree не на issue-ветке
+на записанном candidate, если в worktree есть незакоммиченные изменения или операция в процессе или
+если remote-ветка уже не равна записанному candidate. Stash, reset и обход не применяются, protected
+и `integration/*` ветки целью записи не бывают, а чужие worktree не затрагиваются.
+
+Чистый rebase возвращает `state: rebased`, `new_candidate_sha` и `verification_required: true`, не
 вызывает resolver и не тратит его два цикла. Текстовый конфликт возвращает `state: conflict` и
-`resolver` (`conflicting_files`, `candidate_sha`, `target_sha`, `worktree`, `cycles_spent: 0`).
-Rebase отменяется, ветка и worktree остаются как были. Rebase пишет immutable
+`resolver` (`conflicting_files`, `candidate_sha`, `target_sha`, `worktree`, `cycles_spent: 0`);
+rebase при этом отменяется, а ветка и worktree остаются как были. Rebase пишет immutable
 `IntegrationRefreshRecord` в `reports/integration-refresh/` (прежний и новый candidate, target,
-коммиты до и после). Старое QA остаётся историческим evidence. Новый candidate подтверждают CI или
-local-QA пары через `link-evidence`. Повторный review из-за refresh не нужен. Конфликт и работу,
-которой нужен developer, ведёт маршрут rebase из ADR 0012. `refresh` от него не зависит.
+коммиты до и после). Старое QA остаётся историческим evidence, а новый candidate подтверждают CI
+или local-QA пары через `link-evidence`; повторный review из-за refresh не нужен. Конфликт и работу,
+которой нужен developer, ведёт маршрут rebase из ADR 0012, и `refresh` от него не зависит.
 
 `resolve` — маршрут текстового конфликта (роль `conflict-resolver`, ADR 0015). Он ничего не пишет в
-Git. Чистый rebase он отклоняет (это работа `refresh`). Конфликт превращается в новый batch вида
-`resolver` рядом с завершённым batch тикета (его brief, отчёты и история не меняются):
+Git и отклоняет чистый rebase, потому что это работа `refresh`. Конфликт превращается в новый batch
+вида `resolver` рядом с завершённым batch тикета, при этом его brief, отчёты и история не меняются:
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . integration resolve \
@@ -2080,12 +2092,12 @@ batch; `sides.target` — plan-записи тикетов `(#N)` из subject �
 `report_staging_path`. Роль открывает skill `resolving-merge-conflicts`, сохраняет требования обеих
 сторон и не добавляет функциональность вне них.
 
-Бюджет — два автоматических target SHA. Третий требует решения человека. Цикл тратит только
-зафиксированный отчёт resolver-а по новому target SHA. Чистый rebase, ответ человека и правка на
-том же target цикл не тратят. Правки на одном target ограничены `retry_policy.max_developer_retries`.
-Бюджет выводится из append-only событий `reports/resolver-events/` (`cycle-spent`,
-`same-target-fix`, `human-decision`, `scope-change`, `exhausted`). Поэтому потеря сессии или resume
-его не сбрасывают.
+Бюджет — два автоматических target SHA, а третий требует решения человека. Цикл тратит только
+зафиксированный отчёт resolver-а по новому target SHA, тогда как чистый rebase, ответ человека и
+правка на том же target цикл не тратят. Правки на одном target ограничены
+`retry_policy.max_developer_retries`. Бюджет выводится из append-only событий
+`reports/resolver-events/` (`cycle-spent`, `same-target-fix`, `human-decision`, `scope-change`,
+`exhausted`), поэтому потеря сессии или resume его не сбрасывают.
 
 Несовместимые требования resolver не угадывает: он пишет checkpoint (`blockers` — конкретное описание
 и варианты) и завершает сессию. Ответ человека фиксируется отдельным событием до resume:
@@ -2151,16 +2163,16 @@ python .harness/orchestration/coordinator.py --repo . integration local-qa \
 
 Команда закрепляет immutable запрос (пара candidate/target, причина, полный список
 `verification_commands`) и запускает существующий gate runner в изолированном clean-room checkout
-точного candidate. Ветка задачи, terminal source batch и принятые отчёты не меняются, код не
-чинится. Запуск идёт через общую FIFO-очередь QA (`qa status`): два тяжёлых QA не работают
-одновременно, остальные batch продолжают реализацию. Команда пишет результат отдельной immutable
-записью с командами, санитизированным артефактом и checksum. Затем она привязывает его как evidence
-`kind: local-qa` с `verification: verified`, но только если пара и remote-ветка не сдвинулись.
-Прежний результат не подтверждает другой SHA или движение target. Провал проверки — finding с
-`state: failed`. Он остаётся для маршрутизации PR-сессией. Недоступность инфраструктуры — отдельный
-`state: unavailable` без findings. Повтор возможен только явным `--retry` и не более
-`max_infrastructure_retries`, затем наступает `state: exhausted`. Вручную привязанный `local-qa`
-остаётся `unverified` и проверку пары не закрывает.
+точного candidate. Ветка задачи, terminal source batch и принятые отчёты при этом не меняются, и
+код не чинится. Запуск идёт через общую FIFO-очередь QA (`qa status`): два тяжёлых QA не работают
+одновременно, а остальные batch продолжают реализацию. Результат команда пишет отдельной immutable
+записью с командами, санитизированным артефактом и checksum и привязывает его как evidence
+`kind: local-qa` с `verification: verified`, но только если пара и remote-ветка не сдвинулись:
+прежний результат не подтверждает другой SHA или движение target. Провал проверки — finding с
+`state: failed`, который остаётся для маршрутизации PR-сессией. Недоступность инфраструктуры даёт
+отдельный `state: unavailable` без findings. Повтор возможен только явным `--retry` и не более
+`max_infrastructure_retries`, после чего наступает `state: exhausted`. Вручную привязанный
+`local-qa` остаётся `unverified` и проверку пары не закрывает.
 
 `next` — read-only шаг продолжения PR (ADR 0017). Он ничего не пишет в Git, ledger, dispatch и PR и
 не обращается к трекеру. Он классифицирует `status`, evidence, открытые resolver batch и события
@@ -2221,10 +2233,11 @@ protection и merge queue автоматически не включаются. 
 
 `link-evidence` — единственный публичный способ привязать к записи будущие результаты CI, local-QA
 или resolver (`--kind ci|local-qa|resolver`). Каждая привязка — отдельная immutable запись со своей
-парой `candidate_sha`/`target_sha` и `verification: unverified`. Исходное evidence записи никогда не
-получает новую пару. Проверка новой пары не подменяет старую. Повтор той же привязки идемпотентен
-(`linked: false`). Эта операция не запускает сами CI, local-QA и resolver. В `status` каждая
-привязка показывает, относится ли её пара к текущему tip (`pair_checks[].applies_to_current_pair`).
+парой `candidate_sha`/`target_sha` и `verification: unverified`; исходное evidence записи никогда не
+получает новую пару, а проверка новой пары не подменяет старую. Повтор той же привязки
+идемпотентен (`linked: false`). Сами CI, local-QA и resolver эта операция не запускает. В `status`
+каждая привязка показывает, относится ли её пара к текущему tip
+(`pair_checks[].applies_to_current_pair`).
 
 ### Advisory tool call
 
@@ -2241,7 +2254,7 @@ python .harness/orchestration/advisory.py summarize-log --file qa-output.log
 python .harness/orchestration/advisory.py classify-risk --text "data migration for payments" --known-trigger data-migration
 ```
 
-Его вывод — не авторизация. Coordinator/contract validation path не принимает advisory-вывод как
+Вывод advisory не является авторизацией: coordinator/contract validation path не принимает его как
 основание создать dispatch, понизить риск, принять QA или изменить scope. Единственным
 авторитетным источником риска остаётся `coordinator.py risk assess`.
 
@@ -2261,8 +2274,8 @@ Adapter отвечает за запуск worker в выбранной сред
 post-integration defects, включая источник и отсутствующие данные. Форма и единые правила подсчёта
 лежат в `.harness/orchestration/pilot.md`.
 
-Полный нормативный источник — `.harness/orchestration/playbook.md`. Role-specific границы лежат в
-`.harness/orchestration/roles/`. При противоречии между удобством конкретного runtime и этим
+Полный нормативный источник — `.harness/orchestration/playbook.md`, а границы отдельных ролей лежат
+в `.harness/orchestration/roles/`. При противоречии между удобством конкретного runtime и этим
 контрактом приоритет у manifest'а, immutable brief и явного approval.
 
 Архитектурный контракт маршрута целиком зафиксирован в

@@ -25,9 +25,6 @@
 ## 3. Контракты
 - **Вход (Input/Brief):** Входной поток (stdin), содержащий bash-команду и `cwd`. Текущее состояние git-репозитория (HEAD и незакоммиченные изменения) checkout публикуемой ветки.
 - **Выход (Output/Report):** Код возврата `0` (разрешение выполнения) или код возврата `2` с выводом сообщения об ошибке в `stderr` (блокировка команды).
-## 4. Архитектурная схема
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [require-qa-gate.sh](../../harness/project/hooks/require-qa-gate.sh), [qa-gate-state.py](../../harness/project/hooks/qa-gate-state.py), [pr_commands.py](../../harness/project/hooks/pr_commands.py)

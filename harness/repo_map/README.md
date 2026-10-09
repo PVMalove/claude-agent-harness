@@ -65,8 +65,9 @@ CLI не считает деградацию bundle ошибкой.
 `tree_sitter_worker.py <install_dir>` читает из stdin
 `{"paths": {"<path>": "<base64>"}, "languages": {"<extension>": "<grammar>"}}` и пишет в stdout
 `{"files": {"<path>": FileFacts}}`. Backend берёт таблицу `languages` из `grammars[].extensions`
-lock. Только lock задаёт, какая грамматика соответствует расширению. Если запрос без `languages`
-(harness до этого изменения), worker использует совместимую таблицу по умолчанию.
+lock, потому что только lock определяет, какая грамматика соответствует расширению. Если запрос
+пришёл без `languages` (harness до этого изменения), worker использует совместимую таблицу по
+умолчанию.
 
 Структура `FileFacts`: `parser_status`, `signatures[{text, symbols[]}]`,
 `imports[{module, level, names[]}]`, `definitions[]`, `references[]`. `bundle_worker._file_facts`
@@ -178,7 +179,7 @@ SHA-256 защищает полезную нагрузку, и Repo Map повт
 bundle, а не тестовый stub. `harness health` распознаёт lock без поддерживаемых грамматик и сообщает
 `tier=minimal (parser bundle has no supported grammars)` с рекомендацией заменить bundle.
 
-Локальный bundle собирается из wheels своей пары. Эти wheels закреплены с SHA-256 в
+Локальный bundle собирается из wheels своей пары, которые закреплены с SHA-256 в
 `.github/parser-bundle-release-wheels.json` (например, `cp314-win_amd64`). Скачайте ровно эти файлы,
 сверьте SHA-256 и выполните:
 
@@ -186,10 +187,10 @@ bundle, а не тестовый stub. `harness health` распознаёт loc
 .harness/.venv/Scripts/python.exe scripts/build_parser_bundle.py --wheelhouse <каталог wheels> --out .harness/.sandboxes/cache/repo_map/parser_bundle/registry
 ```
 
-После изменения `tree_sitter_worker.py` пересоберите bundle. Registry хранит собственную копию
-worker с её SHA-256 в lock. Поэтому старый bundle продолжит запускать прежнюю копию.
+После изменения `tree_sitter_worker.py` пересоберите bundle: Registry хранит собственную копию
+worker с её SHA-256 в lock, поэтому старый bundle продолжит запускать прежнюю копию.
 
-Фокусный прогон при изменении Repo Map (Windows). Короткий `--basetemp` обязателен. Иначе установка
+Фокусный прогон при изменении Repo Map (Windows). Короткий `--basetemp` обязателен: иначе установка
 bundle во временный репозиторий теста упирается в MAX_PATH и даёт `parser bundle install failed`.
 
 ```powershell
@@ -198,13 +199,13 @@ $env:PYTHONPATH = "."
 .harness/.venv/Scripts/python.exe -m pytest -q -n 4 --basetemp .harness/.sandboxes/scratch/pt tests/repo_map/test_repo_map.py tests/repo_map/test_parser_bundle.py tests/repo_map/test_repo_map_tree_sitter.py tests/repo_map/test_repo_map_tree_sitter_go.py tests/repo_map/test_repo_map_tree_sitter_java.py tests/repo_map/test_repo_map_tree_sitter_csharp.py tests/repo_map/test_repo_map_tree_sitter_unsupported.py tests/repo_map/test_repo_map_tree_sitter_determinism.py
 ```
 
-Полный `scripts/verify.py` — это gate QA и CI. Для итераций разработчика он не нужен (см.
+Полный `scripts/verify.py` — это gate QA и CI, и для итераций разработчика он не нужен (см.
 `developer_verification_commands` в `.harness/orchestration.json`).
 
 ## Политика проекта
 
-CLI использует явно переданный `--policy` или `.harness/orchestration.json`, если файл существует.
-Без файла действуют переносимые значения по умолчанию. Пример:
+CLI использует явно переданный `--policy` или `.harness/orchestration.json`, если файл существует;
+без файла действуют переносимые значения по умолчанию. Пример:
 
 ```json
 {
@@ -230,9 +231,9 @@ CLI использует явно переданный `--policy` или `.harne
 }
 ```
 
-Шаблоны путей и символов чувствительны к регистру. `redact_paths` полностью исключает путь,
+Шаблоны путей и символов чувствительны к регистру. `redact_paths` полностью исключает путь, а
 `redact_symbols` удаляет совпадающие определения и ссылки до построения графа. Неизвестные поля
-отклоняются. Coordinator проверяет `min_tier` и `min_tier_by_role` при допуске dispatch. На
+отклоняются. Coordinator проверяет `min_tier` и `min_tier_by_role` при допуске dispatch, а на
 генерацию карты они не влияют. Значения по умолчанию: `max_files` 10 000, `max_file_bytes`
 2 000 000, `timeout_seconds` 10, `parser_bundle_timeout_seconds` 30,
 `parser_bundle_max_output_bytes` 10 000 000.
@@ -252,9 +253,9 @@ artifact и запускает свои тесты без `-k` и без про�
 Ручной workflow `release-parser-bundle` берёт `.github/parser-bundle-release-wheels.json` и строит
 матрицу Python 3.12–3.14 × Windows x64, Linux x64, macOS arm64. Он проверяет хеши и создаёт общий
 lock, CycloneDX 1.6 SBOM и результат `pip-audit` с пустым кэшем. Для запуска нужен `release_tag`
-существующего GitHub Release, который указывает на коммит запуска. После проверок workflow сохраняет
-artifact запуска и загружает архив bundle как Release asset. Workflow не перезаписывает существующий
-asset. Wheels в репозиторий не коммитятся. Контракт поставки описан в
+существующего GitHub Release, который указывает на коммит запуска. После проверок workflow
+сохраняет artifact запуска и загружает архив bundle как Release asset, но существующий asset не
+перезаписывает. Wheels в репозиторий не коммитятся. Контракт поставки описан в
 [ADR 0008](../../docs/adr/0008-repo-map.md).
 
 ## Архитектурные решения и SOLID

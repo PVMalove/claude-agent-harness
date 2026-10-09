@@ -23,10 +23,6 @@ Conflict Resolver — write-роль для текстового конфлик�
 - **Процесс (Process):** rebase на точный SHA target, разрешение каждого конфликта с сохранением обеих сторон, проверки проекта, коммит резолюции; checkpoint при несовместимости.
 - **Выход (Output/Report):** commit SHA резолюции, точные changed files, проверки и блок `resolver` (сохранённые требования, решения человека, причина, коммиты по плану). После принятия идёт узкий маршрут: без повторного review, но с новыми QA и CI либо local-QA.
 
-## 4. Архитектурная схема
-
-![Контракт роли: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [conflict-resolver.md](../../harness/orchestration/roles/conflict-resolver.md)

@@ -31,13 +31,13 @@ Claude Code и Codex находят один snapshot через свои native
    пользователем файлы.
 2. `/to-spec` сохраняет список в эпике в `## Relevant Files (Discovery Context)`.
 3. `/to-tickets` назначает пути tracer-bullet тикетам, строит Path inventory и один раз
-   вызывает cheap advisory. Advisory может только добавить exact dependency из Path inventory.
+   вызывает cheap advisory, который может лишь добавить exact dependency из Path inventory.
 4. `context_builder.py` читает pinned `base_commit`/`candidate_commit` без LLM и строит immutable
    Context Package: exact diff, 5–10 стартовых файлов с причинами, bounded graph, связанные тесты,
    ADR/precedent cards, размер и SHA-256. Локальные импорты раскрываются на один уровень; для
    неподдержанных форматов используются первые 30 строк.
 5. Coordinator регистрирует package в ledger и перед каждым новым dispatch записывает его freshness
-   в shadow-режиме. Stale package surfaced coordinator-у, но пока не блокирует dispatch.
+   в shadow-режиме: stale package он видит, но dispatch пока не блокируется.
 
 ![Discovery Pipeline](./diagrams/previews/discovery-pipeline.workflow.png)
 
@@ -81,13 +81,13 @@ test-only diff и всегда является новым независимы�
 - [архитектура harness](./diagrams/harness-topology.architecture.html);
 - [implement с гейтами](./diagrams/implement-pipeline.workflow.html) и [sequence](./diagrams/implement-dispatch.sequence.html);
 - [runtime/dispatch](./diagrams/backend-runtime.workflow.html), [QA/PR](./diagrams/qa-call-path.workflow.html);
-- [capability dataflow](./diagrams/capability-delivery.dataflow.html), [skill contract](./diagrams/skill-contract-fill.workflow.html).
+- [capability dataflow](./diagrams/capability-delivery.dataflow.html).
 
-Правится только `*.json`; после изменения запускаются `validate`, `deliver` и `visual-check`. Код
-проверяется `scripts/test_clean_room.py`, unit-тестами и командами из `.harness/project.json`. Для
-telemetry `delivery-stats` сохраняет cache read/write tokens, worker sessions/restart reasons,
-review diff scope excess и QA failure rate только при наличии наблюдаемого источника; отсутствующие
-значения остаются `нет данных`.
+Диаграммы правятся только в `*.json`; после изменения запускаются `validate`, `deliver` и
+`visual-check`. Код проверяется `scripts/test_clean_room.py`, unit-тестами и командами из
+`.harness/project.json`. Telemetry `delivery-stats` сохраняет cache read/write tokens, worker
+sessions/restart reasons, review diff scope excess и QA failure rate только при наличии
+наблюдаемого источника, а отсутствующие значения остаются `нет данных`.
 
-Подробные правила находятся в [backend-orchestration.md](../harness/docs/backend-orchestration.md), [harness-guide.md](../harness/docs/harness-guide.md)
+Подробные правила находятся в [backend-orchestration.md](./backend-orchestration.md), [harness-guide.md](./harness-guide.md)
 и [ADR 0005](./adr/0005-implement-pipeline.md).

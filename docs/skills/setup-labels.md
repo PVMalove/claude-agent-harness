@@ -41,10 +41,6 @@ disable-model-invocation: true
 - **Вход (Input/Brief):** `docs/agents/triage-labels.md` и явное подтверждение мейнтейнера.
 - **Выход (Output/Report):** по одной строке результата для каждой метки.
 
-## 4. Архитектурная схема
-
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/setup-labels/SKILL.md)

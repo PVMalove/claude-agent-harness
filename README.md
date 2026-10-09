@@ -14,7 +14,7 @@
 
 ## Портативный фреймворк для оркестрации ИИ-агентов (Claude Code, Codex).
 
-Harness - это единый набор скиллов, системных правил, hooks и контекстных документов. Одна команда разворачивает его в любой целевой проект. Он устанавливает проверяемый, независимый snapshot (capability). Snapshot работает через нативные механизмы агентов и живет в проекте автономно, без привязки к исходному репозиторию.
+Harness — это единый набор скиллов, системных правил, hooks и контекстных документов, который одна команда разворачивает в любой целевой проект. Установка создаёт проверяемый независимый snapshot (capability): он работает через нативные механизмы агентов и живёт в проекте автономно, без привязки к исходному репозиторию.
 
 Совместимость и стабильность полностью проверены для `Claude Code` и `Codex`.
 
@@ -49,14 +49,14 @@ hooks, агентов и конфигурацию из отдельных шаб
 
 [![Конвейер implement](./docs/diagrams/previews/implement-pipeline.workflow.png)](./docs/diagrams/implement-pipeline.workflow.html)
 
-Backend batches выполняются в отдельных worktrees. Роли обмениваются неизменяемыми briefs и
-reports. Tree-sitter parser запускается в отдельном worker-процессе. Временные файлы размещаются в
+Backend batches выполняются в отдельных worktrees, а роли обмениваются только неизменяемыми briefs и
+reports. Tree-sitter parser работает в отдельном worker-процессе. Временные файлы лежат в
 `.harness/.sandboxes/`: inbox ролей — в `scratch/`, тела PR и комментарии — в `pr_body/`.
 
 [![Изоляция процессов и временных файлов](./docs/diagrams/previews/process-isolation.architecture.png)](./docs/diagrams/process-isolation.architecture.html)
 
-[ADR](./docs/adr/) описывают действующие контракты. [Справочник](./harness/docs/harness-guide.md)
-и [правила Git](./docs/agents/git-workflow.md) описывают операционные процедуры.
+[ADR](./docs/adr/) описывают действующие контракты, а [справочник](./docs/harness-guide.md)
+и [правила Git](./docs/agents/git-workflow.md) — операционные процедуры.
 
 ## Скиллы
 
@@ -170,29 +170,31 @@ python harness\bin\harness.py health C:\path\to\repository
 ```
 
 Без `--capability` команда устанавливает доменно-нейтральную `project-foundation`.
-`mattpocock-suite` предоставляет полный закреплённый upstream-набор. `backend-orchestration`
-добавляет coordinator и роли поверх `pvmalove-suite`. `harness diff` показывает изменения
-управляемого snapshot. `harness update` обновляет его и сохраняет локальные правки.
-`harness uninstall` полностью удаляет харнесс из проекта. Без `--apply` команда показывает план.
-С `--apply --confirm UNINSTALL` команда удаляет `.harness/`, discovery-ссылки, seed-файлы и строки
-харнесса в `.gitignore`. Перед удалением команда копирует изменённые проектом файлы в
-`.harness-uninstall-backup/`. [Справочник](./harness/docs/harness-guide.md) описывает команды и
-параметры.
+`mattpocock-suite` даёт полный закреплённый upstream-набор, а `backend-orchestration` добавляет
+coordinator и роли поверх `pvmalove-suite`. `harness diff` показывает изменения управляемого
+snapshot, `harness update` обновляет его и сохраняет локальные правки.
+
+`harness uninstall` полностью удаляет харнесс из проекта. Без `--apply` команда только показывает
+план; с `--apply --confirm UNINSTALL` она удаляет `.harness/`, discovery-ссылки, seed-файлы и строки
+харнесса в `.gitignore`, предварительно скопировав изменённые проектом файлы в
+`.harness-uninstall-backup/`. Команды и параметры описаны в [справочнике](./docs/harness-guide.md).
 
 Установщик переносит в целевой проект только выбранные ресурсы `harness/`, скиллы и шаблоны
-`harness/project/`. Корневой `docs/` содержит документацию исходного репозитория.
-При `pvmalove-suite` и `backend-orchestration` установщик разворачивает шаблоны проектных руководств
-из `harness/project/docs-agents/` как `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`.
-Справочник харнесса, руководство по backend-оркестрации и контракт интерактивного поиска по памяти
-входят в управляемый snapshot. Установщик устанавливает `harness/docs/` в
-`.harness/docs/{harness-guide,backend-orchestration,project-memory}.md`, а команда
-`harness update` обновляет эти файлы. Для существующего проекта следуйте
-[инструкции обновления и включения памяти](./harness/docs/harness-guide.md#обновление-существующего-проекта-и-включение-памяти).
-Обновление сохраняет `project.json`, а schema и opt-in поля памяти вы переносите отдельно.
+`harness/project/`. Документация для разработчика — корневой `docs/`, справочник харнесса
+[`harness-guide.md`](./docs/harness-guide.md) и руководство по backend-оркестрации
+[`backend-orchestration.md`](./docs/backend-orchestration.md) — остаётся в исходном репозитории и в
+целевой проект не попадает. Агентам доставляются только их собственные контракты:
+`.harness/docs/project-memory.md` (контракт интерактивного поиска по памяти) и
+`.harness/docs/technical-english.md`, а при `pvmalove-suite` и `backend-orchestration` ещё и шаблоны
+проектных руководств из `harness/project/docs-agents/`, которые разворачиваются как
+`docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`. `harness update`
+обновляет эти файлы. Для существующего проекта следуйте
+[инструкции обновления и включения памяти](./docs/harness-guide.md#обновление-существующего-проекта-и-включение-памяти):
+обновление сохраняет `project.json`, поэтому schema и opt-in поля памяти нужно перенести отдельно.
 
-При любой capability установщик устанавливает общий
+При любой capability установщик ставит общий
 [контракт технического английского](./harness/docs/technical-english.md) как
-`.harness/docs/technical-english.md`. Контракт обновляется в составе управляемого snapshot. `diff` и
+`.harness/docs/technical-english.md` и обновляет его в составе управляемого snapshot. `diff` и
 `update` показывают отдельный unified diff недостающих обязательных ссылок для существующих
 `AGENTS.md`, `CLAUDE.md` и установленных agent seeds. Команды сохраняют пользовательские инструкции.
 После просмотра и явного согласования человек или уполномоченный агент применяет только эти
@@ -237,7 +239,7 @@ python3 harness/bin/harness.py health /path/to/repository --json     # маши�
 - `--json` возвращает контракт `schema_version: 1` со стабильными `checks[].id` (например,
   `files.lock`).
 
-[Справочник](./harness/docs/harness-guide.md#шаг-2--команды-cli) содержит полное описание проверок.
+Полное описание проверок — в [справочнике](./docs/harness-guide.md#шаг-2--команды-cli).
 
 ## Пульт управления: `harness console`
 
@@ -253,11 +255,11 @@ python3 harness/bin/harness.py console /path/to/repository
 запуске загружается `textual`, поэтому требуется доступ к сети. При отсутствии `uv` или сети пульт
 выводит причину и текстовый отчёт `harness health`.
 
-Оформление пульта: терракотовые и янтарные акценты на графитовом фоне, тонкие скруглённые рамки.
-Главный экран содержит знак харнесса и сведения об установке: версию, capability, путь репозитория и
-ветку. Дашборд расположен ниже: счётчики проверок, число открытых batch оркестрации, уровень
-Repo Map, версия харнесса и состояние дрейфа snapshot. Действие «Online checks» пересчитывает
-счётчики с `--online`. Разделы меню:
+Пульт оформлен терракотовыми и янтарными акцентами на графитовом фоне с тонкими скруглёнными
+рамками. На главном экране — знак харнесса и сведения об установке: версия, capability, путь
+репозитория и ветка. Ниже расположен дашборд со счётчиками проверок, числом открытых batch
+оркестрации, уровнем Repo Map, версией харнесса и состоянием дрейфа snapshot; действие
+«Online checks» пересчитывает счётчики с `--online`. Разделы меню:
 
 | Раздел | Содержание |
 |---|---|
@@ -272,29 +274,28 @@ Repo Map, версия харнесса и состояние дрейфа snaps
 `b` — хронология batch в отчёте или построение карты в `Repo Map`, `F3` — QA-логи в `Reports`,
 `F1` — справка с любого экрана, `Ctrl+P` — палитра команд, `Ctrl+Q` — выход.
 
-Для каждой команды пульт отображает CLI-эквивалент и запускает тот же CLI-процесс. Пульт
-отображает команды из «Как исправить», но не выполняет их. Перед необратимыми действиями пульт
-запрашивает подтверждение. Для `ledger reset`, hard cleanup и удаления харнесса пульт требует ввод
-`RESET`, `HARD` или `UNINSTALL`. Пульт сохраняет экспорты в `docs/tasks/<папка тикета>/artifacts/`
-или `docs/tasks/console-exports/`. Пульт не перезаписывает существующие файлы.
+Для каждой команды пульт показывает CLI-эквивалент и запускает тот же CLI-процесс. Команды из
+«Как исправить» он только отображает и не выполняет. Перед необратимыми действиями пульт
+запрашивает подтверждение, а для `ledger reset`, hard cleanup и удаления харнесса требует ввести
+`RESET`, `HARD` или `UNINSTALL`. Экспорты сохраняются в `docs/tasks/<папка тикета>/artifacts/` или
+`docs/tasks/console-exports/` и никогда не перезаписывают существующие файлы.
 
 ## Релизная политика
 
-Версии соответствуют SemVer. Новую версию задают в `harness/VERSION`, `pyproject.toml` и секции
-`CHANGELOG.md` в обычном PR. После merge в `master` [GitHub CD](./.github/workflows/release.yml)
+Версии соответствуют SemVer. Новую версию задают в обычном PR: в `harness/VERSION`,
+`pyproject.toml` и секции `CHANGELOG.md`. После merge в `master` [GitHub CD](./.github/workflows/release.yml)
 проверяет, существует ли тег `vMAJOR.MINOR.PATCH` для этой версии. Если тега нет, CD выполняет
-проверки `verify.yml` и создаёт архив установки и SHA-256. Затем CD создаёт тег на проверенном
-коммите и GitHub Release. Push в `master` без смены версии не создаёт Release. Ручная публикация
-тега остаётся поддерживаемой. CD формирует Release Notes из секции версии в
-[CHANGELOG.md](./CHANGELOG.md). Если секции нет, CD прерывает выпуск. Архив и контрольная сумма
-доступны в [GitHub Releases](https://github.com/PVMalove/claude-agent-harness/releases). Проверка
-после загрузки: `sha256sum --check claude-agent-harness-vX.Y.Z.tar.gz.sha256`.
+проверки `verify.yml`, собирает архив установки с SHA-256, создаёт тег на проверенном коммите и
+публикует GitHub Release; push в `master` без смены версии Release не создаёт. Ручная публикация
+тега по-прежнему поддерживается. Release Notes CD берёт из секции версии в
+[CHANGELOG.md](./CHANGELOG.md) и прерывает выпуск, если секции нет. Архив и контрольная сумма
+доступны в [GitHub Releases](https://github.com/PVMalove/claude-agent-harness/releases); после
+загрузки их проверяет `sha256sum --check claude-agent-harness-vX.Y.Z.tar.gz.sha256`.
 
-Workflow [`release-parser-bundle.yml`](./.github/workflows/release-parser-bundle.yml) прикладывает
-дополнительный parser bundle к Release того же коммита. Этот workflow запускают вручную.
-[releases.md](./docs/agents/releases.md) описывает полную процедуру. В целевых проектах GitLab
-поддерживается через `glab` при работе с тикетами и merge requests. Релизный CD этого репозитория
-работает на GitHub.
+Workflow [`release-parser-bundle.yml`](./.github/workflows/release-parser-bundle.yml) запускают
+вручную: он прикладывает дополнительный parser bundle к Release того же коммита. Полная процедура
+описана в [releases.md](./docs/agents/releases.md). В целевых проектах GitLab поддерживается через
+`glab` для тикетов и merge requests, а релизный CD этого репозитория работает только на GitHub.
 
 ## Структура проекта
 

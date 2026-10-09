@@ -46,7 +46,7 @@ HELP_MARKDOWN = """\
 
 ## Документация
 
-- Справочник харнесса: `.harness/docs/harness-guide.md`
-- Backend-оркестрация: `.harness/docs/backend-orchestration.md`
+- Команды и флаги: `harness --help`
+- Контракт оркестрации и роли: `.harness/orchestration/playbook.md`
 - Настройки `orchestration.json`: `.harness/orchestration/README.md`
 """

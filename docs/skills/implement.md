@@ -165,8 +165,9 @@ module-owned guidance:
 - `.harness/orchestration/playbook.md` владеет lifecycle, authority, immutable brief, completion
   evidence, parallelism и metric rules.
 - `.harness/orchestration/roles/` владеет boundary, required proof и specialist trigger каждой роли.
-- `harness/docs/backend-orchestration.md` владеет setup, project configuration, CLI procedure и
-  operational recovery.
+- `--help` и вывод `remedy` координаторского CLI владеют CLI procedure и operational recovery в целевом
+  проекте. Руководство разработчика `docs/backend-orchestration.md` описывает setup и project
+  configuration, но живёт только в исходном репозитории и в проект не поставляется.
 - `docs/agents/git-workflow.md` владеет issue-branch, commit, push и PR boundaries.
 
 Следуйте этим файлам, не дублируя и не ослабляя их правила. Не придумывайте token metrics:
@@ -195,7 +196,7 @@ remedy и не обходите его. Завершённый batch и его r
 
 ## 4. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![/implement: конвейер с гейтами](../diagrams/previews/implement-pipeline.workflow.png)
 
 ## Источник
 

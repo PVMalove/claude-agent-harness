@@ -610,6 +610,25 @@ def run(ctx: SimpleNamespace) -> None:
         shallow=False,
     ):
         sys.exit("pvmalove-suite did not install the interactive memory contract")
+    for human_guide in ("harness-guide.md", "backend-orchestration.md"):
+        if (pv_project / ".harness" / "docs" / human_guide).exists():
+            sys.exit(f"pvmalove-suite installed a developer guide: {human_guide}")
+    # An older installation delivered the guides; update must retire them without touching others.
+    stale_lock_path = pv_project / ".harness" / "harness.lock"
+    stale_lock = json.loads(stale_lock_path.read_text(encoding="utf-8"))
+    for human_guide in ("harness-guide.md", "backend-orchestration.md"):
+        stale = pv_project / ".harness" / "docs" / human_guide
+        stale.write_text("# legacy copy\n", encoding="utf-8")
+        stale_lock["files"][f".harness/docs/{human_guide}"] = hashlib.sha256(
+            stale.read_bytes()
+        ).hexdigest()
+    stale_lock_path.write_text(json.dumps(stale_lock), encoding="utf-8")
+    capture(HARNESS + ["update", str(pv_project)])
+    for human_guide in ("harness-guide.md", "backend-orchestration.md"):
+        if (pv_project / ".harness" / "docs" / human_guide).exists():
+            sys.exit(f"update kept a retired developer guide: {human_guide}")
+    if not (pv_project / ".harness" / "docs" / "project-memory.md").is_file():
+        sys.exit("update removed the interactive memory contract")
     qa_gate_skill = pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md"
     if not qa_gate_skill.is_file():
         sys.exit("pvmalove-suite addition qa-gate missing")

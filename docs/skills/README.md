@@ -21,19 +21,18 @@
 
 ## Закреплённые upstream skills
 
-Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в
-[vendor/](./vendor/). Их исходные `SKILL.md` закреплены в upstream snapshot. Не правьте их
-вручную. First-party overrides с совпадающими именами описаны здесь отдельно по действующей
-версии `pvmalove-suite`.
+Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в [vendor/](./vendor/).
+Их исходные `SKILL.md` закреплены в upstream snapshot и вручную не правятся, а first-party
+overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`.
 
 ## Связанные документы
 
 - Discovery Context начинается в `/grilling` через opt-in `Live Artifact` и проходит через
   `Relevant Files` и ticket-specific Path inventory. Backend batch использует LLM-free
   `Context Package`, checkpoint/continuation для write-роли и base-commit gate. Операционные
-  правила собраны в [backend-orchestration](../../harness/docs/backend-orchestration.md).
-  [ADR 0003](../adr/0003-orchestration-core.md) описывает актуальное устройство,
-  [ADR 0005](../adr/0005-implement-pipeline.md) — конвейер.
+  правила собраны в [backend-orchestration](../backend-orchestration.md), актуальное устройство
+  описывает [ADR 0003](../adr/0003-orchestration-core.md), а конвейер —
+  [ADR 0005](../adr/0005-implement-pipeline.md).
 - Внутренние агенты: [`docs/agents/`](../agents/)
 - Политики-хуки: [`docs/hooks/`](../hooks/)
-- Редактируемая Archify-спецификация: [`docs/diagrams/skill-contract-fill.workflow.json`](../diagrams/skill-contract-fill.workflow.json)
+- Схемы конкретных процессов (`/implement`, `/to-spec`, `/wayfinder`, `/triage` и др.): [`docs/diagrams/`](../diagrams/README.md)

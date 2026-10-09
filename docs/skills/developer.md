@@ -39,10 +39,6 @@ risk_triggers:
 - **Процесс (Process):** реализовать только в allowed paths brief на issue-ветке и в изолированном worktree; выполнить целевые и обязательные проверки, а при risk trigger — требуемый review.
 - **Выход (Output/Report):** implementation, commit SHA, точные changed files, выполненные проверки, остаточные риски и блокеры.
 
-## 4. Архитектурная схема
-
-![Контракт роли: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [developer.md](../../harness/orchestration/roles/developer.md)

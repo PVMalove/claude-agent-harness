@@ -78,7 +78,7 @@ disable-model-invocation: true
 
 ## 4. Архитектурная схема
 
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
+![Продолжение PR после принятого publish](../diagrams/previews/pr-continuation.workflow.png)
 
 ## Источник
 

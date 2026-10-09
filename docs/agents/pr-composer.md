@@ -39,10 +39,6 @@ maxTurns: 15
 - **Процесс (Process):** прочитать шаблон `git-workflow.md` §3 и `language`; собрать diff и журнал коммитов; заполнить все разделы; выбрать футер `Closes #<ID>` или `Related to #<ID>` по целевой ветке.
 - **Выход (Output):** только путь к файлу `.harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md`. PR публикует вызывающая сессия после отдельного подтверждения разработчика.
 
-## 4. Архитектурная схема
-
-![Контракт агента: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [pr-composer.md](../../harness/project/agents/pr-composer.md)

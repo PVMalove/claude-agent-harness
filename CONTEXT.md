@@ -258,7 +258,7 @@ _Avoid_: специализация каждой сервисной правки
 Необязательная capability `backend-orchestration`, расширяющая `pvmalove-suite` и доставляющая
 role manifests, config contract, lifecycle, handoff и optional runtime adapter без изменения
 существующих проектов. Практический порядок включения и запуска —
-`harness/docs/backend-orchestration.md`.
+`docs/backend-orchestration.md`.
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:

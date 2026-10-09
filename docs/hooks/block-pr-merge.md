@@ -31,9 +31,6 @@
 - **Выход (Output/Report):**
   - **Успех (Разрешение):** Код возврата `0` (пустой вывод), если в команде нет merge-текста или каждая её simple command инертна по allowlist.
   - **Отказ (Блокировка):** Код возврата `2` и текстовое сообщение в `stderr` с объяснением причины запрета, если merge-текст стоит вне инертных команд, если команда выходит за подмножество строгого лексера, если Python не найден или `pr_commands.py` не дал решения.
-## 4. Архитектурная схема
-![Контракт скила: вход, работа, результат](../diagrams/previews/skill-contract-fill.workflow.png)
-
 ## Источник
 
 [block-pr-merge.sh](../../harness/project/hooks/block-pr-merge.sh), [pr_commands.py](../../harness/project/hooks/pr_commands.py)
