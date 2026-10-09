@@ -1,25 +1,47 @@
-"""The QA lane's CLI surface.
+"""QA workflow adapter and CLI handlers.
 
-`qa_lane.py` owns the lane itself and deliberately never imports the coordinator; it receives the
-slice it needs as its `ops` argument.  These four handlers are that hand-off point, and nothing
-else.  The coordinator facade is imported inside each call: it is the module that carries the whole
-`CoordinatorOps` surface, and importing it at module scope would close an import cycle.
+The lane owns FIFO, leases and gate execution. This module supplies batch validation and report
+persistence directly from their owning modules, without importing the CLI coordinator.
 """
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import cast
 
 from harness.orchestration import operation_access, qa_lane
 from harness.orchestration.core.utils import JsonObject
 
 
-def _ops() -> qa_lane.CoordinatorOps:
-    from harness.orchestration import coordinator
+from harness.orchestration.core import config, git_utils, utils
+from harness.orchestration.ledger import ledger_ops
+from harness.orchestration.workflow import approval, history, reports
 
-    return cast(qa_lane.CoordinatorOps, coordinator)
+
+class _WorkflowOps:
+    """Concrete batch QA adapter; none of these methods belongs to FIFO admission."""
+
+    _repo = staticmethod(utils._repo)
+    _candidate_commit = staticmethod(git_utils._candidate_commit)
+    _batch_for_ticket_branch = staticmethod(history._batch_for_ticket_branch)
+    _accepted_qa_for_candidate = staticmethod(history._accepted_qa_for_candidate)
+    _load_batch = staticmethod(ledger_ops._load_batch)
+    _load_dispatch = staticmethod(ledger_ops._load_dispatch)
+    _load_dispatch_status = staticmethod(ledger_ops._load_dispatch_status)
+    _validate_batch_integrity = staticmethod(history._validate_batch_integrity)
+    _validate_dispatch = staticmethod(history._validate_dispatch)
+    _config = staticmethod(config._config)
+    _role = staticmethod(config._role)
+    _validate_report = staticmethod(reports._validate_report)
+    _persist_report = staticmethod(reports._persist_report)
+    _approval = staticmethod(approval._approval)
+
+
+_WORKFLOW_OPS = _WorkflowOps()
+
+
+def _ops() -> qa_lane.QaWorkflowOps:
+    return _WORKFLOW_OPS
 
 
 def qa_evidence(args: argparse.Namespace) -> JsonObject:
@@ -50,7 +72,6 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
     from harness.orchestration.core import config as core_config
     from harness.orchestration.core.utils import _read_object, _repo
     from harness.orchestration.ledger.ledger_ops import (
-        _load_batch,
         _load_dispatch,
         _state_root,
     )
@@ -62,7 +83,7 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     dispatch = _load_dispatch(root, args.dispatch)
-    batch = _load_batch(root, dispatch["batch_id"])
+    batch = ledger_ops._load_batch(root, dispatch["batch_id"])
     report = _read_object(Path(result["report"]), "QA completion report")
     from harness.orchestration.infrastructure_retry import pinned
     from harness.orchestration.workflow.completion import _run_policy_chain, _completion
@@ -100,7 +121,7 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
 
 
 def qa_status(args: argparse.Namespace) -> JsonObject:
-    return qa_lane.status(args, _ops())
+    return qa_lane.status(args)
 
 
 def clear_qa_lease(args: argparse.Namespace) -> JsonObject:

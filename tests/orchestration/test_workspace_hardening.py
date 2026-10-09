@@ -47,6 +47,18 @@ def test_a_nul_byte_is_not_a_valid_worktree(repo: Path) -> None:
     assert caught.value.message == "worktree is not a valid path"
 
 
+def test_a_missing_worktree_keeps_its_registration_diagnostic(repo: Path) -> None:
+    missing = repo.parent / "missing"
+
+    with pytest.raises(CoordinatorError) as caught:
+        workspace._validate_worktree(repo, str(missing))
+
+    assert (
+        caught.value.message
+        == f"worktree {str(missing)!r} is not registered by git worktree"
+    )
+
+
 def test_registered_worktrees_are_valid_and_project_roots(
     repo: Path, tmp_path: Path
 ) -> None:

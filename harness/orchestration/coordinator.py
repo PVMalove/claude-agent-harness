@@ -42,10 +42,9 @@ from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration.core import constants
 
-# -- CoordinatorOps -----------------------------------------------------------------------------
-# `qa_lane.py` deliberately never imports the coordinator; it receives the slice it needs as its
-# `ops` argument, and this facade is the module that carries that whole slice. The names below
-# exist here for no other reason -- see qa_lane.CoordinatorOps for the protocol they satisfy.
+# -- Compatibility exports ----------------------------------------------------------------------
+# Existing Python callers use these lifecycle helpers through the CLI module. Batch QA gets its
+# narrower adapter from workflow.qa_integration; queue and lease operations need no adapter.
 from harness.orchestration.core.config import _config as _config
 from harness.orchestration.core.config import _role as _role
 from harness.orchestration.core.constants import QA_LEASE_FIELDS as QA_LEASE_FIELDS

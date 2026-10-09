@@ -33,8 +33,8 @@ from harness.orchestration.ledger import (
     LifecycleLedger,
     PlanRecord,
 )
-from harness.orchestration.qa_lane import CoordinatorOps
-from harness.orchestration.workflow import reports
+from harness.orchestration.qa_lane import QaWorkflowOps
+from harness.orchestration.workflow import reports, qa_integration
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
 OTHER_DISPATCH_ID = "dispatch-fedcba9876543210"
@@ -54,7 +54,7 @@ class _Ops:
     def __getattr__(self, name: str) -> object:
         if name in self._overrides:
             return self._overrides[name]
-        return getattr(coordinator, name)
+        return getattr(qa_integration._ops(), name)
 
 
 class QaLaneBootstrapTests(unittest.TestCase):
@@ -70,7 +70,6 @@ class QaLaneBootstrapTests(unittest.TestCase):
                 admitted = qa_lane.acquire(
                     ledger,
                     identity,
-                    coordinator,
                     owner_kind="local-qa",
                     lease_seconds=1800,
                 )
@@ -82,9 +81,7 @@ class QaLaneBootstrapTests(unittest.TestCase):
                 }
                 ledger.replace(ledger.records_root() / "qa-lane/lease.json", expired)
                 with self.assertRaises(CoordinatorError):
-                    qa_lane.acquire(
-                        ledger, DISPATCH_ID, coordinator, lease_seconds=1800
-                    )
+                    qa_lane.acquire(ledger, DISPATCH_ID, lease_seconds=1800)
             result = qa_lane.clear_stale_lease(
                 _ns(
                     repo=str(repo),
@@ -100,11 +97,9 @@ class QaLaneBootstrapTests(unittest.TestCase):
             )
             self.assertEqual(result["owner_id"], identity)
             with ledger.lock():
-                next_owner = qa_lane.acquire(
-                    ledger, DISPATCH_ID, coordinator, lease_seconds=1800
-                )
+                next_owner = qa_lane.acquire(ledger, DISPATCH_ID, lease_seconds=1800)
                 self.assertEqual(next_owner["state"], "acquired")
-                qa_lane.release(ledger, next_owner["lease"], coordinator)
+                qa_lane.release(ledger, next_owner["lease"])
 
     def test_local_requests_and_dispatches_share_fifo_and_exact_owner_release(
         self,
@@ -116,17 +111,13 @@ class QaLaneBootstrapTests(unittest.TestCase):
                 first = qa_lane.acquire(
                     ledger,
                     "local-qa-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    coordinator,
                     owner_kind="local-qa",
                     lease_seconds=1800,
                 )
-                ordinary = qa_lane.acquire(
-                    ledger, DISPATCH_ID, coordinator, lease_seconds=1800
-                )
+                ordinary = qa_lane.acquire(ledger, DISPATCH_ID, lease_seconds=1800)
                 second = qa_lane.acquire(
                     ledger,
                     "local-qa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    coordinator,
                     owner_kind="local-qa",
                     lease_seconds=1800,
                 )
@@ -134,29 +125,26 @@ class QaLaneBootstrapTests(unittest.TestCase):
                 self.assertEqual(ordinary["position"], 2)
                 self.assertEqual(second["position"], 3)
                 self.assertEqual(
-                    qa_lane.acquire(
-                        ledger, DISPATCH_ID, coordinator, lease_seconds=1800
-                    )["position"],
+                    qa_lane.acquire(ledger, DISPATCH_ID, lease_seconds=1800)[
+                        "position"
+                    ],
                     2,
                 )
                 with self.assertRaises(CoordinatorError):
-                    qa_lane.release(ledger, {**first["lease"], "pid": -1}, coordinator)
-                qa_lane.release(ledger, first["lease"], coordinator)
+                    qa_lane.release(ledger, {**first["lease"], "pid": -1})
+                qa_lane.release(ledger, first["lease"])
                 self.assertEqual(
                     qa_lane.acquire(
                         ledger,
                         "local-qa-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        coordinator,
                         owner_kind="local-qa",
                         lease_seconds=1800,
                     )["state"],
                     "queued",
                 )
-                admitted = qa_lane.acquire(
-                    ledger, DISPATCH_ID, coordinator, lease_seconds=1800
-                )
+                admitted = qa_lane.acquire(ledger, DISPATCH_ID, lease_seconds=1800)
                 self.assertEqual(admitted["state"], "acquired")
-                qa_lane.release(ledger, admitted["lease"], coordinator)
+                qa_lane.release(ledger, admitted["lease"])
 
     def test_first_enqueue_creates_the_ledger_sequence_record(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
@@ -164,9 +152,7 @@ class QaLaneBootstrapTests(unittest.TestCase):
             ledger = LifecycleLedger(state_root)
             ledger.ensure()
 
-            queue_path, entry = qa_lane._enqueue(
-                ledger, "dispatch-0123456789abcdef", coordinator
-            )
+            queue_path, entry = qa_lane._enqueue(ledger, "dispatch-0123456789abcdef")
 
             self.assertTrue(queue_path.is_file())
             self.assertEqual(entry["sequence"], 1)
@@ -175,9 +161,7 @@ class QaLaneBootstrapTests(unittest.TestCase):
                 coordinator._read_object(sequence_path, "sequence"), {"next": 2}
             )
 
-            _, second = qa_lane._enqueue(
-                ledger, "dispatch-fedcba9876543210", coordinator
-            )
+            _, second = qa_lane._enqueue(ledger, "dispatch-fedcba9876543210")
             self.assertEqual(second["sequence"], 2)
             self.assertEqual(
                 coordinator._read_object(sequence_path, "sequence"), {"next": 3}
@@ -230,7 +214,7 @@ class QaLaneLedgerTranslationTests(QaLaneTestCase):
             held = self.root / ".coordinator.lock"
             held.mkdir()
             try:
-                with qa_lane._lock(self.ledger, coordinator):
+                with qa_lane._lock(self.ledger):
                     pass
             finally:
                 held.rmdir()
@@ -238,19 +222,17 @@ class QaLaneLedgerTranslationTests(QaLaneTestCase):
         cases: dict[str, Callable[[], object]] = {
             "lock": lock,
             "write_immutable": lambda: qa_lane._write_immutable(
-                self.ledger, coordinator, existing, {"a": 2}
+                self.ledger, existing, {"a": 2}
             ),
             "write_artifact": lambda: qa_lane._write_artifact(
-                self.ledger, coordinator, artifact, "two"
+                self.ledger, artifact, "two"
             ),
             "replace_path": lambda: qa_lane._replace_path(
-                self.ledger, coordinator, missing, {"a": 1}
+                self.ledger, missing, {"a": 1}
             ),
-            "replace_record": lambda: qa_lane._replace_record(
-                self.ledger, coordinator, status
-            ),
+            "replace_record": lambda: qa_lane._replace_record(self.ledger, status),
             "delete_record": lambda: qa_lane._delete_record(
-                self.ledger, coordinator, missing, reason="test"
+                self.ledger, missing, reason="test"
             ),
         }
         for name, call in cases.items():
@@ -272,7 +254,7 @@ class QaLaneLedgerTranslationTests(QaLaneTestCase):
         self.ledger.pointer_path.write_text("{", encoding="utf-8")
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            qa_lane._records_root(self.ledger, coordinator)
+            qa_lane._records_root(self.ledger)
 
         self.assertRemedy(caught)
         self.assertIsInstance(caught.exception.__cause__, LedgerError)
@@ -281,13 +263,11 @@ class QaLaneLedgerTranslationTests(QaLaneTestCase):
 class QaLaneValidationTests(QaLaneTestCase):
     def test_state_dir_is_rejected_with_a_remedy(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            qa_lane._state_root(_ns(state_dir="elsewhere"), self.repo, coordinator)
+            qa_lane._state_root(_ns(state_dir="elsewhere"), self.repo)
         self.assertRemedy(caught)
 
     def test_state_root_defaults_to_the_repository_state_dir(self) -> None:
-        self.assertEqual(
-            qa_lane._state_root(_ns(state_dir=None), self.repo, coordinator), self.root
-        )
+        self.assertEqual(qa_lane._state_root(_ns(state_dir=None), self.repo), self.root)
 
     def test_queue_entries_reject_invalid_entries_with_a_remedy(self) -> None:
         queue = self.lane / "queue"
@@ -308,15 +288,15 @@ class QaLaneValidationTests(QaLaneTestCase):
                 self.subTest(name),
                 self.assertRaises(coordinator.CoordinatorError) as caught,
             ):
-                qa_lane._queue_entries(self.ledger, coordinator)
+                qa_lane._queue_entries(self.ledger)
             self.assertRemedy(caught)
             self.ledger.delete(path, reason="test cleanup")
 
     def test_queue_entries_are_ordered_by_sequence(self) -> None:
-        qa_lane._enqueue(self.ledger, DISPATCH_ID, coordinator)
-        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID, coordinator)
+        qa_lane._enqueue(self.ledger, DISPATCH_ID)
+        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID)
 
-        entries = qa_lane._queue_entries(self.ledger, coordinator)
+        entries = qa_lane._queue_entries(self.ledger)
 
         self.assertEqual(
             [entry["dispatch_id"] for _, entry in entries],
@@ -324,8 +304,8 @@ class QaLaneValidationTests(QaLaneTestCase):
         )
 
     def test_enqueue_is_idempotent_per_dispatch(self) -> None:
-        first_path, first = qa_lane._enqueue(self.ledger, DISPATCH_ID, coordinator)
-        again_path, again = qa_lane._enqueue(self.ledger, DISPATCH_ID, coordinator)
+        first_path, first = qa_lane._enqueue(self.ledger, DISPATCH_ID)
+        again_path, again = qa_lane._enqueue(self.ledger, DISPATCH_ID)
 
         self.assertEqual((first_path, first), (again_path, again))
 
@@ -333,16 +313,16 @@ class QaLaneValidationTests(QaLaneTestCase):
         self.ledger.write_immutable(self.lane / "sequence.json", {"next": 0})
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            qa_lane._enqueue(self.ledger, DISPATCH_ID, coordinator)
+            qa_lane._enqueue(self.ledger, DISPATCH_ID)
 
         self.assertRemedy(caught)
 
     def test_lease_is_absent_by_default_and_round_trips(self) -> None:
-        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
+        self.assertIsNone(qa_lane._lease(self.ledger))
         lease = self._lease()
         self.ledger.write_immutable(self.lane / "lease.json", lease)
 
-        self.assertEqual(qa_lane._lease(self.ledger, coordinator), lease)
+        self.assertEqual(qa_lane._lease(self.ledger), lease)
 
     def test_lease_rejects_invalid_records_with_a_remedy(self) -> None:
         cases: dict[str, JsonObject] = {
@@ -357,26 +337,24 @@ class QaLaneValidationTests(QaLaneTestCase):
                 self.subTest(name),
                 self.assertRaises(coordinator.CoordinatorError) as caught,
             ):
-                qa_lane._lease(self.ledger, coordinator)
+                qa_lane._lease(self.ledger)
             self.assertRemedy(caught)
             self.ledger.delete(path, reason="test cleanup")
 
     def test_lease_expiry_compares_against_now(self) -> None:
         future = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
 
-        self.assertTrue(qa_lane._lease_expired(self._lease(), coordinator))
-        self.assertFalse(
-            qa_lane._lease_expired(self._lease(expires_at=future), coordinator)
-        )
+        self.assertTrue(qa_lane._lease_expired(self._lease()))
+        self.assertFalse(qa_lane._lease_expired(self._lease(expires_at=future)))
 
     def test_release_queue_drops_only_the_named_dispatches(self) -> None:
-        qa_lane._enqueue(self.ledger, DISPATCH_ID, coordinator)
-        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID, coordinator)
+        qa_lane._enqueue(self.ledger, DISPATCH_ID)
+        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID)
 
-        released = qa_lane.release_queue(self.ledger, [DISPATCH_ID], coordinator)
+        released = qa_lane.release_queue(self.ledger, [DISPATCH_ID])
 
         self.assertEqual(released, [DISPATCH_ID])
-        remaining = qa_lane._queue_entries(self.ledger, coordinator)
+        remaining = qa_lane._queue_entries(self.ledger)
         self.assertEqual(
             [entry["dispatch_id"] for _, entry in remaining], [OTHER_DISPATCH_ID]
         )
@@ -390,22 +368,19 @@ class QaLaneValidationTests(QaLaneTestCase):
             qa_lane.acquire(
                 self.ledger,
                 identity,
-                coordinator,
                 owner_kind="local-qa",
                 lease_seconds=60,
             )
-            for path, _ in qa_lane._queue_entries(self.ledger, coordinator):
-                qa_lane._delete_record(self.ledger, coordinator, path, reason="t")
+            for path, _ in qa_lane._queue_entries(self.ledger):
+                qa_lane._delete_record(self.ledger, path, reason="t")
             with self.assertRaises(coordinator.CoordinatorError) as caught:
-                qa_lane.running_owner(
-                    self.ledger, identity, coordinator, owner_kind="local-qa"
-                )
+                qa_lane.running_owner(self.ledger, identity, owner_kind="local-qa")
 
         self.assertRemedy(caught)
 
     def test_release_queue_accepts_an_owner_form_dispatch_entry(self) -> None:
         # The queue schema also accepts a dispatch owner as owner_kind/owner_id.
-        queue = qa_lane._queue_root(self.ledger, coordinator)
+        queue = qa_lane._queue_root(self.ledger)
         self.ledger.write_immutable(
             queue / f"{1:020d}-{DISPATCH_ID}.json",
             {
@@ -416,10 +391,10 @@ class QaLaneValidationTests(QaLaneTestCase):
             },
         )
 
-        released = qa_lane.release_queue(self.ledger, [DISPATCH_ID], coordinator)
+        released = qa_lane.release_queue(self.ledger, [DISPATCH_ID])
 
         self.assertEqual(released, [DISPATCH_ID])
-        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
 
     def test_qa_evidence_requires_ticket_and_branch_with_a_remedy(self) -> None:
         for ticket, branch in (("", "feature/x"), ("1", " "), (None, "feature/x")):
@@ -444,14 +419,14 @@ class QaLaneStatusTests(QaLaneTestCase):
 
     def test_status_reports_queue_and_lease(self) -> None:
         self.assertEqual(
-            qa_lane.status(self._args(), coordinator),
+            qa_lane.status(self._args()),
             {"lease": None, "lease_stale": False, "queue": []},
         )
-        qa_lane._enqueue(self.ledger, DISPATCH_ID, coordinator)
+        qa_lane._enqueue(self.ledger, DISPATCH_ID)
         lease = self._lease()
         self.ledger.write_immutable(self.lane / "lease.json", lease)
 
-        status = qa_lane.status(self._args(), coordinator)
+        status = qa_lane.status(self._args())
 
         self.assertEqual(status["lease"], lease)
         self.assertTrue(status["lease_stale"])
@@ -461,7 +436,7 @@ class QaLaneStatusTests(QaLaneTestCase):
 
     def test_status_rejects_state_dir(self) -> None:
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            qa_lane.status(self._args(state_dir="elsewhere"), coordinator)
+            qa_lane.status(self._args(state_dir="elsewhere"))
         self.assertRemedy(caught)
 
 
@@ -478,9 +453,9 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
         values.update(overrides)
         return _ns(**values)
 
-    def _ops(self) -> CoordinatorOps:
+    def _ops(self) -> QaWorkflowOps:
         return cast(
-            CoordinatorOps,
+            QaWorkflowOps,
             _Ops(
                 _approval=lambda args: {"approved_by": "operator", "approved_at": "now"}
             ),
@@ -512,7 +487,7 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
         self.assertRemedy(caught)
 
     def test_stale_lease_is_cleared_with_its_queue_entry_and_recorded(self) -> None:
-        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID, coordinator)
+        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID)
         lease = self._lease()
         self.ledger.write_immutable(self.lane / "lease.json", lease)
 
@@ -520,7 +495,7 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
 
         self.assertEqual(result, {"state": "cleared", "dispatch_id": OTHER_DISPATCH_ID})
         self.assertFalse((self.lane / "lease.json").exists())
-        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
         recoveries = list((self.lane / "recoveries").glob("*.json"))
         self.assertEqual(len(recoveries), 1)
         recovery = coordinator._read_object(recoveries[0], "recovery")
@@ -571,7 +546,7 @@ class QaLaneRunTests(QaLaneTestCase):
         self,
         persisted: list[dict[str, object]] | None = None,
         report_error: coordinator.CoordinatorError | None = None,
-    ) -> CoordinatorOps:
+    ) -> QaWorkflowOps:
         def persist(
             ledger: LifecycleLedger,
             root: Path,
@@ -586,7 +561,7 @@ class QaLaneRunTests(QaLaneTestCase):
             return root / "report.json"
 
         return cast(
-            CoordinatorOps,
+            QaWorkflowOps,
             _Ops(
                 _validate_batch_integrity=lambda root, batch: None,
                 _validate_dispatch=lambda repo, config, root, batch, dispatch: None,
@@ -644,7 +619,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def test_earlier_queue_entry_keeps_the_dispatch_queued(self) -> None:
         self._seed()
-        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID, coordinator)
+        qa_lane._enqueue(self.ledger, OTHER_DISPATCH_ID)
 
         result = qa_lane.run(self.args, self._ops())
 
@@ -739,8 +714,8 @@ class QaLaneRunTests(QaLaneTestCase):
         )
         self.assertEqual(entry["state"], "approved")
         self.assertEqual(status["state"], "approved")
-        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
-        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        self.assertIsNone(qa_lane._lease(self.ledger))
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
         attempts = list((self.lane / "attempts").glob("*.json"))
         self.assertEqual(len(attempts), 1)
 
@@ -764,8 +739,8 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertIs(caught.exception, refusal)
         gate.assert_not_called()
-        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
-        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        self.assertIsNone(qa_lane._lease(self.ledger))
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
         status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
         self.assertEqual(status["state"], "approved")
         (attempt,) = (
@@ -846,11 +821,11 @@ class QaLaneRunTests(QaLaneTestCase):
         original = qa_lane._replace_record
         calls: list[object] = []
 
-        def flaky(ledger: LifecycleLedger, ops: CoordinatorOps, record: object) -> None:
+        def flaky(ledger: LifecycleLedger, record: object) -> None:
             calls.append(record)
             if len(calls) == 1:
                 raise coordinator.CoordinatorError("ledger busy", remedy="retry")
-            original(ledger, ops, cast(LedgerRecordVO, record))
+            original(ledger, cast(LedgerRecordVO, record))
 
         with (
             mock.patch.object(qa_lane, "_replace_record", side_effect=flaky),
@@ -890,8 +865,8 @@ class QaLaneRunTests(QaLaneTestCase):
             Path(str(result["artifact"])).read_text(encoding="utf-8"), "all green"
         )
         self.assertEqual(persisted[0]["outcome"], "completed")
-        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
-        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
+        self.assertIsNone(qa_lane._lease(self.ledger))
 
     def test_failing_gate_reports_a_failed_outcome(self) -> None:
         self._seed()
@@ -1011,12 +986,12 @@ class QaLaneRunTests(QaLaneTestCase):
             mock.patch.object(qa_lane, "run_qa_stages", return_value=staged) as runner,
             mock.patch.object(qa_lane, "run_gate") as legacy,
         ):
-            qa_lane.run(self.args, cast(CoordinatorOps, ops))
+            qa_lane.run(self.args, cast(QaWorkflowOps, ops))
         legacy.assert_not_called()
         self.assertEqual(runner.call_args.args[0], [self.PREPARE])
         self.assertEqual(runner.call_args.args[1], self.GATE)
-        self.assertIsNone(qa_lane._lease(self.ledger, coordinator))
-        self.assertEqual(qa_lane._queue_entries(self.ledger, coordinator), [])
+        self.assertIsNone(qa_lane._lease(self.ledger))
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
         report = persisted[0]
         reports._validate_qa_stages(report, self.dispatch)
         return report
@@ -1134,7 +1109,7 @@ class QaLaneRunTests(QaLaneTestCase):
             qa_lane.run(
                 self.args,
                 cast(
-                    CoordinatorOps,
+                    QaWorkflowOps,
                     _Ops(
                         _validate_batch_integrity=lambda root, batch: None,
                         _validate_dispatch=lambda *a, **k: None,
@@ -1163,7 +1138,7 @@ class QaLaneRunTests(QaLaneTestCase):
             qa_lane.run(
                 self.args,
                 cast(
-                    CoordinatorOps,
+                    QaWorkflowOps,
                     _Ops(
                         _validate_batch_integrity=lambda root, batch: None,
                         _validate_dispatch=lambda *a, **k: None,
@@ -1181,18 +1156,16 @@ class QaLaneRunTests(QaLaneTestCase):
         def taken_over(*arguments: object, **keywords: object) -> GateResult:
             # The run outlived its lease: the lease was cleared and a local QA run took the lane.
             with self.ledger.lock():
-                for path, _ in qa_lane._queue_entries(self.ledger, coordinator):
-                    qa_lane._delete_record(self.ledger, coordinator, path, reason="t")
+                for path, _ in qa_lane._queue_entries(self.ledger):
+                    qa_lane._delete_record(self.ledger, path, reason="t")
                 qa_lane._delete_record(
                     self.ledger,
-                    coordinator,
-                    qa_lane._lane_path(self.ledger, coordinator),
+                    qa_lane._lane_path(self.ledger),
                     reason="t",
                 )
                 qa_lane.acquire(
                     self.ledger,
                     local_owner,
-                    coordinator,
                     owner_kind="local-qa",
                     lease_seconds=60,
                 )
@@ -1205,7 +1178,7 @@ class QaLaneRunTests(QaLaneTestCase):
             qa_lane.run(self.args, self._ops())
 
         self.assertEqual(caught.exception.remedy, "fix the candidate commit")
-        lease = qa_lane._lease(self.ledger, coordinator)
+        lease = qa_lane._lease(self.ledger)
         assert lease is not None
         self.assertEqual(qa_lane._owner(lease), ("local-qa", local_owner))
         batch = coordinator._load_batch(self.root, BATCH_ID)

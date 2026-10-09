@@ -4,8 +4,7 @@
 
 These exercise the coordinator's own public functions against a real ``LifecycleLedger`` on a real
 temporary git repository -- no mocks -- mirroring ``tests/test_qa_lane.py``'s pattern. They prove
-the migration kept batch/dispatch persistence intact, and that ``qa_lane.py``'s bridge into
-``coordinator.py`` (the ``ops`` parameter) carries only validation/loading helpers -- never a
+the migration kept batch/dispatch persistence intact, and that the QA workflow adapter carries only validation/loading helpers -- never a
 raw-path builder or a bare ``Path``+``dict`` write adapter.
 """
 
@@ -60,8 +59,10 @@ from harness.orchestration.workflow import (
     commit_plan,
     decisions,
     delta_review,
+    fix_forward,
     dispatch,
     history,
+    qa_integration,
     reports,
     supersede,
 )
@@ -776,24 +777,10 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             report, dispatch, {"mode": "write", "name": "developer"}
         )
 
-    def test_qa_lane_bridge_surface_has_no_path_builders(self) -> None:
-        """``qa_lane.py`` constructs its own ``LifecycleLedger`` and Value Objects directly (issue
-        #196); the only things it still reaches into ``coordinator.py`` (via the ``ops`` parameter)
-        for are validation/loading helpers, field-set constants and ``_now()`` -- never a raw-path
-        builder or a bare ``Path``+``dict`` write adapter. This is the corrected, narrower successor
-        to the #195-era bridge-symbols test, which pinned a wider surface (including
-        ``_batch_path``/``_dispatch_status_path``/``_replace``) that a later fix (issue #203) proved
-        was never actually required to stay that wide."""
-        required = (
-            "CoordinatorError",
-            "STATE_REL",
-            "_read_object",
-            "QA_QUEUE_FIELDS",
-            "_safe_id",
-            "_non_empty",
-            "_now",
-            "QA_LEASE_FIELDS",
-            "_moment",
+    def test_qa_lane_workflow_adapter_has_no_path_builders(self) -> None:
+        """The batch adapter exposes workflow operations; queue and lease need none of them."""
+        ops = qa_integration._ops()
+        for name in (
             "_repo",
             "_candidate_commit",
             "_batch_for_ticket_branch",
@@ -808,29 +795,35 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "_persist_report",
             "_load_dispatch",
             "_approval",
-        )
-        for name in required:
+        ):
             self.assertTrue(
-                hasattr(coordinator, name), f"{name} must remain defined for qa_lane.py"
+                hasattr(ops, name), f"{name} must be available for batch QA"
             )
-        # ``_write_exclusive``/``_write_text_exclusive`` still exist -- ``_persist_report`` keeps
-        # using them for the one write path with no Value Object -- but qa_lane.py no longer reaches
-        # them (confirmed above: neither name appears in `required`), and none of the four below
-        # (path builders / the path-sniffing bare ``_replace``) survive at all.
-        removed = (
+        for name in (
+            "CoordinatorError",
+            "STATE_REL",
+            "_read_object",
+            "QA_QUEUE_FIELDS",
+            "QA_LEASE_FIELDS",
+            "_safe_id",
+            "_non_empty",
+            "_now",
+            "_moment",
             "_replace",
             "_ledger_for_path",
             "_batch_path",
             "_dispatch_status_path",
-        )
-        for name in removed:
-            self.assertNotIn(
-                name,
-                dir(coordinator),
-                f"{name} was coordinator.py's own raw-path/bare-dict bridge for qa_lane.py and must "
-                "stay deleted now that qa_lane.py builds Value Objects and calls "
-                "LifecycleLedger.write_record/replace_record directly",
+        ):
+            self.assertFalse(
+                hasattr(ops, name), f"{name} belongs outside the QA adapter"
             )
+        for operation in (
+            qa_lane.acquire,
+            qa_lane.release,
+            qa_lane.withdraw,
+            qa_lane.status,
+        ):
+            self.assertNotIn("ops", inspect.signature(operation).parameters)
 
     def test_adaptive_continuation_policy_resolves_context_warn_ratio(self) -> None:
         self.assertEqual(
@@ -6303,7 +6296,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ledger = LifecycleLedger(root)
         open_id = f"dispatch-{uuid.uuid4()}"
         with ledger_ops._ledger_lock(ledger):
-            qa_lane._enqueue(ledger, open_id, coordinator)
+            qa_lane._enqueue(ledger, open_id)
             record = ledger_ops._load_batch(root, batch["batch_id"])
             record["dispatches"].append(
                 {
@@ -10245,13 +10238,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         root = ledger_ops._state_root(self._args(), self.repo)
         batch = self._batch_record(self.batch_id)
         self.assertEqual(
-            reports._closure_base(self.repo, root, batch, second), reviewed
+            fix_forward._closure_base(self.repo, root, batch, second), reviewed
         )
         with mock.patch.object(
-            carried_items, "closure_snapshots", return_value=[again, fix]
+            fix_forward, "_closure_snapshots", return_value=[again, fix]
         ):
             # A chain snapshot the dispatch's own snapshot does not descend from is skipped.
-            self.assertEqual(reports._closure_base(self.repo, root, batch, second), fix)
+            self.assertEqual(
+                fix_forward._closure_base(self.repo, root, batch, second), fix
+            )
         reviewed_closure = [
             {"item_id": "coordinator-finding-1", "commits": [reviewed]},
             {"item_id": "review-finding-1", "commits": [again]},
@@ -11379,10 +11374,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(second["carried_items"], first["carried_items"])
         self.assertEqual(
-            carried_items.closure_snapshots(root, batch, second), [reviewed, fix]
+            fix_forward._closure_snapshots(root, batch, second), [reviewed, fix]
         )
         self.assertEqual(
-            reports._closure_base(self.repo, root, batch, second), upstream
+            fix_forward._closure_base(self.repo, root, batch, second), upstream
         )
         for foreign in (reviewed, upstream, copies[-1]):
             with self.subTest(foreign=foreign):
@@ -15072,15 +15067,15 @@ class DeltaReviewHelperTests(unittest.TestCase):
     ) -> None:
         a, b, c = self.A, self.B, self.C
         chain = {c: (b, True), b: (a, True)}
-        self.assertEqual(delta_review._reviewed_origin(c, chain, {a}), a)
-        self.assertIsNone(delta_review._reviewed_origin(c, {c: (b, False)}, {b}))
-        self.assertIsNone(delta_review._reviewed_origin(c, chain, {b}))
+        self.assertEqual(fix_forward._reviewed_origin(c, chain, {a}), a)
+        self.assertIsNone(fix_forward._reviewed_origin(c, {c: (b, False)}, {b}))
+        self.assertIsNone(fix_forward._reviewed_origin(c, chain, {b}))
         for name, pairs in {
             "own original": {a: (a, True)},
             "two-step cycle": {a: (b, True), b: (a, True)},
         }.items():
             with self.subTest(name):
-                self.assertIsNone(delta_review._reviewed_origin(a, pairs, {a, b}))
+                self.assertIsNone(fix_forward._reviewed_origin(a, pairs, {a, b}))
 
     @staticmethod
     def _item(item_id: str, **source: object) -> JsonObject:
@@ -15119,7 +15114,9 @@ class DeltaReviewHelperTests(unittest.TestCase):
         }
         delta = {"mode": "delta", "developer_dispatch_id": "dispatch-retry"}
         with mock.patch.object(
-            delta_review, "_load_dispatch", return_value={"carried_items": retried}
+            delta_review,
+            "_load_dispatch",
+            return_value={"carried_items": retried},
         ) as load:
             merged = delta_review.with_closure_items(own, Path("root"), delta)
             for scope in (None, {**delta, "mode": "full"}):

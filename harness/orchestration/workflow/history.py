@@ -1094,85 +1094,11 @@ def _pinned_package_stale(
 
 
 def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> None:
-    """The brief's transition, digest, approval, idempotency key and policy agree with one another
-    and with the brief's own fields; the brief hash already proves none of them was edited alone."""
-    transition = dispatch["transition"]
-    if not isinstance(transition, dict) or set(transition) - {
-        *operational_guards.OPTIONAL_TRANSITION_FIELDS,
-        operational_guards.ACCESS_TRANSITION_FIELD,
-    } != set(operational_guards.TRANSITION_FIELDS):
-        raise CoordinatorError(
-            "dispatch transition schema mismatch",
-            remedy="the dispatch transition is malformed -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
-    digest = operational_guards.transition_digest(transition)
-    approval = dispatch.get("coordinator_approval")
-    if (
-        dispatch["transition_digest"] != digest
-        or not isinstance(approval, dict)
-        or approval.get("transition_digest") != digest
-    ):
-        raise CoordinatorError(
-            "dispatch transition digest does not match its transition and approval",
-            remedy="the dispatch transition digest diverged from its transition or approval -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
-    bound = {
-        "batch_id": batch.get("batch_id"),
-        "next_role": dispatch["role"],
-        "purpose": dispatch["purpose"],
-        "candidate_sha": dispatch.get("candidate_commit"),
-        "verification_commands": dispatch["verification_commands"],
-        "context_package_id": dispatch.get("context_package_id"),
-        "required_gates": dispatch["required_gates"],
-    }
-    if any(transition[field] != value for field, value in bound.items()):
-        raise CoordinatorError(
-            "dispatch transition does not match its brief",
-            remedy="the dispatch transition diverged from its brief -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
-    # A non-empty carried-items section is part of what was approved (issue #499); an empty or
-    # absent one binds nothing, so every earlier transition keeps its digest.
-    carried = dispatch.get("carried_items")
-    expected_carried = (
-        operational_guards.carried_items_digest(carried) if carried else None
-    )
-    if transition.get("carried_items_sha256") != expected_carried:
-        raise CoordinatorError(
-            "dispatch transition does not match its carried items",
-            remedy="the dispatch transition diverged from its carried items -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
-    # The rebase target a human approved for a rebase-fix-forward developer-retry (issue #504).
-    if transition.get("rebase_target_sha") != dispatch.get("rebase_target_commit"):
-        raise CoordinatorError(
-            "dispatch transition does not match its rebase target",
-            remedy="the dispatch transition diverged from its rebase_target_commit -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
-    # The delta-or-full choice of a code-review after a fix-forward (issue #625).
-    scope = dispatch.get("delta_review_scope")
-    expected_scope = (
-        operational_guards.delta_review_digest(scope)
-        if isinstance(scope, dict)
-        else None
-    )
-    if transition.get("delta_review_sha256") != expected_scope:
-        raise CoordinatorError(
-            "dispatch transition does not match its delta-review scope",
-            remedy="the dispatch transition diverged from its delta_review_scope -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
-    if dispatch["retry_idempotency_key"] != _transition_idempotency_key(
-        dispatch["role"], dispatch["purpose"], transition
-    ):
-        raise CoordinatorError(
-            "dispatch retry idempotency key does not match its transition",
-            remedy="the dispatch retry idempotency key diverged from its transition -- "
-            + INTERNAL_INVARIANT_REMEDY,
-        )
+    """Verify the pure approval binding, then the coordinator-owned policy snapshot."""
+    try:
+        operational_guards.validate_binding(dispatch, batch.get("batch_id"))
+    except operational_guards.GuardError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     policy = dispatch["orchestration_policy"]
     if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
         "approval_ttl_seconds",
@@ -1650,19 +1576,3 @@ def _live_status(root: Path, dispatch_id: str) -> tuple[JsonObject, JsonObject]:
             remedy="only the currently dispatched role may report liveness for this dispatch",
         )
     return dispatch, status
-
-
-def _transition_idempotency_key(
-    role: str, purpose: str, transition: JsonObject
-) -> str | None:
-    keyed = operational_guards.keyed_role(role, purpose)
-    if keyed is None:
-        return None
-    return operational_guards.retry_idempotency_key(
-        role=keyed,
-        candidate_sha=transition["candidate_sha"],
-        base_sha=transition["base_sha"],
-        review_scope=transition["review_scope"],
-        reason_category=transition["reason_category"] or "none",
-        verification_commands=transition["verification_commands"],
-    )

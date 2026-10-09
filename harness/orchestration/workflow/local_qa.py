@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import re
 from pathlib import Path
-from typing import cast
 
 from harness.storage import storage_path
 from harness.gate_runner.gate_runner import (
@@ -372,10 +371,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
                     "verification": "unverified",
                     "reason": sanitise(str(exc)),
                 }
-        from harness.orchestration import coordinator
-
-        ops = cast(qa_lane.CoordinatorOps, coordinator)
-        running = qa_lane.running_owner(ledger, request_id, ops, owner_kind="local-qa")
+        running = qa_lane.running_owner(ledger, request_id, owner_kind="local-qa")
         if running is not None:
             return {"request_id": request_id, **members, **running}
         previous = _attempts(root, request_id)
@@ -400,7 +396,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             observed = _observe_pair(repo, root, record, pair)
         except CoordinatorError as exc:
             started = _start_attempt(ledger, request_id, len(previous) + 1)
-            qa_lane.withdraw(ledger, request_id, ops, owner_kind="local-qa")
+            qa_lane.withdraw(ledger, request_id, owner_kind="local-qa")
             return _unavailable(
                 ledger, root, request_id, started, exc, "pair-observation"
             )
@@ -413,7 +409,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             )
         except operation_access.OperationAccessError as exc:
             started = _start_attempt(ledger, request_id, len(previous) + 1)
-            qa_lane.withdraw(ledger, request_id, ops, owner_kind="local-qa")
+            qa_lane.withdraw(ledger, request_id, owner_kind="local-qa")
             return _unavailable(
                 ledger, root, request_id, started, exc, "access", access=exc.evidence
             )
@@ -421,7 +417,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         if seconds is None:
             seconds = _execution_policy(_config(repo))["qa_lease_seconds"]
         admission = qa_lane.acquire(
-            ledger, request_id, ops, owner_kind="local-qa", lease_seconds=seconds
+            ledger, request_id, owner_kind="local-qa", lease_seconds=seconds
         )
         if admission["state"] == "queued":
             return {"request_id": request_id, **members, **admission}
@@ -429,7 +425,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         try:
             started = _start_attempt(ledger, request_id, len(previous) + 1)
         except (CoordinatorError, OSError):
-            qa_lane.release(ledger, claimed, ops)
+            qa_lane.release(ledger, claimed)
             raise
     gate: GateResult | None = None
     stage = "gate-run"
@@ -484,4 +480,4 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             return _unavailable(ledger, root, request_id, started, exc, stage, gate)
     finally:
         with _ledger_lock(ledger):
-            qa_lane.release(ledger, claimed, ops)
+            qa_lane.release(ledger, claimed)
