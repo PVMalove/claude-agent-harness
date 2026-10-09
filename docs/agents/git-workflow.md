@@ -35,7 +35,7 @@ branch is the PR target for child work; `base_branch` is the release target for 
    * Commit messages follow the **Semantic Commit Messages** standard (e.g., `feat: ...`, `fix: ...`, `refactor: ...`).
 5. **Continuous Push:**
    * Push commits to the remote (`origin`) both while implementing the task and after addressing code-review feedback: `git push origin feature/issue-<ID>-<slug>`. Never leave finished commits sitting only in the local repo.
-6. **Integration (Pull Request):** *(local markdown tracker: skip this step and step 7 — see "Issue First" above.)*
+6. **Integration (Pull Request):** *(local markdown tracker: skip this step and step 7 — see "Issue First" above; `/to-pull-requests` sets the ticket's `**Workflow:**` to `done` after the developer confirms the merge.)*
    * **Confirm before opening:** before creating the PR, explicitly ask the developer whether the branch is ready to be opened as a pull request. Do not run `gh pr create`/`glab mr create` just because implementation, tests, and code-review are done — wait for an explicit go-ahead. Silence, or the mere fact that the task is otherwise complete, does not count as consent.
    * Once the developer confirms, run the `qa-gate` skill (see [issue-tracker.md](./issue-tracker.md)'s "When a skill says…" conventions for how tickets are referenced) and only proceed once it passes.
    * If the PR body template in [§3](#3-pr-body-template) has more structure than a short summary, follow it directly. A developer may instead configure and run `pr-composer` manually in the coding application; give it `.harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md`, pass that path to `--body-file` (`--description-file` on GitLab) below, and delete it only after the PR/MR is created successfully.

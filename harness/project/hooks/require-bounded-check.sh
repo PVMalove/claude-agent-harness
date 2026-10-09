@@ -107,7 +107,7 @@ fi
 if [ "$STATUS" -eq 2 ]; then
   echo "Заблокировано: полносьютный тестовый/quality-gate прогон без bounded-враппера раздувает историю dispatch-сессии. Оберни вызов:" >&2
   echo "  python .harness/skills/qa-gate/scripts/test_summary.py -- bash -lc '<исходная команда>'" >&2
-  echo "(PowerShell-эквивалент — skills/first-party/pvmalove/qa-gate/SKILL.md). Точечный прогон одного теста (node-id с '::', либо полный dotted-путь unittest) не блокируется." >&2
+  echo "(PowerShell-эквивалент — .harness/skills/qa-gate/SKILL.md). Точечный прогон одного теста (node-id с '::', либо полный dotted-путь unittest) не блокируется." >&2
   exit 2
 fi
 

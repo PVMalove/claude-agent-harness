@@ -8,7 +8,7 @@ This repo does **not** use the upstream `mattpocock/skills` canonical five-role 
 
 Every triaged issue or PR carries exactly one label from each of the first three axes below, except while it carries `status::specs` — execution mode isn't decided yet at that stage (see [State machine](#state-machine)).
 
-### 1. Type (`type::*`) — richer than upstream's `bug`/`enhancement` pair
+### 1. Type (`type::*`)
 
 | Label | Meaning |
 | --- | --- |
@@ -77,7 +77,7 @@ taxonomy — only seeded into target projects that track deployments.
 | `env::qa` | QA |
 | `env::dev` | Development |
 
-Epic grouping no longer uses a label. A ticket decomposed from an epic is linked to it through the tracker's parent link — a GitHub **sub-issue**, or on GitLab a `## Parent: #<epic>` section in the ticket's description plus a `relates_to` issue link — the same mechanism `/wayfinder` uses for its map/ticket relationship — see [issue-tracker.md](./issue-tracker.md#wayfinding-operations). `wayfinder:map` and `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) remain `/wayfinder`'s own separate namespace, colors below — but a Wayfinder ticket (not the map itself) also carries the matching `hitl`/`afk` label plus `status::ready`, moved to `status::in-progress` on claim: the same two axes as everywhere else in this taxonomy, applied by `/wayfinder` itself rather than by `/triage`. `status::specs` and `wayfinder:map` are not the same thing: the former is a triage state on an epic issue, the latter is Wayfinder's own map artifact — the map never carries a `status::*` label.
+Epic grouping uses no label: a ticket decomposed from an epic is linked to it through the tracker's parent link — a GitHub **sub-issue**, or on GitLab a `## Parent: #<epic>` section in the ticket's description plus a `relates_to` issue link — the same mechanism `/wayfinder` uses for its map/ticket relationship — see [issue-tracker.md](./issue-tracker.md#wayfinding-operations). `wayfinder:map` and `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`) remain `/wayfinder`'s own separate namespace, colors below — but a Wayfinder ticket (not the map itself) also carries the matching `hitl`/`afk` label plus `status::ready`, moved to `status::in-progress` on claim: the same two axes as everywhere else in this taxonomy, applied by `/wayfinder` itself rather than by `/triage`. `status::specs` and `wayfinder:map` are not the same thing: the former is a triage state on an epic issue, the latter is Wayfinder's own map artifact — the map never carries a `status::*` label.
 
 | Label | Color | Meaning |
 | --- | --- | --- |
@@ -125,7 +125,7 @@ A local-markdown-tracked ticket (`.scratch/<feature>/issues/NN-*.md`) has no Git
 
 This field block is the vocabulary that [issue-tracker.md](./issue-tracker.md)'s `Workflow:` line refers to. Wayfinder's own `Status: claimed/resolved` line (same source doc) is an orthogonal claim/lock marker for the file and coexists with these fields rather than replacing them.
 
-`status::*`'s values are the same strings as the GitHub/GitLab labels, plus a terminal `done`, which `/to-pull-requests` sets after the developer confirms the separate PR/merge workflow. `/implement` ends at commit and push, then offers `/to-pull-requests`. Remote tickets close only after their change is actually merged: GitHub auto-closes `Closes #<ID>` for a default-branch PR, while GitLab's pattern can be disabled or customized; verify either result. An integration-branch PR is closed explicitly after its confirmed merge (see `docs/agents/git-workflow.md`). There's no sub-issue mechanism for the local tracker; a decomposed ticket instead lives under the feature's `.scratch/<feature-slug>/issues/` directory (see [issue-tracker.md](./issue-tracker.md)) — that directory itself is the grouping, no separate epic-folder or field needed for it.
+`status::*`'s values are the same strings as the GitHub/GitLab labels, plus a terminal `done`, which `/to-pull-requests` sets after the developer confirms the merge of the issue branch. `/implement` and `/fast-implement` end at the pushed issue branch, then offer `/to-pull-requests`. Remote tickets close only after their change is actually merged: GitHub auto-closes `Closes #<ID>` for a default-branch PR, while GitLab's pattern can be disabled or customized; verify either result. An integration-branch PR is closed explicitly after its confirmed merge (see `docs/agents/git-workflow.md`). There's no sub-issue mechanism for the local tracker; a decomposed ticket instead lives under the feature's `.scratch/<feature-slug>/issues/` directory (see [issue-tracker.md](./issue-tracker.md)) — that directory itself is the grouping, no separate epic-folder or field needed for it.
 
 ## Adapting this taxonomy per project
 
