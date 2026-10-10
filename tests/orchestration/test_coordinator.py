@@ -586,7 +586,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(resolved["state"], "not-required")
+        self.assertEqual(resolved["state"], "completed")
         self.assertEqual(resolved["tracker_resolution"], "resolution::wontfix")
         listed = coordinator.list_batches(
             _ns(
@@ -2756,8 +2756,19 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(event["event"], "stale")
 
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "timeout is not proof"
+        ):
+            coordinator.resume_batch(
+                self._args(batch=batch["batch_id"], reason="worker timed out")
+            )
         resumed = coordinator.resume_batch(
-            self._args(batch=batch["batch_id"], reason="worker timed out")
+            self._args(
+                batch=batch["batch_id"],
+                reason="runtime stopped after timeout",
+                runtime_stopped=True,
+                **self._approval(),
+            )
         )
         retry = self._dispatch(batch["batch_id"], "developer")["brief"]
 
@@ -5187,10 +5198,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         before = self._ledger_bytes()
         for label, plan, message, remedy in (
             (
-                "a batch closed with batch abandon",
+                "a batch abandoned before any accept",
                 self._superseding_plan(failed),
-                "'failed', not abandoned",
-                "batch decide",
+                "no abandoned.last_accepted record",
+                "ordinary batch",
             ),
             (
                 "nothing accepted",
@@ -6334,7 +6345,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "a dead QA queue entry must not hold the lane",
         )
 
-    def test_legacy_batch_abandon_still_ends_in_failed_and_closes_open_dispatches(
+    def test_batch_abandon_records_operator_refusal_and_closes_open_dispatches(
         self,
     ) -> None:
         batch = self._create_batch()
@@ -6350,13 +6361,40 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         self.assertEqual(
             (result["state"], result["abandoned_dispatches"]),
-            ("failed", [brief["dispatch_id"]]),
+            ("abandoned", [brief["dispatch_id"]]),
         )
         record = self._batch_record(batch["batch_id"])
         self.assertEqual(record["dispatches"][0]["state"], "abandoned")
         self.assertEqual(
             record["abandoned"]["reason"], "worker died before confirming its model"
         )
+
+    def test_batch_abandon_after_startup_failure_preserves_accepted_candidate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id)
+        brief = self._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
+        coordinator.abandon_batch(
+            self._args(
+                batch=batch_id,
+                reason="operator stops a failed launch",
+                **self._approval(),
+            )
+        )
+        source = self._batch_record(batch_id)
+        self.assertEqual(source["state"], "abandoned")
+        self.assertEqual(
+            source["abandoned"]["last_accepted"]["candidate_commit"], candidate
+        )
+        self.assertIn(brief["dispatch_id"], source["abandoned"]["open_dispatches"])
+        resumed = coordinator.create_batch(
+            self._args(**self._superseding_plan(batch_id))
+        )
+        self.assertEqual(resumed["supersedes"]["start_commit"], candidate)
+        self.assertEqual(resumed["next_action"], "developer")
 
     # -- parallel batches with explicit scope (issue #531) --------------------------------------
 
@@ -6480,7 +6518,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         retry = self._second_batch("again", ticket="#244")
         self.assertNotEqual(retry["batch_id"], first["batch_id"])
 
-    def test_a_decision_blocked_batch_does_not_hold_the_ticket_for_ever(self) -> None:
+    def test_a_decision_blocked_batch_holds_work_until_operator_abandons(self) -> None:
         first = self._create_batch()
         self._accepted_architect(first["batch_id"])
         candidate = self._accepted_candidate(first["batch_id"])
@@ -6489,6 +6527,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             first["batch_id"], "block", reason_category="verification-infrastructure"
         )
         self.assertEqual(self._batch_record(first["batch_id"])["state"], "blocked")
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._second_batch("held-by-block", ticket="#244")
+        coordinator.abandon_batch(
+            self._args(
+                batch=first["batch_id"],
+                reason="operator closes blocked attempt",
+                **self._approval(),
+            )
+        )
         retry = self._second_batch("after-block", ticket="#244")
         self.assertNotEqual(retry["batch_id"], first["batch_id"])
 
@@ -9878,7 +9925,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(event["event"], "stale")
         coordinator.resume_batch(
-            self._args(batch=batch["batch_id"], reason="worker timed out")
+            self._args(
+                batch=batch["batch_id"],
+                reason="runtime stopped after timeout",
+                runtime_stopped=True,
+                **self._approval(),
+            )
         )
         self.assertEqual(
             self._batch_record(batch["batch_id"])["dispatches"][-1]["state"],
@@ -13705,10 +13757,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIsNone(result["decision"])
         stored = self._batch_record(self.batch_id)
         self.assertNotIn("decision", stored["dispatches"][-1])
-        with self.assertRaises(coordinator.CoordinatorError) as refused:
-            self._auto_decide()
-        self.assertIn("stopped", refused.exception.message)
-        # A human still decides: the stop weakens no validation and invents no decision.
+        again = self._auto_decide()
+        self.assertEqual(again["outcome"], "stopped")
+        # A human resumes the report boundary before deciding; the stop stays historical.
+        coordinator.resume_stopped_batch(
+            self._args(
+                batch=self.batch_id, note="inspect unknown blocker", **self._approval()
+            )
+        )
         decided = self._decide(self.batch_id, "block")
         self.assertEqual(decided["state"], "blocked")
 
@@ -13733,6 +13789,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "paths_outside_scope"
             ],
             ["docs/**"],
+        )
+        coordinator.resume_stopped_batch(
+            self._args(
+                batch=self.batch_id,
+                note="approve corrected bounded plan",
+                **self._approval(),
+            )
         )
         self._decide(self.batch_id, "accept")
         with self.assertRaises(coordinator.CoordinatorError) as refused:
@@ -13788,7 +13851,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             coordinator.auto_report(self._args(batch=batch["batch_id"]))
         self.assertIn("approval_policy auto", refused.exception.message)
 
-    def test_auto_report_records_the_stop_a_blocked_batch_shows(self) -> None:
+    def test_auto_report_observes_until_auto_decide_records_pause(self) -> None:
         self._auto_batch()
         architect = self._auto_dispatch("architect")
         coordinator.send_dispatch(
@@ -13810,6 +13873,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         rendered = coordinator.auto_report(self._args(batch=self.batch_id))
 
+        self.assertFalse(rendered["recorded"])
+        self.assertNotIn("auto_stop", self._batch_record(self.batch_id))
+        coordinator.auto_decide(self._args(batch=self.batch_id))
+        rendered = coordinator.auto_report(self._args(batch=self.batch_id))
         self.assertTrue(rendered["recorded"])
         self.assertEqual(
             (rendered["report"]["stop"]["reason"], rendered["report"]["outcome"]),
@@ -13817,7 +13884,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             self._batch_record(self.batch_id)["auto_stop"]["detected_by"],
-            "batch auto-report",
+            "batch auto-decide",
         )
 
     def test_a_model_mismatch_is_an_integrity_stop_before_the_dead_end(self) -> None:
@@ -13885,6 +13952,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 )
             )
 
+        coordinator.auto_decide(self._args(batch=self.batch_id))
         rendered = coordinator.auto_report(self._args(batch=self.batch_id))
 
         stop = self._batch_record(self.batch_id)["auto_stop"]
@@ -13927,18 +13995,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertNotIn("auto_stop", stored)
         self.assertNotIn("decision", stored["dispatches"][-1])
 
-    def test_an_abandoned_batch_is_a_supersede_dead_end(self) -> None:
-        """no-automatic-route: only a human continues an abandoned batch."""
+    def test_an_abandoned_batch_is_terminal_and_auto_report_is_read_only(self) -> None:
         self._auto_architect_report()
         self._decide(self.batch_id, "abandon", reason="the plan is obsolete")
-
+        before = self._batch_record(self.batch_id)
         rendered = coordinator.auto_report(self._args(batch=self.batch_id))
-
-        stop = self._batch_record(self.batch_id)["auto_stop"]
-        self.assertEqual(
-            (stop["category"], stop["reason"], rendered["report"]["stop"]),
-            ("no-automatic-route", "supersede-dead-end", stop),
-        )
+        self.assertEqual(self._batch_record(self.batch_id), before)
+        self.assertNotIn("auto_stop", before)
+        self.assertEqual(rendered["state"], "abandoned")
+        self.assertEqual(rendered["observed_stop"]["reason"], "supersede-dead-end")
 
     def test_an_exhausted_developer_retry_budget_stops_the_automatic_path(
         self,
@@ -14568,7 +14633,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_thirteen(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_fifteen(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -14585,6 +14650,8 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "fix-forward",
                 "rebase-fix-forward",
                 "supersede",
+                "environmental-restart",
+                "rewind",
             ),
         )
         for route in constants.RECOVERY_ROUTES:

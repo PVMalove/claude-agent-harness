@@ -512,7 +512,9 @@ finding или failed QA снова проходит оценку риска.
 ## 4. Coordinator CLI и lifecycle
 
 Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
-`planned → awaiting-approval ↔ active → completed | blocked | failed`. При `manual_all` каждый
+`planned → awaiting-approval ↔ active → completed`, с восстановимыми состояниями `paused`,
+`blocked`, `failed` и окончательным отказом `abandoned`. После ручного восстановления применяется
+эффективная `manual_all`. При `manual_all` каждый
 report оставляет dispatch в `reported` до решения человека. При `low_risk` coordinator
 автоматически принимает чистый завершённый report batch, если scope batch целиком лежит в
 `low_risk_paths`. Решение он записывает в ledger. Blockers, failed checks, раскрытые risks, risk
@@ -1421,23 +1423,29 @@ python .harness/orchestration/coordinator.py --repo . batch abandon \
   --reason 'воркер умер до model self-report, решение недостижимо'
 ```
 
-Она требует явного approval и непустой причины, переводит batch в `failed`, помечает все незакрытые
+Она требует явного approval и непустой причины, переводит batch в `abandoned`, сохраняет `last_accepted`, помечает все незакрытые
 dispatch как `abandoned` и записывает решение рядом с остальными. **Она ничего не удаляет**: immutable
 brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
 нельзя.
 
-Если старт dispatch завершился блокировкой инфраструктуры или watchdog отметил отправленный dispatch
-как `stale`, продолжайте тот же batch после устранения причины:
+При подтверждённом сбое запуска продолжайте тот же batch после устранения причины:
 
 ```bash
-python .harness/orchestration/coordinator.py --repo . batch resume \
-  --batch <batch-id> --reason 'причина устранена'
+python .harness/orchestration/coordinator.py --repo . batch resume-stop \
+  --batch <batch-id> --approved-by 'имя оператора' --approved-at <текущее-время-UTC> \
+  --note 'исправлен каталог запуска воркера'
 ```
 
-Команда сохраняет принятые отчёты и `next_action` в ledger, помечает только сорванный dispatch как
-`abandoned` и переводит batch в `awaiting-approval`. Следующий `dispatch create` использует ту же
-принятую архитектуру и создаёт новый brief для прерванной роли. Для решения `block` или закрытого
-через `batch abandon` batch этот путь недоступен.
+Команда сохраняет принятые отчёты, исходный stop и `next_action`, помечает сорванный dispatch как
+`abandoned` и переводит batch в `awaiting-approval`. Следующий `dispatch create` требует нового
+approval и сохраняет контракт прерванной роли. Подробные ограничения описаны в разделе
+«Восстановление после остановки». Для неизвестной причины или возврата к прежнему gate используется
+`batch rewind`. `completed` и `abandoned` окончательны.
+
+Watchdog `stale` не доказывает завершение процесса. Сначала остановите воркера через его runtime,
+затем запишите `dispatch cancel --runtime-stopped` с человеческим approval и выполните rewind.
+Совместимая команда `batch resume` применяется только к прежнему ручному пути без auto/recovery.
+Для stale она также требует `--runtime-stopped`, `--approved-by` и `--approved-at`.
 
 Для незавершённого initial developer закрепите сохранённый HEAD через `--candidate-commit` при
 следующих `dispatch preflight`, `dispatch propose` и утверждённом `dispatch create`. Это startup
@@ -1478,7 +1486,7 @@ python .harness/orchestration/coordinator.py --repo . batch not-required \
   --reason 'pinned snapshot already satisfies every definition-of-done item'
 ```
 
-Команда оставляет audit evidence, отменяет незакрытые dispatch, переводит batch в `not-required` и
+Команда оставляет audit evidence, отменяет незакрытые dispatch, переводит batch в `completed` с `completion_kind: no-implementation` и
 возвращает рекомендацию закрыть связанный issue с меткой `resolution::wontfix`. Обычный write-role
 report по-прежнему обязан содержать реальный commit и exact changed files.
 
@@ -2284,3 +2292,56 @@ approval для dispatch, review и QA для одного SHA, локально
 только для транспорта. Превращение `/implement` в coordinator-driven конвейер по умолчанию, model
 self-report, dispatch watchdog, per-role transport и zero-config дефолты зафиксированы в
 [ADR 0005](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0005-implement-pipeline.md).
+
+## Ручное восстановление и повтор этапа (#662)
+
+`batch auto-report` только читает состояние. Обнаруженная причина находится в `observed_stop`.
+Чтобы записать остановку, явно вызовите `batch auto-decide`: batch перейдёт в `paused`, даже если
+воркер не успел отправить report. Повторный вызов в paused не изменит ledger.
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger validate
+python .harness/orchestration/coordinator.py --repo . batch resume-stop \
+  --batch <id> --approved-by '<оператор>' --approved-at '<текущий UTC>' --note 'worker checkout fixed'
+python .harness/orchestration/coordinator.py --repo . batch rewind \
+  --batch <id> --to code-review --approved-by '<оператор>' --approved-at '<текущий UTC>' --note 'repeat review'
+```
+
+`resume-stop` подходит для подтверждённого worktree/model mismatch или отказа ОС запустить adapter.
+Он сохраняет роль, scope, candidate и fix-forward findings. Повтор получает новый dispatch ID,
+context и approval. Операционная попытка не расходует второй developer retry. При паузе из-за
+бюджета или неизвестной причины можно вернуть pending report для ручного решения. Грязные файлы,
+неизвестный SHA, failed checks и новые code findings требуют обычного маршрута исправления.
+
+После восстановления действует `manual_all`, включая продолжение после 429. Исходные `auto_stop`
+и `auto_report` остаются историей. Новый отчёт показывает текущий прогресс и `historical_report`.
+`blocked` и `failed` удерживают ticket/branch/worktree; повторный batch до их закрытия запрещён.
+Оба abandon-пути записывают `abandoned` и `last_accepted`. Старый `failed` можно supersede только
+при доказанном человеческом abandon; обычный failed не является отказом от работы.
+
+Rewind выбирает достигнутую стадию `architect`, `developer`, `code-review`, `qa` или `publish`.
+`verification` требует зарегистрированного candidate, `resolve-conflict` — resolver boundary.
+Старые зависимые approvals/reports/risk/QA исключаются из активной цепочки, но не удаляются.
+HEAD и commit objects остаются на месте. После возврата к architect нужен новый принятый план;
+после возврата к writer новая попытка расходует developer retry budget. Ни один счётчик не
+обнуляется. До первого accept сохраняется требование `batch approve`.
+
+Живой worker нужно сначала остановить средствами runtime. Затем оператор записывает
+`dispatch cancel --runtime-stopped` с approved_by/approved_at/reason. Timeout не доказывает остановку.
+После этого можно выполнить rewind. Старый dispatch больше не принимает heartbeat/report/checkpoint.
+
+Для старого pinned batch новые recovery-команды используют установленный runtime. Событие с
+человеческим approval связывает исходный pin с новым control runtime и сохраняет его snapshot.
+Исходный immutable plan и старые brief/report не меняются. `ledger validate` ничего не исправляет.
+
+Перед handoff передайте один абсолютный `--worktree` в preflight и send. Для writer путь должен
+совпадать с issue-worktree, branch и startup SHA. Self-report проверяет фактический каталог даже
+при одинаковом SHA двух checkout. Runtime должен уметь выбрать существующий каталог; одного
+`isolation: worktree` недостаточно. Coordinator остаётся в main checkout.
+
+Если writer-сессия завершилась до первого checkpoint, оператор может выполнить
+`dispatch resume --trigger startup-failure --runtime-stopped` с новым approval и `--note`.
+Файл `--file` содержит ровно `dispatch_id`, `definition_of_done`, `dependencies`, `write_paths`,
+`prohibited_changes` из brief. Чистый worktree должен оставаться на известном startup SHA.
+Команда записывает отдельное startup evidence, расходует continuation budget и требует новой
+self-report/heartbeat. Изменённый scope, неизвестные коммиты или paused batch исключают этот путь.

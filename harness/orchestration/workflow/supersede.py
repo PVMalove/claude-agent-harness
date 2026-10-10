@@ -97,13 +97,14 @@ def _resume_record(source: JsonObject) -> JsonObject:
     """The abandoned batch's ``abandoned.last_accepted`` record that the superseding batch resumes
     from; refuse any other source."""
     source_id = source.get("batch_id")
-    if source.get("state") != "abandoned":
+    from harness.orchestration.workflow.recovery import legacy_abandoned
+
+    if source.get("state") != "abandoned" and not legacy_abandoned(source):
         raise CoordinatorError(
             f"batch {source_id} is {source.get('state')!r}, not abandoned, so it cannot be "
             "superseded",
             remedy=f"a dead-end batch is superseded only after 'batch decide --batch {source_id} "
-            "--decision abandon --reason <why>'; a batch closed with 'batch abandon' has no "
-            "accepted stage to resume, so create an ordinary batch instead",
+            "--decision abandon --reason <why>' or 'batch abandon' with explicit human approval",
         )
     abandoned = source.get("abandoned")
     last = abandoned.get("last_accepted") if isinstance(abandoned, dict) else None
@@ -265,6 +266,12 @@ def attach(
     integration base pinned now, the base becomes its ``rebase_target_commit``.
     """
     source = _load_source(root, source_id)
+    from harness.orchestration.workflow.recovery import legacy_abandoned
+
+    if legacy_abandoned(source) and "last_accepted" not in source["abandoned"]:
+        from harness.orchestration.workflow.decisions import _last_accepted
+
+        source["abandoned"]["last_accepted"] = _last_accepted(repo, root, source)
     last = _resume_record(source)
     _require_same_work(source, record)
     same_done = source.get("definition_of_done") == record["definition_of_done"]

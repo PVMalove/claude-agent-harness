@@ -7,6 +7,8 @@ read-only role on the same candidate; anything about the code itself goes back t
 
 from __future__ import annotations
 
+from harness.orchestration.workflow.recovery import active_dispatches
+
 import argparse
 import hashlib
 from functools import partial
@@ -113,6 +115,8 @@ def _auto_accept_policy(
     config: JsonObject, batch: JsonObject, dispatch: JsonObject, report: JsonObject
 ) -> str | None:
     """Return the policy authorized to decide this clean, non-milestone report."""
+    if batch.get("manual_recovery"):
+        return None
     policy = config.get("approval_policy")
     if policy != batch.get("approval_policy") or policy not in {
         "low_risk",
@@ -221,7 +225,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
         else:
             pending = [
                 item
-                for item in batch.get("dispatches", [])
+                for item in active_dispatches(batch)
                 if item.get("state") == "reported" and "decision" not in item
             ]
             entry = pending[0] if len(pending) == 1 else None
@@ -440,7 +444,7 @@ def _developer_retry_count(batch: JsonObject) -> int:
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
-        if decision.get("decision") == "retry"
+        if decision.get("decision") in {"retry", "rewind-developer"}
         and decision.get("next_role") == "developer"
         and not (
             isinstance(decision.get("routing"), dict)
@@ -836,7 +840,7 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
     entry = next(
         (
             item
-            for item in reversed(batch.get("dispatches", []))
+            for item in reversed(active_dispatches(batch))
             if item.get("state") == "reported"
             and isinstance(item.get("decision"), dict)
             and item["decision"].get("decision") in {"accept", "override-warning"}
@@ -853,6 +857,29 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
         "dispatch_id": entry["dispatch_id"],
         "role": entry["role"],
         "candidate_commit": candidate,
+    }
+
+
+def _record_abandon(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    approval: JsonObject,
+    reason: str,
+    moment: str,
+    open_dispatches: list[str],
+) -> None:
+    """The common operator-refusal boundary, including the accepted resume point."""
+    batch["state"] = "abandoned"
+    batch.pop("next_action", None)
+    batch.pop("required_next_role", None)
+    batch["abandoned"] = {
+        "approved_by": approval["approved_by"],
+        "approved_at": approval["approved_at"],
+        "abandoned_at": moment,
+        "reason": reason,
+        "open_dispatches": open_dispatches,
+        "last_accepted": _last_accepted(repo, root, batch),
     }
 
 
@@ -1059,9 +1086,32 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             if auto_inputs is None:
                 raise
             raise auto_policy.ledger_stop_error(exc) from exc
+        if batch.get("state") == "paused":
+            if auto_inputs is not None:
+                return batch
+            raise CoordinatorError(
+                "batch is paused",
+                remedy="use batch resume-stop or batch rewind with explicit human approval",
+            )
+        if auto_inputs is not None and approvals.auto_active(
+            core_config._config(repo), batch
+        ):
+            found = auto_policy.derive_stop(
+                repo, root, core_config._config(repo), batch
+            )
+            if found is not None:
+                return auto_policy.persist_stop(
+                    ledger,
+                    repo,
+                    root,
+                    core_config._config(repo),
+                    batch,
+                    found,
+                    detected_by="batch auto-decide",
+                )
         pending = [
             item
-            for item in batch.get("dispatches", [])
+            for item in active_dispatches(batch)
             if item.get("state") == "reported" and "decision" not in item
         ]
         if len(pending) != 1:
@@ -1467,29 +1517,28 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "fail": "failed",
                 "abandon": "abandoned",
             }[args.decision]
-        elif batch.get("state") != "completed":
+        elif batch.get("state") not in {"completed", "paused"}:
             batch["state"] = "awaiting-approval"
         if args.decision == "abandon":
             moment = utils._now()
             abandoned = _abandon_open_dispatches(ledger, root, batch, moment)
-            batch["abandoned"] = {
-                "approved_by": approval["approved_by"],
-                "approved_at": approval["approved_at"],
-                "abandoned_at": moment,
-                "reason": abandon_reason,
-                "open_dispatches": abandoned,
-                "last_accepted": _last_accepted(repo, root, batch),
-            }
+            _record_abandon(
+                repo, root, batch, approval, abandon_reason, moment, abandoned
+            )
         if auto_inputs is not None and batch.get("state") == "completed":
             # The accepted publish ends the automatic path: its final report is recorded now.
             from harness.orchestration.workflow import auto_report
 
             auto_report.record(repo, root, config, batch, decision["approved_at"])
         _safe_id(batch["batch_id"], "batch")
+        from harness.orchestration.workflow.recovery import event_audit
+
         _replace_record(
             ledger,
             BatchRecord.from_dict(batch),
-            decision=_decision_audit(pending[0], decision, approver),
+            decision=event_audit(batch["recovery_events"][-1])
+            if batch.get("state") == "paused"
+            else _decision_audit(pending[0], decision, approver),
         )
         if args.decision == "abandon":
             _discard_batch_leftovers(repo, ledger, batch, abandoned)

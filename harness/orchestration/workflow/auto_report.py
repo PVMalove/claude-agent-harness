@@ -128,7 +128,8 @@ def _budget(config: JsonObject, batch: JsonObject) -> JsonObject:
     continuations = [
         item
         for item in recorded
-        if item.get("decision") in {"continue", "continue-automatic"}
+        if item.get("decision")
+        in {"continue", "continue-automatic", "continue-rate-limit"}
     ]
     continuation = _continuation_policy(config)
     return {
@@ -144,7 +145,7 @@ def _budget(config: JsonObject, batch: JsonObject) -> JsonObject:
             "spent": _highest(
                 item.get("dispatch_id")
                 for item in continuations
-                if item["decision"] == "continue-automatic"
+                if item["decision"] in {"continue-automatic", "continue-rate-limit"}
             ),
             "max_per_dispatch": continuation["max_rate_limit_resumes"],
         },
@@ -356,11 +357,18 @@ def live(
         candidate: str | None = _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
         candidate = None
+    stop = batch.get("auto_stop")
+    if batch.get("recovery_events"):
+        stop = (
+            batch["recovery_events"][-1]["evidence"].get("stop")
+            if batch.get("state") == "paused"
+            else None
+        )
     return build(
         batch,
         rows,
         config,
-        stop=batch.get("auto_stop"),
+        stop=stop,
         candidate=candidate,
         settled=carried_items._settled_item_ids(root, batch),
         coverage=_coverage(repo, rows),
@@ -378,14 +386,15 @@ def record(
 
 
 def auto_report(args: argparse.Namespace) -> JsonObject:
-    """``batch auto-report``: render the recorded final report, record a stop the ledger now
-    shows, or render the live report of a batch still on the automatic path."""
+    """Render recorded or live evidence and an observed stop without mutating the ledger."""
     from harness.orchestration.workflow import auto_policy
 
     repo = _repo(args)
     root = _state_root(args, repo)
     config = core_config._config(repo)
     ledger = LifecycleLedger(root)
+    if not root.exists():
+        _load_batch(root, args.batch)  # refusal must not create a ledger directory
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         try:
@@ -412,24 +421,36 @@ def auto_report(args: argparse.Namespace) -> JsonObject:
                 "batch auto-report applies only to a batch planned under approval_policy auto",
                 remedy="render this batch's evidence with batch decision-packet",
             )
-        if "auto_report" not in batch and approvals.auto_active(config, batch):
-            found = auto_policy.derive_stop(repo, root, config, batch)
-            if found is not None:
-                auto_policy.persist_stop(
-                    ledger,
-                    repo,
-                    root,
-                    config,
-                    batch,
-                    found,
-                    detected_by="batch auto-report",
-                )
-        if "auto_report" in batch:
+        found = (
+            auto_policy.derive_stop(repo, root, config, batch)
+            if approvals.auto_active(config, batch)
+            else None
+        )
+        observed = (
+            {
+                "category": found.category,
+                "reason": found.reason,
+                "evidence": found.evidence,
+            }
+            if found
+            else None
+        )
+        events = batch.get("recovery_events", [])
+        current_pause = (
+            events
+            and events[-1]["kind"] == "pause"
+            and batch["state"] == "paused"
+            and events[-1]["evidence"].get("stop")
+            == batch.get("auto_report", {}).get("stop")
+        )
+        if "auto_report" in batch and (not events or current_pause):
             return {
                 "batch_id": batch["batch_id"],
                 "recorded": True,
                 "report": batch["auto_report"],
                 "next_action": batch["auto_report"]["next_human_action"],
+                "observed_stop": observed,
+                "state": batch["state"],
             }
         report = live(repo, root, config, batch, None)
     return {
@@ -437,4 +458,7 @@ def auto_report(args: argparse.Namespace) -> JsonObject:
         "recorded": False,
         "report": report,
         "next_action": report["next_human_action"],
+        "observed_stop": observed,
+        "historical_report": batch.get("auto_report"),
+        "state": batch["state"],
     }

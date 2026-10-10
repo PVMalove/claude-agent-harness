@@ -866,6 +866,27 @@ class LifecycleLedger:
             "audit_records": len(list((root / "audit").glob("*.json"))),
         }
 
+    def validate(self) -> JsonObject:
+        """Validate the selected generation without ensure, migration or pointer writes."""
+        pointer = self.pointer()
+        root = (
+            self.root
+            if pointer is None
+            else self.root / GENERATIONS / self._pointer_generation(pointer)
+        )
+        version = pointer["version"] if pointer else 0
+        if pointer and version == LEDGER_VERSION:
+            self._validate_generation(root)
+        elif pointer or self._legacy_records_present():
+            self._validate_legacy(root)
+            self._validate_audit(root / "audit")
+        return {
+            "valid": True,
+            "version": version,
+            "generation": pointer["generation"] if pointer else None,
+            "batches": [p.stem for p in sorted((root / "batches").glob("*.json"))],
+        }
+
     def upgrade_source_batches(self) -> list[JsonObject]:
         """The batches of the older-schema generation ``migrate`` would upgrade; empty when no
         schema upgrade is pending."""
@@ -937,7 +958,15 @@ class LifecycleLedger:
         active = []
         for path in (current / "batches").glob("*.json"):
             batch = _read(path, "batch record")
-            if batch.get("state") == "active":
+            from harness.orchestration.workflow.recovery import terminal
+
+            if batch.get("state") in {
+                "active",
+                "awaiting-approval",
+                "paused",
+                "blocked",
+                "failed",
+            } and not terminal(batch):
                 active.append(batch.get("batch_id", path.stem))
         if active:
             raise LedgerError(
@@ -1108,6 +1137,17 @@ class LifecycleLedger:
         transition: JsonObject = {"path": relative, "before_sha256": _digest(path)}
         if relative.startswith("batches/"):
             self._validate_batch_transition(generation, before, value)
+            events = cast(list[JsonObject], value.get("recovery_events", []))
+            if len(events) > len(
+                cast(list[JsonObject], before.get("recovery_events", []))
+            ):
+                from harness.orchestration.workflow.recovery import event_audit
+
+                if decision != event_audit(events[-1]):
+                    raise LedgerError(
+                        "recovery event requires its matching audit decision",
+                        remedy="use the recovery command to bind approval and transition in one audit record",
+                    )
             transition.update({"from": before.get("state"), "to": value.get("state")})
         self._atomic_write(path, value)
         transition["sha256"] = _digest(path)
@@ -1177,6 +1217,71 @@ class LifecycleLedger:
     ) -> None:
         previous = before.get("state")
         target = after.get("state")
+        old_events = before.get("recovery_events", [])
+        new_events = after.get("recovery_events", [])
+        if (
+            not isinstance(old_events, list)
+            or not isinstance(new_events, list)
+            or new_events[: len(old_events)] != old_events
+            or len(new_events) > len(old_events) + 1
+        ):
+            raise LedgerError(
+                "recovery events are append-only",
+                remedy="use one audited recovery command; never replace or remove historical evidence",
+            )
+        added = new_events[len(old_events) :]
+        recovery = added[-1] if added else None
+        if recovery is not None:
+            if (
+                not isinstance(recovery, dict)
+                or recovery.get("sequence") != len(new_events)
+                or recovery.get("before_state") != previous
+                or recovery.get("state") != target
+                or recovery.get("next_action") != after.get("next_action")
+            ):
+                raise LedgerError(
+                    "recovery event does not bind this transition",
+                    remedy="record the actual before/after state and next gate through the coordinator",
+                )
+            from harness.orchestration.workflow.approval import sealed
+
+            if recovery != sealed(
+                {k: v for k, v in recovery.items() if k != "record_sha256"}
+            ):
+                raise LedgerError(
+                    "recovery event checksum mismatch",
+                    remedy="use the coordinator to create a sealed event",
+                )
+        if before.get("auto_stop") and before["auto_stop"] != after.get("auto_stop"):
+            raise LedgerError(
+                "historical auto stop is immutable",
+                remedy="append a recovery event; preserve the original stop",
+            )
+        if before.get("manual_recovery") and not after.get("manual_recovery"):
+            raise LedgerError(
+                "recovered batches remain manual",
+                remedy="keep manual_all after recovery",
+            )
+        if (
+            after.get("manual_recovery")
+            and not before.get("manual_recovery")
+            and (not recovery or recovery.get("kind") not in {"resume-stop", "rewind"})
+        ):
+            raise LedgerError(
+                "manual recovery requires a fresh recovery event",
+                remedy="use batch resume-stop or rewind",
+            )
+        old_startup = before.get("startup_evidence", [])
+        new_startup = after.get("startup_evidence", [])
+        if (
+            not isinstance(old_startup, list)
+            or not isinstance(new_startup, list)
+            or new_startup[: len(old_startup)] != old_startup
+        ):
+            raise LedgerError(
+                "startup evidence is append-only",
+                remedy="preserve original startup proof",
+            )
         allowed = {
             "planned": {
                 "planned",
@@ -1184,6 +1289,7 @@ class LifecycleLedger:
                 "blocked",
                 "failed",
                 "not-required",
+                "abandoned",
             },
             "awaiting-approval": {
                 "awaiting-approval",
@@ -1200,13 +1306,22 @@ class LifecycleLedger:
                 "blocked",
                 "failed",
                 "not-required",
+                "abandoned",
             },
-            "blocked": {"blocked", "awaiting-approval", "failed"},
-            "failed": {"failed"},
-            "completed": {"completed", "failed"},
+            "blocked": {"blocked", "awaiting-approval", "failed", "abandoned"},
+            "failed": {"failed", "abandoned"},
+            "completed": {"completed"},
             "not-required": {"not-required"},
             "abandoned": {"abandoned"},
         }
+        for state in ("planned", "awaiting-approval", "active", "blocked", "failed"):
+            allowed[state].add("paused")
+        allowed["paused"] = {"paused", "awaiting-approval", "planned", "abandoned"}
+        allowed["failed"].update({"awaiting-approval", "planned"})
+        allowed["active"].add("planned")
+        allowed["blocked"].add("planned")
+        for state in ("planned", "active", "blocked", "failed", "paused"):
+            allowed[state].add("completed")
         if (
             not isinstance(previous, str)
             or not isinstance(target, str)
@@ -1230,7 +1345,54 @@ class LifecycleLedger:
                     "ledger requires recorded coordinator approval before a batch awaits dispatch",
                     remedy="set coordinator_approval.approved_by and .approved_at before moving the batch to awaiting-approval",
                 )
-        if previous == "blocked" and target == "awaiting-approval":
+        if target == "abandoned" and previous != "abandoned":
+            refusal = after.get("abandoned")
+            if (
+                not isinstance(refusal, dict)
+                or not all(
+                    isinstance(item := refusal.get(key), str) and item.strip()
+                    for key in ("approved_by", "approved_at", "reason")
+                )
+                or not isinstance(refusal.get("approved_by"), str)
+                or cast(str, refusal["approved_by"]).startswith("policy:")
+            ):
+                raise LedgerError(
+                    "abandon requires recorded human refusal",
+                    remedy="record approved_by, approved_at and reason through batch abandon",
+                )
+        if (
+            target == "paused"
+            and previous != "paused"
+            and (not recovery or recovery.get("kind") != "pause")
+        ):
+            raise LedgerError(
+                "pause requires a recorded stop event",
+                remedy="use batch auto-decide to record the policy stop",
+            )
+        recovery_transition = (
+            previous in {"paused", "failed", "blocked"}
+            and target in {"planned", "awaiting-approval"}
+        ) or (previous == "active" and target == "planned")
+        human_event = (
+            recovery
+            and recovery.get("kind") in {"resume-stop", "rewind"}
+            and isinstance(recovery.get("approved_by"), str)
+            and not cast(str, recovery["approved_by"]).startswith("policy:")
+        )
+        if (
+            recovery_transition
+            and not human_event
+            and not (
+                previous == "blocked"
+                and target == "awaiting-approval"
+                and not new_events
+            )
+        ):
+            raise LedgerError(
+                "recovery transition requires a fresh human event",
+                remedy="use batch resume-stop or rewind with human approval",
+            )
+        if previous == "blocked" and target == "awaiting-approval" and not human_event:
             before_entries = before.get("dispatches")
             after_entries = after.get("dispatches")
             decisions = after.get("coordinator_decisions")

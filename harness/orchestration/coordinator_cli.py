@@ -36,6 +36,11 @@ def build_parser(
     ledger_commands = ledger.add_subparsers(dest="ledger_command", required=True)
     for name, handler, help_text in (
         (
+            "validate",
+            handlers.validate_ledger,
+            "Read-only validation of generation, audit and batch evidence",
+        ),
+        (
             "status",
             handlers.ledger_status,
             "Report the selected lifecycle-ledger generation",
@@ -170,7 +175,44 @@ def build_parser(
     _common(batch_resume)
     batch_resume.add_argument("--batch", required=True)
     batch_resume.add_argument("--reason", required=True)
+    batch_resume.add_argument("--runtime-stopped", action="store_true")
+    batch_resume.add_argument("--approved-by")
+    batch_resume.add_argument("--approved-at")
     batch_resume.set_defaults(handler=handlers.resume_batch)
+    resume_stop = batch_commands.add_parser(
+        "resume-stop",
+        help="resume a recorded stop with human approval; next dispatch still needs a fresh approval",
+    )
+    _common(resume_stop)
+    resume_stop.add_argument("--batch", required=True)
+    resume_stop.add_argument("--approved-by", required=True)
+    resume_stop.add_argument("--approved-at", required=True)
+    resume_stop.add_argument("--note", required=True)
+    resume_stop.set_defaults(
+        handler=handlers.resume_stopped_batch, installed_runtime_only=True
+    )
+    rewind = batch_commands.add_parser(
+        "rewind", help="select an earlier gate without changing Git history"
+    )
+    _common(rewind)
+    rewind.add_argument("--batch", required=True)
+    rewind.add_argument(
+        "--to",
+        required=True,
+        choices=[
+            "architect",
+            "developer",
+            "code-review",
+            "qa",
+            "publish",
+            "verification",
+            "resolve-conflict",
+        ],
+    )
+    rewind.add_argument("--approved-by", required=True)
+    rewind.add_argument("--approved-at", required=True)
+    rewind.add_argument("--note", required=True)
+    rewind.set_defaults(handler=handlers.rewind_batch, installed_runtime_only=True)
     batch_restore_runtime = batch_commands.add_parser(
         "restore-runtime",
         help="store the pinned runtime snapshot a batch needs after the installed runtime changed",
@@ -438,6 +480,9 @@ def build_parser(
         "--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work"
     )
     preflight.add_argument("--candidate-commit")
+    preflight.add_argument(
+        "--worktree", help="selected worker checkout, independent of coordinator --repo"
+    )
     preflight.set_defaults(handler=handlers.preflight_dispatch)
     dispatch_propose = dispatch_commands.add_parser(
         "propose",
@@ -495,6 +540,10 @@ def build_parser(
     _common(dispatch_send)
     dispatch_send.add_argument("--dispatch", required=True)
     dispatch_send.add_argument(
+        "--worktree",
+        help="selected worker checkout; writers use the canonical issue-worktree",
+    )
+    dispatch_send.add_argument(
         "--adapter", help="runtime adapter; required for the external transport only"
     )
     dispatch_send.add_argument("--adapter-arg", action="append")
@@ -509,6 +558,11 @@ def build_parser(
     dispatch_cancel.add_argument("--dispatch", required=True)
     dispatch_cancel.add_argument("--approved-by", required=True)
     dispatch_cancel.add_argument("--approved-at", required=True)
+    dispatch_cancel.add_argument(
+        "--runtime-stopped",
+        action="store_true",
+        help="operator confirms the already sent runtime worker has actually stopped; timeout is insufficient",
+    )
     dispatch_cancel.add_argument(
         "--reason",
         required=True,
@@ -542,7 +596,7 @@ def build_parser(
     )
     dispatch_heartbeat.set_defaults(handler=handlers.heartbeat_dispatch)
     dispatch_rate_limited = dispatch_commands.add_parser(
-        "rate-limited", help="record a checkpointed provider 429 and retry window"
+        "rate-limited", help="record provider 429 at a checkpoint or proven startup SHA"
     )
     _common(dispatch_rate_limited)
     dispatch_rate_limited.add_argument("--dispatch", required=True)
@@ -598,7 +652,7 @@ def build_parser(
     )
     dispatch_resume.add_argument(
         "--trigger",
-        choices=sorted(defaults.PLANNED_TRIGGER_KINDS),
+        choices=sorted(defaults.PLANNED_TRIGGER_KINDS | {"startup-failure"}),
         help="planned-trigger kind; required unless --termination-reason is a recognized rate limit",
     )
     dispatch_resume.add_argument(
@@ -613,6 +667,11 @@ def build_parser(
     dispatch_resume.add_argument("--approved-by")
     dispatch_resume.add_argument("--approved-at")
     dispatch_resume.add_argument("--note")
+    dispatch_resume.add_argument(
+        "--runtime-stopped",
+        action="store_true",
+        help="operator confirms the old startup session stopped; required for --trigger startup-failure",
+    )
     dispatch_resume.set_defaults(handler=handlers.resume_dispatch)
     dispatch_status_command = dispatch_commands.add_parser("status")
     _common(dispatch_status_command)

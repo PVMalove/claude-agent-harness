@@ -155,7 +155,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 
 При создании batch coordinator фиксирует в нём политику, и её смена на уже созданные batch не
 влияет. Исключение — `auto`: эта политика согласует шаги, только пока конфиг проекта и план batch
-выбирают `auto` и в batch нет `auto_stop`. В остальных случаях каждый шаг такого batch согласует
+выбирают `auto`, в batch нет `auto_stop` и не было ручного восстановления. В остальных случаях каждый шаг такого batch согласует
 человек.
 
 ### `tool_policy`
@@ -307,3 +307,25 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 
 Полный список подкоманд — `python .harness/orchestration/coordinator.py --help`. Те же команды
 для оператора доступны в разделе Orchestration `harness console`.
+
+## Восстановление остановленного batch
+
+`batch auto-report` читает evidence и показывает `observed_stop`; команда ничего не записывает.
+`batch auto-decide` явно записывает остановку как `paused`, в том числе без report. Повтор команды
+не создаёт новую остановку. `blocked` и `failed` сохраняют работу и допускают ручное восстановление.
+Терминальные состояния — `completed`, `abandoned` и старое `not-required`.
+
+- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина>`
+  готовит повтор того же этапа после доказанного сбоя запуска. Каждый следующий шаг требует
+  человеческого approval; исходный `auto_stop` остаётся историей.
+- `batch rewind --batch <id> --to code-review --approved-by <оператор> --approved-at <UTC> --note <причина>`
+  возвращает к достигнутому этапу. Git history не меняется. Старые зависимые risk/review/QA
+  перестают разрешать продолжение. Новая работа developer расходует оставшийся retry budget.
+- `dispatch cancel --dispatch <id> --runtime-stopped --approved-by <оператор> --approved-at <UTC> --reason <причина>`
+  записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
+- `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
+
+Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
+новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет
+известный чистый startup SHA отдельным evidence без фиктивного checkpoint. После recovery даже
+429 требует человеческого approval. Подробный контракт: [Operator recovery](playbook.md#operator-recovery).

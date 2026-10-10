@@ -32,7 +32,10 @@ from harness.orchestration.ledger.ledger_ops import (
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.workflow.decisions import decide_batch
 from harness.orchestration.workflow.dispatch import create_dispatch
-from harness.orchestration.workflow.history import _require_route
+from harness.orchestration.workflow.history import (
+    _require_route,
+    _validate_batch_integrity,
+)
 from harness.orchestration.workflow.risk import _candidate_changed_files, assess_risk
 
 POLICY_CHAIN_STEPS = ("policy-decide", "risk-assess", "next-dispatch")
@@ -57,6 +60,14 @@ def _chain_state(root: Path, dispatch_id: str) -> JsonObject:
         dispatch = _load_dispatch(root, dispatch_id)
         status = _load_dispatch_status(root, dispatch_id)
         batch = _load_batch(root, dispatch["batch_id"])
+        _validate_batch_integrity(root, batch)
+        from harness.orchestration.workflow.recovery import active_dispatches
+
+        if not any(e["dispatch_id"] == dispatch_id for e in active_dispatches(batch)):
+            raise CoordinatorError(
+                "superseded report cannot complete a policy chain",
+                remedy="continue the fresh recovery dispatch; the old report remains historical evidence",
+            )
         entries = batch.get("dispatches", [])
         position = next(
             (
@@ -98,9 +109,11 @@ def _assessed_candidate(state: JsonObject) -> object:
 def _clean_assessment(repo: Path, batch: JsonObject, reported: object) -> bool:
     """Whether the latest risk assessment of the reported candidate matched no trigger."""
     candidate = _candidate_commit(repo, reported)
+    from harness.orchestration.workflow.recovery import active_risks
+
     assessments = [
         item
-        for item in batch.get("risk_assessments", [])
+        for item in active_risks(batch)
         if item.get("candidate_commit") == candidate
     ]
     return bool(assessments) and not assessments[-1].get("matched_triggers")
@@ -133,6 +146,13 @@ def _run_policy_chain(
         state = _chain_state(root, dispatch_id)
         result["report"] = state["report_path"]
         result["report_sha256"] = state["entry"].get("report_sha256")
+        if (
+            state["batch"].get("manual_recovery")
+            or state["batch"].get("state") == "paused"
+        ):
+            steps.update(dict.fromkeys(POLICY_CHAIN_STEPS, "not-applicable"))
+            result["next_action"] = state["batch"].get("next_action")
+            return result
         from harness.orchestration.infrastructure_retry import pinned
 
         retry_policy = pinned(state["dispatch"])

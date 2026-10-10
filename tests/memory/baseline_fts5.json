@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "engine": "sqlite3 FTS5 bm25, path tie-break",
   "corpus": "Tracked ADRs and CONTEXT.md; excludes task archives and tracker snapshots",
   "k_values": [
@@ -12,10 +12,10 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "a6a0f93a5f83d94a5dc1991b2e581323f7e51f1bd1bf4b2bad18ecbe8943abb6",
   "source_hashes": {
-    "CONTEXT.md": "4cc40d8edeba5f4d6d82d3422833399e93b2788f530907f083038d79f8568b48",
+    "CONTEXT.md": "5806ce0119f9a19cfb3c28fb56f4c7afed7a677d33d64c78ecee5a9e8e547e35",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
-    "docs/adr/0003-orchestration-core.md": "eba04529bff1e9899409cba2434c2f423e9e29862e96ed16a334ec9b6dbb09bf",
+    "docs/adr/0003-orchestration-core.md": "f8d2974549b40a523a4df2b9ca9031bf348b087e62d58043b3e633dda7a914c5",
     "docs/adr/0004-role-assignments.md": "3721543a888daea209f74e3ca92ea920074213b0b758cbc6c1497b53ba782bd0",
     "docs/adr/0005-implement-pipeline.md": "9d3692f8f10b67cf0b9e4b6ed1122c6ddfff3213db83ea23fcc4c7ce6af42453",
     "docs/adr/0006-scratch-artifacts.md": "99f53f8af2a319af5dd90b9e7ac97ef718f17aa63029545636035be8bab7e14b",
@@ -63,8 +63,8 @@
           "docs/adr/0008-repo-map.md",
           "docs/adr/0010-project-memory.md",
           "CONTEXT.md",
-          "docs/adr/0005-implement-pipeline.md",
-          "docs/adr/0009-harness-console.md"
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0005-implement-pipeline.md"
         ],
         "expected": [
           "docs/adr/0008-repo-map.md",
@@ -86,7 +86,7 @@
           "docs/adr/0010-project-memory.md",
           "docs/adr/0005-implement-pipeline.md",
           "docs/adr/0001-portable-capability-delivery.md",
-          "docs/adr/0004-role-assignments.md"
+          "docs/adr/0003-orchestration-core.md"
         ],
         "expected": [
           "docs/adr/0006-scratch-artifacts.md",
@@ -128,8 +128,8 @@
         "retrieved": [
           "CONTEXT.md",
           "docs/adr/0010-project-memory.md",
-          "docs/adr/0009-harness-console.md",
           "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0009-harness-console.md",
           "docs/adr/0006-scratch-artifacts.md"
         ],
         "expected": [
@@ -152,8 +152,8 @@
           "CONTEXT.md",
           "docs/adr/0001-portable-capability-delivery.md",
           "docs/adr/0010-project-memory.md",
-          "docs/adr/0002-controlled-delivery.md",
-          "docs/adr/0009-harness-console.md"
+          "docs/adr/0009-harness-console.md",
+          "docs/adr/0007-python-quality.md"
         ],
         "expected": [
           "CONTEXT.md"
@@ -196,7 +196,7 @@
           "docs/adr/0010-project-memory.md",
           "CONTEXT.md",
           "docs/adr/0008-repo-map.md",
-          "docs/adr/0004-role-assignments.md"
+          "docs/adr/0003-orchestration-core.md"
         ],
         "expected": [
           "docs/adr/0009-harness-console.md",
@@ -264,8 +264,8 @@
           "docs/adr/0010-project-memory.md",
           "CONTEXT.md",
           "docs/adr/0009-harness-console.md",
-          "docs/adr/0003-orchestration-core.md",
-          "docs/adr/0005-implement-pipeline.md"
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0003-orchestration-core.md"
         ],
         "expected": [
           "docs/adr/0010-project-memory.md",
@@ -482,5 +482,6 @@
     ],
     "gate_passed": true
   },
-  "annotation_revision": "Source-grounded multi-label correction; queries, corpus, engine, window and thresholds unchanged. Initial single-label measurement is baseline_fts5_initial.json."
+  "annotation_revision": "Version 2 corrected source-grounded multi-label annotations; version 3 re-evaluates the updated corpus. Initial single-label measurement remains unchanged in baseline_fts5_initial.json.",
+  "corpus_revision": "Issue #662 updates orchestration lifecycle in CONTEXT.md and ADR 0003. Dataset, engine, windows and thresholds are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
 }

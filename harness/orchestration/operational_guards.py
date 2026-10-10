@@ -34,6 +34,7 @@ TRANSITION_FIELDS = (
 # rebase target (issue #504) or a delta-review scope after a fix-forward (issue #625), so every
 # transition without one keeps the digest it always had.
 OPTIONAL_TRANSITION_FIELDS = (
+    "recovery_event_sha256",
     "carried_items_sha256",
     "rebase_target_sha",
     "delta_review_sha256",
@@ -137,6 +138,7 @@ def transition_digest(transition: Mapping[str, object]) -> str:
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
+            "recovery_event_sha256 only after an audited recovery, "
             "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
             "when it carries an approved rebase target, delta_review_sha256 only when it "
             "carries a delta-review scope, runtime_access_sha256 and "

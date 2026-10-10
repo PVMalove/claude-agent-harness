@@ -44,3 +44,13 @@ git worktree add .harness/.sandboxes/worktrees/issue-<ID>-<slug> feature/issue-<
 ```
 
 Before this command, check that the branch points to the commit of `origin/<integration-branch>`: `git rev-parse feature/issue-<ID>-<slug> origin/<integration-branch>`. If the branch has other commits, stop and report a blocker. Then confirm the worktree with `git worktree list`.
+
+Before launching a worker, pass the selected absolute checkout as `--worktree` to `dispatch
+preflight` and `dispatch send`. For writers it must be the batch's registered issue worktree on
+its issue branch at the immutable startup SHA. Code-review retains its explicit `--checkout`;
+QA and publish use their own coordinator boundaries. Send verifies the choice again and returns
+`worker_worktree` and `worker_snapshot_commit` for the launch prompt. The runtime must support
+starting in that existing checkout; `isolation: worktree` alone does not prove that attachment.
+The worker probes and self-reports its actual canonical Git top-level, branch and HEAD. A main
+checkout at the same SHA is still the wrong path for a writer. Keep the coordinator and its CLI
+repo/state address in the main checkout. Never reset a candidate to satisfy a stale brief.

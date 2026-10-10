@@ -18,10 +18,9 @@ SENSITIVE_KEY = re.compile(
 )
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
 DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
-TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
-# A blocked batch that still has an open dispatch can be resumed or abandoned, so it holds its work
-# until one of those happens; with every dispatch settled it is finished like the other states.
-FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES - {"blocked"}
+TERMINAL_BATCH_STATES = {"completed", "not-required", "abandoned"}
+# Blocked and failed batches remain recoverable and retain their work until explicit abandon.
+FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
@@ -87,6 +86,8 @@ RECOVERY_ROUTES = (
     "fix-forward",
     "rebase-fix-forward",
     "supersede",
+    "environmental-restart",
+    "rewind",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

@@ -112,8 +112,14 @@ both independent Standards/Spec review and serialized clean-room QA gates. Befor
 write-role (`developer`) worker, verify that these mandatory gates are recorded in the batch's
 `required_gates`; halt early if missing rather than sending a worker into a risk-gate omission.
 
-For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
-immutable brief. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
+For each handoff, choose the worker checkout and pass its absolute path as `--worktree` to
+`dispatch preflight`. Show `batch decision-packet`, then create an approved immutable brief.
+Pass the same explicit `--worktree` to `dispatch send`; code-review also keeps `--checkout`.
+Preflight and send verify the selected path, branch and startup SHA. Start the worker in exactly
+`send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify
+that mechanism before launch: `isolation: worktree` alone does not prove attachment to an
+existing worktree. If the runtime cannot select that checkout, report a blocker. The coordinator
+stays in the main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
 guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
 evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
 through the required review/QA/publish gates. A write-role worker stopped early before making changes
@@ -157,9 +163,14 @@ as `policy:auto`; follow "Automatic path" in `.harness/orchestration/playbook.md
 `batch auto-decide --batch <id>`. Pass `--commit-plan-file` with the architect's plan copied
 exactly, `--findings-file` for coordinator findings on a developer report, `--bug-ticket` after
 you file or reuse the tool's bug ticket through the tracker CLI, and `--block-bypass --note` when a
-role worked around a block. Pass nothing else, and never choose the decision yourself. After any
-refused command, and after a `stopped` outcome, run `batch auto-report --batch <id>`. A stop is
-final for the batch: show the report, and every later step needs the operator's explicit approval.
+role worked around a block. Pass nothing else, and never choose the decision yourself. After a refused command, run `batch auto-report --batch <id>` to observe evidence. This read-only
+command does not record a stop. If it shows `observed_stop`, run `batch auto-decide --batch <id>`
+to record the pause, even without a pending report, then show `batch auto-report` again.
+The automatic path ends permanently at that pause. A human can approve `batch resume-stop`
+for a proven environment failure, or `batch rewind --to <gate>` to repeat an earlier gate.
+Use the playbook's "Operator recovery" procedure. The original stop stays historical; all later
+approvals, including recognized 429 continuations, follow `manual_all`. Honor an approval already
+explicitly given in this session for the concrete operation; never invent one.
 
 A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
 interpreter or a split command) breaks the protocol: never accept or warning-override that report,
@@ -222,8 +233,12 @@ You are the <role> worker for dispatch <dispatch_id>.
 Brief: <brief path from dispatch send>
 Report staging path: <report_staging_path from dispatch send, verbatim>
 Coordinator CLI: <coordinator CLI>
+Expected worker checkout: <worker_worktree from dispatch send, canonical absolute path>
+Expected startup SHA: <worker_snapshot_commit from dispatch send>
 Before task work, run git rev-parse --show-toplevel, git branch --show-current and git rev-parse HEAD
-in your runtime's current directory. Confirm your actually active model and the probed Git top-level:
+in your runtime's current directory. Compare the top-level path and HEAD with the expected values
+above, and the branch with the brief. Stop on any mismatch; do not reset Git history or claim
+another checkout as your actual directory. Confirm your active model and the probed Git top-level:
 <coordinator CLI> dispatch self-report --dispatch <dispatch_id> --model "<actual active model>" --worktree "<probed Git top-level>"
 Proceed only after a successful self-report; escalate a mismatch or unavailable model identity.
 Immediately after self-report and at least every <heartbeat.every_seconds> seconds while working, run:

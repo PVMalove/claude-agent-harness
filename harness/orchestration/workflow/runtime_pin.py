@@ -35,7 +35,9 @@ from harness.orchestration.ledger.ledger_ops import (
 
 
 def _pinned_hash(batch: JsonObject) -> str | None:
-    value = batch.get("harness_runtime_sha256")
+    from harness.orchestration.workflow.recovery import effective_runtime
+
+    value = effective_runtime(batch)
     if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
         return value
     return None
@@ -74,6 +76,7 @@ def _target_batch(args: argparse.Namespace, root: Path) -> JsonObject | None:
 # runtime that pins a hash has, so it also runs snapshots restored from before this module existed.
 _PINNED_BOOTSTRAP = """\
 import importlib.util, sys
+sys.dont_write_bytecode = True
 from pathlib import Path
 entry = Path(sys.argv[1])
 sys.argv = [str(entry), *sys.argv[2:]]
@@ -102,6 +105,10 @@ def pinned_runtime_command(args: argparse.Namespace) -> list[str] | None:
     repo = _repo(args)
     root = _state_root(args, repo)
     batch = _target_batch(args, root)
+    if batch is not None and batch.get("recovery_events"):
+        from harness.orchestration.workflow.recovery import validate_events
+
+        validate_events(root, batch)
     expected = _pinned_hash(batch) if batch is not None else None
     if expected is None or _runtime_matches(repo, expected):
         return None

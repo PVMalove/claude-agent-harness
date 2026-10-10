@@ -18,6 +18,8 @@ every rule is testable on plain data.
 
 from __future__ import annotations
 
+from harness.orchestration.workflow.recovery import active_dispatches
+
 import hashlib
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -206,7 +208,7 @@ def decided_entries(
 
     A decision is only ever recorded on a reported entry, so it needs no separate state check.
     """
-    for item in reversed(batch.get("dispatches", [])):
+    for item in reversed(active_dispatches(batch)):
         decision = item.get("decision")
         if (
             item.get("role") == role
@@ -226,6 +228,10 @@ def accepted_plan_sha256(batch: JsonObject) -> str | None:
         digest = item["decision"].get("commit_plan_sha256")
         return digest if isinstance(digest, str) else None
     link = batch.get("supersedes")
+    from harness.orchestration.workflow.recovery import carried_architect_active
+
+    if not carried_architect_active(batch):
+        return None
     carried = link.get("architect") if isinstance(link, dict) else None
     digest = carried.get("commit_plan_sha256") if isinstance(carried, dict) else None
     return digest if isinstance(digest, str) else None

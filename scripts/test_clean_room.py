@@ -47,6 +47,7 @@ from scripts.clean_room import (
     orchestration_config,
     parallel_batches,
     project_hooks,
+    recovery_cycle,
     risk_aware_review,
     stuck_batch,
     zero_config_defaults,
@@ -75,6 +76,7 @@ SCENARIOS = (
     orchestration_config,
     project_hooks,
     branch_hooks,
+    recovery_cycle,
     global_install,
 )
 

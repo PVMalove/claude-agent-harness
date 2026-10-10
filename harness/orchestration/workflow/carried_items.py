@@ -20,11 +20,12 @@ report and risk modules call into it, never the other way round.
 
 from __future__ import annotations
 
+from harness.orchestration.workflow.recovery import active_dispatches
+
 import argparse
 import hashlib
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
@@ -236,7 +237,7 @@ def attach(
 def _settled_item_ids(root: Path, batch: JsonObject) -> set[str]:
     """Items a code-review brief carried and whose review was accepted or warning-overridden."""
     settled: set[str] = set()
-    for entry in batch.get("dispatches", []):
+    for entry in active_dispatches(batch):
         if entry.get("role") != "code-review" or not _accepted(entry):
             continue
         section = _load_dispatch(root, entry["dispatch_id"]).get("carried_items") or {}
@@ -440,7 +441,7 @@ def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[Json
     """
     settled = {
         item["item_id"]
-        for entry in batch.get("dispatches", [])
+        for entry in active_dispatches(batch)
         if entry.get("role") == role and _accepted(entry)
         for item in (
             _load_dispatch(root, entry["dispatch_id"]).get("carried_items") or {}
@@ -448,7 +449,7 @@ def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[Json
     }
     return [
         item
-        for entry in batch.get("dispatches", [])
+        for entry in active_dispatches(batch)
         if _accepted(entry) and _hands_incomplete_items(entry)
         for item in _incomplete_brief_items(root, batch, entry)
         if item["source"]["target_role"] == role and item["item_id"] not in settled
@@ -887,7 +888,7 @@ def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
     dispatch may follow it (``batch resume`` abandons a stale or blocked one, which never reports): a created code-review dispatch (or a qa dispatch a policy chain created) already
     holds the brief the findings would have to be in.
     """
-    entries = batch.get("dispatches", [])
+    entries = active_dispatches(batch)
     if any(
         item.get("state") == "reported" and "decision" not in item for item in entries
     ):
@@ -922,7 +923,7 @@ def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
             f"batch carry-over requires a batch awaiting approval, not {batch.get('state')!r}",
             remedy="carry findings over only while the batch awaits its next dispatch",
         )
-    return cast(JsonObject, entries[position])
+    return entries[position]
 
 
 def carry_over_routing(candidate: str, item_ids: list[str]) -> JsonObject:

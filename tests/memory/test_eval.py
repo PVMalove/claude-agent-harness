@@ -353,23 +353,46 @@ def test_dataset_read_errors_use_the_cli_error_contract(
     assert "Traceback" not in process.stderr
 
 
-@pytest.fixture
-def golden_corpus(tmp_path: Path) -> Path:
-    """Build the pinned authoritative corpus without changing this checkout's policy."""
-    baseline = json.loads(
-        GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
+def _baseline_corpus(tmp_path: Path, filename: str) -> Path:
+    """Build current or historical source bytes, with every input pinned by its stored hash."""
+    baseline = json.loads(GOLDEN.with_name(filename).read_text(encoding="utf-8"))
+    archived = (
+        json.loads(
+            (GOLDEN.parent / "fixtures/initial-corpus.json").read_text(encoding="utf-8")
+        )
+        if filename == "baseline_fts5_initial.json"
+        else {}
     )
     root = GOLDEN.resolve().parents[2]
     configure(tmp_path)
     for path, digest in baseline["source_hashes"].items():
-        raw = (root / path).read_bytes()
+        raw = (
+            archived[path].encode("utf-8")
+            if path in archived
+            else (root / path).read_bytes()
+        )
         assert (
             hashlib.sha256(raw).hexdigest() == digest
         ), "baseline corpus changed; re-evaluate explicitly"
         source(tmp_path, path, raw.decode("utf-8"))
-    assert hashlib.sha256(GOLDEN.read_bytes()).hexdigest() == baseline["dataset_hash"]
     assert build(tmp_path)["indexed"] == len(baseline["source_hashes"])
     return tmp_path
+
+
+@pytest.fixture
+def golden_corpus(tmp_path: Path) -> Path:
+    """Build the actively measured corpus without changing this checkout's policy."""
+    baseline = json.loads(
+        GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
+    )
+    assert hashlib.sha256(GOLDEN.read_bytes()).hexdigest() == baseline["dataset_hash"]
+    return _baseline_corpus(tmp_path, "baseline_fts5.json")
+
+
+@pytest.fixture
+def initial_corpus(tmp_path: Path) -> Path:
+    """Preserve the original source corpus when authoritative project documents change."""
+    return _baseline_corpus(tmp_path, "baseline_fts5_initial.json")
 
 
 def test_fts5_baseline_is_reproducible(golden_corpus: Path) -> None:
@@ -391,7 +414,7 @@ def test_fts5_baseline_is_reproducible(golden_corpus: Path) -> None:
     assert json.loads(process.stdout) == report
 
 
-def test_initial_single_label_measurement_is_preserved(golden_corpus: Path) -> None:
+def test_initial_single_label_measurement_is_preserved(initial_corpus: Path) -> None:
     """Relabeling must not be reported as an improvement in the FTS5 engine."""
     from harness.memory import evaluate_memory
     from harness.memory.eval import load_golden_dataset
@@ -402,7 +425,6 @@ def test_initial_single_label_measurement_is_preserved(golden_corpus: Path) -> N
     current = json.loads(
         GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
     )
-    assert initial["source_hashes"] == current["source_hashes"]
     assert initial["engine"] == current["engine"]
     old_labels = {
         result["ticket_id"]: result["expected"]
@@ -421,9 +443,6 @@ def test_initial_single_label_measurement_is_preserved(golden_corpus: Path) -> N
         "utf-8"
     )
     assert hashlib.sha256(original_bytes).hexdigest() == initial["dataset_hash"]
-    report = evaluate_memory(golden_corpus, dataset=dataset)
+    report = evaluate_memory(initial_corpus, dataset=dataset)
     assert report.to_dict() == initial["report"]
     assert report.gate_passed is False
-    assert [item.retrieved for item in report.query_results] == [
-        item["retrieved"] for item in current["report"]["query_results"]
-    ]

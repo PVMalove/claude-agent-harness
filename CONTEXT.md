@@ -262,10 +262,11 @@ role manifests, config contract, lifecycle, handoff и optional runtime adapter 
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:
-Coordinator-owned последовательность `planned → awaiting-approval ↔ active → completed | blocked |
-failed`. Batch хранит ticket, issue-ветку, worktree и историю evidence; он содержит несколько
+Coordinator-owned последовательность `planned → awaiting-approval ↔ active`; `paused`, `blocked`
+и `failed` допускают ручное восстановление, `completed` и `abandoned` терминальны. Batch хранит ticket, issue-ветку, worktree и историю evidence; он содержит несколько
 последовательных dispatch с отдельными immutable brief и terminal outcome. Повторная попытка — новый
-dispatch с новым immutable brief, а не возврат состояния назад.
+dispatch с новым immutable brief. Rewind выбирает предыдущий gate через sealed audit event,
+сохраняет Git history и исключает зависимое старое evidence. После recovery действует manual_all.
 _Avoid_: self-transition воркера, повторное использование старого dispatch.
 
 **Worker session**:

@@ -75,6 +75,18 @@ def _registered_worktrees(repo: Path) -> set[Path]:
 def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[str, str]:
     """Return immutable startup evidence or reject a wrong CWD before role work is accepted."""
     checkout = Path(worktree).resolve()
+    expected_path = dispatch.get("worker_worktree")
+    if expected_path is None and dispatch.get("role") in {
+        "architect",
+        "developer",
+        "conflict-resolver",
+    }:
+        expected_path = dispatch.get("worktree")
+    if isinstance(expected_path, str) and checkout != Path(expected_path).resolve():
+        raise AttestationError(
+            "runtime worktree path does not match the expected worker checkout",
+            remedy=f"start the worker in {Path(expected_path).resolve()} and report that canonical top-level path",
+        )
     if not checkout.is_dir():
         raise AttestationError(
             "reported worktree does not exist",

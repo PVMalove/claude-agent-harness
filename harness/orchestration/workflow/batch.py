@@ -35,7 +35,6 @@ from harness.orchestration.core.config import (
 )
 from harness.orchestration.core.constants import (
     ATTENTION_STATE_FIELDS,
-    FINISHED_BATCH_STATES,
     LIVE_DISPATCH_STATES,
     PLAN_FIELDS,
     TERMINAL_BATCH_STATES,
@@ -81,11 +80,14 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import supersede
+from harness.orchestration.workflow.recovery import terminal
 from harness.orchestration.workflow.approval import (
     _approval,
 )
 from harness.orchestration.workflow.decisions import (
     _abandon_open_dispatches,
+    _discard_batch_leftovers,
+    _record_abandon,
 )
 from harness.orchestration.workflow.history import (
     _accepted_architect,
@@ -116,10 +118,18 @@ def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) ->
         )
     active = 0
     for other in _batch_records(root):
-        if other.get("batch_id") == batch.get("batch_id") or other.get("state") not in {
-            "active",
-            "awaiting-approval",
-        }:
+        if (
+            other.get("batch_id") == batch.get("batch_id")
+            or terminal(other)
+            or other.get("state")
+            not in {
+                "active",
+                "awaiting-approval",
+                "paused",
+                "blocked",
+                "failed",
+            }
+        ):
             continue
         active += 1
     if active >= budget:
@@ -134,16 +144,12 @@ def _reject_duplicate_work(root: Path, ticket: str, branch: str, worktree: str) 
 
     The guard is about the same work, not the same files: two tickets that touch one file are
     independent batches, but a second batch for one unfinished ticket would double the writer.
-    Finished batches stay audit evidence and never block a fresh attempt. A batch a decision
-    blocked has nothing left to resume or abandon, so it is finished too; a blocked batch that
-    still holds an open dispatch keeps its work until ``batch resume`` or ``batch abandon``.
+    Completed and abandoned batches stay audit evidence. Paused, blocked and failed batches
+    retain their ticket, branch and worktree until an explicit operator refusal.
     """
     mine_worktree = str(Path(worktree).resolve())
     for other in _batch_records(root):
-        if other.get("state") in FINISHED_BATCH_STATES or (
-            other.get("state") == "blocked"
-            and all(_settled(item) for item in other.get("dispatches", []))
-        ):
+        if terminal(other):
             continue
         other_worktree = other.get("worktree")
         for label, mine, theirs in (
@@ -403,7 +409,9 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         if _non_empty(integration_ref)
         else None,
         "integration_base_commit": pinned_base,
-        "branch_start_commit": _head_commit(repo),
+        "branch_start_commit": _head_commit(Path(worktree))
+        if Path(worktree).is_dir()
+        else _head_commit(repo),
         "state": "planned",
         "ticket": ticket.strip(),
         "branch": branch.strip(),
@@ -554,7 +562,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
                 continue
             if args.state and state != args.state:
                 continue
-            if args.open and state in TERMINAL_BATCH_STATES:
+            if args.open and terminal(batch):
                 continue
             batches.append(
                 {
@@ -565,7 +573,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
                     "allowed_paths": batch.get("allowed_paths"),
                     "state": state,
                     "created_at": batch.get("created_at"),
-                    "terminal": state in TERMINAL_BATCH_STATES,
+                    "terminal": terminal(batch),
                     "dispatches": len(dispatches),
                     "open_dispatches": open_dispatches,
                     "next_action": batch.get("next_action"),
@@ -593,6 +601,15 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        if (
+            approvals.auto_configured(core_config._config(repo), batch)
+            or batch.get("auto_stop")
+            or batch.get("manual_recovery")
+        ):
+            raise CoordinatorError(
+                "legacy resume cannot bypass a recorded stop",
+                remedy="use batch resume-stop with explicit human approval, or batch rewind",
+            )
         entries = batch.get("dispatches", [])
         latest = entries[-1] if entries else None
         if not isinstance(latest, dict):
@@ -614,6 +631,16 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
                 "batch resume requires a startup-blocked or stale dispatch",
                 remedy="resume only an attestation-blocked or observed stale dispatch; use the existing decision or abandon route otherwise",
             )
+        operator = None
+        if stale_worker:
+            if not getattr(args, "runtime_stopped", False):
+                raise CoordinatorError(
+                    "timeout is not proof that the runtime worker stopped",
+                    remedy="stop the runtime worker first, then pass --runtime-stopped and explicit human approval; use batch rewind for a new gate",
+                )
+            from harness.orchestration.workflow.recovery import human_approval
+
+            operator = human_approval(args)
         status = _load_dispatch_status(root, latest["dispatch_id"])
         if not (
             (startup_blocked and status.get("state") == "blocked")
@@ -659,8 +686,10 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
                     "at": moment,
                     "keys": keys,
                     "note": reason,
-                    "approved_by": "policy:operational-recovery",
-                    "approved_at": moment,
+                    "approved_by": operator["approved_by"]
+                    if operator
+                    else "policy:operational-recovery",
+                    "approved_at": operator["approved_at"] if operator else moment,
                 }
             )
         batch["next_action"] = next_action
@@ -669,8 +698,10 @@ def resume_batch(args: argparse.Namespace) -> JsonObject:
             {
                 "decision": "resume",
                 "dispatch_id": latest["dispatch_id"],
-                "approved_by": "policy:operational-recovery",
-                "approved_at": moment,
+                "approved_by": operator["approved_by"]
+                if operator
+                else "policy:operational-recovery",
+                "approved_at": operator["approved_at"] if operator else moment,
                 "note": reason,
                 "next_role": next_action,
             }
@@ -712,26 +743,14 @@ def abandon_batch(args: argparse.Namespace) -> JsonObject:
             for item in batch.get("dispatches", [])
             if not _settled(item)
         ]
-        if batch.get("state") in TERMINAL_BATCH_STATES and not open_dispatches:
+        if terminal(batch):
             raise CoordinatorError(
                 f"batch is already {batch['state']} and has nothing open to close",
                 remedy=f"this batch is already {batch['state']!r}; nothing further to close",
             )
-        # A terminal batch that still carries an open dispatch is a repair case: its state was moved
-        # without closing what it held, and that dispatch would otherwise be surfaced as live for
-        # ever. Closing the remainder is exactly this command's job.
         moment = utils._now()
         _abandon_open_dispatches(ledger, root, batch, moment)
-        batch["state"] = "failed"
-        batch.pop("next_action", None)
-        batch.pop("required_next_role", None)
-        batch["abandoned"] = {
-            "approved_by": approval["approved_by"],
-            "approved_at": approval["approved_at"],
-            "abandoned_at": moment,
-            "reason": reason,
-            "open_dispatches": open_dispatches,
-        }
+        _record_abandon(repo, root, batch, approval, reason, moment, open_dispatches)
         batch.setdefault("coordinator_decisions", []).append(
             {
                 "decision": "abandon",
@@ -742,10 +761,11 @@ def abandon_batch(args: argparse.Namespace) -> JsonObject:
         )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
+        _discard_batch_leftovers(repo, ledger, batch, open_dispatches)
     return {
         "batch_id": batch["batch_id"],
         "ticket": batch["ticket"],
-        "state": "failed",
+        "state": "abandoned",
         "abandoned_dispatches": open_dispatches,
     }
 
@@ -792,7 +812,8 @@ def mark_batch_not_required(args: argparse.Namespace) -> JsonObject:
                 status = _load_dispatch_status(root, entry["dispatch_id"])
                 status.update({"state": "cancelled", "updated_at": moment})
                 _replace_record(ledger, DispatchStatusRecord.from_dict(status))
-        batch["state"] = "not-required"
+        batch["state"] = "completed"
+        batch["completion_kind"] = "no-implementation"
         batch.pop("next_action", None)
         batch.pop("required_next_role", None)
         batch["not_required"] = {
@@ -815,7 +836,7 @@ def mark_batch_not_required(args: argparse.Namespace) -> JsonObject:
     return {
         "batch_id": batch["batch_id"],
         "ticket": batch["ticket"],
-        "state": "not-required",
+        "state": "completed",
         "tracker_resolution": "resolution::wontfix",
         "cancelled_dispatches": cancelled_dispatches,
     }

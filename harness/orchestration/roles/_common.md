@@ -77,6 +77,16 @@ checkpoint; a role that cannot reach one returns a structured blocker (`outcome:
 the context pressure. A continuation starts only from that checkpoint, in a new session that attests
 its model again. Recording pressure changes no routing or approval by itself.
 
+The launch prompt states the expected canonical checkout and startup SHA. Before task work,
+probe the runtime's actual Git top-level, branch and HEAD and compare them. Report that actual
+path to `dispatch self-report` using the main coordinator's absolute CLI/repo/state address.
+The coordinator's own CWD may be the main checkout. Never report another path, reset history to
+match a stale brief, or assume runtime worktree isolation attaches to an existing checkout.
+Each resumed session repeats self-report and heartbeat; startup evidence is not a completed DoD.
+Before a first checkpoint, a stopped writer session may continue only at its proven clean startup
+SHA through recognized 429 handling or human `startup-failure` authorization with unchanged facts.
+Never manufacture a checkpoint, completion, checks or remaining DoD to make continuation possible.
+
 Write work happens only on the handoff's issue branch and isolated worktree, only inside the brief's
 allowed paths. Protected branches and `integration/*` are never direct write targets. A batch has one
 active writer; role handoffs are sequential. A commit is evidence only after the required checks pass and its

@@ -25,7 +25,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
     _state_root,
 )
-from harness.orchestration.ledger.lifecycle import LifecycleLedger
+from harness.orchestration.ledger.lifecycle import LifecycleLedger, LEDGER_VERSION
 
 
 def ledger_status(args: argparse.Namespace) -> JsonObject:
@@ -35,6 +35,27 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         return ledger.status()
+
+
+def validate_ledger(args: argparse.Namespace) -> JsonObject:
+    """Read-only generation, audit, record graph and batch-contract validation."""
+    from harness.orchestration.workflow.history import _validate_batch_integrity
+    from harness.orchestration.core.utils import _read_object
+
+    root = _state_root(args, _repo(args))
+    ledger = LifecycleLedger(root)
+    if not root.exists():
+        return ledger.validate()
+    with _ledger_lock(ledger), _ledger_errors():
+        result = ledger.validate()
+        if result["version"] == LEDGER_VERSION:
+            records = ledger.records_root()
+            for batch_id in cast(list[str], result["batches"]):
+                _validate_batch_integrity(
+                    root,
+                    _read_object(records / "batches" / f"{batch_id}.json", "batch"),
+                )
+        return result
 
 
 def migrate_ledger(args: argparse.Namespace) -> JsonObject:

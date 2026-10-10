@@ -60,6 +60,8 @@ class PreparedDispatch:
     context_package: JsonObject
     preview_brief: JsonObject
     decision_packet: JsonObject
+    worker_worktree: str
+    worker_snapshot_commit: str
     retry_start: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
@@ -403,33 +405,30 @@ def prepare(
     integration_ref = _text(
         project_state.get("integration_ref") or "base", "integration_ref"
     )
-    if worktree not in _worktree_paths(repo):
-        raise PreflightError(
-            "worktree is not registered by git worktree",
-            remedy=f"run 'git worktree add' for {worktree} or point project_state['worktree'] at a registered worktree",
-        )
-    if _git(worktree, "rev-parse", "--is-inside-work-tree") != "true":
-        raise PreflightError(
-            "worktree is not a Git worktree",
-            remedy=f"point project_state['worktree'] at a real Git worktree, not {worktree}",
-        )
-    worktree_sha = _git(worktree, "rev-parse", "--verify", "HEAD^{commit}")
+    from harness.orchestration.runtime_attestation import AttestationError, attest
+
+    selected = Path(str(project_state.get("worker_worktree") or worktree)).resolve()
     expected_sha = candidate or _text(
         project_state.get("snapshot_sha") or base_sha, "snapshot_sha"
     )
-    if worktree_sha != expected_sha:
-        raise PreflightError(
-            f"worktree is pinned to {worktree_sha}, expected snapshot {expected_sha}",
-            remedy=f"checkout {expected_sha} in the worktree, or update snapshot_sha/candidate_sha to match {worktree_sha}",
+    try:
+        proof = attest(
+            repo,
+            {
+                "role": role,
+                "branch": branch,
+                "worktree": str(worktree),
+                "snapshot_commit": expected_sha,
+                "candidate_commit": candidate,
+                "worker_worktree": str(worktree)
+                if role in {"architect", "developer", "conflict-resolver"}
+                else str(selected),
+            },
+            str(selected),
         )
-    if (
-        role in {"architect", "developer"}
-        and _git(worktree, "branch", "--show-current") != branch
-    ):
-        raise PreflightError(
-            "write/planning worktree is not on the resolved issue branch",
-            remedy=f"checkout branch {branch!r} in the worktree before dispatching this role",
-        )
+    except AttestationError as exc:
+        raise PreflightError(exc.message, remedy=exc.remedy) from exc
+    worktree_sha = proof["head_commit"]
 
     checks = project_state.get("mandatory_checks", [])
     if not string_list(checks):
@@ -526,6 +525,8 @@ def prepare(
         issue_branch=branch,
         worktree=str(worktree),
         worktree_sha=worktree_sha,
+        worker_worktree=str(selected),
+        worker_snapshot_commit=worktree_sha,
         runtime=runtime,
         mandatory_checks=list(checks),
         context_package=package,

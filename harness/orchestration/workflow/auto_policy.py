@@ -361,6 +361,18 @@ def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
         except CoordinatorError:
             continue
         model = status.get("model_self_report")
+        failure = status.get("runtime_failure", {})
+        if (
+            failure.get("kind") == "runtime-unavailable"
+            and failure.get("worker_started") is False
+        ):
+            stops.append(
+                Stop(
+                    "integrity-failure",
+                    "runtime-unavailable",
+                    {"dispatch_id": entry["dispatch_id"], "runtime_failure": failure},
+                )
+            )
         if isinstance(model, dict) and model.get("match") is False:
             stops.append(
                 Stop(
@@ -505,7 +517,7 @@ def record_stop(
     human. Only the in-memory batch changes; the caller writes it."""
     from harness.orchestration.workflow import auto_report
 
-    batch["auto_stop"] = approvals.sealed(
+    stop_record = approvals.sealed(
         {
             "category": stop.category,
             "reason": stop.reason,
@@ -514,6 +526,11 @@ def record_stop(
             "evidence": stop.evidence,
         }
     )
+    if "auto_stop" not in batch:
+        batch["auto_stop"] = stop_record
+    from harness.orchestration.workflow import recovery
+
+    recovery.pause(root, batch, stop_record, moment)
     auto_report.record(repo, root, config, batch, moment)
     return cast(JsonObject, batch["auto_stop"])
 
@@ -533,7 +550,13 @@ def persist_stop(
         repo, root, config, batch, stop, detected_by=detected_by, moment=utils._now()
     )
     _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
+    from harness.orchestration.workflow.recovery import event_audit
+
+    _replace_record(
+        ledger,
+        BatchRecord.from_dict(batch),
+        decision=event_audit(batch["recovery_events"][-1]),
+    )
     return batch
 
 
@@ -591,7 +614,7 @@ def resolve(
             "project that still chooses it",
             remedy="decide the report with batch decide and --approved-by",
         )
-    if "auto_stop" in batch:
+    if "auto_stop" in batch or batch.get("manual_recovery"):
         raise CoordinatorError(
             "the automatic path of this batch stopped, so a human decides every later step",
             remedy="show batch auto-report to a human; decide with batch decide and --approved-by",

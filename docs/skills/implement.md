@@ -201,3 +201,14 @@ remedy и не обходите его. Завершённый batch и его r
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/implement/SKILL.md)
+
+## Восстановление (#662)
+
+`auto-report` наблюдает, `auto-decide` записывает `paused`. Ручные `resume-stop` и `rewind --to`
+сохраняют исходную остановку и включают `manual_all` для всех следующих шагов, включая 429.
+Rewind не меняет Git history, но исключает старое зависимое QA/review/risk из активной цепочки.
+Счётчики сохраняются. Повторная работа developer расходует retry budget; перезапуск после
+подтверждённого сбоя окружения — отдельный infrastructure budget.
+Перед send coordinator проверяет явный каталог воркера через `--worktree`, а worker подтверждает
+фактический path/branch/HEAD через self-report. Coordinator CLI остаётся привязан к main repo/state.
+Подробные ограничения задаёт `.harness/orchestration/playbook.md`, раздел Operator recovery.
