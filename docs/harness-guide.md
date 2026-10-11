@@ -681,6 +681,11 @@ textual. При аварийном завершении TUI пульт сооб�
 оркестрации или «не подключено», tier Repo Map, версия харнесса и статус дрейфа. Действие «Online
 checks» пересчитывает счётчики с `--online` и показывает CLI-эквивалент.
 
+Кнопка «Открыть / подключить проект» ведёт по шагам «выбор проекта → предварительные проверки →
+установка/внедрение → настройка → итоговая диагностика» для выбранного локального Git-проекта.
+Установка идёт через ту же форму подтверждения, что и команды раздела `Harness`, а после неё проект
+становится целью всех экранов. Подробности: [настройка, версии и CLI-помощник](console-configuration.md).
+
 | Раздел | Что внутри |
 |---|---|
 | `Diagnostics` | Полный отчёт `health`, «online checks» и «apply fixes» (`health --fix`, после online checks — `--online --fix`; требует повторного нажатия). Health работает в фоновом потоке, отчёт экспортируется в Markdown |
@@ -688,6 +693,7 @@ checks» пересчитывает счётчики с `--online` и показ
 | `Orchestration` | Статистика пайплайна (запуски и тикеты, состояния, диспатчи по ролям, итоги отчётов, QA, период) и история: слева все состояния batch с числом, справа batch выбранного состояния, Enter открывает хронологию. Ниже — команды coordinator из `harness/console/coordinator_catalog.py` |
 | `Reports` | Completion reports из леджера с фильтрами по тикету, роли, outcome и дате; хронология batch; QA-логи |
 | `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика |
+| `Настройка конфигурации` | Пошаговый мастер `project.json` и `orchestration.json` (`harness/console/configuration_steps.py`): пояснения и рекомендации по признакам проекта, проверка по схеме и валидаторам, различия, применение с автоматической резервной копией, локальные версии в `.harness/config-versions/` и откат, необязательные подсказки через авторизованный Codex CLI или Claude Code CLI (`harness/console/advisor.py`) |
 | `Help` | Справка по разделам, клавишам и правилам безопасности (`harness/console/help_text.py`) |
 
 | Клавиша | Действие |
@@ -724,13 +730,18 @@ checks» пересчитывает счётчики с `--online` и показ
   проверенная запись. Иначе «Построить карту» (`b`) после предупреждения запускает
   `python -B .harness/repo_map/repo_map.py --repo <repo> --commit <HEAD>`. Раздел читает только поля
   схемы v1 и принимает карту лишь после `harness.repo_map.contract.validation_error`.
+- Мастер конфигурации пишет оба JSON только после проверки и подтверждения. Перед записью он
+  сохраняет текущий набор отдельной версией, а запись пары файлов идёт через журнал и
+  восстанавливается после сбоя. ИИ-помощник не пишет файлы и не запускает команды: его ответ
+  попадает в черновик только по кнопке.
 
-Код разложен по шву stdlib/textual. Модули `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text,stats}.py`
+Код разложен по шву stdlib/textual. Модули `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text,stats,advisor,configuration,configuration_steps,project_target,project_facts}.py`
 не импортируют `textual`, и тесты проверяют их без него. `harness/console/app.py` и
 `harness/console/screens/*.py` импортируют его только внутри перезапущенного процесса. Pilot-тесты
 (`tests/console/test_console_app.py`, `tests/console/test_console_harness.py`,
 `tests/console/test_console_orchestration.py`, `tests/console/test_console_reports_app.py`,
-`tests/console/test_console_repo_map_app.py`) пропускаются через `pytest.importorskip`, если textual
+`tests/console/test_console_repo_map_app.py`, `tests/console/test_console_configuration_app.py`,
+`tests/console/test_console_configuration_versions_app.py`, `tests/console/test_console_project_setup.py`) пропускаются через `pytest.importorskip`, если textual
 не установлен. `textual` — только в `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и
 в коде (`tests/console/test_console_pin.py` держит их равными).
 

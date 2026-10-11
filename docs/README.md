@@ -13,6 +13,7 @@
 | [ADR](./adr/) | Девять действующих архитектурных контрактов по доменам. |
 | [Диаграммы](./diagrams/README.md) | Archify JSON, интерактивные HTML и PNG. |
 | [Справочник харнесса](./harness-guide.md) | Установка, команды CLI, `health`, `console`, skills и hooks. |
+| [Настройка в консоли](./console-configuration.md) | Выбор целевого проекта, мастер JSON, версии, откат и необязательные CLI-подсказки. |
 | [Backend-оркестрация](./backend-orchestration.md) | Конфиг, coordinator, роли и lifecycle batch. |
 | [Technical English](../harness/docs/technical-english.md) | Общий контракт английской координации агентов, доставляемый в каждую установку. |
 | [Technical Russian](./technical-russian.md) | Правила технического русского языка и формат Keep a Changelog. |

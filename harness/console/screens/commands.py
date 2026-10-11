@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Callable, Sequence
+from typing import Callable, Sequence, TypeVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -23,7 +23,10 @@ from .. import brand
 _OUTPUT_TAIL_LINES = 200
 
 
-def call_from_worker(screen: Screen[None], callback: Callable[[], object]) -> None:
+_Result = TypeVar("_Result")
+
+
+def call_from_worker(screen: Screen[_Result], callback: Callable[[], object]) -> None:
     """Передаёт результат фонового потока в UI, если экран и приложение ещё работают."""
     if not (screen.is_mounted and screen.app.is_running):
         return

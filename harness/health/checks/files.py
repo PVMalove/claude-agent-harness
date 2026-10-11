@@ -12,6 +12,8 @@ import os
 import re
 from pathlib import Path
 
+from harness.configuration import read_config_file
+
 from harness.storage import sandboxes_health, validate_sandboxes
 
 from ..context import HealthContext
@@ -443,8 +445,11 @@ def check_verification_routing(context: HealthContext) -> CheckResult:
         )
     config_path = context.repo / ORCHESTRATION_CONFIG_REL
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = read_config_file(config_path)
+        config = json.loads(raw) if raw is not None else None
     except JSON_READ_ERRORS:
+        raw = None
+    if raw is None:
         return CheckResult(
             id="files.verification_routing",
             group="files",
