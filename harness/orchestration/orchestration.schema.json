@@ -208,7 +208,7 @@
     "worker_attestation_required": {
       "type": "boolean",
       "default": false,
-      "description": "Требует startup-attestation Git-worktree и коммита для остальных ролей. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review она обязательна независимо от настройки. true включает проверку для всех ролей; false (по умолчанию) оставляет обязательную проверку writer/review."
+      "description": "Цель: гарантия целостности рабочего окружения. За что отвечает: требование от воркеров аттестации (подтверждения корректности Git-worktree, ветки и коммита) перед отправкой отчёта. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review аттестация обязательна независимо от настройки. Варианты: true (проверка для всех ролей), false (проверка только для перечисленных ролей, по умолчанию)."
     },
     "communication_policy": {
       "type": "object",
@@ -354,7 +354,7 @@
     "auto_retry_min_severity": {
       "enum": ["info", "warning", "error", "blocker"],
       "default": "info",
-      "description": "Минимальная серьёзность review finding, при которой auto_policy отправляет отчёт на повтор. Значение фиксируется в плане batch; info сохраняет прежнее поведение."
+      "description": "Цель: не тратить повторы разработчика на замечания низкой серьёзности. За что отвечает: минимальная серьёзность review finding, при которой auto_policy отправляет отчёт на повтор; значение фиксируется в плане batch. Варианты: 'info' (повтор на любое замечание, по умолчанию), 'warning', 'error', 'blocker'."
     },
     "execution_policy": {
       "type": "object",

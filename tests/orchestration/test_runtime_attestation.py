@@ -214,7 +214,16 @@ class RuntimeAttestationTests(unittest.TestCase):
             _git(repo, "commit", "-qm", "test: candidate")
             candidate = _git(repo, "rev-parse", "HEAD")
             worktree = Path(temporary) / "review"
-            _git(repo, "worktree", "add", "-q", "-b", "feature/issue-2-review", str(worktree), candidate)
+            _git(
+                repo,
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feature/issue-2-review",
+                str(worktree),
+                candidate,
+            )
 
             proof = attest(
                 repo,

@@ -7,8 +7,6 @@ read-only role on the same candidate; anything about the code itself goes back t
 
 from __future__ import annotations
 
-from harness.orchestration.workflow.recovery import active_dispatches
-
 import argparse
 import hashlib
 from functools import partial
@@ -68,6 +66,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -1533,7 +1532,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
 
             auto_report.record(repo, root, config, batch, decision["approved_at"])
         _safe_id(batch["batch_id"], "batch")
-        from harness.orchestration.workflow.recovery import event_audit
+        from harness.orchestration.ledger.recovery_chain import event_audit
 
         _replace_record(
             ledger,

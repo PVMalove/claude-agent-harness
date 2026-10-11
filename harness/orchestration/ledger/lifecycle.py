@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..core.utils import sealed
+from .recovery_chain import event_audit, terminal
 
 LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
@@ -958,8 +960,6 @@ class LifecycleLedger:
         active = []
         for path in (current / "batches").glob("*.json"):
             batch = _read(path, "batch record")
-            from harness.orchestration.workflow.recovery import terminal
-
             if batch.get("state") in {
                 "active",
                 "awaiting-approval",
@@ -1141,8 +1141,6 @@ class LifecycleLedger:
             if len(events) > len(
                 cast(list[JsonObject], before.get("recovery_events", []))
             ):
-                from harness.orchestration.workflow.recovery import event_audit
-
                 if decision != event_audit(events[-1]):
                     raise LedgerError(
                         "recovery event requires its matching audit decision",
@@ -1243,8 +1241,6 @@ class LifecycleLedger:
                     "recovery event does not bind this transition",
                     remedy="record the actual before/after state and next gate through the coordinator",
                 )
-            from harness.orchestration.workflow.approval import sealed
-
             if recovery != sealed(
                 {k: v for k, v in recovery.items() if k != "record_sha256"}
             ):

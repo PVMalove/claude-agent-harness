@@ -848,14 +848,23 @@ def run(ctx: SimpleNamespace) -> None:
 
     # A matching candidate SHA in the coordinator checkout is not a valid worker checkout.
     main_checkout = coordinator_run(
-        "dispatch", "send", "--dispatch", review_id,
-        "--adapter", str(fake_adapter), "--checkout", str(orchestration_project),
-        "--worktree", str(orchestration_project),
+        "dispatch",
+        "send",
+        "--dispatch",
+        review_id,
+        "--adapter",
+        str(fake_adapter),
+        "--checkout",
+        str(orchestration_project),
+        "--worktree",
+        str(orchestration_project),
     )
     if main_checkout.returncode == 0 or fake_adapter_log.exists():
         sys.exit("coordinator handed a review worker the main checkout")
 
-    run_step(["git", "checkout", "--detach", candidate_sha], cwd=shared_worktree, check=True)
+    run_step(
+        ["git", "checkout", "--detach", candidate_sha], cwd=shared_worktree, check=True
+    )
     mutable_file = shared_worktree / "services" / "unreviewed.tmp"
     mutable_file.write_text("outside the pinned commit\n", encoding="utf-8")
     if (

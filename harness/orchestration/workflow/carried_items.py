@@ -20,8 +20,6 @@ report and risk modules call into it, never the other way round.
 
 from __future__ import annotations
 
-from harness.orchestration.workflow.recovery import active_dispatches
-
 import argparse
 import hashlib
 from collections.abc import Callable
@@ -63,6 +61,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.history import (

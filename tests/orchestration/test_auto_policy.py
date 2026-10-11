@@ -20,7 +20,11 @@ import pytest
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config
-from harness.orchestration.core.constants import AUTO_REPORT_FIELDS, AUTO_STOP_REASONS
+from harness.orchestration.core.constants import (
+    AUTO_REPORT_FIELDS,
+    AUTO_RETRY_SEVERITIES,
+    AUTO_STOP_REASONS,
+)
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.operational_guards import ATTENTION_REASONS
 from harness.orchestration.workflow import (
@@ -147,7 +151,9 @@ class AutoConfigGateTests(unittest.TestCase):
         )
         return repo
 
-    def test_auto_retry_min_severity_defaults_to_info_and_batch_can_override(self) -> None:
+    def test_auto_retry_min_severity_defaults_to_info_and_batch_can_override(
+        self,
+    ) -> None:
         self.assertEqual(config._auto_retry_min_severity({}), "info")
         self.assertEqual(
             config._auto_retry_min_severity(
@@ -641,7 +647,7 @@ class AutoDecisionTableTests(unittest.TestCase):
     def test_explicit_reviewer_retry_is_actionable_at_every_threshold(self) -> None:
         review = {"recommendation": "retry", **_axes("clean", [])}
         report = _clean("code-review", review=review)
-        for threshold in config.AUTO_RETRY_SEVERITIES:
+        for threshold in AUTO_RETRY_SEVERITIES:
             with self.subTest(threshold=threshold):
                 choice = self._category(
                     "code-review", report, auto_retry_min_severity=threshold
@@ -651,12 +657,15 @@ class AutoDecisionTableTests(unittest.TestCase):
                 assert evidence is not None
                 self.assertEqual(evidence[0], "code")
 
-    def test_warning_axis_prevents_plain_accept_even_above_warning_threshold(self) -> None:
+    def test_warning_axis_prevents_plain_accept_even_above_warning_threshold(
+        self,
+    ) -> None:
         review = {"recommendation": "accept", **_axes("warning", [])}
         for threshold in ("error", "blocker"):
             with self.subTest(threshold=threshold):
                 choice = self._category(
-                    "code-review", _clean("code-review", review=review),
+                    "code-review",
+                    _clean("code-review", review=review),
                     auto_retry_min_severity=threshold,
                 )
                 self.assertEqual(choice.decision, "retry")

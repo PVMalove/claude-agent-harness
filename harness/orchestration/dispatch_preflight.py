@@ -406,6 +406,7 @@ def prepare(
         project_state.get("integration_ref") or "base", "integration_ref"
     )
     from harness.orchestration.runtime_attestation import (
+        ISSUE_WORKTREE_WRITER_ROLES,
         AttestationError,
         attest,
     )
@@ -424,7 +425,7 @@ def prepare(
                 "snapshot_commit": expected_sha,
                 "candidate_commit": candidate,
                 "worker_worktree": str(worktree)
-                if role in {"architect", "developer", "conflict-resolver"}
+                if role in ISSUE_WORKTREE_WRITER_ROLES
                 else str(selected),
             },
             str(selected),

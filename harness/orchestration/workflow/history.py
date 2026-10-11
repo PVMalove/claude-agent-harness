@@ -8,8 +8,6 @@ the handler modules in this package can all depend on it without depending on ea
 
 from __future__ import annotations
 
-from harness.orchestration.workflow.recovery import active_dispatches, active_risks
-
 import hashlib
 import re
 from pathlib import Path
@@ -92,6 +90,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_risk,
     _records_root,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches, active_risks
 from harness.orchestration.workflow.approval import AUTO_APPROVER
 
 
@@ -577,7 +576,7 @@ def _current_developer_candidate(
     try:
         return _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        from harness.orchestration.workflow.recovery import writer_start
+        from harness.orchestration.ledger.recovery_chain import writer_start
 
         return writer_start(batch) or _superseding_start_commit(batch)
 
@@ -624,7 +623,7 @@ def _accepted_architect(batch: JsonObject) -> bool:
     """Whether the batch has an accepted architect: its own, or the one a superseding batch
     carried by reference from the abandoned batch with the same definition of done (issue #506)."""
     link = batch.get("supersedes")
-    from harness.orchestration.workflow.recovery import carried_architect_active
+    from harness.orchestration.ledger.recovery_chain import carried_architect_active
 
     if (
         carried_architect_active(batch)
@@ -935,7 +934,7 @@ def _validate_auto_records(batch: JsonObject) -> None:
 
 
 def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
-    from harness.orchestration.workflow.recovery import validate_events
+    from harness.orchestration.workflow.recovery_events import validate_events
 
     validate_events(root, batch)
     from harness.orchestration.workflow import startup

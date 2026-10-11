@@ -29,6 +29,7 @@ from harness.orchestration.contract import (
     resolve_runtime_name,
 )
 from harness.orchestration.core.constants import (
+    AUTO_RETRY_SEVERITIES,
     DEFAULT_ADAPTIVE_CONTINUATION_POLICY,
     DEFAULT_ATTENTION_POLICY,
     DEFAULT_COMMUNICATION_POLICY,
@@ -221,14 +222,11 @@ def _retry_policy(config: JsonObject) -> dict[str, int]:
     return _numeric_policy(config, "retry_policy", DEFAULT_RETRY_POLICY)
 
 
-AUTO_RETRY_SEVERITIES = ("info", "warning", "error", "blocker")
-
-
 def _auto_retry_min_severity(
-    config: JsonObject, batch: JsonObject | None = None
+    config: JsonObject, batch: JsonObject | None = None, override: str | None = None
 ) -> str:
-    """Resolve the review finding threshold pinned by a batch, then the project, then defaults."""
-    value = (batch or {}).get(
+    """Resolve the review finding threshold: override, then the batch pin, project, defaults."""
+    value = override or (batch or {}).get(
         "auto_retry_min_severity", config.get("auto_retry_min_severity", "info")
     )
     if value not in AUTO_RETRY_SEVERITIES:

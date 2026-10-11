@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import types
 
+from harness.orchestration.core.constants import AUTO_RETRY_SEVERITIES
+
 
 def _common(parser: argparse.ArgumentParser) -> None:
     """Добавить общие аргументы командной строки (--repo, --state-dir) к парсеру."""
@@ -98,7 +100,7 @@ def build_parser(
     )
     create.add_argument(
         "--auto-retry-min-severity",
-        choices=("info", "warning", "error", "blocker"),
+        choices=AUTO_RETRY_SEVERITIES,
         help="minimum review finding severity that triggers an automatic retry; defaults to project policy or info",
     )
     create.add_argument("--definition-of-done", action="append", required=True)

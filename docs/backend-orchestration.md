@@ -1439,7 +1439,7 @@ python .harness/orchestration/coordinator.py --repo . batch resume-stop \
 Команда сохраняет принятые отчёты, исходный stop и `next_action`, помечает сорванный dispatch как
 `abandoned` и переводит batch в `awaiting-approval`. Следующий `dispatch create` требует нового
 approval и сохраняет контракт прерванной роли. Подробные ограничения описаны в разделе
-«Восстановление после остановки». Для неизвестной причины или возврата к прежнему gate используется
+«Ручное восстановление и повтор этапа». Для неизвестной причины или возврата к прежнему gate используется
 `batch rewind`. `completed` и `abandoned` окончательны.
 
 Watchdog `stale` не доказывает завершение процесса. Сначала остановите воркера через его runtime,
@@ -2293,7 +2293,7 @@ approval для dispatch, review и QA для одного SHA, локально
 self-report, dispatch watchdog, per-role transport и zero-config дефолты зафиксированы в
 [ADR 0005](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0005-implement-pipeline.md).
 
-## Ручное восстановление и повтор этапа (#662)
+## Ручное восстановление и повтор этапа
 
 `batch auto-report` только читает состояние. Обнаруженная причина находится в `observed_stop`.
 Чтобы записать остановку, явно вызовите `batch auto-decide`: batch перейдёт в `paused`, даже если

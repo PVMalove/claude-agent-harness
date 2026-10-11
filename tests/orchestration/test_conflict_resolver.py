@@ -654,7 +654,9 @@ class ContinuationTests(ResolverFixture):
         # The resumed session finishes with the decision named in its report.
         coordinator.self_report_dispatch(
             self.branch.args(
-                dispatch=brief["dispatch_id"], model="sonnet", worktree=str(self.worktree)
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
             )
         )
         resolved = self.resolve_in_worktree(tip)
@@ -707,7 +709,9 @@ class ContinuationTests(ResolverFixture):
         self.resume(brief, termination_reason="rate_limit", trigger=None, file=None)
         coordinator.self_report_dispatch(
             self.branch.args(
-                dispatch=brief["dispatch_id"], model="sonnet", worktree=str(self.worktree)
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
             )
         )
         resolved = self.resolve_in_worktree(tip)

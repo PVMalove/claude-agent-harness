@@ -265,6 +265,12 @@ def run(ctx: SimpleNamespace) -> None:
     checkpoint_first_sha = capture(
         ["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]
     ).strip()
+    # The worker's issue branch is what the shared worktree attaches to for startup proof.
+    run_step(
+        ["git", "branch", "-f", "feature/issue-139-checkpoint", checkpoint_first_sha],
+        cwd=orchestration_project,
+        check=True,
+    )
 
     bad_context_package_file = staged_payload("checkpoint-bad-context-package.json")
     bad_context_package_file.write_text(
@@ -524,21 +530,20 @@ def run(ctx: SimpleNamespace) -> None:
             "coordinator accepted a completion report before the resumed session's fresh self-report"
         )
 
-    if (
-        coordinator_run(
-            "--state-dir",
-            str(checkpoint_state),
-            "dispatch",
-            "self-report",
-            "--dispatch",
-            checkpoint_dev_id,
-            "--model",
-            "project-developer-model",
-        ).returncode
-        != 0
-    ):
+    resumed_self_report = coordinator_run(
+        "--state-dir",
+        str(checkpoint_state),
+        "dispatch",
+        "self-report",
+        "--dispatch",
+        checkpoint_dev_id,
+        "--model",
+        "project-developer-model",
+    )
+    if resumed_self_report.returncode != 0:
         sys.exit(
-            "coordinator rejected the resumed worker session's fresh model self-report"
+            "coordinator rejected the resumed worker session's fresh model self-report: "
+            + resumed_self_report.stderr
         )
     if (
         coordinator_run(
@@ -552,6 +557,11 @@ def run(ctx: SimpleNamespace) -> None:
         != 0
     ):
         sys.exit("coordinator rejected the resumed worker session's heartbeat")
+    run_step(
+        ["git", "branch", "-f", "feature/issue-139-checkpoint", checkpoint_second_sha],
+        cwd=orchestration_project,
+        check=True,
+    )
 
     checkpoint_two_file = staged_payload("checkpoint-session-two.json")
     checkpoint_two_file.write_text(

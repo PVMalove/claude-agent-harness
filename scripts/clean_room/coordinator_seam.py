@@ -81,6 +81,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         encoding="utf-8",
     )
 
+    def option(arguments, flag):
+        """Значение, следующее за флагом в аргументах CLI координатора."""
+        return arguments[arguments.index(flag) + 1]
+
+    def state_dir(arguments):
+        """Каталог состояния из `--state-dir` или состояние проекта по умолчанию."""
+        if "--state-dir" in arguments:
+            return Path(option(arguments, "--state-dir"))
+        return orchestration_project / ".harness/orchestration/state"
+
     def coordinator_run(*arguments, env=None):
         """Выполнить команду координатора с автоматическим вычислением transition digest при необходимости."""
         coordinator_env = dict(os.environ, FAKE_ADAPTER_LOG=str(fake_adapter_log))
@@ -126,7 +136,7 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         # otherwise unused worker tree. Bind that fixture tree explicitly at each handoff.
         # Tests that provide --worktree exercise their own runtime path without this preparation.
         if "batch" in arguments and "create" in arguments and "--worktree" in arguments:
-            fixture_tree = Path(arguments[arguments.index("--worktree") + 1])
+            fixture_tree = Path(option(arguments, "--worktree"))
             if fixture_tree.name == "shared-worktree" and fixture_tree.is_dir():
                 head = run_step(
                     ["git", "rev-parse", "HEAD"],
@@ -147,19 +157,15 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             and "send" in arguments
             and "--worktree" not in arguments
         ):
-            state = (
-                Path(arguments[arguments.index("--state-dir") + 1])
-                if "--state-dir" in arguments
-                else orchestration_project / ".harness/orchestration/state"
-            )
-            identity = arguments[arguments.index("--dispatch") + 1]
+            state = state_dir(arguments)
+            identity = option(arguments, "--dispatch")
             brief = json.loads(
                 (
                     lifecycle_records(state) / "dispatches" / f"{identity}.json"
                 ).read_text(encoding="utf-8")
             )
             selected = (
-                Path(arguments[arguments.index("--checkout") + 1])
+                Path(option(arguments, "--checkout"))
                 if "--checkout" in arguments
                 else Path(brief["worktree"])
             )
@@ -209,47 +215,56 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
             and "self-report" in arguments
             and "--worktree" not in arguments
         ):
-            state = (
-                Path(arguments[arguments.index("--state-dir") + 1])
-                if "--state-dir" in arguments
-                else orchestration_project / ".harness/orchestration/state"
-            )
-            identity = arguments[arguments.index("--dispatch") + 1]
+            state = state_dir(arguments)
+            identity = option(arguments, "--dispatch")
             records = lifecycle_records(state)
-            brief = json.loads((records / "dispatches" / f"{identity}.json").read_text(encoding="utf-8"))
-            status = json.loads((records / "dispatch-status" / f"{identity}.json").read_text(encoding="utf-8"))
+            brief = json.loads(
+                (records / "dispatches" / f"{identity}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            status = json.loads(
+                (records / "dispatch-status" / f"{identity}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
             selected = Path(status.get("worker_worktree") or brief["worktree"])
             arguments.extend(["--worktree", str(selected)])
-            if selected.name == "shared-worktree" and brief["role"] in {"architect", "developer", "conflict-resolver"}:
+            if selected.name == "shared-worktree" and brief["role"] in {
+                "architect",
+                "developer",
+                "conflict-resolver",
+            }:
                 run_step(
                     ["git", "checkout", "--ignore-other-worktrees", brief["branch"]],
-                    cwd=selected, capture_output=True, text=True, check=True,
+                    cwd=selected,
+                    capture_output=True,
+                    text=True,
+                    check=True,
                 )
                 try:
                     return run_once(arguments)
                 finally:
                     run_step(
                         ["git", "checkout", "--detach"],
-                        cwd=selected, capture_output=True, text=True, check=True,
+                        cwd=selected,
+                        capture_output=True,
+                        text=True,
+                        check=True,
                     )
 
         if (
             "dispatch" in arguments
             and "create" in arguments
             and "--role" in arguments
-            and arguments[arguments.index("--role") + 1] == "developer"
+            and option(arguments, "--role") == "developer"
             and "--candidate-commit" not in arguments
             and (
-                "--purpose" not in arguments
-                or arguments[arguments.index("--purpose") + 1] == "work"
+                "--purpose" not in arguments or option(arguments, "--purpose") == "work"
             )
         ):
-            state = (
-                Path(arguments[arguments.index("--state-dir") + 1])
-                if "--state-dir" in arguments
-                else orchestration_project / ".harness/orchestration/state"
-            )
-            batch_id = arguments[arguments.index("--batch") + 1]
+            state = state_dir(arguments)
+            batch_id = option(arguments, "--batch")
             batch = json.loads(
                 (lifecycle_records(state) / "batches" / f"{batch_id}.json").read_text(
                     encoding="utf-8"

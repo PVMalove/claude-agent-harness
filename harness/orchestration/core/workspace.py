@@ -183,7 +183,7 @@ def _runtime_tree_sha256(root: Path) -> str:
 
 
 def _validate_harness_runtime_snapshot(repo: Path, batch: JsonObject) -> None:
-    from harness.orchestration.workflow.recovery import effective_runtime
+    from harness.orchestration.ledger.recovery_chain import effective_runtime
 
     expected = effective_runtime(batch)
     if (

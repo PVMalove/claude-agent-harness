@@ -20,14 +20,18 @@ class AttestationError(HarnessError):
     """The runtime did not start in the immutable dispatch's Git context."""
 
 
-WORKER_ROLES_REQUIRING_ISSUE_WORKTREE = frozenset({
-    "architect",
-    "developer",
-    "conflict-resolver",
-    "database-migrations",
-    "messaging-integration",
-    "code-review",
-})
+WORKER_ROLES_REQUIRING_ISSUE_WORKTREE = frozenset(
+    {
+        "architect",
+        "developer",
+        "conflict-resolver",
+        "database-migrations",
+        "messaging-integration",
+        "code-review",
+    }
+)
+# Roles that write in the issue worktree itself; other roles run in the checkout they select.
+ISSUE_WORKTREE_WRITER_ROLES = frozenset({"architect", "developer", "conflict-resolver"})
 
 
 def requires_attestation(dispatch: Mapping[str, object]) -> bool:

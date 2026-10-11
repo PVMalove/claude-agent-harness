@@ -35,7 +35,7 @@ from harness.orchestration.ledger.ledger_ops import (
 
 
 def _pinned_hash(batch: JsonObject) -> str | None:
-    from harness.orchestration.workflow.recovery import effective_runtime
+    from harness.orchestration.ledger.recovery_chain import effective_runtime
 
     value = effective_runtime(batch)
     if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value):
@@ -106,7 +106,7 @@ def pinned_runtime_command(args: argparse.Namespace) -> list[str] | None:
     root = _state_root(args, repo)
     batch = _target_batch(args, root)
     if batch is not None and batch.get("recovery_events"):
-        from harness.orchestration.workflow.recovery import validate_events
+        from harness.orchestration.workflow.recovery_events import validate_events
 
         validate_events(root, batch)
     expected = _pinned_hash(batch) if batch is not None else None

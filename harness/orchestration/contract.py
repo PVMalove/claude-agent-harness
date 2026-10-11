@@ -16,6 +16,7 @@ from typing import TypeGuard, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .core.constants import (
+    AUTO_RETRY_SEVERITIES,
     DEFAULT_CONTEXT_PACKAGE_POLICY,
     DEFAULT_CONTINUATION_POLICY,
     DEFAULT_EXECUTION_POLICY,
@@ -1449,11 +1450,9 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         )
     )
     auto_retry_severity = config.get("auto_retry_min_severity")
-    if auto_retry_severity is not None and auto_retry_severity not in (
-        "info",
-        "warning",
-        "error",
-        "blocker",
+    if (
+        auto_retry_severity is not None
+        and auto_retry_severity not in AUTO_RETRY_SEVERITIES
     ):
         problems.append(
             "orchestration auto_retry_min_severity must be info, warning, error or blocker"

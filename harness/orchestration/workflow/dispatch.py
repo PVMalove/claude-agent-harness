@@ -8,8 +8,6 @@ edited.  Cancelling that brief lives here too; sending, waiting on and publishin
 
 from __future__ import annotations
 
-from harness.orchestration.workflow.recovery import active_dispatches
-
 import argparse
 import hashlib
 import uuid
@@ -85,6 +83,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review

@@ -47,7 +47,9 @@ class RecoveryTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def test_default_policy_blocks_wrong_or_missing_worker_checkout_without_retry_cost(self) -> None:
+    def test_default_policy_blocks_wrong_or_missing_worker_checkout_without_retry_cost(
+        self,
+    ) -> None:
         for role, reported_path in (
             ("architect", "main"),
             ("developer", "main"),
@@ -61,18 +63,27 @@ class RecoveryTests(unittest.TestCase):
                     self._accepted_architect(batch["batch_id"])
                 if role == "code-review":
                     candidate = self._accepted_candidate(batch["batch_id"])
-                brief = self._dispatch(batch["batch_id"], role, candidate=candidate)["brief"]
+                brief = self._dispatch(batch["batch_id"], role, candidate=candidate)[
+                    "brief"
+                ]
                 self.assertFalse(brief["worker_attestation_required"])
-                coordinator.send_dispatch(self._args(
-                    dispatch=brief["dispatch_id"], adapter=None, adapter_arg=None,
-                    checkout=str(self.worktree) if role == "code-review" else None,
-                    worktree=str(self.worktree),
-                ))
+                coordinator.send_dispatch(
+                    self._args(
+                        dispatch=brief["dispatch_id"],
+                        adapter=None,
+                        adapter_arg=None,
+                        checkout=str(self.worktree) if role == "code-review" else None,
+                        worktree=str(self.worktree),
+                    )
+                )
                 with self.assertRaisesRegex(coordinator.CoordinatorError, "blocked"):
-                    coordinator.self_report_dispatch(self._args(
-                        dispatch=brief["dispatch_id"], model="sonnet",
-                        worktree=str(self.repo) if reported_path else None,
-                    ))
+                    coordinator.self_report_dispatch(
+                        self._args(
+                            dispatch=brief["dispatch_id"],
+                            model="sonnet",
+                            worktree=str(self.repo) if reported_path else None,
+                        )
+                    )
                 stored = self._batch_record(batch["batch_id"])
                 self.assertEqual(stored["state"], "blocked")
                 self.assertEqual(decisions._developer_retry_count(stored), 0)
@@ -89,33 +100,65 @@ class RecoveryTests(unittest.TestCase):
             ("blocker", "warning", "accept", "retry"),
             ("info", None, "retry", "retry"),
         ):
-            with self.subTest(threshold=threshold, severity=severity, recommendation=recommendation):
-                (self.repo / ".harness/orchestration.json").write_text(json.dumps({
-                    "provider_profiles": {}, "assignment_plans": {},
-                    "concurrency_budget": 1, "verification_commands": ["true"],
-                    "worker_attestation_required": True, "approval_policy": "auto",
-                    "auto_retry_min_severity": threshold,
-                }), encoding="utf-8")
+            with self.subTest(
+                threshold=threshold, severity=severity, recommendation=recommendation
+            ):
+                (self.repo / ".harness/orchestration.json").write_text(
+                    json.dumps(
+                        {
+                            "provider_profiles": {},
+                            "assignment_plans": {},
+                            "concurrency_budget": 1,
+                            "verification_commands": ["true"],
+                            "worker_attestation_required": True,
+                            "approval_policy": "auto",
+                            "auto_retry_min_severity": threshold,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 batch = self._create_batch()
                 self._accepted_architect(batch["batch_id"])
                 candidate = self._accepted_candidate(batch["batch_id"])
-                brief = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["brief"]
+                brief = self._dispatch(
+                    batch["batch_id"], "code-review", candidate=candidate
+                )["brief"]
                 self._start(brief["dispatch_id"], checkout=self.worktree)
-                findings = [] if severity is None else [
-                    {"severity": severity, "summary": "review context", "evidence": "services/x.py:1"}
-                ]
+                findings = (
+                    []
+                    if severity is None
+                    else [
+                        {
+                            "severity": severity,
+                            "summary": "review context",
+                            "evidence": "services/x.py:1",
+                        }
+                    ]
+                )
                 review = {
-                    "candidate_commit": candidate, "scope": brief["review_scope"],
+                    "candidate_commit": candidate,
+                    "scope": brief["review_scope"],
                     "recommendation": recommendation,
-                    **self._axes(("warning" if severity == "warning" else "clean", findings), ("clean", [])),
+                    **self._axes(
+                        ("warning" if severity == "warning" else "clean", findings),
+                        ("clean", []),
+                    ),
                 }
-                self._submit(brief["dispatch_id"], self._base_report(brief, "code-review", review=review))
+                self._submit(
+                    brief["dispatch_id"],
+                    self._base_report(brief, "code-review", review=review),
+                )
                 coordinator.auto_decide(self._args(batch=batch["batch_id"]))
                 stored = self._batch_record(batch["batch_id"])
                 entry = stored["dispatches"][-1]
                 self.assertEqual(entry["decision"]["decision"], expected)
-                self.assertEqual(decisions._developer_retry_count(stored), int(expected == "retry"))
-                persisted = coordinator._read_object(self._records() / "reports" / f"{brief['dispatch_id']}.json", "report")
+                self.assertEqual(
+                    decisions._developer_retry_count(stored), int(expected == "retry")
+                )
+                persisted = coordinator._read_object(
+                    self._records() / "reports" / f"{brief['dispatch_id']}.json",
+                    "report",
+                )
                 self.assertEqual(persisted["review"]["standards"]["findings"], findings)
                 self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
             self.tearDown()
@@ -1365,7 +1408,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "architect")
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
 
-    def test_external_developer_adapter_runs_from_the_registered_issue_worktree(self) -> None:
+    def test_external_developer_adapter_runs_from_the_registered_issue_worktree(
+        self,
+    ) -> None:
         runtime = {"claude": {"profiles": ["p"], "model": "sonnet", "effort": "high"}}
         config_path = self.repo / ".harness/orchestration.json"
         config_path.write_text(
@@ -1422,4 +1467,96 @@ class RecoveryTests(unittest.TestCase):
         )
 
         self.assertEqual(result["worker_worktree"], str(self.worktree.resolve()))
-        self.assertEqual(marker.read_text(encoding="utf-8"), str(self.worktree.resolve()))
+        self.assertEqual(
+            marker.read_text(encoding="utf-8"), str(self.worktree.resolve())
+        )
+
+    def _batch_in_state(self, state: str) -> JsonObject:
+        """Build a batch in `state` through public commands only."""
+        if state == "paused":
+            batch, _ = self._failed_launch()
+            coordinator.auto_decide(self._args(batch=batch["batch_id"]))
+            return batch
+        if state == "planned":
+            _git(
+                self.repo,
+                "worktree",
+                "add",
+                "-b",
+                self.branch,
+                str(self.worktree),
+                "master",
+            )
+            return coordinator.create_batch(self._args(**self._batch_plan()))
+        batch = self._create_batch()
+        if state == "awaiting-approval":
+            return batch
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        if state == "active":
+            return batch
+        self._submit(
+            brief["dispatch_id"],
+            self._base_report(
+                brief,
+                "architect",
+                **(
+                    {"outcome": "blocked", "blockers": "operator review required"}
+                    if state in {"blocked", "failed"}
+                    else {}
+                ),
+            ),
+        )
+        if state in {"blocked", "failed"}:
+            self._decide(batch["batch_id"], "block" if state == "blocked" else "fail")
+        return batch
+
+    def test_every_non_terminal_state_has_a_rewind_and_a_forward_path(self) -> None:
+        for state in (
+            "planned",
+            "awaiting-approval",
+            "active",
+            "blocked",
+            "failed",
+            "paused",
+        ):
+            with self.subTest(state=state):
+                batch = self._batch_in_state(state)
+                batch_id = batch["batch_id"]
+                self.assertEqual(self._batch_record(batch_id)["state"], state)
+                before = self._ledger_bytes()
+                # Forward: either resume-stop recovers the batch, or it refuses with a
+                # remedy that names the next command; it never leaves the batch stuck.
+                try:
+                    coordinator.resume_stopped_batch(
+                        self._args(batch=batch_id, note="forward", **self._approval())
+                    )
+                except coordinator.CoordinatorError as error:
+                    self.assertTrue(
+                        error.remedy, f"resume-stop from {state} has no remedy"
+                    )
+                    self.assertEqual(before, self._ledger_bytes())
+                else:
+                    self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+                if state == "active":
+                    # A live worker must be proven stopped before any recovery.
+                    live = self._batch_record(batch_id)["dispatches"][-1]["dispatch_id"]
+                    coordinator.cancel_dispatch(
+                        self._args(
+                            dispatch=live,
+                            reason="operator stopped runtime",
+                            runtime_stopped=True,
+                            **self._approval(),
+                        )
+                    )
+                # Backward: rewind to the first stage is reachable from every state.
+                coordinator.rewind_batch(
+                    self._args(
+                        batch=batch_id, to="architect", note="back", **self._approval()
+                    )
+                )
+                recovered = self._batch_record(batch_id)
+                self.assertIn(recovered["state"], {"planned", "awaiting-approval"})
+                self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+            self.tearDown()
+            self.setUp()

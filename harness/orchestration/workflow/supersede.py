@@ -97,7 +97,7 @@ def _resume_record(source: JsonObject) -> JsonObject:
     """The abandoned batch's ``abandoned.last_accepted`` record that the superseding batch resumes
     from; refuse any other source."""
     source_id = source.get("batch_id")
-    from harness.orchestration.workflow.recovery import legacy_abandoned
+    from harness.orchestration.ledger.recovery_chain import legacy_abandoned
 
     if source.get("state") != "abandoned" and not legacy_abandoned(source):
         raise CoordinatorError(
@@ -266,7 +266,7 @@ def attach(
     integration base pinned now, the base becomes its ``rebase_target_commit``.
     """
     source = _load_source(root, source_id)
-    from harness.orchestration.workflow.recovery import legacy_abandoned
+    from harness.orchestration.ledger.recovery_chain import legacy_abandoned
 
     if legacy_abandoned(source) and "last_accepted" not in source["abandoned"]:
         from harness.orchestration.workflow.decisions import _last_accepted

@@ -18,8 +18,6 @@ every rule is testable on plain data.
 
 from __future__ import annotations
 
-from harness.orchestration.workflow.recovery import active_dispatches
-
 import hashlib
 import re
 from collections.abc import Callable, Iterable, Iterator
@@ -40,6 +38,7 @@ from harness.orchestration.core.utils import (
     _canonical,
     _non_empty,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 
 COVERAGE_FIELDS = ("dod_coverage", "divergence_justification")
 COVERAGE_REMEDY = (
@@ -228,7 +227,7 @@ def accepted_plan_sha256(batch: JsonObject) -> str | None:
         digest = item["decision"].get("commit_plan_sha256")
         return digest if isinstance(digest, str) else None
     link = batch.get("supersedes")
-    from harness.orchestration.workflow.recovery import carried_architect_active
+    from harness.orchestration.ledger.recovery_chain import carried_architect_active
 
     if not carried_architect_active(batch):
         return None

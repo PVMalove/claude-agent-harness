@@ -8,7 +8,6 @@ lifecycle transition that needs a human goes through here.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 from contextlib import ExitStack
 from datetime import UTC, datetime
@@ -28,11 +27,11 @@ from harness.orchestration.core.constants import (
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
-    _canonical,
     _moment,
     _non_empty,
     _repo,
 )
+from harness.orchestration.core.utils import sealed as sealed
 
 AUTO_POLICY = "auto"
 AUTO_APPROVER = f"policy:{AUTO_POLICY}"
@@ -60,14 +59,6 @@ def auto_active(config: JsonObject, batch: JsonObject) -> bool:
         and "auto_stop" not in batch
         and not batch.get("manual_recovery")
     )
-
-
-def sealed(body: JsonObject) -> JsonObject:
-    """``body`` with the ``record_sha256`` of its canonical form, as every hashed record has."""
-    return {
-        **body,
-        "record_sha256": hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest(),
-    }
 
 
 def record_auto(

@@ -78,9 +78,9 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     PlanRecord,
 )
+from harness.orchestration.ledger.recovery_chain import terminal
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import supersede
-from harness.orchestration.workflow.recovery import terminal
 from harness.orchestration.workflow.approval import (
     _approval,
 )
@@ -430,10 +430,7 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "dependencies": dependencies,
         "approval_policy": _approval_policy(config),
         "auto_retry_min_severity": core_config._auto_retry_min_severity(
-            config,
-            {"auto_retry_min_severity": getattr(args, "auto_retry_min_severity", None)}
-            if getattr(args, "auto_retry_min_severity", None) is not None
-            else None,
+            config, override=getattr(args, "auto_retry_min_severity", None)
         ),
         "communication_policy": _communication_policy(config),
         "scope_preflight": scope_preflight,

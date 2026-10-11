@@ -113,19 +113,22 @@ write-role (`developer`) worker, verify that these mandatory gates are recorded 
 `required_gates`; halt early if missing rather than sending a worker into a risk-gate omission.
 
 For each handoff, choose the worker checkout and pass its absolute path as `--worktree` to
-`dispatch preflight`. Show `batch decision-packet`, then create an approved immutable brief.
-Pass the same explicit `--worktree` to `dispatch send`; code-review also keeps `--checkout`.
-Preflight and send verify the selected path, branch and startup SHA. Start the worker in exactly
-`send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify
-that mechanism before launch: `isolation: worktree` alone does not prove attachment to an
-existing worktree. If the runtime cannot select that checkout, report a blocker. The coordinator
-stays in the main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
-guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
-evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
-through the required review/QA/publish gates. A write-role worker stopped early before making changes
-returns a truthful `outcome: blocked` report bound to the verified checkout commit with empty
-`changed_files` and unrun checks; the coordinator decision packet returns an explicit recovery route
-(`retry`, `block`, `abandon`) without registering a candidate or weakening `completed` report validation.
+`dispatch preflight`. Show `batch decision-packet`, then create an approved immutable brief. Pass
+the same explicit `--worktree` to `dispatch send`; code-review also keeps `--checkout`. Preflight
+and send verify the selected path, branch and startup SHA. Start the worker in exactly
+`send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify that
+mechanism before launch: `isolation: worktree` alone does not prove attachment to an existing
+worktree. If the runtime cannot select that checkout, report a blocker. The coordinator stays in the
+main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the
+brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
+belongs writes it outside the project.
+
+The coordinator never writes feature code or repairs state by hand. A report is evidence, not
+permission to advance. Architect precedes developer; accepted candidate proceeds through the
+required review/QA/publish gates. A write-role worker stopped early before making changes returns a
+truthful `outcome: blocked` report bound to the verified checkout commit with empty `changed_files`
+and unrun checks; the coordinator decision packet returns an explicit recovery route (`retry`,
+`block`, `abandon`) without registering a candidate or weakening `completed` report validation.
 
 Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
 names one independently reviewable logical change, its expected files and the DoD items it covers;

@@ -67,6 +67,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
 )
@@ -226,7 +227,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             {
                 **dispatch,
                 "worker_worktree": str(Path(dispatch["worktree"]).resolve())
-                if dispatch["role"] in {"architect", "developer", "conflict-resolver"}
+                if dispatch["role"] in ISSUE_WORKTREE_WRITER_ROLES
                 else str(Path(worker_path).resolve()),
             },
             worker_path,

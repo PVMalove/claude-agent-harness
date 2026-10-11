@@ -61,7 +61,7 @@ def _chain_state(root: Path, dispatch_id: str) -> JsonObject:
         status = _load_dispatch_status(root, dispatch_id)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
-        from harness.orchestration.workflow.recovery import active_dispatches
+        from harness.orchestration.ledger.recovery_chain import active_dispatches
 
         if not any(e["dispatch_id"] == dispatch_id for e in active_dispatches(batch)):
             raise CoordinatorError(
@@ -109,7 +109,7 @@ def _assessed_candidate(state: JsonObject) -> object:
 def _clean_assessment(repo: Path, batch: JsonObject, reported: object) -> bool:
     """Whether the latest risk assessment of the reported candidate matched no trigger."""
     candidate = _candidate_commit(repo, reported)
-    from harness.orchestration.workflow.recovery import active_risks
+    from harness.orchestration.ledger.recovery_chain import active_risks
 
     assessments = [
         item

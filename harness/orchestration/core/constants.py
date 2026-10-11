@@ -122,6 +122,9 @@ DEFAULT_COMMUNICATION_POLICY = {
 LIVE_DISPATCH_STATES = {"dispatched", "working"}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
+# Retry thresholds ordered by rank; `error` is a threshold only and ranks with `blocker`.
+AUTO_RETRY_SEVERITY_RANKS = {"info": 0, "warning": 1, "error": 2, "blocker": 2}
+AUTO_RETRY_SEVERITIES = tuple(AUTO_RETRY_SEVERITY_RANKS)
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 QA_OWNER_FIELDS = {"owner_kind", "owner_id"}

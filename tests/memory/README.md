@@ -33,7 +33,8 @@ The historical test reconstructs that dataset, verifies its original SHA-256 and
 entire old report. Version 2 was an **annotation correction, not a retrieval-engine improvement**:
 queries, source bytes, FTS5, top-5 window and thresholds were identical to the initial measurement.
 Version 3 explicitly re-evaluates the corpus after #662 changes `CONTEXT.md` and ADR 0003.
-The retrieval scores remain unchanged. `fixtures/initial-corpus.json` preserves the two original
+The aggregate retrieval metrics remain unchanged, but the ranked paths of several queries differ
+from version 2 because the indexed documents changed. `fixtures/initial-corpus.json` preserves the two original
 source documents for historical reproduction; `baseline_fts5_initial.json` is unchanged.
 Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.

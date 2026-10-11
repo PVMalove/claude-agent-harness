@@ -23,6 +23,7 @@ from harness.orchestration.core.config import (
     _reject_sensitive,
 )
 from harness.orchestration.core.constants import (
+    AUTO_RETRY_SEVERITY_RANKS,
     AUTO_STOP_REASONS,
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
@@ -196,7 +197,7 @@ def accept_obstacles(
         obstacles.append("files changed outside the approved scope")
     review = report.get("review")
     if isinstance(review, dict):
-        ranks = {"info": 0, "warning": 1, "error": 2, "blocker": 2}
+        ranks = AUTO_RETRY_SEVERITY_RANKS
         threshold = ranks[auto_retry_min_severity]
         actionable = False
         for axis in ("standards", "spec"):
@@ -219,7 +220,8 @@ def accept_obstacles(
                 f"the review has findings at or above the {auto_retry_min_severity} retry threshold"
             )
         if review.get("recommendation") == "retry" or (
-            auto_retry_min_severity != "info" and review.get("recommendation") != "accept"
+            auto_retry_min_severity != "info"
+            and review.get("recommendation") != "accept"
         ):
             obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(
@@ -553,9 +555,9 @@ def record_stop(
     )
     if "auto_stop" not in batch:
         batch["auto_stop"] = stop_record
-    from harness.orchestration.workflow import recovery
+    from harness.orchestration.workflow import recovery_events
 
-    recovery.pause(root, batch, stop_record, moment)
+    recovery_events.pause(root, batch, stop_record, moment)
     auto_report.record(repo, root, config, batch, moment)
     return cast(JsonObject, batch["auto_stop"])
 
@@ -575,7 +577,7 @@ def persist_stop(
         repo, root, config, batch, stop, detected_by=detected_by, moment=utils._now()
     )
     _safe_id(batch["batch_id"], "batch")
-    from harness.orchestration.workflow.recovery import event_audit
+    from harness.orchestration.ledger.recovery_chain import event_audit
 
     _replace_record(
         ledger,
