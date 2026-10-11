@@ -15,6 +15,8 @@ from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
 from harness.console.screens.project_setup import ProjectSetupScreen
 
+from tests.console._pilot_wait import wait_until
+
 
 def test_selecting_another_project_replaces_the_dashboard_context(
     tmp_path: Path,
@@ -27,12 +29,17 @@ def test_selecting_another_project_replaces_the_dashboard_context(
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
             await pilot.click("#open-project")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
             await pilot.click("#inspect-project")
             await app.workers.wait_for_complete()
             await pilot.pause()
             await pilot.click("#activate-project")
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: isinstance(app.screen, DashboardScreen)
+                and app.screen.query("HeaderTitle"),
+            )
             assert isinstance(app.screen, DashboardScreen)
             assert app.repo == second.resolve()
             assert app.screen.repo == second.resolve()
@@ -69,6 +76,7 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
         app = HarnessConsoleApp(tmp_path, command_runner=runner)
         async with app.run_test(size=(140, 60)) as pilot:
             await pilot.click("#open-project")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
             await pilot.click("#inspect-project")
             await app.workers.wait_for_complete()
@@ -94,7 +102,11 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
             assert isinstance(app.screen, ProjectSetupScreen)
             assert app.repo == tmp_path
             await pilot.click("#activate-project")
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: isinstance(app.screen, DashboardScreen)
+                and app.screen.query("HeaderTitle"),
+            )
             assert app.repo == second.resolve()
             assert isinstance(app.screen, DashboardScreen)
 
@@ -125,6 +137,7 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
             await pilot.click("#open-project")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             screen = app.screen
             assert "Выбор проекта" in str(
                 screen.query_one("#setup-stage", Static).render()
@@ -242,6 +255,7 @@ def test_online_check_and_local_fixes_target_the_selected_project(
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
             await pilot.click("#open-project")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
             await pilot.click("#inspect-project")
             await app.workers.wait_for_complete()
