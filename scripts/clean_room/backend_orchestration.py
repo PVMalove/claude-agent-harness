@@ -281,7 +281,7 @@ def run(ctx: SimpleNamespace) -> None:
             "санитизирован",
         ),
         ROOT / "docs" / "backend-orchestration.md": (
-            "`planned → awaiting-approval ↔ active → completed | blocked | failed`",
+            "`planned → awaiting-approval ↔ active → completed`",
             "`reported`",
             "детерминирован",
             "Standards и Spec",
@@ -485,9 +485,12 @@ def run(ctx: SimpleNamespace) -> None:
             "planned",
             "awaiting-approval",
             "active",
-            "completed",
+            "paused",
             "blocked",
             "failed",
+            "completed",
+            "abandoned",
+            "not-required",
         )
     ]
     lifecycle_positions = [playbook.index(f"| {state} |") for state in lifecycle_states]

@@ -124,3 +124,10 @@ def test_an_adapter_rejection_carries_its_output() -> None:
 
 def test_an_adapter_that_starts_the_worker_returns() -> None:
     delivery._run_adapter([sys.executable, "-c", "pass"])
+
+
+def test_adapter_starts_in_the_selected_issue_worktree(tmp_path: Path) -> None:
+    script = "import os,sys; sys.exit(0 if os.getcwd() == sys.argv[1] else 17)"
+    delivery._run_adapter(
+        [sys.executable, "-c", script, str(tmp_path.resolve())], cwd=tmp_path
+    )

@@ -17,7 +17,13 @@ evidence задним числом. `contract.py` валидирует project c
 проверочные команды по выбранной execution policy и возвращает структурированное evidence,
 не меняя batch state.
 
-Batch проходит `planned → awaiting-approval ↔ active → completed | blocked | failed`.
+Batch проходит `planned → awaiting-approval ↔ active`. `paused`, `blocked` и `failed`
+сохраняют работу и допускают явное ручное восстановление; `completed` и `abandoned` терминальны.
+После остановки auto не возвращается: `resume-stop` и `rewind` оставляют исходный stop и
+включают эффективный `manual_all`. Sealed recovery event выбирает активную цепочку evidence,
+сохраняет исторические записи и связывает ручное решение с переходом в audit. Rewind не меняет
+Git history и не обнуляет бюджеты. Новый writer стартует от известного сохранённого SHA.
+Переход control runtime разрешён только audited recovery-событием; исходный pin plan сохраняется.
 Dispatch имеет отдельные состояния отправки и отчёта; новый scope или повтор работы создаёт
 новый immutable brief. Отчёт роли поступает в ledger и требует решения coordinator по
 действующей approval policy. QA работает по закреплённому candidate в сериализованной lane.

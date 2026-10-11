@@ -29,7 +29,9 @@ Start with the Context Package and one startup probe: run `git rev-parse --show-
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
 worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-active-model>
 --worktree <top-level>` before task work in every new or resumed session. Model self-report is always
-required; `worker_attestation_required` controls the additional worktree check. Use the coordinator
+required. Worktree attestation is mandatory for architect, developer, conflict-resolver,
+database-migrations, messaging-integration and code-review; `worker_attestation_required` also
+enables it for other roles. Use the coordinator
 CLI and its absolute repo/state paths from the prompt even when your current directory is another
 worktree. After a successful self-report, send `dispatch heartbeat --dispatch <dispatch_id>`
 immediately and at least every `liveness.heartbeat_every_seconds` from the brief while working.
@@ -76,6 +78,16 @@ cycle to a green boundary (every approved verification command passing), commits
 checkpoint; a role that cannot reach one returns a structured blocker (`outcome: blocked`) that names
 the context pressure. A continuation starts only from that checkpoint, in a new session that attests
 its model again. Recording pressure changes no routing or approval by itself.
+
+The launch prompt states the expected canonical checkout and startup SHA. Before task work,
+probe the runtime's actual Git top-level, branch and HEAD and compare them. Report that actual
+path to `dispatch self-report` using the main coordinator's absolute CLI/repo/state address.
+The coordinator's own CWD may be the main checkout. Never report another path, reset history to
+match a stale brief, or assume runtime worktree isolation attaches to an existing checkout.
+Each resumed session repeats self-report and heartbeat; startup evidence is not a completed DoD.
+Before a first checkpoint, a stopped writer session may continue only at its proven clean startup
+SHA through recognized 429 handling or human `startup-failure` authorization with unchanged facts.
+Never manufacture a checkpoint, completion, checks or remaining DoD to make continuation possible.
 
 Write work happens only on the handoff's issue branch and isolated worktree, only inside the brief's
 allowed paths. Protected branches and `integration/*` are never direct write targets. A batch has one

@@ -2,6 +2,21 @@
 
 Изменения выпусков записываются в формате [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/) и версионируются по SemVer.
 
+## [1.3.2] - 2026-10-11
+
+### Added
+
+- **[Ручное восстановление оркестрации]:** Остановленный `auto`-batch можно возобновить командой `batch resume-stop`, а вернуться на предыдущий этап — командой `batch rewind --to`. Принятые отчёты и решения сохраняются, `ledger validate` проверяет журнал без записи, а ранний сбой с кодом 429 больше не требует checkpoint (#662).
+- **[Условное принятие стадии]:** Если report остановлен только сбоем инфраструктуры, а работа выглядит завершённой, человек принимает стадию командой `batch decide --decision accept-conditional --infrastructure-failure`. Пайплайн идёт дальше, а publish ждёт, пока более поздний gate независимо подтвердит стадию. `batch resume-stop` теперь распознаёт и инфраструктурную причину в тексте blocked report; решение остаётся за человеком (#662).
+- **[Порог повтора по замечаниям review]:** Параметр `auto_retry_min_severity` и флаг `batch create --auto-retry-min-severity` задают, с какой серьёзности замечаний review `auto` отправляет работу на повтор. По умолчанию `info`: прежнее поведение не меняется (#662).
+
+### Changed
+
+- **[Просмотр отчёта auto не пишет остановку]:** Команда `batch auto-report` только читает состояние. Остановку записывает `batch auto-decide`: batch переходит в `paused`, откуда его возобновляет человек (#662).
+- **[Единый abandon]:** Оба пути отказа записывают `abandoned` с `last_accepted`, поэтому `batch create --supersedes` принимает любой из них (#662).
+- **[Проверка каталога воркера]:** Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review проверка рабочего каталога обязательна независимо от `worker_attestation_required`. Явный `--worktree` проверяется в `dispatch preflight` и `dispatch send` (#662).
+- **[Строже batch resume]:** Команда `batch resume` отказывает для batch с `approval_policy: auto`, записанной остановкой или ручным восстановлением. Для них используется `batch resume-stop` (#662).
+
 ## [1.3.1] - 2026-10-08
 
 ### Added

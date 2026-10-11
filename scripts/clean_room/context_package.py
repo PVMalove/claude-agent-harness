@@ -359,7 +359,7 @@ def run(ctx: SimpleNamespace) -> None:
             "--adapter",
             str(fake_adapter),
             "--checkout",
-            str(orchestration_project),
+            str(shared_worktree),
         ).returncode
         != 0
     ):

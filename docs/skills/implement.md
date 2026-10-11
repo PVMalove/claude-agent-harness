@@ -198,6 +198,21 @@ remedy и не обходите его. Завершённый batch и его r
 
 ![/implement: конвейер с гейтами](../diagrams/previews/implement-pipeline.workflow.png)
 
+## Восстановление
+
+`auto-report` наблюдает, `auto-decide` записывает `paused`. Ручные `resume-stop` и `rewind --to`
+сохраняют исходную остановку и включают `manual_all` для всех следующих шагов, включая 429.
+Report стадии, заблокированный только сбоем инфраструктуры при законченной работе, человек принимает
+решением `accept-conditional`: стадия остаётся открытым условием, которое закрывает более поздний
+независимый gate, а publish до этого отказывает. `resume-stop` при отсутствии структурного
+доказательства использует осторожную эвристику по тексту blockers; решает по-прежнему человек.
+Rewind не меняет Git history, но исключает старое зависимое QA/review/risk из активной цепочки.
+Счётчики сохраняются. Повторная работа developer расходует retry budget; перезапуск после
+подтверждённого сбоя окружения — отдельный infrastructure budget.
+Перед send coordinator проверяет явный каталог воркера через `--worktree`, а worker подтверждает
+фактический path/branch/HEAD через self-report. Coordinator CLI остаётся привязан к main repo/state.
+Подробные ограничения задаёт `.harness/orchestration/playbook.md`, раздел Operator recovery.
+
 ## Источник
 
 [SKILL.md](../../skills/first-party/pvmalove/implement/SKILL.md)

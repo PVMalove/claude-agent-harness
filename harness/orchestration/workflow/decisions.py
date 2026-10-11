@@ -38,6 +38,7 @@ from harness.orchestration.core.constants import (
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _fetch_ref_tip,
+    _remote_branch_tip,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -66,11 +67,12 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
-from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
@@ -113,6 +115,8 @@ def _auto_accept_policy(
     config: JsonObject, batch: JsonObject, dispatch: JsonObject, report: JsonObject
 ) -> str | None:
     """Return the policy authorized to decide this clean, non-milestone report."""
+    if batch.get("manual_recovery"):
+        return None
     policy = config.get("approval_policy")
     if policy != batch.get("approval_policy") or policy not in {
         "low_risk",
@@ -221,7 +225,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
         else:
             pending = [
                 item
-                for item in batch.get("dispatches", [])
+                for item in active_dispatches(batch)
                 if item.get("state") == "reported" and "decision" not in item
             ]
             entry = pending[0] if len(pending) == 1 else None
@@ -440,7 +444,7 @@ def _developer_retry_count(batch: JsonObject) -> int:
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
-        if decision.get("decision") == "retry"
+        if decision.get("decision") in {"retry", "rewind-developer"}
         and decision.get("next_role") == "developer"
         and not (
             isinstance(decision.get("routing"), dict)
@@ -500,7 +504,7 @@ def _retry_evidence(
 ) -> tuple[str, str] | None:
     """The reason category a report's structured data dictates by itself, and what showed it.
 
-    Findings, a warning/blocker severity on either review axis, a failed check and a moved
+    Findings, an explicit reviewer retry, a warning/blocker severity, a failed check and a moved
     candidate all mean the work itself has to change. Free text (``blockers``, ``output``) is never
     consulted: a sentence that merely mentions infrastructure proves nothing.
     """
@@ -515,6 +519,8 @@ def _retry_evidence(
                 return (
                     "requirements" if axis == "spec" else "code"
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
+        if review.get("recommendation") == "retry":
+            return "code", "the reviewer explicitly recommends another developer pass"
     if carried_items.marks_open(report):
         return "code", "the review confirms a carried item is still open"
     checks = report.get("checks_run")
@@ -764,6 +770,54 @@ def _reporting_stage(dispatch: JsonObject, report: JsonObject) -> str:
     )
 
 
+def _record_condition(
+    repo: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    stage: str,
+    decision: JsonObject,
+    approver: str,
+) -> None:
+    """Record what a conditional accept leaves open, after proving what can be proven.
+
+    A work stage must name a real candidate commit. A publish is an external effect, so the remote
+    branch tip must already be the candidate; that evidence closes its condition at once.
+    """
+    work = stage in {"developer", "conflict-resolver"}
+    candidate = (
+        _candidate_commit(repo, report["commit_sha"])
+        if work or stage == "publish"
+        else dispatch.get("candidate_commit")
+    )
+    closed_by = None
+    if stage == "publish":
+        if _remote_branch_tip(repo, "origin", dispatch["branch"]) != candidate:
+            raise CoordinatorError(
+                "the remote branch does not resolve to the published candidate",
+                remedy="push the accepted candidate to origin, or retry the publish dispatch",
+            )
+        closed_by = "remote-branch-tip"
+    decision.setdefault(
+        "routing",
+        {
+            "route": "accept-conditional",
+            "stage": stage,
+            "candidate_commit": candidate,
+        },
+    )
+    decision["condition"] = conditions.record(
+        batch,
+        dispatch_id=dispatch["dispatch_id"],
+        stage=stage,
+        candidate=candidate,
+        approver=approver,
+        moment=decision["approved_at"],
+        note=decision["note"],
+        closed_by=closed_by,
+    )
+
+
 def _abandon_routing(stage: str, report: JsonObject, moment: str) -> JsonObject:
     """The routing record of an ``abandon`` decision (no I/O).
 
@@ -836,7 +890,7 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
     entry = next(
         (
             item
-            for item in reversed(batch.get("dispatches", []))
+            for item in reversed(active_dispatches(batch))
             if item.get("state") == "reported"
             and isinstance(item.get("decision"), dict)
             and item["decision"].get("decision") in {"accept", "override-warning"}
@@ -853,6 +907,29 @@ def _last_accepted(repo: Path, root: Path, batch: JsonObject) -> JsonObject | No
         "dispatch_id": entry["dispatch_id"],
         "role": entry["role"],
         "candidate_commit": candidate,
+    }
+
+
+def _record_abandon(
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    approval: JsonObject,
+    reason: str,
+    moment: str,
+    open_dispatches: list[str],
+) -> None:
+    """The common operator-refusal boundary, including the accepted resume point."""
+    batch["state"] = "abandoned"
+    batch.pop("next_action", None)
+    batch.pop("required_next_role", None)
+    batch["abandoned"] = {
+        "approved_by": approval["approved_by"],
+        "approved_at": approval["approved_at"],
+        "abandoned_at": moment,
+        "reason": reason,
+        "open_dispatches": open_dispatches,
+        "last_accepted": _last_accepted(repo, root, batch),
     }
 
 
@@ -1059,9 +1136,32 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             if auto_inputs is None:
                 raise
             raise auto_policy.ledger_stop_error(exc) from exc
+        if batch.get("state") == "paused":
+            if auto_inputs is not None:
+                return batch
+            raise CoordinatorError(
+                "batch is paused",
+                remedy="use batch resume-stop or batch rewind with explicit human approval",
+            )
+        if auto_inputs is not None and approvals.auto_active(
+            core_config._config(repo), batch
+        ):
+            found = auto_policy.derive_stop(
+                repo, root, core_config._config(repo), batch
+            )
+            if found is not None:
+                return auto_policy.persist_stop(
+                    ledger,
+                    repo,
+                    root,
+                    core_config._config(repo),
+                    batch,
+                    found,
+                    detected_by="batch auto-decide",
+                )
         pending = [
             item
-            for item in batch.get("dispatches", [])
+            for item in active_dispatches(batch)
             if item.get("state") == "reported" and "decision" not in item
         ]
         if len(pending) != 1:
@@ -1102,10 +1202,21 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 )
             args = argparse.Namespace(**{**vars(args), **resolution.fields})
             auto_choice = resolution.choice
-        if report.get("outcome") != "completed" and args.decision in {
-            "accept",
-            "override-warning",
-        }:
+        # A human attestation of an infrastructure failure accepts a blocked report as an
+        # ordinary accept would, but leaves an open condition (see ``conditions``).
+        conditional = args.decision == "accept-conditional"
+        if conditional:
+            condition_approver = conditions.attest(args, report)
+            args = argparse.Namespace(**{**vars(args), "decision": "accept"})
+        if (
+            report.get("outcome") != "completed"
+            and not conditional
+            and args.decision
+            in {
+                "accept",
+                "override-warning",
+            }
+        ):
             raise CoordinatorError(
                 "a non-completed role report cannot be accepted or warning-overridden",
                 remedy="only accept or warning-override a completed role report",
@@ -1326,6 +1437,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             else abandon_reason
             or (args.note.strip() if _non_empty(args.note) else "none"),
         }
+        if conditional:
+            decision["decision"] = "accept-conditional"
         if routing is not None:
             decision["routing"] = routing
         elif abandon_routing is not None:
@@ -1375,6 +1488,17 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             # each target role's brief reads the items back from the report.
             decision["routing"] = incomplete_carry
         pending[0]["decision"] = decision
+        stage = _reporting_stage(dispatch, report)
+        if conditional:
+            _record_condition(
+                repo, batch, dispatch, report, stage, decision, condition_approver
+            )
+        elif args.decision in {"accept", "override-warning"}:
+            if stage == "publish":
+                conditions.require_closed(batch)
+            conditions.close_covered(
+                batch, stage, dispatch["dispatch_id"], decision["approved_at"]
+            )
         if decision["approved_by"] == approvals.AUTO_APPROVER:
             from harness.orchestration.workflow import auto_policy
 
@@ -1467,29 +1591,28 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 "fail": "failed",
                 "abandon": "abandoned",
             }[args.decision]
-        elif batch.get("state") != "completed":
+        elif batch.get("state") not in {"completed", "paused"}:
             batch["state"] = "awaiting-approval"
         if args.decision == "abandon":
             moment = utils._now()
             abandoned = _abandon_open_dispatches(ledger, root, batch, moment)
-            batch["abandoned"] = {
-                "approved_by": approval["approved_by"],
-                "approved_at": approval["approved_at"],
-                "abandoned_at": moment,
-                "reason": abandon_reason,
-                "open_dispatches": abandoned,
-                "last_accepted": _last_accepted(repo, root, batch),
-            }
+            _record_abandon(
+                repo, root, batch, approval, abandon_reason, moment, abandoned
+            )
         if auto_inputs is not None and batch.get("state") == "completed":
             # The accepted publish ends the automatic path: its final report is recorded now.
             from harness.orchestration.workflow import auto_report
 
             auto_report.record(repo, root, config, batch, decision["approved_at"])
         _safe_id(batch["batch_id"], "batch")
+        from harness.orchestration.ledger.recovery_chain import event_audit
+
         _replace_record(
             ledger,
             BatchRecord.from_dict(batch),
-            decision=_decision_audit(pending[0], decision, approver),
+            decision=event_audit(batch["recovery_events"][-1])
+            if batch.get("state") == "paused"
+            else _decision_audit(pending[0], decision, approver),
         )
         if args.decision == "abandon":
             _discard_batch_leftovers(repo, ledger, batch, abandoned)

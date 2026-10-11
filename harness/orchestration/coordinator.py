@@ -27,6 +27,9 @@ from typing import cast
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
 # `from harness...` resolves the same way in both places. See docs/adr/0001.
 _HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
+if __name__ == "__main__" or _HARNESS_ROOT.name != "harness":
+    # Installed runtime imports are read-only operations; lazy imports must not dirty checkouts.
+    sys.dont_write_bytecode = True
 _REPO_ROOT: Path = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -87,6 +90,7 @@ from harness.orchestration.infrastructure_retry import (
 )
 from harness.orchestration.ledger.ledger_admin import clean_ledger as clean_ledger
 from harness.orchestration.ledger.ledger_admin import ledger_status as ledger_status
+from harness.orchestration.ledger.ledger_admin import validate_ledger as validate_ledger
 from harness.orchestration.ledger.ledger_admin import migrate_ledger as migrate_ledger
 from harness.orchestration.ledger.ledger_admin import (
     release_ledger_lock as release_ledger_lock,
@@ -110,6 +114,10 @@ from harness.orchestration.workflow.batch import (
 )
 from harness.orchestration.workflow.batch import preflight_batch as preflight_batch
 from harness.orchestration.workflow.batch import resume_batch as resume_batch
+from harness.orchestration.workflow.recovery import (
+    resume_stopped_batch as resume_stopped_batch,
+)
+from harness.orchestration.workflow.recovery import rewind_batch as rewind_batch
 from harness.orchestration.workflow.carried_items import (
     carry_over_findings as carry_over_findings,
 )

@@ -17,11 +17,21 @@ SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
-DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
-TERMINAL_BATCH_STATES = {"completed", "failed", "blocked", "not-required", "abandoned"}
-# A blocked batch that still has an open dispatch can be resumed or abandoned, so it holds its work
-# until one of those happens; with every dispatch settled it is finished like the other states.
-FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES - {"blocked"}
+DECISIONS = {
+    "accept",
+    "accept-conditional",
+    "override-warning",
+    "retry",
+    "block",
+    "fail",
+    "abandon",
+}
+# Decisions that let the pipeline move past a reported stage. `accept-conditional` is a human
+# attestation that an infrastructure failure stopped the stage; it leaves an open condition.
+ACCEPTED_DECISIONS = frozenset({"accept", "override-warning", "accept-conditional"})
+TERMINAL_BATCH_STATES = {"completed", "not-required", "abandoned"}
+# Blocked and failed batches remain recoverable and retain their work until explicit abandon.
+FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
@@ -87,6 +97,9 @@ RECOVERY_ROUTES = (
     "fix-forward",
     "rebase-fix-forward",
     "supersede",
+    "environmental-restart",
+    "rewind",
+    "accept-conditional",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
@@ -121,6 +134,9 @@ DEFAULT_COMMUNICATION_POLICY = {
 LIVE_DISPATCH_STATES = {"dispatched", "working"}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
+# Retry thresholds ordered by rank; `error` is a threshold only and ranks with `blocker`.
+AUTO_RETRY_SEVERITY_RANKS = {"info": 0, "warning": 1, "error": 2, "blocker": 2}
+AUTO_RETRY_SEVERITIES = tuple(AUTO_RETRY_SEVERITY_RANKS)
 QA_LEASE_FIELDS = {"dispatch_id", "host", "pid", "acquired_at", "expires_at"}
 QA_QUEUE_FIELDS = {"dispatch_id", "sequence", "queued_at"}
 QA_OWNER_FIELDS = {"owner_kind", "owner_id"}

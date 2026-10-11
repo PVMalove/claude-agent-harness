@@ -631,7 +631,7 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
             with self.assertRaises(LedgerError):
                 ledger.replace(batch_path, {**batch, "state": "awaiting-approval"})
 
-    def test_abandoned_is_reachable_only_after_a_report_and_is_terminal(self) -> None:
+    def test_abandoned_requires_operator_refusal_and_is_terminal(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             ledger = LifecycleLedger(Path(temporary) / "state")
             ledger.ensure()
@@ -658,7 +658,18 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
                 "coordinator_approval": {"approved_by": "a", "approved_at": "b"},
             }
             ledger.replace(batch_path, approved)
-            ledger.replace(batch_path, {**approved, "state": "abandoned"})
+            ledger.replace(
+                batch_path,
+                {
+                    **approved,
+                    "state": "abandoned",
+                    "abandoned": {
+                        "approved_by": "operator",
+                        "approved_at": "now",
+                        "reason": "explicit refusal",
+                    },
+                },
+            )
 
             for target in ("awaiting-approval", "active", "failed", "completed"):
                 with self.assertRaises(LedgerError, msg=target):

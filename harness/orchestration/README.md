@@ -105,10 +105,11 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
 | `approval_policy` | `manual_all` \| `milestone` \| `low_risk` \| `auto` | `manual_all` | Какие report политика принимает без человека (см. ниже). |
+| `auto_retry_min_severity` | `info` \| `warning` \| `error` \| `blocker` | `info` | Порог review findings для автоматического retry. Фиксируется при создании batch; CLI `batch create --auto-retry-min-severity` может переопределить проектное значение. `info` сохраняет прежнее поведение. |
 | `low_risk_paths` | список glob | — | Пути в форме `dir/**`, `**` или точного файла (без `./`, `//`, `..`; сравнение по сегментам). При `low_risk` политика автоматически принимает чистые report внутри этих путей, если весь `--allowed-path` batch лежит в них. Без списка ничто не считается низкорисковым. |
 | `human_approval_gate` | `trusted` \| `tty` | `trusted` | `trusted` — approval через `--approved-by/--approved-at`; `tty` — только интерактивное подтверждение в терминале. |
 | `approval_ttl_seconds` | целое ≥ 1 | без срока | Срок жизни `--approved-at`. Coordinator отклоняет более старое approval и approval, датированное будущим. |
-| `worker_attestation_required` | логическое | `false` | Воркер до работы подтверждает фактический worktree, ветку и SHA. Пример включает `true`. |
+| `worker_attestation_required` | логическое | `false` | Включает проверку фактического worktree и SHA для остальных ролей. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review startup-attestation обязательна при любом значении. Пример включает `true` для всех ролей. |
 | `communication_policy` | объект | `en` / `ru` | `agent_to_agent_language` всегда `en`, `coordinator_report_language` всегда `ru`. |
 | `tool_policy` | объект | по режиму роли | Рабочий набор инструментов роли в brief (см. ниже). |
 | `access_policy` | объект | — | Доступ ролей и операций `qa`/`git`/`publish` к сети и файловой системе (см. «Доступ QA, Git и publish»). Opt-in: любой `access_policy` блокирует `dispatch send`, пока проект не подключил реализацию `extensions.runtime_access`. Поэтому пример его не содержит. |
@@ -155,7 +156,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 
 При создании batch coordinator фиксирует в нём политику, и её смена на уже созданные batch не
 влияет. Исключение — `auto`: эта политика согласует шаги, только пока конфиг проекта и план batch
-выбирают `auto` и в batch нет `auto_stop`. В остальных случаях каждый шаг такого batch согласует
+выбирают `auto`, в batch нет `auto_stop` и не было ручного восстановления. В остальных случаях каждый шаг такого batch согласует
 человек.
 
 ### `tool_policy`
@@ -307,3 +308,25 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 
 Полный список подкоманд — `python .harness/orchestration/coordinator.py --help`. Те же команды
 для оператора доступны в разделе Orchestration `harness console`.
+
+## Восстановление остановленного batch
+
+`batch auto-report` читает evidence и показывает `observed_stop`; команда ничего не записывает.
+`batch auto-decide` явно записывает остановку как `paused`, в том числе без report. Повтор команды
+не создаёт новую остановку. `blocked` и `failed` сохраняют работу и допускают ручное восстановление.
+Терминальные состояния — `completed`, `abandoned` и старое `not-required`.
+
+- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина>`
+  готовит повтор того же этапа после доказанного сбоя запуска. Каждый следующий шаг требует
+  человеческого approval; исходный `auto_stop` остаётся историей.
+- `batch rewind --batch <id> --to code-review --approved-by <оператор> --approved-at <UTC> --note <причина>`
+  возвращает к достигнутому этапу. Git history не меняется. Старые зависимые risk/review/QA
+  перестают разрешать продолжение. Новая работа developer расходует оставшийся retry budget.
+- `dispatch cancel --dispatch <id> --runtime-stopped --approved-by <оператор> --approved-at <UTC> --reason <причина>`
+  записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
+- `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
+
+Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
+новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет
+известный чистый startup SHA отдельным evidence без фиктивного checkpoint. После recovery даже
+429 требует человеческого approval. Подробный контракт: [Operator recovery](playbook.md#operator-recovery).

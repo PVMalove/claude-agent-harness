@@ -8,6 +8,7 @@ Nothing here reads project configuration, touches git, or opens the ledger, so `
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from datetime import UTC, datetime
@@ -61,6 +62,14 @@ def _strings(value: object, label: str, *, allow_empty: bool = False) -> list[st
 
 def _canonical(value: JsonObject) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+
+def sealed(body: JsonObject) -> JsonObject:
+    """``body`` with the ``record_sha256`` of its canonical form, as every hashed record has."""
+    return {
+        **body,
+        "record_sha256": hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest(),
+    }
 
 
 def _safe_id(value: object, label: str) -> str:

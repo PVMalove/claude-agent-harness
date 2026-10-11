@@ -81,3 +81,18 @@ Delta-review проверяет новые коммиты и закрытие п
   `docs/backend-orchestration.md`. `/implement` ссылается на таблицу, а контракты ролей
   запрещают обход hook-а и описывают неполные пункты.
 - Контракт реализуют тикеты, нарезанные из #479. До их слияния coordinator работает по ADR 0005.
+
+## Уточнение lifecycle и ручного восстановления (#662)
+
+`blocked`/`failed` — восстанавливаемые состояния, `paused` — записанная остановка автоматического
+пути. Завершение без реализации записывается как `completed` с отдельным evidence
+`not_required` и `completion_kind: no-implementation`, без фиктивного publish или commit.
+Старое `not-required` остаётся читаемым терминальным состоянием.
+Оба abandon-пути означают явный отказ оператора: `abandoned` с `last_accepted`. Старое
+`failed + abandoned` допускает supersede только при recorded human abandon, без переписи источника.
+
+`environmental-restart` повторяет ту же работу после подтверждённого сбоя запуска с отдельным
+операционным бюджетом. `rewind` выбирает прежний достигнутый gate и исключает зависимое старое
+evidence. Новая code-попытка расходует developer retry budget. Оба пути требуют человеческого
+approval и остаются manual_all. Sealed events и startup evidence связываются с audit; наблюдение
+`auto-report` ничего не пишет, `ledger validate` ничего не исправляет.

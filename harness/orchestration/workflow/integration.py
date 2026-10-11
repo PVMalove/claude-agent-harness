@@ -25,6 +25,7 @@ from harness.orchestration.core import ci_source
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _config, _reject_sensitive
 from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
     INTEGRATION_CI_COLLECTED,
     INTEGRATION_CI_COLLECTED_FAILURE,
     INTEGRATION_EVIDENCE_KINDS,
@@ -64,7 +65,6 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.workflow import history, pr_refresh
 
 INTEGRATION_RECORD_CONTRACT = 1
-_ACCEPTED_DECISIONS = {"accept", "override-warning"}
 # A refreshed candidate is confirmed only by a passed CI or local-QA check of its own pair: resolver
 # evidence records a conflict resolution, never the verification of the result.
 _INTEGRATION_VERIFICATION_KINDS = ("ci", "local-qa")
@@ -161,13 +161,15 @@ def _accepted_publish(root: Path, batch: JsonObject) -> JsonObject | None:
     for entry in reversed(batch.get("dispatches", [])):
         if entry.get("role") != "developer" or entry.get("state") != "reported":
             continue
-        if (entry.get("decision") or {}).get("decision") not in _ACCEPTED_DECISIONS:
+        if (entry.get("decision") or {}).get("decision") not in ACCEPTED_DECISIONS:
             continue
         dispatch = _verified_dispatch(root, entry)
         if dispatch.get("purpose") != "publish":
             continue
         report = history._pending_report(root, batch, entry)
-        if report.get("outcome") != "completed":
+        # A conditional publish was proven by the remote tip when it was accepted.
+        conditional = entry["decision"].get("decision") == "accept-conditional"
+        if report.get("outcome") != "completed" and not conditional:
             continue
         candidate = dispatch.get("candidate_commit")
         if report.get("commit_sha") != candidate:
