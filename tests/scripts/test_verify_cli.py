@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from scripts import verify
@@ -45,3 +47,34 @@ def test_an_unknown_argument_is_refused_before_any_stage(
         verify.main(["--fast"])
     assert exit_info.value.code == 2
     assert "unrecognized arguments: --fast" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "stages"),
+    [
+        ([], ["mypy", "pytest", "clean-room"]),
+        (["--only", "tests"], ["mypy", "pytest"]),
+        (["--only", "clean-room"], ["clean-room"]),
+    ],
+)
+def test_only_selects_the_stages_to_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    argv: list[str],
+    stages: list[str],
+) -> None:
+    started: list[str] = []
+    monkeypatch.setattr(verify, "_prepare_run_root", lambda: (tmp_path / "run", {}))
+    monkeypatch.setattr(verify, "_static_checks", lambda env: None)
+    monkeypatch.setattr(
+        verify, "run_stage", lambda name, cmd, **kwargs: started.append(name)
+    )
+    monkeypatch.setattr(verify, "remove_tree", lambda path: None)
+    verify.main(argv)
+    assert started == stages
+
+
+def test_an_unknown_stage_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        verify.main(["--only", "lint"])
+    assert exit_info.value.code == 2

@@ -13,7 +13,7 @@ from scripts import release_parser_bundle as release
 from scripts.build_parser_bundle import CORE_VERSION
 
 
-class TestManifest(TypedDict):
+class ReleaseBundleManifest(TypedDict):
     """Структура манифеста для тестов сборки релизного пакета парсеров."""
 
     schema_version: int
@@ -21,10 +21,10 @@ class TestManifest(TypedDict):
     wheels: list[release.WheelPin]
 
 
-def _staged(tmp_path: Path) -> tuple[Path, Path, TestManifest]:
+def _staged(tmp_path: Path) -> tuple[Path, Path, ReleaseBundleManifest]:
     """Подготовить временное окружение со скачанными wheel-пакетами и манифестом."""
     payload = cast(
-        TestManifest, json.loads(release.MANIFEST.read_text(encoding="utf-8"))
+        ReleaseBundleManifest, json.loads(release.MANIFEST.read_text(encoding="utf-8"))
     )
     wheels = tmp_path / "wheels"
     wheels.mkdir()
