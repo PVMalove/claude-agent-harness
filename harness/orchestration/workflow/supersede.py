@@ -19,6 +19,7 @@ from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import ACCEPTED_DECISIONS
 from harness.orchestration.core.git_utils import _candidate_commit, _git_is_ancestor
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -147,7 +148,7 @@ def _architect_reference(root: Path, source: JsonObject) -> JsonObject | None:
     chain of superseding batches keeps pointing at the one accepted architect report.
     """
     entry = next(
-        plan_rules.decided_entries(source, "architect", {"accept", "override-warning"}),
+        plan_rules.decided_entries(source, "architect", ACCEPTED_DECISIONS),
         None,
     )
     if entry is None:

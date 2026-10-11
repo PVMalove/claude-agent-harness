@@ -175,6 +175,13 @@ Use the playbook's "Operator recovery" procedure. The original stop stays histor
 approvals, including recognized 429 continuations, follow `manual_all`. Honor an approval already
 explicitly given in this session for the concrete operation; never invent one.
 
+When a stage's report is `blocked` only by an infrastructure failure although its work looks
+complete (a developer's commits match the plan, for example), a human may decide
+`batch decide --decision accept-conditional --infrastructure-failure --note <cause>`. The pipeline
+advances as after `accept`, but the stage stays an open condition that a later code-review or qa
+accept must independently close; publish refuses while one is open. Never choose it yourself, and
+prefer `resume-stop` when the stage can simply be restarted.
+
 A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
 interpreter or a split command) breaks the protocol: never accept or warning-override that report,
 and record the violation in `--note`. For an architect or developer (publish included), decide

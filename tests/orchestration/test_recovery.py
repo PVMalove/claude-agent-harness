@@ -1560,3 +1560,174 @@ class RecoveryTests(unittest.TestCase):
                 self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
             self.tearDown()
             self.setUp()
+
+    def _blocked_architect(self, blockers: str) -> JsonObject:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(
+            brief["dispatch_id"],
+            self._base_report(brief, "architect", outcome="blocked", blockers=blockers),
+        )
+        self._decide(batch["batch_id"], "block")
+        self.assertEqual(self._batch_record(batch["batch_id"])["state"], "blocked")
+        return batch
+
+    def test_resume_stop_recognises_an_infrastructure_cause_in_the_blocked_report(
+        self,
+    ) -> None:
+        batch = self._blocked_architect("worker session crashed: connection reset")
+        result = coordinator.resume_stopped_batch(
+            self._args(
+                batch=batch["batch_id"], note="runtime restored", **self._approval()
+            )
+        )
+        classification = result["event"]["evidence"]["failure"]["classification"]
+        self.assertEqual(classification["method"], "heuristic")
+        self.assertEqual(classification["category"], "network")
+        self.assertEqual(result["state"], "awaiting-approval")
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_resume_stop_refuses_a_blocked_report_with_a_code_or_unknown_cause(
+        self,
+    ) -> None:
+        for blockers in (
+            "unit tests failed after the connection reset",
+            "the plan is unclear",
+        ):
+            with self.subTest(blockers=blockers):
+                batch = self._blocked_architect(blockers)
+                before = self._ledger_bytes()
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "not confirmed"
+                ):
+                    coordinator.resume_stopped_batch(
+                        self._args(
+                            batch=batch["batch_id"], note="try", **self._approval()
+                        )
+                    )
+                self.assertEqual(before, self._ledger_bytes())
+            self.tearDown()
+            self.setUp()
+
+    def _blocked_developer(
+        self, batch_id: str, **overrides: object
+    ) -> tuple[JsonObject, str, list[str]]:
+        """A developer whose work is complete in the report, but whose handoff failed."""
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="runtime connection reset during the handoff to review",
+                **overrides,
+            ),
+        )
+        return brief, candidate, changed
+
+    def test_conditional_accept_moves_a_complete_but_blocked_developer_to_review(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        brief, candidate, changed = self._blocked_developer(batch_id)
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "non-completed"):
+            self._decide(batch_id, "accept")
+        for extra, message in (
+            ({"infrastructure_failure": False, "note": "restored"}, "attest"),
+            ({"infrastructure_failure": True, "note": "none"}, "recorded note"),
+            (
+                {
+                    "infrastructure_failure": True,
+                    "note": "restored",
+                    "approved_by": "policy:auto",
+                },
+                "human approval",
+            ),
+        ):
+            before = self._ledger_bytes()
+            with self.assertRaisesRegex(coordinator.CoordinatorError, message):
+                self._decide(batch_id, "accept-conditional", **extra)
+            self.assertEqual(before, self._ledger_bytes())
+        self._decide(
+            batch_id,
+            "accept-conditional",
+            infrastructure_failure=True,
+            note="runtime restored; commits match the plan",
+        )
+        stored = self._batch_record(batch_id)
+        self.assertEqual(stored["next_action"], "risk-assessment")
+        (condition,) = stored["conditions"]
+        entry = next(
+            e for e in stored["dispatches"] if e["dispatch_id"] == brief["dispatch_id"]
+        )
+        self.assertEqual(entry["decision"]["decision"], "accept-conditional")
+        self.assertEqual(
+            entry["decision"]["routing"],
+            {
+                "route": "accept-conditional",
+                "stage": "developer",
+                "candidate_commit": candidate,
+            },
+        )
+        self.assertEqual(
+            (condition["stage"], condition["status"], condition["candidate_commit"]),
+            ("developer", "open", candidate),
+        )
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+        self._assess(batch_id, candidate, changed)
+        # The pipeline moves forward: review is dispatched and accepted without the condition
+        # blocking it, and the independent review closes the condition.
+        self._reported_review(batch_id, candidate)
+        self._decide(batch_id, "accept")
+        closed = self._batch_record(batch_id)["conditions"][0]
+        self.assertEqual(closed["status"], "closed")
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_conditional_accept_refuses_a_report_with_a_failed_check(self) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers="the unit test failed",
+                checks_run=self._checks(brief, "fail"),
+            ),
+        )
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "failed check"):
+            self._decide(
+                batch_id,
+                "accept-conditional",
+                infrastructure_failure=True,
+                note="restored",
+            )
+
+    def test_rewind_retires_the_condition_of_a_superseded_stage(self) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        self._blocked_developer(batch_id)
+        self._decide(
+            batch_id, "accept-conditional", infrastructure_failure=True, note="restored"
+        )
+        coordinator.rewind_batch(
+            self._args(batch=batch_id, to="developer", note="redo", **self._approval())
+        )
+        from harness.orchestration.workflow import conditions
+
+        self.assertEqual(conditions.open_conditions(self._batch_record(batch_id)), [])
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])

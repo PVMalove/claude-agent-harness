@@ -32,6 +32,7 @@ from harness.orchestration.core.config import (
     _roles_dir,
 )
 from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
     AUTO_DECISION_FIELDS,
@@ -466,9 +467,10 @@ def _context_package_freshness(
 def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> str:
     candidates: list[str] = []
     for item in active_dispatches(batch):
-        if item.get("state") != "reported" or item.get("decision", {}).get(
-            "decision"
-        ) not in {"accept", "override-warning"}:
+        if (
+            item.get("state") != "reported"
+            or item.get("decision", {}).get("decision") not in ACCEPTED_DECISIONS
+        ):
             continue
         # Legacy dispatch ledger entries predate the explicit ``purpose`` field.
         # They are developer work dispatches unless they explicitly identify another
@@ -635,7 +637,7 @@ def _accepted_architect(batch: JsonObject) -> bool:
         item.get("role") == "architect"
         and item.get("state") == "reported"
         and isinstance(item.get("decision"), dict)
-        and item["decision"].get("decision") in {"accept", "override-warning"}
+        and item["decision"].get("decision") in ACCEPTED_DECISIONS
         for item in active_dispatches(batch)
     )
 

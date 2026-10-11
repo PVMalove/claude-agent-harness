@@ -31,6 +31,7 @@ from harness.orchestration.contract import (
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import ACCEPTED_DECISIONS
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _approval_policy,
@@ -84,7 +85,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches
-from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
@@ -169,9 +170,7 @@ def _accepted_divergence(
     A developer-retry builds on that history and keeps its strict commit_map, so the commit
     boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
     """
-    for item in plan_rules.decided_entries(
-        batch, "developer", {"accept", "override-warning"}
-    ):
+    for item in plan_rules.decided_entries(batch, "developer", ACCEPTED_DECISIONS):
         developer = _load_dispatch(root, item["dispatch_id"])
         if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
             developer
@@ -877,6 +876,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "publish must use the latest accepted developer candidate",
                     remedy="publish must use the latest accepted developer candidate_commit",
                 )
+            conditions.require_closed(batch)
             _accepted_qa_for_candidate(root, batch, candidate)
         elif purpose != "work":
             raise CoordinatorError(
@@ -958,8 +958,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 accepted_review = any(
                     item.get("role") == "code-review"
                     and item.get("state") == "reported"
-                    and item.get("decision", {}).get("decision")
-                    in {"accept", "override-warning"}
+                    and item.get("decision", {}).get("decision") in ACCEPTED_DECISIONS
                     and _load_dispatch(root, item["dispatch_id"]).get(
                         "candidate_commit"
                     )

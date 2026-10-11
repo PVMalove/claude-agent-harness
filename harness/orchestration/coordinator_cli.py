@@ -255,6 +255,12 @@ def build_parser(
     decide.add_argument("--approved-at", required=True)
     decide.add_argument("--note", default="none")
     decide.add_argument(
+        "--infrastructure-failure",
+        action="store_true",
+        help="with --decision accept-conditional: the operator attests that an infrastructure "
+        "failure, not the work, blocked the report; the stage stays an open condition",
+    )
+    decide.add_argument(
         "--reason", help="required for abandon: why the batch is abandoned"
     )
     decide.add_argument(

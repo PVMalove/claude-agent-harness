@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Set
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
@@ -201,7 +201,7 @@ def plan_sha256(plan: list[JsonObject]) -> str:
 
 
 def decided_entries(
-    batch: JsonObject, role: str, decisions: set[str]
+    batch: JsonObject, role: str, decisions: Set[str]
 ) -> Iterator[JsonObject]:
     """The batch's ``role`` dispatch entries decided with one of ``decisions``, newest first.
 

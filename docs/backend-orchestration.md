@@ -2308,7 +2308,12 @@ python .harness/orchestration/coordinator.py --repo . batch rewind \
 ```
 
 `resume-stop` подходит для подтверждённого worktree/model mismatch или отказа ОС запустить adapter.
-Он сохраняет роль, scope, candidate и fix-forward findings. Повтор получает новый dispatch ID,
+Если структурного доказательства нет, осторожная текстовая эвристика ищет инфраструктурную причину
+(rate limit, timeout, сеть, падение runtime, ресурсы, недоступный сервис) в `blockers` blocked
+report и в ошибке runtime. Признак проблемы с тестами, линтером, типами, конфликтом, scope или
+требованиями перевешивает; неизвестный текст остаётся неизвестным. Совпадение записывается в
+событие как `classification` с `method: heuristic`; оно лишь предлагает причину, а решает
+человеческий approval. Он сохраняет роль, scope, candidate и fix-forward findings. Повтор получает новый dispatch ID,
 context и approval. Операционная попытка не расходует второй developer retry. При паузе из-за
 бюджета или неизвестной причины можно вернуть pending report для ручного решения. Грязные файлы,
 неизвестный SHA, failed checks и новые code findings требуют обычного маршрута исправления.
@@ -2325,6 +2330,25 @@ Rewind выбирает достигнутую стадию `architect`, `develo
 HEAD и commit objects остаются на месте. После возврата к architect нужен новый принятый план;
 после возврата к writer новая попытка расходует developer retry budget. Ни один счётчик не
 обнуляется. До первого accept сохраняется требование `batch approve`.
+
+Если report стадии `blocked` только из-за сбоя инфраструктуры, а работа по report выглядит
+завершённой (например, коммиты developer соответствуют плану, но передача на review упала),
+человек может принять стадию условно:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch decide --batch <id> \
+  --decision accept-conditional --infrastructure-failure --note '<проверенная причина>' \
+  --approved-by '<оператор>' --approved-at '<текущий UTC>'
+```
+
+Решение записывается как `accept-conditional`, пайплайн идёт дальше, как после `accept`, а стадия
+остаётся открытым условием batch. Условие независимо закрывает безусловный `accept` более
+позднего gate: code-review или qa для architect, developer и verification; qa для code-review и
+qa. Пока условие открыто, publish и завершение отказывают. Условный qa не считается зелёным QA,
+поэтому publish всё равно требует реального QA. Условный publish принимается, только если remote
+branch уже указывает на candidate. Report должен быть `blocked` без failed checks, остальные
+проверки обычного `accept` (план коммитов, scope, DoD) сохраняются. Rewind снимает условия
+отменённых dispatch. Если стадию можно просто перезапустить, предпочтительнее `resume-stop`.
 
 Живой worker нужно сначала остановить средствами runtime. Затем оператор записывает
 `dispatch cancel --runtime-stopped` с approved_by/approved_at/reason. Timeout не доказывает остановку.

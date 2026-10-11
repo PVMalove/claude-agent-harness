@@ -212,9 +212,12 @@ def _stop_to_resume(batch: JsonObject) -> JsonObject | None:
     return None if batch.get("manual_recovery") else batch.get("auto_stop")
 
 
-def _confirmed_failure(root: Path, entry: JsonObject) -> JsonObject:
-    """Structural runtime evidence of an environment failure, never an inference from a timeout."""
+def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObject:
+    """Structural runtime evidence of an environment failure; failing that, a conservative text
+    classification of the blocked report, recorded as a heuristic for the human to approve."""
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
+    from harness.orchestration.workflow import failure_classifier
+    from harness.orchestration.workflow.history import _pending_report
 
     status = _load_dispatch_status(root, entry["dispatch_id"])
     model = status.get("model_self_report", {})
@@ -225,16 +228,25 @@ def _confirmed_failure(root: Path, entry: JsonObject) -> JsonObject:
         and failure.get("operation") == "startup"
         and failure.get("worker_started") is False
     )
-    if not (model.get("match") is False or tree.get("match") is False or unavailable):
-        raise CoordinatorError(
-            "environment failure is not structurally confirmed",
-            remedy="collect runtime status evidence; use an ordinary decision or human rewind for an unknown failure",
-        )
-    return {
+    evidence: JsonObject = {
         "model_self_report": model,
         "worktree_attestation": tree,
         "runtime_failure": failure,
     }
+    if model.get("match") is False or tree.get("match") is False or unavailable:
+        return evidence
+    report = _pending_report(root, batch, entry) if entry.get("report") else {}
+    classification = (
+        failure_classifier.classify(report.get("blockers"), failure.get("error"))
+        if report.get("outcome") in {None, "blocked"}
+        else None
+    )
+    if classification is None:
+        raise CoordinatorError(
+            "environment failure is not confirmed by runtime status or by the blocked report",
+            remedy="collect runtime status evidence or name the infrastructure cause in the report blockers; use an ordinary decision or human rewind for an unknown failure",
+        )
+    return {**evidence, "classification": classification}
 
 
 def _require_codeless_report(root: Path, batch: JsonObject, entry: JsonObject) -> None:
@@ -270,7 +282,7 @@ def _restart_failed_dispatch(
     from harness.orchestration.core.git_utils import _git
     from harness.orchestration.workflow.decisions import _abandon_open_dispatches
 
-    failure = _confirmed_failure(root, entry)
+    failure = _confirmed_failure(root, batch, entry)
     if stop and stop.get("evidence", {}).get("dispatch_id") != entry["dispatch_id"]:
         raise CoordinatorError(
             "stop and active dispatch disagree",

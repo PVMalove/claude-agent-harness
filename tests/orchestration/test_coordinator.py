@@ -14641,7 +14641,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     self._route(stage, self._report(standards=None), "block-bypass")
                 self.assertIn("developer reason category", raised.exception.remedy)
 
-    def test_the_recovery_routes_are_exactly_the_documented_fifteen(self) -> None:
+    def test_the_recovery_routes_are_exactly_the_documented_sixteen(self) -> None:
         self.assertEqual(
             constants.RECOVERY_ROUTES,
             (
@@ -14660,6 +14660,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 "supersede",
                 "environmental-restart",
                 "rewind",
+                "accept-conditional",
             ),
         )
         for route in constants.RECOVERY_ROUTES:

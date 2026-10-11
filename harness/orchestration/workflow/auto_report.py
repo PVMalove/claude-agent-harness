@@ -25,6 +25,7 @@ from harness.orchestration.core.config import (
     _retry_policy,
 )
 from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
     AUTO_REPORT_FIELDS,
     OPERATIONAL_REASON_CATEGORIES,
 )
@@ -330,7 +331,7 @@ def _coverage(repo: Path, rows: list[Row]) -> dict[int, list[str]]:
             entry.get("role") != "developer"
             or dispatch.get("purpose") != "work"
             or report is None
-            or _decided(entry) not in {"accept", "override-warning"}
+            or _decided(entry) not in ACCEPTED_DECISIONS
         ):
             continue
         records, _ = plan_rules.coverage(

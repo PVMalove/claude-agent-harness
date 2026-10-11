@@ -31,6 +31,7 @@ from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
     CARRIED_ITEM_ACCOUNTING_FIELDS,
     CARRIED_ITEM_CLOSED_FIELDS,
     CARRIED_ITEM_FIELDS,
@@ -425,10 +426,7 @@ def _incomplete_brief_items(
 
 def _accepted(entry: JsonObject) -> bool:
     decision = entry.get("decision")
-    return isinstance(decision, dict) and decision.get("decision") in {
-        "accept",
-        "override-warning",
-    }
+    return isinstance(decision, dict) and decision.get("decision") in ACCEPTED_DECISIONS
 
 
 def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[JsonObject]:

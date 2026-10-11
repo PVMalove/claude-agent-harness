@@ -17,7 +17,18 @@ SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 REPORT_OUTCOMES = {"completed", "blocked", "failed"}
-DECISIONS = {"accept", "override-warning", "retry", "block", "fail", "abandon"}
+DECISIONS = {
+    "accept",
+    "accept-conditional",
+    "override-warning",
+    "retry",
+    "block",
+    "fail",
+    "abandon",
+}
+# Decisions that let the pipeline move past a reported stage. `accept-conditional` is a human
+# attestation that an infrastructure failure stopped the stage; it leaves an open condition.
+ACCEPTED_DECISIONS = frozenset({"accept", "override-warning", "accept-conditional"})
 TERMINAL_BATCH_STATES = {"completed", "not-required", "abandoned"}
 # Blocked and failed batches remain recoverable and retain their work until explicit abandon.
 FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES
@@ -88,6 +99,7 @@ RECOVERY_ROUTES = (
     "supersede",
     "environmental-restart",
     "rewind",
+    "accept-conditional",
 )
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {

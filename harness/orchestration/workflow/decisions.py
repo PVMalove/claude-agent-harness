@@ -38,6 +38,7 @@ from harness.orchestration.core.constants import (
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _fetch_ref_tip,
+    _remote_branch_tip,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -71,7 +72,7 @@ from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
-from harness.orchestration.workflow import carried_items
+from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
@@ -769,6 +770,54 @@ def _reporting_stage(dispatch: JsonObject, report: JsonObject) -> str:
     )
 
 
+def _record_condition(
+    repo: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    stage: str,
+    decision: JsonObject,
+    approver: str,
+) -> None:
+    """Record what a conditional accept leaves open, after proving what can be proven.
+
+    A work stage must name a real candidate commit. A publish is an external effect, so the remote
+    branch tip must already be the candidate; that evidence closes its condition at once.
+    """
+    work = stage in {"developer", "conflict-resolver"}
+    candidate = (
+        _candidate_commit(repo, report["commit_sha"])
+        if work or stage == "publish"
+        else dispatch.get("candidate_commit")
+    )
+    closed_by = None
+    if stage == "publish":
+        if _remote_branch_tip(repo, "origin", dispatch["branch"]) != candidate:
+            raise CoordinatorError(
+                "the remote branch does not resolve to the published candidate",
+                remedy="push the accepted candidate to origin, or retry the publish dispatch",
+            )
+        closed_by = "remote-branch-tip"
+    decision.setdefault(
+        "routing",
+        {
+            "route": "accept-conditional",
+            "stage": stage,
+            "candidate_commit": candidate,
+        },
+    )
+    decision["condition"] = conditions.record(
+        batch,
+        dispatch_id=dispatch["dispatch_id"],
+        stage=stage,
+        candidate=candidate,
+        approver=approver,
+        moment=decision["approved_at"],
+        note=decision["note"],
+        closed_by=closed_by,
+    )
+
+
 def _abandon_routing(stage: str, report: JsonObject, moment: str) -> JsonObject:
     """The routing record of an ``abandon`` decision (no I/O).
 
@@ -1153,10 +1202,21 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 )
             args = argparse.Namespace(**{**vars(args), **resolution.fields})
             auto_choice = resolution.choice
-        if report.get("outcome") != "completed" and args.decision in {
-            "accept",
-            "override-warning",
-        }:
+        # A human attestation of an infrastructure failure accepts a blocked report as an
+        # ordinary accept would, but leaves an open condition (see ``conditions``).
+        conditional = args.decision == "accept-conditional"
+        if conditional:
+            condition_approver = conditions.attest(args, report)
+            args = argparse.Namespace(**{**vars(args), "decision": "accept"})
+        if (
+            report.get("outcome") != "completed"
+            and not conditional
+            and args.decision
+            in {
+                "accept",
+                "override-warning",
+            }
+        ):
             raise CoordinatorError(
                 "a non-completed role report cannot be accepted or warning-overridden",
                 remedy="only accept or warning-override a completed role report",
@@ -1377,6 +1437,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             else abandon_reason
             or (args.note.strip() if _non_empty(args.note) else "none"),
         }
+        if conditional:
+            decision["decision"] = "accept-conditional"
         if routing is not None:
             decision["routing"] = routing
         elif abandon_routing is not None:
@@ -1426,6 +1488,17 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             # each target role's brief reads the items back from the report.
             decision["routing"] = incomplete_carry
         pending[0]["decision"] = decision
+        stage = _reporting_stage(dispatch, report)
+        if conditional:
+            _record_condition(
+                repo, batch, dispatch, report, stage, decision, condition_approver
+            )
+        elif args.decision in {"accept", "override-warning"}:
+            if stage == "publish":
+                conditions.require_closed(batch)
+            conditions.close_covered(
+                batch, stage, dispatch["dispatch_id"], decision["approved_at"]
+            )
         if decision["approved_by"] == approvals.AUTO_APPROVER:
             from harness.orchestration.workflow import auto_policy
 
