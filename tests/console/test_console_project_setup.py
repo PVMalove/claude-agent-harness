@@ -15,7 +15,7 @@ from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
 from harness.console.screens.project_setup import ProjectSetupScreen
 
-from tests.console._pilot_wait import wait_until
+from tests.console._pilot_wait import press, wait_until
 
 
 def test_selecting_another_project_replaces_the_dashboard_context(
@@ -28,13 +28,13 @@ def test_selecting_another_project_replaces_the_dashboard_context(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#open-project")
+            await press(pilot, "#open-project")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
-            await pilot.click("#inspect-project")
+            await press(pilot, "#inspect-project")
             await app.workers.wait_for_complete()
             await pilot.pause()
-            await pilot.click("#activate-project")
+            await press(pilot, "#activate-project")
             await wait_until(
                 pilot,
                 lambda: isinstance(app.screen, DashboardScreen)
@@ -75,25 +75,25 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path, command_runner=runner)
         async with app.run_test(size=(140, 60)) as pilot:
-            await pilot.click("#open-project")
+            await press(pilot, "#open-project")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
-            await pilot.click("#inspect-project")
+            await press(pilot, "#inspect-project")
             await app.workers.wait_for_complete()
             await pilot.pause()
             options = app.screen.query_one("#capability", RadioSet)
             options.query(RadioButton)[-1].value = True
             await pilot.pause()
-            await pilot.click("#install-project")
+            await press(pilot, "#install-project")
             await pilot.pause()
             assert seen == []
             # The Harness section's confirmation form: nothing runs until it is accepted.
-            await pilot.click("#cancel")
+            await press(pilot, "#cancel")
             await pilot.pause()
             assert seen == []
-            await pilot.click("#install-project")
+            await press(pilot, "#install-project")
             await pilot.pause()
-            await pilot.click("#run")
+            await press(pilot, "#run")
             await app.workers.wait_for_complete()
             await pilot.pause()
             output = str(app.screen.query_one("#setup-output", Static).render())
@@ -101,7 +101,7 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
             # The flow continues: the project becomes the target only on completion.
             assert isinstance(app.screen, ProjectSetupScreen)
             assert app.repo == tmp_path
-            await pilot.click("#activate-project")
+            await press(pilot, "#activate-project")
             await wait_until(
                 pilot,
                 lambda: isinstance(app.screen, DashboardScreen)
@@ -136,14 +136,14 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#open-project")
+            await press(pilot, "#open-project")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             screen = app.screen
             assert "Выбор проекта" in str(
                 screen.query_one("#setup-stage", Static).render()
             )
             screen.query_one("#project-path", Input).value = str(second)
-            await pilot.click("#inspect-project")
+            await press(pilot, "#inspect-project")
             await app.workers.wait_for_complete()
             await pilot.pause()
             pressed = screen.query_one("#capability", RadioSet).pressed_index
@@ -152,7 +152,7 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
             assert "[Предварительные проверки]" in stage
             plan = str(screen.query_one("#installation-plan", Static).render())
             assert "Состав:" in plan
-            await pilot.click("#browse-project")
+            await press(pilot, "#browse-project")
             await pilot.pause()
             assert len(screen.query("#directory-browser")) == 1
 
@@ -254,20 +254,20 @@ def test_online_check_and_local_fixes_target_the_selected_project(
     async def scenario() -> str:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#open-project")
+            await press(pilot, "#open-project")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
-            await pilot.click("#inspect-project")
+            await press(pilot, "#inspect-project")
             await app.workers.wait_for_complete()
             await pilot.pause()
             await app.workers.wait_for_complete()
-            await pilot.click("#setup-online")
+            await press(pilot, "#setup-online")
             await app.workers.wait_for_complete()
             await pilot.pause()
             online_text = str(app.screen.query_one("#setup-output", Static).render())
-            await pilot.click("#setup-fix")
+            await press(pilot, "#setup-fix")
             await pilot.pause()
-            await pilot.click("#confirm")
+            await press(pilot, "#confirm")
             await app.workers.wait_for_complete()
             await pilot.pause()
             return online_text

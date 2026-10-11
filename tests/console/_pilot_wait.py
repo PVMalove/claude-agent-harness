@@ -7,6 +7,7 @@ import asyncio
 from collections.abc import Callable
 
 from textual.pilot import Pilot
+from textual.widgets import Button
 
 WAIT_SECONDS = 10.0
 POLL_SECONDS = 0.05
@@ -25,3 +26,14 @@ async def wait_until[T](pilot: Pilot[T], ready: Callable[[], object]) -> None:
                 f"UI did not reach the expected state in {WAIT_SECONDS}s"
             )
         await asyncio.sleep(POLL_SECONDS)
+
+
+async def press[T](pilot: Pilot[T], selector: str) -> None:
+    """Дождаться кнопки на текущем экране и нажать её без позиционного клика.
+
+    `pilot.click` целится в координаты: на Windows длинный путь временного каталога переносит
+    строки заголовка, кнопка уходит из окна или под другой виджет, и клик не доходит до неё.
+    `Button.press()` отправляет то же событие `Pressed` без проверки попадания."""
+    await wait_until(pilot, lambda: pilot.app.screen.query(selector))
+    pilot.app.screen.query_one(selector, Button).press()
+    await pilot.pause()
