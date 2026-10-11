@@ -5,7 +5,8 @@ from pathlib import Path
 
 from textual.app import App
 
-from harness.configuration import ConfigurationStore, read_config_bundle
+from harness.configuration import read_config_bundle
+from harness.configuration_store import ConfigurationStore
 from harness.console.screens.configuration_versions import ConfigurationVersionsScreen
 from tests.console.test_console_configuration_app import installed_project
 

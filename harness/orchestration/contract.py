@@ -12,9 +12,9 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TypeGuard, cast
 
 from harness.configuration import read_config_file
-from typing import TypeGuard, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .core.constants import (
@@ -1057,14 +1057,10 @@ def configuration_problems(
         }
     missing = [field for field in CONFIG_REQUIRED_FIELDS if field not in config]
     if missing:
-        problems.append(
-            f"{location} missing required field(s): {', '.join(missing)}"
-        )
+        problems.append(f"{location} missing required field(s): {', '.join(missing)}")
     extra = sorted(set(config) - CONFIG_ALLOWED_FIELDS)
     if extra:
-        problems.append(
-            f"{location} has unknown field(s): {', '.join(extra)}"
-        )
+        problems.append(f"{location} has unknown field(s): {', '.join(extra)}")
     roles: dict[str, JsonObject] = {}
     if not roles_root.is_dir():
         problems.append("missing .harness/orchestration/roles")

@@ -15,7 +15,11 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
 
-from harness.configuration import parse_config_json, read_config_bundle, read_config_file
+from harness.configuration import (
+    parse_config_json,
+    read_config_bundle,
+    read_config_file,
+)
 
 from harness.orchestration import extensions
 from harness.orchestration.contract import (

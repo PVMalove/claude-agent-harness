@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 from threading import Event
 
@@ -40,7 +41,12 @@ def test_cli_uses_saved_login_and_disables_tools(
     seen: list[list[str]] = []
 
     def run(
-        argv: list[str], cwd: Path, prompt: str, cancel: Event, timeout: float
+        argv: list[str],
+        cwd: Path,
+        prompt: str,
+        cancel: Event,
+        timeout: float,
+        **_: object,
     ) -> str:
         seen.append(argv)
         assert cwd != tmp_path
@@ -102,7 +108,12 @@ def test_claude_reuses_auth_and_never_uses_bare(
     seen: list[list[str]] = []
 
     def run(
-        argv: list[str], cwd: Path, prompt: str, cancel: Event, timeout: float
+        argv: list[str],
+        cwd: Path,
+        prompt: str,
+        cancel: Event,
+        timeout: float,
+        **_: object,
     ) -> str:
         seen.append(argv)
         if "--help" in argv:
@@ -144,3 +155,91 @@ def test_cancellation_and_output_limit_terminate_cli(tmp_path: Path) -> None:
             Event(),
             0.1,
         )
+
+
+def test_stderr_warnings_do_not_corrupt_structured_output(tmp_path: Path) -> None:
+    from harness.console.advisor import _run
+
+    script = tmp_path / "cli.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write('WARNING: read-only file system\\n')\n"
+        "sys.stdout.write('{\"ok\": true}')\n",
+        encoding="utf-8",
+    )
+    out = _run([sys.executable, str(script)], tmp_path, "", Event(), 10)
+    assert json.loads(out) == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    ("status", "ready"),
+    [
+        ("Logged in using ChatGPT", True),
+        ("WARNING: aliases\nLogged in using an API key", True),
+        ("Not logged in", False),
+        ("not logged in; run login", False),
+    ],
+)
+def test_codex_login_status_is_matched_by_leading_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str, ready: bool
+) -> None:
+    from harness.console import advisor
+
+    def run(
+        argv: list[str],
+        cwd: Path,
+        prompt: str,
+        cancel: Event,
+        timeout: float,
+        **_: object,
+    ) -> str:
+        if "--help" in argv:
+            return "--ignore-user-config --ignore-rules --ephemeral --output-schema --disable"
+        return status
+
+    monkeypatch.setattr(shutil, "which", lambda _: "/bin/codex")
+    monkeypatch.setattr(advisor, "_run", run)
+    result = advisor.availability("codex", Event())
+    assert result.startswith("Готов") is ready
+
+
+def test_comparison_is_validated_and_context_carries_only_non_secret_facts(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+    (tmp_path / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    draft = ConfigurationDraft.load(tmp_path, ("project.json",))
+    field = steps_for(draft)[0]
+    request = build_request(draft, field)
+    assert '"project_markers": ["pyproject.toml"]' in request
+    assert "comparison" in request and str(tmp_path) not in request
+    good = {
+        "value": "en",
+        "why": "Команда",
+        "impact": "Язык",
+        "comparison": [{"option": "ru", "tradeoff": "Русские отчёты"}],
+    }
+    assert parse_response(json.dumps(good), field).comparison == (
+        ("ru", "Русские отчёты"),
+    )
+    for bad in (
+        {**good, "comparison": [{"option": "a"}]},
+        {**good, "comparison": [{"option": "a", "tradeoff": "b"}] * 5},
+        {**good, "comparison": [{"option": "a", "tradeoff": "token=hidden1"}]},
+    ):
+        with pytest.raises(AdvisorUnavailable):
+            parse_response(json.dumps(bad), field)
+
+
+def test_status_commands_may_report_on_stderr_only_when_requested(
+    tmp_path: Path,
+) -> None:
+    from harness.console.advisor import _run
+
+    script = tmp_path / "status.py"
+    script.write_text(
+        "import sys\nsys.stderr.write('Logged in using ChatGPT\\n')\n", encoding="utf-8"
+    )
+    argv = [sys.executable, str(script)]
+    assert _run(argv, tmp_path, "", Event(), 10) == ""
+    assert "Logged in" in _run(argv, tmp_path, "", Event(), 10, merge_stderr=True)

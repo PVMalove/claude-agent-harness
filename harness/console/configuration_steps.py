@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 from harness.configuration import parse_config_json
+from harness.configuration_schema import load_schema, resolve_ref, value_problems
 from harness.json_types import JsonObject
-from .configuration import ConfigurationDraft, PACKAGE, parse_object
+from .configuration import ConfigurationDraft
+from .project_facts import ProjectFacts, project_facts
+
+CHOICE_PAGE_SIZE = 4
 
 _HELP = {
     "language": "Язык отчётов и описания PR: ru — русский, en — английский. На выполнение команд не влияет.",
@@ -44,20 +48,73 @@ _HELP = {
     "story_points.full_threshold": "Оценки не ниже этого порога предлагают pipeline::full с отдельными этапами проверки.",
     "story_points.gray_zone": "Промежуточная оценка вызывает дополнительную оценку сложности. Настройте согласованно с обоими порогами.",
 }
-_EFFECTS = {
-    "manual_all": "Каждый шаг требует ручного решения; подходит для первой настройки.",
-    "milestone": "Чистые промежуточные этапы принимает политика; QA, publish и риск требуют человека.",
-    "low_risk": "Автоматическое принятие ограничено low_risk_paths; без путей автопуть не сработает.",
-    "auto": "Больше автономности; нужны trusted, attestation и готовые проверки. PR/merge вручную.",
-    "trusted": "Согласование через записанное evidence; подходящий режим для поддерживаемого auto.",
-    "tty": "Согласование только интерактивно в терминале; несовместимо с auto.",
-    "in-process": "Роль запускается в текущем runtime координатора.",
-    "external": "Нужен подключённый внешний runtime adapter и его доступы.",
-    "local": "Локальные Markdown-задачи; онлайн-проверки трекера пропускаются.",
-    "github": "Задачи и PR в GitHub; используется текущая авторизация gh.",
-    "gitlab": "Задачи и MR в GitLab/self-hosted; используется glab и явный host.",
-    "bash": "Linux/macOS/WSL; выполняется bash -lc.",
-    "powershell": "Native Windows; команды должны соответствовать PowerShell.",
+# value -> (what it does, limitation, when to choose it); plain strings are one-line effects.
+_EFFECTS: dict[str, str | tuple[str, str, str]] = {
+    "manual_all": (
+        "Каждый шаг требует ручного решения.",
+        "Медленнее: человек нужен на каждом этапе.",
+        "Первая настройка, чувствительные проекты, отладка процесса.",
+    ),
+    "milestone": (
+        "Чистые промежуточные этапы принимает политика; QA, publish и риск требуют человека.",
+        "Нужны надёжные проверки и evidence на каждом этапе.",
+        "Проект с проверенными QA-командами и умеренным риском.",
+    ),
+    "low_risk": (
+        "Автоматическое принятие ограничено путями из low_risk_paths.",
+        "Без low_risk_paths автопуть не сработает.",
+        "Документация, тесты и другие заранее перечисленные безопасные области.",
+    ),
+    "auto": (
+        "Максимальная автономность цикла; PR и merge остаются ручными.",
+        "Требует human_approval_gate=trusted и worker_attestation_required=true.",
+        "Зрелый проект с готовыми проверками и проверенной политикой доступа.",
+    ),
+    "trusted": (
+        "Согласование через записанное evidence.",
+        "Доверие определяется записанными данными, а не живым терминалом.",
+        "Режим, поддерживаемый для approval_policy=auto и неинтерактивных запусков.",
+    ),
+    "tty": (
+        "Согласование только интерактивно в терминале.",
+        "Несовместимо с approval_policy=auto.",
+        "Нужно живое подтверждение человеком каждого решения.",
+    ),
+    "in-process": (
+        "Роль запускается в текущем runtime координатора.",
+        "Использует доступы и ограничения самого координатора.",
+        "Локальный запуск без внешнего адаптера.",
+    ),
+    "external": (
+        "Роль запускается во внешнем runtime через адаптер.",
+        "Нужны подключённый адаптер и его доступы.",
+        "Отдельная изолированная среда выполнения ролей.",
+    ),
+    "local": (
+        "Локальные Markdown-задачи; онлайн-проверки трекера пропускаются.",
+        "Нет PR/MR и совместной работы через хостинг.",
+        "Проект без GitHub/GitLab или автономная работа.",
+    ),
+    "github": (
+        "Задачи и PR в GitHub; используется текущая авторизация gh.",
+        "Нужны host/project и право доступа к репозиторию.",
+        "Репозиторий на GitHub.",
+    ),
+    "gitlab": (
+        "Задачи и MR в GitLab/self-hosted; используется glab и явный host.",
+        "Нужны host/project и право доступа к проекту.",
+        "Репозиторий на GitLab, в том числе self-hosted.",
+    ),
+    "bash": (
+        "Команды выполняются через bash -lc.",
+        "Нужен bash: Linux, macOS или WSL.",
+        "Linux/macOS/WSL-окружение.",
+    ),
+    "powershell": (
+        "Команды выполняются в PowerShell.",
+        "Команды должны соответствовать синтаксису PowerShell.",
+        "Native Windows без WSL.",
+    ),
     "ru": "Русские отчёты и описания PR.",
     "en": "Английские отчёты и описания PR.",
     "none": "Без reasoning, если модель и runtime поддерживают такой режим.",
@@ -77,6 +134,121 @@ _EFFECTS = {
 }
 
 
+Recommendation = tuple[object, str] | None
+
+
+def _approval_policy(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    if facts.qa_commands:
+        return (
+            "manual_all",
+            "Ручное согласование безопасно для первой настройки; "
+            f"в проекте найдена проверка «{facts.qa_commands[0]}», после её проверки можно перейти на milestone.",
+        )
+    return (
+        "manual_all",
+        "В проекте не найдены очевидные QA-команды, поэтому автоматизировать согласование рано: оставьте ручное.",
+    )
+
+
+def _shell(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    shell = "powershell" if facts.platform == "windows" else "bash"
+    return (
+        shell,
+        "Выбрано по ОС процесса консоли; если QA выполняется в другой среде (WSL, контейнер), укажите её оболочку.",
+    )
+
+
+def _concurrency(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    return (
+        1,
+        "Последовательная работа упрощает первую проверку и ограничивает потребление ресурсов.",
+    )
+
+
+def _transport(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    return "in-process", "Внешний transport требует отдельно настроенного адаптера."
+
+
+def _approval_gate(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    return (
+        "trusted",
+        "Режим поддерживает записанное согласование; для обязательного живого терминала выберите tty.",
+    )
+
+
+def _attestation(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    if draft.documents[step.file].get("approval_policy") == "auto":
+        return (
+            True,
+            "Для approval_policy=auto attestation обязательна; без неё контракт отклонит конфигурацию.",
+        )
+    return None
+
+
+def _base_branch(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    if facts.default_branch:
+        return (
+            facts.default_branch,
+            f"Ветка по умолчанию origin в этом репозитории: {facts.default_branch}.",
+        )
+    return None
+
+
+def _qa_commands(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    if facts.qa_commands and not step.value(draft):
+        return (
+            list(facts.qa_commands),
+            f"Команда выведена из файлов проекта ({', '.join(facts.markers)}); проверьте её перед использованием.",
+        )
+    return None
+
+
+def _tracker_type(
+    step: ConfigurationStep, draft: ConfigurationDraft, facts: ProjectFacts
+) -> Recommendation:
+    from harness.health.project_tracker import resolve_project_tracker
+
+    if step.path != ("tracker", "type"):
+        return None
+    effective = resolve_project_tracker(draft.repo).effective
+    return (
+        effective.type,
+        "Тип определён по текущему окружению проекта (remote origin или локальный режим); при необходимости задайте явно.",
+    )
+
+
+_RECOMMENDERS: dict[
+    str, Callable[[ConfigurationStep, ConfigurationDraft, ProjectFacts], Recommendation]
+] = {
+    "approval_policy": _approval_policy,
+    "shell": _shell,
+    "concurrency_budget": _concurrency,
+    "transport": _transport,
+    "human_approval_gate": _approval_gate,
+    "worker_attestation_required": _attestation,
+    "base_branch": _base_branch,
+    "qa_gate_commands": _qa_commands,
+    "verification_commands": _qa_commands,
+    "type": _tracker_type,
+}
+
+
 @dataclass(frozen=True)
 class ConfigurationStep:
     file: str
@@ -84,6 +256,7 @@ class ConfigurationStep:
     schema: JsonObject
     description: str
     required: bool
+    root: JsonObject = field(default_factory=dict, compare=False, repr=False)
 
     @property
     def kind(self) -> str:
@@ -101,8 +274,13 @@ class ConfigurationStep:
         )
         return tuple(values) if isinstance(values, list) else ()
 
+    @property
+    def pages(self) -> int:
+        return -(-len(self.choices) // CHOICE_PAGE_SIZE)
+
     def choice_page(self, page: int) -> tuple[object, ...]:
-        return self.choices[page * 4 : page * 4 + 4]
+        start = page * CHOICE_PAGE_SIZE
+        return self.choices[start : start + CHOICE_PAGE_SIZE]
 
     def present(self, draft: ConfigurationDraft) -> bool:
         target: object = draft.documents[self.file]
@@ -122,39 +300,12 @@ class ConfigurationStep:
 
     def recommendation(self, draft: ConfigurationDraft) -> tuple[object, str]:
         key = self.path[-1]
-        if key == "approval_policy":
-            return (
-                "manual_all",
-                "Для первой настройки рекомендуем ручное согласование каждого шага; автоматизацию включайте после проверки проекта.",
-            )
-        if key == "shell":
-            return (
-                ("powershell" if os.name == "nt" else "bash"),
-                "Рекомендация по ОС процесса консоли; для другой целевой среды выберите её оболочку.",
-            )
-        if key == "concurrency_budget":
-            return (
-                1,
-                "Последовательная работа упрощает первую проверку и ограничивает потребление ресурсов.",
-            )
-        if key == "transport":
-            return (
-                "in-process",
-                "Внешний transport требует отдельно настроенного адаптера.",
-            )
-        if key == "human_approval_gate":
-            return (
-                "trusted",
-                "Режим поддерживает записанное согласование; для обязательного живого терминала выберите tty.",
-            )
-        if (
-            key == "worker_attestation_required"
-            and draft.documents[self.file].get("approval_policy") == "auto"
-        ):
-            return (
-                True,
-                "Для approval_policy=auto attestation обязательна; без неё контракт отклонит конфигурацию.",
-            )
+        facts = project_facts(draft.repo)
+        rule = _RECOMMENDERS.get(key)
+        if rule is not None:
+            advice = rule(self, draft, facts)
+            if advice is not None:
+                return advice
         value = self.value(draft)
         if value is not None and self.present(draft):
             try:
@@ -175,12 +326,18 @@ class ConfigurationStep:
     def effect(self, value: object) -> str:
         if isinstance(value, bool):
             return "Включает этот параметр." if value else "Отключает этот параметр."
-        return _EFFECTS.get(
-            str(value),
-            "Значение применяется к "
-            + ".".join(self.path)
-            + "; последствия описаны выше.",
-        )
+        known = _EFFECTS.get(str(value))
+        if isinstance(known, tuple):
+            effect, limit, scenario = known
+            return f"{effect} Ограничение: {limit} Когда выбирать: {scenario}"
+        if known is not None:
+            return known
+        summary = self.description.split(". ")[0].rstrip(".")
+        return f"Значение задаёт {'.'.join(self.path)}: {summary}."
+
+    def recommended(self, draft: ConfigurationDraft) -> object:
+        """The recommended value, to mark it in the list of options."""
+        return self.recommendation(draft)[0]
 
     def parse(self, text: str) -> object:
         if self.kind == "string" and not self.choices:
@@ -198,81 +355,24 @@ class ConfigurationStep:
             json.dumps(value, allow_nan=False)
         except (ValueError, TypeError, RecursionError):
             raise ValueError("Введите корректное JSON-значение") from None
-        kind = self.kind
-        valid = {
-            "string": isinstance(value, str),
-            "integer": isinstance(value, int) and not isinstance(value, bool),
-            "number": isinstance(value, (int, float)) and not isinstance(value, bool),
-            "boolean": isinstance(value, bool),
-            "array": isinstance(value, list),
-            "object": isinstance(value, dict),
-        }.get(kind, True)
-        if value is None and "null" in self.schema.get("type", []):
-            valid = True
-        if not valid:
-            raise ValueError(f"Ожидается тип {kind}")
-        if self.kind != "array" and self.choices and value not in self.choices:
-            raise ValueError("Выберите одно из допустимых значений")
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            if "minimum" in self.schema and value < self.schema["minimum"]:
-                raise ValueError(f"Минимум: {self.schema['minimum']}")
-            if "maximum" in self.schema and value > self.schema["maximum"]:
-                raise ValueError(f"Максимум: {self.schema['maximum']}")
-        if isinstance(value, str) and len(value) < self.schema.get("minLength", 0):
-            raise ValueError("Значение слишком короткое")
-        if isinstance(value, str):
-            if len(value) > self.schema.get("maxLength", len(value)):
-                raise ValueError("Значение слишком длинное")
-            if (
-                "pattern" in self.schema
-                and re.search(self.schema["pattern"], value) is None
-            ):
-                raise ValueError("Значение не соответствует формату поля")
-        if isinstance(value, list):
-            if len(value) < self.schema.get("minItems", 0):
-                raise ValueError("Недостаточно элементов списка")
-            if self.schema.get("uniqueItems") and len(
-                {json.dumps(v, sort_keys=True) for v in value}
-            ) != len(value):
-                raise ValueError("Элементы списка должны быть уникальны")
-            item_schema = self.schema.get("items")
-            if isinstance(item_schema, dict):
-                item = ConfigurationStep(
-                    self.file, self.path, item_schema, self.description, True
-                )
-                for element in value:
-                    item.validate(element)
+        problems = value_problems(value, self.schema, self.root)
+        if problems:
+            raise ValueError(problems[0])
 
 
 def _resolve(node: JsonObject, schema: JsonObject) -> JsonObject:
-    ref = node.get("$ref")
-    if not isinstance(ref, str) or not ref.startswith("#/"):
+    if "$ref" not in node:
         return node
-    target = schema
-    for part in ref[2:].split("/"):
-        target = target[part.replace("~1", "/").replace("~0", "~")]
-    return {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+    return {
+        **resolve_ref(schema, node["$ref"]),
+        **{k: v for k, v in node.items() if k != "$ref"},
+    }
 
 
 def steps_for(draft: ConfigurationDraft) -> list[ConfigurationStep]:
     result: list[ConfigurationStep] = []
     for name, document in draft.documents.items():
-        schema_path = (
-            draft.repo
-            / ".harness"
-            / (
-                "project.schema.json"
-                if name == "project.json"
-                else "orchestration/orchestration.schema.json"
-            )
-        )
-        if not schema_path.is_file():
-            schema_path = PACKAGE / (
-                "project/project.schema.json"
-                if name == "project.json"
-                else "orchestration/orchestration.schema.json"
-            )
-        schema = parse_object(schema_path.read_bytes(), "schema")
+        schema = load_schema(draft.repo, name)
 
         def visit(
             node: JsonObject,
@@ -291,7 +391,7 @@ def steps_for(draft: ConfigurationDraft) -> list[ConfigurationStep]:
                 # Optional objects can be omitted, added or removed as a unit. An absent
                 # optional parent must not force its required children into the draft.
                 result.append(
-                    ConfigurationStep(name, path, node, description, required)
+                    ConfigurationStep(name, path, node, description, required, schema)
                 )
                 if not isinstance(value, dict) and not required:
                     return
@@ -305,7 +405,9 @@ def steps_for(draft: ConfigurationDraft) -> list[ConfigurationStep]:
                         description,
                     )
                 return
-            result.append(ConfigurationStep(name, path, node, description, required))
+            result.append(
+                ConfigurationStep(name, path, node, description, required, schema)
+            )
             additional = node.get("additionalProperties")
             if (
                 node.get("type") == "object"
@@ -322,3 +424,17 @@ def steps_for(draft: ConfigurationDraft) -> list[ConfigurationStep]:
                 node, (key,), document.get(key), key in schema.get("required", []), key
             )
     return result
+
+
+def step_for_problem(steps: list[ConfigurationStep], problem: str) -> int | None:
+    """Index of the step a validation message is about, or ``None`` when unclear."""
+    files = [name for name in ("project.json", "orchestration.json") if name in problem]
+    best: tuple[int, int] | None = None
+    for index, step in enumerate(steps):
+        if files and step.file not in files:
+            continue
+        dotted = ".".join(step.path)
+        if re.search(r"(?<![\w])" + re.escape(dotted) + r"(?![\w])", problem):
+            if best is None or len(dotted) > best[0]:
+                best = (len(dotted), index)
+    return None if best is None else best[1]

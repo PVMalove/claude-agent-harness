@@ -16,9 +16,10 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.configuration import read_config_file
 from typing import Literal
 from urllib.parse import urlsplit
+
+from harness.configuration import read_config_file
 
 from .process import run_tool
 from .project_files import TRACKER_HOSTED_TYPES, tracker_field_problems

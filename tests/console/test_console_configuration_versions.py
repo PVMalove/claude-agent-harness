@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 import harness.configuration as configuration
-from harness.configuration import ConfigurationStore, read_config_bundle
+import harness.configuration_store as store_module
+from harness.configuration import read_config_bundle
+from harness.configuration_store import ConfigurationStore
 from harness.health.project_tracker import resolve_project_tracker
 
 
@@ -51,7 +53,7 @@ def test_interrupted_pair_is_read_as_previous_set_and_recovers(
     root.mkdir()
     (root / "project.json").write_bytes(project("ru"))
     before = read_config_bundle(tmp_path)
-    atomic = configuration._atomic
+    atomic = store_module._atomic
 
     def interrupted(path: Path, raw: bytes | None) -> None:
         if path == root / "orchestration.json":
@@ -59,14 +61,14 @@ def test_interrupted_pair_is_read_as_previous_set_and_recovers(
             raise KeyboardInterrupt("simulated process interruption")
         atomic(path, raw)
 
-    monkeypatch.setattr(configuration, "_atomic", interrupted)
+    monkeypatch.setattr(store_module, "_atomic", interrupted)
     with pytest.raises(KeyboardInterrupt):
         ConfigurationStore(tmp_path).apply(
             {"project.json": project("en")}, expected=before
         )
     assert (root / "project.json").read_bytes() == project("en")
     assert read_config_bundle(tmp_path) == before
-    monkeypatch.setattr(configuration, "_atomic", atomic)
+    monkeypatch.setattr(store_module, "_atomic", atomic)
     ConfigurationStore(tmp_path).recover()
     assert read_config_bundle(tmp_path) == before
     assert (root / "project.json").read_bytes() == project("ru")
@@ -87,14 +89,14 @@ def test_tracker_reader_uses_previous_generation_during_interrupted_write(
     }
     (root / "project.json").write_bytes(json.dumps(old).encode())
     before = read_config_bundle(tmp_path)
-    atomic = configuration._atomic
+    atomic = store_module._atomic
 
     def interrupted(path: Path, raw: bytes | None) -> None:
         if path == root / "orchestration.json":
             raise KeyboardInterrupt
         atomic(path, raw)
 
-    monkeypatch.setattr(configuration, "_atomic", interrupted)
+    monkeypatch.setattr(store_module, "_atomic", interrupted)
     with pytest.raises(KeyboardInterrupt):
         ConfigurationStore(tmp_path).apply(
             {"project.json": project("en")}, expected=before
@@ -134,7 +136,9 @@ def test_store_rejects_symlinks_secrets_and_competing_writers(tmp_path: Path) ->
         ConfigurationStore(tmp_path).recover()
     secret = json.loads(project("ru"))
     secret["qa_gate_commands"] = ["TOKEN=hidden"]
-    with pytest.raises(ValueError, match="Секреты"):
+    with pytest.raises(
+        ValueError, match="project.json содержит значение, похожее на секрет"
+    ):
         store.save(
             {"project.json": json.dumps(secret).encode(), "orchestration.json": None}
         )
@@ -149,19 +153,19 @@ def test_recovery_refuses_external_edits(
     root = tmp_path / ".harness"
     root.mkdir()
     (root / "project.json").write_bytes(project("ru"))
-    atomic = configuration._atomic
+    atomic = store_module._atomic
 
     def interrupt(path: Path, raw: bytes | None) -> None:
         if path == root / "orchestration.json":
             raise KeyboardInterrupt
         atomic(path, raw)
 
-    monkeypatch.setattr(configuration, "_atomic", interrupt)
+    monkeypatch.setattr(store_module, "_atomic", interrupt)
     with pytest.raises(KeyboardInterrupt):
         ConfigurationStore(tmp_path).apply(
             {"project.json": project("en")}, expected=read_config_bundle(tmp_path)
         )
-    monkeypatch.setattr(configuration, "_atomic", atomic)
+    monkeypatch.setattr(store_module, "_atomic", atomic)
     external = project("ru") + b"\n"
     (root / "project.json").write_bytes(external)
     with pytest.raises(ValueError, match="внешнее изменение"):
@@ -178,15 +182,15 @@ def test_recovery_refuses_external_journal_symlink(tmp_path: Path) -> None:
     store._prepare()
     outside = tmp_path / "outside-journal.json"
     outside.write_bytes(
-        configuration._json(
+        store_module.json_bytes(
             {
                 "schema": 1,
                 "state": "prepared",
                 "id": "test",
-                "before": configuration._encode(
+                "before": store_module._encode(
                     {**before, "project.json": project("en")}
                 ),
-                "after": configuration._encode(before),
+                "after": store_module._encode(before),
             }
         )
     )
@@ -204,7 +208,7 @@ def test_commit_marker_sync_failure_rolls_back_instead_of_claiming_false_recover
     root.mkdir()
     (root / "project.json").write_bytes(project("ru"))
     before = read_config_bundle(tmp_path)
-    atomic = configuration._atomic
+    atomic = store_module._atomic
     failed = False
 
     def fail_after_replace(path: Path, raw: bytes | None) -> None:
@@ -219,7 +223,7 @@ def test_commit_marker_sync_failure_rolls_back_instead_of_claiming_false_recover
             failed = True
             raise OSError("simulated directory sync failure after replace")
 
-    monkeypatch.setattr(configuration, "_atomic", fail_after_replace)
+    monkeypatch.setattr(store_module, "_atomic", fail_after_replace)
     with pytest.raises(ValueError, match="восстановлена"):
         ConfigurationStore(tmp_path).apply(
             {"project.json": project("en")}, expected=before
@@ -234,7 +238,7 @@ def test_coordinator_pins_one_generation_for_policy_and_qa_commands(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import shutil
-    from harness.console.configuration import PACKAGE
+    from harness.configuration_schema import PACKAGE
     from harness.orchestration.core import config
 
     root = tmp_path / ".harness"
@@ -271,7 +275,7 @@ def test_health_readers_keep_previous_generation_until_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import shutil
-    from harness.console.configuration import PACKAGE
+    from harness.configuration_schema import PACKAGE
     from harness.health.checks.orchestration import _attention_policy_threshold
     from harness.health.checks.tracker import _base_branch
     from harness.health.project_files import verification_routing_health
@@ -293,7 +297,7 @@ def test_health_readers_keep_previous_generation_until_commit(
         "attention_policy": {"stale_dispatch_seconds": 30},
         "developer_verification_commands": ["make focused"],
     }
-    atomic = configuration._atomic
+    atomic = store_module._atomic
 
     def interrupt_before_commit(path: Path, raw: bytes | None) -> None:
         if (
@@ -304,7 +308,7 @@ def test_health_readers_keep_previous_generation_until_commit(
             raise KeyboardInterrupt
         atomic(path, raw)
 
-    monkeypatch.setattr(configuration, "_atomic", interrupt_before_commit)
+    monkeypatch.setattr(store_module, "_atomic", interrupt_before_commit)
     with pytest.raises(KeyboardInterrupt):
         ConfigurationStore(tmp_path).apply(
             {
@@ -317,6 +321,66 @@ def test_health_readers_keep_previous_generation_until_commit(
     assert _base_branch(tmp_path) == "main"
     assert _attention_policy_threshold(tmp_path) == 20
     assert verification_routing_health(tmp_path)
-    monkeypatch.setattr(configuration, "_atomic", atomic)
+    monkeypatch.setattr(store_module, "_atomic", atomic)
     ConfigurationStore(tmp_path).recover()
     assert read_config_bundle(tmp_path) == before
+
+
+def test_readers_accept_a_symlinked_or_relative_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "real"
+    (repo / ".harness").mkdir(parents=True)
+    (repo / ".harness/project.json").write_bytes(project("ru"))
+    link = tmp_path / "link"
+    link.symlink_to(repo, target_is_directory=True)
+    assert read_config_bundle(link)["project.json"] == project("ru")
+    assert configuration.read_config_file(link / ".harness/project.json") == project(
+        "ru"
+    )
+    monkeypatch.chdir(repo)
+    assert configuration.read_config_file(Path(".harness/project.json")) == project(
+        "ru"
+    )
+    (repo / ".harness/orchestration.json").symlink_to(repo / "outside.json")
+    with pytest.raises(ValueError, match="ссылками"):
+        read_config_bundle(link)
+
+
+def test_environment_references_are_not_secrets_and_backup_failure_names_the_file(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".harness"
+    root.mkdir()
+    document = json.loads(project("ru"))
+    document["qa_gate_commands"] = ["TOKEN=$CI_TOKEN pytest"]
+    (root / "project.json").write_bytes(json.dumps(document).encode())
+    store = ConfigurationStore(tmp_path)
+    store.apply({"project.json": project("en")}, expected=read_config_bundle(tmp_path))
+    document["qa_gate_commands"] = ["TOKEN=abc123 pytest"]
+    (root / "project.json").write_bytes(json.dumps(document).encode())
+    with pytest.raises(ValueError, match="project.json содержит значение"):
+        store.apply(
+            {"project.json": project("ru")}, expected=read_config_bundle(tmp_path)
+        )
+
+
+def test_damaged_versions_stay_listed_with_a_reason_and_incompatibility_is_explained(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".harness"
+    root.mkdir()
+    (root / "project.json").write_bytes(project("ru"))
+    store = ConfigurationStore(tmp_path)
+    good = store.save(read_config_bundle(tmp_path), "good")
+    broken = store.root / "20200101T000000Z-aaaaaaaaaaaa"
+    broken.mkdir()
+    (broken / "manifest.json").write_text("{", encoding="utf-8")
+    listed = {v.id: v for v in store.versions()}
+    assert listed[good.id].problem == ""
+    assert listed[broken.name].problem
+    invalid = json.loads(project("ru"))
+    invalid["language"] = "xx"
+    bundle = {"project.json": json.dumps(invalid).encode(), "orchestration.json": None}
+    with pytest.raises(ValueError, match="language"):
+        store._validate(bundle)

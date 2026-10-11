@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import tempfile
 from contextlib import contextmanager
@@ -11,7 +10,7 @@ from collections.abc import Iterator
 import sqlite3
 from pathlib import Path
 
-from harness.configuration import read_config_file
+from harness.configuration import read_config_json
 from harness.storage import storage_path, storage_root
 
 from .policy import Policy, parse_policy
@@ -29,9 +28,7 @@ def context(repo: Path, *, writer: bool = False) -> tuple[Path, Path, Policy]:
     if writer and canonical != repo.resolve():
         raise ValueError(f"memory writers require main checkout: {canonical}")
     try:
-        config = json.loads(
-            read_config_file(canonical / ".harness/project.json") or b"{}"
-        )
+        config = read_config_json(canonical / ".harness/project.json")
     except (OSError, ValueError):
         raise ValueError("cannot read memory project configuration") from None
     if not isinstance(config, dict):

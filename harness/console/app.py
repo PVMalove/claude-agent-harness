@@ -5,10 +5,10 @@ and only once that has already confirmed the process is running inside the relau
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from threading import Lock
 from typing import Mapping, Sequence
-import subprocess
 
 from textual.app import App
 from textual.binding import Binding
@@ -98,7 +98,13 @@ class HarnessConsoleApp(App[None]):
         self.theme = brand.THEME_NAME
         self.push_screen(DashboardScreen(self.repo, command_runner=self.command_runner))
 
-    def _tracked_runner(self, argv: Sequence[str], *, env: Mapping[str, str] | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    def _tracked_runner(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         with self._command_lock:
             self.commands_running += 1
         try:

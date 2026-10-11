@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
-from harness.configuration import read_config_file
+from harness.configuration import read_config_json
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
@@ -774,9 +774,7 @@ def _in_work_issues(data: object) -> list[tuple[int, str]] | None:
 def _base_branch(repo: Path) -> str | None:
     """`base_branch` of .harness/project.json, or None when it is absent or unreadable."""
     try:
-        data = json.loads(
-            read_config_file(repo / ".harness" / "project.json") or b"{}"
-        )
+        data = read_config_json(repo / ".harness" / "project.json")
     except (OSError, ValueError):
         return None
     value = data.get("base_branch") if isinstance(data, dict) else None

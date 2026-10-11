@@ -12,7 +12,7 @@ import pytest
 from textual.app import App
 from textual.widgets import Button, RadioButton, RadioSet, Static, TextArea
 
-from harness.console.configuration import PACKAGE
+from harness.configuration_schema import PACKAGE
 from harness.console.configuration import ConfigurationDraft
 from harness.console.configuration_steps import ConfigurationStep
 from harness.console.advisor import Advice, AdvisorUnavailable
@@ -262,5 +262,169 @@ def test_dashboard_refreshes_after_applied_configuration_is_closed(
                 app.screen.query_one("#dashboard-summary", Static).content
             )
             assert collections == [False, False]
+
+    asyncio.run(scenario())
+
+
+def _array_choices(screen: object) -> list[object]:
+    from textual.widgets import Checkbox
+
+    return [
+        box
+        for box in screen.query(Checkbox)  # type: ignore[attr-defined]
+        if (box.id or "").startswith("array-choice-")
+    ]
+
+
+def _write_project(repo: Path, **extra: object) -> None:
+    path = repo / ".harness/project.json"
+    data = json.loads(path.read_bytes())
+    data.update(extra)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_back_keeps_answers_and_missing_capability_is_explained(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-orchestration")
+            await pilot.pause()
+            error = str(app.screen.query_one("#config-error", Static).render())
+            assert "backend-orchestration" in error
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            app.screen.query_one("#choice-1", RadioButton).value = True
+            await pilot.click("#next-step")
+            await pilot.pause()
+            await pilot.click("#previous-step")
+            await pilot.pause()
+            assert app.screen.query_one("#field-value", TextArea).text == '"en"'
+
+    asyncio.run(scenario())
+
+
+def test_choices_beyond_four_are_paged_and_the_recommendation_is_marked(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+    _write_project(tmp_path, memory_policy={"source_types": ["adr"]})
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            screen = app.screen
+            steps = screen.steps  # type: ignore[attr-defined]
+            screen.index = next(  # type: ignore[attr-defined]
+                i
+                for i, s in enumerate(steps)
+                if s.path == ("memory_policy", "source_types")
+            )
+            await screen.recompose()
+            await pilot.pause()
+            assert len(_array_choices(screen)) == 4
+            await pilot.click("#choice-next-page")
+            await pilot.pause()
+            assert len(_array_choices(screen)) == 2
+            screen.index = 0  # type: ignore[attr-defined]
+            screen.choice_page = 0  # type: ignore[attr-defined]
+            await screen.recompose()
+            await pilot.pause()
+            labels = [str(b.label) for b in screen.query(RadioButton)]
+            assert any(label.startswith("★ ") for label in labels)
+
+    asyncio.run(scenario())
+
+
+def test_external_change_is_reloaded_without_losing_the_draft(tmp_path: Path) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            app.screen.query_one("#choice-1", RadioButton).value = True
+            await pilot.click("#review-config")
+            await pilot.pause()
+            _write_project(tmp_path, base_branch="release")
+            await pilot.click("#apply-config")
+            await pilot.pause()
+            await pilot.click("#confirm")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert (
+                json.loads((tmp_path / ".harness/project.json").read_bytes())[
+                    "language"
+                ]
+                == "ru"
+            )
+            assert app.screen.query_one("#apply-config", Button).disabled
+            await pilot.click("#reload-external")
+            await pilot.pause()
+            await pilot.click("#apply-config")
+            await pilot.pause()
+            await pilot.click("#confirm")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            active = json.loads((tmp_path / ".harness/project.json").read_bytes())
+            assert (active["language"], active["base_branch"]) == ("en", "release")
+
+    asyncio.run(scenario())
+
+
+def test_current_set_can_be_saved_as_a_version_from_the_menu(tmp_path: Path) -> None:
+    from harness.configuration_store import ConfigurationStore
+
+    before = installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#save-current-version")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+    asyncio.run(scenario())
+    assert len(ConfigurationStore(tmp_path).versions()) == 1
+    assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+
+def test_errors_link_to_steps_and_cli_status_is_shown_without_a_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.console.screens import configuration
+
+    installed_project(tmp_path)
+    monkeypatch.setattr(
+        configuration,
+        "availability",
+        lambda provider, cancel: "Готов к запросу"
+        if provider == "codex"
+        else "CLI не найден.",
+    )
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-project")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            buttons = list(
+                app.screen.query_one("#advisor-provider", RadioSet).query(RadioButton)
+            )
+            assert not buttons[1].disabled and buttons[2].disabled
+            assert "CLI не найден" in str(buttons[2].label)
+            await pilot.click("#review-config")
+            await pilot.pause()
+            app.screen.draft.set_value("project.json", ("language",), "xx")  # type: ignore[attr-defined]
+            await app.screen.recompose()
+            await pilot.pause()
+            assert len(app.screen.query("#problem-jump")) == 1
 
     asyncio.run(scenario())

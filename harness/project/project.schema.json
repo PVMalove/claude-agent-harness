@@ -31,6 +31,7 @@
     "branch_pattern": {
       "type": "string",
       "minLength": 1,
+      "format": "regex",
       "description": "Regex a new branch name must match, enforced by check-branch-name.sh/check-worktree-branch-name.sh. If this file is missing entirely, the hooks fall back to their own built-in default (^feature/issue-[0-9]+-.+) instead of blocking every branch name - that fallback does not apply if this field is merely empty."
     },
     "qa_gate_commands": {

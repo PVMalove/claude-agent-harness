@@ -11,13 +11,30 @@ import math
 import re
 from pathlib import Path
 
+from harness.configuration import parse_object
 from harness.json_types import JsonObject
+
+PACKAGE = Path(__file__).resolve().parent  # holds the shipped schemas and templates
 
 
 def _same(left: object, right: object) -> bool:
     return json.dumps(left, sort_keys=True, allow_nan=False) == json.dumps(
         right, sort_keys=True, allow_nan=False
     )
+
+
+def resolve_ref(schema: JsonObject, reference: object) -> JsonObject:
+    """Follow a local ``#/...`` reference; other references are unsupported."""
+    if not isinstance(reference, str) or not reference.startswith("#/"):
+        raise ValueError("Поддерживаются только локальные ссылки схемы")
+    target: object = schema
+    for part in reference[2:].split("/"):
+        if not isinstance(target, dict):
+            raise ValueError("Повреждённая ссылка схемы")
+        target = target[part.replace("~1", "/").replace("~0", "~")]
+    if not isinstance(target, dict):
+        raise ValueError("Повреждённая ссылка схемы")
+    return target
 
 
 def _check(
@@ -32,15 +49,7 @@ def _check(
     if not isinstance(node, dict):
         raise ValueError("Некорректная схема конфигурации")
     if "$ref" in node:
-        reference = node["$ref"]
-        if not isinstance(reference, str) or not reference.startswith("#/"):
-            raise ValueError("Поддерживаются только локальные ссылки схемы")
-        target: object = schema
-        for part in reference[2:].split("/"):
-            if not isinstance(target, dict):
-                raise ValueError("Повреждённая ссылка схемы")
-            target = target[part.replace("~1", "/").replace("~0", "~")]
-        return _check(value, target, schema, path, depth + 1)
+        return _check(value, resolve_ref(schema, node["$ref"]), schema, path, depth + 1)
     problems: list[str] = []
 
     def check(item: object, child: object, location: str = path) -> list[str]:
@@ -124,23 +133,37 @@ def _check(
     return problems
 
 
-def schema_problems(repo: Path, name: str, document: JsonObject) -> list[str]:
+def schema_file(repo: Path, name: str) -> Path:
+    """Schema of the target's installed capability, else the one shipped with Harness."""
     relative = (
         "project.schema.json"
         if name == "project.json"
         else "orchestration/orchestration.schema.json"
     )
-    path = repo / ".harness" / relative
-    if not path.is_file():
-        path = Path(__file__).parent / (
-            "project/" + relative if name == "project.json" else relative
-        )
-    if not path.is_file():
+    installed = repo / ".harness" / relative
+    if installed.is_file():
+        return installed
+    shipped = PACKAGE / ("project/" + relative if name == "project.json" else relative)
+    if not shipped.is_file():
         raise ValueError("Схема отсутствует; обновите capability Harness")
+    return shipped
+
+
+def load_schema(repo: Path, name: str) -> JsonObject:
+    return parse_object(schema_file(repo, name).read_bytes(), "schema")
+
+
+def value_problems(value: object, node: JsonObject, schema: JsonObject) -> list[str]:
+    """Problems of one value against one node of ``schema``, labelled ``значение``."""
     try:
-        schema = json.loads(path.read_bytes())
-        if not isinstance(schema, dict):
-            raise ValueError("Схема должна быть объектом")
+        return _check(value, node, schema, "значение", 0)
+    except (KeyError, TypeError, RecursionError):
+        raise ValueError("Повреждённая схема конфигурации; обновите Harness") from None
+
+
+def schema_problems(repo: Path, name: str, document: JsonObject) -> list[str]:
+    schema = load_schema(repo, name)
+    try:
         return _check(document, schema, schema, name, 0)
     except (KeyError, TypeError, RecursionError):
         raise ValueError("Повреждённая схема конфигурации; обновите Harness") from None

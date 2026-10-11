@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 from pathlib import Path
 
 from textual.app import ComposeResult
@@ -11,8 +10,10 @@ from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Select, Static
 
-from harness.configuration import Bundle, ConfigurationStore, read_config_bundle
+from harness.configuration import Bundle, read_config_bundle
+from harness.configuration_store import ConfigurationStore, ConfigurationVersion
 from .commands import call_from_worker
+from ..configuration import bundle_diff
 from .configuration import ConfirmConfiguration
 
 
@@ -32,6 +33,7 @@ class ConfigurationVersionsScreen(Screen[None]):
         self.expected: Bundle = {}
         self.candidate: Bundle | None = None
         self.busy = False
+        self.versions: dict[str, ConfigurationVersion] = {}
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -40,14 +42,9 @@ class ConfigurationVersionsScreen(Screen[None]):
                 "Локальные версии конфигурации\nЦель: " + str(self.repo), markup=False
             )
             versions = self.store.versions()
+            self.versions = {v.id: v for v in versions}
             yield Select(
-                [
-                    (
-                        f"{v.created_at} · {v.description or v.id} · Harness {v.package_version} · {', '.join(v.files) or 'без файлов'}",
-                        v.id,
-                    )
-                    for v in versions
-                ],
+                [(_label(v), v.id) for v in versions],
                 value=versions[0].id if versions else Select.BLANK,
                 id="configuration-version",
             )
@@ -73,28 +70,28 @@ class ConfigurationVersionsScreen(Screen[None]):
         try:
             self.expected = read_config_bundle(self.repo)
             self.candidate = self.store.load(self.selected)
-            lines: list[str] = []
-            for name, raw in self.candidate.items():
-                before = (self.expected[name] or b"").decode().splitlines(keepends=True)
-                after = (raw or b"").decode().splitlines(keepends=True)
-                lines.extend(
-                    difflib.unified_diff(
-                        before,
-                        after,
-                        fromfile="active/" + name,
-                        tofile="version/" + name,
-                    )
-                )
-                if raw is None and self.expected[name] is not None:
-                    lines.append("Удалить " + name + "\n")
+            diff = bundle_diff(self.expected, self.candidate, "active", "version")
             self.query_one("#version-diff", Static).update(
-                "".join(lines) or "Изменений нет"
+                (diff or "Изменений нет") + self._compatibility_note(self.selected)
             )
             self.query_one("#restore-version", Button).disabled = False
         except (OSError, ValueError) as exc:
             self.candidate = None
-            self.query_one("#version-diff", Static).update(str(exc))
+            self.query_one("#version-diff", Static).update(
+                f"{exc}\nАктивная конфигурация не изменена. Версию нельзя применить как есть: "
+                "примените другую версию или исправьте поля в мастере и сохраните новый набор."
+            )
             self.query_one("#restore-version", Button).disabled = True
+
+    def _compatibility_note(self, identifier: str) -> str:
+        made = self.versions[identifier].package_version
+        installed = self.store.installed_version()
+        if "unknown" in (made, installed) or made == installed:
+            return ""
+        return (
+            f"\nВерсия создана для Harness {made}, в проекте установлен {installed}: "
+            "проверка контракта пройдена, но сверьте различия перед откатом."
+        )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-versions":
@@ -146,3 +143,12 @@ class ConfigurationVersionsScreen(Screen[None]):
 
     def on_unmount(self) -> None:
         self.workers.cancel_node(self)
+
+
+def _label(version: ConfigurationVersion) -> str:
+    if version.problem:
+        return f"⚠ {version.id} · повреждена: {version.problem}"
+    return (
+        f"{version.created_at} · {version.description or version.id} · "
+        f"Harness {version.package_version} · {', '.join(version.files) or 'без файлов'}"
+    )

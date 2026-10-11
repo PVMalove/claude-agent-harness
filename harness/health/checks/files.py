@@ -175,7 +175,7 @@ def check_project_json(context: HealthContext) -> CheckResult:
                 "и повторите harness health"
             ),
         )
-    if read_config_file(context.repo / ".harness" / "project.json") is not None:
+    if (context.repo / ".harness" / "project.json").is_file():
         return CheckResult(
             id="files.project_json",
             group="files",
@@ -446,10 +446,10 @@ def check_verification_routing(context: HealthContext) -> CheckResult:
     config_path = context.repo / ORCHESTRATION_CONFIG_REL
     try:
         raw = read_config_file(config_path)
-        if raw is None:
-            raise ValueError("absent config")
-        config = json.loads(raw)
+        config = json.loads(raw) if raw is not None else None
     except JSON_READ_ERRORS:
+        raw = None
+    if raw is None:
         return CheckResult(
             id="files.verification_routing",
             group="files",

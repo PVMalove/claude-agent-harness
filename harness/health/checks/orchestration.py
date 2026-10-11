@@ -23,8 +23,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from harness.configuration import read_config_file
-
+from harness.configuration import read_config_json
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
 from ..context import HealthContext
@@ -219,13 +218,12 @@ def check_unfinished_batches(context: HealthContext) -> CheckResult:
 def _attention_policy_threshold(repo: Path) -> int:
     """Resolve `attention_policy.stale_dispatch_seconds` the same way the coordinator does:
     a positive integer override in `.harness/orchestration.json`, else the built-in default."""
-    import json
 
     from harness.orchestration.core.constants import DEFAULT_ATTENTION_POLICY
 
     config_path = repo / ".harness" / "orchestration.json"
     try:
-        config = json.loads(read_config_file(config_path) or b"{}")
+        config = read_config_json(config_path)
     except (OSError, ValueError):
         config = None
     attention = config.get("attention_policy") if isinstance(config, dict) else None

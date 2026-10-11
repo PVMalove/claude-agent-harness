@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 import pytest
 
-from harness.console.configuration import ConfigurationDraft, PACKAGE, parse_object
+from harness.configuration import parse_object
+from harness.configuration_schema import PACKAGE
+from harness.console.configuration import ConfigurationDraft
 from harness.console.configuration_steps import steps_for
 
 
@@ -79,3 +81,31 @@ def test_nested_nonfinite_values_are_rejected_before_draft_rendering() -> None:
         step.parse('{"threshold": NaN}')
     with pytest.raises(ValueError, match="JSON"):
         parse_object(b'{"threshold": NaN}', "project.json")
+
+
+def test_recommendations_use_project_facts_and_options_describe_limits(
+    tmp_path: Path,
+) -> None:
+    from harness.console.configuration_steps import step_for_problem
+    from harness.console.project_facts import project_facts
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "Makefile").write_text("verify:\n\t@true\n", encoding="utf-8")
+    draft = ConfigurationDraft(
+        tmp_path,
+        {"project.json": {"language": "ru", "qa_gate_commands": []}},
+        {"project.json": None},
+    )
+    assert project_facts(tmp_path).qa_commands == ("make verify",)
+    steps = steps_for(draft)
+    qa = next(s for s in steps if s.path == ("qa_gate_commands",))
+    value, why = qa.recommendation(draft)
+    assert value == ["make verify"] and "pyproject.toml" in why
+    assert qa.recommended(draft) == value
+    effect = steps[0].effect("auto")
+    assert "Ограничение:" in effect and "Когда выбирать:" in effect
+    language = next(s for s in steps if s.path == ("language",))
+    assert step_for_problem(
+        steps, "project.json.language: значение вне допустимых"
+    ) == (steps.index(language))
+    assert step_for_problem(steps, "что-то без имени поля") is None

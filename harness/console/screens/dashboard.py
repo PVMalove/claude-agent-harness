@@ -19,7 +19,16 @@ from ..data import DashboardData
 from ..runner import CommandRunner, capturing_runner
 from .commands import call_from_worker
 
-SECTIONS = ("Diagnostics", "Harness", "Orchestration", "Reports", "Repo Map", "Настройка конфигурации", "Help")
+CONFIGURATION_SECTION = "Настройка конфигурации"
+SECTIONS = (
+    "Diagnostics",
+    "Harness",
+    "Orchestration",
+    "Reports",
+    "Repo Map",
+    CONFIGURATION_SECTION,
+    "Help",
+)
 
 
 class _CollectDashboard(Protocol):
@@ -119,7 +128,7 @@ class DashboardScreen(Screen[None]):
             "Orchestration": self._orchestration,
             "Reports": self._reports,
             "Repo Map": self._repo_map,
-            "Настройка конфигурации": self._configuration,
+            CONFIGURATION_SECTION: self._configuration,
             "Help": self._help,
         }
 
@@ -168,17 +177,21 @@ class DashboardScreen(Screen[None]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "open-project":
-            if getattr(self.app, "commands_running", 0):
-                self.notify("Дождитесь окончания команды", severity="warning")
-                return
             from .project_setup import ProjectSetupScreen
             from ..app import HarnessConsoleApp
+
+            if isinstance(self.app, HarnessConsoleApp) and self.app.commands_running:
+                self.notify("Дождитесь окончания команды", severity="warning")
+                return
 
             def selected(repo: Path | None) -> None:
                 if repo is not None and isinstance(self.app, HarnessConsoleApp):
                     self.app.activate_project(repo)
 
-            self.app.push_screen(ProjectSetupScreen(self.repo, command_runner=self._command_runner), selected)
+            self.app.push_screen(
+                ProjectSetupScreen(self.repo, command_runner=self._command_runner),
+                selected,
+            )
             return
         if event.button.id not in ("dashboard-offline", "dashboard-online"):
             return
@@ -206,7 +219,7 @@ class DashboardScreen(Screen[None]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         open_screen = self._sections.get(event.item.name or "")
         if open_screen is not None:
-            if event.item.name == "Настройка конфигурации":
+            if event.item.name == CONFIGURATION_SECTION:
                 self.app.push_screen(
                     open_screen(), lambda _result: self._refresh_dashboard()
                 )
@@ -240,6 +253,7 @@ class DashboardScreen(Screen[None]):
 
     def _configuration(self) -> Screen[None]:
         from .configuration import ConfigurationScreen
+
         return ConfigurationScreen(self.repo)
 
     def _help(self) -> Screen[None]:
