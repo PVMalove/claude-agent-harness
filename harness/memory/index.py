@@ -11,6 +11,7 @@ from collections.abc import Iterator
 import sqlite3
 from pathlib import Path
 
+from harness.configuration import read_config_file
 from harness.storage import storage_path, storage_root
 
 from .policy import Policy, parse_policy
@@ -29,10 +30,8 @@ def context(repo: Path, *, writer: bool = False) -> tuple[Path, Path, Policy]:
         raise ValueError(f"memory writers require main checkout: {canonical}")
     try:
         config = json.loads(
-            (canonical / ".harness/project.json").read_text(encoding="utf-8")
+            read_config_file(canonical / ".harness/project.json") or b"{}"
         )
-    except FileNotFoundError:
-        config = {}
     except (OSError, ValueError):
         raise ValueError("cannot read memory project configuration") from None
     if not isinstance(config, dict):

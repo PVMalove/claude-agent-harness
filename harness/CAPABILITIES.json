@@ -68,6 +68,8 @@
       "reporting",
       "gate_runner",
       "cleanup.py",
+      "configuration.py",
+      "configuration_schema.py",
       "storage.py",
       "repo_map",
       "docs/project-memory.md",

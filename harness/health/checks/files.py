@@ -12,6 +12,8 @@ import os
 import re
 from pathlib import Path
 
+from harness.configuration import read_config_file
+
 from harness.storage import sandboxes_health, validate_sandboxes
 
 from ..context import HealthContext
@@ -173,7 +175,7 @@ def check_project_json(context: HealthContext) -> CheckResult:
                 "и повторите harness health"
             ),
         )
-    if (context.repo / ".harness" / "project.json").is_file():
+    if read_config_file(context.repo / ".harness" / "project.json") is not None:
         return CheckResult(
             id="files.project_json",
             group="files",
@@ -443,7 +445,10 @@ def check_verification_routing(context: HealthContext) -> CheckResult:
         )
     config_path = context.repo / ORCHESTRATION_CONFIG_REL
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = read_config_file(config_path)
+        if raw is None:
+            raise ValueError("absent config")
+        config = json.loads(raw)
     except JSON_READ_ERRORS:
         return CheckResult(
             id="files.verification_routing",

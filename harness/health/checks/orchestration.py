@@ -23,6 +23,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from harness.configuration import read_config_file
+
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
 from ..context import HealthContext
@@ -223,7 +225,7 @@ def _attention_policy_threshold(repo: Path) -> int:
 
     config_path = repo / ".harness" / "orchestration.json"
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(read_config_file(config_path) or b"{}")
     except (OSError, ValueError):
         config = None
     attention = config.get("attention_policy") if isinstance(config, dict) else None

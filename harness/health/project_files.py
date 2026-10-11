@@ -15,6 +15,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+from harness.configuration import read_config_file
 from typing import NoReturn
 from urllib.parse import urlsplit
 
@@ -578,13 +580,19 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
     только для редактора, в рантайме нет зависимости `jsonschema`, поэтому соответствие поддерживается синхронно.
     """
     path = repo / ".harness/project.json"
-    if not path.is_file():
-        return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_config_file(path)
+        if raw is None:
+            return
+        data = json.loads(raw)
     except JSON_READ_ERRORS as exc:
         problems.append(f".harness/project.json is not valid JSON: {exc}")
         return
+    validate_project_data(data, problems)
+
+
+def validate_project_data(data: object, problems: list[str]) -> None:
+    """Validate an in-memory draft using the same contract as the health check."""
     if not isinstance(data, dict):
         problems.append(".harness/project.json must contain a JSON object")
         return
@@ -701,7 +709,7 @@ def verification_routing_health(repo: Path) -> list[str]:
     """
     config_path = repo / ORCHESTRATION_CONFIG_REL
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(read_config_file(config_path) or b"{}")
     except JSON_READ_ERRORS:
         return []
     if (

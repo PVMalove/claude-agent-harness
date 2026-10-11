@@ -599,6 +599,7 @@ PVMALOVE_CAPABILITY = "pvmalove-suite"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
+config-versions/
 """
 
 

@@ -37,6 +37,8 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
+from harness.configuration import read_config_file
+
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 
 from ..context import HealthContext
@@ -773,7 +775,7 @@ def _base_branch(repo: Path) -> str | None:
     """`base_branch` of .harness/project.json, or None when it is absent or unreadable."""
     try:
         data = json.loads(
-            (repo / ".harness" / "project.json").read_text(encoding="utf-8")
+            read_config_file(repo / ".harness" / "project.json") or b"{}"
         )
     except (OSError, ValueError):
         return None

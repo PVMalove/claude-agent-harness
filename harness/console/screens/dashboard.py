@@ -19,7 +19,7 @@ from ..data import DashboardData
 from ..runner import CommandRunner, capturing_runner
 from .commands import call_from_worker
 
-SECTIONS = ("Diagnostics", "Harness", "Orchestration", "Reports", "Repo Map", "Help")
+SECTIONS = ("Diagnostics", "Harness", "Orchestration", "Reports", "Repo Map", "Настройка конфигурации", "Help")
 
 
 class _CollectDashboard(Protocol):
@@ -119,6 +119,7 @@ class DashboardScreen(Screen[None]):
             "Orchestration": self._orchestration,
             "Reports": self._reports,
             "Repo Map": self._repo_map,
+            "Настройка конфигурации": self._configuration,
             "Help": self._help,
         }
 
@@ -152,6 +153,7 @@ class DashboardScreen(Screen[None]):
                     classes="action-cli",
                     markup=False,
                 )
+        yield Button("Открыть / подключить проект", id="open-project")
         menu = ListView(
             *(ListItem(Static(name), name=name) for name in SECTIONS),
             id="section-menu",
@@ -162,12 +164,28 @@ class DashboardScreen(Screen[None]):
 
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
-        self.workers.cancel_all()
+        self.workers.cancel_node(self)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "open-project":
+            if getattr(self.app, "commands_running", 0):
+                self.notify("Дождитесь окончания команды", severity="warning")
+                return
+            from .project_setup import ProjectSetupScreen
+            from ..app import HarnessConsoleApp
+
+            def selected(repo: Path | None) -> None:
+                if repo is not None and isinstance(self.app, HarnessConsoleApp):
+                    self.app.activate_project(repo)
+
+            self.app.push_screen(ProjectSetupScreen(self.repo, command_runner=self._command_runner), selected)
+            return
         if event.button.id not in ("dashboard-offline", "dashboard-online"):
             return
         online = event.button.id == "dashboard-online"
+        self._refresh_dashboard(online=online)
+
+    def _refresh_dashboard(self, *, online: bool = False) -> None:
         summary = self.query_one("#dashboard-summary", Static)
         summary.update(
             "онлайн-проверки выполняются…" if online else "офлайн-проверки выполняются…"
@@ -188,7 +206,12 @@ class DashboardScreen(Screen[None]):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         open_screen = self._sections.get(event.item.name or "")
         if open_screen is not None:
-            self.app.push_screen(open_screen())
+            if event.item.name == "Настройка конфигурации":
+                self.app.push_screen(
+                    open_screen(), lambda _result: self._refresh_dashboard()
+                )
+            else:
+                self.app.push_screen(open_screen())
 
     def _diagnostics(self) -> Screen[None]:
         from .diagnostics import DiagnosticsScreen
@@ -214,6 +237,10 @@ class DashboardScreen(Screen[None]):
         from .repo_map import RepoMapScreen
 
         return RepoMapScreen(self.repo, command_runner=self._command_runner)
+
+    def _configuration(self) -> Screen[None]:
+        from .configuration import ConfigurationScreen
+        return ConfigurationScreen(self.repo)
 
     def _help(self) -> Screen[None]:
         from .help import HelpScreen
