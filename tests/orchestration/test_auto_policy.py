@@ -147,6 +147,16 @@ class AutoConfigGateTests(unittest.TestCase):
         )
         return repo
 
+    def test_auto_retry_min_severity_defaults_to_info_and_batch_can_override(self) -> None:
+        self.assertEqual(config._auto_retry_min_severity({}), "info")
+        self.assertEqual(
+            config._auto_retry_min_severity(
+                {"auto_retry_min_severity": "info"},
+                {"auto_retry_min_severity": "warning"},
+            ),
+            "warning",
+        )
+
     def test_approval_policy_refuses_auto_under_a_tty_gate(self) -> None:
         with self.assertRaises(CoordinatorError) as refused:
             config._approval_policy(
@@ -515,6 +525,7 @@ class AutoDecisionTableTests(unittest.TestCase):
         scope: list[str] | None = None,
         bypass: bool = False,
         pressure: bool = False,
+        auto_retry_min_severity: str = "info",
     ) -> auto_policy.Choice:
         return auto_policy.category(
             stage,
@@ -524,6 +535,7 @@ class AutoDecisionTableTests(unittest.TestCase):
             block_bypass=bypass,
             candidate_moved=False,
             pressure_recorded=pressure,
+            auto_retry_min_severity=auto_retry_min_severity,
         )
 
     def test_a_clean_report_with_risks_is_accepted_and_its_risks_recorded(self) -> None:
@@ -555,6 +567,99 @@ class AutoDecisionTableTests(unittest.TestCase):
             "code-review", _clean("code-review", review=_axes("warning", [finding]))
         )
         self.assertEqual((choice.decision, choice.reason_category), ("retry", None))
+
+    def test_info_review_findings_are_accepted_when_threshold_is_warning(self) -> None:
+        findings = [
+            {"severity": "info", "summary": f"context {n}", "evidence": "reviewed"}
+            for n in range(4)
+        ]
+        review = {
+            "recommendation": "accept",
+            "standards": {
+                "severity": "clean",
+                "findings": findings[:2],
+                "risks": "none",
+                "blockers": "none",
+            },
+            "spec": {
+                "severity": "clean",
+                "findings": findings[2:],
+                "risks": "none",
+                "blockers": "none",
+            },
+        }
+        choice = self._category(
+            "code-review",
+            _clean("code-review", review=review),
+            auto_retry_min_severity="warning",
+        )
+        self.assertEqual(choice.decision, "accept")
+
+    def test_warning_review_finding_retries_at_warning_threshold(self) -> None:
+        finding = {"severity": "warning", "summary": "risk", "evidence": "reviewed"}
+        review = {
+            "recommendation": "accept",
+            "standards": {
+                "severity": "warning",
+                "findings": [finding],
+                "risks": "none",
+                "blockers": "none",
+            },
+            "spec": {
+                "severity": "clean",
+                "findings": [],
+                "risks": "none",
+                "blockers": "none",
+            },
+        }
+        choice = self._category(
+            "code-review",
+            _clean("code-review", review=review),
+            auto_retry_min_severity="warning",
+        )
+        self.assertEqual(choice.decision, "retry")
+
+    def test_default_info_threshold_keeps_retrying_info_findings(self) -> None:
+        finding = {"severity": "info", "summary": "context", "evidence": "reviewed"}
+        review = {
+            "standards": {
+                "severity": "clean",
+                "findings": [finding],
+                "risks": "none",
+                "blockers": "none",
+            },
+            "spec": {
+                "severity": "clean",
+                "findings": [],
+                "risks": "none",
+                "blockers": "none",
+            },
+        }
+        choice = self._category("code-review", _clean("code-review", review=review))
+        self.assertEqual(choice.decision, "retry")
+
+    def test_explicit_reviewer_retry_is_actionable_at_every_threshold(self) -> None:
+        review = {"recommendation": "retry", **_axes("clean", [])}
+        report = _clean("code-review", review=review)
+        for threshold in config.AUTO_RETRY_SEVERITIES:
+            with self.subTest(threshold=threshold):
+                choice = self._category(
+                    "code-review", report, auto_retry_min_severity=threshold
+                )
+                self.assertEqual(choice.decision, "retry")
+                evidence = decisions._retry_evidence(report, False)
+                assert evidence is not None
+                self.assertEqual(evidence[0], "code")
+
+    def test_warning_axis_prevents_plain_accept_even_above_warning_threshold(self) -> None:
+        review = {"recommendation": "accept", **_axes("warning", [])}
+        for threshold in ("error", "blocker"):
+            with self.subTest(threshold=threshold):
+                choice = self._category(
+                    "code-review", _clean("code-review", review=review),
+                    auto_retry_min_severity=threshold,
+                )
+                self.assertEqual(choice.decision, "retry")
 
     def test_a_block_bypass_reruns_a_read_only_stage_and_retries_a_writer(self) -> None:
         for stage, expected in (

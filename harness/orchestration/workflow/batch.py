@@ -429,6 +429,12 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         ),
         "dependencies": dependencies,
         "approval_policy": _approval_policy(config),
+        "auto_retry_min_severity": core_config._auto_retry_min_severity(
+            config,
+            {"auto_retry_min_severity": getattr(args, "auto_retry_min_severity", None)}
+            if getattr(args, "auto_retry_min_severity", None) is not None
+            else None,
+        ),
         "communication_policy": _communication_policy(config),
         "scope_preflight": scope_preflight,
         "harness_runtime_sha256": _harness_runtime_sha256(repo),

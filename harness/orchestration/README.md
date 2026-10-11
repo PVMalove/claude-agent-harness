@@ -105,10 +105,11 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
 | `approval_policy` | `manual_all` \| `milestone` \| `low_risk` \| `auto` | `manual_all` | Какие report политика принимает без человека (см. ниже). |
+| `auto_retry_min_severity` | `info` \| `warning` \| `error` \| `blocker` | `info` | Порог review findings для автоматического retry. Фиксируется при создании batch; CLI `batch create --auto-retry-min-severity` может переопределить проектное значение. `info` сохраняет прежнее поведение. |
 | `low_risk_paths` | список glob | — | Пути в форме `dir/**`, `**` или точного файла (без `./`, `//`, `..`; сравнение по сегментам). При `low_risk` политика автоматически принимает чистые report внутри этих путей, если весь `--allowed-path` batch лежит в них. Без списка ничто не считается низкорисковым. |
 | `human_approval_gate` | `trusted` \| `tty` | `trusted` | `trusted` — approval через `--approved-by/--approved-at`; `tty` — только интерактивное подтверждение в терминале. |
 | `approval_ttl_seconds` | целое ≥ 1 | без срока | Срок жизни `--approved-at`. Coordinator отклоняет более старое approval и approval, датированное будущим. |
-| `worker_attestation_required` | логическое | `false` | Воркер до работы подтверждает фактический worktree, ветку и SHA. Пример включает `true`. |
+| `worker_attestation_required` | логическое | `false` | Включает проверку фактического worktree и SHA для остальных ролей. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review startup-attestation обязательна при любом значении. Пример включает `true` для всех ролей. |
 | `communication_policy` | объект | `en` / `ru` | `agent_to_agent_language` всегда `en`, `coordinator_report_language` всегда `ru`. |
 | `tool_policy` | объект | по режиму роли | Рабочий набор инструментов роли в brief (см. ниже). |
 | `access_policy` | объект | — | Доступ ролей и операций `qa`/`git`/`publish` к сети и файловой системе (см. «Доступ QA, Git и publish»). Opt-in: любой `access_policy` блокирует `dispatch send`, пока проект не подключил реализацию `extensions.runtime_access`. Поэтому пример его не содержит. |

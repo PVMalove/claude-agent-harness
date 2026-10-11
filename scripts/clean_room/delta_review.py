@@ -269,7 +269,7 @@ def run(ctx: SimpleNamespace) -> None:
         "--adapter",
         str(fake_adapter),
         "--checkout",
-        str(orchestration_project),
+        str(shared_worktree),
     )
     if first_review_sent.returncode != 0:
         sys.exit(
@@ -507,7 +507,7 @@ def run(ctx: SimpleNamespace) -> None:
         "--adapter",
         str(fake_adapter),
         "--checkout",
-        str(orchestration_project),
+        str(shared_worktree),
     )
     if second_review_sent.returncode != 0:
         sys.exit(

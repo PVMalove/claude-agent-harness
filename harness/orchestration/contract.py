@@ -68,6 +68,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "extensions",
     "access_policy",
     "infrastructure_retry_policy",
+    "auto_retry_min_severity",
 }
 # The working set a brief records for a role when the project states no `tool_policy`. It is the
 # role's own set, not a deny-list: global runtime tools stay available whatever a brief records.
@@ -1447,4 +1448,14 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             booleans={"require_estimates"},
         )
     )
+    auto_retry_severity = config.get("auto_retry_min_severity")
+    if auto_retry_severity is not None and auto_retry_severity not in (
+        "info",
+        "warning",
+        "error",
+        "blocker",
+    ):
+        problems.append(
+            "orchestration auto_retry_min_severity must be info, warning, error or blocker"
+        )
     return problems

@@ -509,7 +509,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
                 state_dir=str(self.state_dir),
                 dispatch=dispatch_id,
                 model="sonnet",
-                worktree=None,
+                worktree=str(self.tmp / "worktree"),
             )
         )
 
@@ -1767,7 +1767,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "state_dir": str(self.state_dir),
             "dispatch": dispatch_id,
             "model": "sonnet",
-            "worktree": None,
+            "worktree": str(self.tmp / "worktree"),
         }
         values.update(overrides)
         return coordinator.self_report_dispatch(_ns(**values))
@@ -1813,7 +1813,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         path.write_text(json.dumps(record), encoding="utf-8")
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            self._self_report(dispatch["dispatch_id"], model=dispatch["resolved_model"])
+            self._self_report(dispatch["dispatch_id"], model=dispatch["resolved_model"], worktree=None)
 
         self.assertEqual(
             caught.exception.message,
@@ -2170,7 +2170,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(launches, [brief["dispatch_id"]])
 
     def _start(self, dispatch_id: str, *, checkout: Path | None = None) -> None:
-        coordinator.send_dispatch(
+        launched = coordinator.send_dispatch(
             self._args(
                 dispatch=dispatch_id,
                 adapter=None,
@@ -2180,7 +2180,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         coordinator.self_report_dispatch(
             self._args(
-                dispatch=dispatch_id, model="sonnet", worktree=str(self.worktree)
+                dispatch=dispatch_id, model="sonnet", worktree=launched["worker_worktree"]
             )
         )
 
@@ -7168,7 +7168,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with self.assertRaises(coordinator.CoordinatorError):
             coordinator.submit_report(self._args(file=str(path)))
         coordinator.self_report_dispatch(
-            self._args(dispatch=brief["dispatch_id"], model="sonnet", worktree=None)
+            self._args(dispatch=brief["dispatch_id"], model="sonnet", worktree=str(self.worktree))
         )
         self.assertEqual(
             self._submit(
@@ -16159,7 +16159,8 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
         self._reinstall_runtime()
         self._ok("dispatch", "send", "--dispatch", dispatch_id)
         self._ok(
-            "dispatch", "self-report", "--dispatch", dispatch_id, "--model", "sonnet"
+            "dispatch", "self-report", "--dispatch", dispatch_id, "--model", "sonnet",
+            "--worktree", cast(str, brief["worktree"]),
         )
         report = workspace._prepare_agent_inbox(self.repo) / f"{dispatch_id}.json"
         report.write_text(

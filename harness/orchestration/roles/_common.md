@@ -29,7 +29,9 @@ Start with the Context Package and one startup probe: run `git rev-parse --show-
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
 worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-active-model>
 --worktree <top-level>` before task work in every new or resumed session. Model self-report is always
-required; `worker_attestation_required` controls the additional worktree check. Use the coordinator
+required. Worktree attestation is mandatory for architect, developer, conflict-resolver,
+database-migrations, messaging-integration and code-review; `worker_attestation_required` also
+enables it for other roles. Use the coordinator
 CLI and its absolute repo/state paths from the prompt even when your current directory is another
 worktree. After a successful self-report, send `dispatch heartbeat --dispatch <dispatch_id>`
 immediately and at least every `liveness.heartbeat_every_seconds` from the brief while working.

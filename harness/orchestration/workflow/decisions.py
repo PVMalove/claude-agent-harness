@@ -504,7 +504,7 @@ def _retry_evidence(
 ) -> tuple[str, str] | None:
     """The reason category a report's structured data dictates by itself, and what showed it.
 
-    Findings, a warning/blocker severity on either review axis, a failed check and a moved
+    Findings, an explicit reviewer retry, a warning/blocker severity, a failed check and a moved
     candidate all mean the work itself has to change. Free text (``blockers``, ``output``) is never
     consulted: a sentence that merely mentions infrastructure proves nothing.
     """
@@ -519,6 +519,8 @@ def _retry_evidence(
                 return (
                     "requirements" if axis == "spec" else "code"
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
+        if review.get("recommendation") == "retry":
+            return "code", "the reviewer explicitly recommends another developer pass"
     if carried_items.marks_open(report):
         return "code", "the review confirms a carried item is still open"
     checks = report.get("checks_run")

@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import cast
 
 from harness.orchestration.core import utils
-from harness.orchestration.core.config import _continuation_policy, _reject_sensitive
+from harness.orchestration.core.config import (
+    _auto_retry_min_severity,
+    _continuation_policy,
+    _reject_sensitive,
+)
 from harness.orchestration.core.constants import (
     AUTO_STOP_REASONS,
     BLOCK_BYPASS_REASON_CATEGORY,
@@ -163,6 +167,7 @@ def accept_obstacles(
     *,
     scope_warnings: list[str],
     block_bypass: bool,
+    auto_retry_min_severity: str = "info",
 ) -> list[str]:
     """Why the policy cannot accept this report; none means it accepts (no I/O).
 
@@ -190,15 +195,33 @@ def accept_obstacles(
     if scope_warnings:
         obstacles.append("files changed outside the approved scope")
     review = report.get("review")
-    if isinstance(review, dict) and any(
-        isinstance(review.get(axis), dict)
-        and (
-            review[axis].get("findings")
-            or review[axis].get("severity") in {"warning", "blocker"}
-        )
-        for axis in ("standards", "spec")
-    ):
-        obstacles.append("the review has findings or a warning/blocker severity")
+    if isinstance(review, dict):
+        ranks = {"info": 0, "warning": 1, "error": 2, "blocker": 2}
+        threshold = ranks[auto_retry_min_severity]
+        actionable = False
+        for axis in ("standards", "spec"):
+            evidence = review.get(axis)
+            if not isinstance(evidence, dict):
+                continue
+            axis_severity = evidence.get("severity")
+            if axis_severity in {"warning", "blocker"}:
+                # Plain accept must pass the same warning/blocker guard as batch decide,
+                # even when the configured finding threshold is higher.
+                obstacles.append("a review axis has warning/blocker severity")
+            if any(
+                isinstance(finding, dict)
+                and ranks.get(str(finding.get("severity")), -1) >= threshold
+                for finding in evidence.get("findings", [])
+            ):
+                actionable = True
+        if actionable:
+            obstacles.append(
+                f"the review has findings at or above the {auto_retry_min_severity} retry threshold"
+            )
+        if review.get("recommendation") == "retry" or (
+            auto_retry_min_severity != "info" and review.get("recommendation") != "accept"
+        ):
+            obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(
         isinstance(review.get(axis), dict)
         and str(review[axis].get("blockers", "none")).strip().lower() != "none"
@@ -222,6 +245,7 @@ def category(
     block_bypass: bool,
     candidate_moved: bool,
     pressure_recorded: bool,
+    auto_retry_min_severity: str = "info",
 ) -> Choice:
     """The first half of the auto decision table (no I/O)."""
     obstacles = accept_obstacles(
@@ -230,6 +254,7 @@ def category(
         dispatch,
         scope_warnings=scope_warnings,
         block_bypass=block_bypass,
+        auto_retry_min_severity=auto_retry_min_severity,
     )
     if not obstacles:
         # Incomplete items left here all target later roles: their briefs carry them.
@@ -650,6 +675,7 @@ def resolve(
             and item.get("level") == "critical"
             for item in batch.get("context_pressure", [])
         ),
+        auto_retry_min_severity=_auto_retry_min_severity(config, batch),
     )
     fields: JsonObject = {
         "decision": choice.decision,

@@ -379,6 +379,17 @@ computes the decision from ledger facts under the ledger lock. The decision then
 check of `batch decide`, and the coordinator records it as `policy:auto`. The session passes only
 the inputs that need judgement:
 
+Review reports may include `review.recommendation: accept|retry`. The project setting
+`auto_retry_min_severity` defaults to `info` and is frozen into each batch; a human can override it
+for one batch with `batch create --auto-retry-min-severity warning` (or `error` / `blocker`). At
+the `warning` threshold, lower-severity findings remain in the original report and ledger, while an
+`accept` recommendation with passed checks and no warning/blocker axis permits auto-accept. A finding at or
+above the threshold, a reviewer `retry` recommendation, a failed required check, or any warning/blocker axis
+still routes to retry. The default `info` threshold retries on info findings as before.
+Warning/blocker axes always prevent plain accept, including at the `error` and `blocker`
+thresholds. `error` is a threshold between warning and blocker; the report contract uses
+`info`, `warning` and `blocker` findings.
+
 | Input | Use |
 | --- | --- |
 | `--commit-plan-file <path>` | An architect report that the policy accepts. The policy pins the plan if its `expected_paths` lie inside `allowed_paths` and it covers every Definition of Done item. Otherwise the path stops with `deterministic-gate-failed`. If the command cannot read the file as a JSON object, it refuses and records nothing. |
@@ -666,8 +677,9 @@ either.
 
 A dispatched role is not assumed to be alive because it was sent. Its first action after receiving
 its brief is a model self-report: it names the model it is actually running, and the coordinator
-compares that against `resolved_model` in the immutable brief. When the project enables
-`worker_attestation_required`, that same first action proves the canonical Git top-level, branch and
+compares that against `resolved_model` in the immutable brief. For architect, developer,
+conflict-resolver, database-migrations, messaging-integration and code-review, and for other roles
+when the project enables `worker_attestation_required`, that same first action proves the canonical Git top-level, branch and
 pinned candidate from the runtime's actual CWD. A model or worktree mismatch blocks the dispatch
 immediately, and its completion report is refused; the recovery is a new dispatch, never an edited
 brief. While it works, the role emits a heartbeat, and the coordinator watches for a silence longer

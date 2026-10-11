@@ -405,7 +405,10 @@ def prepare(
     integration_ref = _text(
         project_state.get("integration_ref") or "base", "integration_ref"
     )
-    from harness.orchestration.runtime_attestation import AttestationError, attest
+    from harness.orchestration.runtime_attestation import (
+        AttestationError,
+        attest,
+    )
 
     selected = Path(str(project_state.get("worker_worktree") or worktree)).resolve()
     expected_sha = candidate or _text(

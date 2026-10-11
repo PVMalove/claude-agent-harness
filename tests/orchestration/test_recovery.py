@@ -13,7 +13,7 @@ from harness.orchestration.core import git_utils, workspace
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.ledger.lifecycle import LifecycleLedger, BatchRecord
-from harness.orchestration.workflow import carried_items, commit_plan
+from harness.orchestration.workflow import carried_items, commit_plan, decisions
 from tests.orchestration.test_coordinator import (
     _init_repo,
     _git,
@@ -46,6 +46,80 @@ class RecoveryTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
+
+    def test_default_policy_blocks_wrong_or_missing_worker_checkout_without_retry_cost(self) -> None:
+        for role, reported_path in (
+            ("architect", "main"),
+            ("developer", "main"),
+            ("developer", None),
+            ("code-review", "main"),
+        ):
+            with self.subTest(role=role, reported_path=reported_path):
+                batch = self._create_batch()
+                candidate = None
+                if role != "architect":
+                    self._accepted_architect(batch["batch_id"])
+                if role == "code-review":
+                    candidate = self._accepted_candidate(batch["batch_id"])
+                brief = self._dispatch(batch["batch_id"], role, candidate=candidate)["brief"]
+                self.assertFalse(brief["worker_attestation_required"])
+                coordinator.send_dispatch(self._args(
+                    dispatch=brief["dispatch_id"], adapter=None, adapter_arg=None,
+                    checkout=str(self.worktree) if role == "code-review" else None,
+                    worktree=str(self.worktree),
+                ))
+                with self.assertRaisesRegex(coordinator.CoordinatorError, "blocked"):
+                    coordinator.self_report_dispatch(self._args(
+                        dispatch=brief["dispatch_id"], model="sonnet",
+                        worktree=str(self.repo) if reported_path else None,
+                    ))
+                stored = self._batch_record(batch["batch_id"])
+                self.assertEqual(stored["state"], "blocked")
+                self.assertEqual(decisions._developer_retry_count(stored), 0)
+                self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+                # Each case needs a fresh issue branch/worktree in this fixture.
+            self.tearDown()
+            self.setUp()
+
+    def test_auto_review_threshold_routes_through_public_decision_guards(self) -> None:
+        for threshold, severity, recommendation, expected in (
+            ("warning", "info", "accept", "accept"),
+            ("warning", "warning", "accept", "retry"),
+            ("error", "warning", "accept", "retry"),
+            ("blocker", "warning", "accept", "retry"),
+            ("info", None, "retry", "retry"),
+        ):
+            with self.subTest(threshold=threshold, severity=severity, recommendation=recommendation):
+                (self.repo / ".harness/orchestration.json").write_text(json.dumps({
+                    "provider_profiles": {}, "assignment_plans": {},
+                    "concurrency_budget": 1, "verification_commands": ["true"],
+                    "worker_attestation_required": True, "approval_policy": "auto",
+                    "auto_retry_min_severity": threshold,
+                }), encoding="utf-8")
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                candidate = self._accepted_candidate(batch["batch_id"])
+                brief = self._dispatch(batch["batch_id"], "code-review", candidate=candidate)["brief"]
+                self._start(brief["dispatch_id"], checkout=self.worktree)
+                findings = [] if severity is None else [
+                    {"severity": severity, "summary": "review context", "evidence": "services/x.py:1"}
+                ]
+                review = {
+                    "candidate_commit": candidate, "scope": brief["review_scope"],
+                    "recommendation": recommendation,
+                    **self._axes(("warning" if severity == "warning" else "clean", findings), ("clean", [])),
+                }
+                self._submit(brief["dispatch_id"], self._base_report(brief, "code-review", review=review))
+                coordinator.auto_decide(self._args(batch=batch["batch_id"]))
+                stored = self._batch_record(batch["batch_id"])
+                entry = stored["dispatches"][-1]
+                self.assertEqual(entry["decision"]["decision"], expected)
+                self.assertEqual(decisions._developer_retry_count(stored), int(expected == "retry"))
+                persisted = coordinator._read_object(self._records() / "reports" / f"{brief['dispatch_id']}.json", "report")
+                self.assertEqual(persisted["review"]["standards"]["findings"], findings)
+                self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+            self.tearDown()
+            self.setUp()
 
     def _args(self, **values: object) -> argparse.Namespace:
         return _ns(repo=str(self.repo), state_dir=str(self.state_dir), **values)
@@ -1290,3 +1364,62 @@ class RecoveryTests(unittest.TestCase):
         )
         self.assertEqual(result["next_action"], "architect")
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_external_developer_adapter_runs_from_the_registered_issue_worktree(self) -> None:
+        runtime = {"claude": {"profiles": ["p"], "model": "sonnet", "effort": "high"}}
+        config_path = self.repo / ".harness/orchestration.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "provider_profiles": {
+                        "p": {
+                            "capabilities": [
+                                "architecture-analysis",
+                                "backend-development",
+                                "code-review",
+                            ],
+                            "fallback": [],
+                            "known_limitations": ["none"],
+                        }
+                    },
+                    "assignment_plans": {
+                        "architect": {"zone": "repository", "runtimes": runtime},
+                        "developer": {
+                            "zone": "repository",
+                            "runtimes": runtime,
+                            "transport": "external",
+                        },
+                        "code-review": {"zone": "repository", "runtimes": runtime},
+                    },
+                    "backend_zones": {"repository": {"paths": ["**"]}},
+                    "concurrency_budget": 1,
+                    "verification_commands": ["true"],
+                    "auto_retry_min_severity": "warning",
+                }
+            ),
+            encoding="utf-8",
+        )
+        batch = self._create_batch()
+        self.assertEqual(batch["auto_retry_min_severity"], "warning")
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        marker = self.tmp / "adapter-cwd.txt"
+        adapter = self.tmp / "cwd-adapter.py"
+        adapter.write_text(
+            "import os\nfrom pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text(os.getcwd(), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        result = coordinator.send_dispatch(
+            self._args(
+                dispatch=brief["dispatch_id"],
+                adapter=str(adapter),
+                adapter_arg=None,
+                checkout=None,
+                worktree=str(self.worktree),
+            )
+        )
+
+        self.assertEqual(result["worker_worktree"], str(self.worktree.resolve()))
+        self.assertEqual(marker.read_text(encoding="utf-8"), str(self.worktree.resolve()))

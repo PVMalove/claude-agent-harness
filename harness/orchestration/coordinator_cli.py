@@ -96,6 +96,11 @@ def build_parser(
     create.add_argument(
         "--goal", help="approved local ticket goal frozen in the immutable batch plan"
     )
+    create.add_argument(
+        "--auto-retry-min-severity",
+        choices=("info", "warning", "error", "blocker"),
+        help="minimum review finding severity that triggers an automatic retry; defaults to project policy or info",
+    )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
     create.add_argument("--required-gate", action="append")

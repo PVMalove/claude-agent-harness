@@ -201,6 +201,38 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                         check=True,
                     )
 
+        # Legacy clean-room scenarios simulate a worker separately from the coordinator.
+        # Supply that worker's selected checkout and attach writers to their actual issue branch
+        # for startup proof; explicit --worktree scenarios keep their own negative/positive paths.
+        if (
+            "dispatch" in arguments
+            and "self-report" in arguments
+            and "--worktree" not in arguments
+        ):
+            state = (
+                Path(arguments[arguments.index("--state-dir") + 1])
+                if "--state-dir" in arguments
+                else orchestration_project / ".harness/orchestration/state"
+            )
+            identity = arguments[arguments.index("--dispatch") + 1]
+            records = lifecycle_records(state)
+            brief = json.loads((records / "dispatches" / f"{identity}.json").read_text(encoding="utf-8"))
+            status = json.loads((records / "dispatch-status" / f"{identity}.json").read_text(encoding="utf-8"))
+            selected = Path(status.get("worker_worktree") or brief["worktree"])
+            arguments.extend(["--worktree", str(selected)])
+            if selected.name == "shared-worktree" and brief["role"] in {"architect", "developer", "conflict-resolver"}:
+                run_step(
+                    ["git", "checkout", "--ignore-other-worktrees", brief["branch"]],
+                    cwd=selected, capture_output=True, text=True, check=True,
+                )
+                try:
+                    return run_once(arguments)
+                finally:
+                    run_step(
+                        ["git", "checkout", "--detach"],
+                        cwd=selected, capture_output=True, text=True, check=True,
+                    )
+
         if (
             "dispatch" in arguments
             and "create" in arguments

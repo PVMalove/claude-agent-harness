@@ -127,7 +127,7 @@ class RuntimeAttestationTests(unittest.TestCase):
 
             with patch.object(subprocess, "run", side_effect=undecodable_git):
                 with self.assertRaisesRegex(AttestationError, "dubious ownership"):
-                    attest(repo, {"role": "developer"}, str(repo))
+                    attest(repo, {"role": "verification"}, str(repo))
 
     def test_write_role_requires_the_registered_issue_worktree(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
@@ -155,6 +155,8 @@ class RuntimeAttestationTests(unittest.TestCase):
 
             self.assertEqual(proof["worktree"], str(worktree.resolve()))
             self.assertEqual(proof["branch"], branch)
+            with self.assertRaisesRegex(AttestationError, "main checkout"):
+                attest(repo, dispatch, str(repo))
             (worktree / "nested").mkdir()
             with self.assertRaisesRegex(AttestationError, "not registered"):
                 attest(repo, dispatch, str(worktree / "nested"))
@@ -211,6 +213,8 @@ class RuntimeAttestationTests(unittest.TestCase):
             _git(repo, "add", "tracked.txt")
             _git(repo, "commit", "-qm", "test: candidate")
             candidate = _git(repo, "rev-parse", "HEAD")
+            worktree = Path(temporary) / "review"
+            _git(repo, "worktree", "add", "-q", "-b", "feature/issue-2-review", str(worktree), candidate)
 
             proof = attest(
                 repo,
@@ -220,7 +224,7 @@ class RuntimeAttestationTests(unittest.TestCase):
                     "candidate_commit": candidate,
                     "snapshot_commit": candidate,
                 },
-                str(repo),
+                str(worktree),
             )
 
             self.assertEqual(proof["head_commit"], candidate)
@@ -279,7 +283,7 @@ def test_a_git_probe_that_hangs_or_cannot_start_is_an_attestation_error(
         patch.object(subprocess, "run", side_effect=failure),
         pytest.raises(AttestationError) as caught,
     ):
-        attest(tmp_path, {"role": "developer"}, str(tmp_path))
+        attest(tmp_path, {"role": "verification"}, str(tmp_path))
 
     assert caught.value.__cause__ is failure
     assert caught.value.remedy.strip()

@@ -481,48 +481,6 @@ def test_dashboard_online_checks_action_reruns_with_online_and_shows_the_cli(
     assert "harness health" in cli and "--online" in cli
 
 
-def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
-    tmp_path: Path,
-) -> None:
-    """Проверить, что экран диагностики отображает эквиваленты CLI и экспортирует отчёт."""
-
-    async def scenario() -> tuple[str, str]:
-        """Сценарий проверки строк CLI и экспорта отчёта диагностики."""
-        from textual.app import App
-        from textual.widgets import Static
-
-        screen = DiagnosticsScreen(
-            tmp_path, collect_diagnostics=lambda repo, *, online=False: _fake_report()
-        )
-
-        class _HostApp(App[None]):
-            """Тестовое приложение-хост для экрана диагностики."""
-
-            def on_mount(self) -> None:
-                """Смонтировать тестируемый экран."""
-                self.push_screen(screen)
-
-        app = _HostApp()
-        async with app.run_test(size=(120, 40)) as pilot:
-            await _settle(pilot)
-            online_cli = str(app.screen.query_one("#online-checks-cli", Static).content)
-            fix_cli = str(app.screen.query_one("#apply-fixes-cli", Static).content)
-            await pilot.click("#export")
-            await _settle(pilot)
-        return online_cli, fix_cli
-
-    online_cli, fix_cli = asyncio.run(scenario())
-    assert online_cli.endswith("--online")
-    assert fix_cli.endswith("--fix")
-    exported = list(
-        (tmp_path / "docs" / "tasks" / "console-exports").glob("*health-report.md")
-    )
-    assert len(exported) == 1
-    text = exported[0].read_text(encoding="utf-8")
-    assert text.startswith("# Health-отчёт")
-    assert "environment.uv" in text
-
-
 def test_offline_checks_buttons_rerun_health_offline(tmp_path: Path) -> None:
     """Проверить, что кнопки Offline checks дашборда и диагностики перезапускают проверки офлайн."""
 

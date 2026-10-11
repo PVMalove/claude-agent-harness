@@ -133,7 +133,7 @@ class AdapterUnavailable(CoordinatorError):
     """The OS refused to start the adapter; no worker was handed a brief."""
 
 
-def _run_adapter(command: list[str]) -> None:
+def _run_adapter(command: list[str], *, cwd: Path | None = None) -> None:
     """Hand the brief to a project runtime adapter.
 
     The adapter contract bounds the call: the adapter returns after it starts the worker. A worker
@@ -144,6 +144,7 @@ def _run_adapter(command: list[str]) -> None:
         # UTF-8 adapter message is mojibaked before it ever reaches the coordinator error.
         result = subprocess.run(
             command,
+            cwd=cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -304,7 +305,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         if command is not None and access_evidence["status"] == "legacy-inherit":
             try:
-                _run_adapter(command)
+                _run_adapter(command, cwd=Path(launch["worktree"]))
             except AdapterUnavailable as exc:
                 status.update(
                     {

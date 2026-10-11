@@ -104,6 +104,10 @@ class _PreflightFixture(unittest.TestCase):
 
 
 class PrepareTests(_PreflightFixture):
+    def test_writer_preflight_rejects_the_coordinator_main_checkout(self) -> None:
+        with self.assertRaisesRegex(PreflightError, "main checkout"):
+            self._prepare(worktree=str(self.repo))
+
     def test_prepares_a_dispatch_from_valid_state(self) -> None:
         prepared = self._prepare()
         self.assertEqual(

@@ -1272,7 +1272,7 @@ def _validate_dispatch(
     except runtime_access.AccessError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     # Briefs are immutable. A record created before worker attestation was introduced keeps its
-    # historical shape and is treated as an explicit legacy opt-out instead of being rewritten.
+    # historical shape; mandatory writer/review startup proof is enforced by the report handler.
     pre_summary_fields = DISPATCH_FIELDS - {"context_package_summary"}
     legacy_fields = DISPATCH_FIELDS - {
         "context_package_summary",

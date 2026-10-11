@@ -102,6 +102,7 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.runtime_attestation import (
     AttestationError,
+    requires_attestation,
 )
 from harness.orchestration.runtime_attestation import (
     attest as attest_runtime_worktree,
@@ -168,7 +169,7 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         model_matched = reported == expected
         attestation: JsonObject | None = None
         worktree_matched = True
-        if dispatch.get("worker_attestation_required", False):
+        if requires_attestation(dispatch):
             supplied_worktree = getattr(args, "worktree", None)
             if not _non_empty(supplied_worktree):
                 worktree_matched = False
@@ -1055,15 +1056,21 @@ def _persist_report(
 
 def _validate_review(review: object, dispatch: JsonObject) -> None:
     # ``carried_items`` (issue #499) is optional: the review's account of the brief's carried items.
-    if not isinstance(review, dict) or set(review) - {"carried_items"} != {
-        "candidate_commit",
-        "scope",
-        "standards",
-        "spec",
-    }:
+    if not isinstance(review, dict) or set(review) - {
+        "carried_items",
+        "recommendation",
+    } != {"candidate_commit", "scope", "standards", "spec"}:
         raise CoordinatorError(
             "composite review must contain independent standards and spec evidence",
             remedy="submit composite review evidence with independent standards and spec findings",
+        )
+    if review.get("recommendation") is not None and review["recommendation"] not in (
+        "accept",
+        "retry",
+    ):
+        raise CoordinatorError(
+            "composite review recommendation must be accept or retry",
+            remedy="set review.recommendation to accept or retry",
         )
     if (
         review["candidate_commit"] != dispatch["candidate_commit"]
@@ -1797,7 +1804,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="pass --model naming the model actually running this session before reporting",
             )
         if (
-            dispatch.get("worker_attestation_required", False)
+            requires_attestation(dispatch)
             and status.get("worktree_attestation", {}).get("match") is not True
         ):
             raise CoordinatorError(

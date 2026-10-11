@@ -20,6 +20,24 @@ class AttestationError(HarnessError):
     """The runtime did not start in the immutable dispatch's Git context."""
 
 
+WORKER_ROLES_REQUIRING_ISSUE_WORKTREE = frozenset({
+    "architect",
+    "developer",
+    "conflict-resolver",
+    "database-migrations",
+    "messaging-integration",
+    "code-review",
+})
+
+
+def requires_attestation(dispatch: Mapping[str, object]) -> bool:
+    """Writer/review startup proof is mandatory; projects may also require it for other roles."""
+    return (
+        dispatch.get("role") in WORKER_ROLES_REQUIRING_ISSUE_WORKTREE
+        or dispatch.get("worker_attestation_required") is True
+    )
+
+
 def _git_command(path: Path, *arguments: str) -> list[str]:
     # The coordinator may run under a different Windows sandbox account. Trust only the
     # already selected repository or registered worktree for this one Git invocation.
@@ -75,6 +93,14 @@ def _registered_worktrees(repo: Path) -> set[Path]:
 def attest(repo: Path, dispatch: Mapping[str, object], worktree: str) -> dict[str, str]:
     """Return immutable startup evidence or reject a wrong CWD before role work is accepted."""
     checkout = Path(worktree).resolve()
+    if (
+        dispatch.get("role") in WORKER_ROLES_REQUIRING_ISSUE_WORKTREE
+        and checkout == repo.resolve()
+    ):
+        raise AttestationError(
+            "worker checkout must be the registered issue worktree, not the coordinator main checkout",
+            remedy="start the worker in the batch's registered issue worktree and report its canonical top-level path",
+        )
     expected_path = dispatch.get("worker_worktree")
     if expected_path is None and dispatch.get("role") in {
         "architect",
