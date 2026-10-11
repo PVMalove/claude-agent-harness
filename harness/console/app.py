@@ -5,7 +5,10 @@ and only once that has already confirmed the process is running inside the relau
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
+from threading import Lock
+from typing import Mapping, Sequence
 
 from textual.app import App
 from textual.binding import Binding
@@ -85,12 +88,37 @@ class HarnessConsoleApp(App[None]):
     ) -> None:
         super().__init__()
         self.repo = repo
-        self.command_runner = command_runner
+        self.commands_running = 0
+        self._command_lock = Lock()
+        self._runner = command_runner
+        self.command_runner = self._tracked_runner
 
     def on_mount(self) -> None:
         self.register_theme(HARNESS_THEME)
         self.theme = brand.THEME_NAME
         self.push_screen(DashboardScreen(self.repo, command_runner=self.command_runner))
+
+    def _tracked_runner(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        with self._command_lock:
+            self.commands_running += 1
+        try:
+            return self._runner(argv, env=env, cwd=cwd)
+        finally:
+            with self._command_lock:
+                self.commands_running -= 1
+
+    def activate_project(self, repo: Path) -> None:
+        if self.commands_running:
+            self.notify("Дождитесь окончания команды", severity="warning")
+            return
+        self.repo = repo
+        self.switch_screen(DashboardScreen(repo, command_runner=self.command_runner))
 
     def action_open_help(self) -> None:
         from .screens.help import HelpScreen

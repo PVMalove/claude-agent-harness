@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeGuard, cast
 
+from harness.configuration import read_config_file
+
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .core.constants import (
     AUTO_RETRY_SEVERITIES,
@@ -1015,14 +1017,23 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
 def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     """Вернуть диагностические замечания к здоровью конфигурации без изменения состояния проекта."""
     problems: list[str] = []
-    if not config_path.is_file():
-        return problems
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = read_config_file(config_path)
+        if raw is None:
+            return problems
+        config = json.loads(raw)
     except (OSError, ValueError) as exc:
         return [f"{config_path.as_posix()} is not valid JSON: {exc}"]
     if not isinstance(config, dict):
         return [f"{config_path.as_posix()} must contain a JSON object"]
+    return configuration_problems(config, roles_root, config_path.as_posix())
+
+
+def configuration_problems(
+    config: JsonObject, roles_root: Path, location: str = ".harness/orchestration.json"
+) -> list[str]:
+    """Validate a draft without writing it to the active project config."""
+    problems: list[str] = []
     reject_error: ContractError | None = None
     try:
         reject_sensitive(config, "project orchestration config")
@@ -1046,14 +1057,10 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         }
     missing = [field for field in CONFIG_REQUIRED_FIELDS if field not in config]
     if missing:
-        problems.append(
-            f"{config_path.as_posix()} missing required field(s): {', '.join(missing)}"
-        )
+        problems.append(f"{location} missing required field(s): {', '.join(missing)}")
     extra = sorted(set(config) - CONFIG_ALLOWED_FIELDS)
     if extra:
-        problems.append(
-            f"{config_path.as_posix()} has unknown field(s): {', '.join(extra)}"
-        )
+        problems.append(f"{location} has unknown field(s): {', '.join(extra)}")
     roles: dict[str, JsonObject] = {}
     if not roles_root.is_dir():
         problems.append("missing .harness/orchestration/roles")

@@ -33,7 +33,7 @@ _MANUAL_NOTE = "Команды «Как исправить» пульт не в�
 _RUNNING = "health выполняется…"
 
 
-def _render_report(report: Report) -> str:
+def render_report(report: Report) -> str:
     """Формирует текстовое представление отчёта проверок health со статусами и рекомендациями."""
     summary = report.summary()
     lines = [
@@ -63,9 +63,9 @@ _MARKER_COLORS = {
 
 
 def _styled_report(report: Report) -> Text:
-    """The same text as `_render_report`, with status markers and remedies coloured on screen."""
+    """The same text as `render_report`, with status markers and remedies coloured on screen."""
     styled = Text()
-    for index, line in enumerate(_render_report(report).split("\n")):
+    for index, line in enumerate(render_report(report).split("\n")):
         if index:
             styled.append("\n")
         marker = next((m for m in _MARKER_COLORS if line.startswith(m + " ")), None)
@@ -91,7 +91,7 @@ def health_document(report: Report) -> MarkdownDocument:
             ("Онлайн-проверки", "да" if report.online else "нет"),
         ],
         sections=[
-            MarkdownSection("Проверки", _render_report(report), preformatted=True)
+            MarkdownSection("Проверки", render_report(report), preformatted=True)
         ],
     )
 

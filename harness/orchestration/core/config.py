@@ -15,6 +15,12 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
 
+from harness.configuration import (
+    parse_config_json,
+    read_config_bundle,
+    read_config_file,
+)
+
 from harness.orchestration import extensions
 from harness.orchestration.contract import (
     APPROVAL_POLICIES,
@@ -22,7 +28,7 @@ from harness.orchestration.contract import (
     COMMUNICATION_POLICY_FIELDS,
     HUMAN_APPROVAL_GATES,
     ContractError,
-    health_problems,
+    configuration_problems,
     load_role_manifest,
     reject_sensitive,
     resolve_assignment,
@@ -46,7 +52,6 @@ from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
     _non_empty,
-    _read_object,
     _strings,
 )
 
@@ -58,8 +63,33 @@ def _reject_sensitive(value: object, location: str) -> None:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
+def _configuration_data(raw: bytes | None, label: str) -> JsonObject:
+    try:
+        data = parse_config_json(raw) if raw is not None else {}
+    except ValueError:
+        raise CoordinatorError(
+            f"cannot read {label}", remedy="repair the configuration"
+        ) from None
+    if not isinstance(data, dict):
+        raise CoordinatorError(
+            f"{label} must be an object", remedy="repair the configuration"
+        )
+    return data
+
+
+def _configuration_object(path: Path, label: str) -> JsonObject:
+    try:
+        raw = read_config_file(path)
+    except (OSError, ValueError):
+        raise CoordinatorError(
+            f"cannot read {label}",
+            remedy="repair the configuration or recover its transaction",
+        ) from None
+    return _configuration_data(raw, label)
+
+
 def _project(repo: Path) -> JsonObject:
-    return _read_object(repo / ".harness/project.json", "project config")
+    return _configuration_object(repo / ".harness/project.json", "project config")
 
 
 def _configured(repo: Path) -> bool:
@@ -71,14 +101,19 @@ def _configured(repo: Path) -> bool:
     would fix it. An empty template therefore means the same as no file: use the documented defaults.
     """
     path = repo / ".harness/orchestration.json"
-    if not path.is_file():
-        return False
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_config_file(path)
+        if raw is None:
+            return False
+        value = json.loads(raw)
     except (OSError, ValueError):
         return True  # let the real loader report the parse failure
     if not isinstance(value, dict):
         return True
+    return _configured_value(value)
+
+
+def _configured_value(value: JsonObject) -> bool:
     return (
         bool(value.get("backend_zones"))
         or bool(value.get("assignment_plans"))
@@ -88,11 +123,11 @@ def _configured(repo: Path) -> bool:
     )
 
 
-def _default_config(repo: Path) -> JsonObject:
+def _default_config(repo: Path, *, project: JsonObject | None = None) -> JsonObject:
     """Zero-configuration fallback.  A project that has not authored an orchestration config takes
     the role runtime from the invoking session and every batch states its own scope, so the gated
     pipeline is available before any assignment plan exists."""
-    commands = _project(repo).get("qa_gate_commands")
+    commands = (_project(repo) if project is None else project).get("qa_gate_commands")
     if not isinstance(commands, list) or not all(_non_empty(item) for item in commands):
         commands = []
     return {
@@ -105,13 +140,22 @@ def _default_config(repo: Path) -> JsonObject:
 
 
 def _config(repo: Path) -> JsonObject:
-    if not _configured(repo):
-        return _default_config(repo)
-    value = _read_object(
-        repo / ".harness/orchestration.json", "project orchestration config"
+    try:
+        bundle = read_config_bundle(repo)
+    except (OSError, ValueError):
+        raise CoordinatorError(
+            "cannot read project configuration",
+            remedy="repair the configuration or recover its transaction",
+        ) from None
+    value = _configuration_data(
+        bundle["orchestration.json"], "project orchestration config"
     )
+    if not _configured_value(value):
+        return _default_config(
+            repo, project=_configuration_data(bundle["project.json"], "project config")
+        )
     _reject_sensitive(value, "project orchestration config")
-    problems = health_problems(repo / ".harness/orchestration.json", _roles_dir(repo))
+    problems = configuration_problems(value, _roles_dir(repo))
     if problems:
         raise CoordinatorError(
             "invalid project orchestration config: " + "; ".join(problems),
@@ -119,9 +163,10 @@ def _config(repo: Path) -> JsonObject:
         )
     if value.get("assignment_plans"):
         return value
-    # An access-only config (issue #624) states no assignment: it takes the zero-config defaults
-    # beneath its own keys. Its own verification_commands stay the developer fallback.
-    defaults = _default_config(repo)
+    # Policy-only configuration and QA defaults must belong to the same generation.
+    defaults = _default_config(
+        repo, project=_configuration_data(bundle["project.json"], "project config")
+    )
     if "developer_verification_commands" not in value:
         del defaults["developer_verification_commands"]
     return {**defaults, **value}

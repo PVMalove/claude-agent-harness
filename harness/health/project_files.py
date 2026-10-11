@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import NoReturn
 from urllib.parse import urlsplit
 
+from harness.configuration import read_config_file
+
 from .model import JsonObject
 
 # --- Paths and constants ------------------------------------
@@ -305,7 +307,9 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
             )
         source = data.get("source")
         if not isinstance(source, dict):
-            problems.append(f"missing overlay source: {lock_path.relative_to(repo).as_posix()}")
+            problems.append(
+                f"missing overlay source: {lock_path.relative_to(repo).as_posix()}"
+            )
         elif source.get("type") != "project-local":
             remote = source.get("remote")
             revision = source.get("revision")
@@ -574,17 +578,24 @@ def ci_required_checks_problems(value: object) -> list[str]:
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
-    Структура вручную синхронизируется с `harness/project/project.schema.json`: эта схема предназначена
-    только для редактора, в рантайме нет зависимости `jsonschema`, поэтому соответствие поддерживается синхронно.
+    Структура синхронизируется с `harness/project/project.schema.json`: редактор и мастер консоли
+    проверяют эту схему (`harness/configuration_schema.py`, без зависимости `jsonschema`), а здесь
+    применяются те же правила и бизнес-правила; изменения вносятся в обе части сразу.
     """
     path = repo / ".harness/project.json"
-    if not path.is_file():
-        return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_config_file(path)
+        if raw is None:
+            return
+        data = json.loads(raw)
     except JSON_READ_ERRORS as exc:
         problems.append(f".harness/project.json is not valid JSON: {exc}")
         return
+    validate_project_data(data, problems)
+
+
+def validate_project_data(data: object, problems: list[str]) -> None:
+    """Validate an in-memory draft using the same contract as the health check."""
     if not isinstance(data, dict):
         problems.append(".harness/project.json must contain a JSON object")
         return
@@ -615,6 +626,14 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
     for field in ("base_branch", "branch_pattern"):
         if field in data and (not isinstance(data[field], str) or not data[field]):
             problems.append(f".harness/project.json {field} must be a non-empty string")
+    pattern = data.get("branch_pattern")
+    if isinstance(pattern, str) and pattern:
+        try:
+            re.compile(pattern)
+        except re.error:
+            problems.append(
+                ".harness/project.json branch_pattern must be a valid regex"
+            )
     if "qa_gate_commands" in data:
         commands = data["qa_gate_commands"]
         if not isinstance(commands, list) or not all(
@@ -701,7 +720,7 @@ def verification_routing_health(repo: Path) -> list[str]:
     """
     config_path = repo / ORCHESTRATION_CONFIG_REL
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(read_config_file(config_path) or b"{}")
     except JSON_READ_ERRORS:
         return []
     if (
