@@ -29,11 +29,18 @@ async def wait_until[T](pilot: Pilot[T], ready: Callable[[], object]) -> None:
 
 
 async def press[T](pilot: Pilot[T], selector: str) -> None:
-    """Дождаться кнопки на текущем экране и нажать её без позиционного клика.
+    """Дождаться включённой кнопки на текущем экране и нажать её без позиционного клика.
 
     `pilot.click` целится в координаты: на Windows длинный путь временного каталога переносит
     строки заголовка, кнопка уходит из окна или под другой виджет, и клик не доходит до неё.
-    `Button.press()` отправляет то же событие `Pressed` без проверки попадания."""
-    await wait_until(pilot, lambda: pilot.app.screen.query(selector))
+    `Button.press()` отправляет то же событие `Pressed` без проверки попадания, но на
+    отключённой кнопке молча ничего не делает, поэтому сначала ждём, пока экран её включит."""
+    await wait_until(
+        pilot,
+        lambda: any(
+            not button.disabled
+            for button in pilot.app.screen.query(selector).results(Button)
+        ),
+    )
     pilot.app.screen.query_one(selector, Button).press()
     await pilot.pause()
