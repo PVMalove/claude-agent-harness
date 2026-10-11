@@ -38,7 +38,7 @@ lint: typecheck $(HARNESS_ENV_STAMP) ## Линтинг кода (ruff check + my
 	$(HARNESS_PYTHON) -m ruff check .
 
 verify: $(HARNESS_ENV_STAMP) ## Запустить полный набор проверок проекта (sanity checks, mypy, tests, clean-room)
-	$(HARNESS_PYTHON) scripts/verify.py
+	$(HARNESS_PYTHON) scripts/verify.py $(VERIFY_ARGS)
 
 test: $(HARNESS_ENV_STAMP) ## Запустить только unit-тесты (pytest)
 	$(HARNESS_PYTHON) -m pytest -n 4 tests

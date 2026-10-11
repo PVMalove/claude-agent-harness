@@ -194,15 +194,21 @@ def _static_checks(test_env: dict[str, str]) -> None:
     _check_documentation()
 
 
+# Platform-neutral and slow on Windows (hundreds of tests each spawn a dozen git.exe processes):
+# a pull request leaves them to Linux and the full run on `master` (ADR 0018).
+WINDOWS_PR_IGNORED_TESTS = ("tests/orchestration/test_coordinator.py",)
+
+
 def pytest_command(
     run_tmp: Path,
     *,
     platform: str = sys.platform,
     cpu_count: int | None = None,
+    platform_subset: bool = False,
 ) -> list[str]:
     """Сформировать аргументы запуска pytest с учетом платформы и числа воркеров."""
     effective_cpus = os.cpu_count() or 1 if cpu_count is None else cpu_count
-    workers = 2 if platform == "win32" else min(4, effective_cpus)
+    workers = min(4, effective_cpus)
     args = [
         sys.executable,
         "-m",
@@ -222,30 +228,44 @@ def pytest_command(
                 "--ignore=tests/memory/test_vector_probe.py",
             ]
         )
+        if platform_subset:
+            args.extend(f"--ignore={path}" for path in WINDOWS_PR_IGNORED_TESTS)
     return args
 
 
-def _run_stages(run_tmp: Path, test_env: dict[str, str]) -> None:
-    """Стадии с замером времени: mypy, pytest и clean-room прогон."""
-    run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
+def _run_stages(
+    run_tmp: Path,
+    test_env: dict[str, str],
+    *,
+    only: str | None,
+    platform_subset: bool,
+) -> None:
+    """Стадии с замером времени: mypy, pytest и clean-room прогон; `only` оставляет одну группу."""
     try:
-        run_stage("pytest", pytest_command(run_tmp), env=test_env)
-        run_stage(
-            "clean-room",
-            [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
-            # UTF-8 mode: the harness CLI writes UTF-8, and a cp1252 runner locale cannot decode it.
-            env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp), PYTHONUTF8="1"),
-        )
+        if only != "clean-room":
+            run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
+            run_stage(
+                "pytest",
+                pytest_command(run_tmp, platform_subset=platform_subset),
+                env=test_env,
+            )
+        if only != "tests":
+            run_stage(
+                "clean-room",
+                [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
+                # UTF-8 mode: the harness CLI writes UTF-8, and a cp1252 runner locale cannot decode it.
+                env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp), PYTHONUTF8="1"),
+            )
     finally:
         remove_tree(run_tmp)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Парсер CLI: опций нет, `--help` описывает стадии до их запуска."""
-    return argparse.ArgumentParser(
+    """Парсер CLI: две необязательные опции сужения прогона, `--help` описывает стадии до их запуска."""
+    parser = argparse.ArgumentParser(
         prog="scripts/verify.py",
         description=(
-            "Full project verification. Takes no options: every run executes all stages\n"
+            "Full project verification. Without options every run executes all stages\n"
             "in order and stops at the first failure."
         ),
         epilog=(
@@ -262,14 +282,31 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument(
+        "--only",
+        choices=("tests", "clean-room"),
+        help=(
+            "run one CI job's share: 'tests' = static checks, mypy and pytest; "
+            "'clean-room' = static checks and the clean-room run"
+        ),
+    )
+    parser.add_argument(
+        "--platform-subset",
+        action="store_true",
+        help=(
+            "on Windows skip the platform-neutral slow test files "
+            "(WINDOWS_PR_IGNORED_TESTS); the full run omits this flag"
+        ),
+    )
+    return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     """Точка входа: подготовить изолированный корень, выполнить проверки и стадии."""
-    build_parser().parse_args(argv)
+    args = build_parser().parse_args(argv)
     run_tmp, test_env = _prepare_run_root()
     _static_checks(test_env)
-    _run_stages(run_tmp, test_env)
+    _run_stages(run_tmp, test_env, only=args.only, platform_subset=args.platform_subset)
     print("agent-harness verification passed")
 
 
