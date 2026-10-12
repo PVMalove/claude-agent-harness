@@ -914,6 +914,16 @@ rating cannot replace either report.
 
 Use this shape so missing proof is visible:
 
+Each `checks_run` entry uses exactly `pass`, `fail` or `not-run` as its `result`.
+Only an architect may use `not_run_architect_read_only`, for compatibility with older briefs
+that approved verification commands. An architect work brief with no verification commands
+still reports `checks_run: []`. Neither `fail` nor `not-run` proves a successful check.
+Submission rejects other values (including `passed`) with a remedy before recording the report;
+correct the staging file and submit it again for the same dispatch. Pending reports are validated
+again before a decision, so older reports with unknown results are also refused. Do not rewrite
+immutable evidence; recover an already recorded report or stopped batch through the coordinator's
+existing human-approved recovery workflow.
+
 ```markdown
 # Completion report: <dispatch-id>
 
@@ -922,7 +932,7 @@ Use this shape so missing proof is visible:
 - Commit SHA: <sha|not applicable — read-only role>
 - Changed files: <exact paths|none>
 - Checks run:
-  - `<exact command>` — <pass|fail>, <evidence>
+  - `<exact command>` — <pass|fail|not-run>, <evidence>
 - Risks: <residual risks|none>
 - Blockers: <blockers|none>
 - Next coordinator action: <accept, block, fail, or create a new dispatch>

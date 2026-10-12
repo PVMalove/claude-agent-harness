@@ -23,6 +23,7 @@ from harness.orchestration.core.config import (
     _reject_sensitive,
 )
 from harness.orchestration.core.constants import (
+    ARCHITECT_READ_ONLY_CHECK_RESULT,
     AUTO_RETRY_SEVERITY_RANKS,
     AUTO_STOP_REASONS,
     BLOCK_BYPASS_REASON_CATEGORY,
@@ -185,7 +186,7 @@ def accept_obstacles(
         result = check.get("result") if isinstance(check, dict) else None
         if result != "pass" and not (
             report.get("role") == "architect"
-            and result == "not_run_architect_read_only"
+            and result == ARCHITECT_READ_ONLY_CHECK_RESULT
         ):
             obstacles.append(f"a check did not pass ({result})")
             break

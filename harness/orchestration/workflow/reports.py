@@ -29,6 +29,7 @@ from harness.orchestration.core.config import (
     _role,
 )
 from harness.orchestration.core.constants import (
+    ARCHITECT_READ_ONLY_CHECK_RESULT,
     CHECKPOINT_INPUT_FIELDS,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTINUATION_FACTS_FIELDS,
@@ -51,6 +52,7 @@ from harness.orchestration.core.constants import (
     QA_STAGES_FIELDS,
     QA_STAGES_OPTIONAL_FIELDS,
     RATE_LIMIT_TERMINATION_REASONS,
+    REPORT_CHECK_RESULTS,
     REPORT_FIELDS,
     REPORT_OPTIONAL_FIELDS,
     REPORT_OUTCOMES,
@@ -1532,7 +1534,7 @@ def _validate_report(
             "completion report checks_run must be a non-empty list",
             remedy="set checks_run to a non-empty list",
         )
-    for check in checks:
+    for position, check in enumerate(checks):
         if not isinstance(check, dict) or set(check) != {
             "command",
             "result",
@@ -1548,6 +1550,18 @@ def _validate_report(
             raise CoordinatorError(
                 "completion report checks_run entries must contain text evidence",
                 remedy="each checks_run entry must contain text evidence of the check result",
+            )
+        allowed_results = REPORT_CHECK_RESULTS
+        if dispatch["role"] == "architect":
+            allowed_results = allowed_results | {ARCHITECT_READ_ONLY_CHECK_RESULT}
+        if check["result"] not in allowed_results:
+            raise CoordinatorError(
+                f"completion report checks_run[{position}].result is invalid "
+                f"({check['result']!r}) for command {check['command']!r}",
+                remedy=f"set checks_run[{position}].result to one of: "
+                f"{', '.join(sorted(allowed_results))}; use pass only if the evidence "
+                "confirms the command passed, fail if it failed, or not-run if it "
+                "was not executed; correct the staging report and submit it again",
             )
         if len(check["evidence"]) > MAX_CHECK_EVIDENCE_CHARS:
             raise CoordinatorError(

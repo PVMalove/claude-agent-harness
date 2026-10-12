@@ -331,6 +331,10 @@ QA_DIAGNOSIS_FIELDS = frozenset({"category", "signals", "basis"})
 QA_DIAGNOSIS_CATEGORIES = ("infrastructure", "project-defect", "unknown")
 # The result of a verification command the run never reached, so it is neither a pass nor a failure.
 QA_NOT_RUN_RESULT = "not-run"
+# Completion reports use exact results, never synonyms such as "passed". The architect's
+# read-only marker remains valid for historical briefs that included verification commands.
+REPORT_CHECK_RESULTS = frozenset({"pass", "fail", QA_NOT_RUN_RESULT})
+ARCHITECT_READ_ONLY_CHECK_RESULT = "not_run_architect_read_only"
 # One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
 # handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the
 # safety classifier, kept the role from it.

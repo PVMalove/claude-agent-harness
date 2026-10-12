@@ -615,6 +615,18 @@ QA, publish и рискованные переходы остаются ручн
    python .harness/orchestration/coordinator.py --repo . report submit \
      --file developer-report.json
    ```
+   В `checks_run[*].result` допустимы только `pass`, `fail` и `not-run`; только architect
+   может использовать `not_run_architect_read_only` для совместимости со старыми brief.
+   Architect work без verification gate сохраняет пустой `checks_run`.
+   Значение `passed` и другие неизвестные результаты отклоняются с `remedy` до записи
+   canonical report. Исправьте staging-файл по evidence и повторите отправку для того же
+   dispatch: `pass` означает успешную команду, `fail` — неуспешную, `not-run` — незапущенную.
+   Допустимость результата как evidence не означает автоматического принятия отчёта.
+   Перед решением coordinator снова проверяет report, поэтому старый записанный отчёт
+   с неизвестным результатом также получит отказ. Immutable report не редактируют;
+   для уже записанного отчёта или остановленного batch оператор отдельно выбирает
+   существующий маршрут восстановления. После `resume-stop` политика `auto` не возвращается.
+
    До следующего dispatch coordinator записывает отдельное решение. При `manual_all` или нечистом
    report человек принимает report, override-ит warning либо требует retry. При `low_risk` и чистом
    report coordinator сам записывает `accept` с rationale
