@@ -25,9 +25,8 @@ from harness.orchestration.core.config import (
     _role,
     _worker_attestation_required,
 )
-from harness.orchestration.core.check_results import canonical_check_result
+from harness.orchestration.core.check_results import check_counts_as_success
 from harness.orchestration.core.constants import (
-    ARCHITECT_READ_ONLY_CHECK_RESULT,
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
     DEVELOPER_REASON_CATEGORIES,
@@ -164,10 +163,7 @@ def _auto_accept_policy(
             return None
     for check in report.get("checks_run", []):
         result = check.get("result") if isinstance(check, dict) else None
-        if canonical_check_result(result) != "pass" and not (
-            dispatch.get("role") == "architect"
-            and result == ARCHITECT_READ_ONLY_CHECK_RESULT
-        ):
+        if not check_counts_as_success(dispatch.get("role"), result):
             return None
     review = report.get("review")
     if review is not None:

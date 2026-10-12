@@ -22,9 +22,8 @@ from harness.orchestration.core.config import (
     _continuation_policy,
     _reject_sensitive,
 )
-from harness.orchestration.core.check_results import canonical_check_result
+from harness.orchestration.core.check_results import check_counts_as_success
 from harness.orchestration.core.constants import (
-    ARCHITECT_READ_ONLY_CHECK_RESULT,
     AUTO_RETRY_SEVERITY_RANKS,
     AUTO_STOP_REASONS,
     BLOCK_BYPASS_REASON_CATEGORY,
@@ -185,10 +184,7 @@ def accept_obstacles(
         obstacles.append("the report names blockers")
     for check in report.get("checks_run", []):
         result = check.get("result") if isinstance(check, dict) else None
-        if canonical_check_result(result) != "pass" and not (
-            report.get("role") == "architect"
-            and result == ARCHITECT_READ_ONLY_CHECK_RESULT
-        ):
+        if not check_counts_as_success(report.get("role"), result):
             obstacles.append(f"a check did not pass ({result})")
             break
     if plan_rules.not_covered(report):
