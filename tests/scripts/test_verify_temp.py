@@ -238,9 +238,9 @@ class PytestCommandTest(unittest.TestCase):
         )
         self.assertIn("-x", cmd)
         self.assertIn("--ff", cmd)
-        self.assertIn("cache_dir=/tmp/cache", cmd)
+        self.assertIn(f"cache_dir={Path('/tmp/cache')}", cmd)
         self.assertNotIn("no:cacheprovider", cmd)
-        self.assertIn("--junitxml=/tmp/out/junit.xml", cmd)
+        self.assertIn(f"--junitxml={Path('/tmp/out/junit.xml')}", cmd)
 
     def test_single_cpu_fallback(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=1)
