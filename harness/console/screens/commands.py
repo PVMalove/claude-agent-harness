@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Callable, Sequence, TypeVar
@@ -42,6 +43,11 @@ def call_from_worker(screen: Widget, callback: Callable[[], object]) -> None:
         # The screen or the app can close between the check above and the call (RuntimeError from
         # a stopped loop, NoMatches from an unmounted widget): the result has no receiver then.
         pass
+
+
+def short_repo(cli_line: str, repo: Path) -> str:
+    """`cli_line` with the project path replaced by `$REPO`, quoted or not (a Windows path is quoted)."""
+    return cli_line.replace(shlex.quote(str(repo)), "$REPO").replace(str(repo), "$REPO")
 
 
 def render_result(cli_line: str, result: "CompletedProcess[str]") -> str:
@@ -218,7 +224,7 @@ class CommandMenuScreen(Translated, Screen[None]):
 
     def display_cli(self, cli_line: str) -> str:
         """Строка CLI для показа: путь проекта заменён на `$REPO`."""
-        return cli_line.replace(str(self.repo), "$REPO")
+        return short_repo(cli_line, self.repo)
 
     def overview(self) -> ComposeResult:
         """Виджеты над меню команд: текущее состояние и статистика раздела (по умолчанию нет)."""

@@ -17,6 +17,7 @@ from textual.pilot import Pilot
 from textual.widgets import Button, RadioButton, SelectionList, Static, TabbedContent
 
 from harness.console import brand
+from tests.console._pilot_wait import press
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.configuration import ConfigurationScreen
 from harness.console.screens.repo_map import RepoMapScreen
@@ -114,15 +115,15 @@ def test_the_tier_is_switched_after_confirmation(tmp_path: Path) -> None:
         async with app.run_test(size=(120, 48)) as pilot:
             await _open(app, pilot)
             app.screen.query_one("#tier-minimal", RadioButton).value = True
-            await pilot.click("#tier-apply")
+            await press(pilot, "#tier-apply")
             await pilot.pause()
             before = (repo / ".harness/orchestration.json").read_bytes()
-            await pilot.click("#cancel")
+            await press(pilot, "#cancel")
             await _settle(pilot)
             assert (repo / ".harness/orchestration.json").read_bytes() == before
-            await pilot.click("#tier-apply")
+            await press(pilot, "#tier-apply")
             await pilot.pause()
-            await pilot.click("#confirm")
+            await press(pilot, "#confirm")
             await _settle(pilot)
             written = json.loads((repo / ".harness/orchestration.json").read_bytes())
             assert written["repo_map_policy"]["tier"] == "minimal"
@@ -155,10 +156,10 @@ def test_installing_parsers_runs_the_cli_command_after_confirmation(
         app = _Host(repo, runner, NO_BUNDLE)
         async with app.run_test(size=(120, 48)) as pilot:
             await _open(app, pilot)
-            await pilot.click("#parser-install")
+            await press(pilot, "#parser-install")
             await pilot.pause()
             assert runner.calls == []  # the confirmation form comes first
-            await pilot.click("#run")
+            await press(pilot, "#run")
             await _settle(pilot)
             assert runner.calls
             argv = runner.calls[0]
@@ -185,10 +186,10 @@ def test_memory_is_enabled_then_built_when_it_is_off(tmp_path: Path) -> None:
         app = _Host(repo, runner, NO_BUNDLE)
         async with app.run_test(size=(120, 48)) as pilot:
             await _open(app, pilot)
-            await pilot.click("#memory-init")
+            await press(pilot, "#memory-init")
             await pilot.pause()
             assert runner.calls == []
-            await pilot.click("#confirm")
+            await press(pilot, "#confirm")
             await _settle(pilot)
             await _settle(pilot)
             config = json.loads((repo / ".harness/project.json").read_bytes())
@@ -206,9 +207,9 @@ def test_memory_sync_and_rebuild_run_their_commands(tmp_path: Path) -> None:
         app = _Host(repo, runner, NO_BUNDLE)
         async with app.run_test(size=(120, 48)) as pilot:
             await _open(app, pilot)
-            await pilot.click("#memory-sync")
+            await press(pilot, "#memory-sync")
             await _settle(pilot)
-            await pilot.click("#memory-rebuild")
+            await press(pilot, "#memory-rebuild")
             await _settle(pilot)
             assert [call[2:4] for call in runner.calls] == [
                 ["memory", "sync"],
@@ -231,7 +232,7 @@ def test_the_wizard_opens_on_the_policy_it_was_asked_for(
         app = _Host(repo, _Runner(), NO_BUNDLE)
         async with app.run_test(size=(120, 48)) as pilot:
             await _open(app, pilot)
-            await pilot.click(button)
+            await press(pilot, button)
             await _settle(pilot)
             screen = app.screen
             assert isinstance(screen, ConfigurationScreen)
@@ -305,7 +306,7 @@ def test_an_installed_parser_is_ticked_locked_and_grey(tmp_path: Path) -> None:
             )
             # Installing ignores the locked row.
             options.deselect("go")
-            await pilot.click("#parser-install")
+            await press(pilot, "#parser-install")
             await pilot.pause()
             assert "Отметьте язык" in _text(app, "#settings-output")
             assert runner.calls == []
@@ -332,7 +333,7 @@ def test_the_diagnostics_tab_runs_the_checks_when_it_opens(tmp_path: Path) -> No
             assert "Python: парсер установлен" in text
             assert "Go: парсер не установлен" in text
             assert "Память проекта выключена" in text
-            await pilot.click("#run-checks")
+            await press(pilot, "#run-checks")
             await _settle(pilot)
             assert "Bundle парсеров готов" in _text(app, "#map-checks")
 
@@ -352,7 +353,7 @@ def test_the_pane_says_why_the_map_is_minimal_although_the_policy_is_full(
             assert "В политике проекта: full" in status
             assert "Фактически карта строится в minimal" in status
             # Applying the mode the policy already has explains instead of doing nothing.
-            await pilot.click("#tier-apply")
+            await press(pilot, "#tier-apply")
             await _settle(pilot)
             output = _text(app, "#settings-output")
             assert "В политике уже full" in output
@@ -384,12 +385,12 @@ def test_memory_with_empty_allow_paths_is_fixed_then_built(tmp_path: Path) -> No
         async with app.run_test(size=(120, 48)) as pilot:
             await _open(app, pilot)
             assert "не читает источники" in _text(app, "#memory-status")
-            await pilot.click("#memory-init")
+            await press(pilot, "#memory-init")
             await pilot.pause()
             assert "allow_paths" in str(
                 app.screen.query_one("#confirm-text Static", Static).content
             )
-            await pilot.click("#confirm")
+            await press(pilot, "#confirm")
             await _settle(pilot)
             await _settle(pilot)
             policy = json.loads(path.read_bytes())["memory_policy"]

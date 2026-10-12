@@ -418,7 +418,7 @@ class RepoMapSettings(Vertical):
                 message, ok = f"{exc!r}", False
             call_from_worker(self, lambda: self._worked(message, ok, then))
 
-        self.run_worker(work, thread=True, exclusive=True, group="settings-run")
+        self.run_worker(work, thread=True, exclusive=True, group="settings-write")
 
     def _worked(self, message: str, ok: bool, then: Callable[[], None] | None) -> None:
         self._set_busy(False)
@@ -445,7 +445,7 @@ class RepoMapSettings(Vertical):
                 text, success = f"$ {line}\nсбой запуска: {exc!r}", False
             call_from_worker(self, lambda: self._finished(text, success, reload))
 
-        self.run_worker(work, thread=True, exclusive=True, group="settings-run")
+        self.run_worker(work, thread=True, exclusive=True, group="settings-command")
 
     def _finished(self, text: str, success: bool, reload: bool) -> None:
         self._set_busy(False)

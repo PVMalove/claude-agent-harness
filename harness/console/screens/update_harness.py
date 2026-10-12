@@ -40,7 +40,7 @@ from ..translate import Translated
 from ..logtext import colorize_diff, colorize_log
 from ..runner import CommandRunner, capturing_runner
 from ..widgets import CheckList
-from .commands import call_from_worker, render_result
+from .commands import call_from_worker, render_result, short_repo
 from .harness import CommandFormScreen
 
 SEED_MODE = "update-seed-selected"
@@ -469,7 +469,7 @@ class UpdateHarnessScreen(Translated, Screen[None]):
 
     def _show_plan(self) -> None:
         entry = self._entry()
-        line = entry.cli_line(self.repo).replace(str(self.repo), "$REPO")
+        line = short_repo(entry.cli_line(self.repo), self.repo)
         text = Text()
         text.append(f"$ {line}\n", style=f"bold {brand.PALETTE['secondary']}")
         text.append(

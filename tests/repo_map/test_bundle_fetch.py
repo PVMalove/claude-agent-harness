@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -224,6 +225,9 @@ def _cli(*args: str) -> subprocess.CompletedProcess[str]:
         [sys.executable, str(ROOT / "harness/bin/harness.py"), "parsers", *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         check=False,
     )
 
