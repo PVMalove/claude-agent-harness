@@ -7,7 +7,7 @@ from rich.segment import Segment
 from rich.style import Style
 from textual.content import Content
 from textual.strip import Strip
-from textual.widgets import Checkbox, SelectionList
+from textual.widgets import Checkbox, RadioButton, SelectionList
 from textual.widgets.option_list import OptionDoesNotExist
 
 from . import brand
@@ -32,6 +32,16 @@ class CheckBox(Checkbox):
         return Content.styled(f" {glyph} ", f"bold {color}")
 
 
+class RoundRadioButton(RadioButton):
+    """A radio option with a filled or empty circle, without a button background."""
+
+    @property
+    def _button(self) -> Content:
+        glyph = "●" if self.value else "○"
+        color = brand.PALETTE["primary"] if self.value else brand.PALETTE["muted"]
+        return Content.styled(glyph, color)
+
+
 class CheckList(SelectionList[str]):
     """A `SelectionList` whose rows start with ☑ / ☐ instead of the coloured `X` button."""
 
@@ -46,6 +56,9 @@ class CheckList(SelectionList[str]):
         except OptionDoesNotExist:
             return strip
         glyph, color = _glyph(selection.value in self._selected)
+        if selection.disabled:
+            # A locked row (e.g. an installed parser) keeps its glyph but loses the accent.
+            color = brand.PALETTE["muted"]
         base = segments[3].style or Style()
         style = Style(
             color=color,

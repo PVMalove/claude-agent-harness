@@ -13,48 +13,44 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKER = ROOT / "harness" / "repo_map" / "tree_sitter_worker.py"
-CORE_DISTRIBUTION = "tree_sitter"
-CORE_VERSION = "0.26.0"
-CORE_ABI_RANGE = "13-15"
+sys.path.insert(0, str(ROOT))
+from harness.repo_map.bundle_build import (  # noqa: E402
+    WORKER,
+    BundleBuildError,
+    build_bundle,
+    sha256_file,
+    single_wheel,
+)
+from harness.repo_map.bundle_pins import (  # noqa: E402
+    CORE_ABI_RANGE,
+    CORE_DISTRIBUTION,
+    CORE_VERSION,
+    GRAMMARS,
+    GrammarPin,
+)
+
+__all__ = [
+    "CORE_ABI_RANGE",
+    "CORE_DISTRIBUTION",
+    "CORE_VERSION",
+    "GRAMMARS",
+    "WORKER",
+    "GrammarPin",
+    "build",
+    "main",
+]
 # Bound for the interpreter probe that names the running cpXY-platform pair.
 PROBE_TIMEOUT_SECONDS = 60
 
 
-@dataclass(frozen=True)
-class GrammarPin:
-    """Закреплённая грамматика: имя в lock, дистрибутив, версия, ABI и расширения файлов."""
-
-    name: str
-    distribution: str
-    version: str
-    abi: int
-    extensions: tuple[str, ...]
-
-
-GRAMMARS = (
-    GrammarPin("python", "tree_sitter_python", "0.25.0", 15, (".py",)),
-    GrammarPin("typescript", "tree_sitter_typescript", "0.23.2", 14, (".ts",)),
-    GrammarPin("tsx", "tree_sitter_typescript", "0.23.2", 14, (".tsx",)),
-    GrammarPin("javascript", "tree_sitter_javascript", "0.25.0", 15, (".js", ".jsx")),
-    GrammarPin("go", "tree_sitter_go", "0.25.0", 15, (".go",)),
-    GrammarPin("java", "tree_sitter_java", "0.23.5", 14, (".java",)),
-    GrammarPin("csharp", "tree_sitter_c_sharp", "0.23.5", 15, (".cs",)),
-)
-
-
 def _sha256(path: Path) -> str:
     """SHA-256 содержимого файла."""
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return sha256_file(path)
 
 
 def _running_pair() -> str:
@@ -71,52 +67,18 @@ def _running_pair() -> str:
 
 def _single_wheel(wheelhouse: Path, distribution: str, version: str) -> Path:
     """Найти единственный wheel дистрибутива нужной версии или завершить скрипт с ошибкой."""
-    matches = sorted(wheelhouse.glob(f"{distribution}-{version}-*.whl"))
-    if len(matches) != 1:
-        raise SystemExit(
-            f"expected exactly one {distribution}=={version} wheel in {wheelhouse}, "
-            f"found {len(matches)}"
-        )
-    return matches[0]
+    try:
+        return single_wheel(wheelhouse, distribution, version)
+    except BundleBuildError as error:
+        raise SystemExit(str(error)) from None
 
 
 def build(wheelhouse: Path, out: Path, pair: str) -> Path:
     """Скопировать wheels и worker в `out` и записать lock для пары `pair`; вернуть путь к lock."""
-    core = _single_wheel(wheelhouse, CORE_DISTRIBUTION, CORE_VERSION)
-    grammar_wheels = {
-        pin.name: _single_wheel(wheelhouse, pin.distribution, pin.version)
-        for pin in GRAMMARS
-    }
-    target = out / "wheelhouse" / pair
-    target.mkdir(parents=True, exist_ok=True)
-    artifacts = []
-    for wheel in dict.fromkeys((core, *grammar_wheels.values())):
-        shutil.copyfile(wheel, target / wheel.name)
-        artifacts.append({"filename": wheel.name, "sha256": _sha256(wheel)})
-    shutil.copyfile(WORKER, out / WORKER.name)
-    lock = {
-        "core_version": CORE_VERSION,
-        "core_abi_range": CORE_ABI_RANGE,
-        "worker_script": WORKER.name,
-        "script_sha256": _sha256(out / WORKER.name),
-        "grammars": [
-            {
-                "name": pin.name,
-                "distribution": pin.distribution,
-                "version": pin.version,
-                "abi": pin.abi,
-                "sha256": _sha256(grammar_wheels[pin.name]),
-                "extensions": list(pin.extensions),
-            }
-            for pin in GRAMMARS
-        ],
-        "wheelhouses": {pair: artifacts},
-    }
-    lock_path = out / "parser_bundle.lock.json"
-    lock_path.write_text(
-        json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    return lock_path
+    try:
+        return build_bundle(wheelhouse, out, pair)
+    except BundleBuildError as error:
+        raise SystemExit(str(error)) from None
 
 
 def main(argv: list[str] | None = None) -> int:

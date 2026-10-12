@@ -243,3 +243,30 @@ def test_status_commands_may_report_on_stderr_only_when_requested(
     argv = [sys.executable, str(script)]
     assert _run(argv, tmp_path, "", Event(), 10) == ""
     assert "Logged in" in _run(argv, tmp_path, "", Event(), 10, merge_stderr=True)
+
+
+def test_a_response_in_a_code_fence_or_with_an_encoded_value_is_accepted(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+    draft = ConfigurationDraft.load(tmp_path, ("project.json",))
+    field = steps_for(draft)[0]
+    body = '{"value": "\\"en\\"", "why": "Команда", "impact": "Язык"}'
+    advice = parse_response("Вот ответ:\n```json\n" + body + "\n```", field)
+    assert advice.value == "en"
+    assert parse_response(body, field).value == "en"
+    assert parse_response('{"value":"en","why":"x","impact":"y","note":"?"}', field)
+
+
+def test_a_rejected_response_names_the_reason(tmp_path: Path) -> None:
+    installed_project(tmp_path)
+    draft = ConfigurationDraft.load(tmp_path, ("project.json",))
+    field = steps_for(draft)[0]
+    for raw, reason in (
+        ("не JSON", "не в формате JSON"),
+        ('{"value":"en","why":"x"}', "нет полей impact"),
+        ('{"value":"invented","why":"x","impact":"y"}', "не проходит проверку поля"),
+        ('{"value":"en","why":"token=secret","impact":"y"}', "похож на секрет"),
+    ):
+        with pytest.raises(AdvisorUnavailable, match=reason):
+            parse_response(raw, field)

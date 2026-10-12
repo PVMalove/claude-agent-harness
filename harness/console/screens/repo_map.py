@@ -32,8 +32,11 @@ from ..translate import Translated
 from .. import repo_map as console_repo_map
 from ..repo_map import RepoMapView
 from ..runner import CommandRunner, capturing_runner
-from .. import brand
+from .. import brand, i18n
+from .. import repo_map_settings
 from .commands import call_from_worker
+from .repo_map_settings import RepoMapSettings
+from harness.repo_map.bundle_fetch import ParserStatus, parser_status
 from .export import (
     EXPORT_BINDING_KEY,
     EXPORT_JSON_BINDING_KEY,
@@ -106,6 +109,8 @@ class RepoMapScreen(Translated, Screen[None]):
     RepoMapScreen #repo-map-head { height: auto; }
     RepoMapScreen #repo-map-status { height: auto; }
     RepoMapScreen #repo-map-actions { height: auto; }
+    RepoMapScreen #checks-frame { height: auto; }
+    RepoMapScreen #map-checks { height: auto; }
     RepoMapScreen #repo-map-tabs { height: 1fr; margin: 0 1; }
     RepoMapScreen .map-panel {
         height: 1fr; padding: 0 1;
@@ -128,16 +133,19 @@ class RepoMapScreen(Translated, Screen[None]):
         load_cached: Callable[
             [Path, str], RepoMapView | None
         ] = console_repo_map.cached_map,
+        load_parsers: Callable[[Path], ParserStatus] = parser_status,
     ) -> None:
         """Инициализирует экран Repo Map для указанного репозитория."""
         super().__init__()
         self.repo = repo
         self._command_runner = command_runner
+        self._load_parsers = load_parsers
         self.head = find_head(repo)
         self.view: RepoMapView | None = (
             load_cached(repo, self.head) if self.head is not None else None
         )
         self._status_text = self._initial_status()
+        self._check_inputs: tuple[ParserStatus | None, dict[str, int]] | None = None
 
     def _initial_status(self) -> str:
         """Формирует начальный текст строки статуса при открытии экрана."""
@@ -182,14 +190,88 @@ class RepoMapScreen(Translated, Screen[None]):
             with TabPane("Хабы", id="tab-hubs"):
                 yield _panel("Хабы", Static("", id="map-hubs", markup=False))
             with TabPane("Диагностики", id="tab-diagnostics"):
+                with Vertical(id="checks-frame", classes="frame") as checks:
+                    checks.border_title = brand.frame_title("Проверка Repo Map")
+                    yield Static("", id="map-checks", classes="no-i18n", markup=False)
+                    with Horizontal(classes="actions"):
+                        yield Button("Проверить", id="run-checks", compact=True)
                 yield _panel(
-                    "Диагностики", Static("", id="map-diagnostics", markup=False)
+                    "Диагностики карты", Static("", id="map-diagnostics", markup=False)
+                )
+            with TabPane("Настройки", id="tab-settings"):
+                yield RepoMapSettings(
+                    self.repo,
+                    command_runner=self._command_runner,
+                    load_parsers=self._load_parsers,
                 )
         yield Footer()
+
+    def sync_language(self) -> None:
+        """Repaints the texts built in the current language: the checks and the settings pane."""
+        self._paint_checks()
+        for pane in self.query(RepoMapSettings):
+            pane.repaint()
+
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        """The checks are read fresh each time their tab opens."""
+        if event.pane.id == "tab-diagnostics":
+            self._run_checks()
+
+    def _run_checks(self) -> None:
+        """Read the parsers, languages and memory in a worker, then show the checks."""
+        self.query_one("#map-checks", Static).update(
+            i18n.tr_text(self._language, "Проверяю…")
+        )
+
+        def work() -> None:
+            try:
+                parsers: ParserStatus | None = self._load_parsers(self.repo)
+            except Exception:
+                parsers = None
+            files = repo_map_settings.language_files(self.repo)
+            call_from_worker(self, lambda: self._checked(parsers, files))
+
+        self.run_worker(work, thread=True, exclusive=True, group="repo-map-checks")
+
+    def _checked(self, parsers: ParserStatus | None, files: dict[str, int]) -> None:
+        self._check_inputs = (parsers, files)
+        self._paint_checks()
+
+    @property
+    def _language(self) -> str:
+        return str(getattr(self.app, "language", "ru"))
+
+    def _paint_checks(self) -> None:
+        if self._check_inputs is None:
+            return
+        parsers, files = self._check_inputs
+        checks = repo_map_settings.repo_map_checks(
+            head=self.head,
+            tier=repo_map_settings.tier_setting(self.repo),
+            parsers=parsers,
+            files=files,
+            memory=repo_map_settings.memory_status(self.repo),
+            view=self.view,
+            t=lambda text: i18n.tr_text(self._language, text),
+        )
+        text = Text()
+        for index, check in enumerate(checks):
+            color = brand.STATUS_COLORS.get(check.level, brand.PALETTE["muted"])
+            text.append(
+                ("\n" if index else "")
+                + brand.STATUS_ICONS.get(check.level, "·")
+                + " ",
+                style=color,
+            )
+            text.append(check.text)
+        self.query_one("#map-checks", Static).update(text)
 
     def on_mount(self) -> None:
         """Отрисовывает карту репозитория при монтировании экрана."""
         self._render_map()
+        self._run_checks()
 
     def _render_map(self) -> None:
         view = self.view
@@ -278,6 +360,8 @@ class RepoMapScreen(Translated, Screen[None]):
             self.action_export()
         elif event.button.id == "export-json":
             self.action_export_json()
+        elif event.button.id == "run-checks":
+            self._run_checks()
 
     def action_build(self) -> None:
         head = self.head
@@ -319,6 +403,7 @@ class RepoMapScreen(Translated, Screen[None]):
         self._set_status(f"карта HEAD {outcome.commit[:12]} построена")
         self.query_one("#file-relations", Static).update("выберите файл")
         self._render_map()
+        self._paint_checks()
 
     def _set_status(self, text: str) -> None:
         self._status_text = text

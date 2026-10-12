@@ -16,6 +16,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen, Screen
+from textual.widget import Widget
 from textual.widgets import Button, Footer, ListItem, ListView, Static
 
 from ..chrome import TopBar
@@ -31,8 +32,8 @@ _OUTPUT_TAIL_LINES = 200
 _Result = TypeVar("_Result")
 
 
-def call_from_worker(screen: Screen[_Result], callback: Callable[[], object]) -> None:
-    """Передаёт результат фонового потока в UI, если экран и приложение ещё работают."""
+def call_from_worker(screen: Widget, callback: Callable[[], object]) -> None:
+    """Передаёт результат фонового потока в UI, если экран (или виджет) и приложение ещё работают."""
     if not (screen.is_mounted and screen.app.is_running):
         return
     try:

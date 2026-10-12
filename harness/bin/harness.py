@@ -1303,6 +1303,57 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_parsers(args: argparse.Namespace) -> int:
+    """Show or install the Repo Map parsers (tree-sitter grammars) of the project's languages."""
+    from harness.repo_map.bundle_fetch import install_languages, parser_status
+    from harness.repo_map.bundle_pins import LANGUAGES
+
+    repo = Path(args.repo).expanduser().resolve()
+    labels = {language.key: language.label for language in LANGUAGES}
+    if args.parsers_operation == "status":
+        status = parser_status(repo)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "registry": str(status.registry),
+                        "pair": status.pair,
+                        "source": status.source,
+                        "ready": status.ready,
+                        "problem": status.problem,
+                        "grammars": list(status.grammars),
+                        "languages": list(status.languages),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(f"Registry: {status.registry}")
+            print(f"Pair: {status.pair or '-'}")
+            print(
+                "State: "
+                + ("ready (tier full)" if status.ready else str(status.problem))
+            )
+            print(
+                "Languages: " + (", ".join(labels[k] for k in status.languages) or "-")
+            )
+        return 0
+    result = install_languages(
+        repo, args.language, progress=lambda line: print(line, flush=True)
+    )
+    print("Languages: " + ", ".join(labels[key] for key in result.languages))
+    print(f"Pair: {result.pair}\nRegistry: {result.registry}")
+    if not result.ready:
+        print(
+            f"Bundle is built, but tier full is not ready yet: {result.problem}",
+            file=sys.stderr,
+        )
+        return 1
+    print("Tier full is ready")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     """Сконфигурировать парсер аргументов командной строки CLI harness."""
     root = argparse.ArgumentParser(prog="harness")
@@ -1401,6 +1452,27 @@ def parser() -> argparse.ArgumentParser:
             memory_command.add_argument("--max-noise", type=float, default=0.7)
             memory_command.add_argument("--json", action="store_true")
         memory_command.set_defaults(func=cmd_memory)
+
+    parsers = commands.add_parser(
+        "parsers", help="Repo Map parsers (tree-sitter grammars) for project languages"
+    )
+    parsers_commands = parsers.add_subparsers(dest="parsers_operation", required=True)
+    parsers_status = parsers_commands.add_parser("status")
+    parsers_status.add_argument("repo")
+    parsers_status.add_argument("--json", action="store_true")
+    parsers_install = parsers_commands.add_parser(
+        "install",
+        help="download the pinned wheels of the chosen languages (network) and build the bundle",
+    )
+    parsers_install.add_argument("repo")
+    parsers_install.add_argument(
+        "--language",
+        action="append",
+        required=True,
+        help="python, typescript, javascript, go, java or csharp; repeatable",
+    )
+    for operation_parser in (parsers_status, parsers_install):
+        operation_parser.set_defaults(func=cmd_parsers)
 
     health = commands.add_parser("health")
     health.add_argument("repo")

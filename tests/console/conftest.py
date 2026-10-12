@@ -12,3 +12,9 @@ def offline_advisor_probe(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         configuration, "availability", lambda provider, cancel: "Готов к запросу (тест)"
     )
+
+
+@pytest.fixture(autouse=True)
+def private_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test never reads or overwrites the developer's real clipboard."""
+    monkeypatch.setenv("HARNESS_CONSOLE_SYSTEM_CLIPBOARD", "0")

@@ -83,6 +83,7 @@ cd claude-agent-harness
 | `registry` | Пересобирает `.harness/skills/REGISTRY.md` | да |
 | `lock-project-skills` | Фиксирует хэши скиллов, которыми владеет сам проект | да |
 | `memory build/search/rebuild` | Локальный FTS5-кэш и указатели на разрешённые источники | build/rebuild — да; search — нет |
+| `parsers status/install` | Парсеры Repo Map: состояние bundle и установка парсеров выбранных языков (`--language`, повторяемый); `install` скачивает закреплённые wheels с PyPI и проверяет их SHA-256 | install — да (скачивает файлы), status — нет |
 | `health` | Диагностика установки и окружения | только с `--fix` |
 | `list` | Список установленных скиллов | нет |
 | `cleanup` | Предпросмотр и удаление одноразовых данных `.harness` | только с `--apply` |
@@ -696,7 +697,7 @@ checks» пересчитывает счётчики с `--online` и показ
 | `Harness` | Панель «Состояние»: установленная версия (и версия пакета, если они расходятся), capability, число скиллов и управляемых файлов, время обновления lock, подключена ли оркестрация и сводка использования пайплайна (`harness/console/stats.py`). Ниже — команды из `harness/console/catalog.py`: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса (план и применение), registry, lock-project-skills, list, health, Repo Map, parser bundle, verify, ledger migrate/clean/reset, удаление worktree |
 | `Orchestration` | Статистика пайплайна (запуски и тикеты, состояния, диспатчи по ролям, итоги отчётов, QA, период) и история: слева все состояния batch с числом, справа batch выбранного состояния, Enter открывает хронологию. Ниже — команды coordinator из `harness/console/coordinator_catalog.py` |
 | `Reports` | Completion reports из леджера с фильтрами по тикету, роли, outcome и дате; хронология batch; QA-логи |
-| `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика |
+| `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика. Вкладка «Настройки»: режим карты `minimal`/`full` (`repo_map_policy.tier`), мастер на шаге `repo_map_policy`, установка парсеров выбранных языков (`harness parsers install`) и память проекта: инициализация (`memory_policy` по умолчанию и `harness memory build`), синхронизация, пересборка, мастер на шаге `memory` |
 | `Настройка конфигурации` | Пошаговый мастер `project.json` и `orchestration.json` (`harness/console/configuration_steps.py`): пояснения и рекомендации по признакам проекта, проверка по схеме и валидаторам, различия, применение с автоматической резервной копией, локальные версии в `.harness/config_versions/` и откат, необязательные подсказки через авторизованный Codex CLI или Claude Code CLI (`harness/console/advisor.py`) |
 | `Help` | Справка по разделам, клавишам и правилам безопасности (`harness/console/help_text.py`) |
 

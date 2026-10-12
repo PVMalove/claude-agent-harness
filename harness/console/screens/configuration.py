@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 from enum import StrEnum
@@ -9,6 +10,7 @@ from pathlib import Path
 from threading import Event
 from typing import Callable, cast
 
+from rich.json import JSON
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -19,6 +21,9 @@ from textual.widgets import (
     Checkbox,
     Footer,
     Input,
+    Label,
+    ListItem,
+    ListView,
     RadioButton,
     RadioSet,
     Select,
@@ -32,10 +37,11 @@ from .. import brand
 from ..chrome import TopBar
 from ..translate import Translated
 from ..logtext import colorize_diff
-from ..widgets import CheckBox
+from ..widgets import CheckBox, RoundRadioButton
 from ..advisor import PROVIDERS, Advice, AdvisorUnavailable, advise, availability
 from ..configuration import ConfigurationDraft
 from ..configuration_steps import (
+    skeleton,
     CHOICE_PAGE_SIZE,
     ConfigurationStep,
     step_for_problem,
@@ -57,6 +63,21 @@ class Phase(StrEnum):
     CHOOSE = "choose"
     EDITING = "editing"
     REVIEW = "review"
+
+
+def _short(value: object, limit: int = 48) -> str:
+    """One-line preview of a JSON value for the section overview."""
+    if isinstance(value, dict):
+        return (
+            "{…} "
+            + ", ".join(list(map(str, value))[:4])
+            + (", …" if len(value) > 4 else "")
+        )
+    if isinstance(value, list):
+        text = "[" + ", ".join(_short(item, 16) for item in value) + "]"
+    else:
+        text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 class ConfirmConfiguration(Translated, ModalScreen[bool]):
@@ -105,18 +126,47 @@ class ConfigurationScreen(Translated, Screen[None]):
     ConfigurationScreen .actions { height: auto; }
     ConfigurationScreen Static { height: auto; }
     ConfigurationScreen RadioSet { height: auto; }
+    ConfigurationScreen #configuration-mode {
+        layout: horizontal; height: 1; border: none; padding: 0; background: transparent;
+    }
+    ConfigurationScreen #configuration-mode > RadioButton {
+        width: auto; height: 1; margin-right: 3; border: none; padding: 0;
+        background: transparent;
+    }
+    ConfigurationScreen #configuration-mode > RadioButton.-selected {
+        background: transparent;
+    }
+    ConfigurationScreen #configuration-mode:focus > RadioButton.-selected {
+        color: $primary; background: transparent;
+    }
+    ConfigurationScreen #configuration-mode:focus > RadioButton.-selected > .toggle--label {
+        color: $primary; text-style: underline; background: transparent;
+    }
     ConfigurationScreen #field-value { height: 9; min-height: 3; }
+    ConfigurationScreen .recommendation-title { color: $text-muted; }
+    ConfigurationScreen .recommendation-json { height: auto; max-height: 12; }
+    ConfigurationScreen .section-rows { height: auto; max-height: 12; }
+    ConfigurationScreen #menu-items { height: auto; max-height: 8; }
+    ConfigurationScreen .hint { color: $text-muted; }
+    ConfigurationScreen .row-ok { color: $success; }
+    ConfigurationScreen .row-warn { color: $warning; }
+    ConfigurationScreen .row-muted { color: $text-muted; }
     ConfigurationScreen #config-error { color: $error; }
     """
 
-    def __init__(self, repo: Path) -> None:
+    def __init__(
+        self, repo: Path, focus: tuple[str, tuple[str, ...]] | None = None
+    ) -> None:
+        """`focus` is (file, field path): the wizard opens on that file at that field."""
         super().__init__()
         self.repo = repo
+        self.focus_target = focus
         self.phase = Phase.CHOOSE
         self.draft: ConfigurationDraft | None = None
         self.steps: list[ConfigurationStep] = []
         self.index = 0
         self.choice_page = 0
+        self.text_mode = False
         self.message = ""
         self.busy = False
         self.stale = False
@@ -140,6 +190,9 @@ class ConfigurationScreen(Translated, Screen[None]):
             "open-versions": self._open_versions,
             "ask-advisor": self._ask_advisor,
             "check-advisor": self._check_advisor,
+            "menu-add": self._menu_add,
+            "menu-remove": self._menu_remove,
+            "menu-open": self._menu_open,
         }
 
     def compose(self) -> ComposeResult:
@@ -257,19 +310,43 @@ class ConfigurationScreen(Translated, Screen[None]):
             yield from self._compose_parameter(field)
         with Vertical(id="configuration-advisor", classes="frame") as advisor:
             advisor.border_title = brand.frame_title("ИИ-подсказки")
+            advisor.display = not (
+                field.is_section
+                or field.is_map
+                or (field.has_menu and not self.text_mode)
+            )
             yield from self._compose_advisor()
 
     def _compose_parameter(self, field: ConfigurationStep) -> ComposeResult:
         assert self.draft is not None
         yield Static(field.description, markup=False)
+        if field.is_section:
+            yield from self._compose_section(field)
+            return
+        if field.has_menu:
+            yield from self._compose_mode_switch()
+            if not self.text_mode:
+                yield from self._compose_menu(field)
+                return
         recommendation, why = field.recommendation(self.draft)
-        yield Static(
-            "Рекомендация (★): "
-            + json.dumps(recommendation, ensure_ascii=False)
-            + "\nПочему: "
-            + why,
-            markup=False,
-        )
+        if isinstance(recommendation, (dict, list)) and recommendation:
+            if recommendation != field.value(self.draft):
+                # A whole object is unreadable on one line; show it as indented JSON.
+                yield Static("Рекомендация (★):", classes="recommendation-title")
+                with VerticalScroll(classes="recommendation-json"):
+                    yield Static(
+                        JSON.from_data(recommendation, indent=2, ensure_ascii=False),
+                        classes="no-i18n",
+                    )
+            yield Static("Почему: " + why, markup=False)
+        else:
+            yield Static(
+                "Рекомендация (★): "
+                + json.dumps(recommendation, ensure_ascii=False)
+                + "\nПочему: "
+                + why,
+                markup=False,
+            )
         yield CheckBox(
             "Использовать параметр (снять — оставить его отсутствующим)",
             value=field.present(self.draft) or field.required,
@@ -296,11 +373,216 @@ class ConfigurationScreen(Translated, Screen[None]):
             yield Static(
                 "Введите значение"
                 if field.kind == "string" and not field.choices
+                else "Добавьте или удалите записи в JSON; поля каждой записи настраиваются на следующих шагах"
+                if field.is_map
                 else "Значение в JSON; объект/список можно редактировать целиком"
             )
             yield TextArea(str(text or ""), id="field-value", soft_wrap=True)
         with Horizontal(classes="actions"):
             yield Button("Принять рекомендацию", id="use-recommendation")
+
+    def _compose_section(self, field: ConfigurationStep) -> ComposeResult:
+        """A block of fields: what is set so far; the fields follow on the next steps."""
+        assert self.draft is not None
+        yield CheckBox(
+            "Использовать блок (снять — убрать его целиком)",
+            value=field.present(self.draft) or field.required,
+            disabled=field.required,
+            id="include-field",
+        )
+        yield from self._compose_rows(self._section_rows(field), "Поля блока:")
+        yield Static(
+            "Поля блока настраиваются на следующих шагах — «Далее».",
+            classes="hint",
+        )
+
+    def _compose_rows(self, rows: list[tuple[str, str]], title: str) -> ComposeResult:
+        yield Static(title, classes="recommendation-title")
+        with VerticalScroll(classes="section-rows"):
+            for text, style in rows:
+                yield Static(text, classes=style, markup=False)
+
+    def _section_rows(self, field: ConfigurationStep) -> list[tuple[str, str]]:
+        assert self.draft is not None
+        value = field.value(self.draft)
+        current = value if isinstance(value, dict) else {}
+        required = field.required_names
+        rows = []
+        for name in field.child_names:
+            if name in current:
+                rows.append((f"✓ {name} = {_short(current[name])}", "row-ok"))
+            elif name in required:
+                rows.append((f"! {name} — не задан (обязательный)", "row-warn"))
+            else:
+                rows.append((f"· {name} — не задан", "row-muted"))
+        return rows
+
+    def _compose_mode_switch(self) -> ComposeResult:
+        """Two ways to edit: through menu items or as JSON text."""
+        with RadioSet(id="configuration-mode", compact=True):
+            yield RoundRadioButton(
+                "Через меню", value=not self.text_mode, id="mode-menu", compact=True
+            )
+            yield RoundRadioButton(
+                "Текстом (JSON)", value=self.text_mode, id="mode-text", compact=True
+            )
+
+    def _compose_menu(self, field: ConfigurationStep) -> ComposeResult:
+        assert self.draft is not None
+        yield CheckBox(
+            "Использовать параметр (снять — оставить его отсутствующим)",
+            value=field.present(self.draft) or field.required,
+            disabled=field.required,
+            id="include-field",
+        )
+        value = field.value(self.draft)
+        if field.is_map:
+            entries = value if isinstance(value, dict) else {}
+            rows = [
+                (str(name), f"{name}  {_short(item)}") for name, item in entries.items()
+            ]
+            yield Static("Записи:", classes="recommendation-title")
+            empty = "Записей пока нет"
+        else:
+            items = value if isinstance(value, list) else []
+            rows = [(str(i), _short(item)) for i, item in enumerate(items)]
+            yield Static("Элементы:", classes="recommendation-title")
+            empty = "Список пока пуст"
+        if rows:
+            yield ListView(
+                *[
+                    ListItem(Label(text, markup=False), name=name)
+                    for name, text in rows
+                ],
+                id="menu-items",
+                initial_index=0,
+            )
+        else:
+            yield Static(empty, classes="row-muted")
+        with Horizontal(classes="actions"):
+            if field.is_map:
+                yield Button("Настроить запись", id="menu-open", disabled=not rows)
+                yield Button("Удалить запись", id="menu-remove", disabled=not rows)
+            else:
+                yield Button("Удалить элемент", id="menu-remove", disabled=not rows)
+        yield Input(
+            placeholder="Имя новой записи" if field.is_map else "Новый элемент",
+            id="menu-new",
+        )
+        if field.is_map and rows:
+            yield Static("Копировать настройки из:", classes="hint")
+            yield Select(
+                [(name, name) for name, _ in rows],
+                value=rows[0][0],
+                allow_blank=False,
+                id="menu-template",
+            )
+        with Horizontal(classes="actions"):
+            yield Button(
+                "Добавить запись" if field.is_map else "Добавить элемент",
+                id="menu-add",
+            )
+
+    async def _set_mode(self, text: bool) -> None:
+        if self._save_field():
+            self.text_mode = text
+            await self.recompose()
+
+    def _selected_menu_name(self) -> str | None:
+        menu = (
+            self.query("#menu-items").first(ListView)
+            if self.query("#menu-items")
+            else None
+        )
+        item = menu.highlighted_child if menu is not None else None
+        return item.name if item is not None else None
+
+    async def _menu_open(self) -> None:
+        field = self.steps[self.index]
+        name = self._selected_menu_name()
+        target = (*field.path, name)
+        index = next(
+            (
+                i
+                for i, s in enumerate(self.steps)
+                if s.file == field.file and s.path == target
+            ),
+            None,
+        )
+        if name is None or index is None or not self._save_field():
+            return
+        self.index = index
+        self._set_page()
+        await self.recompose()
+
+    async def _menu_remove(self) -> None:
+        assert self.draft is not None
+        field = self.steps[self.index]
+        name = self._selected_menu_name()
+        if name is None:
+            return
+        if field.is_map:
+            self.draft.remove_value(field.file, (*field.path, name))
+        else:
+            items = field.value(self.draft)
+            if isinstance(items, list) and 0 <= int(name) < len(items):
+                del items[int(name)]
+                self.draft.set_value(field.file, field.path, items)
+        self._set_message("")
+        self._refresh_steps(field)
+        self._set_page()
+        await self.recompose()
+
+    async def _menu_add(self) -> None:
+        assert self.draft is not None
+        field = self.steps[self.index]
+        text = self.query_one("#menu-new", Input).value.strip()
+        if not text:
+            self._set_message(
+                "Введите имя записи" if field.is_map else "Введите элемент"
+            )
+            return
+        current = field.value(self.draft)
+        if field.is_map:
+            entries = dict(current) if isinstance(current, dict) else {}
+            if text in entries:
+                self._set_message("Запись с таким именем уже есть")
+                return
+            templates = self.query("#menu-template")
+            source = templates.first(Select).value if templates else None
+            entries[text] = (
+                copy.deepcopy(entries[source])
+                if isinstance(source, str) and source in entries
+                else skeleton(field.entry_schema, field.root)
+            )
+            new: object = entries
+        else:
+            new = [*(current if isinstance(current, list) else []), text]
+            try:
+                field.validate(new)
+            except ValueError as exc:
+                self._set_message(str(exc))
+                return
+        self.draft.set_value(field.file, field.path, new)
+        self._set_message("")
+        self._refresh_steps(field)
+        if field.is_map:
+            # The new entry opens at once: its own fields are what is left to fill in.
+            target = (*field.path, text)
+            self.index = next(
+                (
+                    i
+                    for i, s in enumerate(self.steps)
+                    if s.file == field.file and s.path == target
+                ),
+                self.index,
+            )
+        self._set_page()
+        await self.recompose()
+
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "menu-items" and self.steps[self.index].is_map:
+            await self._menu_open()
 
     def _compose_choices(
         self, field: ConfigurationStep, value: object, recommended: object
@@ -331,7 +613,7 @@ class ConfigurationScreen(Translated, Screen[None]):
 
     def _compose_advisor(self) -> ComposeResult:
         yield Static(
-            "ИИ-подсказки используют существующую авторизацию CLI; запрос запускается только по кнопке."
+            "ИИ-подсказки используют существующую авторизацию CLI; запрос запускается только по кнопке, проверка CLI модель не вызывает."
         )
         with RadioSet(id="advisor-provider"):
             yield RadioButton(_NO_ADVISOR, value=True)
@@ -342,9 +624,10 @@ class ConfigurationScreen(Translated, Screen[None]):
                     disabled=key in self.provider_status
                     and not status.startswith("Готов"),
                 )
-        yield Button("Проверить CLI (без запроса к модели)", id="check-advisor")
-        yield Button("Спросить ИИ", id="ask-advisor")
-        yield Button("Принять совет ИИ", id="use-advisor", disabled=True)
+        with Horizontal(classes="actions"):
+            yield Button("Проверить CLI", id="check-advisor")
+            yield Button("Спросить ИИ", id="ask-advisor")
+            yield Button("Принять совет ИИ", id="use-advisor", disabled=True)
         yield Static("", id="advisor-output", markup=False)
 
     def _compose_review(self) -> ComposeResult:
@@ -399,7 +682,12 @@ class ConfigurationScreen(Translated, Screen[None]):
                 id="version-description",
             )
 
-    async def _start(self, names: tuple[str, ...]) -> None:
+    def on_mount(self) -> None:
+        if self.focus_target is not None:
+            name, path = self.focus_target
+            self.call_later(self._start, (name,), path)
+
+    async def _start(self, names: tuple[str, ...], focus: tuple[str, ...] = ()) -> None:
         try:
             if not (self.repo / ".harness/project.schema.json").is_file():
                 raise ValueError(
@@ -408,7 +696,15 @@ class ConfigurationScreen(Translated, Screen[None]):
             ConfigurationStore(self.repo).recover()
             self.draft = ConfigurationDraft.load(self.repo, names)
             self.steps = steps_for(self.draft)
-            self.index = 0
+            # Opening on a given field takes one build of the page, not two.
+            self.index = next(
+                (
+                    i
+                    for i, step in enumerate(self.steps)
+                    if focus and step.path[: len(focus)] == focus
+                ),
+                0,
+            )
             self.phase = Phase.EDITING
             self.message = ""
             self._set_page()
@@ -445,7 +741,17 @@ class ConfigurationScreen(Translated, Screen[None]):
             return True
         field = self.steps[self.index]
         try:
-            if self.query_one("#include-field", Checkbox).value:
+            if field.is_section or (field.has_menu and not self.text_mode):
+                # Fields, entries and items change the draft as they are edited; the checkbox
+                # only adds or removes the whole value.
+                if not self.query_one("#include-field", Checkbox).value:
+                    if field.present(self.draft):
+                        self.draft.remove_value(field.file, field.path)
+                elif not field.present(self.draft):
+                    self.draft.set_value(
+                        field.file, field.path, [] if field.kind == "array" else {}
+                    )
+            elif self.query_one("#include-field", Checkbox).value:
                 value = (
                     self.query_one("#field-boolean", Checkbox).value
                     if field.kind == "boolean"
@@ -462,7 +768,18 @@ class ConfigurationScreen(Translated, Screen[None]):
             self._set_message(self.message)
             return False
 
-    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+    async def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        if event.radio_set.id == "configuration-mode":
+            text = event.pressed.id == "mode-text"
+            if text != self.text_mode:
+                await self._set_mode(text)
+                if self.text_mode != text:
+                    # Invalid JSON keeps the editor and its selected mode intact.
+                    pending = self.query_one("#field-value", TextArea).text
+                    await self.recompose()
+                    self.query_one("#field-value", TextArea).load_text(pending)
+                self.query_one("#configuration-mode", RadioSet).focus()
+            return
         if event.radio_set.id == "field-choices" and self.draft is not None:
             choices = self.steps[self.index].choice_page(self.choice_page)
             if 0 <= event.index < len(choices):

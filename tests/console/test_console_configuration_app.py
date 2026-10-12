@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from typing import cast
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from threading import Event
 import pytest
 
 from textual.app import App
+from textual.pilot import Pilot
 from textual.widgets import Button, RadioButton, RadioSet, Static, TextArea
 
 from harness.configuration_schema import PACKAGE
@@ -548,3 +550,200 @@ def test_the_confirmation_dialog_is_framed_and_cancel_changes_nothing(
     assert asyncio.run(scenario()) == "Подтверждение"
     assert answers == [False]
     assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+
+def test_a_block_is_a_section_page_with_its_fields_on_the_next_steps(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox, Select
+
+    installed_project(tmp_path)
+    path = tmp_path / ".harness/project.json"
+    document = json.loads(path.read_bytes())
+    document["memory_policy"] = {"source_types": ["adr"], "top_k": 5}
+    path.write_text(json.dumps(document))
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen)
+            parent = next(
+                i for i, s in enumerate(screen.steps) if s.path == ("memory_policy",)
+            )
+            screen.query_one("#step-jump", Select).value = parent
+            await pilot.pause()
+            # No JSON editor of the whole block: its fields follow as steps of their own.
+            assert not screen.query("#field-value")
+            assert not screen.query("#use-recommendation")
+            assert screen.query_one("#include-field", Checkbox).value is True
+            rows = [
+                str(s.content)
+                for s in screen.query(".row-ok, .row-muted, .row-warn").results(Static)
+            ]
+            assert any(r.startswith("✓ top_k = 5") for r in rows)
+            assert any(r.startswith("✓ source_types") for r in rows)
+            await pilot.click("#next-step")
+            await pilot.pause()
+            assert screen.steps[screen.index].path[0] == "memory_policy"
+            assert len(screen.steps[screen.index].path) == 2
+
+    asyncio.run(scenario())
+
+
+def test_a_section_added_with_the_checkbox_gets_its_field_steps(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox, Select
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen)
+            parent = next(
+                i for i, s in enumerate(screen.steps) if s.path == ("memory_policy",)
+            )
+            assert not any(
+                s.path[:1] == ("memory_policy",) and len(s.path) > 1
+                for s in screen.steps
+            )
+            screen.query_one("#step-jump", Select).value = parent
+            await pilot.pause()
+            assert screen.query_one("#include-field", Checkbox).value is False
+            screen.query_one("#include-field", Checkbox).value = True
+            await pilot.click("#next-step")
+            await pilot.pause()
+            assert screen.draft is not None
+            assert "memory_policy" in screen.draft.documents["project.json"]
+            assert len(screen.steps[screen.index].path) == 2
+
+    asyncio.run(scenario())
+
+
+def _orchestration_project(repo: Path) -> None:
+    from harness.configuration_schema import PACKAGE
+
+    installed_project(repo)
+    root = repo / ".harness/orchestration"
+    shutil.copytree(PACKAGE / "orchestration/roles", root / "roles")
+    (root / "orchestration.schema.json").write_bytes(
+        (PACKAGE / "orchestration/orchestration.schema.json").read_bytes()
+    )
+    (repo / ".harness/orchestration.json").write_bytes(
+        (PACKAGE / "orchestration.example.json").read_bytes()
+    )
+
+
+async def _open_step(
+    pilot: Pilot[None], screen: ConfigurationScreen, path: tuple[str, ...]
+) -> None:
+    from textual.widgets import Select
+
+    index = next(i for i, s in enumerate(screen.steps) if s.path == path)
+    screen.query_one("#step-jump", Select).value = index
+    await pilot.pause()
+
+
+def test_entries_of_a_map_are_added_removed_and_opened_through_the_menu(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Input, ListView
+
+    _orchestration_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-orchestration")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen) and screen.draft is not None
+            await _open_step(pilot, screen, ("assignment_plans",))
+            # The menu is the default way; the JSON text has its own radio option.
+            assert not screen.query("#field-value")
+            assert screen.query_one("#menu-items", ListView)
+            plans = screen.draft.documents["orchestration.json"]["assignment_plans"]
+            assert isinstance(plans, dict) and "reviewer" not in plans
+            screen.query_one("#menu-new", Input).value = "reviewer"
+            await pilot.click("#menu-add")
+            await pilot.pause()
+            plans = screen.draft.documents["orchestration.json"]["assignment_plans"]
+            assert isinstance(plans, dict)
+            assert plans["reviewer"] == plans["architect"]  # copied from the template
+            # The new entry opens at once, so its own fields are the next thing to fill.
+            assert screen.steps[screen.index].path == ("assignment_plans", "reviewer")
+            await _open_step(pilot, screen, ("assignment_plans",))
+            screen.query_one("#menu-new", Input).value = "reviewer"
+            await pilot.click("#menu-add")
+            await pilot.pause()
+            assert "уже есть" in str(screen.query_one("#config-error").render())
+            menu = screen.query_one("#menu-items", ListView)
+            menu.index = [str(i.name) for i in menu.children].index("reviewer")
+            await pilot.click("#menu-remove")
+            await pilot.pause()
+            plans = screen.draft.documents["orchestration.json"]["assignment_plans"]
+            assert isinstance(plans, dict) and "reviewer" not in plans
+            await pilot.click("#menu-open")
+            await pilot.pause()
+            assert screen.steps[screen.index].path == ("assignment_plans", "architect")
+
+    asyncio.run(scenario())
+
+
+def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
+    from textual.widgets import Input, ListView, TextArea
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen) and screen.draft is not None
+            await _open_step(pilot, screen, ("qa_gate_commands",))
+            screen.query_one("#menu-new", Input).value = "make lint"
+            await pilot.click("#menu-add")
+            await pilot.pause()
+            assert screen.draft.documents["project.json"]["qa_gate_commands"] == [
+                "pytest",
+                "make lint",
+            ]
+            assert not screen.query("Button#mode-menu, Button#mode-text")
+            assert screen.query_one("#mode-menu", RadioButton).value
+            screen.query_one("#configuration-mode", RadioSet).focus()
+            await pilot.press("right", "space")
+            await pilot.pause()
+            assert screen.query_one("#mode-text", RadioButton).value
+            assert not screen.query_one("#mode-menu", RadioButton).value
+            area = screen.query_one("#field-value", TextArea)
+            assert json.loads(area.text) == ["pytest", "make lint"]
+            area.load_text("{broken JSON")
+            await pilot.click("#mode-menu")
+            await pilot.pause()
+            assert screen.text_mode
+            assert screen.query_one("#mode-text", RadioButton).value
+            assert not screen.query_one("#mode-menu", RadioButton).value
+            area = screen.query_one("#field-value", TextArea)
+            assert area.text == "{broken JSON"
+            area.load_text('["pytest"]')
+            await pilot.click("#mode-menu")
+            await pilot.pause()
+            assert screen.draft.documents["project.json"]["qa_gate_commands"] == [
+                "pytest"
+            ]
+            assert len(screen.query_one("#menu-items", ListView).children) == 1
+            await pilot.click("#menu-remove")
+            await pilot.pause()
+            assert screen.draft.documents["project.json"]["qa_gate_commands"] == []
+
+    asyncio.run(scenario())

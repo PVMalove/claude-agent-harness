@@ -18,7 +18,7 @@ HELP_MARKDOWN = """\
 | Harness | Состояние установки и использование пайплайна; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса, registry, list, health, Repo Map, ledger. |
 | Orchestration | Статистика пайплайна, история batch по состояниям (Enter открывает хронологию) и команды coordinator. |
 | Reports | Отчёты ролей из леджера с фильтрами, хронология batch и QA-логи. |
-| Repo Map | Карта репозитория для HEAD: сводка, дерево файлов, символы, связи и хабы. |
+| Repo Map | Карта репозитория для HEAD: сводка, дерево файлов, символы, связи и хабы. Вкладка «Диагностики» проверяет, что мешает полной карте; вкладка «Настройки»: режим minimal / full, установка парсеров языков и память проекта. |
 | Настройка конфигурации | Шаги `project.json` и `orchestration.json`, черновик, проверка и diff, версии и откат, необязательные CLI-подсказки. |
 | Help | Эта справка. |
 
@@ -84,7 +84,7 @@ its logic.
 | Harness | Installation state and pipeline usage; CLI commands: init, update (including `--force-managed-files` and `--force-seed-files`), diff, adopt, soft/hard cleanup (plan and apply), Harness removal, registry, list, health, Repo Map, ledger. |
 | Orchestration | Pipeline statistics, batch history by state (Enter opens the timeline) and coordinator commands. |
 | Reports | Role reports from the ledger with filters, the batch timeline and QA logs. |
-| Repo Map | The repository map for HEAD: summary, file tree, symbols, relations and hubs. |
+| Repo Map | The repository map for HEAD: summary, file tree, symbols, relations and hubs. The Diagnostics tab checks what stands in the way of a full map; the Settings tab: the minimal / full mode, installing language parsers and project memory. |
 | Configuration | `project.json` and `orchestration.json` steps, draft, check and diff, versions and restore, optional CLI hints. |
 | Help | This guide. |
 

@@ -19,7 +19,7 @@ from textual.screen import Screen
 from textual.scrollbar import ScrollBar
 from textual.theme import Theme
 
-from . import brand, i18n, translate
+from . import brand, clipboard, i18n, translate
 from .chrome import HealthCounts
 from .launcher import restart_console
 from .runner import CommandRunner, capturing_runner
@@ -241,6 +241,16 @@ class HarnessConsoleApp(App[None]):
             "Reload console code and keep the selected project",
             self.action_restart_console,
         )
+
+    @property
+    def clipboard(self) -> str:
+        """What Ctrl+V pastes: the system clipboard when there is one, else the app's own."""
+        system = clipboard.read_system()
+        return super().clipboard if system is None else system
+
+    def copy_to_clipboard(self, text: str) -> None:
+        super().copy_to_clipboard(text)
+        clipboard.write_system(text)
 
     def action_toggle_language(self) -> None:
         """Switch the menu language between Russian and English."""

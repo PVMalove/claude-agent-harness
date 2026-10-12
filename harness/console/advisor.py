@@ -170,19 +170,66 @@ def _comparison(raw: object) -> tuple[tuple[str, str], ...]:
     return tuple(rows)
 
 
+def _reject(reason: str) -> AdvisorUnavailable:
+    return AdvisorUnavailable(
+        f"CLI вернул неподходящую рекомендацию: {reason}.{FALLBACK}"
+    )
+
+
+def _json_object(text: str) -> object:
+    """The JSON the CLI returned, also when it is wrapped in a code fence or in prose."""
+    text = text.strip()
+    for candidate in (
+        text,
+        *re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S),
+        text[text.find("{") : text.rfind("}") + 1] if "{" in text else "",
+    ):
+        try:
+            return json.loads(candidate)
+        except ValueError:
+            continue
+    raise ValueError
+
+
+def _valid_value(field: ConfigurationStep, value: object) -> object:
+    """`value` as the field's own type: the CLI may JSON-encode a string or quote a choice."""
+    candidates = [value]
+    if isinstance(value, str):
+        try:
+            candidates.append(json.loads(value))
+        except ValueError:
+            pass
+        bare = value.strip().strip("\"'")
+        if bare != value:
+            candidates.append(bare)
+    first: ValueError | None = None
+    for candidate in candidates:
+        try:
+            field.validate(candidate)
+            return candidate
+        except ValueError as exc:
+            first = first or exc
+    raise first or ValueError("значение не подходит")
+
+
 def parse_response(raw: str, field: ConfigurationStep) -> Advice:
     try:
-        data = json.loads(raw)
+        data = _json_object(raw)
+    except (ValueError, RecursionError):
+        raise _reject("ответ не в формате JSON") from None
+    try:
         if isinstance(data, dict) and "structured_output" in data:
             data = data["structured_output"]
         elif isinstance(data, dict) and isinstance(data.get("result"), str):
-            data = json.loads(data["result"])
-        required = {"value", "why", "impact"}
-        if not isinstance(data, dict) or set(data) not in (
-            required,
-            required | {"comparison"},
-        ):
-            raise ValueError()
+            data = _json_object(data["result"])
+    except (ValueError, RecursionError):
+        raise _reject("ответ не в формате JSON") from None
+    if not isinstance(data, dict):
+        raise _reject("ответ не является объектом")
+    missing = sorted({"value", "why", "impact"} - set(data))
+    if missing:
+        raise _reject("нет полей " + ", ".join(missing))
+    try:
         why, impact = data["why"], data["impact"]
         if (
             not isinstance(why, str)
@@ -190,20 +237,26 @@ def parse_response(raw: str, field: ConfigurationStep) -> Advice:
             or not why.strip()
             or not impact.strip()
         ):
-            raise ValueError()
+            raise _reject("пустые why или impact")
         if len(why) > 4000 or len(impact) > 4000:
-            raise ValueError()
-        value = data["value"]
-        if field.kind != "string" and isinstance(value, str):
-            value = json.loads(value)
-        field.validate(value)
-        comparison = _comparison(data.get("comparison", []))
-        reject_secrets(data)
+            raise _reject("слишком длинные why или impact")
+        try:
+            value = _valid_value(field, data["value"])
+        except (ValueError, TypeError, RecursionError) as exc:
+            raise _reject(
+                "значение не проходит проверку поля (" + str(exc)[:120] + ")"
+            ) from None
+        try:
+            comparison = _comparison(data.get("comparison", []))
+        except (ValueError, TypeError, RecursionError):
+            raise _reject("некорректная таблица comparison") from None
+        try:
+            reject_secrets(data)
+        except ValueError:
+            raise _reject("ответ похож на секрет и отброшен") from None
         return Advice(value, why, impact, comparison)
-    except (ValueError, TypeError, RecursionError):
-        raise AdvisorUnavailable(
-            "CLI вернул неподходящую рекомендацию." + FALLBACK
-        ) from None
+    except RecursionError:
+        raise _reject("слишком глубокая вложенность") from None
 
 
 @dataclass(frozen=True)

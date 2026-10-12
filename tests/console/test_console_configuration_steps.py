@@ -11,6 +11,22 @@ from harness.console.configuration import ConfigurationDraft
 from harness.console.configuration_steps import steps_for
 
 
+@pytest.mark.parametrize("provider", ["none", "native_access", "runtime:factory"])
+def test_extensions_step_accepts_runtime_access(tmp_path: Path, provider: str) -> None:
+    document = parse_object(
+        (PACKAGE / "orchestration.example.json").read_bytes(), "example"
+    )
+    document["extensions"]["runtime_access"] = provider
+    draft = ConfigurationDraft(
+        tmp_path, {"orchestration.json": document}, {"orchestration.json": None}
+    )
+    step = next(s for s in steps_for(draft) if s.path == ("extensions",))
+    step.validate(document["extensions"])
+    assert step.recommendation(draft)[0] == document["extensions"]
+    with pytest.raises(ValueError, match="unknown_extension"):
+        step.validate({"unknown_extension": "none"})
+
+
 def test_role_effort_choices_and_approval_help_are_available_without_losing_values(
     tmp_path: Path,
 ) -> None:
