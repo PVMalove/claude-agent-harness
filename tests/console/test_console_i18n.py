@@ -12,6 +12,7 @@ from harness.console import i18n
 from harness.console.app import HarnessConsoleApp
 from harness.console.help_text import HELP_MARKDOWN, HELP_MARKDOWN_EN, help_markdown
 from harness.console.i18n_strings import EN, EN_PHRASES
+from tests.console._pilot_wait import wait_until
 
 
 def test_tr_translates_known_strings_and_leaves_the_rest() -> None:
@@ -64,13 +65,14 @@ def test_f2_switches_the_dashboard_and_back_without_drift(tmp_path: Path) -> Non
         async with app.run_test(size=(130, 50)) as pilot:
             # The dashboard fills in asynchronously; a slow machine must not be compared half-built.
             await app.workers.wait_for_complete()
-            await pilot.pause()
+            # Footer bindings recompose independently of workers and the Pilot idle barrier.
+            await wait_until(pilot, lambda: "r Офлайн" in _dump(app).splitlines()[-1])
             before = _dump(app)
             await pilot.press("f2")
-            await pilot.pause()
+            await wait_until(pilot, lambda: "r Offline" in _dump(app).splitlines()[-1])
             english = _dump(app)
             await pilot.press("f2")
-            await pilot.pause()
+            await wait_until(pilot, lambda: "r Офлайн" in _dump(app).splitlines()[-1])
             return before, english, _dump(app)
 
     before, english, after = asyncio.run(scenario())
