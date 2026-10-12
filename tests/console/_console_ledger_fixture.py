@@ -115,8 +115,8 @@ class _Batch:
         outcome: str,
         *,
         output: str,
-        risks: str = "нет",
-        blockers: str = "нет",
+        risks: str = "",
+        blockers: str = "",
         review: JsonObject | None = None,
     ) -> None:
         """Записать неизменяемый отчёт о завершении диспатча и перевести батч в awaiting-approval."""
@@ -131,12 +131,15 @@ class _Batch:
             "checks_run": [
                 {
                     "command": "make test",
-                    "result": "passed",
+                    "result": "pass",
                     "evidence": "412 passed",
                 }
             ],
-            "risks": risks,
-            "blockers": blockers,
+            "risks": {"status": "present" if risks else "none", "details": risks},
+            "blockers": {
+                "status": "present" if blockers else "none",
+                "details": blockers,
+            },
             "next_coordinator_action": f"решить судьбу отчёта {role}",
             "report_language": "ru",
         }
@@ -219,14 +222,14 @@ def build_reports_fixture(repo: Path) -> None:
                         "evidence": "reports.py:10",
                     }
                 ],
-                "risks": "нет",
-                "blockers": "нет",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "none",
                 "findings": [],
-                "risks": "нет",
-                "blockers": "нет",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
         },
     )

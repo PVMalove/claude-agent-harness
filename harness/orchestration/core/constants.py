@@ -9,6 +9,7 @@ depend on it.
 from __future__ import annotations
 
 import re
+from enum import StrEnum
 from pathlib import Path
 
 STATE_REL = Path(".harness/orchestration/state")
@@ -16,7 +17,88 @@ SENSITIVE_KEY = re.compile(
     r"(?:api[_-]?key|credential|password|secret|(?:access|auth|refresh|id|bearer)[_-]?token|(?:^|[_-])token(?:$|[_-](?:id|value|secret|key)$))",
     re.IGNORECASE,
 )
-REPORT_OUTCOMES = {"completed", "blocked", "failed"}
+
+
+class ReportOutcome(StrEnum):
+    COMPLETED = "completed"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+
+
+class ReportCheckResult(StrEnum):
+    PASS = "pass"
+    FAIL = "fail"
+    NOT_RUN = "not_run"
+
+
+class EvidenceStatus(StrEnum):
+    NONE = "none"
+    PRESENT = "present"
+
+
+class IntegrationCheckResult(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+
+
+class RetryReason(StrEnum):
+    VERIFICATION_INFRASTRUCTURE = "verification-infrastructure"
+    TRANSPORT = "transport"
+    CONTEXT_PRESSURE = "context-pressure"
+    TOOLING = "tooling"
+    BLOCK_BYPASS = "block-bypass"
+    CODE = "code"
+    REQUIREMENTS = "requirements"
+    CANDIDATE_CHANGE = "candidate-change"
+    UNKNOWN = "unknown"
+
+
+class RecoveryRoute(StrEnum):
+    DEVELOPER_RETRY = "developer-retry"
+    SAME_CANDIDATE_RERUN = "same-candidate-rerun"
+    VERIFICATION = "verification"
+    ARCHITECT_RETRY = "architect-retry"
+    ABANDON = "abandon"
+    REPORT_COMPLETION = "report-completion"
+    CARRY_OVER = "carry-over"
+    TOOLING_RETRY = "tooling-retry"
+    BYPASS_RERUN = "bypass-rerun"
+    NARROWED_RETRY = "narrowed-retry"
+    FIX_FORWARD = "fix-forward"
+    REBASE_FIX_FORWARD = "rebase-fix-forward"
+    SUPERSEDE = "supersede"
+    ENVIRONMENTAL_RESTART = "environmental-restart"
+    REWIND = "rewind"
+    ACCEPT_CONDITIONAL = "accept-conditional"
+
+
+class BatchState(StrEnum):
+    PLANNED = "planned"
+    AWAITING_APPROVAL = "awaiting-approval"
+    ACTIVE = "active"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    COMPLETED = "completed"
+    NOT_REQUIRED = "not-required"
+    ABANDONED = "abandoned"
+    PAUSED = "paused"
+
+
+class DispatchState(StrEnum):
+    PROPOSED = "proposed"
+    APPROVED = "approved"
+    DISPATCHED = "dispatched"
+    WORKING = "working"
+    BLOCKED = "blocked"
+    FAILED = "failed"
+    REPORTED = "reported"
+    CHECKPOINTED = "checkpointed"
+    RATE_LIMITED = "rate_limited"
+    ABANDONED = "abandoned"
+    CANCELLED = "cancelled"
+
+
+REPORT_OUTCOMES = frozenset(ReportOutcome)
 DECISIONS = {
     "accept",
     "accept-conditional",
@@ -29,24 +111,32 @@ DECISIONS = {
 # Decisions that let the pipeline move past a reported stage. `accept-conditional` is a human
 # attestation that an infrastructure failure stopped the stage; it leaves an open condition.
 ACCEPTED_DECISIONS = frozenset({"accept", "override-warning", "accept-conditional"})
-TERMINAL_BATCH_STATES = {"completed", "not-required", "abandoned"}
+TERMINAL_BATCH_STATES = {
+    BatchState.COMPLETED,
+    BatchState.NOT_REQUIRED,
+    BatchState.ABANDONED,
+}
 # Blocked and failed batches remain recoverable and retain their work until explicit abandon.
 FINISHED_BATCH_STATES = TERMINAL_BATCH_STATES
 # Why a role stopped, as the coordinator records it. Only the first two are operational evidence:
 # they never change what a role would conclude, so they alone may re-run a read-only role (or the
 # publish boundary) on the same candidate. Everything else, or anything unclear, needs a developer.
 OPERATIONAL_REASON_CATEGORIES = (
-    "verification-infrastructure",
-    "transport",
-    "context-pressure",
+    RetryReason.VERIFICATION_INFRASTRUCTURE,
+    RetryReason.TRANSPORT,
+    RetryReason.CONTEXT_PRESSURE,
 )
-DEVELOPER_REASON_CATEGORIES = ("code", "requirements", "candidate-change")
+DEVELOPER_REASON_CATEGORIES = (
+    RetryReason.CODE,
+    RetryReason.REQUIREMENTS,
+    RetryReason.CANDIDATE_CHANGE,
+)
 # A tool (a hook, the safety classifier, the ledger) blocked a legitimate role action (issue #500).
 # It is operational too, but only a blocked report's structured ``tooling_blocker`` proves it, and it
 # has a route of its own (``tooling-retry``): the same stage on the same SHA, a developer from its
 # last commit, without spending ``retry_policy.max_developer_retries``. It is deliberately not one
 # of ``OPERATIONAL_REASON_CATEGORIES``, whose routes and attention count it must not join.
-TOOLING_REASON_CATEGORY = "tooling"
+TOOLING_REASON_CATEGORY = RetryReason.TOOLING
 TOOLING_BLOCKER_FIELDS = frozenset({"tool", "command", "message"})
 # A developer whose ``git commit`` a tool blocked reverts nothing and lists the files it left
 # uncommitted in its report's ``tooling_blocker``; the restart inherits exactly them (issue #502).
@@ -55,15 +145,9 @@ TOOLING_BLOCKER_UNCOMMITTED_FIELD = "uncommitted_files"
 # none of that report is evidence: the same stage re-runs on the same SHA (``bypass-rerun``) under an
 # explicit approval, since there is nothing for a developer to fix. A writing role that worked around
 # a block is still retried with a developer category or blocked.
-BLOCK_BYPASS_REASON_CATEGORY = "block-bypass"
+BLOCK_BYPASS_REASON_CATEGORY = RetryReason.BLOCK_BYPASS
 BLOCK_BYPASS_STAGES = ("code-review", "qa", "verification")
-RETRY_REASON_CATEGORIES = (
-    *OPERATIONAL_REASON_CATEGORIES,
-    TOOLING_REASON_CATEGORY,
-    BLOCK_BYPASS_REASON_CATEGORY,
-    *DEVELOPER_REASON_CATEGORIES,
-    "unknown",
-)
+RETRY_REASON_CATEGORIES = tuple(RetryReason)
 # The recovery route a ``retry`` or ``abandon`` decision records in its routing record. Each value
 # names a route the coordinator already computes; a new route adds its value here and its row to
 # the playbook "Recovery route table" in the same change. ``report-completion`` is not a
@@ -83,24 +167,7 @@ RETRY_REASON_CATEGORIES = (
 # ``supersede`` (issue #506) is recorded by ``batch create --supersedes`` on the new batch: after a
 # forced abandon it resumes from the abandoned batch's ``last_accepted`` record instead of
 # repeating the architect stage and cherry-picking the accepted commits by hand.
-RECOVERY_ROUTES = (
-    "developer-retry",
-    "same-candidate-rerun",
-    "verification",
-    "architect-retry",
-    "abandon",
-    "report-completion",
-    "carry-over",
-    "tooling-retry",
-    "bypass-rerun",
-    "narrowed-retry",
-    "fix-forward",
-    "rebase-fix-forward",
-    "supersede",
-    "environmental-restart",
-    "rewind",
-    "accept-conditional",
-)
+RECOVERY_ROUTES = tuple(RecoveryRoute)
 # The role a next-action dispatch runs as: ``publish`` is a purpose of the developer role.
 NEXT_ACTION_DISPATCH_ROLE = {
     "architect": "architect",
@@ -131,7 +198,7 @@ DEFAULT_COMMUNICATION_POLICY = {
     "agent_to_agent_language": "en",
     "coordinator_report_language": "ru",
 }
-LIVE_DISPATCH_STATES = {"dispatched", "working"}
+LIVE_DISPATCH_STATES = {DispatchState.DISPATCHED, DispatchState.WORKING}
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 # Retry thresholds ordered by rank; `error` is a threshold only and ranks with `blocker`.
@@ -330,11 +397,8 @@ QA_CODE_CHECKS_STARTED = ("started", "not_started", "unknown")
 QA_DIAGNOSIS_FIELDS = frozenset({"category", "signals", "basis"})
 QA_DIAGNOSIS_CATEGORIES = ("infrastructure", "project-defect", "unknown")
 # The result of a verification command the run never reached, so it is neither a pass nor a failure.
-QA_NOT_RUN_RESULT = "not_run"
-# New completion reports store canonical results after resolving supported aliases. The architect's
-# read-only marker remains valid for historical briefs that included verification commands.
-REPORT_CHECK_RESULTS = frozenset({"pass", "fail", QA_NOT_RUN_RESULT})
-ARCHITECT_READ_ONLY_CHECK_RESULT = "not_run_architect_read_only"
+QA_NOT_RUN_RESULT = ReportCheckResult.NOT_RUN
+REPORT_CHECK_RESULTS = frozenset(ReportCheckResult)
 # One brief item a read-only role left undone (issue #501): what it was, why, and the role it can be
 # handed to. ``tooling_blocker`` (the report field's shape) is optional per item: a tool, such as the
 # safety classifier, kept the role from it.
@@ -600,7 +664,7 @@ ATTENTION_STATE_FIELDS = (
 # record, the results a registered check may carry, and the shape of the ids and SHAs involved.
 INTEGRATION_EVIDENCE_KINDS = ("ci", "local-qa", "resolver")
 LOCAL_QA_CI_CONDITIONS = ("absent", "unavailable", "unusable")
-INTEGRATION_EVIDENCE_RESULTS = ("passed", "failed")
+INTEGRATION_EVIDENCE_RESULTS = tuple(IntegrationCheckResult)
 INTEGRATION_RECORD_ID_PATTERN = re.compile(r"integration-[0-9a-f]{32}")
 INTEGRATION_SHA_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 INTEGRATION_REFERENCE_MAX_CHARS = 2_048

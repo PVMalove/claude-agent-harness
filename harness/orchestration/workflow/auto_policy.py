@@ -23,6 +23,7 @@ from harness.orchestration.core.config import (
     _reject_sensitive,
 )
 from harness.orchestration.core.check_results import check_counts_as_success
+from harness.orchestration.core.report_evidence import evidence_is_none
 from harness.orchestration.core.constants import (
     AUTO_RETRY_SEVERITY_RANKS,
     AUTO_STOP_REASONS,
@@ -180,11 +181,11 @@ def accept_obstacles(
     obstacles = []
     if report.get("outcome") != "completed":
         obstacles.append(f"outcome is {report.get('outcome')}")
-    if str(report.get("blockers", "")).strip().lower() != "none":
+    if not evidence_is_none(report.get("blockers")):
         obstacles.append("the report names blockers")
     for check in report.get("checks_run", []):
         result = check.get("result") if isinstance(check, dict) else None
-        if not check_counts_as_success(report.get("role"), result):
+        if not check_counts_as_success(result):
             obstacles.append(f"a check did not pass ({result})")
             break
     if plan_rules.not_covered(report):
@@ -224,7 +225,7 @@ def accept_obstacles(
             obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(
         isinstance(review.get(axis), dict)
-        and str(review[axis].get("blockers", "none")).strip().lower() != "none"
+        and not evidence_is_none(review[axis].get("blockers"))
         for axis in ("standards", "spec")
     ):
         # A clean severity does not hide blockers an axis names (as for the policy auto-accept).
@@ -747,7 +748,7 @@ def accepted_risks(
     """The risks an accept takes on: the report's own, its triggers, the candidate's matched
     triggers and the review axes' risks (no I/O)."""
     risks: list[JsonObject] = []
-    if str(report.get("risks", "none")).strip().lower() != "none":
+    if not evidence_is_none(report.get("risks")):
         risks.append({"source": "report", "risks": report["risks"]})
     if report.get("risk_triggers"):
         risks.append({"source": "risk_triggers", "triggers": report["risk_triggers"]})
@@ -765,10 +766,7 @@ def accepted_risks(
     review = report.get("review")
     for axis in ("standards", "spec"):
         evidence = review.get(axis) if isinstance(review, dict) else None
-        if (
-            isinstance(evidence, dict)
-            and str(evidence.get("risks", "none")).strip().lower() != "none"
-        ):
+        if isinstance(evidence, dict) and not evidence_is_none(evidence.get("risks")):
             risks.append({"source": f"review-{axis}", "risks": evidence["risks"]})
     return risks
 

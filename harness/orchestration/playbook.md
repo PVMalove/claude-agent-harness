@@ -27,6 +27,11 @@ blocker, but it cannot transition its own batch or silently widen its brief. The
 `coordinator.py` implements this contract's lifecycle and keeps its local state under
 the gitignored `.harness/orchestration/state/` directory.
 
+`BatchState` and `DispatchState` define separate, closed English vocabularies. The ledger and
+coordinator validate states on read and before writing either a record or its audit event. Unknown
+values, translations, whitespace and case variants are refused. The enum checks the vocabulary;
+the transition table and approval guards still determine whether a transition is allowed.
+
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
 | `planned` | Immutable scope drafted; initial planning approval is still required. | `awaiting-approval`, `blocked`, `failed`, `paused`, `completed` (no implementation), `abandoned`; rewind preserves `planned` |
@@ -246,6 +251,11 @@ not recorded by `batch decide`: `report submit` names it in its `completion` obj
 chain after a recorded report stops, and the coordinator completes that chain with
 `report complete --dispatch <dispatch-id>`. `supersede` is not recorded by `batch decide` either:
 `batch create --supersedes` records it once in the new batch's own `coordinator_decisions`.
+
+`RecoveryRoute` supplies `RECOVERY_ROUTES`, and `RetryReason` supplies the reason categories.
+Classifier hints and explicit categories are parsed before routing; recorded categories and routes
+are validated on read. `unknown` is an explicit reason, never a fallback for an invalid literal.
+These enums preserve the routing guards, candidate binding and retry budgets in this table.
 `carry-over` is recorded by an `accept` or
 `override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
 `carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
@@ -402,7 +412,7 @@ The decision table:
 
 1. A conflict-resolver report is outside the automatic path: the command refuses, and a human
    decides the report.
-2. The policy accepts a clean report: `outcome: completed`, `blockers: none`, every check passes,
+2. The policy accepts a clean report: `outcome: completed`, `blockers.status: none`, every check passes,
    no `not_covered` item, no carried gap, no scope warning, no review finding or warning/blocker
    severity, no review axis that names blockers, no incomplete item for the reporting role, and no
    `--block-bypass`. The record lists
@@ -820,6 +830,19 @@ A minimal brief can be rendered as:
 Each dispatched role returns one completion report. The coordinator accepts the batch only after
 the report is complete and its evidence is independently sufficient for the role's contract.
 
+Report prose is Russian (`report_language: ru`); machine-read values stay exact English enums.
+`outcome` is `completed | blocked | failed`. `blockers` and `risks`, including each composite
+review axis, are objects with exactly `status` and `details`. For absent evidence write
+`{"status": "none", "details": ""}`; for present evidence write
+`{"status": "present", "details": "<Russian description>"}`. The same objects are required in
+checkpoints and continuation risks. A `none` status requires empty details; `present` requires
+non-empty details. Put other explanations in `output`. Policies read only the structured status;
+they never infer the absence of a blocker from its Russian description. `report submit` rejects
+string fields, translated statuses and malformed objects before writing ledger evidence, and
+returns the allowed format as its remedy. Correct the staging file and resubmit for the same
+dispatch; this refusal preserves the active approval policy. Old report shapes are not accepted
+and immutable evidence is never rewritten.
+
 The report must include:
 
 - dispatch ID, ticket, role, and outcome (`completed`, `blocked`, or `failed`);
@@ -829,8 +852,8 @@ The report must include:
 - the exact `changed files`, or an explicit `none` for read-only work;
 - a `checks run` list with every exact command, result, and relevant evidence; “done” is not a
   check result;
-- residual `risks`, including unverified edge cases and deferred decisions;
-- `blockers`, or an explicit `none`;
+- structured `risks`, with `status: present` and details for unverified edge cases and deferred decisions;
+- structured `blockers`, with `status: none` and empty details when absent;
 - the next coordinator action, including the required independent gate when applicable;
 - for a developer brief with a `commit_plan`: a `commit_map` of `{commit_sha, plan_entry_id}` pairs
   covering every created commit. An initial or rebase report may map one commit to several entries
@@ -912,18 +935,14 @@ For the high-risk triggers in the `code-review` manifest, Standards and Spec are
 read-only reports. They must both be present before the coordinator accepts the batch; one combined
 rating cannot replace either report.
 
-Each `checks_run` entry uses `pass`, `fail` or `not_run` as its canonical `result`.
-`passed` is equivalent to `pass`; the legacy spelling `not-run` is equivalent to `not_run`.
-New submissions store canonical results. Historical reports accept these aliases without rewriting
-immutable evidence, and automatic acceptance treats `pass` and `passed` as the same success.
-Only an architect may use `not_run_architect_read_only`, for compatibility with older briefs
-that approved verification commands. An architect work brief with no verification commands
-still reports `checks_run: []`. Neither `fail` nor `not_run` proves a successful check.
-Submission rejects unknown values with a remedy before recording the report;
-correct the staging file and submit it again for the same dispatch. Pending reports are validated
-again before a decision, so older reports with unknown results are also refused. Do not rewrite
-immutable evidence; recover an already recorded report or stopped batch through the coordinator's
-existing human-approved recovery workflow.
+Each `checks_run` entry uses the exact enum `pass | fail | not_run` as its `result`.
+`passed`, `not-run`, translated spellings, and `not_run_architect_read_only` are invalid.
+An architect work brief with no verification commands reports `checks_run: []`.
+Neither `fail` nor `not_run` proves a successful check. Submission rejects invalid values with a
+remedy before recording; correct the staging file and submit it again for the same dispatch.
+Reports are validated again before a decision, so old non-canonical evidence is also refused.
+Do not rewrite immutable evidence; recover an already recorded report or stopped batch through
+the coordinator's existing human-approved recovery workflow.
 
 Use this shape so missing proof is visible:
 
@@ -936,8 +955,8 @@ Use this shape so missing proof is visible:
 - Changed files: <exact paths|none>
 - Checks run:
   - `<exact command>` — <pass|fail|not_run>, <evidence>
-- Risks: <residual risks|none>
-- Blockers: <blockers|none>
+- Risks: <status: none|present; details: empty|residual risks>
+- Blockers: <status: none|present; details: empty|blocker description>
 - Next coordinator action: <accept, block, fail, or create a new dispatch>
 - Lessons (optional, не подтверждено человеком): <historical observations, no extra weight>
 - Used memory (optional, weak signal, not a gate): <used hit identifiers>
@@ -995,6 +1014,11 @@ quality gate lane position. After each handoff, the incoming role receives the p
 evidence but still receives its own immutable brief.
 
 ## Integration accounting
+
+`IntegrationCheckResult` defines the exact `passed / failed` results of an aggregate pair check.
+It is distinct from the command-check enum `ReportCheckResult` (`pass / fail / not_run`): CI and
+local-QA producers map their accepted or completed run explicitly to the integration enum. Both
+linked input and stored results are validated; aliases, translations and whitespace are refused.
 
 A `completed` batch is history and is never reopened or rewritten. After an accepted publish the
 coordinator records the link a later integration step needs in a separate immutable Integration

@@ -498,8 +498,8 @@ def _clean(role: str, **overrides: object) -> JsonObject:
     report: JsonObject = {
         "role": role,
         "outcome": "completed",
-        "blockers": "none",
-        "risks": "none",
+        "blockers": {"status": "none", "details": ""},
+        "risks": {"status": "none", "details": ""},
         "checks_run": [{"command": "pytest", "result": "pass", "evidence": "ok"}],
     }
     report.update(overrides)
@@ -511,8 +511,8 @@ def _axes(severity: str, findings: list[JsonObject]) -> JsonObject:
         axis: {
             "severity": severity,
             "findings": findings,
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
         }
         for axis in ("standards", "spec")
     }
@@ -545,12 +545,24 @@ class AutoDecisionTableTests(unittest.TestCase):
         )
 
     def test_a_clean_report_with_risks_is_accepted_and_its_risks_recorded(self) -> None:
-        report = _clean("architect", risks="the ledger schema grows", checks_run=[])
+        report = _clean(
+            "architect",
+            risks={"status": "present", "details": "the ledger schema grows"},
+            checks_run=[],
+        )
         choice = self._category("architect", report)
         self.assertEqual((choice.decision, choice.carry_incomplete), ("accept", False))
         self.assertEqual(
             auto_policy.accepted_risks({}, {}, report),
-            [{"source": "report", "risks": "the ledger schema grows"}],
+            [
+                {
+                    "source": "report",
+                    "risks": {
+                        "status": "present",
+                        "details": "the ledger schema grows",
+                    },
+                }
+            ],
         )
 
     def test_incomplete_items_of_later_roles_are_carried_with_the_accept(self) -> None:
@@ -584,14 +596,14 @@ class AutoDecisionTableTests(unittest.TestCase):
             "standards": {
                 "severity": "clean",
                 "findings": findings[:2],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "clean",
                 "findings": findings[2:],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
         }
         choice = self._category(
@@ -608,14 +620,14 @@ class AutoDecisionTableTests(unittest.TestCase):
             "standards": {
                 "severity": "warning",
                 "findings": [finding],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
         }
         choice = self._category(
@@ -631,14 +643,14 @@ class AutoDecisionTableTests(unittest.TestCase):
             "standards": {
                 "severity": "clean",
                 "findings": [finding],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
         }
         choice = self._category("code-review", _clean("code-review", review=review))
@@ -702,7 +714,11 @@ class AutoDecisionTableTests(unittest.TestCase):
                 )
 
     def test_recorded_context_pressure_names_its_category(self) -> None:
-        blocked = _clean("developer", outcome="blocked", blockers="context is full")
+        blocked = _clean(
+            "developer",
+            outcome="blocked",
+            blockers={"status": "present", "details": "context is full"},
+        )
         self.assertEqual(
             self._category("developer", blocked, pressure=True).reason_category,
             "context-pressure",
@@ -939,7 +955,10 @@ class AutoReportBuildTests(unittest.TestCase):
             }
         )
         batch["auto_decisions"][2]["evidence"]["accepted_risks"] = [
-            {"source": "report", "risks": "the schema grows"}
+            {
+                "source": "report",
+                "risks": {"status": "present", "details": "the schema grows"},
+            }
         ]
         batch.update(fields)
         return batch
@@ -970,7 +989,7 @@ class AutoReportBuildTests(unittest.TestCase):
                 {
                     "dispatch_id": "dispatch-1",
                     "source": "report",
-                    "risks": "the schema grows",
+                    "risks": {"status": "present", "details": "the schema grows"},
                 }
             ],
         )
@@ -1081,7 +1100,10 @@ def test_every_attention_reason_has_a_listed_stop() -> None:
 @pytest.mark.parametrize("axis", ["standards", "spec"])
 def test_a_review_axis_that_names_blockers_is_not_accepted(axis: str) -> None:
     review = _axes("clean", [])
-    review[axis]["blockers"] = "the migration cannot be rolled back"
+    review[axis]["blockers"] = {
+        "status": "present",
+        "details": "the migration cannot be rolled back",
+    }
     report = _clean("code-review", review=review)
 
     obstacles = auto_policy.accept_obstacles(
@@ -1100,11 +1122,11 @@ def test_a_review_axis_that_names_blockers_is_not_accepted(axis: str) -> None:
     [
         ("developer", "pass", True),
         ("developer", "fail", False),
-        ("developer", "not-run", False),
         ("developer", "not_run", False),
-        ("developer", "passed", True),
+        ("developer", "not-run", False),
+        ("developer", "passed", False),
         ("developer", "not_run_architect_read_only", False),
-        ("architect", "not_run_architect_read_only", True),
+        ("architect", "not_run_architect_read_only", False),
         ("code-review", "not_run_architect_read_only", False),
     ],
 )

@@ -23,7 +23,6 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
-from .core.check_results import canonical_check_result
 from .core.config import _execution_policy, _qa_preparation_commands
 from .core.constants import (
     QA_NOT_RUN_RESULT,
@@ -502,9 +501,6 @@ def _qa_report(
     ``blocked`` one, whose ``checks_run`` records the commands never reached as ``not_run`` rather
     than as failed code checks.
     """
-    checks = [
-        {**check, "result": canonical_check_result(check["result"])} for check in checks
-    ]
     failed = any(check["result"] == "fail" for check in checks)
     reference = f"full sanitised output: {artifact.as_posix()} (sha256:{checksum})"
     report: JsonObject = {
@@ -516,8 +512,18 @@ def _qa_report(
         "commit_sha": "not applicable — read-only role",
         "changed_files": [],
         "checks_run": checks,
-        "risks": "QA gate failed; inspect immutable evidence" if failed else "none",
-        "blockers": "new approved developer retry required" if failed else "none",
+        "risks": {
+            "status": "present",
+            "details": "QA gate failed; inspect immutable evidence",
+        }
+        if failed
+        else {"status": "none", "details": ""},
+        "blockers": {
+            "status": "present",
+            "details": "new approved developer retry required",
+        }
+        if failed
+        else {"status": "none", "details": ""},
         "next_coordinator_action": "create a new approved developer retry"
         if failed
         else "accept or continue",
@@ -552,22 +558,40 @@ def _qa_report(
     if category == "project-defect":
         report.update(
             outcome="failed",
-            risks="the candidate's project files break environment preparation; code was not verified",
-            blockers="new approved developer retry required to fix the project-file defect",
+            risks={
+                "status": "present",
+                "details": "the candidate's project files break environment preparation; code was not verified",
+            },
+            blockers={
+                "status": "present",
+                "details": "new approved developer retry required to fix the project-file defect",
+            },
             next_coordinator_action="create a new approved developer retry",
         )
     elif category == "infrastructure":
         report.update(
             outcome="blocked",
-            risks="infrastructure failure before code checks; the candidate code was not verified",
-            blockers="QA infrastructure failure; no developer retry is needed",
+            risks={
+                "status": "present",
+                "details": "infrastructure failure before code checks; the candidate code was not verified",
+            },
+            blockers={
+                "status": "present",
+                "details": "QA infrastructure failure; no developer retry is needed",
+            },
             next_coordinator_action="restore the QA environment, then decide a same-SHA QA retry",
         )
     else:
         report.update(
             outcome="blocked",
-            risks="cause of the preparation failure is unknown; the candidate code was not verified",
-            blockers="coordinator triage required; no automatic retry",
+            risks={
+                "status": "present",
+                "details": "cause of the preparation failure is unknown; the candidate code was not verified",
+            },
+            blockers={
+                "status": "present",
+                "details": "coordinator triage required; no automatic retry",
+            },
             next_coordinator_action="triage the preparation failure, then decide the retry route",
         )
     return report

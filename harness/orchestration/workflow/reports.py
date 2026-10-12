@@ -20,7 +20,8 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
-from harness.orchestration.core.check_results import canonical_check_result
+from harness.orchestration.core.check_results import parse_check_result
+from harness.orchestration.core.report_evidence import evidence_text, validate_evidence
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _context_advisory,
@@ -30,7 +31,6 @@ from harness.orchestration.core.config import (
     _role,
 )
 from harness.orchestration.core.constants import (
-    ARCHITECT_READ_ONLY_CHECK_RESULT,
     CHECKPOINT_INPUT_FIELDS,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTINUATION_FACTS_FIELDS,
@@ -506,11 +506,7 @@ def _validate_checkpoint(
             remedy="only checkpoint a write role; a read-only role completes in a single worker session",
         )
     for field in ("risks", "blockers"):
-        if not _non_empty(checkpoint[field]):
-            raise CoordinatorError(
-                f"checkpoint {field} must be a non-empty string",
-                remedy=f"set checkpoint {field} to a non-empty string",
-            )
+        validate_evidence(checkpoint[field], f"checkpoint {field}")
     commit_sha = checkpoint["commit_sha"]
     if (
         not isinstance(commit_sha, str)
@@ -786,6 +782,7 @@ def _check_continuation_facts_unchanged(
             remedy="the continuation facts dispatch_id does not match the dispatched role -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    validate_evidence(facts["risks"], "continuation facts risks")
     unchanged = (
         facts["remaining_definition_of_done"]
         == checkpoint["remaining_definition_of_done"]
@@ -1109,13 +1106,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
                     f"composite review {axis} must reference the prior review as evidence",
                     remedy=f"composite review {axis} must cite the prior review as evidence for a delta-review",
                 )
-            if not _non_empty(evidence["risks"]) or not _non_empty(
-                evidence["blockers"]
-            ):
-                raise CoordinatorError(
-                    f"composite review {axis} must state risks and blockers",
-                    remedy=f"composite review {axis} must state its risks and blockers explicitly",
-                )
+            for field in ("risks", "blockers"):
+                validate_evidence(evidence[field], f"composite review {axis} {field}")
             continue
         if evidence["severity"] not in REVIEW_SEVERITIES:
             raise CoordinatorError(
@@ -1159,11 +1151,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
                 f"composite review {axis} hides a warning finding",
                 remedy=f"composite review {axis} must disclose every warning finding, not hide it",
             )
-        if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
-            raise CoordinatorError(
-                f"composite review {axis} must state risks and blockers",
-                remedy=f"composite review {axis} must state its risks and blockers explicitly",
-            )
+        for field in ("risks", "blockers"):
+            validate_evidence(evidence[field], f"composite review {axis} {field}")
     carried_items.validate_review_accounting(review, dispatch)
 
 
@@ -1439,7 +1428,7 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
         (command, QA_NOT_RUN_RESULT) for command in approved[len(gate) :]
     ]
     if [
-        (check["command"], canonical_check_result(check["result"])) for check in checks
+        (check["command"], parse_check_result(check["result"])) for check in checks
     ] != expected:
         raise refuse(
             "does not agree with checks_run (a command never reached is not_run)"
@@ -1510,19 +1499,24 @@ def _validate_report(
                 f"completion report {field} does not match the approved dispatch",
                 remedy=f"resubmit completion report {field} matching the approved dispatch",
             )
-    if report["outcome"] not in REPORT_OUTCOMES:
+    if (
+        not isinstance(report["outcome"], str)
+        or report["outcome"] not in REPORT_OUTCOMES
+    ):
         raise CoordinatorError(
             "completion report outcome is invalid",
-            remedy="set outcome to one of the accepted completion-report outcomes",
+            remedy=f"set outcome to an exact English enum value: {', '.join(sorted(REPORT_OUTCOMES))}",
         )
     _validate_tooling_blocker(report, dispatch)
     _validate_incomplete_items(report, role)
-    for field in ("output", "risks", "blockers", "next_coordinator_action"):
+    for field in ("output", "next_coordinator_action"):
         if not _non_empty(report[field]):
             raise CoordinatorError(
                 f"completion report {field} must be a non-empty string",
                 remedy=f"set completion report {field} to a non-empty string",
             )
+    for field in ("risks", "blockers"):
+        validate_evidence(report[field], f"completion report {field}")
     changed_files = _strings(
         report["changed_files"], "completion report changed_files", allow_empty=True
     )
@@ -1555,16 +1549,14 @@ def _validate_report(
                 remedy="each checks_run entry must contain text evidence of the check result",
             )
         allowed_results = REPORT_CHECK_RESULTS
-        if dispatch["role"] == "architect":
-            allowed_results = allowed_results | {ARCHITECT_READ_ONLY_CHECK_RESULT}
-        if canonical_check_result(check["result"]) not in allowed_results:
+        if parse_check_result(check["result"]) not in allowed_results:
             raise CoordinatorError(
                 f"completion report checks_run[{position}].result is invalid "
                 f"({check['result']!r}) for command {check['command']!r}",
                 remedy=f"set checks_run[{position}].result to one of: "
                 f"{', '.join(sorted(allowed_results))}; use pass only if the evidence "
-                "confirms the command passed (passed is also accepted), fail if it failed, "
-                "or not_run if it was not executed (not-run is also accepted); "
+                "confirms the command passed, fail if it failed, "
+                "or not_run if it was not executed; aliases and translated values are invalid; "
                 "correct the staging report and submit it again",
             )
         if len(check["evidence"]) > MAX_CHECK_EVIDENCE_CHARS:
@@ -1710,8 +1702,8 @@ def _report_markdown(report: JsonObject) -> str:
         )
     lines.extend(
         [
-            f"- Risks: {report['risks']}",
-            f"- Blockers: {report['blockers']}",
+            f"- Risks: {evidence_text(report['risks'])}",
+            f"- Blockers: {evidence_text(report['blockers'])}",
             f"- Next coordinator action: {report['next_coordinator_action']}",
         ]
     )
@@ -1769,8 +1761,8 @@ def _report_markdown(report: JsonObject) -> str:
                 [
                     f"- Review {axis.title()} severity: {evidence['severity']}",
                     f"- Review {axis.title()} findings: {len(evidence['findings'])}",
-                    f"- Review {axis.title()} risks: {evidence['risks']}",
-                    f"- Review {axis.title()} blockers: {evidence['blockers']}",
+                    f"- Review {axis.title()} risks: {evidence_text(evidence['risks'])}",
+                    f"- Review {axis.title()} blockers: {evidence_text(evidence['blockers'])}",
                 ]
             )
             if "inherited_from" in evidence:
@@ -1831,9 +1823,6 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         role = _role(repo, dispatch["role"])
         _validate_report_in_batch(repo, root, batch, dispatch, report, role)
-        # Canonicalise new submissions only; historical immutable evidence is never rewritten.
-        for check in report["checks_run"]:
-            check["result"] = canonical_check_result(check["result"])
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
         carried_items.require_closure(report, dispatch)

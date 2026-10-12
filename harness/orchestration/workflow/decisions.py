@@ -26,6 +26,7 @@ from harness.orchestration.core.config import (
     _worker_attestation_required,
 )
 from harness.orchestration.core.check_results import check_counts_as_success
+from harness.orchestration.core.report_evidence import evidence_is_none
 from harness.orchestration.core.constants import (
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
@@ -34,6 +35,8 @@ from harness.orchestration.core.constants import (
     NEXT_ACTION_DISPATCH_ROLE,
     OPERATIONAL_REASON_CATEGORIES,
     RETRY_REASON_CATEGORIES,
+    RecoveryRoute,
+    RetryReason,
     TOOLING_REASON_CATEGORY,
 )
 from harness.orchestration.core.git_utils import (
@@ -130,8 +133,8 @@ def _auto_accept_policy(
         return None
     if (
         report.get("outcome") != "completed"
-        or str(report.get("blockers", "")).strip().lower() != "none"
-        or str(report.get("risks", "")).strip().lower() != "none"
+        or not evidence_is_none(report.get("blockers"))
+        or not evidence_is_none(report.get("risks"))
         or report.get("risk_triggers")
         or dispatch.get("purpose") == "publish"
         # A conflict resolution changes code the target never reviewed: a human decides it.
@@ -163,7 +166,7 @@ def _auto_accept_policy(
             return None
     for check in report.get("checks_run", []):
         result = check.get("result") if isinstance(check, dict) else None
-        if not check_counts_as_success(dispatch.get("role"), result):
+        if not check_counts_as_success(result):
             return None
     review = report.get("review")
     if review is not None:
@@ -175,8 +178,8 @@ def _auto_accept_policy(
                 not isinstance(evidence, dict)
                 or evidence.get("severity") != "clean"
                 or evidence.get("findings") != []
-                or str(evidence.get("blockers", "")).strip().lower() != "none"
-                or str(evidence.get("risks", "")).strip().lower() != "none"
+                or not evidence_is_none(evidence.get("blockers"))
+                or not evidence_is_none(evidence.get("risks"))
             ):
                 return None
     return cast(str, policy)
@@ -239,8 +242,8 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "candidate_sha": None,
                 "changed_files": [],
                 "checks": [],
-                "risks": "not assessed yet",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "not assessed yet"},
+                "blockers": {"status": "none", "details": ""},
                 "report": None,
                 "diff": None,
                 "worker_attestation_required": _worker_attestation_required(
@@ -461,7 +464,7 @@ def _review_severity(review: JsonObject) -> dict[str, str]:
     return {axis: review[axis]["severity"] for axis in ("standards", "spec")}
 
 
-QA_INFRASTRUCTURE_CATEGORY = "verification-infrastructure"
+QA_INFRASTRUCTURE_CATEGORY = RetryReason.VERIFICATION_INFRASTRUCTURE
 
 
 def _independent_infrastructure_facts(stages: JsonObject) -> bool:
@@ -499,7 +502,7 @@ def _qa_preparation_diagnosis(report: JsonObject) -> tuple[str, bool] | None:
 
 def _retry_evidence(
     report: JsonObject, candidate_moved: bool
-) -> tuple[str, str] | None:
+) -> tuple[RetryReason, str] | None:
     """The reason category a report's structured data dictates by itself, and what showed it.
 
     Findings, an explicit reviewer retry, a warning/blocker severity, a failed check and a moved
@@ -515,25 +518,31 @@ def _retry_evidence(
                 or evidence.get("severity") in {"warning", "blocker"}
             ):
                 return (
-                    "requirements" if axis == "spec" else "code"
+                    RetryReason.REQUIREMENTS if axis == "spec" else RetryReason.CODE
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
         if review.get("recommendation") == "retry":
-            return "code", "the reviewer explicitly recommends another developer pass"
+            return (
+                RetryReason.CODE,
+                "the reviewer explicitly recommends another developer pass",
+            )
     if carried_items.marks_open(report):
-        return "code", "the review confirms a carried item is still open"
+        return RetryReason.CODE, "the review confirms a carried item is still open"
     checks = report.get("checks_run")
     if isinstance(checks, list) and any(
         isinstance(check, dict) and check.get("result") == "fail" for check in checks
     ):
-        return "code", "a verification check failed"
+        return RetryReason.CODE, "a verification check failed"
     preparation = _qa_preparation_diagnosis(report)
     if preparation is not None and preparation[0] == "project-defect":
         return (
-            "code",
+            RetryReason.CODE,
             "QA preparation failed on a confirmed defect in the project files and no code check started",
         )
     if candidate_moved:
-        return "candidate-change", "the candidate changed after the dispatch was pinned"
+        return (
+            RetryReason.CANDIDATE_CHANGE,
+            "the candidate changed after the dispatch was pinned",
+        )
     return None
 
 
@@ -543,7 +552,7 @@ def _retry_routing(
     *,
     dispatch_candidate: str | None,
     current_candidate: str | None,
-    explicit_category: str | None,
+    explicit_category: object,
     pressure_recorded: bool = False,
     narrowed: bool = False,
 ) -> JsonObject:
@@ -562,14 +571,15 @@ def _retry_routing(
     block: the report is no evidence, so only a moved candidate overrides its ``bypass-rerun``.
     ``narrowed`` (``--narrowed``) re-runs a read-only stage on its report's incomplete items only.
     """
-    if (
-        explicit_category is not None
-        and explicit_category not in RETRY_REASON_CATEGORIES
+    if explicit_category is not None and (
+        not isinstance(explicit_category, str) or explicit_category not in RetryReason
     ):
         raise CoordinatorError(
             f"unknown retry reason category {explicit_category!r}",
             remedy=f"pass --reason-category as one of: {', '.join(RETRY_REASON_CATEGORIES)}",
         )
+    if explicit_category is not None:
+        explicit_category = RetryReason(explicit_category)
     if narrowed:
         return _narrowed_routing(
             stage,
@@ -630,22 +640,25 @@ def _retry_routing(
         category = TOOLING_REASON_CATEGORY
         basis = "the blocked report carries a structured tooling_blocker (tool, command, message)"
     elif explicit_category == TOOLING_REASON_CATEGORY:
-        category = "unknown"
+        category = RetryReason.UNKNOWN
         basis = f"the approver named tooling, but outcome={outcome} carries no structured tooling_blocker"
     elif explicit_category == "context-pressure" and not pressure_recorded:
-        category = "unknown"
+        category = RetryReason.UNKNOWN
         basis = "context-pressure was named, but no critical context_pressure observation exists for the reported dispatch"
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES and outcome == "blocked":
         category = explicit_category
         basis = f"the report is blocked with no finding, no failed check and an unchanged candidate, and the approver named {category}"
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES:
-        category = "unknown"
+        category = RetryReason.UNKNOWN
         basis = f"the approver named {explicit_category}, but outcome={outcome} does not show a blocked run"
     else:
-        category, basis = "unknown", "no structured evidence classifies the cause"
+        category, basis = (
+            RetryReason.UNKNOWN,
+            "no structured evidence classifies the cause",
+        )
     if category == TOOLING_REASON_CATEGORY:
         next_action = "developer-retry" if stage == "developer" else stage
-        route = "tooling-retry"
+        route = RecoveryRoute.TOOLING_RETRY
         restart = (
             "continues from the developer's last commit"
             if stage == "developer"
@@ -656,13 +669,13 @@ def _retry_routing(
             "earlier brief, report and tooling blocker stay as audit evidence"
         )
     elif category == BLOCK_BYPASS_REASON_CATEGORY:
-        next_action, route = stage, "bypass-rerun"
+        next_action, route = stage, RecoveryRoute.BYPASS_RERUN
         outcome_sentence = (
             f"a new independent {stage} dispatch runs on the same SHA under an explicit approval; "
             "the bypassing report is neither accepted nor overridden and stays only as audit evidence"
         )
     elif stage == "architect":
-        next_action, route = "architect", "architect-retry"
+        next_action, route = "architect", RecoveryRoute.ARCHITECT_RETRY
         outcome_sentence = "a new architect dispatch runs; no developer starts before an architect report is accepted"
     elif (
         stage == resolver_state.RESOLVER_ROLE
@@ -670,21 +683,27 @@ def _retry_routing(
     ):
         # An integration incompatibility continues with a resolver; the ticket's own defect falls
         # through to a regular developer retry below.
-        next_action, route = resolver_state.RESOLVER_NEXT_ACTION, "same-candidate-rerun"
+        next_action, route = (
+            resolver_state.RESOLVER_NEXT_ACTION,
+            RecoveryRoute.SAME_CANDIDATE_RERUN,
+        )
         outcome_sentence = "a new conflict-resolver dispatch retries the same target; it is a fix on that target and spends no cycle"
     elif candidate_bound and category in OPERATIONAL_REASON_CATEGORIES:
-        next_action, route = stage, "same-candidate-rerun"
+        next_action, route = stage, RecoveryRoute.SAME_CANDIDATE_RERUN
         outcome_sentence = (
             f"a new independent {stage} dispatch runs on the unchanged candidate; "
             "the earlier brief, report and blocker stay as audit evidence"
         )
     else:
-        next_action, route = "developer-retry", "developer-retry"
+        next_action, route = (
+            "developer-retry",
+            RecoveryRoute.DEVELOPER_RETRY,
+        )
         outcome_sentence = "a developer retry must produce a new candidate commit, which needs a new risk assessment"
     return {
         "route": route,
         "previous_role": stage,
-        "reason_category": category,
+        "reason_category": RetryReason(category),
         "next_role": {
             "developer-retry": "developer",
             resolver_state.RESOLVER_NEXT_ACTION: resolver_state.RESOLVER_ROLE,
@@ -742,11 +761,11 @@ def _narrowed_routing(
         )
     tooled = sum(1 for item in items if "tooling_blocker" in item)
     if tooled:
-        category: str | None = TOOLING_REASON_CATEGORY
-        route = "tooling-retry"
+        category: RetryReason | None = TOOLING_REASON_CATEGORY
+        route = RecoveryRoute.TOOLING_RETRY
         basis = f"{tooled} of its {len(items)} incomplete items carry a tooling_blocker"
     else:
-        category, route = None, "narrowed-retry"
+        category, route = None, RecoveryRoute.NARROWED_RETRY
         basis = f"it lists {len(items)} incomplete items"
     return {
         "route": route,
@@ -1830,9 +1849,15 @@ def _classifier_hint(
         ).classify(facts)
     except extensions.ExtensionError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
-    if hint is not None and hint.category not in RETRY_REASON_CATEGORIES:
+    if hint is not None and (
+        not isinstance(hint.category, str) or hint.category not in RetryReason
+    ):
         raise CoordinatorError(
             f"the retry reason classifier proposed an unknown category {hint.category!r}",
             remedy=f"fix the classifier to return one of: {', '.join(RETRY_REASON_CATEGORIES)}",
         )
-    return hint
+    return (
+        extensions.ReasonHint(RetryReason(hint.category), hint.basis)
+        if hint is not None
+        else None
+    )

@@ -22,6 +22,7 @@ from typing import cast
 
 from ..gate_runner.gate_runner import parse_command_log
 from ..orchestration.core.constants import STATE_REL
+from ..orchestration.core.report_evidence import evidence_is_none
 from ..orchestration.ledger.lifecycle import JsonObject, JsonValue, LifecycleLedger
 from .export import MarkdownDocument, MarkdownSection
 from .json_fields import strings, text
@@ -356,6 +357,14 @@ def _review_text(review: JsonObject) -> str:
     return "\n".join(lines)
 
 
+def _evidence_summary(value: JsonValue) -> str:
+    if evidence_is_none(value):
+        return "none"
+    if isinstance(value, dict) and value.get("status") == "present":
+        return text(value.get("details"))
+    return ""
+
+
 def report_sections(report: JsonObject) -> list[tuple[str, str]]:
     """Формирует список именованных секций отчёта в порядке чтения."""
     sections = [
@@ -367,8 +376,8 @@ def report_sections(report: JsonObject) -> list[tuple[str, str]]:
         sections.append(("Review", _review_text(review)))
     sections.extend(
         [
-            ("Risks", text(report.get("risks"))),
-            ("Blockers", text(report.get("blockers"))),
+            ("Risks", _evidence_summary(report.get("risks"))),
+            ("Blockers", _evidence_summary(report.get("blockers"))),
             ("Next action", text(report.get("next_coordinator_action"))),
         ]
     )

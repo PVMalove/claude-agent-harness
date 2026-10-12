@@ -462,8 +462,8 @@ def run(ctx: SimpleNamespace) -> None:
         "changed_files": [],
         # The architect owns no verification gate: its brief approves no commands to report.
         "checks_run": [],
-        "risks": "none",
-        "blockers": "none",
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "accept and dispatch the developer",
         "report_language": "ru",
     }
@@ -679,8 +679,8 @@ def run(ctx: SimpleNamespace) -> None:
                 "evidence": "1 passed",
             }
         ],
-        "risks": "none",
-        "blockers": "none",
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "accept",
         "report_language": "ru",
         "risk_triggers": ["authorization-security"],
@@ -918,8 +918,11 @@ def run(ctx: SimpleNamespace) -> None:
                 "evidence": "review scope inspected",
             }
         ],
-        "risks": "standards warning requires coordinator decision",
-        "blockers": "none",
+        "risks": {
+            "status": "present",
+            "details": "standards warning requires coordinator decision",
+        },
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "override-warning or retry",
         "report_language": "ru",
         "review": {
@@ -934,14 +937,14 @@ def run(ctx: SimpleNamespace) -> None:
                         "summary": "style warning",
                     }
                 ],
-                "risks": "style risk",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "style risk"},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
         },
     }

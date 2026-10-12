@@ -738,6 +738,12 @@ class IntegrationEvidenceLinkTests(unittest.TestCase):
         invalid: list[JsonObject] = [
             {"kind": "manual"},
             {"result": "ok"},
+            {"result": " passed "},
+            {"result": "Passed"},
+            {"result": "pass"},
+            {"result": "пройдено"},
+            {"result": None},
+            {"result": []},
             {"candidate_commit": "abc123"},
             {"candidate_commit": "A" * 40},
             {"target_commit": "g" * 40},
@@ -765,6 +771,22 @@ class IntegrationEvidenceLinkTests(unittest.TestCase):
             self.link()
         self.assertIn("integrity", raised.exception.message)
         self.assertEqual(self.evidence_files(), [])
+
+    def test_a_stored_result_alias_is_refused_on_status_read(self) -> None:
+        linked = self.link()
+        path = (
+            self.branch.records()
+            / "reports/integration-evidence"
+            / f"{linked['evidence_id']}.json"
+        )
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["result"] = "pass"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        before = path.read_bytes()
+        with self.assertRaises(CoordinatorError) as raised:
+            coordinator.integration_status(self.branch.args(record=self.record_id))
+        self.assertIn("passed", raised.exception.remedy)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_the_public_cli_group_reaches_link_evidence(self) -> None:
         parsed = coordinator.parser().parse_args(
