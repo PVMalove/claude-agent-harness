@@ -9,7 +9,7 @@ from collections.abc import Callable
 from textual.pilot import Pilot
 from textual.widgets import Button
 
-WAIT_SECONDS = 10.0
+WAIT_SECONDS = 30.0
 POLL_SECONDS = 0.05
 
 

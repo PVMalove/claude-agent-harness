@@ -21,6 +21,7 @@ from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.diagnostics import DiagnosticsScreen
 from harness.console.screens.harness import HarnessScreen
 from harness.health.model import CheckResult, Fix, Report
+from tests.console._pilot_wait import wait_until
 
 
 def test_dashboard_shows_the_section_menu_in_order(tmp_path: Path) -> None:
@@ -407,17 +408,26 @@ def test_common_actions_remain_reachable_after_terminal_is_narrowed(
             await pilot.pause()
             screen.query_one("#style-first", Button).focus()
             await pilot.press("tab", "tab")
-            await pilot.pause()
             last = screen.query_one("#style-last", Button)
             actions = screen.query_one("#style-actions", Horizontal)
+            # Focus scrolls the button into view with an animation: wait for it, not for one pause.
+            await wait_until(
+                pilot,
+                lambda: app.focused is last
+                and actions.scrollable_content_region.contains_region(last.region),
+            )
             assert app.focused is last
             assert actions.scrollable_content_region.contains_region(last.region)
             assert await pilot.click("#style-last")
             assert screen.pressed == ["style-last"]
             await pilot.resize_terminal(120, 48)
-            await pilot.pause()
-            for button in actions.query(Button):
-                assert actions.scrollable_content_region.contains_region(button.region)
+            await wait_until(
+                pilot,
+                lambda: all(
+                    actions.scrollable_content_region.contains_region(button.region)
+                    for button in actions.query(Button)
+                ),
+            )
 
     asyncio.run(scenario())
 
