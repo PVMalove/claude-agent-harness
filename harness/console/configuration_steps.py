@@ -266,6 +266,51 @@ class ConfigurationStep:
         return str(kind)
 
     @property
+    def is_section(self) -> bool:
+        """An object with its own fields: edited field by field on the steps that follow."""
+        return self.kind == "object" and isinstance(self.schema.get("properties"), dict)
+
+    @property
+    def is_map(self) -> bool:
+        """An object keyed by free names (plans, profiles); each entry has steps of its own."""
+        return (
+            self.kind == "object"
+            and not self.is_section
+            and isinstance(self.schema.get("additionalProperties"), dict)
+        )
+
+    @property
+    def has_menu(self) -> bool:
+        """Edited through a menu (entries, items) as well as through JSON text."""
+        return self.is_map or self.is_text_list
+
+    @property
+    def is_text_list(self) -> bool:
+        items = self.schema.get("items")
+        return (
+            self.kind == "array"
+            and not self.choices
+            and isinstance(items, dict)
+            and items.get("type") == "string"
+        )
+
+    @property
+    def entry_schema(self) -> JsonObject:
+        """Schema of a map entry, with its reference resolved."""
+        node = self.schema.get("additionalProperties")
+        return _resolve(node, self.root) if isinstance(node, dict) else {}
+
+    @property
+    def child_names(self) -> tuple[str, ...]:
+        properties = self.schema.get("properties")
+        return tuple(properties) if isinstance(properties, dict) else ()
+
+    @property
+    def required_names(self) -> tuple[str, ...]:
+        required = self.schema.get("required")
+        return tuple(str(n) for n in required) if isinstance(required, list) else ()
+
+    @property
     def choices(self) -> tuple[object, ...]:
         values = (
             self.schema.get("items", {}).get("enum", [])
@@ -367,6 +412,41 @@ def _resolve(node: JsonObject, schema: JsonObject) -> JsonObject:
         **resolve_ref(schema, node["$ref"]),
         **{k: v for k, v in node.items() if k != "$ref"},
     }
+
+
+def skeleton(node: JsonObject, root: JsonObject, depth: int = 0) -> object:
+    """A starting value for a new entry: defaults and required fields, so its steps can be filled."""
+    node = _resolve(node, root)
+    if "default" in node:
+        return copy.deepcopy(node["default"])
+    choices = node.get("enum")
+    if isinstance(choices, list) and choices:
+        return choices[0]
+    kind = node.get("type", "string")
+    if isinstance(kind, list):
+        kind = next((k for k in kind if k != "null"), "string")
+    if kind == "object":
+        properties = node.get("properties")
+        required = node.get("required")
+        if (
+            depth > 6
+            or not isinstance(properties, dict)
+            or not isinstance(required, list)
+        ):
+            return {}
+        return {
+            name: skeleton(properties[name], root, depth + 1)
+            for name in required
+            if name in properties and isinstance(properties[name], dict)
+        }
+    if kind == "array":
+        return []
+    if kind in ("integer", "number"):
+        minimum = node.get("minimum")
+        return minimum if isinstance(minimum, (int, float)) else 0
+    if kind == "boolean":
+        return False
+    return ""
 
 
 def steps_for(draft: ConfigurationDraft) -> list[ConfigurationStep]:

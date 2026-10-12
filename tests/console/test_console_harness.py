@@ -253,3 +253,50 @@ def test_a_runner_failure_is_shown_instead_of_running_forever(tmp_path: Path) ->
     assert len(runner.calls) == 1
     assert output.startswith(f"$ {_entry('diff').cli_line(tmp_path)}")
     assert "сбой запуска: ValueError('embedded null byte')" in output
+
+
+def test_every_harness_command_belongs_to_a_menu_group() -> None:
+    from harness.console.screens.harness import _GROUPS
+
+    assert {entry.key for entry in HARNESS_COMMANDS} <= set(_GROUPS)
+
+
+def test_menu_starts_on_a_command_and_describes_it_with_a_short_repo_path(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[str | None, str, list[str]]:
+        app = _HostApp(HarnessScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            menu = app.screen.query_one("#command-menu", ListView)
+            detail = str(app.screen.query_one("#command-detail", Static).content)
+            headings = [
+                str(item.query_one(Static).content)
+                for item in menu.query(ListItem)
+                if item.name is None
+            ]
+            return (
+                menu.highlighted_child.name if menu.highlighted_child else None,
+                detail,
+                headings,
+            )
+
+    name, detail, headings = asyncio.run(scenario())
+    assert name == "init"
+    assert "$ harness init $REPO" in detail and str(tmp_path) not in detail
+    assert headings[0] == "УСТАНОВКА И ОБНОВЛЕНИЕ"
+
+
+def test_y_copies_the_full_cli_line_of_the_highlighted_command(tmp_path: Path) -> None:
+    async def scenario() -> list[str]:
+        copied: list[str] = []
+        app = _HostApp(HarnessScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=(120, 40)) as pilot:
+            setattr(app, "copy_to_clipboard", copied.append)
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+        return copied
+
+    (line,) = asyncio.run(scenario())
+    assert line == _entry("init").cli_line(tmp_path)

@@ -10,16 +10,57 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, ListView, Static
 
+from .. import brand, i18n
 from .. import data as console_data
 from .. import reports as console_reports
 from .. import stats as console_stats
 from ..catalog import HARNESS_COMMANDS, CatalogEntry, process_argv
+from ..logtext import colorize_overview
 from ..runner import CommandRunner, capturing_runner
-from .commands import CommandForm, CommandMenuScreen
+from .commands import CommandForm, CommandMenuScreen, describe_command
+
+_OTHER_GROUP = "Прочее"
+_GROUPS = {
+    **dict.fromkeys(
+        (
+            "init",
+            "update",
+            "update-force-managed",
+            "update-force-seed",
+            "adopt",
+        ),
+        "Установка и обновление",
+    ),
+    **dict.fromkeys(
+        ("diff", "health", "health-fix", "health-online-fix", "verify"),
+        "Проверки",
+    ),
+    **dict.fromkeys(("registry", "lock-project-skills", "list"), "Скиллы"),
+    **dict.fromkeys(("repo-map", "parser-bundle"), "Repo Map"),
+    **dict.fromkeys(
+        (
+            "cleanup",
+            "cleanup-hard",
+            "cleanup-apply",
+            "cleanup-hard-apply",
+            "uninstall",
+            "uninstall-apply",
+            "worktree-remove",
+        ),
+        "Очистка и удаление",
+    ),
+    **dict.fromkeys(("ledger-migrate", "ledger-clean", "ledger-reset"), "Ledger"),
+}
+_GROUP_ORDER = list(dict.fromkeys(_GROUPS.values())) + [_OTHER_GROUP]
+
+
+def _group_rank(key: str) -> int:
+    return _GROUP_ORDER.index(_GROUPS.get(key, _OTHER_GROUP))
 
 
 class CommandFormScreen(CommandForm):
@@ -35,16 +76,18 @@ class CommandFormScreen(CommandForm):
         """Формирует структуру виджетов формы ввода параметров команды."""
         entry = self.entry
         with Vertical(id="command-form"):
-            yield from self.form_header(
-                entry.title, entry.cli_line(self.repo), entry.reversibility
-            )
-            for name in entry.inputs:
-                yield Input(placeholder=name, id=f"input-{name}")
-            if entry.typed_confirmation is not None:
-                yield Input(
-                    placeholder=f"Введите {entry.typed_confirmation}",
-                    id="typed-confirmation",
+            with VerticalScroll(id="command-form-body"):
+                yield from self.form_header(
+                    entry.title, entry.cli_line(self.repo), entry.reversibility
                 )
+                for name in entry.inputs:
+                    yield Input(placeholder=name, id=f"input-{name}")
+                if entry.typed_confirmation is not None:
+                    yield Input(
+                        placeholder=f"Введите {entry.typed_confirmation}",
+                        id="typed-confirmation",
+                    )
+            # Outside the scrolling body: Run and the error stay visible however long the form is.
             yield from self.form_buttons(entry.reversibility)
 
     def _submit(self) -> None:
@@ -69,6 +112,8 @@ class CommandFormScreen(CommandForm):
 class HarnessScreen(CommandMenuScreen):
     """Экран раздела Harness с меню доступных команд харнесса и обслуживания леджера."""
 
+    CRUMB = "Harness"
+
     def __init__(
         self,
         repo: Path,
@@ -91,22 +136,59 @@ class HarnessScreen(CommandMenuScreen):
         state = console_stats.harness_state(self.repo)
         text = console_stats.harness_state_text(state, console_data.harness_version())
         text += "\n" + console_stats.usage_text(self._load_view(self.repo))
-        panel = Static(text, id="harness-state", classes="overview", markup=False)
-        panel.border_title = "Состояние"
+        panel = Static(
+            colorize_overview(text),
+            id="harness-state",
+            classes="overview",
+            markup=False,
+        )
+        panel.border_title = brand.frame_title("Состояние")
+        panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
 
     def menu_items(self) -> Sequence[tuple[str, str]]:
-        """Возвращает список элементов меню команд харнесса с описанием и строкой CLI."""
+        """Команды харнесса по группам; необратимые отмечены ⚠."""
+        ordered = sorted(
+            self._entries.values(), key=lambda entry: _group_rank(entry.key)
+        )
         return [
-            (entry.key, f"{entry.title}\n  $ {entry.cli_line(self.repo)}")
-            for entry in self._entries.values()
+            (
+                entry.key,
+                ("⚠ " if entry.needs_confirmation else "  ")
+                + i18n.tr(self._language, entry.title),
+            )
+            for entry in ordered
         ]
+
+    def menu_group(self, key: str) -> str:
+        return _GROUPS.get(key, _OTHER_GROUP)
+
+    def menu_detail(self, key: str) -> Text:
+        entry = self._entries[key]
+        return describe_command(
+            i18n.tr(self._language, entry.title),
+            entry.reversibility,
+            self.display_cli(entry.cli_line(self.repo)),
+            entry.inputs,
+            confirmation_word=entry.typed_confirmation,
+            language=self._language,
+        )
+
+    def menu_cli_line(self, key: str) -> str:
+        return self._entries[key].cli_line(self.repo)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Обрабатывает выбор команды из списка, открывая форму параметров либо запуская команду сразу."""
         if event.item.name is None:
             return
-        entry = self._entries[event.item.name]
+        self.open_command(event.item.name)
+
+    def open_command(self, key: str) -> None:
+        """Open a catalog command through its usual parameter and confirmation flow."""
+        entry = self._entries.get(key)
+        if entry is None:
+            self.notify("Команда недоступна для выбранного проекта", severity="warning")
+            return
         if not entry.needs_confirmation and not entry.inputs:
             self._run(entry, {})
             return

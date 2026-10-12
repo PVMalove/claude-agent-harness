@@ -385,9 +385,9 @@
     },
     "extensions": {
       "type": "object",
-      "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier"]},
+      "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier", "runtime_access"]},
       "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
-      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии и проверки здоровья. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'."
+      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и подтверждения доступа среды запуска. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'."
     },
     "preflight_policy": {
       "type": "object",

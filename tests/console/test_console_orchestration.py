@@ -19,7 +19,7 @@ pytest.importorskip("textual")
 
 from textual.app import App
 from textual.pilot import Pilot
-from textual.widgets import ListView, Static, TextArea
+from textual.widgets import ListItem, ListView, Static, TextArea
 
 from harness.console.coordinator_catalog import (
     COORDINATOR_COMMANDS,
@@ -58,7 +58,7 @@ class _HostApp(App[None]):
 
 def _select(app: App[None], key: str) -> None:
     menu = app.screen.query_one("#command-menu", ListView)
-    menu.index = [entry.key for entry in COORDINATOR_COMMANDS].index(key)
+    menu.index = [item.name for item in menu.query(ListItem)].index(key)
 
 
 async def _choose(pilot: Pilot[None], app: App[None], key: str) -> None:

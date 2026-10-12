@@ -212,3 +212,26 @@ def test_catalog_imports_without_textual() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_repo_map_commands_dispatch_to_their_cli_functions() -> None:
+    """The Repo Map section's memory and parser commands reach the CLI functions they name."""
+    from harness.console.catalog import MEMORY_COMMANDS, parsers_install_entry
+
+    cli = runpy.run_path(str(BIN_HARNESS_PATH))
+    install = parsers_install_entry(["python", "go"])
+    assert install.reversibility in CONFIRMATION_REASONS
+    assert install.cli_argv(REPO)[2:] == [
+        "install",
+        str(REPO),
+        "--language",
+        "python",
+        "--language",
+        "go",
+    ]
+    for entry in (*MEMORY_COMMANDS, install):
+        args = cli["parser"]().parse_args(entry.cli_argv(REPO)[1:])
+        assert args.func.__name__ == entry.function.split(":")[1]
+        assert args.repo == str(REPO)
+    assert install.needs_confirmation
+    assert not any(entry.needs_confirmation for entry in MEMORY_COMMANDS)

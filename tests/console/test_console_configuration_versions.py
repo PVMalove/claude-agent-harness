@@ -384,3 +384,63 @@ def test_damaged_versions_stay_listed_with_a_reason_and_incompatibility_is_expla
     bundle = {"project.json": json.dumps(invalid).encode(), "orchestration.json": None}
     with pytest.raises(ValueError, match="language"):
         store._validate(bundle)
+
+
+def test_versions_and_backups_live_inside_the_project_store(tmp_path: Path) -> None:
+    root = tmp_path / ".harness"
+    root.mkdir()
+    (root / "project.json").write_bytes(project("ru"))
+    original = read_config_bundle(tmp_path)
+    store = ConfigurationStore(tmp_path)
+    assert store.root == (tmp_path / ".harness" / "config_versions").resolve()
+    assert not store.root.exists()  # looking at the path creates nothing
+    chosen = store.save({**original, "project.json": project("en")}, "English")
+    backup = store.apply(store.load(chosen.id), expected=original)
+    assert store.root.is_dir() and (store.root / ".gitignore").read_text() == "*\n"
+    stored = {path.name for path in store.root.iterdir() if path.is_dir()}
+    assert stored == {chosen.id, backup.id}
+    assert store.load(backup.id)["project.json"] == project("ru")
+    # A new instance reads the earlier versions and can go back to the original.
+    again = ConfigurationStore(tmp_path)
+    assert {v.id for v in again.versions()} == stored
+    again.apply(again.load(backup.id), expected=read_config_bundle(tmp_path))
+    assert read_config_bundle(tmp_path) == original
+    assert (tmp_path / ".harness" / "project.json").read_bytes() == project("ru")
+
+
+def test_two_projects_keep_separate_stores(tmp_path: Path) -> None:
+    stores = []
+    for name, language in (("first", "ru"), ("second", "en")):
+        repo = tmp_path / name
+        (repo / ".harness").mkdir(parents=True)
+        (repo / ".harness" / "project.json").write_bytes(project(language))
+        store = ConfigurationStore(repo)
+        store.save(read_config_bundle(repo), name)
+        stores.append(store)
+    first, second = stores
+    assert first.root != second.root
+    assert [v.description for v in first.versions()] == ["first"]
+    assert [v.description for v in second.versions()] == ["second"]
+
+
+def test_versions_saved_under_the_former_name_are_moved_not_lost(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".harness"
+    root.mkdir()
+    (root / "project.json").write_bytes(project("ru"))
+    saved = ConfigurationStore(tmp_path).save(read_config_bundle(tmp_path), "старая")
+    (root / "config_versions").rename(root / "config-versions")
+    store = ConfigurationStore(tmp_path)
+    assert not (root / "config-versions").exists()
+    assert [v.id for v in store.versions()] == [saved.id]
+    assert store.load(saved.id) == read_config_bundle(tmp_path)
+
+
+def test_an_existing_new_store_wins_over_the_former_directory(tmp_path: Path) -> None:
+    root = tmp_path / ".harness"
+    (root / "config-versions").mkdir(parents=True)
+    (root / "config_versions").mkdir()
+    store = ConfigurationStore(tmp_path)
+    assert store.root.name == "config_versions"
+    assert (root / "config-versions").is_dir()

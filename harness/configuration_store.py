@@ -136,8 +136,18 @@ class ConfigurationStore:
 
     def __init__(self, repo: Path) -> None:
         self.repo = repo.expanduser().resolve()
-        self.root = inside_project(self.repo, self.repo / ".harness/config-versions")
+        self.root = inside_project(self.repo, self.repo / ".harness/config_versions")
+        self._adopt_legacy_root()
         self.marker = self.root / ".transaction.json"
+
+    def _adopt_legacy_root(self) -> None:
+        """Move versions saved under the former `config-versions` name, so none are lost."""
+        legacy = inside_project(self.repo, self.repo / ".harness/config-versions")
+        if legacy.is_dir() and not self.root.exists():
+            try:
+                legacy.rename(self.root)
+            except OSError:
+                pass
 
     def _prepare(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)

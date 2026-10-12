@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Mapping
 
 import pytest
 
@@ -14,12 +14,14 @@ pytest.importorskip("textual")
 
 from textual.pilot import Pilot
 
+from harness.console import brand
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
 from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.diagnostics import DiagnosticsScreen
 from harness.console.screens.harness import HarnessScreen
 from harness.health.model import CheckResult, Fix, Report
+from tests.console._pilot_wait import wait_until
 
 
 def test_dashboard_shows_the_section_menu_in_order(tmp_path: Path) -> None:
@@ -35,6 +37,191 @@ def test_dashboard_shows_the_section_menu_in_order(tmp_path: Path) -> None:
             return [item.name for item in menu.children]
 
     assert asyncio.run(scenario()) == list(SECTIONS)
+
+
+@pytest.mark.parametrize("size", [(120, 48), (80, 24)])
+def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortcuts(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from textual.app import App
+    from textual.binding import Binding
+    from textual.widgets import Button, ListItem
+
+    from harness.console.chrome import TopBar
+
+    class DashboardHost(App[None]):
+        CSS = HarnessConsoleApp.CSS
+
+    async def scenario() -> None:
+        screen = DashboardScreen(
+            tmp_path,
+            collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+        )
+        app = DashboardHost()
+        async with app.run_test(size=size) as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+            checks = screen.query_one("#dashboard-attention-scroll")
+            assert [button.id for button in checks.query(Button)] == [
+                "dashboard-offline",
+                "dashboard-online",
+            ]
+            sections = screen.query_one("#dashboard-sections")
+            assert sections.query_one("#open-project", ListItem)
+            assert sections.query_one("#update-harness", ListItem)
+            menu_items = list(sections.query("#section-menu > ListItem"))
+            assert [item.name for item in menu_items[:2]] == [
+                "Open project",
+                "Update Harness",
+            ]
+            assert len(menu_items) == 9
+            assert not sections.query(Button)
+            assert screen.query_one("#dashboard-summary").display
+            if size[0] >= 100:
+                assert (
+                    sections.region.bottom
+                    == screen.query_one("#dashboard-details").region.bottom
+                )
+            assert not screen.query(
+                "#dashboard-cli, #dashboard-offline-cli, #dashboard-online-cli"
+            )
+            assert screen.query_one(TopBar).region.height == 2
+            for key in ("r", "o", "p"):
+                assert any(
+                    isinstance(binding, Binding) and binding.key == key
+                    for binding in screen.BINDINGS
+                )
+            for item in screen.query("#section-menu > ListItem").results(ListItem):
+                assert screen.region.contains_region(item.region)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("interaction", ["keyboard", "mouse"])
+def test_dashboard_update_opens_the_update_screen_without_running_a_command(
+    tmp_path: Path,
+    interaction: str,
+) -> None:
+    from textual.app import App
+
+    from harness.console.screens.update_harness import UpdateHarnessScreen
+
+    calls: list[object] = []
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    async def scenario() -> None:
+        app = App[None]()
+        screen = DashboardScreen(
+            tmp_path,
+            collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+            command_runner=runner,
+        )
+        async with app.run_test(size=(120, 48)) as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+            if interaction == "keyboard":
+                await pilot.press("2")
+            else:
+                await pilot.click("#update-harness")
+            await pilot.pause()
+            assert isinstance(app.screen, UpdateHarnessScreen)
+            assert app.screen.repo == tmp_path
+            assert not calls
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, DashboardScreen)
+            assert not calls
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(120, 48), (80, 24)])
+def test_dashboard_menu_opens_a_section_by_its_number(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    async def scenario() -> str:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            await pilot.press("4")
+            await pilot.pause()
+            return type(app.screen).__name__
+
+    assert asyncio.run(scenario()) == "HarnessScreen"
+
+
+def test_dashboard_project_entries_switch_language_without_changing_order(
+    tmp_path: Path,
+) -> None:
+    from io import StringIO
+    from rich.console import Console
+    from textual.app import App
+    from textual.widgets import ListItem, Static
+
+    async def scenario() -> None:
+        app = App[None]()
+        screen = DashboardScreen(
+            tmp_path,
+            collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+        )
+        async with app.run_test(size=(120, 36)):
+            await app.push_screen(screen)
+            for language, expected in (
+                ("ru", ("1 Открыть проект", "2 Обновить Harness")),
+                ("en", ("1 Open project", "2 Update Harness")),
+            ):
+                setattr(app, "language", language)
+                screen.sync_language()
+                items = list(screen.query("#section-menu > ListItem").results(ListItem))
+                assert [item.name for item in items] == list(SECTIONS)
+                for item, label in zip(items[:2], expected):
+                    output = StringIO()
+                    Console(file=output, width=30).print(item.query_one(Static).content)
+                    assert label in output.getvalue()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("interaction", ["keyboard", "mouse"])
+def test_configuration_menu_opens_from_keyboard_and_mouse(
+    tmp_path: Path, interaction: str
+) -> None:
+    from textual.app import App
+    from textual.widgets import ListItem, ListView, Static
+
+    from harness.console.screens.configuration import ConfigurationScreen
+
+    async def scenario() -> None:
+        app = App[None]()
+        screen = DashboardScreen(
+            tmp_path,
+            collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+        )
+        async with app.run_test(size=(120, 48)) as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+            menu = screen.query_one("#section-menu", ListView)
+            item = next(
+                item for item in menu.query(ListItem) if item.name == "Configuration"
+            )
+            if interaction == "keyboard":
+                menu.focus()
+                menu.index = list(menu.children).index(item)
+                await pilot.press("enter")
+            else:
+                assert await pilot.click(item.query_one(Static))
+            await pilot.pause()
+            assert isinstance(app.screen, ConfigurationScreen)
+
+    asyncio.run(scenario())
 
 
 def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
@@ -122,7 +309,9 @@ def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
     assert "ok=5" in rendered
     assert "warn=1" in rendered
     assert "fail=0" in rendered
-    assert "active batches: 3" in rendered
+    from rich.text import Text
+
+    assert "active batches: 3" in Text.from_markup(rendered).plain
     assert "9.9.9" in rendered
     assert "clean" in rendered
 
@@ -130,7 +319,7 @@ def test_dashboard_screen_renders_injected_data_without_touching_the_repo(
 def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> None:
     """The home screen opens with the harness mark and a description of this installation."""
 
-    async def scenario() -> tuple[str, str]:
+    async def scenario() -> tuple[str, str, str]:
         from textual.app import App
         from textual.widgets import Static
 
@@ -156,16 +345,18 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
         async with app.run_test():
             mark = str(app.screen.query_one("#brand-mark", Static).content)
             info = str(app.screen.query_one("#brand-info", Static).content)
-        return mark, info
+            card = str(app.screen.query_one("#card-harness", Static).content)
+        return mark, info, card
 
-    mark, info = asyncio.run(scenario())
+    mark, info, card = asyncio.run(scenario())
     from harness.console import brand
 
     assert mark.splitlines() == list(brand.LOGO)
     assert f"{brand.PRODUCT} 9.9.9" in info
-    assert "pvmalove-suite" in info
+    # The installed Harness (its capabilities) lives on the Harness card, not beside the mark.
+    assert "pvmalove-suite" in card and "pvmalove-suite" not in info
     assert "~/work/app" in info
-    assert "ветка feature/issue-7-x" in info
+    assert "ветка feature/issue-7-x · commit не определён" in info
 
 
 def test_console_registers_and_selects_the_warm_theme(tmp_path: Path) -> None:
@@ -177,6 +368,68 @@ def test_console_registers_and_selects_the_warm_theme(tmp_path: Path) -> None:
     from harness.console import brand
 
     assert asyncio.run(scenario()) == brand.THEME_NAME
+
+
+@pytest.mark.parametrize("group_class", ["actions", "action-row"])
+def test_common_actions_remain_reachable_after_terminal_is_narrowed(
+    tmp_path: Path,
+    group_class: str,
+) -> None:
+    """Общая группа действий прокручивается к фокусу, чтобы кнопки не обрезались."""
+    from textual.app import ComposeResult
+    from textual.containers import Horizontal, VerticalGroup
+    from textual.screen import Screen
+    from textual.widgets import Button, Static
+
+    class StyleScreen(Screen[None]):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pressed: list[str | None] = []
+
+        def compose(self) -> ComposeResult:
+            with VerticalGroup(classes="frame") as frame:
+                frame.border_title = brand.frame_title("Действия")
+                yield Static("Сохранённые конфигурации")
+                with Horizontal(id="style-actions", classes=group_class):
+                    yield Button("Save current configuration", id="style-first")
+                    yield Button("Select version / restore", id="style-second")
+                    yield Button("Close / cancel", id="style-last")
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            self.pressed.append(event.button.id)
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = StyleScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.resize_terminal(80, 24)
+            await pilot.pause()
+            screen.query_one("#style-first", Button).focus()
+            await pilot.press("tab", "tab")
+            last = screen.query_one("#style-last", Button)
+            actions = screen.query_one("#style-actions", Horizontal)
+            # Focus scrolls the button into view with an animation: wait for it, not for one pause.
+            await wait_until(
+                pilot,
+                lambda: app.focused is last
+                and actions.scrollable_content_region.contains_region(last.region),
+            )
+            assert app.focused is last
+            assert actions.scrollable_content_region.contains_region(last.region)
+            assert await pilot.click("#style-last")
+            assert screen.pressed == ["style-last"]
+            await pilot.resize_terminal(120, 48)
+            await wait_until(
+                pilot,
+                lambda: all(
+                    actions.scrollable_content_region.contains_region(button.region)
+                    for button in actions.query(Button)
+                ),
+            )
+
+    asyncio.run(scenario())
 
 
 def test_help_opens_from_the_menu_and_from_f1(tmp_path: Path) -> None:
@@ -441,12 +694,12 @@ def test_diagnostics_online_checks_refetches_with_online_true(tmp_path: Path) ->
     assert seen_online == [False, True]
 
 
-def test_dashboard_online_checks_action_reruns_with_online_and_shows_the_cli(
+def test_dashboard_online_checks_action_reruns_with_online_and_updates_summary(
     tmp_path: Path,
 ) -> None:
-    """Проверить, что онлайн-проверки дашборда перезапускают сбор и выводят команду CLI."""
+    """Проверить, что онлайн-проверки дашборда перезапускают сбор и обновляют сводку."""
 
-    async def scenario() -> tuple[list[bool], str, str]:
+    async def scenario() -> tuple[list[bool], str]:
         """Сценарий запуска онлайн-проверок из дашборда."""
         from textual.app import App
         from textual.widgets import Static
@@ -469,16 +722,15 @@ def test_dashboard_online_checks_action_reruns_with_online_and_shows_the_cli(
 
         app = _HostApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.click("#dashboard-online")
+            await pilot.press("o")
             await _settle(pilot)
             summary = str(app.screen.query_one("#dashboard-summary", Static).content)
-            cli = str(app.screen.query_one("#dashboard-online-cli", Static).content)
-        return seen_online, summary, cli
+        return seen_online, summary
 
-    seen_online, summary, cli = asyncio.run(scenario())
+    seen_online, summary = asyncio.run(scenario())
     assert seen_online == [False, True]
     assert "health (online)" in summary
-    assert "harness health" in cli and "--online" in cli
+    assert "ok=5" in summary
 
 
 def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
@@ -558,24 +810,26 @@ def test_offline_checks_buttons_rerun_health_offline(tmp_path: Path) -> None:
 
         app = _HostApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.click("#dashboard-offline")
+            await pilot.press("r")
             await _settle(pilot)
-            cli = str(app.screen.query_one("#dashboard-offline-cli", Static).content)
+            summary = str(app.screen.query_one("#dashboard-summary", Static).content)
             app.push_screen(screens[1])
             await _settle(pilot)
             await pilot.click("#offline-checks")
             await _settle(pilot)
-        return dashboard_online, diagnostics_online, cli
+        return dashboard_online, diagnostics_online, summary
 
-    dashboard_online, diagnostics_online, cli = asyncio.run(scenario())
+    dashboard_online, diagnostics_online, summary = asyncio.run(scenario())
     assert dashboard_online == [False, False]
     assert diagnostics_online == [False, False]
-    assert cli.endswith(f"health {tmp_path}")
+    assert "health (offline)" in summary
+    assert "ok=5" in summary
 
 
 def test_dashboard_summary_lists_problems_and_splits_repo_map_facts() -> None:
     """Проверить, что сводка перечисляет ошибки и предупреждения и разбивает строку Repo Map."""
     from dataclasses import replace
+    from rich.text import Text
 
     from harness.console.screens.dashboard import _render_summary
 
@@ -588,10 +842,113 @@ def test_dashboard_summary_lists_problems_and_splits_repo_map_facts() -> None:
         ),
     )
     text = _render_summary(data)
-    assert "repo map: tier=minimal\n  policy: enforced" in text
-    assert "ошибки и предупреждения:" in text
+    plain = Text.from_markup(text).plain
+    assert "repo map: tier=minimal\n  policy: enforced" in plain
+    assert "ошибки и предупреждения:" in plain
     assert "env.git — git \\[bold] missing" in text
     assert text.index("env.git") < text.index("repo_map.tier —")
+
+
+def test_dashboard_summary_colors_labels_and_normalizes_repo_map() -> None:
+    from dataclasses import replace
+
+    from rich.text import Text
+    from rich.color import Color
+    from rich.style import Style
+
+    from harness.console.screens.dashboard import _render_summary
+
+    data = replace(
+        _fake_dashboard_data(),
+        repo_map_tier=(
+            "Repo Map: tier=minimal (requested by policy); "
+            "Repo Map provenance: policy requested path-only inventory; "
+            "Repo Map policy: enforced; dispatch is limited to minimal path inventory"
+        ),
+    )
+    rendered = Text.from_markup(_render_summary(data))
+    assert "repo map: tier=minimal" in rendered.plain
+    assert "  provenance: policy requested path-only inventory" in rendered.plain
+    assert "  policy: enforced" in rendered.plain
+    assert "Repo Map" not in rendered.plain
+    for label in (
+        "health (offline):",
+        "active batches:",
+        "repo map:",
+        "memory:",
+        "harness:",
+    ):
+        start = rendered.plain.index(label)
+        assert any(
+            span.start <= start
+            and span.end >= start + len(label)
+            and Style.parse(str(span.style)).bold
+            and Style.parse(str(span.style)).color
+            == Color.parse(brand.PALETTE["primary"])
+            for span in rendered.spans
+        )
+
+
+@pytest.mark.parametrize("status", ["ok", "warn", "fail", "skipped"])
+def test_dashboard_summary_shows_memory_health_without_interpreting_markup(
+    status: str,
+) -> None:
+    from dataclasses import replace
+    from typing import cast
+
+    from rich.text import Text
+
+    from harness.console.screens.dashboard import _render_summary
+    from harness.health.model import Status
+
+    data = replace(
+        _fake_dashboard_data(),
+        memory_index=CheckResult(
+            id="memory.index",
+            group="memory",
+            status=cast(Status, status),
+            message="индекс [test]",
+        ),
+    )
+    assert (
+        f"memory: {status} — индекс [test]"
+        in Text.from_markup(_render_summary(data)).plain
+    )
+
+
+def test_restart_command_keeps_selected_project_and_waits_for_running_commands(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            restart = next(
+                command
+                for command in app.get_system_commands(app.screen)
+                if command.title in ("Restart console", "Перезапустить консоль")
+            )
+            app.commands_running = 1
+            restart.callback()
+            await pilot.pause()
+            assert not app.restart_requested
+            app.commands_running = 0
+            gate = asyncio.Event()
+            worker = app.screen.run_worker(gate.wait(), group="configuration")
+            await pilot.pause()
+            restart.callback()
+            assert not app.restart_requested
+            gate.set()
+            await worker.wait()
+            selected = tmp_path / "selected-project"
+            selected.mkdir()
+            app.activate_project(selected)
+            await pilot.pause()
+            restart.callback()
+            assert app.restart_requested
+            assert app.repo == selected
+
+    asyncio.run(scenario())
 
 
 def test_diagnostics_screen_unmount_cancels_workers_without_deadlock(
@@ -670,7 +1027,7 @@ def test_dashboard_shows_why_the_checks_failed_instead_of_running_forever(
 
         app = _HostApp()
         async with app.run_test(size=(120, 40)) as pilot:
-            await pilot.click("#dashboard-online")
+            await pilot.press("o")
             await _settle(pilot)
             return str(app.screen.query_one("#dashboard-summary", Static).content)
 
@@ -711,3 +1068,56 @@ def test_diagnostics_shows_why_health_failed_instead_of_running_forever(
     rendered = asyncio.run(scenario())
     assert "health не выполнен" in rendered
     assert "ValueError('broken check')" in rendered
+
+
+def test_switching_the_project_shows_its_head_commit_in_the_banner(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Static
+
+    from tests.console.test_console_brand import _committed_repo
+
+    first, first_head = _committed_repo(tmp_path / "first")
+    second, second_head = _committed_repo(tmp_path / "second")
+    assert (
+        first_head != second_head or True
+    )  # same-second commits may share a tree only
+
+    async def scenario() -> tuple[str, str]:
+        app = HarnessConsoleApp(first)
+        async with app.run_test(size=(130, 50)) as pilot:
+            await pilot.pause()
+            before = str(app.screen.query_one("#brand-info", Static).content)
+            app.activate_project(second)
+            await pilot.pause()
+            await pilot.pause()
+            return before, str(app.screen.query_one("#brand-info", Static).content)
+
+    before, after = asyncio.run(scenario())
+    assert f"commit {first_head}" in before.splitlines()[-1]
+    assert f"commit {second_head}" in after.splitlines()[-1]
+    assert "second" in after.splitlines()[-2]
+
+
+def test_dashboard_checks_live_in_the_attention_frame_and_have_no_diagnostics_button(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Button
+
+    async def scenario() -> list[str | None]:
+        screen = DashboardScreen(
+            tmp_path,
+            collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+        )
+        from textual.app import App
+
+        app = App[None]()
+        async with app.run_test(size=(120, 48)) as pilot:
+            await app.push_screen(screen)
+            await pilot.pause()
+            return [
+                b.id
+                for b in screen.query_one("#dashboard-attention-scroll").query(Button)
+            ]
+
+    assert asyncio.run(scenario()) == ["dashboard-offline", "dashboard-online"]

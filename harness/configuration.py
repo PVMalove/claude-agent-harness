@@ -143,7 +143,7 @@ def read_journal(path: Path) -> JsonObject | None:
 def read_config_bundle(repo: Path) -> Bundle:
     """Read a coherent generation without changing files or recovering a live writer."""
     root = inside_project(repo, repo / ".harness")
-    marker = inside_project(repo, root / "config-versions/.transaction.json")
+    marker = inside_project(repo, root / "config_versions/.transaction.json")
     for _ in range(8):
         before = read_journal(marker)
         if before is not None and before["state"] == "prepared":

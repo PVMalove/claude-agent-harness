@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+from collections.abc import Callable
+from typing import cast
 import json
 from pathlib import Path
 from threading import Event
@@ -10,6 +13,7 @@ from threading import Event
 import pytest
 
 from textual.app import App
+from textual.pilot import Pilot
 from textual.widgets import Button, RadioButton, RadioSet, Static, TextArea
 
 from harness.configuration_schema import PACKAGE
@@ -47,6 +51,22 @@ class Host(App[None]):
 
     def on_mount(self) -> None:
         self.push_screen(ConfigurationScreen(self.repo))
+
+
+def test_configuration_choice_groups_editing_and_saved_versions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 36)):
+            editing = app.screen.query_one("#configuration-editing")
+            versions = app.screen.query_one("#configuration-versions")
+            assert editing.query_one("#configure-project", Button)
+            assert editing.query_one("#configure-orchestration", Button)
+            assert editing.query_one("#configure-both", Button)
+            assert versions.query_one("#version-description")
+            assert versions.query_one("#save-current-version", Button)
+            assert versions.query_one("#open-versions", Button)
+
+    asyncio.run(scenario())
 
 
 def test_wizard_choice_changes_only_a_draft_until_apply(tmp_path: Path) -> None:
@@ -242,7 +262,7 @@ def test_dashboard_refreshes_after_applied_configuration_is_closed(
         app = DashboardHost()
         async with app.run_test(size=(120, 48)) as pilot:
             menu = app.screen.query_one("#section-menu", ListView)
-            menu.index = SECTIONS.index("Настройка конфигурации")
+            menu.index = SECTIONS.index("Configuration")
             await pilot.press("enter")
             await pilot.pause()
             await pilot.click("#configure-project")
@@ -256,7 +276,7 @@ def test_dashboard_refreshes_after_applied_configuration_is_closed(
             await app.workers.wait_for_complete()
             await pilot.pause()
             # Successful apply reloads the draft; closing it returns to the dashboard.
-            await pilot.click("#cancel-config")
+            await pilot.press("escape")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -350,15 +370,14 @@ def test_external_change_is_reloaded_without_losing_the_draft(tmp_path: Path) ->
     async def scenario() -> None:
         app = Host(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#configure-project")
-            await pilot.pause()
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#choice-1")))
             app.screen.query_one("#choice-1", RadioButton).value = True
-            await pilot.click("#review-config")
-            await pilot.pause()
+            await press(pilot, "#review-config")
+            await wait_until(pilot, lambda: bool(app.screen.query("#apply-config")))
             _write_project(tmp_path, base_branch="release")
-            await pilot.click("#apply-config")
-            await pilot.pause()
-            await pilot.click("#confirm")
+            await press(pilot, "#apply-config")
+            await press(pilot, "#confirm")
             await app.workers.wait_for_complete()
             await pilot.pause()
             assert (
@@ -368,11 +387,9 @@ def test_external_change_is_reloaded_without_losing_the_draft(tmp_path: Path) ->
                 == "ru"
             )
             assert app.screen.query_one("#apply-config", Button).disabled
-            await pilot.click("#reload-external")
-            await pilot.pause()
-            await pilot.click("#apply-config")
-            await pilot.pause()
-            await pilot.click("#confirm")
+            await press(pilot, "#reload-external")
+            await press(pilot, "#apply-config")
+            await press(pilot, "#confirm")
             await app.workers.wait_for_complete()
             await pilot.pause()
             active = json.loads((tmp_path / ".harness/project.json").read_bytes())
@@ -394,8 +411,14 @@ def test_current_set_can_be_saved_as_a_version_from_the_menu(tmp_path: Path) -> 
             await pilot.pause()
 
     asyncio.run(scenario())
-    assert len(ConfigurationStore(tmp_path).versions()) == 1
+    store = ConfigurationStore(tmp_path)
+    assert len(store.versions()) == 1
     assert (tmp_path / ".harness/project.json").read_bytes() == before
+    # The saved version sits inside the project's own store, under its own directory.
+    assert store.root == (tmp_path / ".harness/config_versions").resolve()
+    assert [p.name for p in store.root.iterdir() if p.is_dir()] == [
+        store.versions()[0].id
+    ]
 
 
 def test_errors_link_to_steps_and_cli_status_is_shown_without_a_request(
@@ -429,5 +452,329 @@ def test_errors_link_to_steps_and_cli_status_is_shown_without_a_request(
             await app.screen.recompose()
             await pilot.pause()
             assert len(app.screen.query("#problem-jump")) == 1
+
+    asyncio.run(scenario())
+
+
+def test_every_phase_keeps_its_content_in_frames(tmp_path: Path) -> None:
+    from textual.widgets import Static
+
+    installed_project(tmp_path)
+
+    async def scenario() -> dict[str, list[str]]:
+        phases: dict[str, list[str]] = {}
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+
+            def titles() -> list[str]:
+                return [
+                    str(frame.border_title).strip()
+                    for frame in app.screen.query(".frame")
+                    if frame.border_title and frame.display
+                ]
+
+            phases["choose"] = titles()
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            phases["editing"] = titles()
+            error = app.screen.query_one("#config-error", Static)
+            assert not error.display  # an empty message takes no room
+            await pilot.click("#review-config")
+            await pilot.pause()
+            phases["review"] = titles()
+        return phases
+
+    phases = asyncio.run(scenario())
+    assert phases["choose"] == [
+        "Цель",
+        "Редактирование конфигурации",
+        "Сохранённые версии",
+    ]
+    assert phases["editing"] == ["Цель", "Шаг", "Параметр", "ИИ-подсказки", "Действия"]
+    assert phases["review"] == [
+        "Цель",
+        "Проверка",
+        "Различия",
+        "Итоговые файлы",
+        "Версия",
+        "Действия",
+    ]
+
+
+def test_a_message_appears_in_the_actions_frame_and_hides_again(tmp_path: Path) -> None:
+    from textual.widgets import Static
+
+    installed_project(tmp_path)
+
+    async def scenario() -> tuple[bool, bool, bool]:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            frame = app.screen.query_one("#configuration-actions")
+            hidden_at_start = not frame.display
+            cast(ConfigurationScreen, app.screen)._set_message("Ошибка поля")
+            await pilot.pause()
+            shown = frame.display
+            assert (
+                str(app.screen.query_one("#config-error", Static).content)
+                == "Ошибка поля"
+            )
+            cast(ConfigurationScreen, app.screen)._set_message("")
+            await pilot.pause()
+            return hidden_at_start, shown, not frame.display
+
+    assert asyncio.run(scenario()) == (True, True, True)
+
+
+def test_the_confirmation_dialog_is_framed_and_cancel_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+
+    before = installed_project(tmp_path)
+    answers: list[bool | None] = []
+
+    class ConfirmHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(ConfirmConfiguration("Перезаписать?"), answers.append)
+
+    async def scenario() -> str:
+        app = ConfirmHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            title = str(app.screen.query_one("Vertical").border_title).strip()
+            await pilot.click("#cancel")
+            await pilot.pause()
+            return title
+
+    assert asyncio.run(scenario()) == "Подтверждение"
+    assert answers == [False]
+    assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+
+def test_a_block_is_a_section_page_with_its_fields_on_the_next_steps(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox
+
+    installed_project(tmp_path)
+    path = tmp_path / ".harness/project.json"
+    document = json.loads(path.read_bytes())
+    document["memory_policy"] = {"source_types": ["adr"], "top_k": 5}
+    path.write_text(json.dumps(document))
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen)
+            await _open_step(pilot, screen, ("memory_policy",), ".section-rows")
+            # No JSON editor of the whole block: its fields follow as steps of their own.
+            assert not screen.query("#field-value")
+            assert not screen.query("#use-recommendation")
+            assert screen.query_one("#include-field", Checkbox).value is True
+            rows = [
+                str(s.content)
+                for s in screen.query(".row-ok, .row-muted, .row-warn").results(Static)
+            ]
+            assert any(r.startswith("✓ top_k = 5") for r in rows)
+            assert any(r.startswith("✓ source_types") for r in rows)
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: len(screen.steps[screen.index].path) == 2)
+            assert screen.steps[screen.index].path[0] == "memory_policy"
+
+    asyncio.run(scenario())
+
+
+def test_a_section_added_with_the_checkbox_gets_its_field_steps(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen)
+            assert not any(
+                s.path[:1] == ("memory_policy",) and len(s.path) > 1
+                for s in screen.steps
+            )
+            await _open_step(pilot, screen, ("memory_policy",), ".section-rows")
+            assert screen.query_one("#include-field", Checkbox).value is False
+            screen.query_one("#include-field", Checkbox).value = True
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: len(screen.steps[screen.index].path) == 2)
+            assert screen.draft is not None
+            assert "memory_policy" in screen.draft.documents["project.json"]
+
+    asyncio.run(scenario())
+
+
+def _orchestration_project(repo: Path) -> None:
+    from harness.configuration_schema import PACKAGE
+
+    installed_project(repo)
+    root = repo / ".harness/orchestration"
+    shutil.copytree(PACKAGE / "orchestration/roles", root / "roles")
+    (root / "orchestration.schema.json").write_bytes(
+        (PACKAGE / "orchestration/orchestration.schema.json").read_bytes()
+    )
+    (repo / ".harness/orchestration.json").write_bytes(
+        (PACKAGE / "orchestration.example.json").read_bytes()
+    )
+
+
+async def _open_step(
+    pilot: Pilot[None],
+    screen: ConfigurationScreen,
+    path: tuple[str, ...],
+    ready: str,
+) -> None:
+    """Jump to the step at `path` and wait until its page (recognised by `ready`) is built."""
+    from textual.widgets import Select
+
+    index = next(i for i, s in enumerate(screen.steps) if s.path == path)
+    screen.query_one("#step-jump", Select).value = index
+    await wait_until(
+        pilot,
+        lambda: screen.steps[screen.index].path == path and bool(screen.query(ready)),
+    )
+
+
+def test_entries_of_a_map_are_added_removed_and_opened_through_the_menu(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Input, ListView
+
+    _orchestration_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await press(pilot, "#configure-orchestration")
+            await app.workers.wait_for_complete()
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen) and screen.draft is not None
+            draft = screen.draft
+            await _open_step(pilot, screen, ("assignment_plans",), "#menu-new")
+            # The menu is the default way; the JSON text has its own radio option.
+            assert not screen.query("#field-value")
+            assert screen.query_one("#menu-items", ListView)
+            plans = draft.documents["orchestration.json"]["assignment_plans"]
+            assert isinstance(plans, dict) and "reviewer" not in plans
+            screen.query_one("#menu-new", Input).value = "reviewer"
+            await press(pilot, "#menu-add")
+            # The new entry opens at once, so its own fields are the next thing to fill.
+            await wait_until(
+                pilot,
+                lambda: screen.steps[screen.index].path
+                == ("assignment_plans", "reviewer"),
+            )
+            plans = draft.documents["orchestration.json"]["assignment_plans"]
+            assert isinstance(plans, dict)
+            assert plans["reviewer"] == plans["architect"]  # copied from the template
+            await _open_step(pilot, screen, ("assignment_plans",), "#menu-new")
+            screen.query_one("#menu-new", Input).value = "reviewer"
+            await press(pilot, "#menu-add")
+            await wait_until(
+                pilot,
+                lambda: "уже есть" in str(screen.query_one("#config-error").render()),
+            )
+            menu = screen.query_one("#menu-items", ListView)
+            menu.index = [str(i.name) for i in menu.children].index("reviewer")
+            await press(pilot, "#menu-remove")
+            await wait_until(
+                pilot,
+                lambda: "reviewer"
+                not in cast(
+                    dict[str, object],
+                    draft.documents["orchestration.json"]["assignment_plans"],
+                ),
+            )
+            await _open_step(pilot, screen, ("assignment_plans",), "#menu-new")
+            await press(pilot, "#menu-open")
+            await wait_until(
+                pilot,
+                lambda: screen.steps[screen.index].path
+                == ("assignment_plans", "architect"),
+            )
+
+    asyncio.run(scenario())
+
+
+async def _stable(
+    pilot: Pilot[None], widget: Callable[[], object], polls: int = 4
+) -> None:
+    """Wait until `widget()` returns the same object `polls` times in a row: the page stopped rebuilding."""
+    last: object = None
+    same = 0
+    for _ in range(400):
+        await pilot.pause()
+        current = widget()
+        same = same + 1 if current is last else 0
+        last = current
+        if same >= polls:
+            return
+    raise AssertionError("the page kept rebuilding")
+
+
+def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
+    from textual.widgets import Input, ListView, TextArea
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = app.screen
+            assert isinstance(screen, ConfigurationScreen) and screen.draft is not None
+            draft = screen.draft
+            await _open_step(pilot, screen, ("qa_gate_commands",), "#menu-new")
+            screen.query_one("#menu-new", Input).value = "make lint"
+            await press(pilot, "#menu-add")
+            await wait_until(
+                pilot,
+                lambda: draft.documents["project.json"]["qa_gate_commands"]
+                == ["pytest", "make lint"],
+            )
+            assert not screen.query("Button#mode-menu, Button#mode-text")
+            assert screen.query_one("#mode-menu", RadioButton).value
+            screen.query_one("#configuration-mode", RadioSet).focus()
+            await pilot.press("right", "space")
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            await _stable(pilot, lambda: screen.query_one("#field-value"))
+            assert screen.query_one("#mode-text", RadioButton).value
+            assert not screen.query_one("#mode-menu", RadioButton).value
+            area = screen.query_one("#field-value", TextArea)
+            assert json.loads(area.text) == ["pytest", "make lint"]
+            area.load_text("{broken JSON")
+            screen.query_one("#mode-menu", RadioButton).value = True
+            await _stable(pilot, lambda: screen.query_one("#field-value"))
+            assert screen.text_mode
+            assert screen.query_one("#mode-text", RadioButton).value
+            assert not screen.query_one("#mode-menu", RadioButton).value
+            area = screen.query_one("#field-value", TextArea)
+            assert area.text == "{broken JSON"
+            area.load_text('["pytest"]')
+            screen.query_one("#mode-menu", RadioButton).value = True
+            await wait_until(pilot, lambda: bool(screen.query("#menu-items")))
+            assert draft.documents["project.json"]["qa_gate_commands"] == ["pytest"]
+            assert len(screen.query_one("#menu-items", ListView).children) == 1
+            await press(pilot, "#menu-remove")
+            await wait_until(
+                pilot,
+                lambda: draft.documents["project.json"]["qa_gate_commands"] == [],
+            )
 
     asyncio.run(scenario())

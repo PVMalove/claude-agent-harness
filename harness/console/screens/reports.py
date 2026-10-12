@@ -11,12 +11,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Input, ListItem, ListView, Static
+from textual.widgets import Button, Footer, Input, ListItem, ListView, Static
 
+from ..chrome import TopBar
+from ..translate import Translated
 from .. import reports as console_reports
 from ..reports import BatchTimeline, LedgerView, ReportEntry
 from .. import brand
@@ -30,28 +33,50 @@ _FILTERS = (
 )
 
 
-def _report_label(entry: ReportEntry) -> str:
-    date = entry.reported_at[:16].replace("T", " ") if entry.reported_at else "дата ?"
-    return f"{date} · {entry.ticket} · {entry.role} · {entry.outcome} · {entry.dispatch_id}"
+_OUTCOME_STATUS = {"completed": "ok", "failed": "fail", "blocked": "warn"}
+
+
+def _short_id(identifier: str, prefix: str) -> str:
+    return identifier.removeprefix(prefix)[:8]
+
+
+def _report_label(entry: ReportEntry) -> Text:
+    """One aligned row. A `Text`, never markup: the fields come from untrusted role output."""
+    date = entry.reported_at[:16].replace("T", " ")[5:] if entry.reported_at else "?"
+    status = _OUTCOME_STATUS.get(entry.outcome, "skipped")
+    label = Text(f"{date:<11} {entry.ticket:<6} {entry.role:<13} ")
+    label.append(
+        f"{brand.STATUS_ICONS[status]} {entry.outcome:<10}",
+        style=brand.STATUS_COLORS[status],
+    )
+    label.append(f" {_short_id(entry.dispatch_id, 'dispatch-')}")
+    return label
 
 
 def _section_id(title: str) -> str:
     return "section-" + title.lower().replace(" ", "-")
 
 
-class ReportsScreen(Screen[None]):
+class ReportsScreen(Translated, Screen[None]):
     """The report list with its filters, and the batch list that opens a chronology."""
 
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         Binding("f3", "open_qa_logs", "QA-логи"),
     ]
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide")]
     DEFAULT_CSS = """
-    ReportsScreen #reports-status { height: auto; }
-    ReportsScreen #report-filters { height: auto; }
-    ReportsScreen #report-filters Input { width: 1fr; }
-    ReportsScreen ListView { height: auto; min-height: 3; max-height: 40%; margin: 0 1; }
-    ReportsScreen #open-qa-logs { margin: 0 1; }
+    ReportsScreen #report-filters { height: 1; margin: 0 2; }
+    ReportsScreen #reports-status { width: auto; }
+    ReportsScreen #report-filters Input { width: 1fr; margin-left: 1; }
+    ReportsScreen #reports-body { width: 100%; height: 1fr; margin: 0 1; }
+    ReportsScreen ListView > ListItem { height: 1; padding: 0 1; }
+    ReportsScreen ListView Static { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    ReportsScreen #report-list { width: 2fr; height: 1fr; margin: 0; }
+    ReportsScreen #batch-list { width: 1fr; height: 1fr; margin: 0; }
+    ReportsScreen.-narrow #reports-body { layout: vertical; }
+    ReportsScreen.-narrow #report-list { width: 1fr; }
+    ReportsScreen.-narrow #batch-list { width: 1fr; height: 8; }
     """
 
     def __init__(
@@ -66,35 +91,31 @@ class ReportsScreen(Screen[None]):
         self.shown: list[ReportEntry] = list(self.view.reports)
 
     def compose(self) -> ComposeResult:
-        yield Header(icon=brand.MENU_ICON)
-        status = Static(
-            self._status(), id="reports-status", classes="frame", markup=False
-        )
-        status.border_title = "Состояние"
-        yield status
-        with Horizontal(id="report-filters", classes="frame") as filters:
-            filters.border_title = "Фильтры"
+        yield TopBar("Главная › Отчёты")
+        with Horizontal(id="report-filters"):
+            yield Static(self._status(), id="reports-status", markup=False)
             for widget_id, placeholder, _ in _FILTERS:
-                yield Input(placeholder=placeholder, id=widget_id)
-        reports = ListView(*self._report_items(), id="report-list")
-        reports.border_title = "Completion reports"
-        yield reports
-        yield Button("QA-логи", id="open-qa-logs")
-        batches = ListView(
-            *(
-                ListItem(
-                    Static(
-                        f"{batch.ticket} · {batch.state} · {batch.batch_id}",
-                        markup=False,
-                    ),
-                    name=batch.batch_id,
-                )
-                for batch in self.view.batches
-            ),
-            id="batch-list",
-        )
-        batches.border_title = "Батчи (хронология)"
-        yield batches
+                yield Input(placeholder=placeholder, id=widget_id, compact=True)
+        with Horizontal(id="reports-body"):
+            reports = ListView(*self._report_items(), id="report-list")
+            reports.border_title = brand.frame_title("Отчёты ролей")
+            yield reports
+            batches = ListView(
+                *(
+                    ListItem(
+                        Static(
+                            f"{batch.ticket} · {batch.state} · "
+                            f"{_short_id(batch.batch_id, 'batch-')}",
+                            markup=False,
+                        ),
+                        name=batch.batch_id,
+                    )
+                    for batch in self.view.batches
+                ),
+                id="batch-list",
+            )
+            batches.border_title = brand.frame_title("Батчи (хронология)")
+            yield batches
         yield Footer()
 
     def _status(self) -> str:
@@ -131,15 +152,11 @@ class ReportsScreen(Screen[None]):
             if timeline is not None:
                 self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "open-qa-logs":
-            self.action_open_qa_logs()
-
     def action_open_qa_logs(self) -> None:
         self.app.push_screen(QaLogsScreen(self.view))
 
 
-class ReportScreen(Screen[None]):
+class ReportScreen(Translated, Screen[None]):
     """One completion report, section by section; every section wraps to the screen width."""
 
     BINDINGS = [
@@ -161,9 +178,9 @@ class ReportScreen(Screen[None]):
         self.repo = repo
 
     def compose(self) -> ComposeResult:
-        yield Header(icon=brand.MENU_ICON)
+        yield TopBar("Главная › Отчёты › Отчёт")
         with VerticalScroll(id="report-body", classes="frame") as frame:
-            frame.border_title = "Отчёт"
+            frame.border_title = brand.frame_title("Отчёт")
             yield Static(
                 console_reports.report_header(self.entry),
                 id="report-header",
@@ -184,7 +201,7 @@ class ReportScreen(Screen[None]):
                     qa_log, id="section-qa-log", classes="section-body", markup=False
                 )
         with Horizontal(classes="actions frame") as actions:
-            actions.border_title = "Действия"
+            actions.border_title = brand.frame_title("Действия")
             yield Button("Хронология батча", id="open-timeline")
             yield Button("Экспорт в Markdown", id="export")
         yield Footer()
@@ -221,7 +238,7 @@ def _render_timeline(timeline: BatchTimeline) -> str:
     return "\n".join(lines)
 
 
-class BatchTimelineScreen(Screen[None]):
+class BatchTimelineScreen(Translated, Screen[None]):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
@@ -233,12 +250,12 @@ class BatchTimelineScreen(Screen[None]):
         self.repo = repo
 
     def compose(self) -> ComposeResult:
-        yield Header(icon=brand.MENU_ICON)
+        yield TopBar("Главная › Отчёты › Хронология")
         timeline = VerticalScroll(
             Static(_render_timeline(self.timeline), id="batch-timeline", markup=False),
             classes="frame",
         )
-        timeline.border_title = "Хронология batch"
+        timeline.border_title = brand.frame_title("Хронология batch")
         yield timeline
         yield Footer()
 
@@ -258,7 +275,7 @@ def _render_qa_logs(view: LedgerView) -> str:
     return "\n\n".join(parts)
 
 
-class QaLogsScreen(Screen[None]):
+class QaLogsScreen(Translated, Screen[None]):
     """Every QA gate log in the generation (newest first) and every failed qa-lane attempt."""
 
     BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
@@ -268,11 +285,11 @@ class QaLogsScreen(Screen[None]):
         self.view = view
 
     def compose(self) -> ComposeResult:
-        yield Header(icon=brand.MENU_ICON)
+        yield TopBar("Главная › Отчёты › QA-логи")
         logs = VerticalScroll(
             Static(_render_qa_logs(self.view), id="qa-logs", markup=False),
             classes="frame",
         )
-        logs.border_title = "QA-логи"
+        logs.border_title = brand.frame_title("QA-логи")
         yield logs
         yield Footer()
