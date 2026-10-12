@@ -398,6 +398,11 @@ def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits
             screen.query_one("#array-choice-0", Checkbox).value = True
             await pilot.pause()
             await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: screen.steps[screen.index].path
+                != ("memory_policy", "source_types"),
+            )
             await _open_step(
                 pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
             )
@@ -432,6 +437,10 @@ def test_accepting_false_recommendation_clears_boolean_without_applying_config(
             await press(pilot, "#use-recommendation")
             assert screen.query_one("#field-boolean", Checkbox).value is False
             await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: screen.steps[screen.index].path != ("memory", "enabled"),
+            )
             await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
             assert screen.query_one("#field-boolean", Checkbox).value is False
             assert (tmp_path / ".harness/project.json").read_bytes() == before
