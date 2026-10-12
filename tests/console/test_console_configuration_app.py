@@ -21,6 +21,8 @@ from harness.console.configuration_steps import ConfigurationStep
 from harness.console.advisor import Advice, AdvisorUnavailable
 from harness.console.screens.configuration import ConfigurationScreen
 
+from tests.console._pilot_wait import press, wait_until
+
 
 def installed_project(repo: Path) -> bytes:
     root = repo / ".harness"
@@ -207,18 +209,19 @@ def test_removing_optional_object_then_jumping_to_its_former_child_keeps_it_remo
                 if s.path == ("memory_policy", "top_k")
             )
             screen.query_one("#step-jump", Select).value = parent
-            await pilot.pause()
+            await wait_until(pilot, lambda: screen.query("#include-field"))
             screen.query_one("#include-field", Checkbox).value = False
             screen.query_one("#step-jump", Select).value = child
-            await pilot.pause()
+            await wait_until(
+                pilot, lambda: screen.steps[screen.index].path == ("memory_policy",)
+            )
             assert screen.draft is not None
             assert "memory_policy" not in screen.draft.documents["project.json"]
             assert screen.steps[screen.index].path == ("memory_policy",)
             assert not any(
                 len(s.path) > 1 and s.path[0] == "memory_policy" for s in screen.steps
             )
-            await pilot.click("#review-config")
-            await pilot.pause()
+            await press(pilot, "#review-config")
             assert screen.phase == "review"
             assert "memory_policy" not in screen.draft.documents["project.json"]
             assert path.read_bytes() == before

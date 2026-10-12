@@ -13,6 +13,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -94,7 +95,7 @@ def build_request(draft: ConfigurationDraft, field: ConfigurationStep) -> str:
 
 def _stop(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is None:
-        if os.name == "posix":
+        if sys.platform != "win32":
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:

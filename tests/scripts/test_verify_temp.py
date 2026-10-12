@@ -196,9 +196,22 @@ class PytestCommandTest(unittest.TestCase):
     def test_windows_configuration(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="win32", cpu_count=8)
         self.assertIn("-n", cmd)
-        self.assertEqual(cmd[cmd.index("-n") + 1], "2")
+        self.assertEqual(cmd[cmd.index("-n") + 1], "4")
         self.assertIn("--ignore=tests/memory/test_eval.py", cmd)
         self.assertIn("--ignore=tests/memory/test_vector_probe.py", cmd)
+        self.assertNotIn("--ignore=tests/orchestration/test_coordinator.py", cmd)
+
+    def test_windows_platform_subset_skips_the_slow_neutral_files(self) -> None:
+        cmd = verify.pytest_command(
+            Path("/tmp/run"), platform="win32", cpu_count=8, platform_subset=True
+        )
+        self.assertIn("--ignore=tests/orchestration/test_coordinator.py", cmd)
+
+    def test_posix_ignores_the_platform_subset_flag(self) -> None:
+        cmd = verify.pytest_command(
+            Path("/tmp/run"), platform="linux", cpu_count=8, platform_subset=True
+        )
+        self.assertFalse([arg for arg in cmd if arg.startswith("--ignore=")])
 
     def test_posix_configuration(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=8)
