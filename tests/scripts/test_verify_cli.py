@@ -78,3 +78,29 @@ def test_an_unknown_stage_is_refused(capsys: pytest.CaptureFixture[str]) -> None
     with pytest.raises(SystemExit) as exit_info:
         verify.main(["--only", "lint"])
     assert exit_info.value.code == 2
+
+
+def test_the_ci_options_reach_the_pytest_command(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(verify, "_prepare_run_root", lambda: (tmp_path / "run", {}))
+    monkeypatch.setattr(verify, "_static_checks", lambda env: None)
+    monkeypatch.setattr(
+        verify, "run_stage", lambda name, cmd, **kwargs: commands.append(cmd)
+    )
+    monkeypatch.setattr(verify, "remove_tree", lambda path: None)
+    verify.main(
+        [
+            "--only",
+            "tests",
+            "--fail-fast",
+            "--failed-first",
+            str(tmp_path / "cache"),
+            "--junit-xml",
+            str(tmp_path / "junit.xml"),
+        ]
+    )
+    pytest_cmd = next(cmd for cmd in commands if "pytest" in cmd)
+    assert "-x" in pytest_cmd and "--ff" in pytest_cmd
+    assert f"--junitxml={tmp_path / 'junit.xml'}" in pytest_cmd

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from textual.pilot import Pilot
 from textual.widgets import Button
 
-WAIT_SECONDS = 10.0
+WAIT_SECONDS = 30.0
 POLL_SECONDS = 0.05
 
 
@@ -23,7 +23,8 @@ async def wait_until[T](pilot: Pilot[T], ready: Callable[[], object]) -> None:
             return
         if loop.time() >= deadline:
             raise AssertionError(
-                f"UI did not reach the expected state in {WAIT_SECONDS}s"
+                f"UI did not reach the expected state in {WAIT_SECONDS}s "
+                f"(screen: {type(pilot.app.screen).__name__})"
             )
         await asyncio.sleep(POLL_SECONDS)
 

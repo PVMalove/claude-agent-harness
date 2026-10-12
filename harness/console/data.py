@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import difflib
 import functools
 import json
 import runpy
@@ -25,7 +26,7 @@ from typing import Callable, cast
 
 from ..health import registry as health_registry
 from ..health.context import shell_join
-from ..health.model import JsonObject, Report
+from ..health.model import CheckResult, JsonObject, Report
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = _PACKAGE_ROOT / "VERSION"
@@ -34,7 +35,7 @@ BIN_HARNESS_PATH = _PACKAGE_ROOT / "bin" / "harness.py"
 
 @dataclass(frozen=True)
 class DashboardData:
-    """Факты для отображения на экране Dashboard: счётчики проверок health, активные батчи, уровень Repo Map, версия харнесса и статус дрейфа."""
+    """Факты для Dashboard: счётчики health, батчи, Repo Map, memory, версия и дрейф."""
 
     ok: int
     warn: int
@@ -48,6 +49,7 @@ class DashboardData:
     )  # None: backend-orchestration is not connected in this project
     # (status, check id, message) of every failed and then every warning check.
     problems: tuple[tuple[str, str, str], ...] = ()
+    memory_index: CheckResult | None = None
 
 
 def harness_version() -> str:
@@ -63,8 +65,8 @@ def _repo_map_tier(report: Report) -> str:
     return "не установлен"
 
 
-def drift_state(repo: Path, *, timeout: float = 30.0) -> str:
-    """Вызывает `harness diff --json` в подпроцессе для определения состояния дрейфа управляемых файлов."""
+def drift_report(repo: Path, *, timeout: float = 30.0) -> JsonObject | None:
+    """Результат `harness diff --json` в подпроцессе (состояние и счётчики дрейфа) либо None."""
     try:
         result = subprocess.run(
             [sys.executable, str(BIN_HARNESS_PATH), "diff", str(repo), "--json"],
@@ -73,12 +75,18 @@ def drift_state(repo: Path, *, timeout: float = 30.0) -> str:
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
-        return "неизвестно"
+        return None
     try:
         payload = json.loads(result.stdout)
     except (json.JSONDecodeError, ValueError):
-        return "неизвестно"
-    state = payload.get("state") if isinstance(payload, dict) else None
+        return None
+    return cast(JsonObject, payload) if isinstance(payload, dict) else None
+
+
+def drift_state(repo: Path, *, timeout: float = 30.0) -> str:
+    """Вызывает `harness diff --json` в подпроцессе для определения состояния дрейфа управляемых файлов."""
+    payload = drift_report(repo, timeout=timeout)
+    state = payload.get("state") if payload is not None else None
     return state if isinstance(state, str) else "неизвестно"
 
 
@@ -120,6 +128,41 @@ def _packager() -> dict[str, object]:
     return runpy.run_path(str(BIN_HARNESS_PATH))
 
 
+def update_diff_text(repo: Path, relative: str, *, max_lines: int = 600) -> str:
+    """Unified diff of a project file against what `harness update` would write there: the package
+    file for managed files, the template for seed files. Empty text means nothing would change."""
+    namespace = _packager()
+    lock = namespace["load_lock"](repo)  # type: ignore[operator]
+    expected: bytes | None = None
+    if lock is not None:
+        selected = namespace["selected_capabilities"](lock.get("capabilities"))  # type: ignore[operator]
+        expected = namespace["package_files"](selected).get(relative)  # type: ignore[operator]
+    if expected is None:
+        templates = namespace["seed_template_files"](  # type: ignore[operator]
+            repo, orchestration_enabled=(repo / ".harness/orchestration.json").exists()
+        )
+        expected = templates.get(relative)
+    path = repo / relative
+    try:
+        local = path.read_bytes() if path.is_file() else b""
+        before = local.decode("utf-8").splitlines(keepends=True)
+        after = (expected or b"").decode("utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeDecodeError):
+        return "Бинарный или нечитаемый файл: diff недоступен."
+    removed = expected is None and bool(local)
+    lines = list(
+        difflib.unified_diff(
+            before,
+            after,
+            fromfile=f"проект/{relative}",
+            tofile="(файл будет удалён)" if removed else f"после обновления/{relative}",
+        )
+    )
+    if len(lines) > max_lines:
+        lines = lines[:max_lines] + [f"… ещё {len(lines) - max_lines} строк\n"]
+    return "".join(lines)
+
+
 def run_health(repo: Path, *, online: bool = False, fix: bool = False) -> Report:
     """Выполняет проверку состояния репозитория, аналогично вызову `harness health [--online] [--fix]`."""
     packager = _packager()
@@ -145,6 +188,9 @@ def collect_dashboard(repo: Path, *, online: bool = False) -> DashboardData:
         harness_version=harness_version(),
         drift_state=drift_state(repo),
         active_batches=active_batches(repo),
+        memory_index=next(
+            (check for check in report.checks if check.id == "memory.index"), None
+        ),
         problems=tuple(
             (check.status, check.id, check.message)
             for status in ("fail", "warn")

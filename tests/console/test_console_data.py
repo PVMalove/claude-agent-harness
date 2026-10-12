@@ -78,6 +78,9 @@ def test_collect_dashboard_returns_offline_counters_and_optional_facts(
     assert dashboard.harness_version
     assert dashboard.drift_state == "missing"
     assert dashboard.active_batches is None
+    assert dashboard.memory_index is not None
+    assert dashboard.memory_index.status == "skipped"
+    assert "память выключена" in dashboard.memory_index.message
 
 
 def test_collect_diagnostics_returns_the_full_offline_report(tmp_path: Path) -> None:

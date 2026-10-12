@@ -113,7 +113,9 @@ _needs_non_root = pytest.mark.skipif(
     hasattr(os, "geteuid") and os.geteuid() == 0,
     reason="a privileged process is not denied by file permissions",
 )
-_needs_posix_modes = pytest.mark.skipif(os.name == "nt", reason="Windows does not deny writes by POSIX mode bits")
+_needs_posix_modes = pytest.mark.skipif(
+    os.name == "nt", reason="Windows does not deny writes by POSIX mode bits"
+)
 
 
 def _project(tmp_path: Path) -> Path:

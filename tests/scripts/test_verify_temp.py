@@ -220,6 +220,28 @@ class PytestCommandTest(unittest.TestCase):
         self.assertNotIn("--ignore=tests/memory/test_eval.py", cmd)
         self.assertNotIn("--ignore=tests/memory/test_vector_probe.py", cmd)
 
+    def test_default_run_has_no_cache_no_stop_and_no_report(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=8)
+        self.assertEqual(cmd[cmd.index("-p") + 1], "no:cacheprovider")
+        for absent in ("-x", "--ff"):
+            self.assertNotIn(absent, cmd)
+        self.assertFalse([a for a in cmd if a.startswith("--junitxml")])
+
+    def test_fail_fast_failed_first_and_junit_options(self) -> None:
+        cmd = verify.pytest_command(
+            Path("/tmp/run"),
+            platform="linux",
+            cpu_count=8,
+            fail_fast=True,
+            failed_first=Path("/tmp/cache"),
+            junit_xml=Path("/tmp/out/junit.xml"),
+        )
+        self.assertIn("-x", cmd)
+        self.assertIn("--ff", cmd)
+        self.assertIn(f"cache_dir={Path('/tmp/cache')}", cmd)
+        self.assertNotIn("no:cacheprovider", cmd)
+        self.assertIn(f"--junitxml={Path('/tmp/out/junit.xml')}", cmd)
+
     def test_single_cpu_fallback(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=1)
         self.assertEqual(cmd[cmd.index("-n") + 1], "1")

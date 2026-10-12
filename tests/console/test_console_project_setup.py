@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from textual.widgets import Input, RadioButton, RadioSet, Static
+from textual.widgets import Button, Input, RadioButton, RadioSet, Static
 
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
@@ -28,7 +28,7 @@ def test_selecting_another_project_replaces_the_dashboard_context(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await press(pilot, "#open-project")
+            await pilot.press("p")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
             await press(pilot, "#inspect-project")
@@ -38,7 +38,7 @@ def test_selecting_another_project_replaces_the_dashboard_context(
             await wait_until(
                 pilot,
                 lambda: isinstance(app.screen, DashboardScreen)
-                and app.screen.query("HeaderTitle"),
+                and app.screen.query("TopBar"),
             )
             assert isinstance(app.screen, DashboardScreen)
             assert app.repo == second.resolve()
@@ -75,7 +75,7 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path, command_runner=runner)
         async with app.run_test(size=(140, 60)) as pilot:
-            await press(pilot, "#open-project")
+            await pilot.press("p")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
             await press(pilot, "#inspect-project")
@@ -105,7 +105,7 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
             await wait_until(
                 pilot,
                 lambda: isinstance(app.screen, DashboardScreen)
-                and app.screen.query("HeaderTitle"),
+                and app.screen.query("TopBar"),
             )
             assert app.repo == second.resolve()
             assert isinstance(app.screen, DashboardScreen)
@@ -136,7 +136,7 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await press(pilot, "#open-project")
+            await pilot.press("p")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             screen = app.screen
             assert "Выбор проекта" in str(
@@ -254,7 +254,7 @@ def test_online_check_and_local_fixes_target_the_selected_project(
     async def scenario() -> str:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await press(pilot, "#open-project")
+            await pilot.press("p")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             app.screen.query_one("#project-path", Input).value = str(second)
             await press(pilot, "#inspect-project")
@@ -277,3 +277,96 @@ def test_online_check_and_local_fixes_target_the_selected_project(
     assert ("collect", second.resolve(), True) in calls
     assert ("fix", second.resolve(), False) in calls
     assert all(repo == second.resolve() for _, repo, _ in calls)
+
+
+def test_the_actions_are_disabled_while_an_operation_runs(tmp_path: Path) -> None:
+    second = tmp_path / "backend"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+
+    async def scenario() -> tuple[list[bool], list[bool]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.press("p")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
+            screen = app.screen
+            assert isinstance(screen, ProjectSetupScreen)
+            screen.query_one("#project-path", Input).value = str(second)
+            await press(pilot, "#inspect-project")
+            # The local diagnostics start by themselves: wait until they are done.
+            await wait_until(
+                pilot,
+                lambda: not screen.busy
+                and "Итого" in str(screen.query_one("#setup-output", Static).render()),
+            )
+            names = ("inspect-project", "activate-project", "install-project")
+            idle = [screen.query_one("#" + n, Button).disabled for n in names]
+            screen._set_busy(True)
+            busy = [screen.query_one("#" + n, Button).disabled for n in names]
+            screen._set_busy(False)
+            assert [screen.query_one("#" + n, Button).disabled for n in names] == idle
+            return idle, busy
+
+    idle, busy = asyncio.run(scenario())
+    assert idle == [False, False, False]
+    assert busy == [True, True, True]
+
+
+def test_capability_change_keeps_install_disabled_during_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from harness.console import data
+    from harness.console.screens.harness import CommandFormScreen
+    from harness.health.model import Report
+
+    second = tmp_path / "backend with spaces"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+    started, release = threading.Event(), threading.Event()
+
+    def collect(repo: Path, *, online: bool = False) -> Report:
+        started.set()
+        if not release.wait(10):
+            raise TimeoutError("Test did not release diagnostics")
+        return Report(1, str(repo), online, [])
+
+    monkeypatch.setattr(data, "collect_diagnostics", collect)
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(140, 60)) as pilot:
+            try:
+                await pilot.press("p")
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ProjectSetupScreen)
+                )
+                screen = app.screen
+                assert isinstance(screen, ProjectSetupScreen)
+                screen.query_one("#project-path", Input).value = str(second)
+                await press(pilot, "#inspect-project")
+                await wait_until(pilot, started.is_set)
+                assert screen.busy
+                assert screen.query_one("#install-project", Button).disabled
+
+                # A queued capability change must not enable installation mid-operation.
+                screen.query_one("#capability", RadioSet).query(RadioButton)[
+                    -1
+                ].value = True
+                await pilot.pause()
+                assert screen.busy
+                assert screen.query_one("#install-project", Button).disabled
+
+                release.set()
+                await wait_until(pilot, lambda: not screen.busy)
+                await press(pilot, "#install-project")
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, CommandFormScreen)
+                )
+                await press(pilot, "#cancel")
+                await wait_until(pilot, lambda: app.screen is screen)
+            finally:
+                release.set()
+
+    asyncio.run(scenario())

@@ -83,6 +83,7 @@ cd claude-agent-harness
 | `registry` | Пересобирает `.harness/skills/REGISTRY.md` | да |
 | `lock-project-skills` | Фиксирует хэши скиллов, которыми владеет сам проект | да |
 | `memory build/search/rebuild` | Локальный FTS5-кэш и указатели на разрешённые источники | build/rebuild — да; search — нет |
+| `parsers status/install` | Парсеры Repo Map: состояние bundle и установка парсеров выбранных языков (`--language`, повторяемый); `install` скачивает закреплённые wheels с PyPI и проверяет их SHA-256 | install — да (скачивает файлы), status — нет |
 | `health` | Диагностика установки и окружения | только с `--fix` |
 | `list` | Список установленных скиллов | нет |
 | `cleanup` | Предпросмотр и удаление одноразовых данных `.harness` | только с `--apply` |
@@ -345,6 +346,7 @@ python3 harness/bin/harness.py diff /path/to/repository --json   # машино�
 python3 harness/bin/harness.py update /path/to/repository --capability pvmalove-suite
 python3 harness/bin/harness.py update /path/to/repository --force-managed-files   # перезаписать snapshot
 python3 harness/bin/harness.py update /path/to/repository --force-seed-files      # перезаписать seed-файлы
+python3 harness/bin/harness.py update /path/to/repository --force-seed-file .claude/rules/token-efficiency.md   # только этот seed-файл
 ```
 
 - Без флага `update` отказывается перезаписывать локально изменённые managed files: он показывает их
@@ -352,8 +354,11 @@ python3 harness/bin/harness.py update /path/to/repository --force-seed-files    
 - `--force-managed-files` перезаписывает только managed snapshot и заодно удаляет файлы, которых
   больше нет в текущей версии capability.
 - Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.schema.json`,
-  `.harness/orchestration.json`) команда сохраняет; `--force-seed-files` разрешает их перезапись, а
-  `--force` объединяет оба действия и может потерять project-owned настройки. Существующий
+  `.harness/orchestration.json`) команда сохраняет; `--force-seed-files` разрешает их перезапись,
+  `--force-seed-file <путь>` (повторяемый) перезаписывает только указанные файлы — путь от корня
+  проекта, неизвестный путь отклоняется до записи; список отличающихся от шаблона файлов даёт поле
+  `seed_differing` в `harness diff --json`. `--force` объединяет оба действия (managed и все
+  seed-файлы) и может потерять project-owned настройки. Существующий
   `.harness/project.json` сохраняется даже с force-флагами, поэтому новые поля в него добавляют
   вручную.
 - `update` не проверяет и не трогает `.harness/overlays/project-local.lock` и
@@ -681,7 +686,7 @@ textual. При аварийном завершении TUI пульт сооб�
 оркестрации или «не подключено», tier Repo Map, версия харнесса и статус дрейфа. Действие «Online
 checks» пересчитывает счётчики с `--online` и показывает CLI-эквивалент.
 
-Кнопка «Открыть / подключить проект» ведёт по шагам «выбор проекта → предварительные проверки →
+Кнопка «Проект» ведёт по шагам «выбор проекта → предварительные проверки →
 установка/внедрение → настройка → итоговая диагностика» для выбранного локального Git-проекта.
 Установка идёт через ту же форму подтверждения, что и команды раздела `Harness`, а после неё проект
 становится целью всех экранов. Подробности: [настройка, версии и CLI-помощник](console-configuration.md).
@@ -692,8 +697,8 @@ checks» пересчитывает счётчики с `--online` и показ
 | `Harness` | Панель «Состояние»: установленная версия (и версия пакета, если они расходятся), capability, число скиллов и управляемых файлов, время обновления lock, подключена ли оркестрация и сводка использования пайплайна (`harness/console/stats.py`). Ниже — команды из `harness/console/catalog.py`: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса (план и применение), registry, lock-project-skills, list, health, Repo Map, parser bundle, verify, ledger migrate/clean/reset, удаление worktree |
 | `Orchestration` | Статистика пайплайна (запуски и тикеты, состояния, диспатчи по ролям, итоги отчётов, QA, период) и история: слева все состояния batch с числом, справа batch выбранного состояния, Enter открывает хронологию. Ниже — команды coordinator из `harness/console/coordinator_catalog.py` |
 | `Reports` | Completion reports из леджера с фильтрами по тикету, роли, outcome и дате; хронология batch; QA-логи |
-| `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика |
-| `Настройка конфигурации` | Пошаговый мастер `project.json` и `orchestration.json` (`harness/console/configuration_steps.py`): пояснения и рекомендации по признакам проекта, проверка по схеме и валидаторам, различия, применение с автоматической резервной копией, локальные версии в `.harness/config-versions/` и откат, необязательные подсказки через авторизованный Codex CLI или Claude Code CLI (`harness/console/advisor.py`) |
+| `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика. Вкладка «Настройки»: режим карты `minimal`/`full` (`repo_map_policy.tier`), мастер на шаге `repo_map_policy`, установка парсеров выбранных языков (`harness parsers install`) и память проекта: инициализация (`memory_policy` по умолчанию и `harness memory build`), синхронизация, пересборка, мастер на шаге `memory` |
+| `Настройка конфигурации` | Пошаговый мастер `project.json` и `orchestration.json` (`harness/console/configuration_steps.py`): пояснения и рекомендации по признакам проекта, проверка по схеме и валидаторам, различия, применение с автоматической резервной копией, локальные версии в `.harness/config_versions/` и откат, необязательные подсказки через авторизованный Codex CLI или Claude Code CLI (`harness/console/advisor.py`) |
 | `Help` | Справка по разделам, клавишам и правилам безопасности (`harness/console/help_text.py`) |
 
 | Клавиша | Действие |

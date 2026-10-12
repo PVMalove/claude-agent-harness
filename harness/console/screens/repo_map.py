@@ -19,7 +19,6 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Footer,
-    Header,
     Input,
     Static,
     TabbedContent,
@@ -28,11 +27,16 @@ from textual.widgets import (
 )
 from textual.widgets.tree import TreeNode
 
+from ..chrome import TopBar
+from ..translate import Translated
 from .. import repo_map as console_repo_map
 from ..repo_map import RepoMapView
 from ..runner import CommandRunner, capturing_runner
-from .. import brand
+from .. import brand, i18n
+from .. import repo_map_settings
 from .commands import call_from_worker
+from .repo_map_settings import RepoMapSettings
+from harness.repo_map.bundle_fetch import ParserStatus, parser_status
 from .export import (
     EXPORT_BINDING_KEY,
     EXPORT_JSON_BINDING_KEY,
@@ -46,14 +50,23 @@ _NO_MAP = "карты нет"
 def _panel(title: str, content: Static, *, id: str | None = None) -> VerticalScroll:
     """A scrolling panel in a titled frame, like the frames of the other sections."""
     panel = VerticalScroll(content, id=id, classes="map-panel")
-    panel.border_title = title
+    panel.border_title = brand.frame_title(title)
     return panel
 
 
-class BuildConfirmScreen(ModalScreen[bool]):
+class BuildConfirmScreen(Translated, ModalScreen[bool]):
     """Модальный экран подтверждения запуска построения карты Repo Map для коммита HEAD."""
 
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
+    DEFAULT_CSS = """
+    BuildConfirmScreen { align: center middle; }
+    BuildConfirmScreen #build-confirm {
+        width: 80%; max-width: 100; height: auto; padding: 0 1;
+        border: round $primary; border-title-color: $primary;
+    }
+    BuildConfirmScreen Static { height: auto; }
+    BuildConfirmScreen Horizontal { height: auto; }
+    """
 
     def __init__(self, commit: str) -> None:
         """Инициализирует экран подтверждения для указанного хэша коммита."""
@@ -62,7 +75,8 @@ class BuildConfirmScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов окна подтверждения построения карты."""
-        with Vertical(id="build-confirm"):
+        with Vertical(id="build-confirm") as dialog:
+            dialog.border_title = brand.frame_title("Подтверждение")
             yield Static(
                 f"Построить Repo Map для HEAD {self.commit[:12]}?", markup=False
             )
@@ -70,7 +84,7 @@ class BuildConfirmScreen(ModalScreen[bool]):
                 console_repo_map.BUILD_WARNING, id="build-warning", markup=False
             )
             with Horizontal():
-                yield Button("Построить", id="confirm-build", variant="warning")
+                yield Button("Собрать", id="confirm-build", variant="warning")
                 yield Button("Отмена", id="cancel-build")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -82,7 +96,7 @@ class BuildConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RepoMapScreen(Screen[None]):
+class RepoMapScreen(Translated, Screen[None]):
     """Экран раздела Repo Map: визуализация дерева файлов, сигнатур, связей, хабов и диагностик."""
 
     BINDINGS = [
@@ -92,11 +106,11 @@ class RepoMapScreen(Screen[None]):
         Binding(EXPORT_JSON_BINDING_KEY, "export_json", "Экспорт в JSON"),
     ]
     DEFAULT_CSS = """
-    RepoMapScreen #repo-map-status {
-        height: auto; margin: 0 1; padding: 0 1;
-        border: round $primary 50%; border-title-color: $primary;
-    }
-    RepoMapScreen #repo-map-actions { height: auto; margin: 0 1; }
+    RepoMapScreen #repo-map-head { height: auto; }
+    RepoMapScreen #repo-map-status { height: auto; }
+    RepoMapScreen #repo-map-actions { height: auto; }
+    RepoMapScreen #checks-frame { height: auto; }
+    RepoMapScreen #map-checks { height: auto; }
     RepoMapScreen #repo-map-tabs { height: 1fr; margin: 0 1; }
     RepoMapScreen .map-panel {
         height: 1fr; padding: 0 1;
@@ -119,16 +133,20 @@ class RepoMapScreen(Screen[None]):
         load_cached: Callable[
             [Path, str], RepoMapView | None
         ] = console_repo_map.cached_map,
+        load_parsers: Callable[[Path], ParserStatus] = parser_status,
     ) -> None:
         """Инициализирует экран Repo Map для указанного репозитория."""
         super().__init__()
         self.repo = repo
         self._command_runner = command_runner
+        self._load_parsers = load_parsers
         self.head = find_head(repo)
         self.view: RepoMapView | None = (
             load_cached(repo, self.head) if self.head is not None else None
         )
         self._status_text = self._initial_status()
+        self._check_serial = 0
+        self._check_inputs: tuple[ParserStatus | None, dict[str, int]] | None = None
 
     def _initial_status(self) -> str:
         """Формирует начальный текст строки статуса при открытии экрана."""
@@ -140,14 +158,19 @@ class RepoMapScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов и вкладок экрана Repo Map."""
-        yield Header(icon=brand.MENU_ICON)
-        status = Static(self._status_text, id="repo-map-status", markup=False)
-        status.border_title = "Состояние"
-        yield status
-        with Horizontal(id="repo-map-actions"):
-            yield Button("Построить карту", id="build-map", disabled=self.head is None)
-            yield Button("Экспорт в Markdown", id="export-markdown")
-            yield Button("Экспорт в JSON", id="export-json")
+        yield TopBar("Главная › Repo Map")
+        with Vertical(id="repo-map-head", classes="frame") as head:
+            head.border_title = brand.frame_title("Состояние")
+            yield Static(self._status_text, id="repo-map-status", markup=False)
+            with Horizontal(id="repo-map-actions", classes="actions"):
+                yield Button(
+                    "Собрать карту",
+                    id="build-map",
+                    disabled=self.head is None,
+                    compact=True,
+                )
+                yield Button("Экспорт в Markdown", id="export-markdown", compact=True)
+                yield Button("Экспорт в JSON", id="export-json", compact=True)
         with TabbedContent(id="repo-map-tabs"):
             with TabPane("Сводка", id="tab-summary"):
                 yield _panel("Сводка", Static("", id="map-summary", markup=False))
@@ -158,7 +181,7 @@ class RepoMapScreen(Screen[None]):
                 yield Static("", id="search-status", markup=False)
                 with Horizontal(id="file-browser"):
                     tree: Tree[str] = Tree("карта", id="file-tree", classes="map-panel")
-                    tree.border_title = "Файлы"
+                    tree.border_title = brand.frame_title("Файлы")
                     yield tree
                     yield _panel(
                         "Связи",
@@ -168,14 +191,95 @@ class RepoMapScreen(Screen[None]):
             with TabPane("Хабы", id="tab-hubs"):
                 yield _panel("Хабы", Static("", id="map-hubs", markup=False))
             with TabPane("Диагностики", id="tab-diagnostics"):
+                with Vertical(id="checks-frame", classes="frame") as checks:
+                    checks.border_title = brand.frame_title("Проверка Repo Map")
+                    yield Static("", id="map-checks", classes="no-i18n", markup=False)
+                    with Horizontal(classes="actions"):
+                        yield Button("Проверить", id="run-checks", compact=True)
                 yield _panel(
-                    "Диагностики", Static("", id="map-diagnostics", markup=False)
+                    "Диагностики карты", Static("", id="map-diagnostics", markup=False)
+                )
+            with TabPane("Настройки", id="tab-settings"):
+                yield RepoMapSettings(
+                    self.repo,
+                    command_runner=self._command_runner,
+                    load_parsers=self._load_parsers,
                 )
         yield Footer()
+
+    def sync_language(self) -> None:
+        """Repaints the texts built in the current language: the checks and the settings pane."""
+        self._paint_checks()
+        for pane in self.query(RepoMapSettings):
+            pane.repaint()
+
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
+        """The checks are read fresh each time their tab opens."""
+        if event.pane.id == "tab-diagnostics":
+            self._run_checks()
+
+    def _run_checks(self) -> None:
+        """Read the parsers, languages and memory in a worker, then show the checks."""
+        self.query_one("#map-checks", Static).update(
+            i18n.tr_text(self._language, "Проверяю…")
+        )
+
+        self._check_serial += 1
+        serial = self._check_serial
+
+        def work() -> None:
+            try:
+                parsers: ParserStatus | None = self._load_parsers(self.repo)
+            except Exception:
+                parsers = None
+            files = repo_map_settings.language_files(self.repo)
+            call_from_worker(self, lambda: self._checked(serial, parsers, files))
+
+        self.run_worker(work, thread=True, group="repo-map-checks")
+
+    def _checked(
+        self, serial: int, parsers: ParserStatus | None, files: dict[str, int]
+    ) -> None:
+        if serial != self._check_serial:
+            return
+        self._check_inputs = (parsers, files)
+        self._paint_checks()
+
+    @property
+    def _language(self) -> str:
+        return str(getattr(self.app, "language", "ru"))
+
+    def _paint_checks(self) -> None:
+        if self._check_inputs is None:
+            return
+        parsers, files = self._check_inputs
+        checks = repo_map_settings.repo_map_checks(
+            head=self.head,
+            tier=repo_map_settings.tier_setting(self.repo),
+            parsers=parsers,
+            files=files,
+            memory=repo_map_settings.memory_status(self.repo),
+            view=self.view,
+            t=lambda text: i18n.tr_text(self._language, text),
+        )
+        text = Text()
+        for index, check in enumerate(checks):
+            color = brand.STATUS_COLORS.get(check.level, brand.PALETTE["muted"])
+            text.append(
+                ("\n" if index else "")
+                + brand.STATUS_ICONS.get(check.level, "·")
+                + " ",
+                style=color,
+            )
+            text.append(check.text)
+        self.query_one("#map-checks", Static).update(text)
 
     def on_mount(self) -> None:
         """Отрисовывает карту репозитория при монтировании экрана."""
         self._render_map()
+        self._run_checks()
 
     def _render_map(self) -> None:
         view = self.view
@@ -264,6 +368,8 @@ class RepoMapScreen(Screen[None]):
             self.action_export()
         elif event.button.id == "export-json":
             self.action_export_json()
+        elif event.button.id == "run-checks":
+            self._run_checks()
 
     def action_build(self) -> None:
         head = self.head
@@ -305,6 +411,7 @@ class RepoMapScreen(Screen[None]):
         self._set_status(f"карта HEAD {outcome.commit[:12]} построена")
         self.query_one("#file-relations", Static).update("выберите файл")
         self._render_map()
+        self._paint_checks()
 
     def _set_status(self, text: str) -> None:
         self._status_text = text

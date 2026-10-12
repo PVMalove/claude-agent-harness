@@ -23,6 +23,10 @@ class ProjectTarget:
     conflicts: tuple[str, ...]
 
 
+# A cold, busy machine (a Windows CI runner starting its first git.exe) needs more than a few seconds.
+GIT_TIMEOUT_SECONDS = 30
+
+
 def inspect_target(value: str) -> ProjectTarget:
     if not value.strip():
         raise ValueError("Выберите каталог проекта")
@@ -34,7 +38,7 @@ def inspect_target(value: str) -> ProjectTarget:
             ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError("Git недоступен или не отвечает") from None
