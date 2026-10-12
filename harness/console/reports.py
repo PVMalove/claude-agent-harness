@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -46,6 +47,28 @@ class ReportEntry:
 
 
 @dataclass(frozen=True)
+class StageEntry:
+    """A recorded dispatch, with its completion report when one is available."""
+
+    dispatch_id: str
+    batch_id: str
+    ticket: str
+    role: str
+    state: str
+    at: str
+    report: ReportEntry | None = None
+
+    @property
+    def finished(self) -> bool:
+        return self.report is not None or self.state in {
+            "reported",
+            "cancelled",
+            "failed",
+            "abandoned",
+        }
+
+
+@dataclass(frozen=True)
 class BatchSummary:
     """Краткая сводка по батчу (идентификатор, тикет, состояние, время создания)."""
 
@@ -53,6 +76,10 @@ class BatchSummary:
     ticket: str
     state: str
     created_at: str
+    branch: str = ""
+    pr_created_at: str = ""
+    pr_url: str = ""
+    pr_state: str = "unknown"
 
 
 @dataclass(frozen=True)
@@ -114,6 +141,7 @@ class LedgerView:
     _dispatches: dict[str, JsonObject] = field(default_factory=dict)
     _risks: dict[str, JsonObject] = field(default_factory=dict)
     _audit: dict[str, list[JsonObject]] = field(default_factory=dict)
+    stages: list[StageEntry] = field(default_factory=list)
 
     def dispatch_records(self) -> list[JsonObject]:
         """Все записи диспатчей леджера (для статистики по ролям)."""
@@ -193,8 +221,8 @@ def load_ledger_view(repo: Path) -> LedgerView:
                 batch_id=batch_id,
                 ticket=text(record.get("ticket"), "?"),
                 state=text(record.get("state"), "?"),
-                created_at=text(record.get("created_at"))
-                or _first_write_at(view, f"batches/{batch_id}.json"),
+                created_at=text(record.get("created_at")),
+                branch=text(record.get("branch")),
             )
         )
     view.batches.sort(key=lambda batch: batch.created_at, reverse=True)
@@ -210,14 +238,148 @@ def load_ledger_view(repo: Path) -> LedgerView:
                 ticket=text(report.get("ticket"), "?"),
                 role=text(report.get("role"), "?"),
                 outcome=text(report.get("outcome"), "?"),
-                reported_at=_first_write_at(view, f"reports/{dispatch_id}.json")
-                or text(dispatch.get("created_at")),
+                reported_at=_first_write_at(view, f"reports/{dispatch_id}.json"),
                 report=report,
             )
         )
     view.reports.sort(key=lambda entry: entry.reported_at, reverse=True)
+    _load_stages(view, root)
     _load_qa(view, root)
     return view
+
+
+def timestamp(value: str) -> datetime | None:
+    """Parse a recorded, timezone-aware time; missing/invalid times remain unknown."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+
+
+def batch_start_text(batch: BatchSummary) -> str:
+    start = timestamp(batch.created_at)
+    return start.strftime("%d.%m.%Y %H:%M UTC") if start else "начало: неизвестно"
+
+
+def batch_timing_text(batch: BatchSummary, *, language: str = "ru") -> str:
+    """Elapsed wall time to PR creation, never inferred from publish or merge."""
+    if batch.pr_state == "missing":
+        return "PR has not been created" if language == "en" else "PR ещё не создан"
+    if batch.pr_state != "found":
+        return "to PR: unknown" if language == "en" else "до PR: неизвестно"
+    start, end = timestamp(batch.created_at), timestamp(batch.pr_created_at)
+    if start is None or end is None or end < start:
+        return "to PR: unknown" if language == "en" else "до PR: неизвестно"
+    seconds = int((end - start).total_seconds())
+    days, rest = divmod(seconds, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes = rest // 60
+    units = ("d", "h", "min", "s") if language == "en" else ("д", "ч", "мин", "с")
+    parts = [
+        f"{count} {unit}"
+        for count, unit in ((days, units[0]), (hours, units[1]), (minutes, units[2]))
+        if count
+    ]
+    return ("to PR: " if language == "en" else "до PR: ") + (
+        " ".join(parts) if parts else f"{seconds} {units[3]}"
+    )
+
+
+def _load_stages(view: LedgerView, root: Path) -> None:
+    statuses = {
+        text(record.get("dispatch_id")): record
+        for record in _read_directory(root, "dispatch-status")
+    }
+    dispatches = dict(view._dispatches)
+    entries: dict[str, JsonObject] = {}
+    for batch_id, batch in view._batch_records.items():
+        for entry in _objects(batch.get("dispatches")):
+            dispatch_id = text(entry.get("dispatch_id"))
+            if dispatch_id:
+                entries[dispatch_id] = entry
+                dispatches.setdefault(dispatch_id, {**entry, "batch_id": batch_id})
+    reports = {entry.dispatch_id: entry for entry in view.reports}
+    for dispatch_id in reports:
+        dispatches.setdefault(dispatch_id, {})
+    for dispatch_id, dispatch in dispatches.items():
+        report = reports.get(dispatch_id)
+        batch_id = text(dispatch.get("batch_id")) or (report.batch_id if report else "")
+        batch = view._batch_records.get(batch_id, {})
+        view.stages.append(
+            StageEntry(
+                dispatch_id=dispatch_id,
+                batch_id=batch_id,
+                ticket=report.ticket
+                if report
+                else text(dispatch.get("ticket")) or text(batch.get("ticket"), "?"),
+                role=report.role if report else text(dispatch.get("role"), "?"),
+                state=text(statuses.get(dispatch_id, {}).get("state"))
+                or text(entries.get(dispatch_id, {}).get("state"), "неизвестно"),
+                at=report.reported_at
+                if report
+                else text(dispatch.get("created_at"))
+                or _first_write_at(view, f"dispatches/{dispatch_id}.json"),
+                report=report,
+            )
+        )
+    view.stages[:] = select_stages(view.stages)
+
+
+def select_stages(
+    stages: list[StageEntry],
+    *,
+    ticket: str = "",
+    role: str = "",
+    outcome: str = "",
+    date: str = "",
+    state: str = "",
+    completion: str = "all",
+    sort_by: str = "time",
+    descending: bool = True,
+) -> list[StageEntry]:
+    """Apply combined filters and stable ordering; unknown times always go last."""
+    ticket, role, state = (value.strip().lower() for value in (ticket, role, state))
+    outcome, date = outcome.strip().lower(), date.strip()
+    shown = [
+        entry
+        for entry in stages
+        if (not ticket or ticket in entry.ticket.lower())
+        and (not role or role in entry.role.lower())
+        and (not state or state == entry.state.lower())
+        and (
+            not outcome
+            or entry.report is not None
+            and outcome == entry.report.outcome.lower()
+        )
+        and (not date or entry.at.startswith(date))
+        and (completion != "open" or not entry.finished)
+        and (completion != "finished" or entry.finished)
+    ]
+    shown.sort(key=lambda entry: entry.dispatch_id)
+    if sort_by == "time":
+        known = [entry for entry in shown if timestamp(entry.at) is not None]
+        unknown = [entry for entry in shown if timestamp(entry.at) is None]
+        known.sort(
+            key=lambda entry: timestamp(entry.at) or datetime.min.replace(tzinfo=UTC),
+            reverse=descending,
+        )
+        return known + unknown
+    if sort_by == "ticket":
+
+        def ticket_key(entry: StageEntry) -> tuple[int, int, str]:
+            match = re.fullmatch(r"#?(\d+)", entry.ticket)
+            return (0, int(match[1]), "") if match else (1, 0, entry.ticket.lower())
+
+        shown.sort(key=ticket_key, reverse=descending)
+    else:
+        shown.sort(
+            key=lambda entry: (
+                entry.role if sort_by == "role" else entry.state
+            ).lower(),
+            reverse=descending,
+        )
+    return shown
 
 
 def _load_qa(view: LedgerView, root: Path) -> None:
@@ -549,6 +711,9 @@ def timeline_document(timeline: BatchTimeline) -> MarkdownDocument:
             ("Ticket", batch.ticket),
             ("Batch", batch.batch_id),
             ("State", batch.state),
+            ("Начало", batch_start_text(batch)),
+            ("До PR", batch_timing_text(batch)),
+            ("PR", batch.pr_url or "неизвестно"),
             ("Маршрут", role_flow_text(timeline)),
         ],
         sections=[MarkdownSection("События", "\n".join(rows))],

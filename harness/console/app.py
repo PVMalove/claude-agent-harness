@@ -133,6 +133,9 @@ class HarnessConsoleApp(App[None]):
         border: round $panel-lighten-2; background: transparent; padding: 0 1;
     }
     Select:focus > SelectCurrent { border: round $primary; }
+    ReportsScreen #report-order Select > SelectCurrent {
+        border: none; height: 1; padding: 0 1;
+    }
     SelectOverlay { border: round $primary; background: $background; }
     Checkbox, Checkbox:focus, RadioButton, RadioButton:focus {
         border: none; padding: 0; background: transparent;

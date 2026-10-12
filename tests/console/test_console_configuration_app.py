@@ -364,6 +364,79 @@ def test_choices_beyond_four_are_paged_and_the_recommendation_is_marked(
     asyncio.run(scenario())
 
 
+def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox
+
+    installed_project(tmp_path)
+    _write_project(tmp_path, memory_policy={"source_types": ["adr", "ledger"]})
+    before = (tmp_path / ".harness/project.json").read_bytes()
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await press(pilot, "#configure-project")
+            screen = cast(ConfigurationScreen, app.screen)
+            await _open_step(
+                pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
+            )
+            screen.query_one("#array-choice-0", Checkbox).value = False
+            screen.query_one("#array-choice-1", Checkbox).value = True
+            await pilot.pause()
+            await press(pilot, "#use-recommendation")
+            assert screen.query_one("#array-choice-0", Checkbox).value is True
+            assert screen.query_one("#array-choice-1", Checkbox).value is False
+            assert json.loads(screen.query_one("#field-value", TextArea).text) == [
+                "adr",
+                "ledger",
+            ]
+            await press(pilot, "#use-recommendation")
+            await press(pilot, "#choice-next-page")
+            assert screen.query_one("#array-choice-1", Checkbox).value is True
+            screen.query_one("#array-choice-0", Checkbox).value = True
+            await pilot.pause()
+            await press(pilot, "#next-step")
+            await _open_step(
+                pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
+            )
+            assert json.loads(screen.query_one("#field-value", TextArea).text) == [
+                "adr",
+                "ledger",
+                "completion_report",
+            ]
+            assert screen.query_one("#array-choice-0", Checkbox).value is True
+            assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+    asyncio.run(scenario())
+
+
+def test_accepting_false_recommendation_clears_boolean_without_applying_config(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox
+
+    installed_project(tmp_path)
+    _write_project(tmp_path, memory={"enabled": False})
+    before = (tmp_path / ".harness/project.json").read_bytes()
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await press(pilot, "#configure-project")
+            screen = cast(ConfigurationScreen, app.screen)
+            await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
+            screen.query_one("#field-boolean", Checkbox).value = True
+            await press(pilot, "#use-recommendation")
+            assert screen.query_one("#field-boolean", Checkbox).value is False
+            await press(pilot, "#next-step")
+            await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
+            assert screen.query_one("#field-boolean", Checkbox).value is False
+            assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+    asyncio.run(scenario())
+
+
 def test_external_change_is_reloaded_without_losing_the_draft(tmp_path: Path) -> None:
     installed_project(tmp_path)
 
