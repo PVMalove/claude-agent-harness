@@ -386,6 +386,11 @@ def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits
             screen.query_one("#array-choice-1", Checkbox).value = True
             await pilot.pause()
             await press(pilot, "#use-recommendation")
+            await wait_until(
+                pilot,
+                lambda: screen.query_one("#array-choice-0", Checkbox).value
+                and not screen.query_one("#array-choice-1", Checkbox).value,
+            )
             assert screen.query_one("#array-choice-0", Checkbox).value is True
             assert screen.query_one("#array-choice-1", Checkbox).value is False
             assert json.loads(screen.query_one("#field-value", TextArea).text) == [
@@ -394,6 +399,14 @@ def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits
             ]
             await press(pilot, "#use-recommendation")
             await press(pilot, "#choice-next-page")
+            # The page index changes before recompose finishes; wait for the new labels.
+            await wait_until(
+                pilot,
+                lambda: any(
+                    str(box.label).startswith("ledger —")
+                    for box in screen.query("#array-choice-1").results(Checkbox)
+                ),
+            )
             assert screen.query_one("#array-choice-1", Checkbox).value is True
             screen.query_one("#array-choice-0", Checkbox).value = True
             await pilot.pause()
@@ -401,7 +414,8 @@ def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits
             await wait_until(
                 pilot,
                 lambda: screen.steps[screen.index].path
-                != ("memory_policy", "source_types"),
+                != ("memory_policy", "source_types")
+                and _step_is_rendered(screen, screen.steps[screen.index].path),
             )
             await _open_step(
                 pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
@@ -435,11 +449,15 @@ def test_accepting_false_recommendation_clears_boolean_without_applying_config(
             await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
             screen.query_one("#field-boolean", Checkbox).value = True
             await press(pilot, "#use-recommendation")
+            await wait_until(
+                pilot, lambda: not screen.query_one("#field-boolean", Checkbox).value
+            )
             assert screen.query_one("#field-boolean", Checkbox).value is False
             await press(pilot, "#next-step")
             await wait_until(
                 pilot,
-                lambda: screen.steps[screen.index].path != ("memory", "enabled"),
+                lambda: screen.steps[screen.index].path != ("memory", "enabled")
+                and _step_is_rendered(screen, screen.steps[screen.index].path),
             )
             await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
             assert screen.query_one("#field-boolean", Checkbox).value is False
@@ -716,6 +734,13 @@ def _orchestration_project(repo: Path) -> None:
     )
 
 
+def _step_is_rendered(screen: ConfigurationScreen, path: tuple[str, ...]) -> bool:
+    return any(
+        str(header.content).endswith(" → " + ".".join(path))
+        for header in screen.query("#configuration-step > Static").results(Static)
+    )
+
+
 async def _open_step(
     pilot: Pilot[None],
     screen: ConfigurationScreen,
@@ -729,7 +754,9 @@ async def _open_step(
     screen.query_one("#step-jump", Select).value = index
     await wait_until(
         pilot,
-        lambda: screen.steps[screen.index].path == path and bool(screen.query(ready)),
+        lambda: screen.steps[screen.index].path == path
+        and _step_is_rendered(screen, path)
+        and bool(screen.query(ready)),
     )
 
 
