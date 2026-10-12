@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from collections.abc import Callable
 from typing import cast
 import json
 from pathlib import Path
@@ -710,6 +711,22 @@ def test_entries_of_a_map_are_added_removed_and_opened_through_the_menu(
     asyncio.run(scenario())
 
 
+async def _stable(
+    pilot: Pilot[None], widget: Callable[[], object], polls: int = 4
+) -> None:
+    """Wait until `widget()` returns the same object `polls` times in a row: the page stopped rebuilding."""
+    last: object = None
+    same = 0
+    for _ in range(400):
+        await pilot.pause()
+        current = widget()
+        same = same + 1 if current is last else 0
+        last = current
+        if same >= polls:
+            return
+    raise AssertionError("the page kept rebuilding")
+
+
 def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
     from textual.widgets import Input, ListView, TextArea
 
@@ -736,13 +753,14 @@ def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
             screen.query_one("#configuration-mode", RadioSet).focus()
             await pilot.press("right", "space")
             await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            await _stable(pilot, lambda: screen.query_one("#field-value"))
             assert screen.query_one("#mode-text", RadioButton).value
             assert not screen.query_one("#mode-menu", RadioButton).value
             area = screen.query_one("#field-value", TextArea)
             assert json.loads(area.text) == ["pytest", "make lint"]
             area.load_text("{broken JSON")
             screen.query_one("#mode-menu", RadioButton).value = True
-            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            await _stable(pilot, lambda: screen.query_one("#field-value"))
             assert screen.text_mode
             assert screen.query_one("#mode-text", RadioButton).value
             assert not screen.query_one("#mode-menu", RadioButton).value

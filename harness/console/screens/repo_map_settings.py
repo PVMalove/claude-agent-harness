@@ -80,6 +80,7 @@ class RepoMapSettings(Vertical):
         self.files: dict[str, int] = {}
         self._output = ""
         self._seeded = False
+        self._load_serial = 0
         self._installed: set[str] = set()
         self._policy_tier: str | None = None
 
@@ -132,17 +133,26 @@ class RepoMapSettings(Vertical):
     def reload(self) -> None:
         """Re-read the tier, parsers and memory in a worker, then repaint."""
 
+        # Reads never cancel each other (a cancelled worker is an error to whoever waits for it);
+        # a read that is no longer the latest is ignored when it arrives.
+        self._load_serial += 1
+        serial = self._load_serial
+
         def work() -> None:
             try:
                 parsers: ParserStatus | None = self._load_parsers(self.repo)
             except Exception:
                 parsers = None
             files = repo_map_settings.language_files(self.repo)
-            call_from_worker(self, lambda: self._loaded(parsers, files))
+            call_from_worker(self, lambda: self._loaded(serial, parsers, files))
 
-        self.run_worker(work, thread=True, exclusive=True, group="settings-load")
+        self.run_worker(work, thread=True, group="settings-load")
 
-    def _loaded(self, parsers: ParserStatus | None, files: dict[str, int]) -> None:
+    def _loaded(
+        self, serial: int, parsers: ParserStatus | None, files: dict[str, int]
+    ) -> None:
+        if serial != self._load_serial:
+            return
         self.parsers = parsers
         self.files = files
         self._seeded = False

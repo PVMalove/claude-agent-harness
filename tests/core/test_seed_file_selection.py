@@ -68,7 +68,7 @@ def test_only_the_named_seed_file_is_overwritten(project: Path) -> None:
     assert "LOCAL" in (project / OTHER).read_text(encoding="utf-8")
     assert _differing(project) == [OTHER]
     # The file left alone is still reported, as before.
-    assert OTHER in result.stdout
+    assert OTHER in result.stdout.replace("\\", "/")
 
 
 def test_several_files_can_be_named(project: Path) -> None:

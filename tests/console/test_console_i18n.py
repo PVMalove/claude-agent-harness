@@ -62,6 +62,8 @@ def test_f2_switches_the_dashboard_and_back_without_drift(tmp_path: Path) -> Non
     async def scenario() -> tuple[str, str, str]:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(130, 50)) as pilot:
+            # The dashboard fills in asynchronously; a slow machine must not be compared half-built.
+            await app.workers.wait_for_complete()
             await pilot.pause()
             before = _dump(app)
             await pilot.press("f2")

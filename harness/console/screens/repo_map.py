@@ -145,6 +145,7 @@ class RepoMapScreen(Translated, Screen[None]):
             load_cached(repo, self.head) if self.head is not None else None
         )
         self._status_text = self._initial_status()
+        self._check_serial = 0
         self._check_inputs: tuple[ParserStatus | None, dict[str, int]] | None = None
 
     def _initial_status(self) -> str:
@@ -225,17 +226,24 @@ class RepoMapScreen(Translated, Screen[None]):
             i18n.tr_text(self._language, "Проверяю…")
         )
 
+        self._check_serial += 1
+        serial = self._check_serial
+
         def work() -> None:
             try:
                 parsers: ParserStatus | None = self._load_parsers(self.repo)
             except Exception:
                 parsers = None
             files = repo_map_settings.language_files(self.repo)
-            call_from_worker(self, lambda: self._checked(parsers, files))
+            call_from_worker(self, lambda: self._checked(serial, parsers, files))
 
-        self.run_worker(work, thread=True, exclusive=True, group="repo-map-checks")
+        self.run_worker(work, thread=True, group="repo-map-checks")
 
-    def _checked(self, parsers: ParserStatus | None, files: dict[str, int]) -> None:
+    def _checked(
+        self, serial: int, parsers: ParserStatus | None, files: dict[str, int]
+    ) -> None:
+        if serial != self._check_serial:
+            return
         self._check_inputs = (parsers, files)
         self._paint_checks()
 
