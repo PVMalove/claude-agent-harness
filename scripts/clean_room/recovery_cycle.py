@@ -206,8 +206,8 @@ def run(ctx: SimpleNamespace) -> None:
                 {"command": check, "result": "pass", "evidence": "fixture checked"}
                 for check in brief["verification_commands"]
             ],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "decide",
             "report_language": "ru",
             **extra,
@@ -253,8 +253,8 @@ def run(ctx: SimpleNamespace) -> None:
             axis: {
                 "severity": "clean",
                 "findings": findings or [] if axis == "standards" else [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             }
             for axis in ("standards", "spec")
         }

@@ -11,6 +11,9 @@ disable-model-invocation: true
 Language contract: agents communicate with each other and write free-text protocol/state evidence in
 English. Every completion report addressed to this coordinator is in Russian and includes
 `"report_language": "ru"`; preserve commands, paths, IDs, and quoted evidence verbatim.
+Machine-read report values stay exact English enums: `outcome: completed | blocked | failed`,
+check `result: pass | fail | not_run`, and `blockers.status` / `risks.status: none | present`.
+Each blockers/risks field is a status/details object; translate only its description.
 This binds the text this session writes, not only the text it reads: translate the ticket into
 English before it reaches a batch or a worker prompt. `definition_of_done` and `prohibited_changes`
 are rejected outright when they carry Cyrillic, and a worker prompt carrying the untranslated
@@ -258,7 +261,13 @@ related_tests. For a starting file with non-empty sections, read only the start_
 ranges the task needs.
 Work within the brief; escalate a blocker for anything the brief and the package leave out.
 Before your final reply, write the completion report JSON to the exact report staging path using
-the common and role-specific report contract, with report_language: ru, then run:
+the common and role-specific report contract, with report_language: ru.
+Use exact English enums: outcome = completed | blocked | failed; checks_run[].result = pass | fail | not_run.
+Set blockers and risks (also in every review axis) to {"status": "none", "details": ""} when absent,
+or {"status": "present", "details": "<Russian description>"} when present. A none status requires empty
+details; present requires a non-empty description. Put other explanations in output. Strings, translated
+statuses, passed and not-run are invalid; no aliases or old report formats are accepted.
+Then run:
 <coordinator CLI> report submit --file "<report_staging_path>"
 Completion means the report is recorded in the ledger. Include the submit result in your final reply.
 If submission fails before recording, return the command and error as a blocker; keep the report file.

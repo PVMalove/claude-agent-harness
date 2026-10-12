@@ -711,8 +711,8 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
                 for command in dispatch["verification_commands"]
             ],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "accept publication or inspect remote evidence",
             "report_language": "ru",
         }

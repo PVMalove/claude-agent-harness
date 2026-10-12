@@ -508,6 +508,7 @@ class QaLaneRunTests(QaLaneTestCase):
         super().setUp()
         self.dispatch: JsonObject = {
             "dispatch_id": DISPATCH_ID,
+            "state": "approved",
             "batch_id": BATCH_ID,
             "ticket": "225",
             "role": "qa",
@@ -882,7 +883,8 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertEqual(persisted[0]["outcome"], "failed")
         self.assertEqual(
-            persisted[0]["blockers"], "new approved developer retry required"
+            persisted[0]["blockers"],
+            {"status": "present", "details": "new approved developer retry required"},
         )
 
     # ---- preparation and gate stages (issue #618) ----

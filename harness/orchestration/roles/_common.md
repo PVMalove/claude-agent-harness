@@ -13,6 +13,17 @@ dependency explanations, and messages to the next worker. Treat `.harness/orches
 machine-readable audit trail and keep any free-text coordination fields in English. Completion
 reports addressed to the coordinator must be written in Russian and include `"report_language": "ru"`.
 Do not translate commands, paths, commit IDs, test names, or quoted source evidence.
+Machine-read values stay exact English enums: `outcome` is `completed | blocked | failed`, and
+check `result` is `pass | fail | not_run`. `blockers` and `risks`, including both composite review
+axes and checkpoints, are objects with exactly `status` and `details`:
+- absent: `{"status": "none", "details": ""}`;
+- present: `{"status": "present", "details": "<description>"}`.
+
+Keep `status` in English and write descriptions in Russian. A `none` status requires empty
+`details`; a `present` status requires a non-empty description. Put unrelated explanations in
+`output`. Strings such as `нет` or `none`, translated statuses, `passed`, `not-run`, and extra
+object keys are rejected before recording. There are no legacy aliases or automatic conversions:
+correct the staging file and submit again for the same dispatch.
 
 Write the completion report, and any checkpoint, to the absolute `report_staging_path` named in the
 brief (`.harness/.sandboxes/scratch/inbox/<dispatch_id>.json`) and hand that same path to
@@ -102,7 +113,7 @@ itself names (such as the bounded summary wrapper) is not a workaround. Stop ins
 tool that blocked, `safety-classifier` for an interruption by the safety classifier), `command`
 (the exact command or action as it was invoked) and `message` (the tool's verbatim message, bounded
 like check evidence). Only this field lets the coordinator classify the stop as `tooling`; free
-text in `blockers` never does. Report a check the block kept from running as not run, never as
+text in `blockers.details` never does. Report a check the block kept from running as not run, never as
 `fail`.
 
 A read-only role (`architect`, `verification`, `code-review`, `qa`) that leaves part of its brief

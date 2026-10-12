@@ -63,7 +63,7 @@ candidate) or `qa`.
 
 When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
 rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
-both axes, and state the operational cause in `blockers`. Never invent a finding to explain an
+both axes, and state `blockers.status: present` and the operational cause in `blockers.details`. Never invent a finding to explain an
 infrastructure stop: the coordinator routes such a report to a new review of the same candidate, and
 routes any finding, warning or blocker severity to a developer retry.
 

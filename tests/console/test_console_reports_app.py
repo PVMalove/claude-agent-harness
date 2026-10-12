@@ -144,7 +144,7 @@ def test_report_screen_shows_sections_wrapped_to_the_screen_width(
     assert titles == ["Output", "Checks", "Risks", "Blockers", "Next action"]
     assert width <= screen_width
     assert height > 1  # the long Output wraps instead of running off-screen
-    assert blockers == "нет"
+    assert blockers == "none"
 
 
 def test_report_text_is_rendered_literally_not_as_markup(tmp_path: Path) -> None:

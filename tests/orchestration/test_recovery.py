@@ -224,7 +224,10 @@ class RecoveryTests(unittest.TestCase):
                         brief,
                         "architect",
                         outcome="blocked",
-                        blockers="operator review required",
+                        blockers={
+                            "status": "present",
+                            "details": "operator review required",
+                        },
                     ),
                 )
                 self._decide(batch["batch_id"], decision)
@@ -354,8 +357,8 @@ class RecoveryTests(unittest.TestCase):
                     "changed_files": changed,
                     "remaining_definition_of_done": brief["definition_of_done"],
                     "passing_checks": self._checks(brief),
-                    "risks": "none",
-                    "blockers": "none",
+                    "risks": {"status": "none", "details": ""},
+                    "blockers": {"status": "none", "details": ""},
                     "context_package_id": package["context_package_id"],
                 }
             ),
@@ -540,8 +543,8 @@ class RecoveryTests(unittest.TestCase):
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
             "checks_run": self._checks(brief),
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "decide",
             "report_language": "ru",
         }
@@ -635,8 +638,8 @@ class RecoveryTests(unittest.TestCase):
             axis: {
                 "severity": severity,
                 "findings": findings,
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             }
             for axis, (severity, findings) in (("standards", standards), ("spec", spec))
         }
@@ -647,7 +650,7 @@ class RecoveryTests(unittest.TestCase):
         candidate: str,
         *,
         outcome: str = "completed",
-        blockers: str = "none",
+        blockers: JsonObject | None = None,
         standards: tuple[str, list[JsonObject]] = ("clean", []),
         spec: tuple[str, list[JsonObject]] = ("clean", []),
         carried: object = None,
@@ -678,9 +681,11 @@ class RecoveryTests(unittest.TestCase):
                 brief,
                 "code-review",
                 outcome=outcome,
-                blockers=blockers,
+                blockers=blockers
+                if blockers is not None
+                else {"status": "none", "details": ""},
                 checks_run=self._checks(
-                    brief, "pass" if outcome == "completed" else "not-run"
+                    brief, "pass" if outcome == "completed" else "not_run"
                 ),
                 review=review,
                 **(
@@ -1501,7 +1506,13 @@ class RecoveryTests(unittest.TestCase):
                 brief,
                 "architect",
                 **(
-                    {"outcome": "blocked", "blockers": "operator review required"}
+                    {
+                        "outcome": "blocked",
+                        "blockers": {
+                            "status": "present",
+                            "details": "operator review required",
+                        },
+                    }
                     if state in {"blocked", "failed"}
                     else {}
                 ),
@@ -1567,7 +1578,12 @@ class RecoveryTests(unittest.TestCase):
         self._start(brief["dispatch_id"])
         self._submit(
             brief["dispatch_id"],
-            self._base_report(brief, "architect", outcome="blocked", blockers=blockers),
+            self._base_report(
+                brief,
+                "architect",
+                outcome="blocked",
+                blockers={"status": "present", "details": blockers},
+            ),
         )
         self._decide(batch["batch_id"], "block")
         self.assertEqual(self._batch_record(batch["batch_id"])["state"], "blocked")
@@ -1624,7 +1640,10 @@ class RecoveryTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="runtime connection reset during the handoff to review",
+                blockers={
+                    "status": "present",
+                    "details": "runtime connection reset during the handoff to review",
+                },
                 **overrides,
             ),
         )
@@ -1704,7 +1723,7 @@ class RecoveryTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="the unit test failed",
+                blockers={"status": "present", "details": "the unit test failed"},
                 checks_run=self._checks(brief, "fail"),
             ),
         )

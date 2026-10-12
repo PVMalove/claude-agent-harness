@@ -38,6 +38,7 @@ from harness.orchestration.core.constants import (
     LIVE_DISPATCH_STATES,
     PLAN_FIELDS,
     TERMINAL_BATCH_STATES,
+    BatchState,
 )
 from harness.orchestration.core.git_utils import (
     _fetch_ref_tip,
@@ -536,7 +537,7 @@ def approve_batch(args: argparse.Namespace) -> JsonObject:
         updated = _vo_replace(
             BatchRecord.from_dict(record),
             coordinator_approval=approval,
-            state="awaiting-approval",
+            state=BatchState.AWAITING_APPROVAL,
         )
         _safe_id(updated.batch_id, "batch")
         _replace_record(ledger, updated)

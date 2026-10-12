@@ -134,8 +134,8 @@ def run(ctx: SimpleNamespace) -> None:
                     "evidence": "1 passed",
                 }
             ],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "accept",
             "report_language": "ru",
         }
@@ -301,8 +301,11 @@ def run(ctx: SimpleNamespace) -> None:
                 "evidence": "review scope inspected",
             }
         ],
-        "risks": "spec warning requires coordinator decision",
-        "blockers": "none",
+        "risks": {
+            "status": "present",
+            "details": "spec warning requires coordinator decision",
+        },
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "override-warning or retry",
         "report_language": "ru",
         "review": {
@@ -311,8 +314,8 @@ def run(ctx: SimpleNamespace) -> None:
             "standards": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "warning",
@@ -323,8 +326,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "summary": "spec warning",
                     }
                 ],
-                "risks": "spec risk",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "spec risk"},
+                "blockers": {"status": "none", "details": ""},
             },
         },
     }
@@ -539,8 +542,8 @@ def run(ctx: SimpleNamespace) -> None:
                 "evidence": "fix diff inspected",
             }
         ],
-        "risks": "none",
-        "blockers": "none",
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "accept",
         "report_language": "ru",
         "review": {
@@ -552,15 +555,18 @@ def run(ctx: SimpleNamespace) -> None:
             "standards": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "inherited from the prior review",
-                "blockers": "none",
+                "risks": {
+                    "status": "present",
+                    "details": "inherited from the prior review",
+                },
+                "blockers": {"status": "none", "details": ""},
                 "inherited_from": first_review_id,
             },
             "spec": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "edge case covered",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "edge case covered"},
+                "blockers": {"status": "none", "details": ""},
             },
         },
     }
@@ -573,8 +579,8 @@ def run(ctx: SimpleNamespace) -> None:
         "findings": [
             {"severity": "warning", "summary": "reflagged", "evidence": "re-checked"}
         ],
-        "risks": "re-checked",
-        "blockers": "none",
+        "risks": {"status": "present", "details": "re-checked"},
+        "blockers": {"status": "none", "details": ""},
         "inherited_from": first_review_id,
     }
     re_derived_file = staged_payload(

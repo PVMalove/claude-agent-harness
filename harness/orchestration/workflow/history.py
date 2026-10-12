@@ -64,6 +64,8 @@ from harness.orchestration.core.constants import (
     PRE_APPROVAL_LEGACY_PLAN_FIELDS,
     PRE_SCOPE_PLAN_FIELDS,
     RECOVERY_ROUTES,
+    RecoveryRoute,
+    RetryReason,
     RISK_ASSESSMENT_FIELDS,
 )
 from harness.orchestration.core.git_utils import (
@@ -698,13 +700,13 @@ def _last_decided_entry(batch: JsonObject) -> JsonObject | None:
     )
 
 
-def _require_route(value: object, *, recorded: bool = False) -> str:
+def _require_route(value: object, *, recorded: bool = False) -> RecoveryRoute:
     """Return ``value`` when it is one of ``RECOVERY_ROUTES``; refuse anything else.
 
     ``recorded`` marks a route read back from a batch record rather than one about to be written.
     """
     if isinstance(value, str) and value in RECOVERY_ROUTES:
-        return value
+        return RecoveryRoute(value)
     allowed = ", ".join(RECOVERY_ROUTES)
     if recorded:
         raise CoordinatorError(
@@ -731,6 +733,14 @@ def _validate_operational_batch_fields(batch: JsonObject) -> None:
         routing = decision.get("routing") if isinstance(decision, dict) else None
         if isinstance(routing, dict) and "route" in routing:
             _require_route(routing["route"], recorded=True)
+        if isinstance(routing, dict) and routing.get("reason_category") is not None:
+            category = routing["reason_category"]
+            if not isinstance(category, str) or category not in RetryReason:
+                raise CoordinatorError(
+                    f"batch routing record carries an unknown retry reason category {category!r}",
+                    remedy=f"restore the recorded category from: {', '.join(RetryReason)} -- "
+                    + INTERNAL_INVARIANT_REMEDY,
+                )
     for entry in batch.get("context_pressure", []):
         if not isinstance(entry, dict) or set(entry) != CONTEXT_PRESSURE_FIELDS:
             raise CoordinatorError(

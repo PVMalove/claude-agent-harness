@@ -25,7 +25,7 @@ Rules:
 
 - Preserve the requirements of both sides. Do not add behaviour outside them and never widen the scope.
 - Never `--abort` a rebase and never force-push; finish the rebase onto the exact target SHA and commit the resolution.
-- When the two sides are incompatible, do not guess. Write a checkpoint (`blockers` names the concrete incompatibility and each option with its consequence), then end the session. The human answer is recorded as a separate `human-decision` event and the same dispatch is resumed; no new developer starts and neighbouring batches keep running.
+- When the two sides are incompatible, do not guess. Write a checkpoint (`blockers.status` is `present` and `blockers.details` names the concrete incompatibility and each option with its consequence), then end the session. The human answer is recorded as a separate `human-decision` event and the same dispatch is resumed; no new developer starts and neighbouring batches keep running.
 - A change of scope is a new approved dispatch. The original brief is never rewritten.
 - A resolution that needs a fix of the ticket's own code is the ticket's defect: report it with `cause: task-defect` so it returns to a regular developer.
 

@@ -33,6 +33,7 @@ from harness.orchestration.core.constants import (
     INTEGRATION_RECORD_ID_PATTERN,
     INTEGRATION_REFERENCE_MAX_CHARS,
     INTEGRATION_SHA_PATTERN,
+    IntegrationCheckResult,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -74,7 +75,7 @@ def _satisfies(link: JsonObject, pair: JsonObject) -> bool:
     """A passed check of exactly this pair.  CI counts only when 'integration collect-ci' accepted
     it (issue #535): a CI result linked by hand stays unverified evidence."""
     if (
-        link["result"] != "passed"
+        _integration_result(link.get("result")) != IntegrationCheckResult.PASSED
         or link["candidate_sha"] != pair["candidate_sha"]
         or link["target_sha"] != pair["target_sha"]
     ):
@@ -340,6 +341,7 @@ def _evidence_links(root: Path, record_id: str) -> list[JsonObject]:
     for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
         link = _read_object(path, "integration evidence record")
         if link.get("integration_record_id") == record_id:
+            link["result"] = _integration_result(link.get("result"))
             links.append(link)
     return links
 
@@ -474,6 +476,18 @@ def _choice(args: argparse.Namespace, name: str, allowed: tuple[str, ...]) -> st
     return value
 
 
+def _integration_result(value: object) -> IntegrationCheckResult:
+    if isinstance(value, str):
+        try:
+            return IntegrationCheckResult(value)
+        except ValueError:
+            pass
+    raise CoordinatorError(
+        f"result must be one of {', '.join(INTEGRATION_EVIDENCE_RESULTS)}: {value!r}",
+        remedy=f"use an exact English integration result from: {', '.join(INTEGRATION_EVIDENCE_RESULTS)}; command checks use the separate pass/fail/not_run vocabulary",
+    )
+
+
 def _sha(args: argparse.Namespace, name: str, *, required: bool = True) -> str | None:
     value = _text(args, name)
     if not value and not required:
@@ -498,7 +512,7 @@ def integration_link_evidence(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     kind = _choice(args, "kind", INTEGRATION_EVIDENCE_KINDS)
-    result = _choice(args, "result", INTEGRATION_EVIDENCE_RESULTS)
+    result = _integration_result(getattr(args, "result", None))
     candidate = _sha(args, "candidate_commit")
     target = _sha(args, "target_commit")
     artifact = _sha(args, "artifact_sha256", required=False)
@@ -532,6 +546,7 @@ def _store_evidence(
 ) -> JsonObject:
     """Write one immutable pair-check record (the caller holds the ledger lock); the same members
     find the existing record instead of writing another."""
+    members = {**members, "result": _integration_result(members.get("result"))}
     evidence_id = IntegrationEvidenceRecord.derive_id(members)
     path = (
         _records_root(root)
@@ -539,11 +554,13 @@ def _store_evidence(
         / f"{evidence_id}.json"
     )
     if path.is_file():
+        existing = _read_object(path, "integration evidence record")
+        existing["result"] = _integration_result(existing.get("result"))
         return {
             "evidence_id": evidence_id,
             "integration_record_id": members["integration_record_id"],
             "linked": False,
-            "evidence": _read_object(path, "integration evidence record"),
+            "evidence": existing,
         }
     document: JsonObject = {
         "evidence_id": evidence_id,
@@ -909,7 +926,9 @@ def integration_collect_ci(args: argparse.Namespace) -> JsonObject:
             "kind": "ci",
             "candidate_sha": pair["candidate_sha"],
             "target_sha": pair["target_sha"],
-            "result": "passed" if accepted else "failed",
+            "result": IntegrationCheckResult.PASSED
+            if accepted
+            else IntegrationCheckResult.FAILED,
             "reference": f"{verified['source']}:{verified['repository']}/pull/{number}"
             f"@{verified['merge_commit_sha']}",
             "artifact_sha256": _sha256(verified),
@@ -952,7 +971,7 @@ def _failed_pair_checks(links: list[JsonObject], pair: JsonObject) -> list[str]:
     return [
         link["evidence_id"]
         for link in links
-        if link["result"] == "failed"
+        if link["result"] == IntegrationCheckResult.FAILED
         and link["candidate_sha"] == pair["candidate_sha"]
         and link["target_sha"] == pair["target_sha"]
         and (
@@ -985,7 +1004,7 @@ def _verified_source(status: JsonObject) -> tuple[str, JsonObject]:
         check
         for check in status["pair_checks"]
         if check["kind"] == "local-qa"
-        and check["result"] == "passed"
+        and check["result"] == IntegrationCheckResult.PASSED
         and check["applies_to_current_pair"]
         and check["verification"] == "verified"
     ]

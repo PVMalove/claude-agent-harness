@@ -100,30 +100,39 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
 
 
 def _load_batch(root: Path, batch_id: str) -> JsonObject:
-    return _read_object(
-        _records_root(root)
-        / BatchRecord.directory
-        / f"{_safe_id(batch_id, 'batch')}.json",
-        "batch record",
-    )
+    with _ledger_errors():
+        return BatchRecord.from_dict(
+            _read_object(
+                _records_root(root)
+                / BatchRecord.directory
+                / f"{_safe_id(batch_id, 'batch')}.json",
+                "batch record",
+            )
+        ).to_dict()
 
 
 def _load_dispatch(root: Path, dispatch_id: str) -> JsonObject:
-    return _read_object(
-        _records_root(root)
-        / DispatchRecord.directory
-        / f"{_safe_id(dispatch_id, 'dispatch')}.json",
-        "dispatch record",
-    )
+    with _ledger_errors():
+        return DispatchRecord.from_dict(
+            _read_object(
+                _records_root(root)
+                / DispatchRecord.directory
+                / f"{_safe_id(dispatch_id, 'dispatch')}.json",
+                "dispatch record",
+            )
+        ).to_dict()
 
 
 def _load_dispatch_status(root: Path, dispatch_id: str) -> JsonObject:
-    return _read_object(
-        _records_root(root)
-        / DispatchStatusRecord.directory
-        / f"{_safe_id(dispatch_id, 'dispatch')}.json",
-        "dispatch status",
-    )
+    with _ledger_errors():
+        return DispatchStatusRecord.from_dict(
+            _read_object(
+                _records_root(root)
+                / DispatchStatusRecord.directory
+                / f"{_safe_id(dispatch_id, 'dispatch')}.json",
+                "dispatch status",
+            )
+        ).to_dict()
 
 
 def _load_risk(root: Path, risk_id: str) -> JsonObject:

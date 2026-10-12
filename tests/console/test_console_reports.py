@@ -85,7 +85,7 @@ def test_report_sections_follow_the_reading_order(tmp_path: Path) -> None:
     assert [title for title, _ in developer] == list(REPORT_SECTIONS)
     body = dict(developer)
     assert body["Output"] == LONG_OUTPUT
-    assert "make test — passed: 412 passed" in body["Checks"]
+    assert "make test — pass: 412 passed" in body["Checks"]
 
     blocked = dict(report_sections(reports["dispatch-stuck"].report))
     assert blocked["Blockers"] == "нет токена трекера в окружении"
@@ -239,7 +239,7 @@ def test_report_document_is_the_report_plus_its_qa_log(tmp_path: Path) -> None:
     ]
     text = render_markdown(document)
     assert "- **Outcome:** completed" in text
-    assert "## Checks\n\n- `make test` — passed: 412 passed" in text
+    assert "## Checks\n\n- `make test` — pass: 412 passed" in text
     assert "## QA log\n\n```text\nпопытки qa-lane: 1" in text
 
 

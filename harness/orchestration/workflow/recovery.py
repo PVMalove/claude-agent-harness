@@ -237,7 +237,9 @@ def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> Json
         return evidence
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (
-        failure_classifier.classify(report.get("blockers"), failure.get("error"))
+        failure_classifier.classify(
+            (report.get("blockers") or {}).get("details"), failure.get("error")
+        )
         if report.get("outcome") in {None, "blocked"}
         else None
     )

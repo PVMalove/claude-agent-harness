@@ -33,6 +33,8 @@ from pathlib import Path
 from typing import ClassVar, cast
 from unittest import mock
 
+from harness.orchestration.core.constants import BatchState
+from harness.orchestration.ledger import JsonValue
 from harness.orchestration import (
     contract,
     coordinator,
@@ -108,8 +110,8 @@ class ImmutableReportPersistenceTests(unittest.TestCase):
                 "commit_sha": "not applicable",
                 "changed_files": [],
                 "checks_run": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "next_coordinator_action": "accept",
             }
             failure = coordinator.CoordinatorError("disk full", remedy="free space")
@@ -523,8 +525,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "changed_files": [],
             # The architect owns no verification gate, so its brief approves no commands.
             "checks_run": [],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "dispatch developer",
             "report_language": "ru",
         }
@@ -609,8 +611,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "commit_sha": "not applicable",
             "changed_files": [],
             "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "accept",
             "report_language": "ru",
         }
@@ -641,8 +643,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "commit_sha": "a" * 40,
             "changed_files": changed,
             "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "accept",
             "report_language": "ru",
         }
@@ -712,8 +714,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "changed_files": ["services/b.py"],
             "remaining_definition_of_done": "none",
             "passing_checks": "none",
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "context_package_id": "pkg",
         }
 
@@ -758,8 +760,8 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "commit_sha": "a" * 40,
             "changed_files": ["src/app.py"],
             "checks_run": [{"command": "true", "result": "pass", "evidence": "passed"}],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "accept",
             "report_language": "ru",
             "commit_map": [{"commit_sha": "a" * 40, "plan_entry_id": "step-1"}],
@@ -1618,7 +1620,7 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         ledger = self._ledger()
         missing = BatchRecord(
             batch_id="batch-0000",
-            state="planned",
+            state=BatchState.PLANNED,
             dispatches=[],
             coordinator_approval=None,
         )
@@ -2211,8 +2213,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "commit_sha": "not applicable — read-only role",
             "changed_files": [],
             "checks_run": self._checks(brief),
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "decide",
             "report_language": "ru",
         }
@@ -2243,7 +2245,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(brief["dispatch_id"])
         candidate, changed = self._developer_commit("check-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+            brief, candidate, changed, checks_run=self._checks(brief, "pass")
         )
         before = {
             path: path.read_bytes()
@@ -2253,6 +2255,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         for result in (
             "failed",
+            "passed",
+            "not-run",
             "PASS",
             " pass ",
             "unknown",
@@ -2286,6 +2290,195 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
         self.assertEqual(recorded["checks_run"], self._checks(brief, "pass"))
 
+    def test_structured_empty_evidence_is_auto_accepted(self) -> None:
+        self._patch_config(approval_policy="auto")
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        report = self._base_report(
+            brief,
+            "architect",
+            blockers={"status": "none", "details": ""},
+            risks={"status": "none", "details": ""},
+        )
+        self.assertTrue(self._submit(brief["dispatch_id"], report)["auto_accepted"])
+
+    def test_invalid_outcome_enum_is_refused_without_ledger_writes(self) -> None:
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        report = self._base_report(brief, "architect")
+        before = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file()
+        }
+        invalid: list[JsonValue] = [
+            "готово",
+            "Completed",
+            "completed ",
+            [],
+            {},
+            None,
+            True,
+        ]
+        for value in invalid:
+            with self.subTest(value=value):
+                report["outcome"] = value
+                with self.assertRaises(coordinator.CoordinatorError) as raised:
+                    self._submit(brief["dispatch_id"], report)
+                self.assertIn("completed", raised.exception.remedy)
+                self.assertEqual(
+                    before,
+                    {
+                        path: path.read_bytes()
+                        for path in self._records().rglob("*")
+                        if path.is_file()
+                    },
+                )
+
+    def test_none_alias_in_risks_or_blockers_is_rejected_before_recording(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("none-marker")
+        before = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file()
+        }
+
+        for field in ("risks", "blockers"):
+            for marker in (
+                "none",
+                "Нет. Всё сделано",
+                "нет",
+                " Нет. ",
+                "отсутствуют",
+                "Отсутствует",
+                "нету",
+                "нет!",
+                "no",
+                "n/a",
+                "None.",
+                "none. All done",
+                {"status": "нет", "details": ""},
+                {"status": "None", "details": ""},
+                {"status": " none ", "details": ""},
+                {"status": "absent", "details": ""},
+                {"status": "none", "details": "Всё сделано"},
+                {"status": "none", "details": " "},
+                {"status": "present", "details": ""},
+                {"status": "present", "details": " "},
+                {"status": "present", "details": []},
+                {"status": "none"},
+                {"status": "none", "details": "", "extra": True},
+                {"status": [], "details": ""},
+            ):
+                with self.subTest(field=field, marker=marker):
+                    report = self._developer_report(
+                        brief, candidate, changed, **{field: marker}
+                    )
+                    with self.assertRaises(coordinator.CoordinatorError) as caught:
+                        self._submit(brief["dispatch_id"], report)
+
+                    self.assertIn(field, caught.exception.message)
+                    self.assertIn("none", caught.exception.remedy)
+                    self.assertIn("output", caught.exception.remedy)
+                    self.assertEqual(
+                        before,
+                        {
+                            path: path.read_bytes()
+                            for path in self._records().rglob("*")
+                            if path.is_file()
+                        },
+                    )
+        # Russian prose stays valid: only the empty marker is a service literal.
+        report = self._developer_report(
+            brief,
+            candidate,
+            changed,
+            blockers={
+                "status": "present",
+                "details": "Нет доступа к сети для проверки",
+            },
+        )
+        self.assertEqual(
+            self._submit(brief["dispatch_id"], report)["state"], "reported"
+        )
+
+    def test_review_axis_none_alias_is_rejected_and_corrected_report_is_accepted(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id)
+        brief = self._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
+        self._start(brief["dispatch_id"], checkout=self.worktree)
+        report = self._base_report(
+            brief,
+            "code-review",
+            review={
+                "candidate_commit": candidate,
+                "scope": brief["review_scope"],
+                **self._axes(("clean", []), ("clean", [])),
+            },
+        )
+        before = self._batch_record(batch_id)
+        for axis in ("standards", "spec"):
+            for field in ("risks", "blockers"):
+                for marker in ("нет", "Нет. Всё проверено", "n/a", "None."):
+                    with self.subTest(axis=axis, field=field, marker=marker):
+                        report["review"][axis][field] = marker
+                        with self.assertRaises(coordinator.CoordinatorError) as caught:
+                            self._submit(brief["dispatch_id"], report)
+                        self.assertIn(axis, caught.exception.message)
+                        self.assertIn(field, caught.exception.message)
+                        self.assertIn("none", caught.exception.remedy)
+                        self.assertEqual(self._batch_record(batch_id), before)
+                        for suffix in ("json", "md"):
+                            self.assertFalse(
+                                (
+                                    self._records()
+                                    / "reports"
+                                    / f"{brief['dispatch_id']}.{suffix}"
+                                ).exists()
+                            )
+                        report["review"][axis][field] = {
+                            "status": "none",
+                            "details": "",
+                        }
+
+        self._submit(brief["dispatch_id"], report)
+        self.assertEqual(self._decide(batch_id, "accept")["next_action"], "qa")
+
+    def test_correcting_a_none_alias_keeps_auto_policy_active(self) -> None:
+        self._patch_config(approval_policy="auto")
+        batch = self._create_batch()
+        brief = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(brief["dispatch_id"])
+        report = self._base_report(
+            brief, "architect", blockers={"status": "нет", "details": ""}
+        )
+        before = self._batch_record(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError):
+            self._submit(brief["dispatch_id"], report)
+        self.assertEqual(self._batch_record(batch["batch_id"]), before)
+
+        report["blockers"] = {"status": "none", "details": ""}
+        submitted = self._submit(brief["dispatch_id"], report)
+        self.assertTrue(submitted["auto_accepted"])
+        stored = self._batch_record(batch["batch_id"])
+        self.assertNotIn("auto_stop", stored)
+        self.assertNotIn("needs_attention", stored)
+        self.assertEqual(stored["dispatches"][0]["decision"]["decision"], "accept")
+        self.assertEqual(stored["next_action"], "developer")
+
     def test_correcting_an_invalid_check_result_keeps_auto_policy_active(self) -> None:
         self._patch_config(approval_policy="auto")
         batch = self._create_batch()
@@ -2316,7 +2509,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self.assertFalse(
                 (self._records() / "reports" / f"{developer_id}.{suffix}").exists()
             )
-        report["checks_run"] = self._checks(brief, "passed")
+        report["checks_run"] = self._checks(brief, "pass")
         submitted = self._submit(developer_id, report)
         self.assertTrue(submitted["auto_accepted"])
         recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
@@ -2377,10 +2570,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_not_run_is_recorded_as_a_skipped_check(self) -> None:
         self._assert_skipped_check_is_recorded("not_run")
 
-    def test_legacy_not_run_spelling_is_recorded_canonically(self) -> None:
-        self._assert_skipped_check_is_recorded("not-run")
-
-    def test_manual_accept_preserves_a_legacy_passed_report(self) -> None:
+    def test_manual_accept_rejects_a_legacy_passed_report(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
@@ -2397,11 +2587,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ]
         before = {path: path.read_bytes() for path in paths}
 
-        self._decide(batch["batch_id"], "accept")
-
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "result is invalid"):
+            self._decide(batch["batch_id"], "accept")
         self.assertEqual(before, {path: path.read_bytes() for path in paths})
-        stored = self._batch_record(batch["batch_id"])
-        self.assertEqual(stored["dispatches"][-1]["decision"]["decision"], "accept")
 
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""
@@ -2572,7 +2760,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._base_report(
                 brief,
                 "architect",
-                blockers="none",
+                blockers={"status": "none", "details": ""},
             ),
         )
 
@@ -2598,7 +2786,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         result = self._submit(
             brief["dispatch_id"],
-            self._base_report(brief, "architect", risks="Known alias limitation"),
+            self._base_report(
+                brief,
+                "architect",
+                risks={"status": "present", "details": "Known alias limitation"},
+            ),
         )
 
         self.assertNotIn("auto_accepted", result)
@@ -2615,7 +2807,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         result = self._submit(
             brief["dispatch_id"],
-            self._base_report(brief, "architect", risks="Known alias limitation"),
+            self._base_report(
+                brief,
+                "architect",
+                risks={"status": "present", "details": "Known alias limitation"},
+            ),
         )
 
         self.assertNotIn("auto_accepted", result)
@@ -2714,7 +2910,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 qa,
                 "qa",
                 checks_run=self._checks(qa, "pass"),
-                blockers="none",
+                blockers={"status": "none", "details": ""},
             ),
             via_qa_lane=True,
         )
@@ -2818,7 +3014,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 qa,
                 "qa",
                 checks_run=self._checks(qa, "pass"),
-                blockers="none",
+                blockers={"status": "none", "details": ""},
             ),
             via_qa_lane=True,
         )
@@ -3036,8 +3232,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             axis: {
                 "severity": severity,
                 "findings": findings,
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             }
             for axis, (severity, findings) in (("standards", standards), ("spec", spec))
         }
@@ -3048,7 +3244,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         candidate: str,
         *,
         outcome: str = "completed",
-        blockers: str = "none",
+        blockers: JsonObject | None = None,
         standards: tuple[str, list[JsonObject]] = ("clean", []),
         spec: tuple[str, list[JsonObject]] = ("clean", []),
         carried: object = None,
@@ -3079,9 +3275,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 brief,
                 "code-review",
                 outcome=outcome,
-                blockers=blockers,
+                blockers=blockers
+                if blockers is not None
+                else {"status": "none", "details": ""},
                 checks_run=self._checks(
-                    brief, "pass" if outcome == "completed" else "not-run"
+                    brief, "pass" if outcome == "completed" else "not_run"
                 ),
                 review=review,
                 **(
@@ -3103,7 +3301,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch_id,
             candidate,
             outcome="blocked",
-            blockers="a hook blocked a legitimate check command",
+            blockers={
+                "status": "present",
+                "details": "a hook blocked a legitimate check command",
+            },
             standards=("none", []),
             spec=("none", []),
             tooling_blocker=dict(TOOLING_BLOCKER),
@@ -3114,7 +3315,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch_id,
             candidate,
             outcome="blocked",
-            blockers="Bash/WSL wrapper unavailable; checks could not run",
+            blockers={
+                "status": "present",
+                "details": "Bash/WSL wrapper unavailable; checks could not run",
+            },
             standards=("none", []),
             spec=("none", []),
         )
@@ -3173,7 +3377,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "qa",
                 outcome=outcome,
                 checks_run=self._checks(brief, check_result),
-                blockers="none" if outcome == "completed" else "QA could not complete",
+                blockers={"status": "none", "details": ""}
+                if outcome == "completed"
+                else {"status": "present", "details": "QA could not complete"},
             ),
             via_qa_lane=True,
         )
@@ -3194,8 +3400,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 git_utils._changed_files_between(self.repo, base, candidate),
                 outcome="blocked",
-                blockers=blockers,
-                checks_run=self._checks(brief, "not-run"),
+                blockers={"status": "present", "details": blockers},
+                checks_run=self._checks(brief, "not_run"),
             ),
             via_qa_lane=False,
         )
@@ -3257,7 +3463,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="verification environment unavailable",
+                blockers={
+                    "status": "present",
+                    "details": "verification environment unavailable",
+                },
             ),
         )
 
@@ -3308,7 +3517,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="tests failed",
+                blockers={"status": "present", "details": "tests failed"},
                 checks_run=self._checks(developer, "fail"),
             ),
         )
@@ -3339,8 +3548,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             [],
             outcome="blocked",
             output="stopped early because risk trigger requires gate",
-            blockers="missing mandatory risk review gate",
-            checks_run=self._checks(developer, "not-run"),
+            blockers={
+                "status": "present",
+                "details": "missing mandatory risk review gate",
+            },
+            checks_run=self._checks(developer, "not_run"),
             commit_map=[],
         )
         submitted = self._submit(developer["dispatch_id"], report)
@@ -3403,8 +3615,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             [],
             outcome="blocked",
             output="wrong checkout commit reported",
-            blockers="some blocker",
-            checks_run=self._checks(developer, "not-run"),
+            blockers={"status": "present", "details": "some blocker"},
+            checks_run=self._checks(developer, "not_run"),
             commit_map=[],
         )
         with self.assertRaises(coordinator.CoordinatorError) as caught:
@@ -3524,7 +3736,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     batch["batch_id"],
                     candidate,
                     outcome="blocked",
-                    blockers="reviewer stopped",
+                    blockers={"status": "present", "details": "reviewer stopped"},
                     **axes,
                 )
 
@@ -3593,7 +3805,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch["batch_id"],
             first_candidate,
             outcome="blocked",
-            blockers="fix needed",
+            blockers={"status": "present", "details": "fix needed"},
             spec=("blocker", [blocker]),
         )
         self._decide(batch["batch_id"], "retry")
@@ -3670,7 +3882,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._reported_review(batch["batch_id"], candidate)
         self._decide(batch["batch_id"], "accept")
         first = self._reported_qa(
-            batch["batch_id"], candidate, outcome="blocked", check_result="not-run"
+            batch["batch_id"], candidate, outcome="blocked", check_result="not_run"
         )
 
         decided = self._decide(
@@ -3902,9 +4114,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "qa",
                 outcome=outcome,
                 output="QA environment preparation failed; code was not verified",
-                checks_run=self._checks(brief, "not-run"),
-                risks="the candidate code was not verified",
-                blockers="preparation failed before any code check",
+                checks_run=self._checks(brief, "not_run"),
+                risks={
+                    "status": "present",
+                    "details": "the candidate code was not verified",
+                },
+                blockers={
+                    "status": "present",
+                    "details": "preparation failed before any code check",
+                },
                 qa_stages={
                     "stages": [
                         {
@@ -4204,7 +4422,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._submit(
             brief["dispatch_id"],
             self._base_report(
-                brief, "architect", outcome="blocked", blockers="unclear scope"
+                brief,
+                "architect",
+                outcome="blocked",
+                blockers={"status": "present", "details": "unclear scope"},
             ),
         )
 
@@ -4240,7 +4461,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch["batch_id"],
             candidate,
             outcome="blocked",
-            blockers="fix needed",
+            blockers={"status": "present", "details": "fix needed"},
             spec=("blocker", [blocker]),
         )
 
@@ -4313,7 +4534,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch["batch_id"],
             candidate,
             outcome="blocked",
-            blockers="fix needed",
+            blockers={"status": "present", "details": "fix needed"},
             spec=(
                 "blocker",
                 [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}],
@@ -4461,8 +4682,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="a hook blocked a legitimate check command",
-                checks_run=self._checks(developer, "not-run"),
+                blockers={
+                    "status": "present",
+                    "details": "a hook blocked a legitimate check command",
+                },
+                checks_run=self._checks(developer, "not_run"),
                 tooling_blocker=dict(TOOLING_BLOCKER),
             ),
         )
@@ -4509,8 +4733,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="a hook blocked git commit",
-                checks_run=self._checks(developer, "not-run"),
+                blockers={"status": "present", "details": "a hook blocked git commit"},
+                checks_run=self._checks(developer, "not_run"),
                 tooling_blocker=tooling_blocker,
             )
 
@@ -4603,7 +4827,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="verification environment unavailable",
+                blockers={
+                    "status": "present",
+                    "details": "verification environment unavailable",
+                },
             ),
         )
         self._decide(
@@ -4619,8 +4846,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 verification,
                 "verification",
                 outcome="blocked",
-                blockers="a hook blocked a legitimate check command",
-                checks_run=self._checks(verification, "not-run"),
+                blockers={
+                    "status": "present",
+                    "details": "a hook blocked a legitimate check command",
+                },
+                checks_run=self._checks(verification, "not_run"),
                 tooling_blocker=dict(TOOLING_BLOCKER),
             ),
         )
@@ -4704,7 +4934,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="verification environment unavailable",
+                blockers={
+                    "status": "present",
+                    "details": "verification environment unavailable",
+                },
             ),
         )
         self._decide(
@@ -4808,7 +5041,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch_id,
             candidate,
             outcome="blocked",
-            blockers="fix needed",
+            blockers={"status": "present", "details": "fix needed"},
             spec=("blocker", [blocker]),
         )
         self._decide(batch_id, "retry")
@@ -5001,7 +5234,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             batch_id,
             accepted,
             outcome="blocked",
-            blockers="fix needed",
+            blockers={"status": "present", "details": "fix needed"},
             spec=(
                 "blocker",
                 [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}],
@@ -5143,8 +5376,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                         candidate,
                         changed,
                         outcome="blocked",
-                        blockers="a hook blocked a legitimate check command",
-                        checks_run=self._checks(developer, "not-run"),
+                        blockers={
+                            "status": "present",
+                            "details": "a hook blocked a legitimate check command",
+                        },
+                        checks_run=self._checks(developer, "not_run"),
                         **extra,
                     ),
                 )
@@ -5427,7 +5663,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 [],
                 commit_map=[],
                 outcome="blocked",
-                blockers="the developer cannot continue",
+                blockers={
+                    "status": "present",
+                    "details": "the developer cannot continue",
+                },
             ),
         )
         self._decide(batch_id, "abandon", reason="developer dead end")
@@ -5933,7 +6172,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 [],
                 commit_map=[],
                 outcome="blocked",
-                blockers="the rebase needs a decision on a conflict",
+                blockers={
+                    "status": "present",
+                    "details": "the rebase needs a decision on a conflict",
+                },
             ),
         )
         self._decide(batch_id, "retry", reason_category="code")
@@ -6211,7 +6453,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                             candidate,
                             changed,
                             outcome="blocked",
-                            blockers=blockers,
+                            blockers={"status": "present", "details": blockers},
                             output=output,
                         ),
                     )
@@ -6405,7 +6647,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(brief["dispatch_id"])
 
         self._submit(
-            brief["dispatch_id"], self._base_report(brief, "architect", blockers="none")
+            brief["dispatch_id"],
+            self._base_report(
+                brief, "architect", blockers={"status": "none", "details": ""}
+            ),
         )
 
         audit = self._decision_audits(batch["batch_id"])[-1]
@@ -7011,8 +7256,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "changed_files": changed,
             "remaining_definition_of_done": [brief["definition_of_done"][-1]],
             "passing_checks": self._checks(brief),
-            "risks": "preserve prior commit evidence",
-            "blockers": "none",
+            "risks": {"status": "present", "details": "preserve prior commit evidence"},
+            "blockers": {"status": "none", "details": ""},
             "context_package_id": package_id,
         }
         path = workspace._prepare_agent_inbox(self.repo) / "checkpoint.json"
@@ -7210,7 +7455,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         brief, checkpoint = self._attested_checkpoint()
-        checkpoint["risks"] = "changed risk scope"
+        checkpoint["risks"] = {"status": "present", "details": "changed risk scope"}
         with self.assertRaisesRegex(coordinator.CoordinatorError, "facts differ"):
             self._resume_writer(brief, checkpoint)
 
@@ -7315,8 +7560,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     "changed_files": changed,
                     "remaining_definition_of_done": [],
                     "passing_checks": self._checks(brief),
-                    "risks": "none",
-                    "blockers": "none",
+                    "risks": {"status": "none", "details": ""},
+                    "blockers": {"status": "none", "details": ""},
                     "context_package_id": package_id,
                 }
             ),
@@ -7369,8 +7614,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 review,
                 "code-review",
                 outcome="blocked",
-                blockers="context window exhausted",
-                checks_run=self._checks(review, "not-run"),
+                blockers={"status": "present", "details": "context window exhausted"},
+                checks_run=self._checks(review, "not_run"),
                 review={
                     "candidate_commit": candidate,
                     "scope": review["review_scope"],
@@ -7965,7 +8210,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="verification environment unavailable",
+                blockers={
+                    "status": "present",
+                    "details": "verification environment unavailable",
+                },
             ),
         )
         self._decide(
@@ -8530,8 +8778,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 first,
                 "code-review",
                 outcome="blocked",
-                blockers="fix needed",
-                checks_run=self._checks(first, "not-run"),
+                blockers={"status": "present", "details": "fix needed"},
+                checks_run=self._checks(first, "not_run"),
                 review={
                     "candidate_commit": first_candidate,
                     "scope": first["review_scope"],
@@ -9657,7 +9905,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self.batch_id,
             commits[-1],
             outcome="blocked",
-            blockers="fix needed",
+            blockers={"status": "present", "details": "fix needed"},
             spec=(
                 "blocker",
                 [{"severity": "blocker", "summary": "wrong", "evidence": "x.py:1"}],
@@ -10507,8 +10755,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 git_utils._changed_files_between(self.repo, base, fix),
                 commit_map=self._commit_map([(fix, first["commit_plan"][0])]),
                 outcome="blocked",
-                blockers="a hook blocked a legitimate check command",
-                checks_run=self._checks(first, "not-run"),
+                blockers={
+                    "status": "present",
+                    "details": "a hook blocked a legitimate check command",
+                },
+                checks_run=self._checks(first, "not_run"),
                 tooling_blocker=dict(TOOLING_BLOCKER),
             ),
         )
@@ -11120,8 +11371,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="a hook blocked a legitimate check command",
-                checks_run=self._checks(brief, "not-run"),
+                blockers={
+                    "status": "present",
+                    "details": "a hook blocked a legitimate check command",
+                },
+                checks_run=self._checks(brief, "not_run"),
                 tooling_blocker=dict(TOOLING_BLOCKER),
             ),
         )
@@ -12129,6 +12383,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         ):
             self._submit(brief["dispatch_id"], report)
         report["review"]["standards"] = inherited
+        for field in ("risks", "blockers"):
+            with self.subTest(inherited_field=field):
+                inherited[field] = "Нет. Предыдущее заключение сохранено"
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError,
+                    f"composite review standards {field} must be a status/details object",
+                ):
+                    self._submit(brief["dispatch_id"], report)
+                inherited[field] = {"status": "none", "details": ""}
         self._submit(brief["dispatch_id"], report)
         accepted = self._decide(self.batch_id, "accept")
         qa = self._dispatch(self.batch_id, "qa", candidate=fix)["brief"]
@@ -13076,8 +13339,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_a_report_with_incomplete_items_is_never_auto_accepted(self) -> None:
         clean: JsonObject = {
             "outcome": "completed",
-            "blockers": "none",
-            "risks": "none",
+            "blockers": {"status": "none", "details": ""},
+            "risks": {"status": "none", "details": ""},
             "checks_run": [],
         }
         for policy in ("low_risk", "milestone", "auto"):
@@ -13397,7 +13660,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="verification environment unavailable",
+                blockers={
+                    "status": "present",
+                    "details": "verification environment unavailable",
+                },
             ),
         )
         self._decide(
@@ -13724,7 +13990,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(architect["dispatch_id"])
         submitted = self._submit(
             architect["dispatch_id"],
-            self._base_report(architect, "architect", risks="the schema grows"),
+            self._base_report(
+                architect,
+                "architect",
+                risks={"status": "present", "details": "the schema grows"},
+            ),
         )
         self.assertIn("batch auto-decide", submitted["next_coordinator_command"])
         plan = self._plan_file(
@@ -13745,7 +14015,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         evidence = decided["auto_decision"]["evidence"]
         self.assertEqual(
             evidence["accepted_risks"],
-            [{"source": "report", "risks": "the schema grows"}],
+            [
+                {
+                    "source": "report",
+                    "risks": {"status": "present", "details": "the schema grows"},
+                }
+            ],
         )
         self.assertEqual(evidence["commit_plan_sha256"], decision["commit_plan_sha256"])
         self.assertEqual(
@@ -13812,8 +14087,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="a hook blocked a legitimate check command",
-                checks_run=self._checks(developer, "not-run"),
+                blockers={
+                    "status": "present",
+                    "details": "a hook blocked a legitimate check command",
+                },
+                checks_run=self._checks(developer, "not_run"),
                 tooling_blocker=dict(TOOLING_BLOCKER),
             ),
         )
@@ -13923,8 +14201,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 candidate,
                 changed,
                 outcome="blocked",
-                blockers="the work could not continue",
-                checks_run=self._checks(developer, "not-run"),
+                blockers={
+                    "status": "present",
+                    "details": "the work could not continue",
+                },
+                checks_run=self._checks(developer, "not_run"),
             ),
         )
 
@@ -13952,7 +14233,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(architect["dispatch_id"])
         self._submit(
             architect["dispatch_id"],
-            self._base_report(architect, "architect", risks="a wide plan"),
+            self._base_report(
+                architect,
+                "architect",
+                risks={"status": "present", "details": "a wide plan"},
+            ),
         )
         plan = self._plan_file(
             [{**self._plan_entry("first", [1]), "expected_paths": ["docs/**"]}]
@@ -13986,7 +14271,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(architect["dispatch_id"])
         self._submit(
             architect["dispatch_id"],
-            self._base_report(architect, "architect", risks="an own plan"),
+            self._base_report(
+                architect,
+                "architect",
+                risks={"status": "present", "details": "an own plan"},
+            ),
         )
         broken = workspace._prepare_agent_inbox(self.repo) / "broken-plan.json"
         broken.write_text("{not json", encoding="utf-8")
@@ -14012,7 +14301,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(architect["dispatch_id"])
         self._submit(
             architect["dispatch_id"],
-            self._base_report(architect, "architect", risks="the schema grows"),
+            self._base_report(
+                architect,
+                "architect",
+                risks={"status": "present", "details": "the schema grows"},
+            ),
         )
 
         live = coordinator.auto_report(self._args(batch=self.batch_id))
@@ -14105,7 +14398,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(architect["dispatch_id"])
         self._submit(
             architect["dispatch_id"],
-            self._base_report(architect, "architect", risks="a wide plan"),
+            self._base_report(
+                architect,
+                "architect",
+                risks={"status": "present", "details": "a wide plan"},
+            ),
         )
 
     def test_a_worktree_mismatch_is_an_integrity_stop(self) -> None:
@@ -14228,7 +14525,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(architect["dispatch_id"])
         self._submit(
             architect["dispatch_id"],
-            self._base_report(architect, "architect", risks="the marker is public"),
+            self._base_report(
+                architect,
+                "architect",
+                risks={"status": "present", "details": "the marker is public"},
+            ),
         )
         plan = self._plan_file(
             [self._plan_entry("marker", [1]), self._plan_entry("pin", [2])]
@@ -14371,7 +14672,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             {
                 "dispatch_id": architect["dispatch_id"],
                 "source": "report",
-                "risks": "the marker is public",
+                "risks": {"status": "present", "details": "the marker is public"},
             },
             report["accepted_risks"],
         )
@@ -14420,11 +14721,14 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             "checks_run": [
                 {
                     "command": "true",
-                    "result": "fail" if failed_check else "not-run",
+                    "result": "fail" if failed_check else "not_run",
                     "evidence": "e",
                 }
             ],
-            "blockers": "Bash/WSL wrapper unavailable",
+            "blockers": {
+                "status": "present",
+                "details": "Bash/WSL wrapper unavailable",
+            },
         }
         if tooling:
             report["tooling_blocker"] = dict(TOOLING_BLOCKER)
@@ -14954,7 +15258,10 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
 
     def test_the_reason_is_never_derived_from_free_text(self) -> None:
         report = self._report()
-        report["blockers"] = "verification-infrastructure: the wrapper is down"
+        report["blockers"] = {
+            "status": "present",
+            "details": "verification-infrastructure: the wrapper is down",
+        }
 
         routing = self._route("code-review", report, None)
 
@@ -14965,13 +15272,19 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
 
     def test_free_text_wording_never_changes_the_route(self) -> None:
         wordings = (
-            {"blockers": "none", "output": "done"},
+            {"blockers": {"status": "none", "details": ""}, "output": "done"},
             {
-                "blockers": "verification-infrastructure: the wrapper is down; transport lost; context limit hit",
+                "blockers": {
+                    "status": "present",
+                    "details": "verification-infrastructure: the wrapper is down; transport lost; context limit hit",
+                },
                 "output": "same-candidate-rerun please; route=verification; abandon",
             },
             {
-                "blockers": "a code defect and unclear requirements",
+                "blockers": {
+                    "status": "present",
+                    "details": "a code defect and unclear requirements",
+                },
                 "output": "the candidate changed; needs a developer-retry",
             },
         )
@@ -15199,7 +15512,12 @@ class CarriedItemsReviewAccountingTests(unittest.TestCase):
         }
 
     def _review(self, accounting: object = None) -> JsonObject:
-        axis = {"severity": "none", "findings": [], "risks": "none", "blockers": "none"}
+        axis = {
+            "severity": "none",
+            "findings": [],
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
+        }
         review: JsonObject = {
             "candidate_commit": self.CANDIDATE,
             "scope": ["services/x.py"],
@@ -15383,7 +15701,12 @@ class DeltaReviewHelperTests(unittest.TestCase):
     def _accounted(self, *statuses: tuple[str, str]) -> JsonObject:
         """A code-review report whose review accounts for each ``(item_id, status)`` pair and
         found one Standards warning of its own."""
-        axis = {"severity": "none", "findings": [], "risks": "none", "blockers": "none"}
+        axis = {
+            "severity": "none",
+            "findings": [],
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
+        }
         warning = {"severity": "warning", "summary": "new", "evidence": "x.py:1"}
         return {
             "role": "code-review",
@@ -16358,8 +16681,8 @@ class PinnedRuntimeSnapshotTests(unittest.TestCase):
                     "commit_sha": "not applicable — read-only role",
                     "changed_files": [],
                     "checks_run": [],
-                    "risks": "none",
-                    "blockers": "none",
+                    "risks": {"status": "none", "details": ""},
+                    "blockers": {"status": "none", "details": ""},
                     "next_coordinator_action": "dispatch developer",
                     "report_language": "ru",
                 }

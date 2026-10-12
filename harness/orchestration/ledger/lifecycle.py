@@ -23,10 +23,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..core.constants import BatchState, DispatchState
 from ..core.utils import sealed
 from .recovery_chain import event_audit, terminal
 
@@ -67,6 +69,29 @@ class LedgerLockBusy(LedgerError):
     """Another operation holds the ledger lock."""
 
 
+def _parse_state[T: StrEnum](value: object, vocabulary: type[T]) -> T:
+    if isinstance(value, str):
+        try:
+            return vocabulary(value)
+        except ValueError:
+            pass
+    raise LedgerError(
+        f"invalid {vocabulary.__name__} value {value!r}",
+        remedy=f"use an exact English state from: {', '.join(vocabulary)}; restore the coordinator's recorded state before continuing",
+    )
+
+
+def _validate_record_state(directory: str, value: JsonObject) -> None:
+    if directory == "batches":
+        _parse_state(value.get("state"), BatchState)
+        entries = value.get("dispatches", [])
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and "state" in entry:
+                _parse_state(entry["state"], DispatchState)
+    elif directory in {"dispatches", "dispatch-status"}:
+        _parse_state(value.get("state"), DispatchState)
+
+
 def _lock_busy() -> LedgerLockBusy:
     return LedgerLockBusy(
         "ledger is locked by another operation",
@@ -101,10 +126,14 @@ class BatchRecord:
     directory: ClassVar[str] = "batches"
 
     batch_id: str
-    state: str
+    state: BatchState
     dispatches: list[JsonValue]
     coordinator_approval: JsonObject | None
     extra: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _parse_state(self.state, BatchState))
+        _validate_record_state(self.directory, self.to_dict())
 
     @property
     def record_id(self) -> str:
@@ -125,7 +154,7 @@ class BatchRecord:
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
             batch_id=cast(str, data.get("batch_id")),
-            state=cast(str, data.get("state")),
+            state=_parse_state(data.get("state"), BatchState),
             dispatches=cast(list[JsonValue], data.get("dispatches")),
             coordinator_approval=cast(
                 JsonObject | None, data.get("coordinator_approval")
@@ -165,9 +194,12 @@ class DispatchRecord:
 
     dispatch_id: str
     batch_id: str
-    state: str
+    state: DispatchState
     coordinator_approval: JsonObject | None
     extra: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _parse_state(self.state, DispatchState))
 
     @property
     def record_id(self) -> str:
@@ -189,7 +221,7 @@ class DispatchRecord:
         return cls(
             dispatch_id=cast(str, data.get("dispatch_id")),
             batch_id=cast(str, data.get("batch_id")),
-            state=cast(str, data.get("state")),
+            state=_parse_state(data.get("state"), DispatchState),
             coordinator_approval=cast(
                 JsonObject | None, data.get("coordinator_approval")
             ),
@@ -204,8 +236,11 @@ class DispatchStatusRecord:
     directory: ClassVar[str] = "dispatch-status"
 
     dispatch_id: str
-    state: str
+    state: DispatchState
     extra: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _parse_state(self.state, DispatchState))
 
     @property
     def record_id(self) -> str:
@@ -220,7 +255,7 @@ class DispatchStatusRecord:
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
             dispatch_id=cast(str, data.get("dispatch_id")),
-            state=cast(str, data.get("state")),
+            state=_parse_state(data.get("state"), DispatchState),
             extra=extra,
         )
 
@@ -554,7 +589,9 @@ def _read(path: Path, label: str) -> JsonObject:
         )
     # json.loads is a dynamic boundary; after confirming the top-level object, JSON itself
     # guarantees string object keys and recursive JSON-compatible values.
-    return cast(JsonObject, value)
+    record = cast(JsonObject, value)
+    _validate_record_state(path.parent.name, record)
+    return record
 
 
 def _digest(path: Path) -> str:
@@ -1082,6 +1119,8 @@ class LifecycleLedger:
     def write_immutable(
         self, path: Path, value: JsonObject, *, artifact: bool = False
     ) -> None:
+        if not artifact:
+            _validate_record_state(path.parent.name, value)
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1127,6 +1166,7 @@ class LifecycleLedger:
         ``decision`` is the coordinator decision this transition records; it is stored in the same
         audit event, under the same checksum, so the decision and its transition cannot diverge.
         """
+        _validate_record_state(path.parent.name, value)
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
@@ -1213,8 +1253,8 @@ class LifecycleLedger:
     def _validate_batch_transition(
         self, generation: Path, before: JsonObject, after: JsonObject
     ) -> None:
-        previous = before.get("state")
-        target = after.get("state")
+        previous = _parse_state(before.get("state"), BatchState)
+        target = _parse_state(after.get("state"), BatchState)
         old_events = before.get("recovery_events", [])
         new_events = after.get("recovery_events", [])
         if (
@@ -1279,57 +1319,74 @@ class LifecycleLedger:
                 remedy="preserve original startup proof",
             )
         allowed = {
-            "planned": {
-                "planned",
-                "awaiting-approval",
-                "blocked",
-                "failed",
-                "not-required",
-                "abandoned",
+            BatchState.PLANNED: {
+                BatchState.PLANNED,
+                BatchState.AWAITING_APPROVAL,
+                BatchState.BLOCKED,
+                BatchState.FAILED,
+                BatchState.NOT_REQUIRED,
+                BatchState.ABANDONED,
             },
-            "awaiting-approval": {
-                "awaiting-approval",
-                "active",
-                "completed",
-                "blocked",
-                "failed",
-                "not-required",
-                "abandoned",
+            BatchState.AWAITING_APPROVAL: {
+                BatchState.AWAITING_APPROVAL,
+                BatchState.ACTIVE,
+                BatchState.COMPLETED,
+                BatchState.BLOCKED,
+                BatchState.FAILED,
+                BatchState.NOT_REQUIRED,
+                BatchState.ABANDONED,
             },
-            "active": {
-                "active",
-                "awaiting-approval",
-                "blocked",
-                "failed",
-                "not-required",
-                "abandoned",
+            BatchState.ACTIVE: {
+                BatchState.ACTIVE,
+                BatchState.AWAITING_APPROVAL,
+                BatchState.BLOCKED,
+                BatchState.FAILED,
+                BatchState.NOT_REQUIRED,
+                BatchState.ABANDONED,
             },
-            "blocked": {"blocked", "awaiting-approval", "failed", "abandoned"},
-            "failed": {"failed", "abandoned"},
-            "completed": {"completed"},
-            "not-required": {"not-required"},
-            "abandoned": {"abandoned"},
+            BatchState.BLOCKED: {
+                BatchState.BLOCKED,
+                BatchState.AWAITING_APPROVAL,
+                BatchState.FAILED,
+                BatchState.ABANDONED,
+            },
+            BatchState.FAILED: {BatchState.FAILED, BatchState.ABANDONED},
+            BatchState.COMPLETED: {BatchState.COMPLETED},
+            BatchState.NOT_REQUIRED: {BatchState.NOT_REQUIRED},
+            BatchState.ABANDONED: {BatchState.ABANDONED},
         }
-        for state in ("planned", "awaiting-approval", "active", "blocked", "failed"):
-            allowed[state].add("paused")
-        allowed["paused"] = {"paused", "awaiting-approval", "planned", "abandoned"}
-        allowed["failed"].update({"awaiting-approval", "planned"})
-        allowed["active"].add("planned")
-        allowed["blocked"].add("planned")
-        for state in ("planned", "active", "blocked", "failed", "paused"):
-            allowed[state].add("completed")
-        if (
-            not isinstance(previous, str)
-            or not isinstance(target, str)
-            or previous not in allowed
-            or target not in allowed[previous]
+        for state in (
+            BatchState.PLANNED,
+            BatchState.AWAITING_APPROVAL,
+            BatchState.ACTIVE,
+            BatchState.BLOCKED,
+            BatchState.FAILED,
         ):
-            allowed_targets = (
-                sorted(allowed.get(previous, ())) if isinstance(previous, str) else []
-            )
+            allowed[state].add(BatchState.PAUSED)
+        allowed[BatchState.PAUSED] = {
+            BatchState.PAUSED,
+            BatchState.AWAITING_APPROVAL,
+            BatchState.PLANNED,
+            BatchState.ABANDONED,
+        }
+        allowed[BatchState.FAILED].update(
+            {BatchState.AWAITING_APPROVAL, BatchState.PLANNED}
+        )
+        allowed[BatchState.ACTIVE].add(BatchState.PLANNED)
+        allowed[BatchState.BLOCKED].add(BatchState.PLANNED)
+        for state in (
+            BatchState.PLANNED,
+            BatchState.ACTIVE,
+            BatchState.BLOCKED,
+            BatchState.FAILED,
+            BatchState.PAUSED,
+        ):
+            allowed[state].add(BatchState.COMPLETED)
+        if target not in allowed[previous]:
+            allowed_targets = sorted(allowed[previous])
             raise LedgerError(
-                f"ledger rejects batch transition {previous!r} -> {target!r}",
-                remedy=f"transition through one of the allowed states for {previous!r}: {allowed_targets}",
+                f"ledger rejects batch transition {previous.value!r} -> {target.value!r}",
+                remedy=f"transition through one of the allowed states for {previous.value!r}: {[state.value for state in allowed_targets]}",
             )
         if previous == "planned" and target == "awaiting-approval":
             approval = after.get("coordinator_approval")

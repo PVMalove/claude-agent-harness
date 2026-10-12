@@ -28,6 +28,7 @@ from harness.orchestration.core.constants import (
     INTEGRATION_SHA_PATTERN,
     LOCAL_QA_CI_CONDITIONS,
     STATE_REL,
+    IntegrationCheckResult,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -257,7 +258,9 @@ def _link_result(ledger: LifecycleLedger, root: Path, result: JsonObject) -> Jso
             "kind": "local-qa",
             "candidate_sha": result["candidate_sha"],
             "target_sha": result["target_sha"],
-            "result": "passed" if result["state"] == "completed" else "failed",
+            "result": IntegrationCheckResult.PASSED
+            if result["state"] == "completed"
+            else IntegrationCheckResult.FAILED,
             "reference": str(_path(root, result["local_qa_id"])),
             "artifact_sha256": result["artifact_sha256"],
         },

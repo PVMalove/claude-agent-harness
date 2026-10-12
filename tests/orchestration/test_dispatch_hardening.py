@@ -58,7 +58,10 @@ class PolicyRetryEvidenceTests(PreparationFixture):
                 )
         report_path = Path(blocked["report"])
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        report["risks"] = "rewritten after the policy decision"
+        report["risks"] = {
+            "status": "present",
+            "details": "rewritten after the policy decision",
+        }
         report_path.write_text(json.dumps(report), encoding="utf-8")
 
         with self.assertRaises(CoordinatorError) as raised:

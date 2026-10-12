@@ -130,8 +130,8 @@ def run(ctx: SimpleNamespace) -> None:
                     "evidence": "1 passed",
                 }
             ],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": "accept",
             "report_language": "ru",
         }

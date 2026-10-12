@@ -568,9 +568,14 @@ class ContinuationTests(ResolverFixture):
                     ),
                     "remaining_definition_of_done": brief["definition_of_done"],
                     "passing_checks": [],
-                    "risks": "the sides contradict each other",
-                    "blockers": "option keep-target drops the ticket value; "
-                    "option keep-ticket drops the upstream value",
+                    "risks": {
+                        "status": "present",
+                        "details": "the sides contradict each other",
+                    },
+                    "blockers": {
+                        "status": "present",
+                        "details": "option keep-target drops the ticket value; option keep-ticket drops the upstream value",
+                    },
                     "context_package_id": "not applicable — no context package registered",
                 }
             ),
@@ -582,7 +587,10 @@ class ContinuationTests(ResolverFixture):
         document = {
             "dispatch_id": brief["dispatch_id"],
             "remaining_definition_of_done": brief["definition_of_done"],
-            "risks": "the sides contradict each other",
+            "risks": {
+                "status": "present",
+                "details": "the sides contradict each other",
+            },
             "dependencies": brief["dependencies"],
             **override,
         }

@@ -149,8 +149,8 @@ def test_authorized_archive_qa_and_ledger_store_only_safe_projections(
                 "role": "qa",
                 "outcome": "pass",
                 "output": "qualityword token=unsafe secret=project /tmp/full.log",
-                "risks": ["riskword"],
-                "blockers": [],
+                "risks": {"status": "present", "details": "riskword"},
+                "blockers": {"status": "none", "details": ""},
                 "checks_run": [
                     {
                         "command": "forbiddencommand",

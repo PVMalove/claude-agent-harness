@@ -314,7 +314,7 @@ class QaPreparationE2ETests(PreparationFixture):
 
         self.assertEqual(report["outcome"], "blocked")
         self.assertEqual(report["qa_stages"]["diagnosis"]["category"], "unknown")
-        self.assertIn("triage", report["blockers"])
+        self.assertIn("triage", report["blockers"]["details"])
         before = self.fx._batch_record(self.batch_id)
         with self.assertRaises(CoordinatorError) as refused:
             self.fx._decide(self.batch_id, "retry")

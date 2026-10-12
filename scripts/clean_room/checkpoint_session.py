@@ -95,8 +95,8 @@ def run(ctx: SimpleNamespace) -> None:
                     "evidence": "1 passed",
                 }
             ],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": approved_action,
             "report_language": "ru",
         }
@@ -163,8 +163,8 @@ def run(ctx: SimpleNamespace) -> None:
                 "changed_files": [],
                 "remaining_definition_of_done": [],
                 "passing_checks": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": "not applicable — no context package registered",
             },
             indent=2,
@@ -287,8 +287,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none yet",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "none yet"},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": "context-package-does-not-exist",
             },
             indent=2,
@@ -326,8 +326,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none yet",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "none yet"},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": checkpoint_context_package_id,
             },
             indent=2,
@@ -505,8 +505,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "next_coordinator_action": "accept",
                 "report_language": "ru",
             },
@@ -581,8 +581,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": checkpoint_context_package_id,
             },
             indent=2,
@@ -610,7 +610,7 @@ def run(ctx: SimpleNamespace) -> None:
     facts_unchanged = {
         "dispatch_id": checkpoint_dev_id,
         "remaining_definition_of_done": [],
-        "risks": "none",
+        "risks": {"status": "none", "details": ""},
         "dependencies": ["none"],
     }
     facts_unchanged_file = staged_payload("continuation-facts-unchanged.json")
@@ -620,7 +620,13 @@ def run(ctx: SimpleNamespace) -> None:
     facts_risks_drifted_file = staged_payload("continuation-facts-risks-drifted.json")
     facts_risks_drifted_file.write_text(
         json.dumps(
-            {**facts_unchanged, "risks": "scope grew since the checkpoint"},
+            {
+                **facts_unchanged,
+                "risks": {
+                    "status": "present",
+                    "details": "scope grew since the checkpoint",
+                },
+            },
             indent=2,
         )
         + "\n",

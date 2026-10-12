@@ -129,6 +129,8 @@ def project_json(
     if kind == "qa_finding" or (include_qa and value.get("role") == "qa"):
         for key in ("output", "risks", "blockers"):
             item = value.get(key)
+            if isinstance(item, dict) and item.get("status") == "present":
+                item = item.get("details")
             values = item[:20] if isinstance(item, list) else [item]
             retained.extend(scalar(part) for part in values if isinstance(part, str))
         checks = value.get("checks_run")
