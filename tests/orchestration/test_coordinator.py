@@ -2252,9 +2252,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         }
 
         for result in (
-            "passed",
             "failed",
-            "not_run",
             "PASS",
             " pass ",
             "unknown",
@@ -2267,10 +2265,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
                 self.assertIn("checks_run[0].result", caught.exception.message)
                 self.assertIn(repr(result), caught.exception.message)
-                self.assertIn(brief["verification_commands"][0], caught.exception.message)
+                self.assertIn(
+                    brief["verification_commands"][0], caught.exception.message
+                )
                 self.assertIn("pass", caught.exception.remedy)
                 self.assertIn("fail", caught.exception.remedy)
-                self.assertIn("not-run", caught.exception.remedy)
+                self.assertIn("not_run", caught.exception.remedy)
                 self.assertNotIn("not_run_architect_read_only", caught.exception.remedy)
                 self.assertEqual(
                     before,
@@ -2291,7 +2291,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         batch = self._create_batch()
         architect = self._dispatch(batch["batch_id"], "architect")["brief"]
         self._start(architect["dispatch_id"])
-        self._submit(architect["dispatch_id"], self._base_report(architect, "architect"))
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
         developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
             "dispatch_id"
         ]
@@ -2301,7 +2303,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._start(developer_id)
         candidate, changed = self._developer_commit("auto-check-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
         )
         before = self._batch_record(batch["batch_id"])
 
@@ -2314,9 +2316,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self.assertFalse(
                 (self._records() / "reports" / f"{developer_id}.{suffix}").exists()
             )
-        report["checks_run"] = self._checks(brief, "pass")
+        report["checks_run"] = self._checks(brief, "passed")
         submitted = self._submit(developer_id, report)
         self.assertTrue(submitted["auto_accepted"])
+        recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(recorded["checks_run"], self._checks(brief, "pass"))
         stored = self._batch_record(batch["batch_id"])
         self.assertNotIn("auto_stop", stored)
         self.assertNotIn("needs_attention", stored)
@@ -2329,7 +2333,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
         candidate, changed = self._developer_commit("legacy-check-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
         )
         # Stage historical evidence with its normal digest, as if submitted before #669.
         self._stage_report(
@@ -2345,8 +2349,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             self._decide(batch["batch_id"], "accept")
 
         self.assertIn("checks_run[0].result", caught.exception.message)
-        self.assertIn("passed", caught.exception.message)
-        self.assertIn("not-run", caught.exception.remedy)
+        self.assertIn("unknown", caught.exception.message)
+        self.assertIn("not_run", caught.exception.remedy)
         self.assertEqual(
             before,
             {
@@ -2355,6 +2359,49 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 if path.is_file()
             },
         )
+
+    def _assert_skipped_check_is_recorded(self, result: str) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("skipped-check-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, result)
+        )
+        submitted = self._submit(brief["dispatch_id"], report)
+        recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(recorded["checks_run"], self._checks(brief, "not_run"))
+        self.assertFalse(submitted.get("auto_accepted", False))
+
+    def test_not_run_is_recorded_as_a_skipped_check(self) -> None:
+        self._assert_skipped_check_is_recorded("not_run")
+
+    def test_legacy_not_run_spelling_is_recorded_canonically(self) -> None:
+        self._assert_skipped_check_is_recorded("not-run")
+
+    def test_manual_accept_preserves_a_legacy_passed_report(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        candidate, changed = self._developer_commit("legacy-passed-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+        )
+        self._stage_report(
+            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+        )
+        paths = [
+            self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
+            for suffix in ("json", "md")
+        ]
+        before = {path: path.read_bytes() for path in paths}
+
+        self._decide(batch["batch_id"], "accept")
+
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(stored["dispatches"][-1]["decision"]["decision"], "accept")
 
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""

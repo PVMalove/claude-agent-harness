@@ -330,8 +330,8 @@ QA_CODE_CHECKS_STARTED = ("started", "not_started", "unknown")
 QA_DIAGNOSIS_FIELDS = frozenset({"category", "signals", "basis"})
 QA_DIAGNOSIS_CATEGORIES = ("infrastructure", "project-defect", "unknown")
 # The result of a verification command the run never reached, so it is neither a pass nor a failure.
-QA_NOT_RUN_RESULT = "not-run"
-# Completion reports use exact results, never synonyms such as "passed". The architect's
+QA_NOT_RUN_RESULT = "not_run"
+# New completion reports store canonical results after resolving supported aliases. The architect's
 # read-only marker remains valid for historical briefs that included verification commands.
 REPORT_CHECK_RESULTS = frozenset({"pass", "fail", QA_NOT_RUN_RESULT})
 ARCHITECT_READ_ONLY_CHECK_RESULT = "not_run_architect_read_only"

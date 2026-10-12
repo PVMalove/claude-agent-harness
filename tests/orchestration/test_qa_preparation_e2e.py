@@ -196,7 +196,7 @@ class QaPreparationE2ETests(PreparationFixture):
         # No fabricated failed code check: every gate command is a command never reached.
         self.assertEqual(
             [(c["command"], c["result"]) for c in report["checks_run"]],
-            [(command, "not-run") for command in self.gate],
+            [(command, "not_run") for command in self.gate],
         )
         self.assertIn("code was not verified", report["output"])
         self.assertFalse(self.gate_ran.exists(), "the gate must not start")
@@ -340,7 +340,7 @@ class QaPreparationE2ETests(PreparationFixture):
         self.assertEqual(report["qa_stages"]["code_checks_started"], "started")
         self.assertNotIn("diagnosis", report["qa_stages"])
         self.assertEqual(
-            [c["result"] for c in report["checks_run"]], ["fail", "not-run"]
+            [c["result"] for c in report["checks_run"]], ["fail", "not_run"]
         )
         decided = self.fx._decide(
             self.batch_id, "retry", reason_category="verification-infrastructure"

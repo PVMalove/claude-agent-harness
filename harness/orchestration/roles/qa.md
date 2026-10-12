@@ -21,4 +21,4 @@ the acceptance criteria.
 When part of the brief stays undone, list each undone item in `incomplete_items` under the common
 contract; its `target_role` is always `qa`, so only a narrowed QA retry finishes it. A narrowed QA
 retry still runs every approved verification command. An incomplete item never replaces a failed
-or not-run check in `checks_run`.
+or `not_run` check in `checks_run`.

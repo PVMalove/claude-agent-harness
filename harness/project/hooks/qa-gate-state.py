@@ -250,7 +250,7 @@ def coordinator_evidence(project: Path, checkout: Path) -> bool:
         passed = {
             check["command"]
             for check in report["checks_run"]
-            if check["result"] == "pass"
+            if check["result"] in {"pass", "passed"}
         }
         return (
             evidence["candidate_commit"] == head

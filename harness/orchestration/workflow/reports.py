@@ -20,6 +20,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
+from harness.orchestration.core.check_results import canonical_check_result
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _context_advisory,
@@ -1324,7 +1325,7 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
     """Shape and consistency of a QA report's ``qa_stages`` against its checks and outcome (issue #618).
 
     The stage list is the evidence: its gate entries must be the leading approved verification
-    commands with the same results as ``checks_run``, every later command is ``not-run``, and the
+    commands with the same results as ``checks_run``, every later command is ``not_run``, and the
     failed stage, the code-check fact, the diagnosis and the outcome must follow from the entries.
     """
     if "qa_stages" not in report:
@@ -1437,9 +1438,11 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
     expected = [(entry["command"], entry["result"]) for entry in gate] + [
         (command, QA_NOT_RUN_RESULT) for command in approved[len(gate) :]
     ]
-    if [(check["command"], check["result"]) for check in checks] != expected:
+    if [
+        (check["command"], canonical_check_result(check["result"])) for check in checks
+    ] != expected:
         raise refuse(
-            "does not agree with checks_run (a command never reached is not-run)"
+            "does not agree with checks_run (a command never reached is not_run)"
         )
     if failed_stage is None:
         expected_outcome = "completed"
@@ -1554,14 +1557,15 @@ def _validate_report(
         allowed_results = REPORT_CHECK_RESULTS
         if dispatch["role"] == "architect":
             allowed_results = allowed_results | {ARCHITECT_READ_ONLY_CHECK_RESULT}
-        if check["result"] not in allowed_results:
+        if canonical_check_result(check["result"]) not in allowed_results:
             raise CoordinatorError(
                 f"completion report checks_run[{position}].result is invalid "
                 f"({check['result']!r}) for command {check['command']!r}",
                 remedy=f"set checks_run[{position}].result to one of: "
                 f"{', '.join(sorted(allowed_results))}; use pass only if the evidence "
-                "confirms the command passed, fail if it failed, or not-run if it "
-                "was not executed; correct the staging report and submit it again",
+                "confirms the command passed (passed is also accepted), fail if it failed, "
+                "or not_run if it was not executed (not-run is also accepted); "
+                "correct the staging report and submit it again",
             )
         if len(check["evidence"]) > MAX_CHECK_EVIDENCE_CHARS:
             raise CoordinatorError(
@@ -1827,6 +1831,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         role = _role(repo, dispatch["role"])
         _validate_report_in_batch(repo, root, batch, dispatch, report, role)
+        # Canonicalise new submissions only; historical immutable evidence is never rewritten.
+        for check in report["checks_run"]:
+            check["result"] = canonical_check_result(check["result"])
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
         carried_items.require_closure(report, dispatch)
