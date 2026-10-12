@@ -10,6 +10,7 @@ from typing import Mapping, Sequence
 from textual.app import App
 from textual.widgets import Button, ListView, RadioButton, SelectionList, Static
 
+from tests.console._pilot_wait import press, wait_until
 from harness.console import stats as console_stats
 from harness.console.catalog import seed_update_entry
 from harness.console.screens.harness import CommandFormScreen
@@ -126,19 +127,19 @@ def test_update_asks_for_the_same_confirmation_and_runs_only_after_it(
         app = _host(_screen(tmp_path, runner))
         async with app.run_test(size=(120, 60)) as pilot:
             await pilot.pause()
-            await pilot.click("#update-run")
-            await pilot.pause()
+            await press(pilot, "#update-run")
+            await wait_until(pilot, lambda: isinstance(app.screen, CommandFormScreen))
             assert isinstance(app.screen, CommandFormScreen)
             assert app.screen.entry.key == "update"
             assert not runner.calls
             await pilot.press("escape")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, UpdateHarnessScreen))
             assert isinstance(app.screen, UpdateHarnessScreen)
             assert not runner.calls
-            await pilot.click("#update-run")
-            await pilot.pause()
-            await pilot.click("#run")
-            await pilot.pause()
+            await press(pilot, "#update-run")
+            await wait_until(pilot, lambda: isinstance(app.screen, CommandFormScreen))
+            await press(pilot, "#run")
+            await wait_until(pilot, lambda: isinstance(app.screen, UpdateHarnessScreen))
             await app.workers.wait_for_complete()
             await pilot.pause()
             output = str(app.screen.query_one("#update-output", Static).content)
@@ -186,24 +187,30 @@ def test_seed_mode_updates_only_the_ticked_files(tmp_path: Path) -> None:
             files = screen.query_one("#seed-files", SelectionList)
             assert list(files.selected) == []
             assert screen.query_one("#update-run", Button).disabled
-            await pilot.click("#seed-all")
-            await pilot.pause()
+            await press(pilot, "#seed-all")
+            await wait_until(
+                pilot,
+                lambda: sorted(files.selected) == PAYLOAD["seed_differing"],
+            )
             assert sorted(files.selected) == PAYLOAD["seed_differing"]
-            await pilot.click("#seed-none")
-            await pilot.pause()
+            await press(pilot, "#seed-none")
+            await wait_until(pilot, lambda: not files.selected)
             assert not files.selected
             files.select(".claude/rules/two.md")
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: not screen.query_one("#update-run", Button).disabled,
+            )
             assert not screen.query_one("#update-run", Button).disabled
-            await pilot.click("#update-run")
-            await pilot.pause()
+            await press(pilot, "#update-run")
+            await wait_until(pilot, lambda: isinstance(app.screen, CommandFormScreen))
             assert isinstance(app.screen, CommandFormScreen)
             assert app.screen.entry.cli_argv(tmp_path)[3:] == [
                 "--force-seed-file",
                 ".claude/rules/two.md",
             ]
-            await pilot.click("#run")
-            await pilot.pause()
+            await press(pilot, "#run")
+            await wait_until(pilot, lambda: isinstance(app.screen, UpdateHarnessScreen))
             await app.workers.wait_for_complete()
 
     asyncio.run(scenario())

@@ -875,6 +875,13 @@ class ConfigurationScreen(Translated, Screen[None]):
             else json.dumps(value, ensure_ascii=False, indent=2)
         )
         self.query_one("#field-value", TextArea).load_text(str(text))
+        if field.kind == "array" and isinstance(value, list):
+            # Programmatic ticks must not feed partial selections back into the JSON.
+            with self.prevent(Checkbox.Changed):
+                for offset, choice in enumerate(field.choice_page(self.choice_page)):
+                    self.query_one(f"#array-choice-{offset}", Checkbox).value = (
+                        choice in value
+                    )
 
     def _use_recommendation(self) -> None:
         if self.draft is None:

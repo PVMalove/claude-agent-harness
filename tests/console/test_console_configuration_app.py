@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from collections.abc import Callable
 from typing import cast
 import json
 from pathlib import Path
@@ -364,6 +363,108 @@ def test_choices_beyond_four_are_paged_and_the_recommendation_is_marked(
     asyncio.run(scenario())
 
 
+def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox
+
+    installed_project(tmp_path)
+    _write_project(tmp_path, memory_policy={"source_types": ["adr", "ledger"]})
+    before = (tmp_path / ".harness/project.json").read_bytes()
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            await _open_step(
+                pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
+            )
+            screen.query_one("#array-choice-0", Checkbox).value = False
+            screen.query_one("#array-choice-1", Checkbox).value = True
+            await pilot.pause()
+            await press(pilot, "#use-recommendation")
+            await wait_until(
+                pilot,
+                lambda: screen.query_one("#array-choice-0", Checkbox).value
+                and not screen.query_one("#array-choice-1", Checkbox).value,
+            )
+            assert screen.query_one("#array-choice-0", Checkbox).value is True
+            assert screen.query_one("#array-choice-1", Checkbox).value is False
+            assert json.loads(screen.query_one("#field-value", TextArea).text) == [
+                "adr",
+                "ledger",
+            ]
+            await press(pilot, "#use-recommendation")
+            await press(pilot, "#choice-next-page")
+            # The page index changes before recompose finishes; wait for the new labels.
+            await wait_until(
+                pilot,
+                lambda: any(
+                    str(box.label).startswith("ledger —")
+                    for box in screen.query("#array-choice-1").results(Checkbox)
+                ),
+            )
+            assert screen.query_one("#array-choice-1", Checkbox).value is True
+            screen.query_one("#array-choice-0", Checkbox).value = True
+            await pilot.pause()
+            await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: screen.steps[screen.index].path
+                != ("memory_policy", "source_types")
+                and _step_is_rendered(screen, screen.steps[screen.index].path),
+            )
+            await _open_step(
+                pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
+            )
+            assert json.loads(screen.query_one("#field-value", TextArea).text) == [
+                "adr",
+                "ledger",
+                "completion_report",
+            ]
+            assert screen.query_one("#array-choice-0", Checkbox).value is True
+            assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+    asyncio.run(scenario())
+
+
+def test_accepting_false_recommendation_clears_boolean_without_applying_config(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Checkbox
+
+    installed_project(tmp_path)
+    _write_project(tmp_path, memory={"enabled": False})
+    before = (tmp_path / ".harness/project.json").read_bytes()
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
+            screen.query_one("#field-boolean", Checkbox).value = True
+            await press(pilot, "#use-recommendation")
+            await wait_until(
+                pilot, lambda: not screen.query_one("#field-boolean", Checkbox).value
+            )
+            assert screen.query_one("#field-boolean", Checkbox).value is False
+            await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: screen.steps[screen.index].path != ("memory", "enabled")
+                and _step_is_rendered(screen, screen.steps[screen.index].path),
+            )
+            await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
+            assert screen.query_one("#field-boolean", Checkbox).value is False
+            assert (tmp_path / ".harness/project.json").read_bytes() == before
+
+    asyncio.run(scenario())
+
+
 def test_external_change_is_reloaded_without_losing_the_draft(tmp_path: Path) -> None:
     installed_project(tmp_path)
 
@@ -632,6 +733,13 @@ def _orchestration_project(repo: Path) -> None:
     )
 
 
+def _step_is_rendered(screen: ConfigurationScreen, path: tuple[str, ...]) -> bool:
+    return any(
+        str(header.content).endswith(" → " + ".".join(path))
+        for header in screen.query("#configuration-step > Static").results(Static)
+    )
+
+
 async def _open_step(
     pilot: Pilot[None],
     screen: ConfigurationScreen,
@@ -645,7 +753,9 @@ async def _open_step(
     screen.query_one("#step-jump", Select).value = index
     await wait_until(
         pilot,
-        lambda: screen.steps[screen.index].path == path and bool(screen.query(ready)),
+        lambda: screen.steps[screen.index].path == path
+        and _step_is_rendered(screen, path)
+        and bool(screen.query(ready)),
     )
 
 
@@ -711,22 +821,6 @@ def test_entries_of_a_map_are_added_removed_and_opened_through_the_menu(
     asyncio.run(scenario())
 
 
-async def _stable(
-    pilot: Pilot[None], widget: Callable[[], object], polls: int = 4
-) -> None:
-    """Wait until `widget()` returns the same object `polls` times in a row: the page stopped rebuilding."""
-    last: object = None
-    same = 0
-    for _ in range(400):
-        await pilot.pause()
-        current = widget()
-        same = same + 1 if current is last else 0
-        last = current
-        if same >= polls:
-            return
-    raise AssertionError("the page kept rebuilding")
-
-
 def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
     from textual.widgets import Input, ListView, TextArea
 
@@ -746,21 +840,37 @@ def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
             await wait_until(
                 pilot,
                 lambda: draft.documents["project.json"]["qa_gate_commands"]
-                == ["pytest", "make lint"],
+                == ["pytest", "make lint"]
+                and any(
+                    len(menu.children) == 2
+                    for menu in screen.query("#menu-items").results(ListView)
+                ),
             )
             assert not screen.query("Button#mode-menu, Button#mode-text")
             assert screen.query_one("#mode-menu", RadioButton).value
             screen.query_one("#configuration-mode", RadioSet).focus()
             await pilot.press("right", "space")
-            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
-            await _stable(pilot, lambda: screen.query_one("#field-value"))
+            await wait_until(
+                pilot,
+                lambda: any(
+                    area.text == json.dumps(["pytest", "make lint"], indent=2)
+                    for area in screen.query("#field-value").results(TextArea)
+                ),
+            )
             assert screen.query_one("#mode-text", RadioButton).value
             assert not screen.query_one("#mode-menu", RadioButton).value
             area = screen.query_one("#field-value", TextArea)
             assert json.loads(area.text) == ["pytest", "make lint"]
             area.load_text("{broken JSON")
             screen.query_one("#mode-menu", RadioButton).value = True
-            await _stable(pilot, lambda: screen.query_one("#field-value"))
+            # Invalid JSON rebuilds the text page; the previous editor is not readiness.
+            await wait_until(
+                pilot,
+                lambda: any(
+                    editor is not area and editor.text == "{broken JSON"
+                    for editor in screen.query("#field-value").results(TextArea)
+                ),
+            )
             assert screen.text_mode
             assert screen.query_one("#mode-text", RadioButton).value
             assert not screen.query_one("#mode-menu", RadioButton).value
@@ -774,7 +884,8 @@ def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
             await press(pilot, "#menu-remove")
             await wait_until(
                 pilot,
-                lambda: draft.documents["project.json"]["qa_gate_commands"] == [],
+                lambda: draft.documents["project.json"]["qa_gate_commands"] == []
+                and not screen.query("#menu-items"),
             )
 
     asyncio.run(scenario())
