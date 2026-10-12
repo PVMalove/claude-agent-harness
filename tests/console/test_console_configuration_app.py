@@ -377,6 +377,7 @@ def test_accepting_recommendation_updates_array_checkboxes_and_keeps_later_edits
         app = Host(tmp_path)
         async with app.run_test(size=(120, 60)) as pilot:
             await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
             screen = cast(ConfigurationScreen, app.screen)
             await _open_step(
                 pilot, screen, ("memory_policy", "source_types"), "#array-choice-0"
@@ -424,6 +425,7 @@ def test_accepting_false_recommendation_clears_boolean_without_applying_config(
         app = Host(tmp_path)
         async with app.run_test(size=(120, 60)) as pilot:
             await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
             screen = cast(ConfigurationScreen, app.screen)
             await _open_step(pilot, screen, ("memory", "enabled"), "#field-boolean")
             screen.query_one("#field-boolean", Checkbox).value = True

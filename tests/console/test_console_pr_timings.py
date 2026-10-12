@@ -67,7 +67,7 @@ def test_batch_time_to_pr_uses_the_matching_branch_and_creation_date(
     ]
 
     def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        if Path(argv[0]).name == "git":
+        if Path(argv[0]).stem.lower() == "git":
             return subprocess.CompletedProcess(argv, 1, "", "")
         calls.append(argv)
         assert kwargs.get("cwd") == tmp_path
