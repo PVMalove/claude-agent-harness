@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # A new push to a pull request cancels the run it makes obsolete, so nobody waits for a stale one.
+  # Other events get a group of their own and are never cancelled (a release gate must finish).
+  group: verify-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -31,8 +37,41 @@ jobs:
         run: make bootstrap
       - name: Make script executable
         run: chmod +x scripts/verify.py
+      - name: Restore the pytest cache (tests that failed last time run first)
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .harness/.sandboxes/pytest-cache
+          key: pytest-${{ runner.os }}-verify-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            pytest-${{ runner.os }}-verify-${{ github.head_ref || github.ref_name }}-
       - name: Verify harness and clean-room install
-        run: make verify
+        env:
+          # A pull request stops at the first failing test; `master` and releases run everything.
+          VERIFY_ARGS: >-
+            --junit-xml .harness/.sandboxes/logs/junit-verify.xml
+            --failed-first .harness/.sandboxes/pytest-cache
+            ${{ github.event_name == 'pull_request' && '--fail-fast' || '' }}
+        run: |
+          mkdir -p .harness/.sandboxes/logs
+          make verify
+      - name: Save the pytest cache
+        if: always()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .harness/.sandboxes/pytest-cache
+          key: pytest-${{ runner.os }}-verify-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+      - name: Test summary
+        if: always()
+        run: |
+          python scripts/ci_summary.py tests .harness/.sandboxes/logs/junit-verify.xml --title "Linux: тесты" >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the test report for the dashboard
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-verify
+          path: .harness/.sandboxes/logs/junit-verify.xml
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Check public Git metadata
         if: github.event_name == 'pull_request'
         env:
@@ -80,7 +119,10 @@ jobs:
         include:
           - part: tests
             timeout: 60
-            verify_args: --only tests
+            verify_args: >-
+              --only tests
+              --junit-xml .harness/.sandboxes/logs/junit-windows-tests.xml
+              --failed-first .harness/.sandboxes/pytest-cache
           - part: clean-room
             timeout: 30
             verify_args: --only clean-room
@@ -113,15 +155,41 @@ jobs:
         run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
       - name: Bootstrap harness environment
         run: make bootstrap
+      - name: Restore the pytest cache (tests that failed last time run first)
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .harness/.sandboxes/pytest-cache
+          key: pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-
       - name: Verify harness and clean-room install
         env:
           PYTEST_ADDOPTS: "-vv -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true --max-worker-restart=0"
           PYTHONUNBUFFERED: "1"
-          VERIFY_ARGS: ${{ matrix.verify_args }} ${{ github.event_name == 'pull_request' && '--platform-subset' || '' }}
+          # A pull request stops at the first failing test (the failed ones run first); `master` runs all.
+          VERIFY_ARGS: ${{ matrix.verify_args }} ${{ github.event_name == 'pull_request' && '--platform-subset --fail-fast' || '' }}
         run: |
           set -o pipefail
           mkdir -p .harness/.sandboxes/logs
           make verify 2>&1 | tee .harness/.sandboxes/logs/verify-windows-${{ matrix.part }}.log
+      - name: Save the pytest cache
+        if: always()
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: .harness/.sandboxes/pytest-cache
+          key: pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
+      - name: Test summary
+        if: always() && matrix.part == 'tests'
+        run: |
+          python scripts/ci_summary.py tests .harness/.sandboxes/logs/junit-windows-tests.xml --title "Windows: тесты" >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the test report for the dashboard
+        if: always() && matrix.part == 'tests'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: junit-windows-tests
+          path: .harness/.sandboxes/logs/junit-windows-tests.xml
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Preserve Windows verification diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -252,3 +320,28 @@ jobs:
           .harness/.venv/bin/python -m mypy --strict --disallow-any-explicit \
             --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
             harness/repo_map/tree_sitter_worker.py
+
+  dashboard:
+    # One page for the whole run: which jobs passed, which failed, which tests and why. It runs
+    # after every other job, whatever their results, and only reads what they leave.
+    if: always()
+    needs: [verify, diff-coverage, verify-windows, private-terms, parser-bundle, repo-map-bundle]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        continue-on-error: true
+        with:
+          pattern: junit-*
+          path: ${{ runner.temp }}/junit
+      - name: Dashboard
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/junit"
+          python scripts/ci_summary.py dashboard --junit-dir "$RUNNER_TEMP/junit" --needs-json "$NEEDS" --run-url "$RUN_URL" >> "$GITHUB_STEP_SUMMARY"

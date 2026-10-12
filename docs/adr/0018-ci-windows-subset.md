@@ -20,11 +20,22 @@ Linux-джоб уже проверяет её целиком.
   `tests/orchestration/test_coordinator.py`.
 - **Полный прогон на `master`.** Событие `push` на `master` и вызов workflow не передают
   `--platform-subset`, поэтому полный набор на Windows проверяется после слияния.
-- **Linux не сужается.** Джоб `verify` на Linux всегда выполняет все тесты.
+- **Linux не сужается.** Набор тестов джоба `verify` на Linux не урезается; в pull request он лишь
+  останавливается на первом падении (см. ниже).
 - **Diff-coverage отдельно.** Джоб `diff-coverage` (только `pull_request`) измеряет покрытие своим
   прогоном pytest параллельно с `verify`, а не после него.
 - **Git на Windows.** Джоб задаёт `core.autocrlf=false`, `core.fscache=true`,
   `core.preloadindex=true` до checkout.
+- **Быстрая обратная связь в pull request.** `verify.py --fail-fast` останавливает pytest на первом
+  падении; `--failed-first <каталог>` хранит кэш pytest в `.harness/.sandboxes/pytest-cache`,
+  который workflow сохраняет и восстанавливает по ключу ветки, и запускает ранее упавшие тесты
+  первыми. Повторное падение видно в первые минуты, а не после 20 минут полного прогона. `master`
+  и вызов workflow запускают всё без остановки. Каждое новое обновление ветки pull request отменяет
+  прежний запуск (`concurrency` с `cancel-in-progress` только для `pull_request`).
+- **Сводка и дашборд.** `--junit-xml` пишет отчёт pytest; `scripts/ci_summary.py tests` кладёт в
+  сводку задания итоги, упавшие тесты с причиной и самые медленные тесты, а задание `dashboard`
+  (всегда после остальных) собирает одну страницу: результаты всех заданий, тесты по заданиям и
+  все упавшие тесты.
 
 ## Операционные последствия
 

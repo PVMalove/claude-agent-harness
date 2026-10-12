@@ -205,22 +205,28 @@ def pytest_command(
     platform: str = sys.platform,
     cpu_count: int | None = None,
     platform_subset: bool = False,
+    fail_fast: bool = False,
+    failed_first: Path | None = None,
+    junit_xml: Path | None = None,
 ) -> list[str]:
-    """Сформировать аргументы запуска pytest с учетом платформы и числа воркеров."""
+    """Сформировать аргументы запуска pytest с учетом платформы и числа воркеров.
+
+    `fail_fast` останавливает прогон на первом падении, `failed_first` хранит кэш pytest в
+    указанном каталоге и запускает прежде упавшие тесты первыми, `junit_xml` пишет отчёт для сводки CI."""
     effective_cpus = os.cpu_count() or 1 if cpu_count is None else cpu_count
     workers = min(4, effective_cpus)
-    args = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-p",
-        "no:cacheprovider",
-        "-n",
-        str(workers),
-        "--basetemp",
-        str(run_tmp / "p"),
-        str(ROOT / "tests"),
-    ]
+    args = [sys.executable, "-m", "pytest"]
+    if failed_first is None:
+        args.extend(["-p", "no:cacheprovider"])
+    else:
+        args.extend(["-o", f"cache_dir={failed_first}", "--ff"])
+    if fail_fast:
+        args.append("-x")
+    if junit_xml is not None:
+        args.extend([f"--junitxml={junit_xml}", "-o", "junit_family=xunit2"])
+    args.extend(
+        ["-n", str(workers), "--basetemp", str(run_tmp / "p"), str(ROOT / "tests")]
+    )
     if platform == "win32":
         args.extend(
             [
@@ -239,6 +245,9 @@ def _run_stages(
     *,
     only: str | None,
     platform_subset: bool,
+    fail_fast: bool = False,
+    failed_first: Path | None = None,
+    junit_xml: Path | None = None,
 ) -> None:
     """Стадии с замером времени: mypy, pytest и clean-room прогон; `only` оставляет одну группу."""
     try:
@@ -246,7 +255,13 @@ def _run_stages(
             run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
             run_stage(
                 "pytest",
-                pytest_command(run_tmp, platform_subset=platform_subset),
+                pytest_command(
+                    run_tmp,
+                    platform_subset=platform_subset,
+                    fail_fast=fail_fast,
+                    failed_first=failed_first,
+                    junit_xml=junit_xml,
+                ),
                 env=test_env,
             )
         if only != "tests":
@@ -298,6 +313,26 @@ def build_parser() -> argparse.ArgumentParser:
             "(WINDOWS_PR_IGNORED_TESTS); the full run omits this flag"
         ),
     )
+    parser.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="stop pytest at the first failing test instead of running the whole suite",
+    )
+    parser.add_argument(
+        "--failed-first",
+        type=Path,
+        metavar="CACHE_DIR",
+        help=(
+            "keep the pytest cache in CACHE_DIR and run the tests that failed last time first, "
+            "so a repeated failure shows up in the first minute"
+        ),
+    )
+    parser.add_argument(
+        "--junit-xml",
+        type=Path,
+        metavar="PATH",
+        help="write the pytest results as JUnit XML (the CI summary reads it)",
+    )
     return parser
 
 
@@ -306,7 +341,15 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     run_tmp, test_env = _prepare_run_root()
     _static_checks(test_env)
-    _run_stages(run_tmp, test_env, only=args.only, platform_subset=args.platform_subset)
+    _run_stages(
+        run_tmp,
+        test_env,
+        only=args.only,
+        platform_subset=args.platform_subset,
+        fail_fast=args.fail_fast,
+        failed_first=args.failed_first,
+        junit_xml=args.junit_xml,
+    )
     print("agent-harness verification passed")
 
 
