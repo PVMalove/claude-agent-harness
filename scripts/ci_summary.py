@@ -225,6 +225,10 @@ def main(argv: list[str] | None = None) -> int:
     dashboard.add_argument("--needs-json", default="{}", help="JSON of `needs`")
     dashboard.add_argument("--run-url")
     args = parser.parse_args(argv)
+    # The summary has Cyrillic and emoji; a Windows console or pipe defaults to cp1252.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(encoding="utf-8")
     if args.command == "tests":
         for path in args.junit:
             print(render_tests(read_report(path, args.title)))

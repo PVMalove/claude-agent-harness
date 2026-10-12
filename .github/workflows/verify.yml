@@ -62,6 +62,8 @@ jobs:
           key: pytest-${{ runner.os }}-verify-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
       - name: Test summary
         if: always()
+        env:
+          PYTHONUTF8: "1"
         run: |
           python scripts/ci_summary.py tests .harness/.sandboxes/logs/junit-verify.xml --title "Linux: тесты" >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the test report for the dashboard
@@ -180,6 +182,8 @@ jobs:
           key: pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
       - name: Test summary
         if: always() && matrix.part == 'tests'
+        env:
+          PYTHONUTF8: "1"
         run: |
           python scripts/ci_summary.py tests .harness/.sandboxes/logs/junit-windows-tests.xml --title "Windows: тесты" >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the test report for the dashboard
@@ -340,6 +344,7 @@ jobs:
           path: ${{ runner.temp }}/junit
       - name: Dashboard
         env:
+          PYTHONUTF8: "1"
           NEEDS: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |

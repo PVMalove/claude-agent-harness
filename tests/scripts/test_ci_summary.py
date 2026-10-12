@@ -73,3 +73,18 @@ def test_the_command_line_writes_markdown(
     )
     assert "windows" in capsys.readouterr().out
     assert ci_summary.main(["tests", str(tmp_path / "junit-windows.xml")]) == 0
+
+
+def test_the_summary_survives_a_console_that_cannot_encode_cyrillic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import sys
+
+    path = tmp_path / "junit-windows.xml"
+    path.write_text(JUNIT, encoding="utf-8")
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252", write_through=True)
+    monkeypatch.setattr(sys, "stdout", console)
+    assert ci_summary.main(["tests", str(path), "--title", "Windows: тесты"]) == 0
+    assert "Windows: тесты" in raw.getvalue().decode("utf-8")
