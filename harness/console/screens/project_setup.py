@@ -293,7 +293,9 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
                     "\nУстановка заблокирована; проверьте собственные/изменённые пути:\n"
                     + "\n".join(blocked)
                 )
-            self.query_one("#install-project", Button).disabled = bool(blocked)
+            self.query_one("#install-project", Button).disabled = self.busy or bool(
+                blocked
+            )
         except (ValueError, OSError):
             text += (
                 "\nПлан не удалось проверить; исправьте существующую установку вручную."

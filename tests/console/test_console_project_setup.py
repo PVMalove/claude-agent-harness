@@ -310,3 +310,63 @@ def test_the_actions_are_disabled_while_an_operation_runs(tmp_path: Path) -> Non
     idle, busy = asyncio.run(scenario())
     assert idle == [False, False, False]
     assert busy == [True, True, True]
+
+
+def test_capability_change_keeps_install_disabled_during_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from harness.console import data
+    from harness.console.screens.harness import CommandFormScreen
+    from harness.health.model import Report
+
+    second = tmp_path / "backend with spaces"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+    started, release = threading.Event(), threading.Event()
+
+    def collect(repo: Path, *, online: bool = False) -> Report:
+        started.set()
+        if not release.wait(10):
+            raise TimeoutError("Test did not release diagnostics")
+        return Report(1, str(repo), online, [])
+
+    monkeypatch.setattr(data, "collect_diagnostics", collect)
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(140, 60)) as pilot:
+            try:
+                await pilot.press("p")
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ProjectSetupScreen)
+                )
+                screen = app.screen
+                assert isinstance(screen, ProjectSetupScreen)
+                screen.query_one("#project-path", Input).value = str(second)
+                await press(pilot, "#inspect-project")
+                await wait_until(pilot, started.is_set)
+                assert screen.busy
+                assert screen.query_one("#install-project", Button).disabled
+
+                # A queued capability change must not enable installation mid-operation.
+                screen.query_one("#capability", RadioSet).query(RadioButton)[
+                    -1
+                ].value = True
+                await pilot.pause()
+                assert screen.busy
+                assert screen.query_one("#install-project", Button).disabled
+
+                release.set()
+                await wait_until(pilot, lambda: not screen.busy)
+                await press(pilot, "#install-project")
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, CommandFormScreen)
+                )
+                await press(pilot, "#cancel")
+                await wait_until(pilot, lambda: app.screen is screen)
+            finally:
+                release.set()
+
+    asyncio.run(scenario())
