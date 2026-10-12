@@ -100,6 +100,18 @@ class CatalogEntry:
         return shlex.join(self.cli_argv(repo, values))
 
 
+def seed_update_entry(paths: Sequence[str]) -> CatalogEntry:
+    """`harness update` that overwrites only the chosen seed files (`--force-seed-file` per path)."""
+    flags = tuple(part for path in paths for part in ("--force-seed-file", path))
+    return CatalogEntry(
+        "update-seed-selected",
+        "Обновить харнесс с перезаписью выбранных seed-файлов",
+        ("harness", "update", "{repo}", *flags),
+        Reversibility.OVERWRITES_MANAGED_FILES,
+        "harness/bin/harness.py:cmd_update",
+    )
+
+
 def process_argv(
     cli_argv: Sequence[str], repo: Path | None = None, *, dev_environment: bool = False
 ) -> list[str]:

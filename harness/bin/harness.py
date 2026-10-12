@@ -599,6 +599,7 @@ PVMALOVE_CAPABILITY = "pvmalove-suite"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
+config_versions/
 config-versions/
 """
 
@@ -719,6 +720,44 @@ def _copy_if_absent(
     return str(target)
 
 
+def seed_template_files(repo: Path, *, orchestration_enabled: bool) -> dict[str, bytes]:
+    """Seed-файлы, которые `update` может перезаписать: путь от корня проекта -> эталон из шаблона."""
+    files: dict[str, bytes] = {}
+    for folder, target, suffixes in SEED_FOLDERS:
+        for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
+            if source.is_file() and source.suffix in suffixes:
+                files[f"{target}/{source.name}"] = source.read_bytes()
+    scratch = storage_path(repo, "scratch", ".gitignore")
+    files[scratch.relative_to(repo).as_posix()] = (
+        PROJECT_TEMPLATE_DIR / "scratch/.gitignore"
+    ).read_bytes()
+    files[".harness/.gitignore"] = HARNESS_RUNTIME_GITIGNORE.encode("utf-8")
+    files[".claude/settings.local.json"] = (
+        PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl"
+    ).read_bytes()
+    files[".harness/project.schema.json"] = (
+        PROJECT_TEMPLATE_DIR / "project.schema.json"
+    ).read_bytes()
+    if orchestration_enabled:
+        files[".harness/orchestration.json"] = (
+            PACKAGE / "orchestration.example.json"
+        ).read_bytes()
+    return files
+
+
+def seed_differing(repo: Path) -> list[str]:
+    """Существующие seed-файлы проекта, которые отличаются от шаблона."""
+    templates = seed_template_files(
+        repo, orchestration_enabled=(repo / ".harness/orchestration.json").exists()
+    )
+    differing: list[str] = []
+    for relative, content in templates.items():
+        path = repo / relative
+        if path.is_file() and path.read_bytes() != content:
+            differing.append(relative)
+    return sorted(differing)
+
+
 def scaffold_pvmalove_extras(
     repo: Path, args: argparse.Namespace, *, orchestration_enabled: bool = False
 ) -> list[str]:
@@ -728,6 +767,19 @@ def scaffold_pvmalove_extras(
     force_seed = getattr(args, "force_seed_files", False) or getattr(
         args, "force", False
     )
+    selected_seed = set(getattr(args, "force_seed_file", None) or [])
+    unknown = selected_seed - set(
+        seed_template_files(repo, orchestration_enabled=orchestration_enabled)
+    )
+    if unknown:
+        fail(
+            "--force-seed-file: not a seed file of this project: "
+            + ", ".join(sorted(unknown))
+        )
+
+    def forced(target: Path) -> bool:
+        """Перезаписывать ли файл: все seed-файлы разом или только выбранные по пути."""
+        return force_seed or target.relative_to(repo).as_posix() in selected_seed
 
     for folder, target, suffixes in SEED_FOLDERS:
         for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
@@ -737,7 +789,7 @@ def scaffold_pvmalove_extras(
                 source,
                 repo / target / source.name,
                 executable=folder == "hooks",
-                force=force_seed,
+                force=forced(repo / target / source.name),
                 differing=differing,
             )
             if result:
@@ -746,14 +798,14 @@ def scaffold_pvmalove_extras(
     scratch_gitignore_result = _copy_if_absent(
         PROJECT_TEMPLATE_DIR / "scratch/.gitignore",
         storage_path(repo, "scratch", ".gitignore"),
-        force=force_seed,
+        force=forced(storage_path(repo, "scratch", ".gitignore")),
         differing=differing,
     )
     if scratch_gitignore_result:
         written.append(scratch_gitignore_result)
 
     harness_gitignore = repo / ".harness/.gitignore"
-    if not harness_gitignore.exists() or force_seed:
+    if not harness_gitignore.exists() or forced(harness_gitignore):
         harness_gitignore.parent.mkdir(parents=True, exist_ok=True)
         harness_gitignore.write_text(
             HARNESS_RUNTIME_GITIGNORE, encoding="utf-8", newline="\n"
@@ -776,10 +828,10 @@ def scaffold_pvmalove_extras(
     template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(
         encoding="utf-8"
     )
-    if settings.exists() and not force_seed:
+    if settings.exists() and not forced(settings):
         if settings.read_text(encoding="utf-8") != template_text:
             differing.append(settings)
-    if not settings.exists() or force_seed:
+    if not settings.exists() or forced(settings):
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(template_text, encoding="utf-8", newline="\n")
         written.append(str(settings))
@@ -838,7 +890,7 @@ def scaffold_pvmalove_extras(
     schema_result = _copy_if_absent(
         PROJECT_TEMPLATE_DIR / "project.schema.json",
         repo / ".harness/project.schema.json",
-        force=force_seed,
+        force=forced(repo / ".harness/project.schema.json"),
         differing=differing,
     )
     if schema_result:
@@ -851,7 +903,7 @@ def scaffold_pvmalove_extras(
         orchestration_result = _copy_if_absent(
             PACKAGE / "orchestration.example.json",
             repo / ".harness/orchestration.json",
-            force=force_seed,
+            force=forced(repo / ".harness/orchestration.json"),
             differing=differing,
         )
         if orchestration_result:
@@ -946,6 +998,7 @@ def cmd_diff(args: argparse.Namespace) -> int:
     proposals = propose_contract_links(repo, PROJECT_TEMPLATE_DIR)
     if args.json:
         result["seed_link_proposals"] = proposals
+        result["seed_differing"] = seed_differing(repo)
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
@@ -1316,6 +1369,13 @@ def parser() -> argparse.ArgumentParser:
         "--force-seed-files",
         action="store_true",
         help="overwrite seed files even if present",
+    )
+    update.add_argument(
+        "--force-seed-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="overwrite only this seed file (path from the project root); repeatable",
     )
     _add_pvmalove_args(update)
     update.set_defaults(func=cmd_update)

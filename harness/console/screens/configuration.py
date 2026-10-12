@@ -18,7 +18,6 @@ from textual.widgets import (
     Button,
     Checkbox,
     Footer,
-    Header,
     Input,
     RadioButton,
     RadioSet,
@@ -29,6 +28,11 @@ from textual.widgets import (
 
 from harness.configuration import read_config_bundle
 from harness.configuration_store import ConfigurationStore, StaleConfiguration
+from .. import brand
+from ..chrome import TopBar
+from ..translate import Translated
+from ..logtext import colorize_diff
+from ..widgets import CheckBox
 from ..advisor import PROVIDERS, Advice, AdvisorUnavailable, advise, availability
 from ..configuration import ConfigurationDraft
 from ..configuration_steps import (
@@ -55,11 +59,16 @@ class Phase(StrEnum):
     REVIEW = "review"
 
 
-class ConfirmConfiguration(ModalScreen[bool]):
+class ConfirmConfiguration(Translated, ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
     DEFAULT_CSS = """
     ConfirmConfiguration { align: center middle; }
-    ConfirmConfiguration > Vertical { width: 80%; height: auto; max-height: 80%; padding: 1 2; border: round $primary; }
+    ConfirmConfiguration > Vertical {
+        width: 80%; max-width: 100; height: auto; max-height: 80%; padding: 0 1;
+        border: round $primary; border-title-color: $primary;
+    }
+    ConfirmConfiguration #confirm-text { height: auto; max-height: 20; }
+    ConfirmConfiguration #confirm-text Static { height: auto; }
     ConfirmConfiguration .actions { height: auto; }
     """
 
@@ -68,8 +77,10 @@ class ConfirmConfiguration(ModalScreen[bool]):
         self.text = text
 
     def compose(self) -> ComposeResult:
-        with Vertical():
-            yield Static(self.text, markup=False)
+        with Vertical() as dialog:
+            dialog.border_title = brand.frame_title("Подтверждение")
+            with VerticalScroll(id="confirm-text"):
+                yield Static(self.text, markup=False)
             with Horizontal(classes="actions"):
                 yield Button("Подтвердить", id="confirm")
                 yield Button("Отмена", id="cancel")
@@ -81,10 +92,16 @@ class ConfirmConfiguration(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class ConfigurationScreen(Screen[None]):
+class ConfigurationScreen(Translated, Screen[None]):
     BINDINGS = [Binding("escape", "cancel", "Назад")]
     DEFAULT_CSS = """
-    ConfigurationScreen #configuration-scroll { height: 1fr; margin: 0 1; }
+    ConfigurationScreen #configuration-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
+    ConfigurationScreen.-choose #configuration-scroll { height: auto; }
+    ConfigurationScreen #configuration-project { color: $text-muted; }
+    ConfigurationScreen .store-path { color: $text-muted; }
+    ConfigurationScreen .configuration-choice { height: auto; }
+    ConfigurationScreen Vertical.frame { height: auto; overflow: hidden hidden; }
+    ConfigurationScreen #configuration-actions { height: auto; }
     ConfigurationScreen .actions { height: auto; }
     ConfigurationScreen Static { height: auto; }
     ConfigurationScreen RadioSet { height: auto; }
@@ -121,76 +138,129 @@ class ConfigurationScreen(Screen[None]):
             "save-current-version": self._request_save_current,
             "reload-external": self._reload_external,
             "open-versions": self._open_versions,
-            "cancel-config": self.action_cancel,
             "ask-advisor": self._ask_advisor,
             "check-advisor": self._check_advisor,
         }
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield TopBar("Главная › Настройка")
+        # The start screen hugs its content; the long step and review forms fill the screen so
+        # their action row stays at the bottom.
+        self.set_class(self.phase is Phase.CHOOSE, "-choose")
         with VerticalScroll(id="configuration-scroll"):
-            yield Static(
-                "Настройка конфигурации\nЦель: " + str(self.repo), markup=False
-            )
+            with Vertical(id="configuration-target", classes="frame") as target:
+                target.border_title = brand.frame_title("Цель")
+                yield Static(
+                    "Проект: " + brand.display_path(self.repo)
+                    if self.phase is Phase.CHOOSE
+                    else "Цель: " + str(self.repo),
+                    id="configuration-project",
+                    markup=False,
+                )
             if self.phase is Phase.CHOOSE:
                 yield from self._compose_choose()
             elif self.phase is Phase.EDITING:
                 yield from self._compose_field()
             else:
                 yield from self._compose_review()
-        yield Static(self.message, id="config-error", markup=False)
-        with Horizontal(classes="actions"):
-            if self.phase is Phase.EDITING:
-                yield Button("Назад", id="previous-step", disabled=self.index == 0)
-                yield Button("Далее", id="next-step")
-                yield Button("Просмотр итога", id="review-config")
-            elif self.phase is Phase.REVIEW:
-                assert self.draft is not None
-                invalid = bool(self.draft.problems())
-                yield Button("К шагам", id="back-to-steps")
-                yield Button(
-                    "Применить", id="apply-config", disabled=invalid or self.stale
-                )
-                yield Button("Сохранить версию", id="save-version", disabled=invalid)
-                if self.stale:
-                    yield Button("Загрузить внешние изменения", id="reload-external")
-                yield Button("Версии / откат", id="open-versions")
-            yield Button("Закрыть / отменить", id="cancel-config")
+        with Vertical(id="configuration-actions", classes="frame") as actions:
+            actions.border_title = brand.frame_title("Действия")
+            # The start screen has no actions: this frame appears there only with a message.
+            actions.display = self.phase is not Phase.CHOOSE or bool(self.message)
+            error = Static(self.message, id="config-error", markup=False)
+            error.display = bool(self.message)
+            yield error
+            with Horizontal(classes="actions"):
+                if self.phase is Phase.EDITING:
+                    yield Button(
+                        "Предыдущий шаг", id="previous-step", disabled=self.index == 0
+                    )
+                    yield Button("Далее", id="next-step")
+                    yield Button("Просмотр", id="review-config")
+                elif self.phase is Phase.REVIEW:
+                    assert self.draft is not None
+                    invalid = bool(self.draft.problems())
+                    yield Button("К шагам", id="back-to-steps")
+                    yield Button(
+                        "Применить", id="apply-config", disabled=invalid or self.stale
+                    )
+                    yield Button(
+                        "Сохранить версию", id="save-version", disabled=invalid
+                    )
+                    if self.stale:
+                        yield Button(
+                            "Загрузить внешние изменения", id="reload-external"
+                        )
+                    yield Button("Версии и откат", id="open-versions")
         yield Footer()
 
+    def _set_message(self, text: str) -> None:
+        """Show a message in the actions frame, which the start screen otherwise hides."""
+        error = self.query_one("#config-error", Static)
+        error.update(text)
+        error.display = bool(text)
+        self.query_one("#configuration-actions").display = (
+            self.phase is not Phase.CHOOSE or bool(text)
+        )
+
     def _compose_choose(self) -> ComposeResult:
-        yield Static(
-            "Рабочие JSON изменяются только после итогового просмотра и подтверждения."
-        )
-        with Horizontal(classes="actions"):
-            yield Button("project.json", id="configure-project")
-            yield Button("orchestration.json", id="configure-orchestration")
-            yield Button("Оба файла", id="configure-both")
-        yield Static(
-            "Версии: сохранить текущий набор как есть, выбрать версию, сравнить и восстановить."
-        )
-        yield Input(
-            placeholder="Описание версии (необязательно)", id="version-description"
-        )
-        with Horizontal(classes="actions"):
-            yield Button("Сохранить версию", id="save-current-version")
-            yield Button("Выбрать версию / восстановить", id="open-versions")
+        with Vertical(
+            id="configuration-editing", classes="frame configuration-choice"
+        ) as editing:
+            editing.border_title = brand.frame_title("Редактирование конфигурации")
+            yield Static("Выберите, какие файлы настроить.")
+            with Horizontal(classes="actions"):
+                yield Button("project.json", id="configure-project")
+                yield Button("orchestration.json", id="configure-orchestration")
+                yield Button("Both files", id="configure-both")
+            yield Static("Изменения применяются после просмотра и подтверждения.")
+        with Vertical(
+            id="configuration-versions", classes="frame configuration-choice"
+        ) as versions:
+            versions.border_title = brand.frame_title("Сохранённые версии")
+            yield Static("Сохранить текущий набор без редактирования.")
+            yield Static(
+                "Хранилище: " + str(ConfigurationStore(self.repo).root),
+                id="configuration-store-path",
+                classes="store-path",
+                markup=False,
+            )
+            yield Input(
+                placeholder="Описание версии (необязательно)", id="version-description"
+            )
+            with Horizontal(classes="actions"):
+                yield Button("Save version", id="save-current-version")
+                yield Button("Versions / restore", id="open-versions")
 
     def _compose_field(self) -> ComposeResult:
         assert self.draft is not None
         field = self.steps[self.index]
         groups = list(dict.fromkeys((step.file, step.path[0]) for step in self.steps))
         group = groups.index((field.file, field.path[0])) + 1
-        yield Static(
-            f"Группа {group} / {len(groups)}: {field.path[0]}\nШаг {self.index + 1} / {len(self.steps)}: {field.file} → {'.'.join(field.path)}",
-            markup=False,
-        )
-        yield Select(
-            [(f"{s.file}: {'.'.join(s.path)}", i) for i, s in enumerate(self.steps)],
-            value=self.index,
-            allow_blank=False,
-            id="step-jump",
-        )
+        with Vertical(id="configuration-step", classes="frame") as step:
+            step.border_title = brand.frame_title("Шаг")
+            yield Static(
+                f"Группа {group} / {len(groups)}: {field.path[0]}\nШаг {self.index + 1} / {len(self.steps)}: {field.file} → {'.'.join(field.path)}",
+                markup=False,
+            )
+            yield Select(
+                [
+                    (f"{s.file}: {'.'.join(s.path)}", i)
+                    for i, s in enumerate(self.steps)
+                ],
+                value=self.index,
+                allow_blank=False,
+                id="step-jump",
+            )
+        with Vertical(id="configuration-field", classes="frame") as parameter:
+            parameter.border_title = brand.frame_title("Параметр")
+            yield from self._compose_parameter(field)
+        with Vertical(id="configuration-advisor", classes="frame") as advisor:
+            advisor.border_title = brand.frame_title("ИИ-подсказки")
+            yield from self._compose_advisor()
+
+    def _compose_parameter(self, field: ConfigurationStep) -> ComposeResult:
+        assert self.draft is not None
         yield Static(field.description, markup=False)
         recommendation, why = field.recommendation(self.draft)
         yield Static(
@@ -200,7 +270,7 @@ class ConfigurationScreen(Screen[None]):
             + why,
             markup=False,
         )
-        yield Checkbox(
+        yield CheckBox(
             "Использовать параметр (снять — оставить его отсутствующим)",
             value=field.present(self.draft) or field.required,
             disabled=field.required,
@@ -208,7 +278,7 @@ class ConfigurationScreen(Screen[None]):
         )
         value = field.value(self.draft)
         if field.kind == "boolean":
-            yield Checkbox(
+            yield CheckBox(
                 "Включено — да; выключено — нет",
                 value=value is True,
                 id="field-boolean",
@@ -230,8 +300,7 @@ class ConfigurationScreen(Screen[None]):
             )
             yield TextArea(str(text or ""), id="field-value", soft_wrap=True)
         with Horizontal(classes="actions"):
-            yield Button("Взять рекомендацию", id="use-recommendation")
-        yield from self._compose_advisor()
+            yield Button("Принять рекомендацию", id="use-recommendation")
 
     def _compose_choices(
         self, field: ConfigurationStep, value: object, recommended: object
@@ -243,7 +312,7 @@ class ConfigurationScreen(Screen[None]):
         options = field.choice_page(self.choice_page)
         if field.kind == "array":
             for offset, choice in enumerate(options):
-                yield Checkbox(
+                yield CheckBox(
                     label(choice),
                     value=isinstance(value, list) and choice in value,
                     id=f"array-choice-{offset}",
@@ -256,7 +325,7 @@ class ConfigurationScreen(Screen[None]):
                     )
         if field.pages > 1:
             yield Button(
-                f"Другие варианты (страница {self.choice_page + 1} / {field.pages}, по {CHOICE_PAGE_SIZE})",
+                f"More choices (page {self.choice_page + 1} / {field.pages}, per page {CHOICE_PAGE_SIZE})",
                 id="choice-next-page",
             )
 
@@ -274,47 +343,61 @@ class ConfigurationScreen(Screen[None]):
                     and not status.startswith("Готов"),
                 )
         yield Button("Проверить CLI (без запроса к модели)", id="check-advisor")
-        yield Button("Подсказать с ИИ", id="ask-advisor")
-        yield Button("Взять ИИ-рекомендацию", id="use-advisor", disabled=True)
+        yield Button("Спросить ИИ", id="ask-advisor")
+        yield Button("Принять совет ИИ", id="use-advisor", disabled=True)
         yield Static("", id="advisor-output", markup=False)
 
     def _compose_review(self) -> ComposeResult:
         assert self.draft is not None
         problems = self.draft.problems()
-        yield Static(
-            "Проверка: "
-            + (
+        with Vertical(id="configuration-check", classes="frame") as check:
+            check.border_title = brand.frame_title("Проверка")
+            yield Static(
                 "\n".join(problems)
                 if problems
-                else "контракт конфигурации соблюдён; окружение ещё нужно проверить"
-            ),
-            markup=False,
-        )
-        targets = {
-            index: problem
-            for problem in problems
-            if (index := step_for_problem(self.steps, problem)) is not None
-        }
-        if targets:
-            yield Select(
-                [
-                    (f"{'.'.join(self.steps[i].path)}: {p[:60]}", i)
-                    for i, p in targets.items()
-                ],
-                prompt="Перейти к шагу с ошибкой",
-                id="problem-jump",
-            )
-        yield Static(
-            self.draft.diff() or "Изменений нет", id="configuration-diff", markup=False
-        )
-        for name, data in self.draft.documents.items():
-            yield Static(
-                name + "\n" + json.dumps(data, ensure_ascii=False, indent=2),
+                else "Контракт конфигурации соблюдён; окружение ещё нужно проверить.",
                 markup=False,
             )
-        yield Input(
-            placeholder="Описание версии (необязательно)", id="version-description"
-        )
+            targets = {
+                index: problem
+                for problem in problems
+                if (index := step_for_problem(self.steps, problem)) is not None
+            }
+            if targets:
+                yield Select(
+                    [
+                        (f"{'.'.join(self.steps[i].path)}: {p[:60]}", i)
+                        for i, p in targets.items()
+                    ],
+                    prompt="Перейти к шагу с ошибкой",
+                    id="problem-jump",
+                )
+        with Vertical(id="configuration-changes", classes="frame") as changes:
+            changes.border_title = brand.frame_title("Различия")
+            yield Static(
+                colorize_diff(self.draft.diff() or "Изменений нет"),
+                id="configuration-diff",
+                markup=False,
+            )
+        with Vertical(id="configuration-json", classes="frame") as documents:
+            documents.border_title = brand.frame_title("Итоговые файлы")
+            for name, data in self.draft.documents.items():
+                yield Static(
+                    name + "\n" + json.dumps(data, ensure_ascii=False, indent=2),
+                    markup=False,
+                )
+        with Vertical(id="configuration-version", classes="frame") as version:
+            version.border_title = brand.frame_title("Версия")
+            yield Static(
+                "Хранилище: " + str(ConfigurationStore(self.repo).root),
+                id="configuration-store-path",
+                classes="store-path",
+                markup=False,
+            )
+            yield Input(
+                placeholder="Описание версии (необязательно)",
+                id="version-description",
+            )
 
     async def _start(self, names: tuple[str, ...]) -> None:
         try:
@@ -376,7 +459,7 @@ class ConfigurationScreen(Screen[None]):
             return True
         except ValueError as exc:
             self.message = str(exc)
-            self.query_one("#config-error", Static).update(self.message)
+            self._set_message(self.message)
             return False
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -406,9 +489,7 @@ class ConfigurationScreen(Screen[None]):
                 values.remove(choice)
             area.load_text(json.dumps(values, ensure_ascii=False, indent=2))
         except (ValueError, IndexError):
-            self.query_one("#config-error", Static).update(
-                "Сначала исправьте JSON списка"
-            )
+            self._set_message("Сначала исправьте JSON списка")
 
     async def on_select_changed(self, event: Select.Changed) -> None:
         if self.advisor_pending:
@@ -521,13 +602,23 @@ class ConfigurationScreen(Screen[None]):
             raise ValueError("Исправьте ошибки черновика")
         bundle = {**read_config_bundle(self.repo), **self.draft.encoded()}
         version = ConfigurationStore(self.repo).save(bundle, description)
-        return "Версия сохранена без применения: " + version.id
+        return (
+            "Версия сохранена без применения: "
+            + version.id
+            + "\nХранилище: "
+            + str(ConfigurationStore(self.repo).root)
+        )
 
     def _save_current(self, description: str) -> str:
         version = ConfigurationStore(self.repo).save(
             read_config_bundle(self.repo), description
         )
-        return "Текущая конфигурация сохранена как версия: " + version.id
+        return (
+            "Текущая конфигурация сохранена как версия: "
+            + version.id
+            + "\nХранилище: "
+            + str(ConfigurationStore(self.repo).root)
+        )
 
     def _confirmed_apply(self, confirmed: bool | None) -> None:
         if confirmed:
@@ -560,7 +651,7 @@ class ConfigurationScreen(Screen[None]):
 
     def _operation(self, run: Callable[[], str], reload: bool = False) -> None:
         self.busy = True
-        self.query_one("#config-error", Static).update("Выполняется…")
+        self._set_message("Выполняется…")
 
         def work() -> None:
             stale = False
@@ -581,13 +672,13 @@ class ConfigurationScreen(Screen[None]):
         self.busy = False
         self.message = message
         self.stale = stale or (self.stale and not reload)
-        self.query_one("#config-error", Static).update(message)
+        self._set_message(message)
         if stale:
             await self.recompose()
         elif reload and self.draft is not None:
             self.draft = ConfigurationDraft.load(self.repo, tuple(self.draft.documents))
             await self.recompose()
-            self.query_one("#config-error", Static).update(message)
+            self._set_message(message)
 
     def _selected_provider(self) -> str | None:
         index = self.query_one("#advisor-provider", RadioSet).pressed_index

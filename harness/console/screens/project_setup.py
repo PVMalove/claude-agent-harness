@@ -8,19 +8,22 @@ from typing import Callable, Iterable
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import (
     Button,
     DirectoryTree,
     Footer,
-    Header,
     Input,
     RadioButton,
     RadioSet,
     Static,
 )
 
+from .. import brand, i18n
+from ..chrome import TopBar
+from ..translate import Translated
+from ..logtext import colorize_log
 from .. import data
 from ...health.model import Report
 from ..catalog import process_argv
@@ -46,6 +49,9 @@ _STAGES = (
     "Настройка",
     "Итоговая диагностика",
 )
+_TARGET_HINT = "Укажите путь к проекту и нажмите «Проверить путь»."
+_PLAN_HINT = "План появится после проверки пути."
+_OUTPUT_HINT = "Результат проверок и установки появится здесь."
 _AFTER_INSPECT = (
     "activate-project",
     "install-project",
@@ -92,14 +98,24 @@ class _DirectoryOnlyTree(DirectoryTree):
         return [path for path in paths if path.is_dir()]
 
 
-class ProjectSetupScreen(Screen[Path | None]):
+class ProjectSetupScreen(Translated, Screen[Path | None]):
     BINDINGS = [Binding("escape", "cancel", "Назад")]
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (120, "-wide")]
     DEFAULT_CSS = """
+    ProjectSetupScreen #setup-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
+    ProjectSetupScreen #setup-columns { width: 100%; height: auto; layout: vertical; }
+    ProjectSetupScreen.-wide #setup-columns { layout: horizontal; }
+    ProjectSetupScreen #setup-left, ProjectSetupScreen #setup-right { width: 1fr; height: auto; }
+    ProjectSetupScreen .frame { height: auto; }
+    ProjectSetupScreen Vertical.frame { overflow: hidden hidden; }
     ProjectSetupScreen .actions { height: auto; }
-    ProjectSetupScreen #setup-scroll { height: 1fr; margin: 0 1; }
-    ProjectSetupScreen RadioSet { height: auto; }
+    ProjectSetupScreen .actions Button { margin-right: 1; }
     ProjectSetupScreen Static { height: auto; }
+    ProjectSetupScreen RadioSet { height: auto; border: none; padding: 0; }
+    ProjectSetupScreen #project-path { width: 1fr; }
+    ProjectSetupScreen #target-status, ProjectSetupScreen .hint { color: $text-muted; }
     ProjectSetupScreen #directory-browser { height: 12; }
+    ProjectSetupScreen #setup-output-scroll { height: auto; max-height: 18; }
     """
 
     def __init__(self, repo: Path, *, command_runner: CommandRunner) -> None:
@@ -119,52 +135,111 @@ class ProjectSetupScreen(Screen[Path | None]):
 
     def _set_stage(self, stage: int) -> None:
         self.stage = stage
-        self.query_one("#setup-stage", Static).update(
+        text = (
             " → ".join(
                 f"[{name}]" if index == stage else name
                 for index, name in enumerate(_STAGES)
             )
             + f"\nШаг {stage + 1} из {len(_STAGES)}"
         )
+        self.query_one("#setup-stage", Static).update(
+            i18n.tr_text(getattr(self.app, "language", "ru"), text)
+        )
+
+    def sync_language(self) -> None:
+        self._set_stage(self.stage)
 
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield TopBar("Главная › Проект")
         with VerticalScroll(id="setup-scroll"):
-            yield Static("Открыть / подключить проект")
-            yield Static("", id="setup-stage", markup=False)
-            yield Input(
-                value=str(self.repo),
-                placeholder="Путь к локальному Git-проекту",
-                id="project-path",
-            )
-            with Horizontal(classes="actions"):
-                yield Button("Обзор каталогов", id="browse-project")
-                yield Button("Проверить путь", id="inspect-project")
-                yield Button(
-                    "Сделать целевым / завершить",
-                    id="activate-project",
-                    disabled=True,
-                )
-            yield Static("", id="target-status", markup=False)
-            yield Static(
-                "Состав Harness: workflow нужен для project.json; Backend добавляет orchestration.json."
-            )
-            with RadioSet(id="capability"):
-                for name, label in self.options:
-                    yield RadioButton(label, value=name == DEFAULT_CAPABILITY)
-            yield Static("", id="installation-plan", markup=False)
-            with Horizontal(classes="actions"):
-                yield Button("Установить", id="install-project", disabled=True)
-                yield Button("Offline", id="setup-offline", disabled=True)
-                yield Button("Online", id="setup-online", disabled=True)
-                yield Button("Исправить локально", id="setup-fix", disabled=True)
-                yield Button("Открыть настройки", id="setup-config", disabled=True)
-            yield Static(
-                "Offline — локальные проверки; Online — отдельная проверка GitHub/GitLab "
-                "и прав доступа. Проверки песочницы анализируют настройки; фактические "
-                "доступы могут оставаться непроверенными."
-            )
-            yield Static("", id="setup-output", markup=False)
+            with Vertical(id="setup-stage-frame", classes="frame") as stages:
+                stages.border_title = brand.frame_title("Этапы")
+                yield Static("", id="setup-stage", markup=False)
+            with Horizontal(id="setup-columns"):
+                with Vertical(id="setup-left"):
+                    with Vertical(id="project-frame", classes="frame") as project:
+                        project.border_title = brand.frame_title("Проект")
+                        yield Input(
+                            value=str(self.repo),
+                            placeholder="Путь к локальному Git-проекту",
+                            id="project-path",
+                        )
+                        with Horizontal(classes="actions"):
+                            yield Button(
+                                "Обзор папок", id="browse-project", compact=True
+                            )
+                            yield Button(
+                                "Проверить путь", id="inspect-project", compact=True
+                            )
+                            yield Button(
+                                "Открыть проект",
+                                id="activate-project",
+                                disabled=True,
+                                compact=True,
+                            )
+                        yield Static(
+                            _TARGET_HINT,
+                            id="target-status",
+                            markup=False,
+                        )
+                    with Vertical(id="capability-frame", classes="frame") as capability:
+                        capability.border_title = brand.frame_title("Состав Harness")
+                        yield Static(
+                            "workflow нужен для project.json; Backend добавляет orchestration.json.",
+                            classes="hint",
+                        )
+                        with RadioSet(id="capability"):
+                            for name, label in self.options:
+                                yield RadioButton(
+                                    label, value=name == DEFAULT_CAPABILITY
+                                )
+                with Vertical(id="setup-right"):
+                    with Vertical(id="plan-frame", classes="frame") as plan:
+                        plan.border_title = brand.frame_title("План установки")
+                        yield Static(_PLAN_HINT, id="installation-plan", markup=False)
+                        with Horizontal(classes="actions"):
+                            yield Button(
+                                "Установить",
+                                id="install-project",
+                                disabled=True,
+                                compact=True,
+                            )
+                    with Vertical(id="checks-frame", classes="frame") as checks:
+                        checks.border_title = brand.frame_title("Проверки")
+                        with Horizontal(classes="actions"):
+                            yield Button(
+                                "Офлайн",
+                                id="setup-offline",
+                                disabled=True,
+                                compact=True,
+                            )
+                            yield Button(
+                                "Онлайн",
+                                id="setup-online",
+                                disabled=True,
+                                compact=True,
+                            )
+                            yield Button(
+                                "Исправить",
+                                id="setup-fix",
+                                disabled=True,
+                                compact=True,
+                            )
+                            yield Button(
+                                "Настройка",
+                                id="setup-config",
+                                disabled=True,
+                                compact=True,
+                            )
+                        yield Static(
+                            "Offline — локальные проверки; Online — отдельная проверка GitHub/GitLab "
+                            "и прав доступа. Проверки песочницы анализируют настройки; фактические "
+                            "доступы могут оставаться непроверенными.",
+                            classes="hint",
+                        )
+            with VerticalScroll(id="setup-output-scroll", classes="frame") as output:
+                output.border_title = brand.frame_title("Результат")
+                yield Static(_OUTPUT_HINT, id="setup-output", markup=False)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -262,13 +337,24 @@ class ProjectSetupScreen(Screen[Path | None]):
         existing = self.query("#directory-browser")
         if existing:
             existing.remove()
+            # An auto-height frame keeps its old height unless its layout is recomputed.
+            self.call_after_refresh(self._relayout)
             return
         start = Path(self.query_one("#project-path", Input).value).expanduser()
         root = start if start.is_dir() else Path.home()
-        self.query_one("#setup-scroll").mount(
+        self.query_one("#project-frame").mount(
             _DirectoryOnlyTree(root, id="directory-browser"),
             after=self.query_one("#target-status"),
         )
+
+    def _relayout(self) -> None:
+        for identifier in (
+            "project-frame",
+            "setup-left",
+            "setup-columns",
+            "setup-scroll",
+        ):
+            self.query_one("#" + identifier).refresh(layout=True)
 
     def _confirm_install(self, target: ProjectTarget) -> None:
         # The same confirmation form as the Harness section: command line and reason.
@@ -324,7 +410,9 @@ class ProjectSetupScreen(Screen[Path | None]):
 
     def _install(self, target: ProjectTarget, capability: str) -> None:
         self._set_busy(True)
-        self.query_one("#setup-output", Static).update("Устанавливается Harness…")
+        self.query_one("#setup-output", Static).update(
+            colorize_log("Устанавливается Harness…")
+        )
         entry = installation_entry(target, capability)
         argv = entry.cli_argv(target.repo)
         self._capability_value = capability
@@ -390,7 +478,7 @@ class ProjectSetupScreen(Screen[Path | None]):
 
     def _run(self, run: Callable[[], str], *, refresh: bool = False) -> None:
         self._set_busy(True)
-        self.query_one("#setup-output", Static).update("Выполняется…")
+        self.query_one("#setup-output", Static).update(colorize_log("Выполняется…"))
 
         def work() -> None:
             try:
@@ -403,7 +491,7 @@ class ProjectSetupScreen(Screen[Path | None]):
 
     def _finished(self, text: str, refresh: bool) -> None:
         self._set_busy(False)
-        self.query_one("#setup-output", Static).update(text)
+        self.query_one("#setup-output", Static).update(colorize_log(text))
         if refresh and self.target is not None:
             try:
                 self._inspected(inspect_target(str(self.target.repo)))

@@ -19,7 +19,6 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Footer,
-    Header,
     Input,
     Static,
     TabbedContent,
@@ -28,6 +27,8 @@ from textual.widgets import (
 )
 from textual.widgets.tree import TreeNode
 
+from ..chrome import TopBar
+from ..translate import Translated
 from .. import repo_map as console_repo_map
 from ..repo_map import RepoMapView
 from ..runner import CommandRunner, capturing_runner
@@ -46,14 +47,23 @@ _NO_MAP = "карты нет"
 def _panel(title: str, content: Static, *, id: str | None = None) -> VerticalScroll:
     """A scrolling panel in a titled frame, like the frames of the other sections."""
     panel = VerticalScroll(content, id=id, classes="map-panel")
-    panel.border_title = title
+    panel.border_title = brand.frame_title(title)
     return panel
 
 
-class BuildConfirmScreen(ModalScreen[bool]):
+class BuildConfirmScreen(Translated, ModalScreen[bool]):
     """Модальный экран подтверждения запуска построения карты Repo Map для коммита HEAD."""
 
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
+    DEFAULT_CSS = """
+    BuildConfirmScreen { align: center middle; }
+    BuildConfirmScreen #build-confirm {
+        width: 80%; max-width: 100; height: auto; padding: 0 1;
+        border: round $primary; border-title-color: $primary;
+    }
+    BuildConfirmScreen Static { height: auto; }
+    BuildConfirmScreen Horizontal { height: auto; }
+    """
 
     def __init__(self, commit: str) -> None:
         """Инициализирует экран подтверждения для указанного хэша коммита."""
@@ -62,7 +72,8 @@ class BuildConfirmScreen(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов окна подтверждения построения карты."""
-        with Vertical(id="build-confirm"):
+        with Vertical(id="build-confirm") as dialog:
+            dialog.border_title = brand.frame_title("Подтверждение")
             yield Static(
                 f"Построить Repo Map для HEAD {self.commit[:12]}?", markup=False
             )
@@ -70,7 +81,7 @@ class BuildConfirmScreen(ModalScreen[bool]):
                 console_repo_map.BUILD_WARNING, id="build-warning", markup=False
             )
             with Horizontal():
-                yield Button("Построить", id="confirm-build", variant="warning")
+                yield Button("Собрать", id="confirm-build", variant="warning")
                 yield Button("Отмена", id="cancel-build")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -82,7 +93,7 @@ class BuildConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RepoMapScreen(Screen[None]):
+class RepoMapScreen(Translated, Screen[None]):
     """Экран раздела Repo Map: визуализация дерева файлов, сигнатур, связей, хабов и диагностик."""
 
     BINDINGS = [
@@ -92,11 +103,9 @@ class RepoMapScreen(Screen[None]):
         Binding(EXPORT_JSON_BINDING_KEY, "export_json", "Экспорт в JSON"),
     ]
     DEFAULT_CSS = """
-    RepoMapScreen #repo-map-status {
-        height: auto; margin: 0 1; padding: 0 1;
-        border: round $primary 50%; border-title-color: $primary;
-    }
-    RepoMapScreen #repo-map-actions { height: auto; margin: 0 1; }
+    RepoMapScreen #repo-map-head { height: auto; }
+    RepoMapScreen #repo-map-status { height: auto; }
+    RepoMapScreen #repo-map-actions { height: auto; }
     RepoMapScreen #repo-map-tabs { height: 1fr; margin: 0 1; }
     RepoMapScreen .map-panel {
         height: 1fr; padding: 0 1;
@@ -140,14 +149,19 @@ class RepoMapScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов и вкладок экрана Repo Map."""
-        yield Header(icon=brand.MENU_ICON)
-        status = Static(self._status_text, id="repo-map-status", markup=False)
-        status.border_title = "Состояние"
-        yield status
-        with Horizontal(id="repo-map-actions"):
-            yield Button("Построить карту", id="build-map", disabled=self.head is None)
-            yield Button("Экспорт в Markdown", id="export-markdown")
-            yield Button("Экспорт в JSON", id="export-json")
+        yield TopBar("Главная › Repo Map")
+        with Vertical(id="repo-map-head", classes="frame") as head:
+            head.border_title = brand.frame_title("Состояние")
+            yield Static(self._status_text, id="repo-map-status", markup=False)
+            with Horizontal(id="repo-map-actions", classes="actions"):
+                yield Button(
+                    "Собрать карту",
+                    id="build-map",
+                    disabled=self.head is None,
+                    compact=True,
+                )
+                yield Button("Экспорт в Markdown", id="export-markdown", compact=True)
+                yield Button("Экспорт в JSON", id="export-json", compact=True)
         with TabbedContent(id="repo-map-tabs"):
             with TabPane("Сводка", id="tab-summary"):
                 yield _panel("Сводка", Static("", id="map-summary", markup=False))
@@ -158,7 +172,7 @@ class RepoMapScreen(Screen[None]):
                 yield Static("", id="search-status", markup=False)
                 with Horizontal(id="file-browser"):
                     tree: Tree[str] = Tree("карта", id="file-tree", classes="map-panel")
-                    tree.border_title = "Файлы"
+                    tree.border_title = brand.frame_title("Файлы")
                     yield tree
                     yield _panel(
                         "Связи",

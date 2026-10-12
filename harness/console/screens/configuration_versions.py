@@ -6,23 +6,30 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Select, Static
+from textual.widgets import Button, Footer, Select, Static
 
 from harness.configuration import Bundle, read_config_bundle
 from harness.configuration_store import ConfigurationStore, ConfigurationVersion
 from .commands import call_from_worker
+from .. import brand
+from ..chrome import TopBar
+from ..translate import Translated
+from ..logtext import colorize_diff
 from ..configuration import bundle_diff
 from .configuration import ConfirmConfiguration
 
 
-class ConfigurationVersionsScreen(Screen[None]):
+class ConfigurationVersionsScreen(Translated, Screen[None]):
     BINDINGS = [Binding("escape", "close", "Назад")]
     DEFAULT_CSS = """
+    ConfigurationVersionsScreen #versions-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
+    ConfigurationVersionsScreen Vertical.frame { height: auto; overflow: hidden hidden; }
     ConfigurationVersionsScreen .actions { height: auto; }
     ConfigurationVersionsScreen Static { height: auto; }
-    ConfigurationVersionsScreen VerticalScroll { height: 1fr; margin: 0 1; }
+    ConfigurationVersionsScreen #version-status { color: $text-muted; }
+    ConfigurationVersionsScreen #version-diff-scroll { height: auto; max-height: 24; }
     """
 
     def __init__(self, repo: Path) -> None:
@@ -36,27 +43,46 @@ class ConfigurationVersionsScreen(Screen[None]):
         self.versions: dict[str, ConfigurationVersion] = {}
 
     def compose(self) -> ComposeResult:
-        yield Header()
-        with VerticalScroll():
-            yield Static(
-                "Локальные версии конфигурации\nЦель: " + str(self.repo), markup=False
-            )
-            versions = self.store.versions()
-            self.versions = {v.id: v for v in versions}
-            yield Select(
-                [(_label(v), v.id) for v in versions],
-                value=versions[0].id if versions else Select.BLANK,
-                id="configuration-version",
-            )
-            yield Static(
-                "Выберите версию; удалённые в ней файлы будут удалены и при откате.",
-                id="version-diff",
-                markup=False,
-            )
-        with Horizontal(classes="actions"):
-            yield Button("Откатиться к версии", id="restore-version", disabled=True)
-            yield Button("Закрыть", id="close-versions")
-        yield Static("", id="version-status", markup=False)
+        yield TopBar("Главная › Настройка › Версии")
+        versions = self.store.versions()
+        self.versions = {v.id: v for v in versions}
+        with VerticalScroll(id="versions-scroll"):
+            with Vertical(id="versions-storage", classes="frame") as storage:
+                storage.border_title = brand.frame_title("Хранилище")
+                # Plain text: a path with spaces or square brackets must not be read as markup.
+                yield Static(
+                    f"Проект: {self.repo}\nВерсии: {self.store.root}",
+                    id="versions-path",
+                    markup=False,
+                )
+            with Vertical(id="versions-list", classes="frame") as listing:
+                listing.border_title = brand.frame_title("Версии")
+                if not versions:
+                    yield Static(
+                        "Сохранённых версий нет. Сохраните текущую конфигурацию "
+                        "в мастере настройки.",
+                        id="versions-empty",
+                        markup=False,
+                    )
+                yield Select(
+                    [(_label(v), v.id) for v in versions],
+                    value=versions[0].id if versions else Select.BLANK,
+                    prompt="Выберите версию",
+                    disabled=not versions,
+                    id="configuration-version",
+                )
+            with Vertical(id="versions-changes", classes="frame") as changes:
+                changes.border_title = brand.frame_title("Различия")
+                yield Static(
+                    "Выберите версию; удалённые в ней файлы будут удалены и при откате.",
+                    id="version-diff",
+                    markup=False,
+                )
+        with Vertical(id="versions-actions", classes="frame") as actions:
+            actions.border_title = brand.frame_title("Действия")
+            yield Static("", id="version-status", markup=False)
+            with Horizontal(classes="actions"):
+                yield Button("Восстановить версию", id="restore-version", disabled=True)
         yield Footer()
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -72,7 +98,9 @@ class ConfigurationVersionsScreen(Screen[None]):
             self.candidate = self.store.load(self.selected)
             diff = bundle_diff(self.expected, self.candidate, "active", "version")
             self.query_one("#version-diff", Static).update(
-                (diff or "Изменений нет") + self._compatibility_note(self.selected)
+                colorize_diff(
+                    (diff or "Изменений нет") + self._compatibility_note(self.selected)
+                )
             )
             self.query_one("#restore-version", Button).disabled = False
         except (OSError, ValueError) as exc:
@@ -94,9 +122,7 @@ class ConfigurationVersionsScreen(Screen[None]):
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "close-versions":
-            self.action_close()
-        elif (
+        if (
             event.button.id == "restore-version"
             and self.candidate is not None
             and not self.busy

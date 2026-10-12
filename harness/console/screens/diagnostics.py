@@ -1,6 +1,6 @@
-"""Экран Diagnostics: полный отчёт `harness health` и три действия — «Online checks» (аналог запуска
-`harness health --online`), «Apply fixes» (аналог запуска `harness health --fix`, применяющий только
-внутрипроцессные фиксеры FIXERS после явного подтверждения) и «Export» (экспорт отчёта в Markdown).
+"""Экран Diagnostics: полный отчёт `harness health` и три действия — «Онлайн» (аналог запуска
+`harness health --online`), «Исправить» (аналог запуска `harness health --fix`, применяющий только
+внутрипроцессные фиксеры FIXERS после явного подтверждения) и «Экспорт» (экспорт отчёта в Markdown).
 Каждое действие отображает эквивалент команды CLI, а сбор данных выполняется в фоновом потоке.
 
 Команды из блока «Как исправить» предназначены для ручного выполнения разработчиком и только отображаются
@@ -17,9 +17,12 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, Header, Static
+from textual.widgets import Button, Footer, Static
 
-from .. import brand
+from ..chrome import TopBar
+from ..translate import Translated
+from ..logtext import colorize_log
+from .. import brand, i18n
 from .. import data as console_data
 from ...health.model import Report
 from ..export import MarkdownDocument, MarkdownSection
@@ -27,7 +30,7 @@ from .commands import call_from_worker
 from .export import EXPORT_BINDING_KEY, export_document
 
 _STATUS_MARKERS = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skipped": "-"}
-_APPLY_LABEL = "Apply fixes"
+_APPLY_LABEL = "Исправить"
 _CONFIRM_LABEL = "Подтвердить фиксы"
 _MANUAL_NOTE = "Команды «Как исправить» пульт не выполняет — запустите их вручную."
 _RUNNING = "health выполняется…"
@@ -55,30 +58,26 @@ def render_report(report: Report) -> str:
     return "\n".join(lines)
 
 
-_MARKER_COLORS = {
-    "[OK]": brand.PALETTE["success"],
-    "[WARN]": brand.PALETTE["warning"],
-    "[FAIL]": brand.PALETTE["error"],
-}
+_FIXED_REPORT_LINES = ("Итого:", "Команды «Как исправить»", "Применённые фиксы:")
 
 
-def _styled_report(report: Report) -> Text:
-    """The same text as `render_report`, with status markers and remedies coloured on screen."""
-    styled = Text()
-    for index, line in enumerate(render_report(report).split("\n")):
-        if index:
-            styled.append("\n")
-        marker = next((m for m in _MARKER_COLORS if line.startswith(m + " ")), None)
-        if marker is not None:
-            styled.append(marker, style=f"bold {_MARKER_COLORS[marker]}")
-            styled.append(line[len(marker) :])
-        elif line.startswith("  -> "):
-            styled.append(line, style=brand.PALETTE["secondary"])
-        elif line.startswith("     ") or line.startswith("- "):
-            styled.append(line, style=brand.PALETTE["muted"])
-        else:
-            styled.append(line)
-    return styled
+def _translated_report(report: Report, language: str) -> str:
+    """`render_report` with only its own fixed lines translated; check messages are data."""
+    lines = []
+    for line in render_report(report).split("\n"):
+        if line.startswith(_FIXED_REPORT_LINES):
+            line = i18n.tr_text(language, line)
+        elif line.startswith("  -> Как исправить:"):
+            line = line.replace(
+                "Как исправить:", i18n.tr_text(language, "Как исправить:"), 1
+            )
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _styled_report(report: Report, language: str = "ru") -> Text:
+    """The same text as `render_report`, with statuses, counters and remedies coloured on screen."""
+    return colorize_log(_translated_report(report, language))
 
 
 def health_document(report: Report) -> MarkdownDocument:
@@ -112,15 +111,15 @@ class _ApplyLocalFixes(Protocol):
         ...
 
 
-class DiagnosticsScreen(Screen[None]):
+class DiagnosticsScreen(Translated, Screen[None]):
     """Экран диагностики состояния репозитория с возможностью запуска онлайн-проверок и применения исправлений."""
 
     DEFAULT_CSS = """
     DiagnosticsScreen #diagnostics-scroll { height: 1fr; }
     DiagnosticsScreen #diagnostics-actions { height: auto; }
     DiagnosticsScreen .action-row { height: auto; }
-    DiagnosticsScreen .action-row Button { width: 21; }
-    DiagnosticsScreen .action-cli { width: 1fr; padding: 1 0 0 2; color: $text-muted; }
+    DiagnosticsScreen .action-row Button { width: 20; }
+    DiagnosticsScreen .action-cli { width: 1fr; padding: 0 0 0 2; color: $text-muted; }
     """
 
     BINDINGS = [
@@ -145,14 +144,14 @@ class DiagnosticsScreen(Screen[None]):
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов экрана диагностики: отчёт и действия в рамках."""
-        yield Header(icon=brand.MENU_ICON)
+        yield TopBar("Главная › Диагностика")
         with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
-            report.border_title = "Health-отчёт"
+            report.border_title = brand.frame_title("Health-отчёт")
             yield Static(_RUNNING, id="diagnostics-report", markup=False)
         with Vertical(id="diagnostics-actions", classes="frame") as actions:
-            actions.border_title = "Действия"
+            actions.border_title = brand.frame_title("Действия")
             with Horizontal(classes="action-row"):
-                yield Button("Offline checks", id="offline-checks")
+                yield Button("Офлайн", id="offline-checks", compact=True)
                 yield Static(
                     f"$ {console_data.health_cli_line(self.repo)}",
                     id="offline-checks-cli",
@@ -160,7 +159,7 @@ class DiagnosticsScreen(Screen[None]):
                     markup=False,
                 )
             with Horizontal(classes="action-row"):
-                yield Button("Online checks", id="online-checks")
+                yield Button("Онлайн", id="online-checks", compact=True)
                 yield Static(
                     f"$ {console_data.health_cli_line(self.repo, '--online')}",
                     id="online-checks-cli",
@@ -168,7 +167,7 @@ class DiagnosticsScreen(Screen[None]):
                     markup=False,
                 )
             with Horizontal(classes="action-row"):
-                yield Button(_APPLY_LABEL, id="apply-fixes")
+                yield Button(_APPLY_LABEL, id="apply-fixes", compact=True)
                 yield Static(
                     f"$ {console_data.health_cli_line(self.repo, '--fix')}",
                     id="apply-fixes-cli",
@@ -176,7 +175,7 @@ class DiagnosticsScreen(Screen[None]):
                     markup=False,
                 )
             with Horizontal(classes="action-row"):
-                yield Button("Export", id="export")
+                yield Button("Экспорт", id="export", compact=True)
         yield Footer()
 
     def on_mount(self) -> None:
@@ -220,6 +219,13 @@ class DiagnosticsScreen(Screen[None]):
         self._confirming_apply = False
         self._apply_button().label = _APPLY_LABEL
 
+    def sync_language(self) -> None:
+        """Show the finished report in the current language."""
+        if self._report is not None:
+            self.query_one("#diagnostics-report", Static).update(
+                _styled_report(self._report, getattr(self.app, "language", "ru"))
+            )
+
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
         self.workers.cancel_all()
@@ -248,7 +254,9 @@ class DiagnosticsScreen(Screen[None]):
     def _show(self, report: Report) -> None:
         """Отображает готовый отчёт health и обновляет строку эквивалента CLI на экране."""
         self._report = report
-        self.query_one("#diagnostics-report", Static).update(_styled_report(report))
+        self.query_one("#diagnostics-report", Static).update(
+            _styled_report(report, getattr(self.app, "language", "ru"))
+        )
         flags = ("--online", "--fix") if report.online else ("--fix",)
         self.query_one("#apply-fixes-cli", Static).update(
             f"$ {console_data.health_cli_line(self.repo, *flags)}"

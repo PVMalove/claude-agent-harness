@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import cast
 import json
 from pathlib import Path
 from threading import Event
@@ -45,6 +46,22 @@ class Host(App[None]):
 
     def on_mount(self) -> None:
         self.push_screen(ConfigurationScreen(self.repo))
+
+
+def test_configuration_choice_groups_editing_and_saved_versions(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 36)):
+            editing = app.screen.query_one("#configuration-editing")
+            versions = app.screen.query_one("#configuration-versions")
+            assert editing.query_one("#configure-project", Button)
+            assert editing.query_one("#configure-orchestration", Button)
+            assert editing.query_one("#configure-both", Button)
+            assert versions.query_one("#version-description")
+            assert versions.query_one("#save-current-version", Button)
+            assert versions.query_one("#open-versions", Button)
+
+    asyncio.run(scenario())
 
 
 def test_wizard_choice_changes_only_a_draft_until_apply(tmp_path: Path) -> None:
@@ -239,7 +256,7 @@ def test_dashboard_refreshes_after_applied_configuration_is_closed(
         app = DashboardHost()
         async with app.run_test(size=(120, 48)) as pilot:
             menu = app.screen.query_one("#section-menu", ListView)
-            menu.index = SECTIONS.index("Настройка конфигурации")
+            menu.index = SECTIONS.index("Configuration")
             await pilot.press("enter")
             await pilot.pause()
             await pilot.click("#configure-project")
@@ -253,7 +270,7 @@ def test_dashboard_refreshes_after_applied_configuration_is_closed(
             await app.workers.wait_for_complete()
             await pilot.pause()
             # Successful apply reloads the draft; closing it returns to the dashboard.
-            await pilot.click("#cancel-config")
+            await pilot.press("escape")
             await pilot.pause()
             await app.workers.wait_for_complete()
             await pilot.pause()
@@ -391,8 +408,14 @@ def test_current_set_can_be_saved_as_a_version_from_the_menu(tmp_path: Path) -> 
             await pilot.pause()
 
     asyncio.run(scenario())
-    assert len(ConfigurationStore(tmp_path).versions()) == 1
+    store = ConfigurationStore(tmp_path)
+    assert len(store.versions()) == 1
     assert (tmp_path / ".harness/project.json").read_bytes() == before
+    # The saved version sits inside the project's own store, under its own directory.
+    assert store.root == (tmp_path / ".harness/config_versions").resolve()
+    assert [p.name for p in store.root.iterdir() if p.is_dir()] == [
+        store.versions()[0].id
+    ]
 
 
 def test_errors_link_to_steps_and_cli_status_is_shown_without_a_request(
@@ -428,3 +451,100 @@ def test_errors_link_to_steps_and_cli_status_is_shown_without_a_request(
             assert len(app.screen.query("#problem-jump")) == 1
 
     asyncio.run(scenario())
+
+
+def test_every_phase_keeps_its_content_in_frames(tmp_path: Path) -> None:
+    from textual.widgets import Static
+
+    installed_project(tmp_path)
+
+    async def scenario() -> dict[str, list[str]]:
+        phases: dict[str, list[str]] = {}
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+
+            def titles() -> list[str]:
+                return [
+                    str(frame.border_title).strip()
+                    for frame in app.screen.query(".frame")
+                    if frame.border_title and frame.display
+                ]
+
+            phases["choose"] = titles()
+            await pilot.click("#configure-project")
+            await pilot.pause()
+            phases["editing"] = titles()
+            error = app.screen.query_one("#config-error", Static)
+            assert not error.display  # an empty message takes no room
+            await pilot.click("#review-config")
+            await pilot.pause()
+            phases["review"] = titles()
+        return phases
+
+    phases = asyncio.run(scenario())
+    assert phases["choose"] == [
+        "Цель",
+        "Редактирование конфигурации",
+        "Сохранённые версии",
+    ]
+    assert phases["editing"] == ["Цель", "Шаг", "Параметр", "ИИ-подсказки", "Действия"]
+    assert phases["review"] == [
+        "Цель",
+        "Проверка",
+        "Различия",
+        "Итоговые файлы",
+        "Версия",
+        "Действия",
+    ]
+
+
+def test_a_message_appears_in_the_actions_frame_and_hides_again(tmp_path: Path) -> None:
+    from textual.widgets import Static
+
+    installed_project(tmp_path)
+
+    async def scenario() -> tuple[bool, bool, bool]:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await pilot.pause()
+            frame = app.screen.query_one("#configuration-actions")
+            hidden_at_start = not frame.display
+            cast(ConfigurationScreen, app.screen)._set_message("Ошибка поля")
+            await pilot.pause()
+            shown = frame.display
+            assert (
+                str(app.screen.query_one("#config-error", Static).content)
+                == "Ошибка поля"
+            )
+            cast(ConfigurationScreen, app.screen)._set_message("")
+            await pilot.pause()
+            return hidden_at_start, shown, not frame.display
+
+    assert asyncio.run(scenario()) == (True, True, True)
+
+
+def test_the_confirmation_dialog_is_framed_and_cancel_changes_nothing(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+
+    before = installed_project(tmp_path)
+    answers: list[bool | None] = []
+
+    class ConfirmHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(ConfirmConfiguration("Перезаписать?"), answers.append)
+
+    async def scenario() -> str:
+        app = ConfirmHost()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            title = str(app.screen.query_one("Vertical").border_title).strip()
+            await pilot.click("#cancel")
+            await pilot.pause()
+            return title
+
+    assert asyncio.run(scenario()) == "Подтверждение"
+    assert answers == [False]
+    assert (tmp_path / ".harness/project.json").read_bytes() == before

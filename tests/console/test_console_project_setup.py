@@ -26,7 +26,7 @@ def test_selecting_another_project_replaces_the_dashboard_context(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#open-project")
+            await pilot.press("p")
             app.screen.query_one("#project-path", Input).value = str(second)
             await pilot.click("#inspect-project")
             await app.workers.wait_for_complete()
@@ -68,7 +68,7 @@ def test_install_runs_the_distribution_in_target_and_activates_it(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path, command_runner=runner)
         async with app.run_test(size=(140, 60)) as pilot:
-            await pilot.click("#open-project")
+            await pilot.press("p")
             app.screen.query_one("#project-path", Input).value = str(second)
             await pilot.click("#inspect-project")
             await app.workers.wait_for_complete()
@@ -124,7 +124,7 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#open-project")
+            await pilot.press("p")
             screen = app.screen
             assert "Выбор проекта" in str(
                 screen.query_one("#setup-stage", Static).render()
@@ -241,7 +241,7 @@ def test_online_check_and_local_fixes_target_the_selected_project(
     async def scenario() -> str:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.click("#open-project")
+            await pilot.press("p")
             app.screen.query_one("#project-path", Input).value = str(second)
             await pilot.click("#inspect-project")
             await app.workers.wait_for_complete()

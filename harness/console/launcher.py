@@ -15,7 +15,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, NoReturn, Sequence
 
 from .pin import TEXTUAL_PIN
 from .runner import CommandRunner, default_runner
@@ -27,6 +27,14 @@ RELAUNCH_ENV = "HARNESS_CONSOLE_RELAUNCHED"
 STARTED_ENV = "HARNESS_CONSOLE_STARTED_FILE"
 
 BIN_HARNESS_PATH = Path(__file__).resolve().parent.parent / "bin" / "harness.py"
+
+
+def restart_console(repo: Path) -> NoReturn:
+    """Reload console code in the existing isolated Python, retaining the selected project."""
+    os.execv(
+        sys.executable,
+        [sys.executable, str(BIN_HARNESS_PATH), "console", str(repo)],
+    )
 
 
 def find_uv() -> str | None:

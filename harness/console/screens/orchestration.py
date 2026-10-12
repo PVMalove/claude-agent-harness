@@ -10,15 +10,35 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Checkbox, Input, ListItem, ListView, Static, TextArea
 
+from .. import brand, i18n
 from .. import reports as console_reports
 from .. import stats as console_stats
 from ..coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand, process_argv
+from ..logtext import colorize_overview
 from ..runner import CommandRunner, capturing_runner
-from .commands import CommandForm, CommandMenuScreen
+from ..widgets import CheckBox
+from .commands import CommandForm, CommandMenuScreen, describe_command
+
+_GROUP_TITLES = {
+    "batch": "Batch",
+    "decide": "Решения",
+    "packet": "Решения",
+    "dispatch": "Dispatch",
+    "qa": "QA",
+    "risk": "Риск",
+    "context-package": "Context Package",
+    "ledger": "Ledger",
+}
+_GROUP_ORDER = list(dict.fromkeys(_GROUP_TITLES.values()))
+
+
+def _group_title(group: str) -> str:
+    return _GROUP_TITLES.get(group, group)
 
 
 class CoordinatorCommandFormScreen(CommandForm):
@@ -34,23 +54,25 @@ class CoordinatorCommandFormScreen(CommandForm):
         """Формирует структуру полей ввода формы на основе метаданных команды координатора."""
         entry = self.entry
         with Vertical(id="command-form"):
-            yield from self.form_header(
-                entry.title, entry.cli_line(self.repo), entry.reversibility
-            )
-            for field in entry.fields:
-                if not field.takes_value:
-                    yield Checkbox(field.flag, id=f"input-{field.dest}")
-                    continue
-                label = (
-                    field.flag
-                    if not field.choices
-                    else f"{field.flag} ({'/'.join(field.choices)})"
+            with VerticalScroll(id="command-form-body"):
+                yield from self.form_header(
+                    entry.title, entry.cli_line(self.repo), entry.reversibility
                 )
-                yield Static(label, classes="field-label")
-                if field.repeatable:
-                    yield TextArea(id=f"input-{field.dest}")
-                else:
-                    yield Input(value=field.default or "", id=f"input-{field.dest}")
+                for field in entry.fields:
+                    if not field.takes_value:
+                        yield CheckBox(field.flag, id=f"input-{field.dest}")
+                        continue
+                    label = (
+                        field.flag
+                        if not field.choices
+                        else f"{field.flag} ({'/'.join(field.choices)})"
+                    )
+                    yield Static(label, classes="field-label")
+                    if field.repeatable:
+                        yield TextArea(id=f"input-{field.dest}")
+                    else:
+                        yield Input(value=field.default or "", id=f"input-{field.dest}")
+            # Outside the scrolling body: Run and the error stay visible however long the form is.
             yield from self.form_buttons(entry.reversibility)
 
     def _submit(self) -> None:
@@ -87,6 +109,8 @@ class OrchestrationScreen(CommandMenuScreen):
     """Экран раздела Orchestration: статистика пайплайна, история batch с фильтром по состоянию
     (выбор batch открывает его хронологию) и список команд координатора."""
 
+    CRUMB = "Оркестрация"
+
     DEFAULT_CSS = """
     OrchestrationScreen #pipeline-history { height: 11; max-height: 40%; margin: 0 1; }
     OrchestrationScreen #state-filter { width: 32; height: 100%; border-title-color: $primary; }
@@ -116,8 +140,14 @@ class OrchestrationScreen(CommandMenuScreen):
             text = f"Оркестрация: {view.unavailable}"
         else:
             text = console_stats.pipeline_stats_text(console_stats.pipeline_stats(view))
-        panel = Static(text, id="pipeline-stats", classes="overview", markup=False)
-        panel.border_title = "Состояние и статистика"
+        panel = Static(
+            colorize_overview(text),
+            id="pipeline-stats",
+            classes="overview",
+            markup=False,
+        )
+        panel.border_title = brand.frame_title("Состояние и статистика")
+        panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
         if view.unavailable:
             return
@@ -129,10 +159,10 @@ class OrchestrationScreen(CommandMenuScreen):
                 ),
                 id="state-filter",
             )
-            states.border_title = "Состояния"
+            states.border_title = brand.frame_title("Состояния")
             yield states
             history = ListView(id="batch-history")
-            history.border_title = "История пайплайна"
+            history.border_title = brand.frame_title("История пайплайна")
             yield history
 
     def on_mount(self) -> None:
@@ -165,14 +195,35 @@ class OrchestrationScreen(CommandMenuScreen):
             self._show_batches(event.item.name)
 
     def menu_items(self) -> Sequence[tuple[str, str]]:
-        """Возвращает список элементов меню команд координатора с группой, названием и строкой CLI."""
+        """Команды координатора по группам; необратимые отмечены ⚠."""
+        ordered = sorted(
+            self._entries.values(),
+            key=lambda entry: _GROUP_ORDER.index(_group_title(entry.group)),
+        )
         return [
             (
                 entry.key,
-                f"[{entry.group}] {entry.title}\n  $ {entry.cli_line(self.repo)}",
+                ("⚠ " if entry.needs_confirmation else "  ")
+                + i18n.tr(self._language, entry.title),
             )
-            for entry in self._entries.values()
+            for entry in ordered
         ]
+
+    def menu_group(self, key: str) -> str:
+        return _group_title(self._entries[key].group)
+
+    def menu_detail(self, key: str) -> Text:
+        entry = self._entries[key]
+        return describe_command(
+            i18n.tr(self._language, entry.title),
+            entry.reversibility,
+            self.display_cli(entry.cli_line(self.repo)),
+            [field.dest for field in entry.fields],
+            language=self._language,
+        )
+
+    def menu_cli_line(self, key: str) -> str:
+        return self._entries[key].cli_line(self.repo)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Выбор состояния показывает его batch, выбор batch открывает хронологию, выбор команды
