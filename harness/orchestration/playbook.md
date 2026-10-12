@@ -912,8 +912,6 @@ For the high-risk triggers in the `code-review` manifest, Standards and Spec are
 read-only reports. They must both be present before the coordinator accepts the batch; one combined
 rating cannot replace either report.
 
-Use this shape so missing proof is visible:
-
 Each `checks_run` entry uses `pass`, `fail` or `not_run` as its canonical `result`.
 `passed` is equivalent to `pass`; the legacy spelling `not-run` is equivalent to `not_run`.
 New submissions store canonical results. Historical reports accept these aliases without rewriting
@@ -926,6 +924,8 @@ correct the staging file and submit it again for the same dispatch. Pending repo
 again before a decision, so older reports with unknown results are also refused. Do not rewrite
 immutable evidence; recover an already recorded report or stopped batch through the coordinator's
 existing human-approved recovery workflow.
+
+Use this shape so missing proof is visible:
 
 ```markdown
 # Completion report: <dispatch-id>
