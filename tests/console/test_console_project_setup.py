@@ -9,7 +9,7 @@ import pytest
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from textual.widgets import Input, RadioButton, RadioSet, Static
+from textual.widgets import Button, Input, RadioButton, RadioSet, Static
 
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
@@ -277,3 +277,36 @@ def test_online_check_and_local_fixes_target_the_selected_project(
     assert ("collect", second.resolve(), True) in calls
     assert ("fix", second.resolve(), False) in calls
     assert all(repo == second.resolve() for _, repo, _ in calls)
+
+
+def test_the_actions_are_disabled_while_an_operation_runs(tmp_path: Path) -> None:
+    second = tmp_path / "backend"
+    second.mkdir()
+    subprocess.run(["git", "init", "-q", str(second)], check=True)
+
+    async def scenario() -> tuple[list[bool], list[bool]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.press("p")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
+            screen = app.screen
+            assert isinstance(screen, ProjectSetupScreen)
+            screen.query_one("#project-path", Input).value = str(second)
+            await press(pilot, "#inspect-project")
+            # The local diagnostics start by themselves: wait until they are done.
+            await wait_until(
+                pilot,
+                lambda: not screen.busy
+                and "Итого" in str(screen.query_one("#setup-output", Static).render()),
+            )
+            names = ("inspect-project", "activate-project", "install-project")
+            idle = [screen.query_one("#" + n, Button).disabled for n in names]
+            screen._set_busy(True)
+            busy = [screen.query_one("#" + n, Button).disabled for n in names]
+            screen._set_busy(False)
+            assert [screen.query_one("#" + n, Button).disabled for n in names] == idle
+            return idle, busy
+
+    idle, busy = asyncio.run(scenario())
+    assert idle == [False, False, False]
+    assert busy == [True, True, True]

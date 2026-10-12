@@ -132,6 +132,15 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
         self.busy = value
         for identifier in ("project-path", "capability", "browse-project"):
             self.query_one("#" + identifier).disabled = value
+        # A press during an operation is ignored, so the actions look it: disabled until it ends.
+        self.query_one("#inspect-project", Button).disabled = value
+        if value:
+            for name in _AFTER_INSPECT:
+                self.query_one("#" + name, Button).disabled = True
+        elif self.target is not None:
+            for name in _AFTER_INSPECT:
+                self.query_one("#" + name, Button).disabled = False
+            self._show_plan()
 
     def _set_stage(self, stage: int) -> None:
         self.stage = stage
