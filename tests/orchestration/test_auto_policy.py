@@ -1095,6 +1095,39 @@ def test_a_review_axis_that_names_blockers_is_not_accepted(axis: str) -> None:
     assert obstacles == ["a review axis names blockers"]
 
 
+@pytest.mark.parametrize(
+    ("role", "result", "accepted"),
+    [
+        ("developer", "pass", True),
+        ("developer", "fail", False),
+        ("developer", "not-run", False),
+        ("developer", "not_run", False),
+        ("developer", "passed", True),
+        ("developer", "not_run_architect_read_only", False),
+        ("architect", "not_run_architect_read_only", True),
+        ("code-review", "not_run_architect_read_only", False),
+    ],
+)
+def test_auto_accept_paths_agree_on_check_success(
+    role: str, result: str, accepted: bool
+) -> None:
+    report = _clean(
+        role,
+        changed_files=[],
+        checks_run=[{"command": "pytest", "result": result, "evidence": "ok"}],
+    )
+    brief = {"role": role, "purpose": "work", "write_paths": ["**"]}
+    policy = decisions._auto_accept_policy(
+        {"approval_policy": "auto"}, {"approval_policy": "auto"}, brief, report
+    )
+    obstacles = auto_policy.accept_obstacles(
+        role, report, brief, scope_warnings=[], block_bypass=False
+    )
+
+    assert policy == ("auto" if accepted else None)
+    assert obstacles == ([] if accepted else [f"a check did not pass ({result})"])
+
+
 def test_a_clean_review_without_blockers_is_still_accepted() -> None:
     report = _clean("code-review", review=_axes("clean", []))
     assert (

@@ -23,6 +23,7 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
+from .core.check_results import canonical_check_result
 from .core.config import _execution_policy, _qa_preparation_commands
 from .core.constants import (
     QA_NOT_RUN_RESULT,
@@ -498,9 +499,12 @@ def _qa_report(
     Without ``stages`` (a verification-only configuration) it is the historical report. With them,
     the failing stage decides the outcome: a failed gate or a confirmed project-file defect is a
     ``failed`` report for the developer; an infrastructure or unknown preparation failure is a
-    ``blocked`` one, whose ``checks_run`` records the commands never reached as ``not-run`` rather
+    ``blocked`` one, whose ``checks_run`` records the commands never reached as ``not_run`` rather
     than as failed code checks.
     """
+    checks = [
+        {**check, "result": canonical_check_result(check["result"])} for check in checks
+    ]
     failed = any(check["result"] == "fail" for check in checks)
     reference = f"full sanitised output: {artifact.as_posix()} (sha256:{checksum})"
     report: JsonObject = {

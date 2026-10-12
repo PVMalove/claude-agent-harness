@@ -82,7 +82,7 @@ In this table and the Recovery route table, an operational reason is one of thes
 **QA preparation failures.** When the project declares `qa_preparation`, the QA report carries `qa_stages`
 (per-stage command, result, exit code, sanitised diagnostics, `failed_stage`, `code_checks_started`
 and, for a failed preparation, a `diagnosis`). A failed preparation stops the run before any gate
-command: the gate commands are recorded as `not-run`, never as failed checks. Only after that failure
+command: the gate commands are recorded as `not_run`, never as failed checks. Only after that failure
 the runner runs the project's `qa_environment_probes` and `qa_project_file_checks` in the same
 checkout, as independent facts recorded as `environment-probe` and `project-file-check` stages.
 Neither an exit code nor a log keyword decides a category alone, and the preparation stage alone
@@ -884,7 +884,7 @@ The report must include:
   `diagnostics` on a failed one; `stage` is `preparation`, `environment-probe`, `project-file-check`
   or `gate`), `failed_stage` (`preparation`, `gate` or `null`), `code_checks_started` (`started`,
   `not_started` or `unknown`) and, for a failed preparation, a `diagnosis` (`category`, `signals`,
-  `basis`). A gate command the run never reached has the `checks_run` result `not-run`; it is
+  `basis`). A gate command the run never reached has the `checks_run` result `not_run`; it is
   neither a pass nor a failed code check. A project that does not declare `qa_preparation` keeps the
   earlier report shape without `qa_stages`;
 - for a role a tool blocked: `outcome: blocked` and `tooling_blocker`, exactly the non-empty strings
@@ -912,6 +912,19 @@ For the high-risk triggers in the `code-review` manifest, Standards and Spec are
 read-only reports. They must both be present before the coordinator accepts the batch; one combined
 rating cannot replace either report.
 
+Each `checks_run` entry uses `pass`, `fail` or `not_run` as its canonical `result`.
+`passed` is equivalent to `pass`; the legacy spelling `not-run` is equivalent to `not_run`.
+New submissions store canonical results. Historical reports accept these aliases without rewriting
+immutable evidence, and automatic acceptance treats `pass` and `passed` as the same success.
+Only an architect may use `not_run_architect_read_only`, for compatibility with older briefs
+that approved verification commands. An architect work brief with no verification commands
+still reports `checks_run: []`. Neither `fail` nor `not_run` proves a successful check.
+Submission rejects unknown values with a remedy before recording the report;
+correct the staging file and submit it again for the same dispatch. Pending reports are validated
+again before a decision, so older reports with unknown results are also refused. Do not rewrite
+immutable evidence; recover an already recorded report or stopped batch through the coordinator's
+existing human-approved recovery workflow.
+
 Use this shape so missing proof is visible:
 
 ```markdown
@@ -922,7 +935,7 @@ Use this shape so missing proof is visible:
 - Commit SHA: <sha|not applicable — read-only role>
 - Changed files: <exact paths|none>
 - Checks run:
-  - `<exact command>` — <pass|fail>, <evidence>
+  - `<exact command>` — <pass|fail|not_run>, <evidence>
 - Risks: <residual risks|none>
 - Blockers: <blockers|none>
 - Next coordinator action: <accept, block, fail, or create a new dispatch>

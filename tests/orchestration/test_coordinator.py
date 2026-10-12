@@ -2234,6 +2234,175 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._submit(brief["dispatch_id"], self._base_report(brief, "architect"))
         self._decide(batch_id, "accept")
 
+    def test_invalid_check_result_is_rejected_before_recording_and_can_be_corrected(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("check-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+        )
+        before = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file()
+        }
+
+        for result in (
+            "failed",
+            "PASS",
+            " pass ",
+            "unknown",
+            "not_run_architect_read_only",
+        ):
+            with self.subTest(result=result):
+                report["checks_run"] = self._checks(brief, result)
+                with self.assertRaises(coordinator.CoordinatorError) as caught:
+                    self._submit(brief["dispatch_id"], report)
+
+                self.assertIn("checks_run[0].result", caught.exception.message)
+                self.assertIn(repr(result), caught.exception.message)
+                self.assertIn(
+                    brief["verification_commands"][0], caught.exception.message
+                )
+                self.assertIn("pass", caught.exception.remedy)
+                self.assertIn("fail", caught.exception.remedy)
+                self.assertIn("not_run", caught.exception.remedy)
+                self.assertNotIn("not_run_architect_read_only", caught.exception.remedy)
+                self.assertEqual(
+                    before,
+                    {
+                        path: path.read_bytes()
+                        for path in self._records().rglob("*")
+                        if path.is_file()
+                    },
+                )
+        report["checks_run"] = self._checks(brief, "pass")
+        submitted = self._submit(brief["dispatch_id"], report)
+        self.assertEqual(submitted["state"], "reported")
+        recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(recorded["checks_run"], self._checks(brief, "pass"))
+
+    def test_correcting_an_invalid_check_result_keeps_auto_policy_active(self) -> None:
+        self._patch_config(approval_policy="auto")
+        batch = self._create_batch()
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
+        brief = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("auto-check-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
+        )
+        before = self._batch_record(batch["batch_id"])
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._submit(developer_id, report)
+
+        self.assertIn("checks_run[0].result", caught.exception.message)
+        self.assertEqual(self._batch_record(batch["batch_id"]), before)
+        for suffix in ("json", "md"):
+            self.assertFalse(
+                (self._records() / "reports" / f"{developer_id}.{suffix}").exists()
+            )
+        report["checks_run"] = self._checks(brief, "passed")
+        submitted = self._submit(developer_id, report)
+        self.assertTrue(submitted["auto_accepted"])
+        recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(recorded["checks_run"], self._checks(brief, "pass"))
+        stored = self._batch_record(batch["batch_id"])
+        self.assertNotIn("auto_stop", stored)
+        self.assertNotIn("needs_attention", stored)
+        self.assertEqual(stored["dispatches"][1]["decision"]["decision"], "accept")
+        self.assertIn(stored["next_action"], {"code-review", "qa"})
+
+    def test_manual_accept_rejects_a_legacy_invalid_check_result(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        candidate, changed = self._developer_commit("legacy-check-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
+        )
+        # Stage historical evidence with its normal digest, as if submitted before #669.
+        self._stage_report(
+            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+        )
+        before = {
+            path: path.read_bytes()
+            for path in self._records().rglob("*")
+            if path.is_file()
+        }
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            self._decide(batch["batch_id"], "accept")
+
+        self.assertIn("checks_run[0].result", caught.exception.message)
+        self.assertIn("unknown", caught.exception.message)
+        self.assertIn("not_run", caught.exception.remedy)
+        self.assertEqual(
+            before,
+            {
+                path: path.read_bytes()
+                for path in self._records().rglob("*")
+                if path.is_file()
+            },
+        )
+
+    def _assert_skipped_check_is_recorded(self, result: str) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit("skipped-check-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, result)
+        )
+        submitted = self._submit(brief["dispatch_id"], report)
+        recorded = json.loads(Path(submitted["report"]).read_text(encoding="utf-8"))
+        self.assertEqual(recorded["checks_run"], self._checks(brief, "not_run"))
+        self.assertFalse(submitted.get("auto_accepted", False))
+
+    def test_not_run_is_recorded_as_a_skipped_check(self) -> None:
+        self._assert_skipped_check_is_recorded("not_run")
+
+    def test_legacy_not_run_spelling_is_recorded_canonically(self) -> None:
+        self._assert_skipped_check_is_recorded("not-run")
+
+    def test_manual_accept_preserves_a_legacy_passed_report(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        candidate, changed = self._developer_commit("legacy-passed-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+        )
+        self._stage_report(
+            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+        )
+        paths = [
+            self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
+            for suffix in ("json", "md")
+        ]
+        before = {path: path.read_bytes() for path in paths}
+
+        self._decide(batch["batch_id"], "accept")
+
+        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        stored = self._batch_record(batch["batch_id"])
+        self.assertEqual(stored["dispatches"][-1]["decision"]["decision"], "accept")
+
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""
         batch = self._create_batch()
@@ -3171,7 +3340,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             outcome="blocked",
             output="stopped early because risk trigger requires gate",
             blockers="missing mandatory risk review gate",
-            checks_run=self._checks(developer, "not_run"),
+            checks_run=self._checks(developer, "not-run"),
             commit_map=[],
         )
         submitted = self._submit(developer["dispatch_id"], report)
@@ -3235,7 +3404,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             outcome="blocked",
             output="wrong checkout commit reported",
             blockers="some blocker",
-            checks_run=self._checks(developer, "not_run"),
+            checks_run=self._checks(developer, "not-run"),
             commit_map=[],
         )
         with self.assertRaises(coordinator.CoordinatorError) as caught:
