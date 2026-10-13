@@ -387,6 +387,7 @@ def test_rejected_zone_refuses_the_run(project: Path) -> None:
 # --- argv, environment, rendering -----------------------------------------------------------
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bwrap runs only on Linux")
 def test_sandbox_argv_is_the_adr_flag_set() -> None:
     argv = runner.sandbox_argv(
         "/usr/bin/bwrap",
@@ -420,6 +421,7 @@ def test_command_for_replaces_only_the_placeholder_element() -> None:
     assert runner.command_for(command, "t::a") == ["pytest", "x{test_id}", "t::a", "-q"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bwrap runs only on Linux")
 def test_sandbox_environment_is_an_allowlist() -> None:
     env = runner.sandbox_environment(
         Path("/run/cache"),
@@ -504,7 +506,7 @@ def test_host_without_isolation_never_launches(
 def test_masked_checkout_never_launches(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(runner, "MASKED_ROOTS", (str(project.parent),))
+    monkeypatch.setattr(runner, "MASKED_ROOTS", (project.parent.as_posix(),))
     launcher = FakeLauncher([])
     outcome = _run(project, "direct", launcher)
     assert (outcome.reason, outcome.detail) == (
@@ -528,7 +530,7 @@ def test_masked_run_directory_never_launches(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runs = project / ".harness" / ".sandboxes"
-    monkeypatch.setattr(runner, "MASKED_ROOTS", (str(runs),))
+    monkeypatch.setattr(runner, "MASKED_ROOTS", (runs.as_posix(),))
     outcome = _run(project, "direct", FakeLauncher([]))
     assert (outcome.reason, outcome.detail) == (
         "isolation_unavailable",
@@ -779,6 +781,7 @@ def _plain(code: str) -> Callable[[int], list[str]]:
 REPORT_CHILD = "import os, sys; os.write(int(sys.argv[1]), b'{\"child-pid\": 2}\\n'); "
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="pass_fds is POSIX-only")
 def test_launch_streams_output_and_status(project: Path) -> None:
     log = project / "log.txt"
     result = runner.launch(
@@ -791,6 +794,7 @@ def test_launch_streams_output_and_status(project: Path) -> None:
     assert log.read_text(encoding="utf-8").strip() == "hello"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="pass_fds is POSIX-only")
 def test_launch_without_child_pid_is_not_started(project: Path) -> None:
     result = runner.launch(
         _plain("import os, sys; os.write(int(sys.argv[1]), b'not json\\n{}\\n')"),
@@ -801,6 +805,7 @@ def test_launch_without_child_pid_is_not_started(project: Path) -> None:
     assert result == runner.Launch(started=False, exit_code=0)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="pass_fds is POSIX-only")
 def test_launch_caps_the_log(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner, "LOG_LIMIT_BYTES", 100)
     log = project / "log.txt"
@@ -813,6 +818,7 @@ def test_launch_caps_the_log(project: Path, monkeypatch: pytest.MonkeyPatch) -> 
     assert log.read_bytes() == b"x" * 100 + runner.LOG_TRUNCATED
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="pass_fds is POSIX-only")
 def test_launch_kills_on_timeout(project: Path) -> None:
     result = runner.launch(
         _plain(REPORT_CHILD + "import time; time.sleep(60)"),
@@ -823,6 +829,7 @@ def test_launch_kills_on_timeout(project: Path) -> None:
     assert result == runner.Launch(started=True, exit_code=None, timed_out=True)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="pass_fds is POSIX-only")
 def test_launch_failures_are_not_started(project: Path) -> None:
     missing = runner.launch(
         lambda fd: [str(project / "no-such-program")],
