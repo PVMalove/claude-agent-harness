@@ -10,6 +10,7 @@ import sys
 from types import SimpleNamespace
 
 from harness.bin import harness as harness_cli
+from harness.health.project_files import frontmatter_metadata
 
 from scripts.clean_room.support import (
     HARNESS,
@@ -322,7 +323,7 @@ def run(ctx: SimpleNamespace) -> None:
             "selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded"
         )
 
-    # pvmalove-suite inherits 25 upstream skills, overrides 11 of them, and adds 7 names;
+    # pvmalove-suite inherits 25 upstream skills, overrides some of them in place, and adds 7 names;
     # the clean-room check below expects 32 distinct installed skills (ADR 0001).
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
@@ -528,7 +529,7 @@ def run(ctx: SimpleNamespace) -> None:
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
     if pv_skill_count != 32:
         sys.exit(
-            f"expected 32 skills in a pvmalove-suite project (25 inherited + 7 additions), found {pv_skill_count}"
+            f"expected 32 skills in a pvmalove-suite project (25 inherited, overrides replaced in place, + 7 additions), found {pv_skill_count}"
         )
 
     # A failed older update could remove a retired managed skill's SKILL.md but leave
@@ -583,13 +584,38 @@ def run(ctx: SimpleNamespace) -> None:
     for required_text in ("integration next", "separate confirmation", "/qa-gate"):
         if required_text not in pr_step_text:
             sys.exit(f"installed to-pull-requests step lacks: {required_text}")
-    for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect"):
+    for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect", "tdd"):
         if not filecmp.cmp(
             ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",
             pv_project / ".harness" / "skills" / name / "SKILL.md",
             shallow=False,
         ):
             sys.exit(f"pvmalove-suite override did not install the first-party {name}")
+    # Issue #552: the installed registry lists the first-party tdd, and the update baseline
+    # records no drift for its files.
+    _, tdd_description = frontmatter_metadata(
+        ROOT / "skills" / "first-party" / "pvmalove" / "tdd" / "SKILL.md"
+    )
+    if f"| `tdd` | `.harness/skills/tdd` | {tdd_description} |" not in (
+        pv_project / ".harness" / "skills" / "REGISTRY.md"
+    ).read_text(encoding="utf-8"):
+        sys.exit("installed REGISTRY.md does not list the first-party tdd")
+    pv_drift = capture_json(HARNESS + ["diff", str(pv_project), "--json"])
+    tdd_drift = [
+        path
+        for key in (
+            "added",
+            "missing",
+            "package_changed",
+            "local_changed",
+            "conflict",
+            "retired",
+        )
+        for path in pv_drift[key]
+        if path.startswith(".harness/skills/tdd/")
+    ]
+    if tdd_drift:
+        sys.exit(f"installed first-party tdd has unconfirmed drift: {tdd_drift}")
     if not filecmp.cmp(
         ROOT
         / "skills"
