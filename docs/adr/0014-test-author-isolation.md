@@ -95,8 +95,11 @@ validator в #551 не менялись. Зоны runner (временный к�
 **Устанавливаемый runner (#553).** Прототип перенесён в устанавливаемый runner
 `.claude/hooks/run-test.sh` (шаблон `harness/project/hooks/run-test.sh`) с ядром
 `.harness/health/isolated_runner.py`; руководство — [`docs/hooks/run-test.md`](../hooks/run-test.md).
-Набор флагов bwrap выше сохранён без ослаблений и дополнен `--chdir <repo>` и
-`--json-status-fd`: отсутствие записи `child-pid` означает, что песочница не поднялась.
+Набор флагов bwrap выше сохранён без ослаблений и дополнен `--tmpfs /run`, `--chdir <repo>` и
+`--json-status-fd`: отсутствие записи `child-pid` означает, что песочница не поднялась. Пустой
+tmpfs поверх `/run` закрывает обход, который прототип не проверял: `--ro-bind` не запрещает
+`connect()` к сокетам сервисов хоста, а через сессионную D-Bus в `/run/user/<uid>` systemd user
+manager запускает процессы вне песочницы.
 Конфигурация задаётся единым контрактом — `project.schema.json` и validator
 (`test_paths_problems`, `test_runner_problems` в `harness/health/project_files.py`), которые
 runner вызывает сам:
@@ -110,11 +113,13 @@ runner вызывает сам:
   вызывающий не может расширить зону записи.
 
 `project.json.tmpl` новых полей не содержит: без них runner отказывает с `test_paths_missing` или
-`test_runner_missing`, а доставка полей в шаблоне и opt-in остаются за #554. Writable-зоны
-запуска — каталоги `test_paths`, `/tmp` (tmpfs) и свежие `cache/` и `reports/` в
+`test_runner_missing`. Поле `test_paths` в шаблоне включило бы тест-автора в каждом новом
+проекте, поэтому доставка полей в шаблоне и opt-in остаются за #554. Writable-зоны запуска —
+каталоги `test_paths`, `/tmp` (tmpfs) и свежие `cache/` и `reports/` в
 `.harness/.sandboxes/runs/isolated-test-<run_id>/`. Перед тестом runner выполняет probe с тем же
-набором монтирований; провал любой проверки до запуска даёт отказ `isolation_unavailable` с
-кодом `platform`, `bwrap_missing`, `checkout_masked`, `sandbox_failed` или `probe_failed`.
+набором монтирований: запись в корень checkout получает `EROFS`, а `/run` и `/var/run` пусты.
+Провал любой проверки до запуска даёт отказ `isolation_unavailable` с кодом `platform`,
+`bwrap_missing`, `checkout_masked`, `sandbox_failed` или `probe_failed`.
 Вывод — одна JSON-строка не длиннее 512 байт; коды выхода `0` (прошёл), `1` (упал или таймаут),
 `3` (отказ). `run-test.sh --probe` возвращает `{"status":"ok"}` или `unavailable` с кодом
 причины — это условие (2) preflight; сам `preflight.sh` с canary-проверкой guard — часть #554.
@@ -135,7 +140,7 @@ Clean-room сценарий `scripts/clean_room/isolated_test_runner.py` про�
 - Поддержанное окружение — Linux + bubblewrap 0.9.0+ при наличии user-namespaces без
   дополнительных привилегий (`unshare -U` работает без root). Windows и macOS не проверялись;
   там `preflight.sh` обязан вернуть `isolation_unavailable`, а не выполнить тест без изоляции.
-- Проект, чей checkout лежит внутри `/tmp` или другого пути, который runner монтирует как
+- Проект, чей checkout лежит внутри `/tmp`, `/run` или другого пути, который runner монтирует как
   tmpfs/приватный неймспейс, не поддерживается текущим набором флагов bwrap — `--probe`
   провалится и `preflight.sh` отключит тест-автора, а не выполнит тест в небезопасном режиме.
 - Разделение авторства, scoped guard и process-изоляция не гарантируют смысловую независимость
