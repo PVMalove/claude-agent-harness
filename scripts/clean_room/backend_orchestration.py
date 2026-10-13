@@ -96,6 +96,58 @@ def _require_recovery_route_table(playbook: str) -> None:
         )
 
 
+def _require_startup_recovery_contract(skill: str, playbook: str) -> None:
+    """Keep worker guidance aligned with evidence-gated startup recovery (#679)."""
+    normalized_skill = " ".join(skill.split()).casefold()
+    normalized_playbook = " ".join(playbook.split()).casefold()
+    for phrase in (
+        "batch auto-report",
+        "batch decision-packet",
+        "dispatch status",
+        "ledger validate",
+        "batch resume-stop",
+        "batch rewind",
+        "unsupported flags",
+        "capacity",
+        "model self-report",
+        "live or unknown worker",
+        "separate explicit human choice",
+    ):
+        if phrase.casefold() not in normalized_skill:
+            sys.exit(f"implement skill is missing startup-recovery contract: {phrase}")
+    start = normalized_skill.find("batch auto-report")
+    evidence_order = [
+        normalized_skill.find(phrase, start)
+        for phrase in (
+            "batch auto-report",
+            "batch decision-packet",
+            "dispatch status",
+            "ledger validate",
+        )
+    ]
+    if -1 in evidence_order or evidence_order != sorted(evidence_order):
+        sys.exit(
+            "implement skill must inspect auto-report, decision-packet, dispatch status and ledger validate in order"
+        )
+    for phrase in (
+        "dispatch preflight",
+        "unsupported adapter flags",
+        "model self-report",
+        "capacity",
+        "rate-limit",
+        "service-unavailable",
+        "absent/exited",
+        "live or unknown worker",
+        "worker process state",
+        "does not select abandon",
+        "unsent dispatch",
+    ):
+        if phrase.casefold() not in normalized_playbook:
+            sys.exit(f"playbook is missing startup-recovery contract: {phrase}")
+    if "silence" not in normalized_playbook or "timeout" not in normalized_playbook:
+        sys.exit("playbook must state that silence and timeout do not prove worker termination")
+
+
 def run(ctx: SimpleNamespace) -> None:
     """Установка backend-orchestration, Repo Map и health.
 
@@ -384,6 +436,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not playbook_path.is_file():
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
+    _require_startup_recovery_contract(installed_implement, playbook)
     contract = orchestration_project / ".harness/docs/technical-english.md"
     for continuation_rule in ("integration next", "verification-failure"):
         if continuation_rule not in playbook:

@@ -131,6 +131,47 @@ class PrepareTests(_PreflightFixture):
             prepared.decision_packet["options"],
             ["accept", "retry", "block"],
         )
+        self.assertEqual(
+            prepared.runtime_preflight["status"] if prepared.runtime_preflight else None,
+            "not-configured",
+        )
+        runtime_preflight = prepared.decision_packet.get("runtime_preflight")
+        assert isinstance(runtime_preflight, dict)
+        self.assertIn("limitation", runtime_preflight)
+
+    def test_unsupported_adapter_flags_fail_before_worker_launch(self) -> None:
+        adapter = Path(self._tmp.name) / "adapter.py"
+        adapter.write_text(
+            "import sys\n"
+            "print('unrecognized arguments: --legacy-flag', file=sys.stderr)\n"
+            "raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(PreflightError) as caught:
+            self._prepare(
+                runtime_preflight={
+                    "adapter": str(adapter),
+                    "adapter_args": ["--legacy-flag"],
+                }
+            )
+
+        self.assertIn("unsupported adapter flags", caught.exception.remedy)
+
+    def test_unavailable_adapter_is_a_reported_limitation(self) -> None:
+        prepared = self._prepare(
+            runtime_preflight={
+                "adapter": str(Path(self._tmp.name) / "missing-adapter")
+            }
+        )
+
+        runtime_preflight = prepared.decision_packet.get("runtime_preflight")
+        assert isinstance(runtime_preflight, dict)
+        self.assertEqual(runtime_preflight["status"], "unavailable")
+        self.assertEqual(runtime_preflight["worker_launch"], "not-performed")
+        preview_preflight = prepared.preview_brief.get("runtime_preflight")
+        assert isinstance(preview_preflight, dict)
+        self.assertIn("limitation", preview_preflight)
 
     def test_to_dict_round_trips_every_field(self) -> None:
         prepared = self._prepare(

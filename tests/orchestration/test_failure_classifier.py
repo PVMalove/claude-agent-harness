@@ -42,3 +42,38 @@ def test_unknown_or_code_text_is_not_classified(text: object) -> None:
 
 def test_every_source_text_is_considered_but_only_strings() -> None:
     assert failure_classifier.classify(None, 5, "rate limit exceeded") is not None
+
+
+@pytest.mark.parametrize(
+    ("text", "category"),
+    [
+        ("provider is at capacity", "capacity"),
+        ("capacity exhausted for this model", "capacity"),
+        ("service unavailable (HTTP 503)", "service-unavailable"),
+        ("HTTP 429 from the provider", "rate-limit"),
+    ],
+)
+def test_startup_infrastructure_categories_stay_separate(
+    text: str, category: str
+) -> None:
+    result = failure_classifier.classify(text)
+    assert result is not None
+    assert result["category"] == category
+
+
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        ({"kind": "capacity", "worker_started": False}, "capacity"),
+        ({"kind": "rate_limit", "worker_started": False}, "rate-limit"),
+        ({"status_code": 503, "worker_started": False}, "service-unavailable"),
+        ({"kind": "runtime-unavailable", "worker_started": False}, "runtime-unavailable"),
+    ],
+)
+def test_structured_runtime_categories_are_explicit(
+    failure: dict[str, object], category: str
+) -> None:
+    result = failure_classifier.classify_runtime_failure(failure)
+    assert result is not None
+    assert result["method"] == "structured"
+    assert result["category"] == category

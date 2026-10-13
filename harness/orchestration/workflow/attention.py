@@ -60,12 +60,132 @@ from harness.orchestration.workflow.history import (
 )
 
 
-def _stale_dispatch_finding(dispatch_id: str, silent: int) -> dict[str, str]:
+def recovery_evidence(
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    dispatch_id: str,
+) -> JsonObject:
+    """Collect the read-only evidence an operator needs before choosing a recovery route."""
+    from harness.orchestration.workflow import auto_report
+    from harness.orchestration.workflow.startup import assess_startup
+
+    dispatch = _load_dispatch(root, dispatch_id)
+    status = _load_dispatch_status(root, dispatch_id)
+    try:
+        _validate_batch_integrity(root, batch)
+        ledger: JsonObject = {"status": "valid"}
+    except CoordinatorError as exc:
+        ledger = {"status": "invalid", "error": _sanitise(exc.message)[:200]}
+    try:
+        report = auto_report.live(repo, root, config, batch, None)
+        auto: JsonObject = {
+            "status": "available",
+            "outcome": report.get("outcome"),
+            "stop": (report.get("stop") or {}).get("reason")
+            if isinstance(report.get("stop"), dict)
+            else None,
+        }
+    except CoordinatorError as exc:
+        auto = {"status": "unavailable", "error": _sanitise(exc.message)[:200]}
+    pending = [
+        entry
+        for entry in batch.get("dispatches", [])
+        if entry.get("state") == "reported" and "decision" not in entry
+    ]
+    decision: JsonObject = {
+        "status": "pending-report" if len(pending) == 1 else "no-pending-report",
+        "route": None,
+        "options": [
+            "wait",
+            "launch-repair",
+            "resume-stop",
+            "rewind",
+            "abandon",
+        ],
+    }
+    if len(pending) == 1:
+        from harness.orchestration.workflow import decisions
+        from harness.orchestration.workflow.history import _pending_report
+
+        try:
+            pending_dispatch = _load_dispatch(root, pending[0]["dispatch_id"])
+            retry = decisions._decide_retry_route(
+                repo,
+                root,
+                batch,
+                pending_dispatch,
+                _pending_report(root, batch, pending[0]),
+                argparse.Namespace(
+                    retry_role=None,
+                    narrowed=False,
+                    reason_category=None,
+                ),
+            )
+            decision["route"] = retry.get("route")
+            decision["retry"] = {
+                "route": retry.get("route"),
+                "reason_category": retry.get("reason_category"),
+            }
+        except CoordinatorError as exc:
+            decision["refused"] = _sanitise(exc.message)[:200]
+    assessment = assess_startup(dispatch, status)
+    return {
+        "dispatch_status": {
+            "state": status.get("state"),
+            "updated_at": status.get("updated_at"),
+            "heartbeat_at": status.get("heartbeat_at"),
+        },
+        "startup": {
+            "classification": assessment.get("classification"),
+            "worker_state": assessment.get("worker_state"),
+            "restart_allowed": assessment.get("restart_allowed"),
+            "ready": assessment.get("ready"),
+        },
+        "auto_report": auto,
+        "decision_packet": decision,
+        "ledger_validate": ledger,
+    }
+
+
+def _stale_dispatch_finding(
+    dispatch_id: str,
+    silent: int,
+    *,
+    repo: Path | None = None,
+    root: Path | None = None,
+    config: JsonObject | None = None,
+    batch: JsonObject | None = None,
+) -> dict[str, str]:
+    if repo is not None and root is not None and config is not None and batch is not None:
+        try:
+            evidence = recovery_evidence(repo, root, config, batch, dispatch_id)
+            status = evidence["dispatch_status"]
+            startup = evidence["startup"]
+            auto = evidence["auto_report"]
+            decision = evidence["decision_packet"]
+            ledger = evidence["ledger_validate"]
+            checked = (
+                f"batch auto-report={auto.get('status')}/{auto.get('outcome')}; "
+                f"batch decision-packet={decision.get('status')}/{decision.get('route')}; "
+                f"dispatch status={status.get('state')}; "
+                f"ledger validate={ledger.get('status')}; "
+                f"worker={startup.get('worker_state')}; "
+                f"classification={startup.get('classification')}"
+            )
+        except CoordinatorError as exc:
+            checked = f"recovery evidence unavailable: {_sanitise(exc.message)[:200]}"
+    else:
+        checked = (
+            "batch auto-report, batch decision-packet, dispatch status and ledger validate "
+            "must be collected before a recovery decision"
+        )
     return operational_guards.attention_finding(
         "stale-dispatch",
         dispatch_id,
-        last_safe_action=f"dispatch {dispatch_id} has been silent for {silent}s; its brief and any report stay as immutable evidence and nothing was cancelled",
-        recommended_human_action="decide whether to keep waiting, cancel the unsent brief, or abandon the batch; then resolve this attention",
+        last_safe_action=f"dispatch {dispatch_id} has been silent for {silent}s; its brief and any report stay as immutable evidence and nothing was cancelled; checked {checked}",
+        recommended_human_action="do not infer termination or abandon from silence; inspect batch auto-report, batch decision-packet, dispatch status and ledger validate, then choose wait, launch repair, human-approved batch resume-stop, batch rewind, or dispatch cancel for unsent work; batch abandon is a separate explicit human decision",
     )
 
 
@@ -167,7 +287,14 @@ def _attention_findings(
             and _silent_seconds(status) >= threshold
         ):
             findings.append(
-                _stale_dispatch_finding(entry["dispatch_id"], _silent_seconds(status))
+                _stale_dispatch_finding(
+                    entry["dispatch_id"],
+                    _silent_seconds(status),
+                    repo=repo,
+                    root=root,
+                    config=config,
+                    batch=batch,
+                )
             )
     return findings
 
@@ -268,7 +395,16 @@ def _flag_stale_dispatch(
     if _apply_attention(
         core_config._config(repo),
         batch,
-        [_stale_dispatch_finding(dispatch["dispatch_id"], silent)],
+        [
+            _stale_dispatch_finding(
+                dispatch["dispatch_id"],
+                silent,
+                repo=repo,
+                root=root,
+                config=core_config._config(repo),
+                batch=batch,
+            )
+        ],
         utils._now(),
     ):
         _safe_id(batch["batch_id"], "batch")

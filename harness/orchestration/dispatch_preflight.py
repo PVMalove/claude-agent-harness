@@ -63,6 +63,7 @@ class PreparedDispatch:
     worker_worktree: str
     worker_snapshot_commit: str
     retry_start: JsonObject | None = None
+    runtime_preflight: JsonObject | None = None
 
     def to_dict(self) -> JsonObject:
         """Преобразовать подготовленные данные диспетчеризации в словарь."""
@@ -82,6 +83,82 @@ def _text(value: object, label: str) -> str:
 def _optional_text(value: object, label: str) -> str | None:
     """Вернуть непустую строку из состояния проекта либо None, если поле не задано."""
     return None if value is None else _text(value, label)
+
+
+def _runtime_preflight(
+    project_state: Mapping[str, JsonValue], plan: JsonObject | None
+) -> JsonObject:
+    """Run the optional read-only adapter probe and keep limitations in the approval packet.
+
+    ``prepare`` has no adapter-launch side effect.  A project may provide ``runtime_preflight``
+    (``adapter`` plus ``adapter_args`` or a direct ``command``) in the state passed by its adapter.
+    An external transport without that information is reported as a limitation rather than being
+    guessed from a provider/model name.
+    """
+    from harness.orchestration.runtime_attestation import (
+        AttestationError,
+        probe_adapter,
+        probe_command,
+    )
+
+    configured = project_state.get("runtime_preflight")
+    if configured is None:
+        configured = project_state.get("adapter_preflight")
+    settings = configured if isinstance(configured, dict) else {}
+    command = settings.get("command")
+    if command is None:
+        command = project_state.get("runtime_probe")
+    raw_worktree = project_state.get("worktree")
+    worktree_path: str | None = raw_worktree if isinstance(raw_worktree, str) else None
+    timeout_raw = settings.get("timeout_seconds", 15)
+    timeout: int = timeout_raw if isinstance(timeout_raw, int) else 15
+    if command is not None:
+        try:
+            evidence = probe_command(
+                command,  # type: ignore[arg-type]
+                cwd=worktree_path,
+                timeout=timeout,
+                label="runtime-command",
+            )
+        except AttestationError as exc:
+            raise PreflightError(exc.message, remedy=exc.remedy) from exc
+    else:
+        adapter = settings.get("adapter") or project_state.get("adapter")
+        if adapter is None and isinstance(plan, dict):
+            adapter = plan.get("adapter")
+        adapter_args = settings.get("adapter_args")
+        if adapter_args is None:
+            adapter_args = project_state.get("adapter_args")
+        if adapter_args is None and isinstance(plan, dict):
+            adapter_args = plan.get("adapter_args")
+        if adapter_args is not None and not isinstance(adapter_args, list):
+            raise PreflightError(
+                "runtime preflight adapter_args must be a list",
+                remedy="set runtime_preflight['adapter_args'] to a list of adapter flag strings",
+            )
+        try:
+            evidence = probe_adapter(
+                adapter,  # type: ignore[arg-type]
+                adapter_args,  # type: ignore[arg-type]
+                cwd=worktree_path,
+                timeout=timeout,
+            )
+        except AttestationError as exc:
+            raise PreflightError(exc.message, remedy=exc.remedy) from exc
+    status = evidence.get("status")
+    if status in {"unsupported", "invalid-configuration"}:
+        detail = evidence.get("stderr") or evidence.get("limitation") or status
+        raise PreflightError(
+            f"runtime adapter preflight rejected the configured CLI: {detail}",
+            remedy="remove or repair the unsupported adapter flags, then repeat dispatch preflight before launching a worker",
+        )
+    if status in {"unknown", "timeout", "unavailable", "not-configured"}:
+        evidence.setdefault(
+            "limitation",
+            "the runtime capability could not be confirmed before worker launch; preserve this limitation in the operator decision",
+        )
+    evidence["worker_launch"] = "not-performed"
+    return evidence
 
 
 def _git(path: Path, *args: str) -> str:
@@ -441,6 +518,9 @@ def prepare(
             remedy="set project_state['mandatory_checks'] to a list of non-empty command strings",
         )
     package = _role_context(role, project_state, expected_sha)
+    runtime_preflight = _runtime_preflight(
+        project_state, plan if isinstance(plan, dict) else None
+    )
     preview: JsonObject = {
         "ticket": ticket,
         "role": role,
@@ -453,6 +533,7 @@ def prepare(
         "candidate_commit": candidate,
         "context_package": package,
         "verification_commands": list(checks),
+        "runtime_preflight": runtime_preflight,
     }
     packet: JsonObject = {
         "action": f"create and send {role} dispatch",
@@ -466,6 +547,7 @@ def prepare(
         "context_package": package,
         "approval_reason": "the immutable brief will bind this exact runtime, worktree and snapshot",
         "options": ["accept", "retry", "block"],
+        "runtime_preflight": runtime_preflight,
     }
     # Authored requirements follow the runtime's role manifest, including specialist writers.
     from .core.config import _role
@@ -537,4 +619,5 @@ def prepare(
         preview_brief=preview,
         decision_packet=packet,
         retry_start=retry_start,
+        runtime_preflight=runtime_preflight,
     )

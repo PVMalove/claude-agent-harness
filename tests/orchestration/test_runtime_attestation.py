@@ -12,7 +12,13 @@ from unittest.mock import patch
 
 import pytest
 
-from harness.orchestration.runtime_attestation import AttestationError, attest
+from harness.orchestration.runtime_attestation import (
+    AttestationError,
+    attest,
+    probe_adapter,
+    validate_runtime_evidence,
+)
+from harness.orchestration.workflow.startup import assess_startup
 
 
 class _RunFn(Protocol):
@@ -317,6 +323,90 @@ def test_an_ancestry_check_that_hangs_is_an_attestation_error(tmp_path: Path) ->
 
     assert isinstance(caught.value.__cause__, subprocess.TimeoutExpired)
     assert caught.value.remedy.strip()
+
+
+def test_adapter_preflight_is_help_only_and_classifies_unsupported_flags(
+    tmp_path: Path,
+) -> None:
+    adapter = tmp_path / "adapter.py"
+    adapter.write_text(
+        "import sys\n"
+        "print('usage: adapter dispatch [--supported]', file=sys.stderr)\n"
+        "print('unrecognized arguments: --bad-flag', file=sys.stderr)\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+
+    evidence = probe_adapter(str(adapter), ["--bad-flag"], cwd=tmp_path)
+
+    assert evidence["status"] == "unsupported"
+    assert evidence["launch_performed"] is False
+    assert evidence["worker_started"] is False
+    assert "--bad-flag" in evidence["command"]
+
+
+def test_runtime_probe_fields_cannot_satisfy_missing_worker_self_report() -> None:
+    result = validate_runtime_evidence(
+        {"resolved_model": "sonnet", "worktree": "/tmp/worker"},
+        {
+            "source": "runtime-probe",
+            "model": "sonnet",
+            "cwd": "/tmp/worker",
+            "reasoningEffort": "high",
+        },
+    )
+
+    assert result["status"] == "unsupported"
+    assert result["match"] is False
+    assert result["model_self_report_required"] is True
+
+
+def test_capacity_after_thread_start_is_not_ready_or_restartable_while_live() -> None:
+    dispatch = {
+        "role": "developer",
+        "resolved_model": "sonnet",
+        "worktree": "/tmp/worker",
+        "worker_worktree": "/tmp/worker",
+        "worker_attestation_required": True,
+    }
+    status = {
+        "state": "working",
+        "model_self_report": {
+            "reported_model": "sonnet",
+            "expected_model": "sonnet",
+            "match": True,
+        },
+        "worktree_attestation": {"match": True},
+        "runtime_failure": {
+            "kind": "capacity",
+            "worker_started": True,
+        },
+    }
+
+    assessment = assess_startup(dispatch, status)
+
+    assert assessment["classification"] == "capacity"
+    assert assessment["worker_state"] == "live"
+    assert assessment["ready"] is False
+    assert assessment["restart_allowed"] is False
+
+
+def test_missing_self_report_stays_fail_closed_for_unknown_worker() -> None:
+    assessment = assess_startup(
+        {
+            "role": "developer",
+            "resolved_model": "sonnet",
+            "worktree": "/tmp/worker",
+            "worker_worktree": "/tmp/worker",
+            "worker_attestation_required": True,
+        },
+        {"state": "blocked"},
+        {"status": "supported", "model": "sonnet"},
+    )
+
+    assert assessment["classification"] == "unsupported-runtime-attestation"
+    assert assessment["worker_state"] == "unknown"
+    assert assessment["restart_allowed"] is False
 
 
 if __name__ == "__main__":

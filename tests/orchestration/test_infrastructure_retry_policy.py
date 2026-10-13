@@ -12,6 +12,8 @@ import pytest
 
 from harness.orchestration import contract, coordinator
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
+from harness.orchestration.runtime_attestation import probe_adapter
+from harness.orchestration.workflow.startup import assess_startup
 from tests.orchestration import test_qa_preparation_e2e as preparation
 from tests.orchestration import test_coordinator as fixtures
 
@@ -34,6 +36,75 @@ def test_malformed_retry_policy_is_rejected(tmp_path: Path, value: object) -> No
         "infrastructure_retry_policy" in p
         for p in contract.health_problems(path, roles)
     )
+
+
+def test_issue_679_startup_sequence_is_bounded_and_fail_closed(tmp_path: Path) -> None:
+    unsupported = tmp_path / "unsupported.py"
+    unsupported.write_text(
+        "import sys\n"
+        "print('unrecognized arguments: --legacy-flag', file=sys.stderr)\n"
+        "raise SystemExit(2)\n",
+        encoding="utf-8",
+    )
+    preflight = probe_adapter(str(unsupported), ["--legacy-flag"])
+    assert preflight["status"] == "unsupported"
+    assert preflight["worker_started"] is False
+
+    dispatch = {
+        "role": "developer",
+        "resolved_model": "gpt-5.6-luna",
+        "worktree": str(tmp_path),
+        "worker_worktree": str(tmp_path),
+        "worker_attestation_required": True,
+    }
+    missing = assess_startup(
+        dispatch,
+        {"state": "blocked"},
+        {"status": "supported", "model": "gpt-5.6-luna"},
+    )
+    assert missing["classification"] == "unsupported-runtime-attestation"
+    assert missing["worker_state"] == "unknown"
+    assert missing["restart_allowed"] is False
+
+    after_thread_start = assess_startup(
+        dispatch,
+        {
+            "state": "blocked",
+            "model_self_report": {
+                "reported_model": "gpt-5.6-luna",
+                "expected_model": "gpt-5.6-luna",
+                "match": True,
+            },
+            "worktree_attestation": {"match": True},
+            "runtime_failure": {
+                "kind": "capacity",
+                "worker_started": True,
+            },
+        },
+    )
+    assert after_thread_start["classification"] == "capacity"
+    assert after_thread_start["ready"] is False
+    assert after_thread_start["worker_state"] == "unknown"
+    assert after_thread_start["restart_allowed"] is False
+
+    exited_capacity = assess_startup(
+        dispatch,
+        {
+            "state": "blocked",
+            "model_self_report": {
+                "reported_model": "gpt-5.6-luna",
+                "expected_model": "gpt-5.6-luna",
+                "match": True,
+            },
+            "worktree_attestation": {"match": True},
+            "runtime_failure": {
+                "kind": "capacity",
+                "worker_started": False,
+            },
+        },
+    )
+    assert exited_capacity["classification"] == "capacity"
+    assert exited_capacity["restart_allowed"] is True
 
 
 class InfrastructureRetryTests(preparation.PreparationFixture):

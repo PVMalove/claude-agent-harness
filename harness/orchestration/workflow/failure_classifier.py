@@ -8,12 +8,24 @@ scope or requirements problem wins over an infrastructure sign, and unknown text
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 from harness.orchestration.core.utils import JsonObject
 
 # Order matters: the first matching category names the failure.
 INFRASTRUCTURE_PATTERNS = (
     ("rate-limit", r"\b429\b|rate[- ]?limit|too many requests"),
+    (
+        "capacity",
+        r"(?:provider|model|runtime|account|service) (?:is )?(?:at|out of|lacks?) capacity"
+        r"|insufficient capacity|capacity (?:exhausted|unavailable|limit)"
+        r"|no capacity available|capacity error",
+    ),
+    (
+        "service-unavailable",
+        r"service (?:is )?unavailable|provider (?:is )?unavailable"
+        r"|http\s*503|\b503\b|temporarily unavailable",
+    ),
     ("timeout", r"timed? ?out|\btimeout\b|deadline exceeded"),
     (
         "network",
@@ -59,3 +71,66 @@ def classify(*texts: object) -> JsonObject | None:
                 "text": joined[:500],
             }
     return None
+
+
+_STRUCTURED_CATEGORIES = {
+    "capacity": "capacity",
+    "capacity-exhausted": "capacity",
+    "insufficient-capacity": "capacity",
+    "rate-limit": "rate-limit",
+    "rate_limit": "rate-limit",
+    "service-unavailable": "service-unavailable",
+    "service_unavailable": "service-unavailable",
+    "runtime-unavailable": "runtime-unavailable",
+    "runtime_unavailable": "runtime-unavailable",
+    "timeout": "timeout",
+    "network": "network",
+    "runtime-crash": "runtime-crash",
+    "resources": "resources",
+    "service": "service",
+}
+
+
+def classify_runtime_failure(failure: Mapping[str, object] | None) -> JsonObject | None:
+    """Classify structured runtime fields before falling back to bounded error text.
+
+    Capacity, rate-limit and service-unavailable are intentionally distinct.  A structured
+    category is evidence supplied by the runtime adapter; a free-form message remains a heuristic
+    and cannot by itself prove that a worker exited.
+    """
+    if not isinstance(failure, Mapping):
+        return None
+    for field in ("category", "failure_category", "kind"):
+        value = failure.get(field)
+        if isinstance(value, str):
+            normalized = value.strip().lower().replace(" ", "-")
+            category = _STRUCTURED_CATEGORIES.get(normalized)
+            if category is not None:
+                return {
+                    "method": "structured",
+                    "category": category,
+                    "field": field,
+                    "value": value,
+                    "text": str(failure.get("error", ""))[:500],
+                }
+    status = failure.get("status_code") or failure.get("http_status")
+    if status == 429 or status == "429":
+        return {
+            "method": "structured",
+            "category": "rate-limit",
+            "field": "status_code",
+            "value": status,
+            "text": str(failure.get("error", ""))[:500],
+        }
+    if status in {503, "503"}:
+        return {
+            "method": "structured",
+            "category": "service-unavailable",
+            "field": "status_code",
+            "value": status,
+            "text": str(failure.get("error", ""))[:500],
+        }
+    return classify(failure.get("error"), failure.get("message"), failure.get("details"))
+
+
+classify_failure = classify_runtime_failure

@@ -218,26 +218,48 @@ def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> Json
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
     from harness.orchestration.workflow import failure_classifier
     from harness.orchestration.workflow.history import _pending_report
+    from harness.orchestration.workflow.startup import assess_startup
 
+    dispatch = _load_dispatch(root, entry["dispatch_id"])
     status = _load_dispatch_status(root, entry["dispatch_id"])
     model = status.get("model_self_report", {})
     tree = status.get("worktree_attestation", {})
     failure = status.get("runtime_failure", {})
-    unavailable = (
-        failure.get("kind") == "runtime-unavailable"
-        and failure.get("operation") == "startup"
-        and failure.get("worker_started") is False
-    )
+    assessment = assess_startup(dispatch, status)
     evidence: JsonObject = {
         "model_self_report": model,
         "worktree_attestation": tree,
         "runtime_failure": failure,
+        "startup_assessment": assessment,
     }
-    if model.get("match") is False or tree.get("match") is False or unavailable:
+    if not assessment["restart_allowed"]:
+        worker_state = assessment.get("worker_state", "unknown")
+        raise CoordinatorError(
+            "environment failure is not confirmed and the worker termination state is "
+            f"{worker_state!r}; no restart was authorized",
+            remedy="inspect batch auto-report, batch decision-packet, dispatch status and ledger validate; "
+            "wait for the worker or stop it through its runtime before choosing resume-stop, rewind or a separate human abandon decision",
+        )
+    if assessment.get("classification") in {
+        "unsupported-runtime-attestation",
+        "model-self-report-missing",
+        "model-self-report-mismatch",
+        "worktree-attestation-mismatch",
+        "runtime-unavailable",
+        "capacity",
+        "rate-limit",
+        "service-unavailable",
+        "service",
+        "timeout",
+        "network",
+        "runtime-crash",
+        "resources",
+    }:
         return evidence
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (
-        failure_classifier.classify(
+        failure_classifier.classify_runtime_failure(failure)
+        or failure_classifier.classify(
             (report.get("blockers") or {}).get("details"), failure.get("error")
         )
         if report.get("outcome") in {None, "blocked"}
@@ -246,7 +268,7 @@ def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> Json
     if classification is None:
         raise CoordinatorError(
             "environment failure is not confirmed by runtime status or by the blocked report",
-            remedy="collect runtime status evidence or name the infrastructure cause in the report blockers; use an ordinary decision or human rewind for an unknown failure",
+            remedy="collect runtime status evidence or name the infrastructure cause in the report blockers; inspect batch auto-report, batch decision-packet, dispatch status and ledger validate before wait, resume-stop or rewind; use a separate human abandon decision only when that is the chosen outcome",
         )
     return {**evidence, "classification": classification}
 
@@ -306,7 +328,7 @@ def _restart_failed_dispatch(
     if attempts >= _attention_policy(_config(repo))["max_infrastructure_retries"]:
         raise CoordinatorError(
             "environment recovery budget exhausted",
-            remedy="inspect operational attempts and explicitly adjust the bounded attention policy; recovery does not reset counters",
+            remedy="inspect batch auto-report, batch decision-packet, dispatch status and ledger validate; pause for a human choice between waiting, launch repair, resume-stop, rewind or a separate explicit abandon decision; recovery does not reset counters",
         )
     retired = _abandon_open_dispatches(ledger, root, batch, utils._now())
     batch["next_action"] = batch.get("next_action") or (
