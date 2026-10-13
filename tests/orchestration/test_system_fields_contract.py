@@ -1218,6 +1218,28 @@ def test_an_exact_role_manifest_mode_passes(tmp_path: Path) -> None:
 
     assert contract.configuration_problems(_example(), roles) == []
 
+@pytest.mark.parametrize("value", ["", "  ", None, True, 0, ["high"], {}])
+def test_an_empty_or_non_string_effort_has_one_problem(value: object) -> None:
+    _, _, subject = CONFIG_VALUES["effort"]
+
+    problems = [problem for problem in _problems("effort", value) if subject in problem]
+
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"{subject} must be one of: ")
+
+
+def test_a_missing_effort_has_one_problem() -> None:
+    _, _, subject = CONFIG_VALUES["effort"]
+    config = _example()
+    del config["assignment_plans"]["developer"]["runtimes"]["claude"]["effort"]
+
+    problems = contract.configuration_problems(config, ROLES_ROOT)
+
+    assert [problem for problem in problems if subject in problem] == [
+        f"{subject} must be a non-empty string"
+    ]
+
+
 
 @pytest.mark.parametrize("name", ["None", "NONE", " none", "none "])
 def test_a_spelling_of_the_none_extension_is_refused(name: str) -> None:

@@ -1335,23 +1335,24 @@ def configuration_problems(
                         f"assignment runtime {runtime_name!r} for role {role_name!r} profiles must be a non-empty list"
                     )
                     profile_ids = []
-                for field in ("model", "effort"):
-                    if not non_empty(runtime.get(field)):
-                        problems.append(
-                            f"assignment runtime {runtime_name!r} for role {role_name!r} {field} must be a non-empty string"
-                        )
+                if not non_empty(runtime.get("model")):
+                    problems.append(
+                        f"assignment runtime {runtime_name!r} for role {role_name!r} model must be a non-empty string"
+                    )
                 model = runtime.get("model")
                 if non_empty(model) and MODEL_ID.fullmatch(model.strip()) is None:
                     problems.append(
                         f"assignment runtime {runtime_name!r} for role {role_name!r} model must be a CLI model ID or alias without spaces"
                     )
-                effort = runtime.get("effort")
-                if "effort" in runtime and (
-                    problem := enum_problem(
-                        f"assignment runtime {runtime_name!r} for role {role_name!r} effort",
-                        effort,
-                        EFFORT_LEVELS,
+                # A present effort gets exactly one problem: the exact-value refusal.
+                if "effort" not in runtime:
+                    problems.append(
+                        f"assignment runtime {runtime_name!r} for role {role_name!r} effort must be a non-empty string"
                     )
+                elif problem := enum_problem(
+                    f"assignment runtime {runtime_name!r} for role {role_name!r} effort",
+                    runtime["effort"],
+                    EFFORT_LEVELS,
                 ):
                     problems.append(problem)
                 for profile_id in profile_ids:
