@@ -2,10 +2,11 @@
 
 `.claude/hooks/run-test.sh <test-id>` запускает один выбранный тест командой `test_runner` из
 `.harness/project.json` внутри bubblewrap: checkout, `.git` и конфигурация runner доступны тесту
-и его потомкам только на чтение, запись разрешена в каталоги `test_paths`, в `/tmp` (tmpfs) и в
-свежие `cache/` и `reports/` запуска. Тест никогда не запускается без песочницы, подтверждённой
-probe: любой провал до запуска даёт отказ. Вывод — одна JSON-строка не длиннее 512 байт без
-путей, вывода теста и окружения; полный лог остаётся локальным артефактом запуска.
+и его потомкам только на чтение, сокеты сервисов хоста в `/run` скрыты, запись разрешена в
+каталоги `test_paths`, в `/tmp` (tmpfs) и в свежие `cache/` и `reports/` запуска. Тест никогда
+не запускается без песочницы, подтверждённой probe: любой провал до запуска даёт отказ. Вывод —
+одна JSON-строка не длиннее 512 байт без путей, вывода теста и окружения; полный лог остаётся
+локальным артефактом запуска.
 
 Модуль использует только stdlib и поставляется в `.harness/health/` целевого проекта; shim
 `run-test.sh` загружает его через `python3 -I -B`, не исполняя ничего из зон записи.
@@ -43,8 +44,14 @@ ZONE_SUFFIX = "/**"
 GLOB_CHARACTERS = frozenset("*?[]{}\\")
 # Top-level directories that hold the repository, the harness and runtime configuration.
 PROTECTED_TOP_LEVEL = frozenset({".git", ".harness", ".claude", ".agents", ".codex"})
-# The sandbox replaces these with its own /tmp, /dev and /proc: a checkout below them is invisible.
-MASKED_ROOTS = ("/tmp", "/dev", "/proc")
+# The sandbox replaces these with its own /tmp, /run, /dev and /proc: a checkout below them is
+# invisible.
+MASKED_ROOTS = ("/tmp", "/run", "/dev", "/proc")
+# Host service sockets live in /run (/var/run links there): the D-Bus buses and the systemd user
+# manager in /run/user/<uid>, container engines. A read-only bind does not stop connect(), and such
+# a service starts processes outside the sandbox, so the sandbox mounts an empty tmpfs over /run
+# and the probe requires both paths to be empty.
+HIDDEN_ROOTS = ("/run", "/var/run")
 ENV_ALLOWLIST = ("PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
 TIMEOUT_SECONDS = 300.0
 PROBE_TIMEOUT_SECONDS = 60.0
@@ -80,20 +87,22 @@ ISOLATION_DETAILS = frozenset(
     {"platform", "bwrap_missing", "checkout_masked", "sandbox_failed", "probe_failed"}
 )
 
-# Runs inside the sandbox: creating a file in the checkout root must fail with EROFS, and a write
-# to the run cache must pass. The runner checks both from outside and removes what was created.
+# Runs inside the sandbox with HIDDEN_ROOTS and two paths: creating the first path in the checkout
+# root must fail with EROFS, every hidden root must be empty or absent, and a write to the second
+# path in the run cache must pass. The runner checks the files from outside and removes them.
 PROBE_SCRIPT = (
     "import errno, os, sys\n"
-    "blocked, allowed = sys.argv[1], sys.argv[2]\n"
+    "*hidden, blocked, allowed = sys.argv[1:]\n"
     "try:\n"
     "    os.close(os.open(blocked, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))\n"
     "except OSError as error:\n"
     "    denied = error.errno == errno.EROFS\n"
     "else:\n"
     "    denied = False\n"
+    "empty = not any(os.path.isdir(root) and os.listdir(root) for root in hidden)\n"
     "with open(allowed, 'w') as handle:\n"
     "    handle.write('ok')\n"
-    "sys.exit(0 if denied else 1)\n"
+    "sys.exit(0 if denied and empty else 1)\n"
 )
 
 
@@ -266,7 +275,7 @@ def _has_linked_file(zone: Path) -> bool:
 
 
 def _masked(path: Path) -> bool:
-    """True when the sandbox hides `path` behind its own /tmp, /dev or /proc."""
+    """True when the sandbox hides `path` behind its own /tmp, /run, /dev or /proc."""
     text = path.as_posix()
     return any(text == root or text.startswith(root + "/") for root in MASKED_ROOTS)
 
@@ -278,8 +287,9 @@ def sandbox_argv(
     command: Sequence[str],
     status_fd: int,
 ) -> list[str]:
-    """The bubblewrap argv of ADR 0014: a read-only root, private /dev, /proc and /tmp, writable
-    `binds`, every namespace unshared and no capabilities; `command` runs without a shell."""
+    """The bubblewrap argv of ADR 0014: a read-only root, private /dev, /proc and /tmp, an empty
+    /run without host sockets, writable `binds`, every namespace unshared and no capabilities;
+    `command` runs without a shell."""
     argv = [
         bwrap,
         "--ro-bind",
@@ -291,6 +301,8 @@ def sandbox_argv(
         "/proc",
         "--tmpfs",
         "/tmp",
+        "--tmpfs",
+        "/run",
     ]
     for path in binds:
         argv += ["--bind", str(path), str(path)]
@@ -487,7 +499,8 @@ def _probe(
     launcher: Launcher,
     run_id: str,
 ) -> None:
-    """Prove with the test's own mounts that the checkout is read-only and the cache writable."""
+    """Prove with the test's own mounts that the checkout is read-only, the host sockets are
+    hidden and the cache is writable."""
     blocked = repo / f".harness-isolation-probe-{run_id}"
     allowed = run_dir / "cache" / "isolation-probe"
     if os.path.lexists(blocked):
@@ -498,6 +511,7 @@ def _probe(
         "-B",
         "-c",
         PROBE_SCRIPT,
+        *HIDDEN_ROOTS,
         str(blocked),
         str(allowed),
     ]

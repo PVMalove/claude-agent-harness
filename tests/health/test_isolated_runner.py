@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -61,6 +62,12 @@ elif action == "legit":
         with open(os.path.join(directory, "legit.txt"), "w") as handle:
             handle.write("ok")
     assert open("/tmp/legit.txt").read() == "ok"
+elif action == "hidden_roots":
+    sys.exit(1 if any(os.path.isdir(p) and os.listdir(p) for p in ("/run", "/var/run")) else 0)
+elif action == "session_bus":
+    import socket
+    with socket.socket(socket.AF_UNIX) as sock:
+        sock.connect("/run/user/%d/bus" % os.getuid())
 elif action == "environment":
     sys.exit(1 if "RUNNER_SECRET" in os.environ else 0)
 elif action == "sleep":
@@ -384,7 +391,7 @@ def test_sandbox_argv_is_the_adr_flag_set() -> None:
     argv = runner.sandbox_argv(
         "/usr/bin/bwrap",
         Path("/repo"),
-        [Path("/repo/tests"), Path("/run/cache")],
+        [Path("/repo/tests"), Path("/cache")],
         ["python3", "-m", "unittest", "a;b c"],
         9,
     )
@@ -394,8 +401,9 @@ def test_sandbox_argv_is_the_adr_flag_set() -> None:
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
+        "--tmpfs", "/run",
         "--bind", "/repo/tests", "/repo/tests",
-        "--bind", "/run/cache", "/run/cache",
+        "--bind", "/cache", "/cache",
         "--chdir", "/repo",
         "--unshare-all",
         "--die-with-parent",
@@ -510,7 +518,9 @@ def test_masked_paths() -> None:
     assert runner._masked(Path("/tmp")) and runner._masked(Path("/tmp/repo"))
     assert runner._masked(Path("/proc/self/cwd"))
     assert runner._masked(Path("/dev"))
+    assert runner._masked(Path("/run/user/1000/repo"))
     assert not runner._masked(Path("/tmpfoo/repo"))
+    assert not runner._masked(Path("/runner/repo"))
     assert not runner._masked(Path("/home/user/repo"))
 
 
@@ -911,3 +921,42 @@ def test_sandbox_main_prints_one_line(
     assert json.loads(probe_line) == {"status": "ok"}
     assert str(sandboxed) not in run_line
     assert json.loads(run_line)["result"] == "failed"
+
+
+def test_sandbox_hides_host_service_sockets(sandboxed: Path) -> None:
+    outcome = runner.run_test(sandboxed, "hidden_roots")
+    assert (outcome.result, outcome.reason) == ("passed", "test_passed")
+
+
+def _session_bus_reachable() -> bool:
+    """True when this process reaches the host D-Bus session socket: the control of the attack."""
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.connect(f"/run/user/{os.getuid()}/bus")
+    except OSError:
+        return False
+    return True
+
+
+def test_sandbox_refuses_the_session_bus(sandboxed: Path) -> None:
+    if not _session_bus_reachable():
+        pytest.skip("no reachable D-Bus session socket on this host")
+    outcome = runner.run_test(sandboxed, "session_bus")
+    assert (outcome.result, outcome.reason) == ("failed", "test_failed")
+
+
+def test_probe_fails_when_host_sockets_are_visible(
+    sandboxed: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not os.listdir("/run"):
+        pytest.skip("the host /run is empty")
+    adr_argv = runner.sandbox_argv
+
+    def without_run(*args: object, **kwargs: object) -> list[str]:
+        argv = adr_argv(*args, **kwargs)  # type: ignore[arg-type]
+        index = argv.index("/run")
+        return argv[: index - 1] + argv[index + 1 :]
+
+    monkeypatch.setattr(runner, "sandbox_argv", without_run)
+    assert runner.probe(sandboxed) == "probe_failed"
+    assert not list(sandboxed.glob(".harness-isolation-probe-*"))
