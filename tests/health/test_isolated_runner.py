@@ -930,6 +930,8 @@ def test_sandbox_hides_host_service_sockets(sandboxed: Path) -> None:
 
 def _session_bus_reachable() -> bool:
     """True when this process reaches the host D-Bus session socket: the control of the attack."""
+    if sys.platform == "win32":
+        return False
     try:
         with socket.socket(socket.AF_UNIX) as sock:
             sock.connect(f"/run/user/{os.getuid()}/bus")
