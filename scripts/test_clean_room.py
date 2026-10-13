@@ -43,6 +43,7 @@ from scripts.clean_room import (
     fixed_sequence_review,
     global_install,
     install_and_update,
+    isolated_test_runner,
     ledger_migration,
     orchestration_config,
     parallel_batches,
@@ -74,6 +75,7 @@ SCENARIOS = (
     baseline_metrics,
     orchestration_config,
     project_hooks,
+    isolated_test_runner,
     branch_hooks,
     global_install,
 )
