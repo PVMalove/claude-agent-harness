@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -286,3 +286,61 @@ def load_registry(path: Path = REGISTRY_PATH) -> SystemFieldsRegistry:
             {name: _field(path, name, value) for name, value in fields.items()}
         ),
     )
+
+
+def vocabulary_drift(
+    registry: SystemFieldsRegistry,
+    values: Mapping[str, Mapping[str, Iterable[str]]],
+    groups: Mapping[str, Mapping[str, Iterable[str]]],
+) -> list[str]:
+    """Name every difference between the registry and the code vocabularies bound to it.
+
+    ``values`` maps a field id to its named code vocabularies, each of which must hold exactly the
+    field's values; ``groups`` maps a field id to its named code subsets, each of which must equal
+    the registry group of that name.  An empty list means the code and the registry agree.
+    """
+    drift: list[str] = []
+    for field_id in registry.fields:
+        if not values.get(field_id):
+            drift.append(
+                f"{field_id}: no code vocabulary is bound to the registry field"
+            )
+    for field_id, vocabularies in values.items():
+        field = registry.fields.get(field_id)
+        if field is None:
+            drift.append(
+                f"{field_id}: {', '.join(vocabularies)} is bound to a field the registry lacks"
+            )
+            continue
+        expected = set(field.values)
+        for name, vocabulary in vocabularies.items():
+            actual = {str(value) for value in vocabulary}
+            if missing := sorted(expected - actual):
+                drift.append(f"{field_id}: {name} lacks the registry values {missing}")
+            if extra := sorted(actual - expected):
+                drift.append(
+                    f"{field_id}: {name} has values the registry lacks {extra}"
+                )
+    for field_id, field in registry.fields.items():
+        bound = groups.get(field_id, {})
+        for name in field.groups:
+            if name not in bound:
+                drift.append(f"{field_id}: registry group {name!r} has no code binding")
+    for field_id, bound in groups.items():
+        field = registry.fields.get(field_id)
+        if field is None:
+            drift.append(
+                f"{field_id}: groups {', '.join(bound)} are bound to a field the registry lacks"
+            )
+            continue
+        for name, members in bound.items():
+            registered = field.groups.get(name)
+            actual = {str(value) for value in members}
+            if registered is None:
+                drift.append(f"{field_id}: code group {name!r} is not a registry group")
+            elif actual != set(registered):
+                drift.append(
+                    f"{field_id}: group {name!r} is {sorted(registered)} in the registry "
+                    f"but {sorted(actual)} in the code"
+                )
+    return drift
