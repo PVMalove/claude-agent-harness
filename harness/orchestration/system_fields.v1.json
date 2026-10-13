@@ -680,6 +680,17 @@
       "values": {
         "shared": "The package is shared across role sessions."
       }
+    },
+    "batch.required_gate": {
+      "description": "Gate a batch plan names with batch create --required-gate; recorded in the plan's required_gates.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "default": "none",
+      "values": {
+        "none": "The plan names no additional gate.",
+        "review": "The plan requires the code-review gate.",
+        "qa": "The plan requires the qa gate."
+      }
     }
   }
 }

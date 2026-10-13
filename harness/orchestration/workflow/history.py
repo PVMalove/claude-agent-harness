@@ -1489,6 +1489,7 @@ def _validate_dispatch(
                 dispatch["resolved_runtime"],
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
+                replay=True,
             )
         )
         if (

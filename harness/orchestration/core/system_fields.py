@@ -38,8 +38,7 @@ FIELD_REQUIRED_KEYS = frozenset(
     {"description", "automatic_decisions", "unrecognized", "values"}
 )
 FIELD_OPTIONAL_KEYS = frozenset({"default", "groups", "sentinels"})
-
-
+# How an exact value is spelled, as every refusal of a variant states it.
 EXACT_SPELLING = "case-sensitive, no surrounding spaces, no synonyms"
 _SEPARATOR_RUN = re.compile(r"[\s_-]+")
 

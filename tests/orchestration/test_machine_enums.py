@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
 
+from harness.orchestration import contract
+from harness.orchestration.core import config as core_config
 from harness.orchestration.core.constants import (
     BatchState,
     DispatchState,
@@ -24,7 +28,7 @@ from harness.orchestration.ledger import (
     LifecycleLedger,
     ledger_ops,
 )
-from harness.orchestration.workflow import decisions, history
+from harness.orchestration.workflow import decisions, history, reports
 
 
 class MachineStateBoundaryTests(unittest.TestCase):
@@ -186,6 +190,139 @@ class RetryVocabularyBoundaryTests(unittest.TestCase):
                         current_candidate="a" * 40,
                         explicit_category=value,
                     )
+
+
+EXACT_SPELLING = "(case-sensitive, no surrounding spaces, no synonyms)"
+
+
+class ExactCliValueHandlerTests(unittest.TestCase):
+    """Flag values the parser cannot check are refused exactly by their handlers, with a remedy."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.repo = Path(temporary.name)
+        self.roles = self.repo / ".harness" / "orchestration" / "roles"
+        shutil.copytree(Path(contract.__file__).parent / "roles", self.roles)
+        self.installed = sorted(
+            path.stem for path in self.roles.glob("*.md") if path.stem != "_common"
+        )
+
+    def test_an_installed_role_name_loads_only_when_exact(self) -> None:
+        for name in self.installed:
+            self.assertEqual(core_config._role(self.repo, name)["name"], name)
+        allowed = ", ".join(self.installed)
+        for name, hint in (
+            ("Developer", "write exactly 'developer'"),
+            (" developer", "write exactly 'developer'"),
+            ("code_review", "write exactly 'code-review'"),
+            ("developer.md", "write one listed value exactly"),
+            ("../roles/developer", "write one listed value exactly"),
+            ("_common", "write one listed value exactly"),
+            ("разработчик", "write one listed value exactly"),
+        ):
+            with self.subTest(name=name):
+                with self.assertRaises(CoordinatorError) as caught:
+                    core_config._role(self.repo, name)
+                self.assertEqual(
+                    caught.exception.message,
+                    f"role must be one of: {allowed} (got {name!r}; "
+                    + caught.exception.message.split("; ", 1)[1],
+                )
+                self.assertIn(hint, caught.exception.message)
+                self.assertEqual(
+                    caught.exception.remedy,
+                    f"set the role to exactly one of: {allowed} {EXACT_SPELLING}",
+                )
+
+    def test_an_empty_roles_directory_keeps_the_manifest_load_error(self) -> None:
+        for manifest in self.roles.glob("*.md"):
+            manifest.unlink()
+
+        with self.assertRaises(CoordinatorError) as caught:
+            core_config._role(self.repo, "developer")
+
+        self.assertEqual(
+            caught.exception.message, "role manifest 'developer.md' cannot be read"
+        )
+
+    def test_a_session_effort_is_exact_and_recorded_unchanged(self) -> None:
+        resolved = core_config._resolve_assignment(
+            self.repo,
+            {},
+            "developer",
+            "",
+            session_model="opus",
+            session_effort="high",
+        )
+        self.assertEqual(resolved[4], "high")
+        for effort in (" high", "high ", "High", "HIGH", "extra-high", "высокий"):
+            with self.subTest(effort=effort):
+                with self.assertRaises(CoordinatorError) as caught:
+                    core_config._resolve_assignment(
+                        self.repo,
+                        {},
+                        "developer",
+                        "",
+                        session_model="opus",
+                        session_effort=effort,
+                    )
+                self.assertTrue(
+                    caught.exception.message.startswith(
+                        "--effort must be one of: high, low, max, medium, minimal, none, "
+                        f"ultra, xhigh (got {effort!r}; "
+                    )
+                )
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "set --effort to exactly one of: high, low, max, medium, minimal, "
+                    f"none, ultra, xhigh {EXACT_SPELLING}",
+                )
+
+    def test_a_recorded_session_effort_replays_as_it_was_written(self) -> None:
+        resolved = core_config._resolve_assignment(
+            self.repo,
+            {},
+            "developer",
+            "",
+            session_model="opus",
+            session_effort="turbo",
+            replay=True,
+        )
+
+        self.assertEqual(resolved[4], "turbo")
+
+    def test_a_termination_reason_variant_is_refused_before_the_ledger(self) -> None:
+        missing = self.repo / "missing"
+        for reason, exact in (
+            ("RATE_LIMIT", "'rate-limit' or 'rate_limit'"),
+            ("Rate-Limit", "'rate-limit' or 'rate_limit'"),
+            ("rate limit", "'rate-limit' or 'rate_limit'"),
+            (" 429", "'429'"),
+            ("429 ", "'429'"),
+        ):
+            with self.subTest(reason=reason):
+                args = argparse.Namespace(
+                    repo=str(missing),
+                    state_dir=str(missing / "state"),
+                    dispatch="dispatch-1",
+                    termination_reason=reason,
+                    trigger=None,
+                )
+                with self.assertRaises(CoordinatorError) as caught:
+                    reports.resume_dispatch(args)
+                self.assertEqual(
+                    caught.exception.message,
+                    f"--termination-reason {reason!r} is not a recognized rate-limit "
+                    f"reason; write exactly {exact}",
+                )
+                self.assertEqual(
+                    caught.exception.remedy,
+                    "pass --termination-reason as exactly one of: 429, rate-limit, "
+                    f"rate_limit {EXACT_SPELLING}, or pass --trigger for a planned "
+                    "continuation",
+                )
+                self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":

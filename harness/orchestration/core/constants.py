@@ -180,6 +180,8 @@ NEXT_ACTION_DISPATCH_ROLE = {
     "resolve-conflict": "conflict-resolver",
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
+# The gates `batch create --required-gate` may name; a batch that names none records `none`.
+REQUIRED_GATES = ("none", "review", "qa")
 ROLE_TRANSPORTS = {"in-process", "external"}
 ACCESS_MODES = ("inherit", "sandbox", "unsandboxed")
 ACCESS_RESOURCES = ("checkout", "git_common", "shared_storage", "cache")

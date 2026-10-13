@@ -68,6 +68,7 @@ from harness.orchestration.core.git_utils import (
     _commit_changed_files,
     _git_is_ancestor,
 )
+from harness.orchestration.core.system_fields import EXACT_SPELLING, near_miss
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -810,13 +811,21 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
     decision. Anything else -- no reason, or one this coordinator does not recognize -- is treated
     as a planned trigger and requires the existing coordinator-decision approval, with its recorded
     facts checked against the checkpoint for drift."""
+    # Only an exact spelling is recognized: a variant of one is refused before anything is read,
+    # and any other text stays an unrecognized diagnostic, kept as it was given.
+    termination_reason = (
+        args.termination_reason if isinstance(args.termination_reason, str) else ""
+    )
+    if exact := near_miss(termination_reason, RATE_LIMIT_TERMINATION_REASONS):
+        raise CoordinatorError(
+            f"--termination-reason {termination_reason!r} is not a recognized rate-limit "
+            f"reason; write exactly {' or '.join(map(repr, exact))}",
+            remedy="pass --termination-reason as exactly one of: "
+            + ", ".join(sorted(RATE_LIMIT_TERMINATION_REASONS))
+            + f" ({EXACT_SPELLING}), or pass --trigger for a planned continuation",
+        )
     repo = _repo(args)
     root = _state_root(args, repo)
-    termination_reason = (
-        args.termination_reason.strip().lower()
-        if _non_empty(args.termination_reason)
-        else ""
-    )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)

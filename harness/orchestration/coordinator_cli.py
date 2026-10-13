@@ -105,7 +105,9 @@ def build_parser(
     )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
-    create.add_argument("--required-gate", action="append")
+    create.add_argument(
+        "--required-gate", action="append", choices=defaults.REQUIRED_GATES
+    )
     create.add_argument("--dependency", action="append")
     create.add_argument(
         "--expected-file", action="append", help="planned changed path; repeated"
@@ -162,7 +164,11 @@ def build_parser(
     batch_list = batch_commands.add_parser("list")
     _common(batch_list)
     batch_list.add_argument("--ticket", help="only batches of this ticket")
-    batch_list.add_argument("--state", help="only batches in this state")
+    batch_list.add_argument(
+        "--state",
+        choices=[str(state) for state in defaults.BatchState],
+        help="only batches in this state",
+    )
     batch_list.add_argument(
         "--open", action="store_true", help="hide batches already in a terminal state"
     )
@@ -265,7 +271,7 @@ def build_parser(
     )
     decide.add_argument(
         "--reason-category",
-        choices=defaults.RETRY_REASON_CATEGORIES,
+        choices=[str(reason) for reason in defaults.RETRY_REASON_CATEGORIES],
         help="why the reporting role stopped, for retry; structured report data overrides an unsupported claim",
     )
     decide.add_argument(
@@ -385,7 +391,7 @@ def build_parser(
     )
     packet.add_argument(
         "--reason-category",
-        choices=defaults.RETRY_REASON_CATEGORIES,
+        choices=[str(reason) for reason in defaults.RETRY_REASON_CATEGORIES],
         help="preview the retry route as batch decide computes it with this --reason-category; the preview does not check the developer-retry budget",
     )
     packet.add_argument(
@@ -811,7 +817,9 @@ def build_parser(
     integration_link.add_argument("--candidate-commit", required=True)
     integration_link.add_argument("--target-commit", required=True)
     integration_link.add_argument(
-        "--result", required=True, choices=defaults.INTEGRATION_EVIDENCE_RESULTS
+        "--result",
+        required=True,
+        choices=[str(result) for result in defaults.INTEGRATION_EVIDENCE_RESULTS],
     )
     integration_link.add_argument(
         "--reference", required=True, help="where the check result can be inspected"

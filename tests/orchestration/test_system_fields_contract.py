@@ -102,6 +102,7 @@ V1_FIELDS = frozenset(
         "extension.kind",
         "repo_map.tier",
         "context_package.role",
+        "batch.required_gate",
     }
 )
 
@@ -205,6 +206,7 @@ def test_the_defaults_and_groups_of_the_inventory() -> None:
         "access.mode": "inherit",
         "repo_map.tier": "full",
         "context_package.role": "shared",
+        "batch.required_gate": "none",
     }
     assert {
         field_id: set(field.groups)
@@ -239,6 +241,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "assignment.effort",
         "extension.kind",
         "context_package.role",
+        "batch.required_gate",
     }
 
 
@@ -683,6 +686,7 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "access.permission": {"ACCESS_PERMISSIONS": constants.ACCESS_PERMISSIONS},
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
+    "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
     "context_package.role": {
         "context-package register --role": [
             str(value) for value in CLI[(("context-package", "register"), "--role")]
@@ -730,6 +734,8 @@ CLI_BINDINGS: dict[CommandOption, tuple[str, str]] = {
         "config.auto_retry_min_severity",
         EQUAL,
     ),
+    (("batch", "create"), "--required-gate"): ("batch.required_gate", EQUAL),
+    (("batch", "list"), "--state"): ("batch.state", EQUAL),
     (("batch", "rewind"), "--to"): ("pipeline.rewind_stage", EQUAL),
     (("batch", "decide"), "--decision"): ("batch.decision", EQUAL),
     (("batch", "decide"), "--reason-category"): ("retry.reason", EQUAL),
@@ -1288,3 +1294,87 @@ def test_an_exact_effort_is_recorded_unchanged() -> None:
     resolved = contract.resolve_assignment(config, role, "developer", "claude")
 
     assert resolved["effort"] == "xhigh"
+
+
+# -- exact CLI flag values -----------------------------------------------------------------------
+
+# The other required arguments of each command whose options take choices; the option under test
+# comes last, so it overrides a value given here.
+REQUIRED_ARGS: dict[tuple[str, ...], list[str]] = {
+    ("batch", "create"): [
+        *("--ticket", "#1", "--branch", "feature/x", "--worktree", "w"),
+        *("--definition-of-done", "done", "--prohibited-change", "none"),
+    ],
+    ("batch", "list"): [],
+    ("batch", "rewind"): [
+        *("--batch", "b", "--approved-by", "a", "--approved-at", "t", "--note", "n")
+    ],
+    ("batch", "decide"): [
+        *("--batch", "b", "--decision", "retry", "--approved-by", "a"),
+        *("--approved-at", "t"),
+    ],
+    ("batch", "decision-packet"): ["--batch", "b"],
+    ("context-package", "register"): ["--batch", "b", "--candidate-commit", "c"],
+    ("dispatch", "preflight"): ["--batch", "b", "--role", "developer"],
+    ("dispatch", "propose"): ["--batch", "b"],
+    ("dispatch", "create"): ["--batch", "b"],
+    ("dispatch", "heartbeat"): ["--dispatch", "d"],
+    ("dispatch", "context-pressure"): ["--dispatch", "d"],
+    ("dispatch", "resume"): ["--dispatch", "d"],
+    ("integration", "local-qa"): [
+        *("--record", "r", "--ci-condition", "absent", "--reason", "x")
+    ],
+    ("integration", "link-evidence"): [
+        *("--record", "r", "--kind", "ci", "--candidate-commit", "c"),
+        *("--target-commit", "t", "--result", "passed", "--reference", "ref"),
+    ],
+    ("integration", "resolver-event"): [
+        *("--kind", "human-decision", "--dispatch", "d", "--decided-by", "x"),
+        *("--note", "n"),
+    ],
+}
+
+
+def test_every_cli_option_with_choices_has_its_required_arguments() -> None:
+    assert {path for path, _ in CLI_BINDINGS} == set(REQUIRED_ARGS)
+
+
+def test_cli_choices_are_plain_value_strings() -> None:
+    for option, choices in CLI.items():
+        assert all(type(choice) is str for choice in choices), option
+
+
+@pytest.mark.parametrize("option", sorted(CLI_BINDINGS))
+def test_an_exact_cli_value_parses(option: CommandOption) -> None:
+    path, flag = option
+    parser = coordinator.parser()
+    for value in CLI[option]:
+        args = parser.parse_args([*path, *REQUIRED_ARGS[path], flag, str(value)])
+        recorded = [
+            parsed
+            for parsed in vars(args).values()
+            if parsed == value or parsed == [value]
+        ]
+        assert recorded, (option, value)
+
+
+@pytest.mark.parametrize("option", sorted(CLI_BINDINGS))
+def test_a_cli_value_variant_exits_2_naming_every_allowed_value(
+    option: CommandOption, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path, flag = option
+    choices = [str(value) for value in CLI[option]]
+    variants = sorted(
+        {variant for value in choices for variant in _near_misses(value)}
+        | {"default", "значение", ""}
+    )
+    for variant in variants:
+        with pytest.raises(SystemExit) as caught:
+            coordinator.parser().parse_args(
+                [*path, *REQUIRED_ARGS[path], flag, variant]
+            )
+        stderr = capsys.readouterr().err
+        assert caught.value.code == 2, (option, variant)
+        assert "invalid choice" in stderr, (option, variant)
+        assert all(repr(value) in stderr for value in choices), (option, stderr)
+        assert "<" not in stderr, (option, stderr)

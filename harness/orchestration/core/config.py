@@ -26,6 +26,7 @@ from harness.orchestration.contract import (
     APPROVAL_POLICIES,
     AUTO_TTY_PROBLEM,
     COMMUNICATION_POLICY_FIELDS,
+    EFFORT_LEVELS,
     HUMAN_APPROVAL_GATES,
     ContractError,
     configuration_problems,
@@ -48,6 +49,7 @@ from harness.orchestration.core.constants import (
     DEFAULT_TEST_PATH_PATTERNS,
     ZERO_ALLOWED_POLICY_FIELDS,
 )
+from harness.orchestration.core.system_fields import enum_problem, enum_remedy
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -360,8 +362,15 @@ def _roles_dir(repo: Path) -> Path:
 
 
 def _role(repo: Path, name: str) -> JsonObject:
+    """The installed manifest of exactly ``name``: never a case variant or a path elsewhere."""
+    roles = _roles_dir(repo)
+    installed = sorted(
+        path.stem for path in roles.glob("*.md") if path.stem != "_common"
+    )
+    if installed and (problem := enum_problem("role", name, installed)):
+        raise CoordinatorError(problem, remedy=enum_remedy("the role", installed))
     try:
-        return load_role_manifest(_roles_dir(repo) / f"{name}.md")
+        return load_role_manifest(roles / f"{name}.md")
     except ContractError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
@@ -465,8 +474,13 @@ def _resolve_assignment(
     *,
     session_model: object = None,
     session_effort: object = None,
+    replay: bool = False,
 ) -> tuple[JsonObject, list[str], str, str, str, str, str]:
-    """Resolve a role's assignment; the second element is the role's write ceiling."""
+    """Resolve a role's assignment; the second element is the role's write ceiling.
+
+    ``replay`` re-derives the assignment a recorded brief was created with: its session effort is
+    the recorded value, which is not re-validated against the current exact-value rule.
+    """
     role = _role(repo, role_name)
     if not config.get("assignment_plans"):
         if not _non_empty(session_model) or not _non_empty(session_effort):
@@ -474,13 +488,19 @@ def _resolve_assignment(
                 "without .harness/orchestration.json the invoking session must supply --model and --effort",
                 remedy="pass --model and --effort explicitly, or create .harness/orchestration.json with an assignment plan",
             )
+        if not replay and (
+            problem := enum_problem("--effort", session_effort, EFFORT_LEVELS)
+        ):
+            raise CoordinatorError(
+                problem, remedy=enum_remedy("--effort", EFFORT_LEVELS)
+            )
         # No project-owned provider profile exists; the invoking session handles the role.
         return (
             role,
             ["**"],
             DEFAULT_PROFILE,
             session_model.strip(),
-            session_effort.strip(),
+            session_effort.strip() if replay else session_effort,
             "in-process",
             runtime_name.strip() if _non_empty(runtime_name) else "session",
         )
