@@ -7,7 +7,8 @@
 не меняются; подключение к сессионной D-Bus хоста в `/run/user/<uid>` тоже проваливается.
 Контрольный прогон тех же атак без runner меняет копию проекта, а D-Bus без runner доступна,
 если хост её предоставляет. Без рабочей песочницы (Windows, CI без bubblewrap) проверяется
-только отказ без запуска теста.
+только отказ без запуска теста; с `HARNESS_REQUIRE_TEST_SANDBOX=1` (Linux-задача CI) отказ
+probe проваливает сценарий.
 """
 
 from __future__ import annotations
@@ -141,6 +142,11 @@ def run(ctx: SimpleNamespace) -> None:
     if probe.get("status") == "ok":
         _verify_isolation(project, ctx.test_root)
         print("isolated-test-runner: process isolation verified", flush=True)
+    elif os.environ.get("HARNESS_REQUIRE_TEST_SANDBOX") == "1":
+        sys.exit(
+            "isolated-test-runner: HARNESS_REQUIRE_TEST_SANDBOX=1, but the probe refused "
+            f"({probe.get('detail')})"
+        )
     else:
         detail = _verify_refusal(project, probe)
         print(
