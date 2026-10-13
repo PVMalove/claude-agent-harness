@@ -28,7 +28,10 @@ from harness.orchestration.core.system_fields import (
     CONTRACT_VERSION,
     REGISTRY_PATH,
     SystemFieldsError,
+    enum_problem,
+    enum_remedy,
     load_registry,
+    near_miss,
     vocabulary_drift,
 )
 from harness.orchestration.core.utils import JsonObject
@@ -542,10 +545,6 @@ def _schema_enums() -> dict[str, tuple[list[object], object]]:
     return found
 
 
-def _schema_enum(pointer: str) -> list[object]:
-    return _schema_enums()[pointer][0]
-
-
 CLI = _cli_choices()
 # Every registry field and the code vocabularies that must hold exactly its values.
 BINDINGS: dict[str, dict[str, Iterable[str]]] = {
@@ -681,14 +680,7 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "access.mode": {"ACCESS_MODES": constants.ACCESS_MODES},
     "access.resource": {"ACCESS_RESOURCES": constants.ACCESS_RESOURCES},
     "access.operation": {"ACCESS_OPERATIONS": constants.ACCESS_OPERATIONS},
-    "access.permission": {
-        "schema filesystem access enum": [
-            str(value)
-            for value in _schema_enum(
-                "/definitions/accessComponent/properties/filesystem/items/properties/access"
-            )
-        ]
-    },
+    "access.permission": {"ACCESS_PERMISSIONS": constants.ACCESS_PERMISSIONS},
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
     "context_package.role": {
@@ -963,3 +955,336 @@ def test_unbound_and_unknown_bindings_are_drift() -> None:
         "batch.state: code group 'open' is not a registry group",
         "qa.stages: groups primary are bound to a field the registry lacks",
     ]
+
+
+# -- exact values --------------------------------------------------------------------------------
+
+EXACT_HINT = (
+    "write one listed value exactly: case-sensitive, no surrounding spaces, no synonyms"
+)
+# Neither a near miss nor a listed value: free text, a synonym, Cyrillic and other JSON types.
+NOT_A_VALUE: tuple[object, ...] = (
+    "",
+    "default",
+    "automatic",
+    "значение",
+    None,
+    True,
+    0,
+    1.5,
+    [],
+    {},
+)
+
+
+def _near_misses(value: str) -> list[str]:
+    """Spellings of ``value`` that differ only by case, surrounding spaces or a separator."""
+    variants = {value.upper(), value.title(), f" {value}", f"{value} ", f"\t{value}\n"}
+    if "-" in value:
+        variants |= {value.replace("-", "_"), value.replace("-", " ")}
+    if "_" in value:
+        variants |= {value.replace("_", "-"), value.replace("_", " ")}
+    return sorted(variants - {value})
+
+
+def test_near_miss_names_the_exact_spellings() -> None:
+    assert near_miss("Auto", {"auto", "manual_all"}) == ("auto",)
+    assert near_miss(" MANUAL-ALL ", {"auto", "manual_all"}) == ("manual_all",)
+    assert near_miss("Rate Limit", ("rate_limit", "rate-limit", "429")) == (
+        "rate-limit",
+        "rate_limit",
+    )
+    for value in ("auto", "automatic", "авто", None, 1, ["auto"], {"auto": 1}):
+        assert near_miss(value, {"auto", "manual_all"}) == ()
+
+
+def test_enum_problem_accepts_only_an_exact_string() -> None:
+    allowed = ("manual_all", "milestone", "low_risk", "auto")
+    for value in allowed:
+        assert enum_problem("orchestration approval_policy", value, allowed) is None
+    assert enum_problem("orchestration approval_policy", "Auto", allowed) == (
+        "orchestration approval_policy must be one of: auto, low_risk, manual_all, "
+        "milestone (got 'Auto'; write exactly 'auto')"
+    )
+    assert enum_problem("orchestration approval_policy", "automatic", allowed) == (
+        "orchestration approval_policy must be one of: auto, low_risk, manual_all, "
+        f"milestone (got 'automatic'; {EXACT_HINT})"
+    )
+    received_values: tuple[tuple[object, str], ...] = (
+        (None, "null"),
+        (False, "a boolean"),
+        (3, "a number"),
+        (["auto"], "a list"),
+        ({"auto": True}, "an object"),
+    )
+    for other, received in received_values:
+        problem = enum_problem("orchestration approval_policy", other, allowed)
+        assert problem is not None
+        assert problem.endswith(f"(got {received}; {EXACT_HINT})")
+
+
+def test_enum_remedy_lists_the_exact_values() -> None:
+    assert enum_remedy("approval_policy", {"auto", "manual_all"}) == (
+        "set approval_policy to exactly one of: auto, manual_all "
+        "(case-sensitive, no surrounding spaces, no synonyms)"
+    )
+
+
+ROLES_ROOT = Path(contract.__file__).parent / "roles"
+EXAMPLE = Path(contract.__file__).parents[1] / "orchestration.example.json"
+Setter = Callable[[JsonObject, object], None]
+
+
+def _example() -> JsonObject:
+    document: JsonObject = json.loads(EXAMPLE.read_text(encoding="utf-8"))
+    return document
+
+
+def _at(*path: str) -> Setter:
+    def put(config: JsonObject, value: object) -> None:
+        node = config
+        for key in path[:-1]:
+            node = node.setdefault(key, {})
+        node[path[-1]] = value
+
+    return put
+
+
+def _requirement(field: str) -> Setter:
+    def put(config: JsonObject, value: object) -> None:
+        requirement: JsonObject = {
+            "resource": "checkout",
+            "access": "read",
+            field: value,
+        }
+        if value == "cache":
+            requirement["path"] = ".cache/tool"
+        config["access_policy"] = {"defaults": {"filesystem": [requirement]}}
+
+    return put
+
+
+_DEVELOPER = ("assignment_plans", "developer")
+# Every configuration value with a closed vocabulary: its field, where it is set, and its subject.
+CONFIG_VALUES: dict[str, tuple[str, Setter, str]] = {
+    "approval_policy": (
+        "config.approval_policy",
+        _at("approval_policy"),
+        "orchestration approval_policy",
+    ),
+    "human_approval_gate": (
+        "config.human_approval_gate",
+        _at("human_approval_gate"),
+        "orchestration human_approval_gate",
+    ),
+    "auto_retry_min_severity": (
+        "config.auto_retry_min_severity",
+        _at("auto_retry_min_severity"),
+        "orchestration auto_retry_min_severity",
+    ),
+    "agent_to_agent_language": (
+        "config.communication_language",
+        _at("communication_policy", "agent_to_agent_language"),
+        "orchestration communication_policy.agent_to_agent_language",
+    ),
+    "coordinator_report_language": (
+        "config.communication_language",
+        _at("communication_policy", "coordinator_report_language"),
+        "orchestration communication_policy.coordinator_report_language",
+    ),
+    "transport": (
+        "role.transport",
+        _at(*_DEVELOPER, "transport"),
+        "assignment plan for role 'developer' transport",
+    ),
+    "effort": (
+        "assignment.effort",
+        _at(*_DEVELOPER, "runtimes", "claude", "effort"),
+        "assignment runtime 'claude' for role 'developer' effort",
+    ),
+    "repo_map tier": (
+        "repo_map.tier",
+        _at("repo_map_policy", "tier"),
+        "orchestration repo_map_policy.tier",
+    ),
+    "repo_map min_tier": (
+        "repo_map.tier",
+        _at("repo_map_policy", "min_tier"),
+        "orchestration repo_map_policy.min_tier",
+    ),
+    "repo_map min_tier_by_role": (
+        "repo_map.tier",
+        _at("repo_map_policy", "min_tier_by_role", "developer"),
+        "orchestration repo_map_policy.min_tier_by_role.developer",
+    ),
+    "access mode": (
+        "access.mode",
+        _at("access_policy", "defaults", "mode"),
+        "access_policy.defaults.mode",
+    ),
+    "access resource": (
+        "access.resource",
+        _requirement("resource"),
+        "access_policy.defaults.filesystem resource",
+    ),
+    "access permission": (
+        "access.permission",
+        _requirement("access"),
+        "access_policy.defaults.filesystem access",
+    ),
+}
+
+
+def _problems(setting: str, value: object) -> list[str]:
+    _, put, _ = CONFIG_VALUES[setting]
+    config = _example()
+    put(config, value)
+    return contract.configuration_problems(config, ROLES_ROOT)
+
+
+@pytest.mark.parametrize("setting", sorted(CONFIG_VALUES))
+def test_every_registry_value_of_a_configuration_field_passes(setting: str) -> None:
+    field_id, _, subject = CONFIG_VALUES[setting]
+    for value in load_registry().fields[field_id].values:
+        problems = _problems(setting, value)
+        assert not [problem for problem in problems if problem.startswith(subject)]
+
+
+@pytest.mark.parametrize("setting", sorted(CONFIG_VALUES))
+def test_a_configuration_variant_is_refused_with_the_values_and_a_hint(
+    setting: str,
+) -> None:
+    field_id, _, subject = CONFIG_VALUES[setting]
+    values = load_registry().fields[field_id].values
+    prefix = f"{subject} must be one of: {', '.join(sorted(values))} (got "
+    cases: list[tuple[object, str]] = [
+        (variant, "write exactly " + " or ".join(map(repr, near_miss(variant, values))))
+        for value in values
+        for variant in _near_misses(value)
+    ]
+    cases += [(value, EXACT_HINT) for value in NOT_A_VALUE]
+    for value, hint in cases:
+        problems = _problems(setting, value)
+        refusals = [problem for problem in problems if problem.startswith(prefix)]
+        assert len(refusals) == 1, (value, problems)
+        assert refusals[0].endswith(f"; {hint})"), (value, refusals)
+
+
+def _roles_with_developer_mode(tmp_path: Path, mode_line: str) -> Path:
+    roles = tmp_path / "roles"
+    roles.mkdir()
+    for manifest in ROLES_ROOT.glob("*.md"):
+        text = manifest.read_text(encoding="utf-8")
+        if manifest.stem == "developer":
+            text = text.replace("mode: write\n", mode_line, 1)
+        (roles / manifest.name).write_text(text, encoding="utf-8")
+    return roles
+
+
+@pytest.mark.parametrize(
+    ("mode_line", "received", "hint"),
+    [
+        ("mode: Write\n", "'Write'", "write exactly 'write'"),
+        ("mode: READ-ONLY\n", "'READ-ONLY'", "write exactly 'read-only'"),
+        ("mode: read_only\n", "'read_only'", "write exactly 'read-only'"),
+        ("mode: read only\n", "'read only'", "write exactly 'read-only'"),
+        ("mode: readonly\n", "'readonly'", EXACT_HINT),
+        ("mode: запись\n", "'запись'", EXACT_HINT),
+        ("mode:\n  - write\n", "a list", EXACT_HINT),
+        ("", "null", EXACT_HINT),
+    ],
+)
+def test_a_role_manifest_mode_variant_is_refused(
+    tmp_path: Path, mode_line: str, received: str, hint: str
+) -> None:
+    roles = _roles_with_developer_mode(tmp_path, mode_line)
+
+    problems = contract.configuration_problems(_example(), roles)
+
+    assert (
+        "orchestration role manifest developer.md mode must be one of: read-only, "
+        f"write (got {received}; {hint})"
+    ) in problems
+
+
+def test_an_exact_role_manifest_mode_passes(tmp_path: Path) -> None:
+    roles = _roles_with_developer_mode(tmp_path, "mode: write\n")
+
+    assert contract.configuration_problems(_example(), roles) == []
+
+
+@pytest.mark.parametrize("name", ["None", "NONE", " none", "none "])
+def test_a_spelling_of_the_none_extension_is_refused(name: str) -> None:
+    config = _example()
+    config["extensions"]["human_notifier"] = name
+
+    problems = contract.configuration_problems(config, ROLES_ROOT)
+
+    assert problems == [
+        "orchestration extensions.human_notifier must be 'none' or a name like "
+        f"'module:factory' (got {name!r}; write exactly 'none')"
+    ]
+
+
+def test_unknown_enum_keys_name_the_allowed_keys() -> None:
+    config = _example()
+    config["extensions"]["Human_Notifier"] = "none"
+    config["tool_policy"]["modes"]["Write"] = ["Read"]
+    config["tool_policy"]["roles"] = {"Developer": ["Read"]}
+    config["repo_map_policy"]["min_tier_by_role"] = {"QA": "full"}
+    config["access_policy"] = {"roles": {"dev": {}}, "operations": {"push": {}}}
+    roles = ", ".join(ROLE_STEMS)
+
+    problems = contract.configuration_problems(config, ROLES_ROOT)
+
+    assert sorted(problems) == sorted(
+        [
+            "orchestration extensions has unknown interface(s): Human_Notifier (allowed: "
+            + ", ".join(sorted(extensions.EXTENSION_KINDS))
+            + ")",
+            "orchestration tool_policy.modes names unknown entry 'Write' "
+            "(allowed: read-only, write)",
+            f"orchestration tool_policy.roles names unknown entry 'Developer' (allowed: {roles})",
+            "orchestration repo_map_policy.min_tier_by_role names unknown role 'QA' "
+            "(allowed: architect, code-review, developer)",
+            f"access_policy.roles has unknown name 'dev' (allowed: {roles})",
+            "access_policy.operations has unknown name 'push' (allowed: git, publish, qa)",
+        ]
+    )
+
+
+def test_contract_errors_carry_an_exact_value_remedy() -> None:
+    config = _example()
+    role = contract.load_role_manifest(ROLES_ROOT / "developer.md")
+    for value in (" xhigh", "XHigh", "extra-high", None, ["xhigh"]):
+        config["assignment_plans"]["developer"]["runtimes"]["claude"]["effort"] = value
+        with pytest.raises(contract.ContractError) as caught:
+            contract.resolve_assignment(config, role, "developer", "claude")
+        assert caught.value.message.startswith(
+            "assignment effort must be one of: high, low, max, medium, minimal, none, "
+            "ultra, xhigh (got "
+        )
+        assert caught.value.remedy == (
+            "set the assignment's effort to exactly one of: high, low, max, medium, "
+            "minimal, none, ultra, xhigh (case-sensitive, no surrounding spaces, no synonyms)"
+        )
+    config = _example()
+    config["assignment_plans"]["developer"]["transport"] = "In-Process"
+    with pytest.raises(contract.ContractError) as caught:
+        contract.resolve_assignment(config, role, "developer", "claude")
+    assert caught.value.message == (
+        "role 'developer' transport must be one of: external, in-process "
+        "(got 'In-Process'; write exactly 'in-process')"
+    )
+    assert caught.value.remedy.startswith(
+        "set assignment_plans['developer'].transport to exactly one of: "
+    )
+
+
+def test_an_exact_effort_is_recorded_unchanged() -> None:
+    config = _example()
+    role = contract.load_role_manifest(ROLES_ROOT / "developer.md")
+
+    resolved = contract.resolve_assignment(config, role, "developer", "claude")
+
+    assert resolved["effort"] == "xhigh"

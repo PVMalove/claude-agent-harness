@@ -184,6 +184,7 @@ ROLE_TRANSPORTS = {"in-process", "external"}
 ACCESS_MODES = ("inherit", "sandbox", "unsandboxed")
 ACCESS_RESOURCES = ("checkout", "git_common", "shared_storage", "cache")
 ACCESS_OPERATIONS = ("qa", "git", "publish")
+ACCESS_PERMISSIONS = ("read", "write")
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.
 # Keep the default long enough for that work, while the handoff still requires frequent, explicit

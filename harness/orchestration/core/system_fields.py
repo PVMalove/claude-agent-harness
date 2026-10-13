@@ -40,6 +40,10 @@ FIELD_REQUIRED_KEYS = frozenset(
 FIELD_OPTIONAL_KEYS = frozenset({"default", "groups", "sentinels"})
 
 
+EXACT_SPELLING = "case-sensitive, no surrounding spaces, no synonyms"
+_SEPARATOR_RUN = re.compile(r"[\s_-]+")
+
+
 class SystemFieldsError(HarnessError):
     """The system-fields registry is missing, unreadable or malformed."""
 
@@ -344,3 +348,60 @@ def vocabulary_drift(
                     f"but {sorted(actual)} in the code"
                 )
     return drift
+
+
+def _fold(text: str) -> str:
+    return _SEPARATOR_RUN.sub("-", text.strip().casefold())
+
+
+def near_miss(value: object, allowed: Iterable[str]) -> tuple[str, ...]:
+    """The exact allowed spellings a string differs from only by case, surrounding spaces or a
+    separator (runs of whitespace, ``_`` and ``-``); empty for an exact member or anything else."""
+    choices = tuple(str(choice) for choice in allowed)
+    if not isinstance(value, str) or value in choices:
+        return ()
+    folded = _fold(value)
+    return tuple(sorted(choice for choice in choices if _fold(choice) == folded))
+
+
+def _received(value: object) -> str:
+    if isinstance(value, str):
+        return repr(value)
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "a boolean"
+    if isinstance(value, int | float):
+        return "a number"
+    if isinstance(value, list | tuple):
+        return "a list"
+    if isinstance(value, dict):
+        return "an object"
+    return f"a {type(value).__name__}"
+
+
+def enum_problem(subject: str, value: object, allowed: Iterable[str]) -> str | None:
+    """``None`` when ``value`` is exactly one allowed string, else a refusal naming the values.
+
+    Nothing is normalized: a variant in case, spaces or separators is refused with a hint that
+    names the exact spelling, and a value of any other JSON type is refused without raising.
+    """
+    choices = sorted(str(choice) for choice in allowed)
+    if isinstance(value, str) and value in choices:
+        return None
+    exact = near_miss(value, choices)
+    hint = (
+        "write exactly " + " or ".join(repr(choice) for choice in exact)
+        if exact
+        else f"write one listed value exactly: {EXACT_SPELLING}"
+    )
+    return (
+        f"{subject} must be one of: {', '.join(choices)} "
+        f"(got {_received(value)}; {hint})"
+    )
+
+
+def enum_remedy(subject: str, allowed: Iterable[str]) -> str:
+    """The remedy of an :func:`enum_problem` refusal."""
+    choices = ", ".join(sorted(str(choice) for choice in allowed))
+    return f"set {subject} to exactly one of: {choices} ({EXACT_SPELLING})"
