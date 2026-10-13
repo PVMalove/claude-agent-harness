@@ -198,3 +198,30 @@ def check_pvmalove_suite_summary_sync() -> None:
         _check_listed(
             doc, text, r"доп\. скиллы:\s*(.+?)\.", "additions", suite.additions
         )
+    check_pvmalove_override_source_docs()
+
+
+def check_pvmalove_override_source_docs() -> None:
+    """Проверить, что каждый first-party override имеет страницу с правильным источником.
+
+    Override-документы существовали в корне ``docs/skills`` до появления отдельного пространства
+    ``docs/skills/pvmalove``. Принимаются оба расположения, но страница должна вести именно на
+    first-party источник, а не на неизменяемый vendor snapshot.
+    """
+    suite = load_pvmalove_suite()
+    for name in sorted(suite.overrides):
+        candidates = (
+            ROOT / "docs" / "skills" / f"{name}.md",
+            ROOT / "docs" / "skills" / "pvmalove" / f"{name}.md",
+        )
+        pages = [path for path in candidates if path.is_file()]
+        expected = f"skills/first-party/pvmalove/{name}/SKILL.md"
+        if not pages:
+            sys.exit(
+                f"missing documentation page for first-party override {name!r}; "
+                f"expected {candidates[0]} or {candidates[1]}"
+            )
+        if not any(expected in path.read_text(encoding="utf-8") for path in pages):
+            sys.exit(
+                f"first-party override documentation for {name!r} does not reference {expected}"
+            )

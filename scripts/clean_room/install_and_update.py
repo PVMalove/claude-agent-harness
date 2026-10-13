@@ -322,7 +322,7 @@ def run(ctx: SimpleNamespace) -> None:
             "selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded"
         )
 
-    # pvmalove-suite inherits 25 upstream skills, overrides 11 of them, and adds 7 names;
+    # pvmalove-suite inherits 25 upstream skills, overrides 12 of them, and adds 7 names;
     # the clean-room check below expects 32 distinct installed skills (ADR 0001).
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
@@ -528,7 +528,7 @@ def run(ctx: SimpleNamespace) -> None:
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
     if pv_skill_count != 32:
         sys.exit(
-            f"expected 32 skills in a pvmalove-suite project (25 inherited + 7 additions), found {pv_skill_count}"
+            f"expected 32 skills in a pvmalove-suite project (25 inherited + 7 additions, 12 overrides), found {pv_skill_count}"
         )
 
     # A failed older update could remove a retired managed skill's SKILL.md but leave
@@ -590,6 +590,20 @@ def run(ctx: SimpleNamespace) -> None:
             shallow=False,
         ):
             sys.exit(f"pvmalove-suite override did not install the first-party {name}")
+    tdd_source = ROOT / "skills" / "first-party" / "pvmalove" / "tdd" / "SKILL.md"
+    tdd_installed = pv_project / ".harness" / "skills" / "tdd" / "SKILL.md"
+    if not filecmp.cmp(tdd_source, tdd_installed, shallow=False):
+        sys.exit("pvmalove-suite override did not install the first-party tdd")
+    tdd_text = tdd_installed.read_text(encoding="utf-8")
+    for required_text in (
+        "One test proves one behavior, not one assertion",
+        "Do not repeat the production algorithm",
+        "Distinguish commands from queries",
+        "production database engine",
+        "Refactor",
+    ):
+        if required_text not in tdd_text:
+            sys.exit(f"first-party tdd contract is missing: {required_text}")
     if not filecmp.cmp(
         ROOT
         / "skills"

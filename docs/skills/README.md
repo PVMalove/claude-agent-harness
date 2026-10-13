@@ -23,7 +23,8 @@
 
 Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в [vendor/](./vendor/).
 Их исходные `SKILL.md` закреплены в upstream snapshot и вручную не правятся, а first-party
-overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`.
+overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`;
+для `tdd` это [first-party-страница](./pvmalove/tdd.md).
 
 ## Связанные документы
 

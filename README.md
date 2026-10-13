@@ -37,7 +37,7 @@ CONTEXT.md определяет архитектурные термины. По�
 к исходному репозиторию; установщик их не переносит. Установщик устанавливает проектные руководства,
 hooks, агентов и конфигурацию из отдельных шаблонов `harness/project/`.
 
-В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
+В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 [![Граница исходного харнесса и целевого проекта](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
 
@@ -78,6 +78,7 @@ reports. Tree-sitter parser работает в отдельном worker-про
 | [`ask-matt`](./docs/skills/ask-matt.md) | Определяет скилл или сценарий, подходящий для ситуации; маршрутизатор по установленным скиллам. |
 | [`architect`](./docs/skills/architect.md#интерактивный-скилл-architect) | Вручную сравнивает архитектурные варианты и прецеденты, возвращает brief решения; при включённой памяти использует read-only поиск. |
 | [`diagnosing-bugs`](./docs/skills/diagnosing-bugs.md) | Диагностирует сложные дефекты и регрессии; при включённой памяти ищет прошлые фиксы перед проверкой гипотез. |
+| [`tdd`](./docs/skills/pvmalove/tdd.md) | Ведёт red → green → refactor на публичном seam с независимыми ожиданиями, детерминированными границами и изоляцией production database engine. |
 | [`grilling`](./docs/skills/grilling.md) | Базовый механизм интервью: последовательно уточняет план, решение или идею до выявления пробелов. |
 | [`grill-me`](./docs/skills/grill-me.md) | Интервью для уточнения плана или дизайна. |
 | [`grill-with-docs`](./docs/skills/grill-with-docs.md) | Интервью с ведением ADR и глоссария по ходу обсуждения. |
@@ -115,7 +116,7 @@ reports. Tree-sitter parser работает в отдельном worker-про
 | [`research`](./docs/skills/vendor/research.md) | Исследует вопрос по первоисточникам и сохраняет выводы Markdown-файлом в репозитории. |
 | [`resolving-merge-conflicts`](./docs/skills/vendor/resolving-merge-conflicts.md) | Разрешает конфликты незавершённого merge или rebase. |
 | [`setup-matt-pocock-skills`](./docs/skills/vendor/setup-matt-pocock-skills.md) | Однократно настраивает репозиторий для инженерных скиллов: трекер, метки, структуру доменных документов. |
-| [`tdd`](./docs/skills/vendor/tdd.md) | Разработка через тестирование: red-green-refactor и интеграционные тесты. |
+| [`tdd`](./docs/skills/vendor/tdd.md)* | Разработка через тестирование: red-green-refactor и интеграционные тесты. |
 | [`teach`](./docs/skills/vendor/teach.md) | Объясняет пользователю новый навык или понятие в рабочем пространстве. |
 | [`to-questionnaire`](./docs/skills/vendor/to-questionnaire.md) | Преобразует вопрос, требующий внешнего ответа, в опросник для другого участника. |
 | [`to-spec`](./docs/skills/vendor/to-spec.md)* | Формирует спецификацию по итогам обсуждения и публикует её в трекер. |

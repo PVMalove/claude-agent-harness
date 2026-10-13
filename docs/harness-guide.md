@@ -1503,9 +1503,9 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 
 ---
 
-## 7. Локальные кастомизации (11 изменённых скиллов)
+## 7. Локальные кастомизации (12 изменённых скиллов)
 
-`.harness/harness.lock` фиксирует 11 скиллов с намеренными правками поверх апстрима. В `harness diff`
+`.harness/harness.lock` фиксирует 12 скиллов с намеренными правками поверх апстрима. В `harness diff`
 они видны как `local_changed` — это ожидаемо. `harness update --force` или
 `harness adopt --replace-conflicts` их бы стёрли.
 
@@ -1518,6 +1518,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Выводит отчёт на языке из `.harness/project.json` (`### Communication language`). |
 | `diagnosing-bugs` | Перед гипотезами ищет прошлые фиксы через read-only `harness memory search`, если память включена. Воспроизведение остаётся обязательным. |
+| `tdd` | Проверяет одно наблюдаемое поведение на согласованном публичном seam, допускает необходимые multi-step сценарии и несколько assertions, требует независимых ожиданий, детерминированных времени/RNG, production database engine для SQL и Refactor после Green. |
 | `grilling` | При включённой памяти ищет прецеденты до первого раунда проектирования. Указатели не отменяют opt-in Live Artifact. Вопросы фронтира задаёт через `AskUserQuestion` (вкладка на вопрос, варианты или «Other»). Текст — запасной формат для открытых вопросов. |
 | `grill-me` | Тонкая обёртка над first-party `/grilling` с единым финальным выбором: `/to-spec` или правки плана. |
 | `grill-with-docs` | Тонкая обёртка над `/grilling` с `/domain-modeling`: тот же финальный выбор плюс `CONTEXT.md`/ADR. |
@@ -1677,7 +1678,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (capability `mattpocock-suite`) + 11 `pvmalove`-переопределений и 7
+Все 25 скиллов апстрима (capability `mattpocock-suite`) + 12 `pvmalove`-переопределений и 7
 дополнительных first-party скиллов (`qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`,
 `fast-implement`, `delivery-stats`, `architect`). `pr-composer` поставляется отдельно как subagent.
 «Только вручную» = `disable-model-invocation: true` (скилл вызывают только как `/имя`).
@@ -1691,7 +1692,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 | `triage` | да | Issue/PR через state machine триажа: категоризация, верификация, agent-ready брифы ([раздел 7](#triage-подробнее)). |
 | `improve-codebase-architecture` | да | Ищет возможности «углубления» модулей, показывает HTML-отчёт, затем прожарка по выбранной. |
 | `setup-matt-pocock-skills` | да | Разовая настройка трекера, таксономии триажа и layout доменных доков. |
-| `tdd` | нет | red → green → refactor ([раздел 5](#tdd-tdd-loop)). |
+| `tdd` | нет | red → green → refactor с независимыми ожиданиями, детерминированными границами и изоляцией production database engine ([раздел 5](#tdd-tdd-loop)). |
 | `to-spec` | да | Синтез диалога в спецификацию и публикация в трекер ([раздел 2](#2-фиксация-требований-и-спецификация-specification)). |
 | `to-tickets` | да | Декомпозиция спецификации на вертикальные слайсы с blocking edges ([раздел 3](#3-декомпозиция-задач-ticketing)). |
 | `wayfinder` | да | Карта решений для работы, не помещающейся в одну сессию ([раздел 1](#wayfinder)). |
