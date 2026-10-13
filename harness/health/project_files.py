@@ -314,9 +314,7 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
             )
         source = data.get("source")
         if not isinstance(source, dict):
-            problems.append(
-                f"missing overlay source: {lock_path.relative_to(repo).as_posix()}"
-            )
+            problems.append(f"missing overlay source: {lock_path.relative_to(repo).as_posix()}")
         elif source.get("type") != "project-local":
             remote = source.get("remote")
             revision = source.get("revision")
