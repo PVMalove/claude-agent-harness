@@ -29,6 +29,7 @@ from harness.orchestration.core.constants import (
     LOCAL_QA_CI_CONDITIONS,
     STATE_REL,
     IntegrationCheckResult,
+    LocalQaState,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -151,7 +152,7 @@ def _verified_generated(root: Path, link: JsonObject) -> bool:
         result = _read_object(_path(root, _result_id(request_id)), "local QA result")
         return (
             result.get("verification") == "verified"
-            and result.get("state") == "completed"
+            and result.get("state") == LocalQaState.COMPLETED
             and link.get("local_qa_result_sha256") == integration._sha256(result)
             and all(
                 link.get(key) == result.get(key)
@@ -216,7 +217,7 @@ def _unavailable(
         "request_id": request_id,
         "event": "attempt-finished",
         "attempt": started["attempt"],
-        "state": "unavailable",
+        "state": LocalQaState.UNAVAILABLE,
         "stage": stage,
         "reason": sanitise(str(failure)),
         "finished_at": utils._now(),
@@ -259,7 +260,7 @@ def _link_result(ledger: LifecycleLedger, root: Path, result: JsonObject) -> Jso
             "candidate_sha": result["candidate_sha"],
             "target_sha": result["target_sha"],
             "result": IntegrationCheckResult.PASSED
-            if result["state"] == "completed"
+            if result["state"] == LocalQaState.COMPLETED
             else IntegrationCheckResult.FAILED,
             "reference": str(_path(root, result["local_qa_id"])),
             "artifact_sha256": result["artifact_sha256"],
@@ -335,7 +336,10 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             try:
                 observed = _observe_pair(repo, root, record, pair)
             except CoordinatorError as exc:
-                observed = {"state": "unavailable", "reason": sanitise(exc.message)}
+                observed = {
+                    "state": LocalQaState.UNAVAILABLE,
+                    "reason": sanitise(exc.message),
+                }
             request = {
                 "local_qa_id": request_id,
                 "event": "request",
@@ -370,7 +374,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             except (CoordinatorError, OSError) as exc:
                 return {
                     **existing,
-                    "state": "unavailable",
+                    "state": LocalQaState.UNAVAILABLE,
                     "verification": "unverified",
                     "reason": sanitise(str(exc)),
                 }
@@ -382,7 +386,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         if len(previous) > limit:
             return {
                 "request_id": request_id,
-                "state": "exhausted",
+                "state": LocalQaState.EXHAUSTED,
                 "attempts": len(previous),
                 "findings": [],
                 "reason": "infrastructure retry limit reached",
@@ -390,7 +394,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         if previous and not getattr(args, "retry", False):
             return {
                 "request_id": request_id,
-                "state": "unavailable",
+                "state": LocalQaState.UNAVAILABLE,
                 "attempts": len(previous),
                 "findings": [],
                 "reason": "explicit --retry is required after an operational attempt",
@@ -447,7 +451,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             "event": "result",
             "request_id": request_id,
             **members,
-            "state": "completed" if gate.passed else "failed",
+            "state": LocalQaState.COMPLETED if gate.passed else LocalQaState.FAILED,
             "checks_run": gate.checks,
             "duration_seconds": gate.duration_seconds,
             "artifact": str(artifact),

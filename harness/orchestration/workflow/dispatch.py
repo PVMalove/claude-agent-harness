@@ -31,7 +31,10 @@ from harness.orchestration.contract import (
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
-from harness.orchestration.core.constants import ACCEPTED_DECISIONS
+from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
+    ContextPackageFreshness,
+)
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _approval_policy,
@@ -1067,7 +1070,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             if (
                 context_package_freshness is None
-                or context_package_freshness["status"] != "fresh"
+                or context_package_freshness["status"] != ContextPackageFreshness.FRESH
             ):
                 raise CoordinatorError(
                     "newly registered Context Package is stale; refresh before dispatch",

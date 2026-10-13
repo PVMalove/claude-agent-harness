@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
@@ -25,6 +26,17 @@ from .core.utils import JsonObject
 
 # Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
 GIT_TIMEOUT_SECONDS = 60
+# The layer that set a component of a pinned plan: a whole legacy plan, the built-in default,
+# the access_policy defaults, or a qualified 'roles.<role>' or 'operations.<operation>' override.
+PLAN_SOURCES = ("legacy", "default", "defaults")
+PLAN_OVERRIDE_SECTIONS = ("roles", "operations")
+
+
+# Whether a pinned plan is a legacy inherit or its access was confirmed for the worker launch.
+class RuntimeAccessStatus(StrEnum):
+    LEGACY_INHERIT = "legacy-inherit"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
 
 
 class AccessError(HarnessError):
@@ -83,8 +95,10 @@ def validate_plan(plan: object) -> None:
             not isinstance(value, str)
             or not value
             or (
-                value not in ("legacy", "default", "defaults")
-                and not value.startswith(("roles.", "operations."))
+                value not in PLAN_SOURCES
+                and not value.startswith(
+                    tuple(f"{section}." for section in PLAN_OVERRIDE_SECTIONS)
+                )
             )
             for value in sources.values()
         )
@@ -380,7 +394,7 @@ def verify_plan(
         and not plan["network"]["hosts"]
     ):
         return {
-            "status": "legacy-inherit",
+            "status": RuntimeAccessStatus.LEGACY_INHERIT,
             "verified": [],
             "unverified": [],
             "remedy": None,
@@ -397,7 +411,9 @@ def verify_plan(
             observation = None
     reason = _observation_problem(plan, transport, observation)
     summary: JsonObject = {
-        "status": "unverified" if reason else "verified",
+        "status": RuntimeAccessStatus.UNVERIFIED
+        if reason
+        else RuntimeAccessStatus.VERIFIED,
         "reason": reason,
         "required": {
             "hosts": plan["network"]["hosts"],
@@ -467,16 +483,16 @@ def apply_plan(
     """
     plan = brief.get("runtime_access")
     if plan is None:
-        return {"status": "legacy-inherit"}
+        return {"status": RuntimeAccessStatus.LEGACY_INHERIT}
     if not isinstance(plan, dict):
         raise AccessError(
             "invalid pinned access plan",
             remedy="create a new dispatch with a valid access plan",
         )
     verification, observation = verify_plan(plan, transport)
-    if verification["status"] == "legacy-inherit":
+    if verification["status"] == RuntimeAccessStatus.LEGACY_INHERIT:
         return verification
-    if verification["status"] != "verified" or observation is None:
+    if verification["status"] != RuntimeAccessStatus.VERIFIED or observation is None:
         raise AccessError(str(verification["reason"]), remedy=_REMEDY)
     provider = extensions.runtime_access(plan["runtime_extension"])
     launch = getattr(provider, "handoff", None) if handoff else None

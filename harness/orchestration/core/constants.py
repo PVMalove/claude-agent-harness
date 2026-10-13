@@ -41,6 +41,26 @@ class IntegrationCheckResult(StrEnum):
     FAILED = "failed"
 
 
+# Where the integration ref points now, compared with the target SHA an integration recorded.
+class IntegrationTargetState(StrEnum):
+    CURRENT = "current"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+
+
+# State of an integration local-QA attempt, of its result and of a request's pair observation.
+class LocalQaState(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    EXHAUSTED = "exhausted"
+
+
+class ContextPackageFreshness(StrEnum):
+    FRESH = "fresh"
+    STALE = "stale"
+
+
 class RetryReason(StrEnum):
     VERIFICATION_INFRASTRUCTURE = "verification-infrastructure"
     TRANSPORT = "transport"

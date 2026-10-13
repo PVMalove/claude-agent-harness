@@ -256,6 +256,28 @@
         "no-automatic-route": ["unknown-reason", "abandon-dead-end", "supersede-dead-end"]
       }
     },
+    "completion.step": {
+      "description": "Step of the policy chain that report complete runs after a recorded report, in this order.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "policy-decide": "Record the decision that the report's pinned policy takes.",
+        "risk-assess": "Assess the risk of the accepted candidate of a risk-assessed role.",
+        "next-dispatch": "Create the next dispatch that the policy routes the batch to."
+      }
+    },
+    "completion.step_status": {
+      "description": "What report complete did with one policy chain step; the first failed step stops the chain.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "done": "The step ran now and its effect is recorded.",
+        "already-done": "The ledger already records the step's effect; it is not repeated.",
+        "not-applicable": "The report's policy or the batch state does not call for the step.",
+        "not-run": "The step did not run because an earlier step stopped the chain.",
+        "failed": "The step failed; the chain stops and the result names the step and its error with a remedy."
+      }
+    },
     "continuation.trigger": {
       "description": "Kind of a continuation of a checkpointed worker given by dispatch resume --trigger.",
       "automatic_decisions": true,
@@ -330,6 +352,23 @@
         "info": "Informational finding.",
         "warning": "Finding that should be fixed.",
         "blocker": "Finding that blocks acceptance."
+      }
+    },
+    "risk.trigger": {
+      "description": "Risk trigger of the code-review gate: risk assess matches it against the candidate's changed files and the developer's declared triggers, and a matched trigger makes code-review mandatory. The code-review role manifest must list every value; a project may add triggers to that manifest, and a trigger outside the manifest is refused.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "api-public-contract": "The change touches an API or another public contract.",
+        "schema-change": "The change alters a database schema.",
+        "data-migration": "The change migrates stored data.",
+        "outbox": "The change touches an outbox.",
+        "queues": "The change touches message queues.",
+        "message-schema-routing": "The change alters a message schema or message routing.",
+        "transactions": "The change alters transaction boundaries.",
+        "authorization-security": "The change touches authorization or security.",
+        "concurrency-retry": "The change touches concurrency or retry behavior.",
+        "retry-dlq": "The change touches retry or dead-letter queue handling."
       }
     },
     "carried_item.source": {
@@ -448,6 +487,17 @@
         "failed": "The check failed on the pair."
       }
     },
+    "integration.target_state": {
+      "description": "Where the integration ref points now, compared with the target SHA the integration record pinned; only a current pair can use its evidence.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "current": "The integration ref still points at the recorded target; the pair's evidence applies.",
+        "stale": "The integration ref moved; the pair needs a refresh before its evidence applies.",
+        "unavailable": "Sentinel: the remote cannot say where the integration ref points; it is never treated as current, so no evidence applies to the pair and a refresh is required once the ref is readable."
+      },
+      "sentinels": ["unavailable"]
+    },
     "integration.local_qa_ci_condition": {
       "description": "Why combined-result CI cannot verify the pair, so integration local-qa runs.",
       "automatic_decisions": true,
@@ -467,6 +517,18 @@
         "collector-accepted": "The collector accepted the CI evidence for the pair.",
         "collector-failed": "The collector found a failed required check on the pair."
       }
+    },
+    "local_qa.attempt_state": {
+      "description": "State of an integration local-QA attempt, of its result and of a request's pair observation; only a result links local-qa evidence to the pair.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "completed": "Every gate command passed on the pair; the result links passed local-qa evidence.",
+        "failed": "A gate command failed on the pair; the result links failed local-qa evidence.",
+        "unavailable": "Sentinel: the attempt could not observe the pair, run the gate or link its evidence; no evidence is linked, the pair stays unverified, and a new attempt needs an explicit --retry.",
+        "exhausted": "The pair has spent its infrastructure retry budget; no new attempt starts."
+      },
+      "sentinels": ["unavailable"]
     },
     "ci.checkout": {
       "description": "What a CI observation ran on.",
@@ -649,6 +711,28 @@
         "write": "Write access."
       }
     },
+    "runtime_access.source": {
+      "description": "Layer that set one component (mode, network or filesystem) of a pinned runtime access plan. The roles and operations layers are written qualified, as 'roles.<pipeline.role>' and 'operations.<access.operation>'; every other source is one bare listed value.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "legacy": "The project has no access_policy: every component is legacy and the plan must stay an empty inherit.",
+        "default": "No access_policy layer set the component; the built-in default applies.",
+        "defaults": "The access_policy defaults layer set the component.",
+        "roles": "The access_policy override of the dispatched role set the component.",
+        "operations": "The access_policy override of the coordinator operation set the component."
+      }
+    },
+    "runtime_access.status": {
+      "description": "Verification status of a pinned runtime access plan at preflight and at every send; only a verified or legacy-inherit plan is handed to a worker.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "legacy-inherit": "A legacy empty inherit plan; the worker inherits the session's access and no native proof is required.",
+        "verified": "The pinned native runtime_access implementation confirmed mode, network and filesystem for the worker launch.",
+        "unverified": "No fresh native observation confirmed the plan; the send is refused with a remedy."
+      }
+    },
     "extension.kind": {
       "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",
       "automatic_decisions": false,
@@ -679,6 +763,15 @@
       "default": "shared",
       "values": {
         "shared": "The package is shared across role sessions."
+      }
+    },
+    "context_package.freshness": {
+      "description": "Freshness of a registered context package against the batch base, the current developer candidate and its frozen memory sources; recorded in the batch and the brief.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "fresh": "The package matches the current base, candidate and memory sources.",
+        "stale": "The base, the candidate or a frozen memory source changed since registration; dispatch create registers a new package and refuses one that is already stale."
       }
     },
     "batch.required_gate": {

@@ -47,6 +47,7 @@ from harness.orchestration.core.constants import (
     CARRIED_ITEM_SOURCES,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTEXT_PACKAGE_FIELDS,
+    ContextPackageFreshness,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
@@ -457,7 +458,9 @@ def _context_package_freshness(
             else {}
         ),
         "context_package_id": package["context_package_id"],
-        "status": "fresh" if fresh else "stale",
+        "status": ContextPackageFreshness.FRESH
+        if fresh
+        else ContextPackageFreshness.STALE,
         "checked_at": utils._now(),
         "registered_base_commit": package["base_commit"],
         "current_base_commit": current_base,

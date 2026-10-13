@@ -21,6 +21,7 @@ from harness.orchestration import (
     coordinator,
     extensions,
     operational_guards,
+    runtime_access,
     runtime_attestation,
 )
 from harness.orchestration.core import ci_source, constants, system_fields
@@ -63,6 +64,8 @@ V1_FIELDS = frozenset(
         "auto.decision_kind",
         "auto.stop_category",
         "auto.stop_reason",
+        "completion.step",
+        "completion.step_status",
         "continuation.trigger",
         "continuation.termination_reason",
         "report.outcome",
@@ -70,6 +73,7 @@ V1_FIELDS = frozenset(
         "report.evidence_status",
         "review.severity",
         "finding.severity",
+        "risk.trigger",
         "carried_item.source",
         "carried_item.status",
         "delta_review.mode",
@@ -81,8 +85,10 @@ V1_FIELDS = frozenset(
         "context.pressure_level",
         "integration.evidence_kind",
         "integration.check_result",
+        "integration.target_state",
         "integration.local_qa_ci_condition",
         "integration.ci_verification",
+        "local_qa.attempt_state",
         "ci.checkout",
         "ci.verdict",
         "ci.verdict_reason",
@@ -99,9 +105,12 @@ V1_FIELDS = frozenset(
         "access.resource",
         "access.operation",
         "access.permission",
+        "runtime_access.source",
+        "runtime_access.status",
         "extension.kind",
         "repo_map.tier",
         "context_package.role",
+        "context_package.freshness",
         "batch.required_gate",
     }
 )
@@ -180,7 +189,9 @@ def test_sentinels_name_their_safe_handling() -> None:
         "retry.reason": ("unknown",),
         "qa.code_checks_started": ("unknown",),
         "qa.diagnosis_category": ("unknown",),
+        "integration.target_state": ("unavailable",),
         "integration.local_qa_ci_condition": ("unavailable",),
+        "local_qa.attempt_state": ("unavailable",),
         "ci.checkout": ("unknown",),
         "ci.verdict_reason": ("unavailable",),
     }
@@ -508,6 +519,11 @@ ROLE_STEMS = tuple(
         if path.stem != "_common"
     )
 )
+CODE_REVIEW_TRIGGERS = tuple(
+    contract.load_role_manifest(
+        Path(contract.__file__).parent / "roles" / "code-review.md"
+    )["risk_triggers"]
+)
 CommandOption = tuple[tuple[str, ...], str]
 
 
@@ -594,6 +610,10 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
             for reason in reasons
         }
     },
+    "completion.step": {"completion.POLICY_CHAIN_STEPS": completion.POLICY_CHAIN_STEPS},
+    "completion.step_status": {
+        "completion.ChainStepStatus": completion.ChainStepStatus
+    },
     "continuation.trigger": {
         "dispatch resume --trigger": [
             str(value) for value in CLI[(("dispatch", "resume"), "--trigger")]
@@ -613,6 +633,12 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "report.evidence_status": {"EvidenceStatus": constants.EvidenceStatus},
     "review.severity": {"REVIEW_SEVERITIES": constants.REVIEW_SEVERITIES},
     "finding.severity": {"FINDING_SEVERITIES": constants.FINDING_SEVERITIES},
+    "risk.trigger": {
+        "contract.CODE_REVIEW_REQUIRED_RISK_TRIGGERS": (
+            contract.CODE_REVIEW_REQUIRED_RISK_TRIGGERS
+        ),
+        "roles/code-review.md risk_triggers": CODE_REVIEW_TRIGGERS,
+    },
     "carried_item.source": {
         "CARRIED_ITEM_SOURCES": constants.CARRIED_ITEM_SOURCES,
         "CARRIED_ITEM_BRIEF_ROLES keys": constants.CARRIED_ITEM_BRIEF_ROLES,
@@ -642,9 +668,13 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
         "IntegrationCheckResult": constants.IntegrationCheckResult,
         "INTEGRATION_EVIDENCE_RESULTS": constants.INTEGRATION_EVIDENCE_RESULTS,
     },
+    "integration.target_state": {
+        "IntegrationTargetState": constants.IntegrationTargetState
+    },
     "integration.local_qa_ci_condition": {
         "LOCAL_QA_CI_CONDITIONS": constants.LOCAL_QA_CI_CONDITIONS
     },
+    "local_qa.attempt_state": {"LocalQaState": constants.LocalQaState},
     "integration.ci_verification": {
         "INTEGRATION_CI_COLLECTED, INTEGRATION_CI_COLLECTED_FAILURE": (
             constants.INTEGRATION_CI_COLLECTED,
@@ -684,9 +714,21 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "access.resource": {"ACCESS_RESOURCES": constants.ACCESS_RESOURCES},
     "access.operation": {"ACCESS_OPERATIONS": constants.ACCESS_OPERATIONS},
     "access.permission": {"ACCESS_PERMISSIONS": constants.ACCESS_PERMISSIONS},
+    "runtime_access.source": {
+        "runtime_access.PLAN_SOURCES | PLAN_OVERRIDE_SECTIONS": (
+            *runtime_access.PLAN_SOURCES,
+            *runtime_access.PLAN_OVERRIDE_SECTIONS,
+        )
+    },
+    "runtime_access.status": {
+        "runtime_access.RuntimeAccessStatus": runtime_access.RuntimeAccessStatus
+    },
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
     "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
+    "context_package.freshness": {
+        "ContextPackageFreshness": constants.ContextPackageFreshness
+    },
     "context_package.role": {
         "context-package register --role": [
             str(value) for value in CLI[(("context-package", "register"), "--role")]
@@ -1176,6 +1218,28 @@ def test_a_configuration_variant_is_refused_with_the_values_and_a_hint(
         assert refusals[0].endswith(f"; {hint})"), (value, refusals)
 
 
+@pytest.mark.parametrize("value", ["", "  ", None, True, 0, ["high"], {}])
+def test_an_empty_or_non_string_effort_has_one_problem(value: object) -> None:
+    _, _, subject = CONFIG_VALUES["effort"]
+
+    problems = [problem for problem in _problems("effort", value) if subject in problem]
+
+    assert len(problems) == 1, problems
+    assert problems[0].startswith(f"{subject} must be one of: ")
+
+
+def test_a_missing_effort_has_one_problem() -> None:
+    _, _, subject = CONFIG_VALUES["effort"]
+    config = _example()
+    del config["assignment_plans"]["developer"]["runtimes"]["claude"]["effort"]
+
+    problems = contract.configuration_problems(config, ROLES_ROOT)
+
+    assert [problem for problem in problems if subject in problem] == [
+        f"{subject} must be a non-empty string"
+    ]
+
+
 def _roles_with_developer_mode(tmp_path: Path, mode_line: str) -> Path:
     roles = tmp_path / "roles"
     roles.mkdir()
@@ -1217,28 +1281,6 @@ def test_an_exact_role_manifest_mode_passes(tmp_path: Path) -> None:
     roles = _roles_with_developer_mode(tmp_path, "mode: write\n")
 
     assert contract.configuration_problems(_example(), roles) == []
-
-@pytest.mark.parametrize("value", ["", "  ", None, True, 0, ["high"], {}])
-def test_an_empty_or_non_string_effort_has_one_problem(value: object) -> None:
-    _, _, subject = CONFIG_VALUES["effort"]
-
-    problems = [problem for problem in _problems("effort", value) if subject in problem]
-
-    assert len(problems) == 1, problems
-    assert problems[0].startswith(f"{subject} must be one of: ")
-
-
-def test_a_missing_effort_has_one_problem() -> None:
-    _, _, subject = CONFIG_VALUES["effort"]
-    config = _example()
-    del config["assignment_plans"]["developer"]["runtimes"]["claude"]["effort"]
-
-    problems = contract.configuration_problems(config, ROLES_ROOT)
-
-    assert [problem for problem in problems if subject in problem] == [
-        f"{subject} must be a non-empty string"
-    ]
-
 
 
 @pytest.mark.parametrize("name", ["None", "NONE", " none", "none "])
