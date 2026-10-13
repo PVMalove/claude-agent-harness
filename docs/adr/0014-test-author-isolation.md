@@ -112,10 +112,11 @@ runner вызывает сам:
   Заменяет `runner.cfg` прототипа; CLI принимает только идентификатор теста или `--probe`, поэтому
   вызывающий не может расширить зону записи.
 
-`project.json.tmpl` новых полей не содержит: без них runner отказывает с `test_paths_missing` или
-`test_runner_missing`. Поле `test_paths` в шаблоне включило бы тест-автора в каждом новом
-проекте, поэтому доставка полей в шаблоне и opt-in остаются за #554. Writable-зоны запуска —
-каталоги `test_paths`, `/tmp` (tmpfs) и свежие `cache/` и `reports/` в
+`project.json.tmpl` пишет новые поля только по флагам `harness init --test-path` и
+`--test-runner-command`: без них runner отказывает с `test_paths_missing` или
+`test_runner_missing`. Значение `test_paths` по умолчанию включило бы тест-автора в каждом новом
+проекте и предполагало бы раскладку проекта, поэтому его нет; opt-in остаётся за #554.
+Writable-зоны запуска — каталоги `test_paths`, `/tmp` (tmpfs) и свежие `cache/` и `reports/` в
 `.harness/.sandboxes/runs/isolated-test-<run_id>/`. Перед тестом runner выполняет probe с тем же
 набором монтирований: запись в корень checkout получает `EROFS`, а `/run` и `/var/run` пусты.
 Провал любой проверки до запуска даёт отказ `isolation_unavailable` с кодом `platform`,

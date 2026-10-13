@@ -32,9 +32,18 @@
 "test_runner": {"command": ["python3", "-m", "unittest", "{test_id}"]}
 ```
 
-Шаблон `project.json.tmpl` этих полей не содержит: без них runner отказывает с
-`test_paths_missing` или `test_runner_missing`. Поле `test_paths` в шаблоне включило бы
-тест-автора в каждом новом проекте, поэтому доставка полей и opt-in проекта относятся к #554.
+Новый проект получает эти поля флагами `harness init`; шаблон `project.json.tmpl` пишет их только
+по флагам, а некорректное значение `init` отклоняет до записи файлов:
+
+```bash
+harness init . --capability pvmalove-suite \
+  --test-path 'tests/**' \
+  --test-runner-command 'python3 -m unittest {test_id}'
+```
+
+Без флагов полей нет, и runner отказывает с `test_paths_missing` или `test_runner_missing`.
+Значения по умолчанию нет: оно включило бы тест-автора в каждом новом проекте и предполагало бы
+раскладку и стек проекта. Включение субагента и opt-in проекта относятся к #554.
 
 **Зоны записи.** Схема допускает любой относительный glob, а runner монтирует на запись только
 записи вида `<каталог>/**` и отказывает с `write_zone_rejected` для остальных. Каждая запись
