@@ -1,14 +1,14 @@
 """Изолированный runner одного теста: сценарий clean-room из `scripts/test_clean_room.py`.
 
-Свежий проект pvmalove-suite без сборки и без БД объявляет `test_paths` и `test_runner`, проходит
-`harness health`, а `.claude/hooks/run-test.sh` вызывается напрямую из шелла, без Claude Code и
-без guard: так проверяются ограничения уровня процесса. Если probe подтверждает песочницу,
-атаки теста на production, `.git` и конфигурацию runner проваливаются, а хэши защищённых файлов
-не меняются; подключение к сессионной D-Bus хоста в `/run/user/<uid>` тоже проваливается.
-Контрольный прогон тех же атак без runner меняет копию проекта, а D-Bus без runner доступна,
-если хост её предоставляет. Без рабочей песочницы (Windows, CI без bubblewrap) проверяется
-только отказ без запуска теста; с `HARNESS_REQUIRE_TEST_SANDBOX=1` (Linux-задача CI) отказ
-probe проваливает сценарий.
+Свежий проект pvmalove-suite без сборки и без БД получает `test_paths` и `test_runner` флагами
+`init`, проходит `harness health`, а `.claude/hooks/run-test.sh` вызывается напрямую из шелла, без
+Claude Code и без guard: так проверяются ограничения уровня процесса. Если probe подтверждает
+песочницу, атаки теста на production, `.git` и конфигурацию runner проваливаются, а хэши защищённых
+файлов не меняются; подключение к сессионной D-Bus хоста в `/run/user/<uid>` тоже проваливается.
+Контрольный прогон тех же атак без runner меняет копию проекта, а D-Bus без runner доступна, если
+хост её предоставляет. Без рабочей песочницы (Windows, CI без bubblewrap) проверяется только отказ
+без запуска теста; с `HARNESS_REQUIRE_TEST_SANDBOX=1` (Linux-задача CI) отказ probe проваливает
+сценарий.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import sys
@@ -177,9 +178,18 @@ def _install(project: Path) -> Path:
             "^feature/issue-[0-9]+-.+",
             "--qa-gate-command",
             "python3 -m unittest",
+            "--test-path",
+            "tests/**",
+            "--test-runner-command",
+            shlex.join(RUNNER_COMMAND),
         ],
         quiet=True,
     )
+    config = json.loads(
+        (project / ".harness" / "project.json").read_text(encoding="utf-8")
+    )
+    if config.get("test_runner") != {"command": RUNNER_COMMAND}:
+        sys.exit("pvmalove-suite init did not write the --test-* flags to project.json")
     fill_agents(project)
     for relative, text in (
         ("src/__init__.py", ""),
@@ -190,10 +200,6 @@ def _install(project: Path) -> Path:
         path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", newline="\n")
-    config = project / ".harness" / "project.json"
-    data = json.loads(config.read_text(encoding="utf-8"))
-    data.update(test_paths=["tests/**"], test_runner={"command": RUNNER_COMMAND})
-    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     run_health(project)
     if not (project / ".claude" / "hooks" / "run-test.sh").is_file():
         sys.exit("pvmalove-suite init did not scaffold run-test.sh")
