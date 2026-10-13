@@ -212,28 +212,45 @@ def _stop_to_resume(batch: JsonObject) -> JsonObject | None:
     return None if batch.get("manual_recovery") else batch.get("auto_stop")
 
 
-def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObject:
-    """Structural runtime evidence of an environment failure; failing that, a conservative text
-    classification of the blocked report, recorded as a heuristic for the human to approve."""
+def _confirmed_failure(
+    root: Path, batch: JsonObject, entry: JsonObject, *, runtime_stopped: bool = False
+) -> JsonObject:
+    """Structural startup evidence of an environment failure; failing that, a conservative text
+    classification of the blocked report, recorded as a heuristic for the human to approve.
+
+    Either way the worker's outcome must be known first: a live or unknown worker may still run,
+    so a restart waits for it or for the operator's ``--runtime-stopped``."""
+    from harness.orchestration.core.constants import RECOVERY_EVIDENCE_COMMANDS
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
     from harness.orchestration.workflow import failure_classifier
     from harness.orchestration.workflow.history import _pending_report
+    from harness.orchestration.workflow.startup import assess_startup
 
     status = _load_dispatch_status(root, entry["dispatch_id"])
-    model = status.get("model_self_report", {})
-    tree = status.get("worktree_attestation", {})
     failure = status.get("runtime_failure", {})
-    unavailable = (
-        failure.get("kind") == "runtime-unavailable"
-        and failure.get("operation") == "startup"
-        and failure.get("worker_started") is False
+    assessment = assess_startup(
+        _load_dispatch(root, entry["dispatch_id"]),
+        status,
+        runtime_stopped=runtime_stopped,
     )
+    if not assessment["restart_allowed"]:
+        raise CoordinatorError(
+            f"the worker outcome is {assessment['worker_state']}; a restart could leave two "
+            "workers on one worktree",
+            remedy="keep waiting, or stop the worker through its runtime and repeat batch "
+            f"resume-stop with --runtime-stopped; inspect {RECOVERY_EVIDENCE_COMMANDS} first",
+        )
     evidence: JsonObject = {
-        "model_self_report": model,
-        "worktree_attestation": tree,
+        "model_self_report": status.get("model_self_report", {}),
+        "worktree_attestation": status.get("worktree_attestation", {}),
         "runtime_failure": failure,
+        "startup_assessment": assessment,
     }
-    if model.get("match") is False or tree.get("match") is False or unavailable:
+    if assessment["runtime_failure"] is not None:
+        evidence["classification"] = assessment["runtime_failure"]
+    # A missing self-report proves no environment failure; only a mismatch or a classified
+    # runtime failure does.
+    if assessment["classification"] not in {None, "model-self-report-missing"}:
         return evidence
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (
@@ -246,7 +263,9 @@ def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> Json
     if classification is None:
         raise CoordinatorError(
             "environment failure is not confirmed by runtime status or by the blocked report",
-            remedy="collect runtime status evidence or name the infrastructure cause in the report blockers; use an ordinary decision or human rewind for an unknown failure",
+            remedy="collect runtime status evidence or name the infrastructure cause in the report "
+            f"blockers; inspect {RECOVERY_EVIDENCE_COMMANDS}, then choose an ordinary decision, "
+            "a human rewind or a separate human abandon decision",
         )
     return {**evidence, "classification": classification}
 
@@ -278,13 +297,16 @@ def _restart_failed_dispatch(
     batch: JsonObject,
     entry: JsonObject,
     stop: JsonObject | None,
+    *,
+    runtime_stopped: bool = False,
 ) -> tuple[JsonObject, list[str]]:
     """Retire the failed dispatch and re-open its stage; returns the event evidence and retirees."""
     from harness.orchestration.core.config import _attention_policy, _config
+    from harness.orchestration.core.constants import RECOVERY_EVIDENCE_COMMANDS
     from harness.orchestration.core.git_utils import _git
     from harness.orchestration.workflow.decisions import _abandon_open_dispatches
 
-    failure = _confirmed_failure(root, batch, entry)
+    failure = _confirmed_failure(root, batch, entry, runtime_stopped=runtime_stopped)
     if stop and stop.get("evidence", {}).get("dispatch_id") != entry["dispatch_id"]:
         raise CoordinatorError(
             "stop and active dispatch disagree",
@@ -306,7 +328,9 @@ def _restart_failed_dispatch(
     if attempts >= _attention_policy(_config(repo))["max_infrastructure_retries"]:
         raise CoordinatorError(
             "environment recovery budget exhausted",
-            remedy="inspect operational attempts and explicitly adjust the bounded attention policy; recovery does not reset counters",
+            remedy=f"the batch stays {batch['state']} for a human choice: wait, repair the launch, "
+            "explicitly adjust the bounded attention policy, rewind, or a separate abandon "
+            f"decision; inspect {RECOVERY_EVIDENCE_COMMANDS}; recovery does not reset counters",
         )
     retired = _abandon_open_dispatches(ledger, root, batch, utils._now())
     batch["next_action"] = batch.get("next_action") or (
@@ -367,7 +391,13 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
         ):
             source_id = entry["dispatch_id"]
             evidence, retired = _restart_failed_dispatch(
-                repo, root, ledger, batch, entry, stop
+                repo,
+                root,
+                ledger,
+                batch,
+                entry,
+                stop,
+                runtime_stopped=bool(getattr(args, "runtime_stopped", False)),
             )
         elif any(
             e.get("state") == "reported" and not e.get("decision") for e in entries

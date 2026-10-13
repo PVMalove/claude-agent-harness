@@ -36,10 +36,14 @@ beginning another.
 If another batch holds the same unfinished ticket, branch or worktree, or the `concurrency_budget`
 is exhausted, inspect `batch list --open`, the conflicting dispatch,
 and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
-If its worker can no longer produce a report, show a copyable `batch abandon` command with the
-actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
-and a reason grounded in the observed failure. Present this as an operator action requiring their
-explicit approval; never supply `--approved-by` as though they already approved, or execute the
+If its worker can no longer produce a report, first run `batch auto-report`,
+`batch decision-packet`, `dispatch status` and `ledger validate`, and quote the dispatch's
+`startup` assessment: worker state, classification and unknowns. Explain which of waiting, launch
+repair, human-approved `batch resume-stop`, `batch rewind` and cancelling an unsent dispatch
+applies, and why the others do not. Offer `batch abandon` only after that, as a separate explicit
+human choice for the whole batch: show a copyable command with the actual batch ID, the verified
+operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`, and a reason grounded in the
+observed failure. Never supply `--approved-by` as though they already approved, or execute the
 command for them without that approval. `ledger clean` only removes orphaned evidence, and
 `ledger reset` does not clear an active batch.
 
@@ -126,12 +130,19 @@ main checkout. A selected path is intent; self-report proves the worker's actual
 brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
 belongs writes it outside the project.
 
+`dispatch send` checks the adapter's flags against its `dispatch --help` before the handoff and
+refuses an unsupported one: fix the `--adapter-arg` values and send the same approved dispatch
+again. Show any `limitation` in the send result's `adapter_preflight`. To diagnose an app-server
+runtime without a worker, run `dispatch runtime-probe`; its result is evidence, and the worker's
+model self-report stays mandatory.
+
 The coordinator never writes feature code or repairs state by hand. A report is evidence, not
 permission to advance. Architect precedes developer; accepted candidate proceeds through the
 required review/QA/publish gates. A write-role worker stopped early before making changes returns a
 truthful `outcome: blocked` report bound to the verified checkout commit with empty `changed_files`
 and unrun checks; the coordinator decision packet returns an explicit recovery route (`retry`,
-`block`, `abandon`) without registering a candidate or weakening `completed` report validation.
+`block`, or a human-selected `abandon`) without registering a candidate or weakening `completed`
+report validation.
 
 Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
 names one independently reviewable logical change, its expected files and the DoD items it covers;
@@ -159,7 +170,9 @@ operator's terminal for transitions that still require human approval. When choo
 route for `retry` or `abandon`, show the decision packet's `route_preview` (with the
 `--reason-category` or `--retry-role` you intend to pass to `batch decide`) and follow the
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
-evidence).
+evidence). Report each startup failure under its own classification (unsupported flag, missing
+or refused self-report, capacity, rate-limit, service-unavailable) together with its recovery
+route.
 
 Under `approval_policy: auto`, the coordinator takes every path decision by policy and records it
 as `policy:auto`; follow "Automatic path" in `.harness/orchestration/playbook.md`. Do not write
@@ -172,8 +185,10 @@ you file or reuse the tool's bug ticket through the tracker CLI, and `--block-by
 role worked around a block. Pass nothing else, and never choose the decision yourself. After a refused command, run `batch auto-report --batch <id>` to observe evidence. This read-only
 command does not record a stop. If it shows `observed_stop`, run `batch auto-decide --batch <id>`
 to record the pause, even without a pending report, then show `batch auto-report` again.
-The automatic path ends permanently at that pause. A human can approve `batch resume-stop`
-for a proven environment failure, or `batch rewind --to <gate>` to repeat an earlier gate.
+The automatic path ends permanently at that pause. Inspect `batch decision-packet`, `dispatch status`
+and `ledger validate` before you propose waiting, launch repair, human-approved `batch resume-stop`,
+or `batch rewind --to <gate>` to repeat an earlier gate. An exhausted infrastructure budget keeps
+the batch paused for that human choice.
 Use the playbook's "Operator recovery" procedure. The original stop stays historical; all later
 approvals, including recognized 429 continuations, follow `manual_all`. Honor an approval already
 explicitly given in this session for the concrete operation; never invent one.
@@ -222,7 +237,10 @@ exception to that budget.
 
 Run `dispatch wait` between send and report. `stale`, model/worktree mismatch, changed harness
 snapshot, and a failed deterministic gate are blockers for the coordinator, not prompts for broad
-LLM recovery. In-process and external transports preserve the same brief and evidence contract.
+LLM recovery. Silence or a timeout does not prove that a worker stopped. `batch resume-stop`
+refuses a worker whose `startup` state is `live` or `unknown`: stop it through its runtime and
+repeat the command with `--runtime-stopped`. In-process and external transports preserve the same
+brief and evidence contract.
 
 A busy ledger (`ledger is locked by another operation`, or `ledger_busy` from `dispatch status`) is
 transient: repeat `dispatch wait` or `dispatch status`. When a relayed `report submit` result

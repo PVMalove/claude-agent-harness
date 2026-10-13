@@ -1457,6 +1457,15 @@ approval и сохраняет контракт прерванной роли. �
 «Ручное восстановление и повтор этапа». Для неизвестной причины или возврата к прежнему gate используется
 `batch rewind`. `completed` и `abandoned` окончательны.
 
+Перед отправкой `dispatch send` сверяет флаги `--adapter-arg` с `dispatch --help` adapter и
+отклоняет неподдерживаемый флаг до передачи brief: dispatch остаётся одобренным и неотправленным.
+Если `--help` не отвечает, результат попадает в `adapter_preflight` как `limitation`.
+`dispatch runtime-probe --dispatch <id> --runtime-command <runtime> --runtime-arg=app-server`
+проверяет app-server runtime без worker: `model/list`, поля `thread/start` и один `turn/start` на
+ephemeral read-only thread без инструментов. Ошибка capacity, rate-limit или недоступности после
+`thread/start` даёт классифицированный сбой, а не READY. Probe ничего не пишет в ledger и не
+заменяет model self-report.
+
 Watchdog `stale` не доказывает завершение процесса. Сначала остановите воркера через его runtime,
 затем запишите `dispatch cancel --runtime-stopped` с человеческим approval и выполните rewind.
 Совместимая команда `batch resume` применяется только к прежнему ручному пути без auto/recovery.
@@ -1582,7 +1591,8 @@ python .harness/orchestration/coordinator.py --repo . dispatch status \
 ```
 
 `dispatch status` показывает для каждого dispatch роль, транспорт, `resolved_model`, результат
-self-report, время последнего heartbeat, `silent_seconds` и признак `stale`. Это обобщение
+self-report, оценку `startup` (состояние worker, классификация сбоя, неизвестные), время
+последнего heartbeat, `silent_seconds` и признак `stale`. Это обобщение
 QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
 coordinator выносит человеку, а сам по таймауту состояние не меняет.
 
@@ -2322,16 +2332,24 @@ python .harness/orchestration/coordinator.py --repo . batch rewind \
   --batch <id> --to code-review --approved-by '<оператор>' --approved-at '<текущий UTC>' --note 'repeat review'
 ```
 
-`resume-stop` подходит для подтверждённого worktree/model mismatch или отказа ОС запустить adapter.
-Если структурного доказательства нет, осторожная текстовая эвристика ищет инфраструктурную причину
+`resume-stop` подходит для подтверждённого worktree/model mismatch или отказа ОС запустить adapter,
+но перезапускает только worker с известным исходом: `absent`, `reported`, `rejected-at-startup`
+или `stopped`. Для отклонённого self-report контракт прежний: одобрение человека выводит dispatch из
+обращения, а ledger отклоняет его поздние записи. Если `dispatch status` показывает `live` или
+`unknown`, команда отказывает и ничего не меняет: остановите worker через его runtime и повторите
+её с `--runtime-stopped`. Отсутствующий self-report `resume-stop` не подтверждает: остановите worker
+и запишите `dispatch cancel --runtime-stopped`. Если структурного доказательства нет, осторожная текстовая эвристика ищет инфраструктурную причину
 (rate limit, timeout, сеть, падение runtime, ресурсы, недоступный сервис) в `blockers` blocked
 report и в ошибке runtime. Признак проблемы с тестами, линтером, типами, конфликтом, scope или
 требованиями перевешивает; неизвестный текст остаётся неизвестным. Совпадение записывается в
 событие как `classification` с `method: heuristic`; оно лишь предлагает причину, а решает
 человеческий approval. Он сохраняет роль, scope, candidate и fix-forward findings. Повтор получает новый dispatch ID,
 context и approval. Операционная попытка не расходует второй developer retry. При паузе из-за
-бюджета или неизвестной причины можно вернуть pending report для ручного решения. Грязные файлы,
-неизвестный SHA, failed checks и новые code findings требуют обычного маршрута исправления.
+бюджета или неизвестной причины можно вернуть pending report для ручного решения. Когда бюджет
+инфраструктурных повторов исчерпан, `resume-stop` отказывает, а batch остаётся в состоянии остановки
+до решения человека: ждать, исправить запуск, изменить attention policy, выполнить `rewind` или
+отдельно решить `batch abandon`; счётчики не сбрасываются. Грязные файлы, неизвестный SHA, failed
+checks и новые code findings требуют обычного маршрута исправления.
 
 После восстановления действует `manual_all`, включая продолжение после 429. Исходные `auto_stop`
 и `auto_report` остаются историей. Новый отчёт показывает текущий прогресс и `historical_report`.

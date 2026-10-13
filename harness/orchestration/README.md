@@ -316,15 +316,19 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 не создаёт новую остановку. `blocked` и `failed` сохраняют работу и допускают ручное восстановление.
 Терминальные состояния — `completed`, `abandoned` и старое `not-required`.
 
-- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина>`
+- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина> [--runtime-stopped]`
   готовит повтор того же этапа после доказанного сбоя запуска. Каждый следующий шаг требует
-  человеческого approval; исходный `auto_stop` остаётся историей.
+  человеческого approval; исходный `auto_stop` остаётся историей. Если `dispatch status` показывает
+  `live` или `unknown`, команда отказывает: остановите worker через runtime и передайте
+  `--runtime-stopped`.
 - `batch rewind --batch <id> --to code-review --approved-by <оператор> --approved-at <UTC> --note <причина>`
   возвращает к достигнутому этапу. Git history не меняется. Старые зависимые risk/review/QA
   перестают разрешать продолжение. Новая работа developer расходует оставшийся retry budget.
 - `dispatch cancel --dispatch <id> --runtime-stopped --approved-by <оператор> --approved-at <UTC> --reason <причина>`
   записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
 - `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
+- `dispatch runtime-probe --dispatch <id> --runtime-command <runtime> [--runtime-arg <аргумент>]`
+  запускает read-only READY probe app-server на brief dispatch без worker и без записи в ledger.
 
 Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
 новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет
