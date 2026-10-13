@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,7 @@ from harness.health.project_files import (
     JSON_READ_ERRORS,
     LOCK_REL,
     REGISTRY_REL,
+    TEST_PATH_PATTERN,
     TRACKER_FIELDS,
     TRACKER_HOST_PATTERN,
     TRACKER_HOST_RULE,
@@ -87,6 +89,7 @@ from harness.health.project_files import (
     project_skill_files,
     public_skill_names,
     skill_inventory,
+    test_runner_problems,
     tracker_field_problems,
 )
 from harness.health.project_tracker import resolve_project_tracker
@@ -98,6 +101,12 @@ HARNESS_CLI = (sys.executable, str(Path(__file__).resolve()))
 DEFAULT_CAPABILITY = "project-foundation"
 # Bound of each local git probe (`rev-parse`); git that does not answer counts as unavailable.
 GIT_TIMEOUT_SECONDS = 10
+# argparse errors of the --test-* flags; like the tracker rules, they never quote the value.
+TEST_PATH_RULE = "must be a relative glob without '..' segments"
+TEST_RUNNER_COMMAND_RULE = (
+    "must split into non-empty arguments with exactly one {test_id} argument, "
+    "not the first"
+)
 
 
 def write_registry(repo: Path) -> None:
@@ -686,6 +695,35 @@ def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
     return '\n  "tracker": ' + json.dumps(field, ensure_ascii=False) + ","
 
 
+def _seed_test_fields(args: argparse.Namespace) -> str:
+    """Собрать записи `test_paths` и `test_runner` нового project.json для шаблона; "" — флагов нет.
+
+    Поля пишутся только по флагам --test-path и --test-runner-command: без `test_paths` тест-автор
+    выключен, а значения зависят от раскладки и стека проекта (docs/hooks/run-test.md).
+    """
+    fields = ""
+    paths = list(dict.fromkeys(getattr(args, "test_path", None) or []))
+    if paths:
+        fields += '\n  "test_paths": ' + json.dumps(paths, ensure_ascii=False) + ","
+    command = getattr(args, "test_runner_command", None)
+    if command:
+        runner = {"command": command}
+        fields += '\n  "test_runner": ' + json.dumps(runner, ensure_ascii=False) + ","
+    return fields
+
+
+def _test_runner_command(value: str) -> list[str]:
+    """argparse-тип --test-runner-command: argv без шелла по правилам `test_runner`; ошибка не
+    цитирует значение."""
+    try:
+        command = shlex.split(value)
+    except ValueError:
+        command = []
+    if not command or test_runner_problems({"command": command}):
+        raise argparse.ArgumentTypeError(TEST_RUNNER_COMMAND_RULE)
+    return command
+
+
 def _matching_arg(pattern: str, rule: str) -> Callable[[str], str]:
     """Создать argparse-тип, принимающий значение по `pattern`; ошибка не цитирует значение."""
 
@@ -817,6 +855,7 @@ def scaffold_pvmalove_extras(
                     break
                 commands.append(line)
         tracker_field = _seed_tracker_field(repo, args)
+        test_fields = _seed_test_fields(args)
         template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
             encoding="utf-8"
         )
@@ -828,6 +867,7 @@ def scaffold_pvmalove_extras(
                 "BRANCH_PATTERN": branch_pattern,
                 "QA_GATE_COMMANDS": json.dumps(commands, ensure_ascii=False),
                 "TRACKER_FIELD": tracker_field,
+                "TEST_FIELDS": test_fields,
             },
         )
         project_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1171,6 +1211,20 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         type=_matching_arg(TRACKER_PROJECT_PATTERN, TRACKER_PROJECT_RULE),
         default=None,
         help="pvmalove-suite: full tracker project path with subgroups (default: from origin)",
+    )
+    sub.add_argument(
+        "--test-path",
+        action="append",
+        type=_matching_arg(TEST_PATH_PATTERN, TEST_PATH_RULE),
+        default=None,
+        help="pvmalove-suite: repeatable test_paths glob, the test author's write zone (default: none)",
+    )
+    sub.add_argument(
+        "--test-runner-command",
+        type=_test_runner_command,
+        default=None,
+        help="pvmalove-suite: test_runner command, split without a shell; one argument is "
+        "{test_id} (default: none)",
     )
 
 
