@@ -4,8 +4,10 @@
 `harness health`, а `.claude/hooks/run-test.sh` вызывается напрямую из шелла, без Claude Code и
 без guard: так проверяются ограничения уровня процесса. Если probe подтверждает песочницу,
 атаки теста на production, `.git` и конфигурацию runner проваливаются, а хэши защищённых файлов
-не меняются; контрольный прогон тех же атак без runner меняет копию проекта. Без рабочей
-песочницы (Windows, CI без bubblewrap) проверяется только отказ без запуска теста.
+не меняются; подключение к сессионной D-Bus хоста в `/run/user/<uid>` тоже проваливается.
+Контрольный прогон тех же атак без runner меняет копию проекта, а D-Bus без runner доступна,
+если хост её предоставляет. Без рабочей песочницы (Windows, CI без bubblewrap) проверяется
+только отказ без запуска теста.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +34,9 @@ TEST_MODULE = "tests.test_runner_cases"
 BENIGN = f"{TEST_MODULE}.Benign.test_add"
 LEGIT = f"{TEST_MODULE}.Legit.test_writes"
 MARKER = f"{TEST_MODULE}.Marker.test_marker"
+# A read-only bind does not stop connect(): through the host session bus a test could start a
+# process outside the sandbox (systemd user manager), so the sandbox must hide it.
+SESSION_BUS = f"{TEST_MODULE}.HostSockets.test_session_bus"
 # Attack test -> the protected file it tries to change.
 ATTACKS = {
     "test_direct": "src/calc.py",
@@ -98,6 +104,14 @@ class Attacks(unittest.TestCase):
 
     def test_runner_module(self):
         append(".harness/health/isolated_runner.py")
+
+
+class HostSockets(unittest.TestCase):
+    def test_session_bus(self):
+        import socket
+
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.connect("/run/user/%d/bus" % os.getuid())
 
 
 class Legit(unittest.TestCase):
@@ -254,6 +268,13 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
         _expect(answer, name, result="failed", reason="test_failed", exit_status=1)
         if _snapshot(project) != before:
             sys.exit(f"isolated-test-runner {name}: {target} changed under the runner")
+    _expect(
+        _hook(project, SESSION_BUS),
+        "session bus",
+        result="failed",
+        reason="test_failed",
+        exit_status=1,
+    )
 
     legit = _hook(project, LEGIT)
     _expect(legit, "legitimate writes", result="passed", reason="test_passed")
@@ -341,6 +362,27 @@ def _verify_control_run(project: Path, test_root: Path) -> None:
             sys.exit(
                 f"isolated-test-runner control run: {name} did not change {target}"
             )
+    if _session_bus_reachable():
+        control = run_step(
+            [sys.executable, "-B", "-m", "unittest", SESSION_BUS],
+            cwd=copy,
+            capture_output=True,
+            check=False,
+        )
+        if control.returncode != 0:
+            sys.exit(
+                "isolated-test-runner control run: the session bus was not reached"
+            )
+
+
+def _session_bus_reachable() -> bool:
+    """True when the host D-Bus session socket accepts this process: the control applies."""
+    try:
+        with socket.socket(socket.AF_UNIX) as sock:
+            sock.connect(f"/run/user/{os.getuid()}/bus")
+    except OSError:
+        return False
+    return True
 
 
 def _verify_refusal(project: Path, probe: dict[str, object]) -> str:
