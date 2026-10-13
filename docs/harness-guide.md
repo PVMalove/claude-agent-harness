@@ -111,7 +111,7 @@ cd claude-agent-harness
 | | `project-foundation` | `mattpocock-suite` | `pvmalove-suite` | `backend-orchestration` |
 |---|---|---|---|---|
 | Скиллов | 5 | 25 | 32 | 32 + роли |
-| Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)) | Согласованная backend-работа несколькими ролями |
+| Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации)) | Согласованная backend-работа несколькими ролями |
 | Даёт | `grilling`, `handoff`, `writing-for-agents`, `research`, `domain-modeling` | Все upstream-скиллы | Спека → тикеты → implement → commit + push (разделы 1–5) | Coordinator, role manifests, playbook, clean-room QA |
 | Проектные файлы | Нет | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` | То же + `.harness/orchestration.json` |
 
@@ -906,7 +906,7 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 `CONTEXT.md` — чистый глоссарий, без деталей реализации.
 
 **В этом репозитории:** first-party-слой переопределяет `/grilling`, `/grill-me` и `/grill-with-docs`
-([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)). Так все точки входа завершаются
+([раздел 7](#7-локальные-кастомизации)). Так все точки входа завершаются
 одинаковым выбором: `/to-spec` или доработка плана.
 
 ### `/wayfinder`
@@ -1020,7 +1020,7 @@ integration/reports
 интерфейсы и решения, без путей к файлам и кода (кроме сниппета из прототипа, если он кодирует
 решение точно).
 
-**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): публикуемый
+**В этом репозитории** ([раздел 7](#7-локальные-кастомизации)): публикуемый
 issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (не `status::ready` — декомпозиции
 ещё не было) + `task-report::required` и секцией `## Integration Branch`. `/to-spec` создаёт
 указанную ветку от `base_branch`, если её нет. `/to-tickets` переносит её в дочерние тикеты.
@@ -1085,7 +1085,7 @@ issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (
    - Итоговая таблица (Ticket / What to build / Est. Time / Labels): описания генерирует дешёвая
      модель (`haiku`) одним вызовом на пакет. Язык колонки — из `.harness/project.json`.
 
-**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): дочерние тикеты
+**В этом репозитории** ([раздел 7](#7-локальные-кастомизации)): дочерние тикеты
 эпика (`status::specs`) линкуются родительской связью трекера (на GitHub — native sub-issues, на
 GitLab — секция `## Parent: #<N>` и связь `relates_to`), а не лейблом `epic::<slug>`. Тикет,
 заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Блокер
@@ -1227,7 +1227,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 **Базовая версия в апстриме** состоит из пяти шагов: реализация тикета, `/tdd` при необходимости,
 регулярный тайпчек и тесты, `/code-review` по готовности, коммит.
 
-**В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов))
+**В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации))
 добавляет три фазы. Ту же Phase 1 выполняет и `/implement` перед `batch create`.
 
 [![/fast-implement: одна сессия от тикета до push](./diagrams/previews/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
@@ -1503,9 +1503,9 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 
 ---
 
-## 7. Локальные кастомизации (12 изменённых скиллов)
+## 7. Локальные кастомизации
 
-`.harness/harness.lock` фиксирует 12 скиллов с намеренными правками поверх апстрима. В `harness diff`
+`.harness/harness.lock` фиксирует скиллы из таблицы ниже с намеренными правками поверх апстрима. В `harness diff`
 они видны как `local_changed` — это ожидаемо. `harness update --force` или
 `harness adopt --replace-conflicts` их бы стёрли.
 
@@ -1518,7 +1518,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Выводит отчёт на языке из `.harness/project.json` (`### Communication language`). |
 | `diagnosing-bugs` | Перед гипотезами ищет прошлые фиксы через read-only `harness memory search`, если память включена. Воспроизведение остаётся обязательным. |
-| `tdd` | Проверяет одно наблюдаемое поведение на согласованном публичном seam, допускает необходимые multi-step сценарии и несколько assertions, требует независимых ожиданий, детерминированных времени/RNG, production database engine для SQL и Refactor после Green. |
+| `tdd` | Добавляет Refactor после Green и проверяемые правила тестов: одно поведение на согласованном seam, ожидание из независимого источника, детерминированные часы и RNG. SQL и транзакции тест проверяет на той же СУБД, что в production. |
 | `grilling` | При включённой памяти ищет прецеденты до первого раунда проектирования. Указатели не отменяют opt-in Live Artifact. Вопросы фронтира задаёт через `AskUserQuestion` (вкладка на вопрос, варианты или «Other»). Текст — запасной формат для открытых вопросов. |
 | `grill-me` | Тонкая обёртка над first-party `/grilling` с единым финальным выбором: `/to-spec` или правки плана. |
 | `grill-with-docs` | Тонкая обёртка над `/grilling` с `/domain-modeling`: тот же финальный выбор плюс `CONTEXT.md`/ADR. |
@@ -1678,7 +1678,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (capability `mattpocock-suite`) + 12 `pvmalove`-переопределений и 7
+Все 25 скиллов апстрима (capability `mattpocock-suite`) + `pvmalove`-переопределения ([раздел 7](#7-локальные-кастомизации)) и 7
 дополнительных first-party скиллов (`qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`,
 `fast-implement`, `delivery-stats`, `architect`). `pr-composer` поставляется отдельно как subagent.
 «Только вручную» = `disable-model-invocation: true` (скилл вызывают только как `/имя`).
@@ -1692,7 +1692,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 | `triage` | да | Issue/PR через state machine триажа: категоризация, верификация, agent-ready брифы ([раздел 7](#triage-подробнее)). |
 | `improve-codebase-architecture` | да | Ищет возможности «углубления» модулей, показывает HTML-отчёт, затем прожарка по выбранной. |
 | `setup-matt-pocock-skills` | да | Разовая настройка трекера, таксономии триажа и layout доменных доков. |
-| `tdd` | нет | red → green → refactor с независимыми ожиданиями, детерминированными границами и изоляцией production database engine ([раздел 5](#tdd-tdd-loop)). |
+| `tdd` | нет | red → green → refactor ([раздел 5](#tdd-tdd-loop)). |
 | `to-spec` | да | Синтез диалога в спецификацию и публикация в трекер ([раздел 2](#2-фиксация-требований-и-спецификация-specification)). |
 | `to-tickets` | да | Декомпозиция спецификации на вертикальные слайсы с blocking edges ([раздел 3](#3-декомпозиция-задач-ticketing)). |
 | `wayfinder` | да | Карта решений для работы, не помещающейся в одну сессию ([раздел 1](#wayfinder)). |

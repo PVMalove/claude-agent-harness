@@ -78,7 +78,7 @@ reports. Tree-sitter parser работает в отдельном worker-про
 | [`ask-matt`](./docs/skills/ask-matt.md) | Определяет скилл или сценарий, подходящий для ситуации; маршрутизатор по установленным скиллам. |
 | [`architect`](./docs/skills/architect.md#интерактивный-скилл-architect) | Вручную сравнивает архитектурные варианты и прецеденты, возвращает brief решения; при включённой памяти использует read-only поиск. |
 | [`diagnosing-bugs`](./docs/skills/diagnosing-bugs.md) | Диагностирует сложные дефекты и регрессии; при включённой памяти ищет прошлые фиксы перед проверкой гипотез. |
-| [`tdd`](./docs/skills/pvmalove/tdd.md) | Ведёт red → green → refactor на публичном seam с независимыми ожиданиями, детерминированными границами и изоляцией production database engine. |
+| [`tdd`](./docs/skills/tdd.md) | Разработка через тесты с Refactor после Green; правила тестов общие для developer и тест-автора. |
 | [`grilling`](./docs/skills/grilling.md) | Базовый механизм интервью: последовательно уточняет план, решение или идею до выявления пробелов. |
 | [`grill-me`](./docs/skills/grill-me.md) | Интервью для уточнения плана или дизайна. |
 | [`grill-with-docs`](./docs/skills/grill-with-docs.md) | Интервью с ведением ADR и глоссария по ходу обсуждения. |

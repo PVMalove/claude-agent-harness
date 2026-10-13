@@ -5,7 +5,7 @@
 ## Командные навыки
 
 - [ask-matt](./ask-matt.md), [wayfinder](./wayfinder.md), [triage](./triage.md)
-- [diagnosing-bugs](./diagnosing-bugs.md)
+- [diagnosing-bugs](./diagnosing-bugs.md), [tdd](./tdd.md)
 - [architect](./architect.md#интерактивный-скилл-architect) — ручное сравнение архитектурных вариантов
 - [grill-me](./grill-me.md), [grilling](./grilling.md), [grill-with-docs](./grill-with-docs.md)
 - [to-spec](./to-spec.md), [to-tickets](./to-tickets.md), [to-guide](./to-guide.md)
@@ -23,8 +23,7 @@
 
 Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в [vendor/](./vendor/).
 Их исходные `SKILL.md` закреплены в upstream snapshot и вручную не правятся, а first-party
-overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`;
-для `tdd` это [first-party-страница](./pvmalove/tdd.md).
+overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`.
 
 ## Связанные документы
 
