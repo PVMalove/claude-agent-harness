@@ -115,8 +115,8 @@ not the goal of this skill.
 ## Examples
 
 Open [examples.md](examples.md) when a test needs a worked pattern: parameterized literals, a
-multi-step behavior with several assertions, or a boundary with a query stub, a command effect,
-and a fixed clock.
+multi-step behavior with several assertions, a reference fixture, an independent oracle, a
+boundary with a query stub, a command effect, and a fixed clock, or a deterministic random source.
 
 ## Review checklist
 
@@ -127,10 +127,12 @@ Before handing off a slice, confirm each item:
 - The name is a behavior phrase, `sut` is clear, and blank lines separate Arrange, Act, Assert, and
   meaningful steps.
 - Several steps or assertions, when present, describe that same behavior.
-- The expectation has a source independent of production; variants use parameterization.
+- The expectation comes from a literal, a reference fixture with a recorded origin, a property, or
+  an independent oracle; variants use parameterization.
 - An external command is checked through the contract it sends; an external query returns a stubbed
   response.
-- Time and randomness are deterministic and enter at a boundary.
+- Time comes from a fixed clock and randomness from a deterministic random source, both injected at
+  a boundary.
 - Database behavior runs on the production engine in an isolated environment; pure domain tests run
   without a database.
 - The test was red for the intended reason, Green came from a minimal change with the expectation
