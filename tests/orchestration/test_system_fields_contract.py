@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import importlib
 import inspect
@@ -20,6 +21,7 @@ from harness.orchestration import (
     contract,
     coordinator,
     extensions,
+    operation_access,
     operational_guards,
     runtime_access,
     runtime_attestation,
@@ -44,6 +46,7 @@ from harness.orchestration.workflow import (
     fix_forward,
     recovery,
     resolver_state,
+    supersede,
 )
 
 # The v1 inventory: every field the registry must carry.
@@ -56,6 +59,7 @@ V1_FIELDS = frozenset(
         "pipeline.role",
         "pipeline.rewind_stage",
         "batch.decision",
+        "coordinator.decision",
         "retry.reason",
         "retry.route",
         "recovery.environment_reason",
@@ -111,6 +115,11 @@ V1_FIELDS = frozenset(
         "access.permission",
         "runtime_access.source",
         "runtime_access.status",
+        "runtime_access.observation_source",
+        "runtime_access.observation_mechanism",
+        "operation_access.check_state",
+        "operation_access.check_source",
+        "operation_access.status",
         "extension.kind",
         "repo_map.tier",
         "context_package.role",
@@ -198,6 +207,8 @@ def test_sentinels_name_their_safe_handling() -> None:
         "local_qa.attempt_state": ("unavailable",),
         "ci.checkout": ("unknown",),
         "ci.verdict_reason": ("unavailable",),
+        "operation_access.check_state": ("unsupported",),
+        "operation_access.status": ("unsupported",),
     }
     registry = load_registry()
     for field_id, names in sentinels.items():
@@ -232,6 +243,12 @@ def test_the_defaults_and_groups_of_the_inventory() -> None:
         "batch.state": {"terminal"},
         "dispatch.state": {"live"},
         "batch.decision": {"accepted"},
+        "coordinator.decision": {
+            "continuation",
+            "rate-limit-resume",
+            "developer-retry",
+            "infrastructure-retry",
+        },
         "retry.reason": {"operational", "developer"},
         "auto.stop_reason": {
             "budget-exhausted",
@@ -585,6 +602,7 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "pipeline.role": {"roles/*.md": ROLE_STEMS},
     "pipeline.rewind_stage": {"recovery.REWIND_STAGES": recovery.REWIND_STAGES},
     "batch.decision": {"DECISIONS": constants.DECISIONS},
+    "coordinator.decision": {"COORDINATOR_DECISIONS": constants.COORDINATOR_DECISIONS},
     "retry.reason": {
         "RetryReason": constants.RetryReason,
         "RETRY_REASON_CATEGORIES": constants.RETRY_REASON_CATEGORIES,
@@ -737,6 +755,21 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "runtime_access.status": {
         "runtime_access.RuntimeAccessStatus": runtime_access.RuntimeAccessStatus
     },
+    "runtime_access.observation_source": {
+        "runtime_access.OBSERVATION_SOURCES": runtime_access.OBSERVATION_SOURCES
+    },
+    "runtime_access.observation_mechanism": {
+        "runtime_access.OBSERVATION_MECHANISMS": runtime_access.OBSERVATION_MECHANISMS
+    },
+    "operation_access.check_state": {
+        "operation_access.AccessCheckState": operation_access.AccessCheckState
+    },
+    "operation_access.check_source": {
+        "operation_access.AccessCheckSource": operation_access.AccessCheckSource
+    },
+    "operation_access.status": {
+        "operation_access.OperationAccessStatus": operation_access.OperationAccessStatus
+    },
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
     "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
@@ -754,6 +787,12 @@ GROUP_BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "batch.state": {"terminal": constants.TERMINAL_BATCH_STATES},
     "dispatch.state": {"live": constants.LIVE_DISPATCH_STATES},
     "batch.decision": {"accepted": constants.ACCEPTED_DECISIONS},
+    "coordinator.decision": {
+        "continuation": constants.CONTINUATION_DECISIONS,
+        "rate-limit-resume": constants.RATE_LIMIT_RESUME_DECISIONS,
+        "developer-retry": constants.DEVELOPER_RETRY_DECISIONS,
+        "infrastructure-retry": constants.INFRASTRUCTURE_RETRY_DECISIONS,
+    },
     "retry.reason": {
         "operational": constants.OPERATIONAL_REASON_CATEGORIES,
         "developer": constants.DEVELOPER_REASON_CATEGORIES,
@@ -894,6 +933,12 @@ SUBSET_BINDINGS: dict[str, tuple[str, Iterable[str]]] = {
         "retry.reason",
         (constants.BLOCK_BYPASS_REASON_CATEGORY,),
     ),
+    "DECISIONS": ("coordinator.decision", constants.DECISIONS),
+    "supersede.ROUTE": ("coordinator.decision", (supersede.ROUTE,)),
+    "operation_access.FAILED_STATUS_ORDER": (
+        "operation_access.status",
+        operation_access.FAILED_STATUS_ORDER,
+    ),
 }
 
 
@@ -950,6 +995,37 @@ def test_every_cli_choice_list_takes_its_field() -> None:
             assert choices == values, option
         else:
             assert choices < values, option
+
+
+def _decision_literals() -> dict[str, set[str]]:
+    """Every string literal under a ``"decision"`` key of a dict display, by module."""
+    found: dict[str, set[str]] = {}
+    for name in _orchestration_modules():
+        source = inspect.getsource(importlib.import_module(name))
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values, strict=True):
+                if (
+                    isinstance(key, ast.Constant)
+                    and key.value == "decision"
+                    and isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                ):
+                    found.setdefault(name, set()).add(value.value)
+    return found
+
+
+def test_every_decision_the_coordinator_writes_is_registered() -> None:
+    values = set(load_registry().fields["coordinator.decision"].values)
+    written = _decision_literals()
+
+    assert written
+    assert {
+        module: sorted(literals - values)
+        for module, literals in written.items()
+        if literals - values
+    } == {}
 
 
 def test_role_stage_route_and_reason_constants_stay_inside_their_fields() -> None:

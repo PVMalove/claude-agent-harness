@@ -30,6 +30,10 @@ GIT_TIMEOUT_SECONDS = 60
 # the access_policy defaults, or a qualified 'roles.<role>' or 'operations.<operation>' override.
 PLAN_SOURCES = ("legacy", "default", "defaults")
 PLAN_OVERRIDE_SECTIONS = ("roles", "operations")
+# Who observed a worker launch for the runtime_access extension, and how the plan reached it; a
+# proof with any other source or mechanism leaves the plan unverified and the send is refused.
+OBSERVATION_SOURCES = ("native-runtime", "runtime-adapter")
+OBSERVATION_MECHANISMS = ("native-apply", "confirmed-inheritance")
 
 
 # Whether a pinned plan is a legacy inherit or its access was confirmed for the worker launch.
@@ -443,8 +447,8 @@ def _observation_problem(
     if (
         not observation.environment_id
         or not observation.launch_id
-        or observation.source not in ("native-runtime", "runtime-adapter")
-        or observation.mechanism not in ("native-apply", "confirmed-inheritance")
+        or observation.source not in OBSERVATION_SOURCES
+        or observation.mechanism not in OBSERVATION_MECHANISMS
     ):
         return "native worker launch identity or application mechanism is unverified"
     try:

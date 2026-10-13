@@ -33,6 +33,7 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     CHECKPOINT_INPUT_FIELDS,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
+    CONTINUATION_DECISIONS,
     CONTINUATION_FACTS_FIELDS,
     FINDING_SEVERITIES,
     INCOMPLETE_ITEM_FIELDS,
@@ -52,6 +53,7 @@ from harness.orchestration.core.constants import (
     QA_STAGE_NAMES,
     QA_STAGES_FIELDS,
     QA_STAGES_OPTIONAL_FIELDS,
+    RATE_LIMIT_RESUME_DECISIONS,
     RATE_LIMIT_TERMINATION_REASONS,
     REPORT_CHECK_RESULTS,
     REPORT_FIELDS,
@@ -144,13 +146,12 @@ def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]
         decision
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("dispatch_id") == dispatch_id
-        and decision.get("decision")
-        in {"continue", "continue-automatic", "continue-rate-limit"}
+        and decision.get("decision") in CONTINUATION_DECISIONS
     ]
     automatic = sum(
         1
         for decision in decisions
-        if decision.get("decision") in {"continue-automatic", "continue-rate-limit"}
+        if decision.get("decision") in RATE_LIMIT_RESUME_DECISIONS
     )
     return len(decisions), automatic
 

@@ -31,6 +31,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
     DEVELOPER_REASON_CATEGORIES,
+    DEVELOPER_RETRY_DECISIONS,
     INCOMPLETE_ITEM_TARGET_ROLES,
     NEXT_ACTION_DISPATCH_ROLE,
     OPERATIONAL_REASON_CATEGORIES,
@@ -446,7 +447,7 @@ def _developer_retry_count(batch: JsonObject) -> int:
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
-        if decision.get("decision") in {"retry", "rewind-developer"}
+        if decision.get("decision") in DEVELOPER_RETRY_DECISIONS
         and decision.get("next_role") == "developer"
         and not (
             isinstance(decision.get("routing"), dict)

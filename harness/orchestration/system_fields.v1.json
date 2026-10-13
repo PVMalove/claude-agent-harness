@@ -119,6 +119,39 @@
         "accepted": ["accept", "override-warning", "accept-conditional"]
       }
     },
+    "coordinator.decision": {
+      "description": "Kind of a decision the coordinator records: the decision of an entry in a batch's coordinator_decisions, and the decision detail of a batch transition audit record. batch decide records the batch.decision kinds; the coordinator records the others itself. The budgets count coordinator_decisions entries by these exact spellings and stop the automatic path when one is spent.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "accept": "batch decide accepted the report and moved the pipeline past its stage.",
+        "accept-conditional": "batch decide recorded a human attestation that an infrastructure failure stopped the stage; an open condition stays until a later stage covers it.",
+        "override-warning": "batch decide accepted a report with warnings as an explicit human override.",
+        "retry": "batch decide retried the stage on the recorded route; with next_role developer it spends one developer retry unless the route is tooling-retry, and with reason verification-infrastructure it spends one infrastructure retry of its candidate.",
+        "block": "batch decide stopped the batch as blocked.",
+        "fail": "batch decide stopped the batch as failed.",
+        "abandon": "batch decide or batch abandon: a human abandoned the batch with a reason.",
+        "continue": "A planned continuation or a startup-failure restart resumed the dispatch; it spends one continuation of that dispatch.",
+        "continue-automatic": "The runtime adapter resumed a rate-limited dispatch after a recognized termination reason; it spends one continuation and one rate-limit resume of that dispatch.",
+        "continue-rate-limit": "A human approved a rate-limit resume after an automatic stop or a manual recovery; it spends one continuation and one rate-limit resume of that dispatch.",
+        "cancel": "An approved, unsent brief was cancelled; with reason verification-infrastructure it spends one infrastructure retry of its candidate.",
+        "rewind-developer": "A new developer dispatch was created after a human rewind; it spends one developer retry.",
+        "resume": "batch resume retired a blocked dispatch and returned the batch to its recorded next action.",
+        "not-required": "batch not-required closed the batch without implementation: the pinned snapshot already satisfies the definition of done.",
+        "carry-over": "Coordinator findings or incomplete items were carried into later briefs without a retry.",
+        "supersede": "A new batch resumed from the last accepted record of an abandoned batch.",
+        "resume-stop": "batch resume-stop: a human retired a proven environment failure of a stopped batch for a new same-stage dispatch; a recovery event binds the approval.",
+        "rewind": "batch rewind: a human returned the batch to an earlier gate; a recovery event binds the approval and Git history is unchanged.",
+        "pause": "Audit record only: the automatic policy paused the batch with a recovery event; a human resumes or rewinds it.",
+        "startup-evidence": "Audit record only: binds the startup evidence point of a restart or of the first rate-limit resume of a dispatch to the batch transition."
+      },
+      "groups": {
+        "continuation": ["continue", "continue-automatic", "continue-rate-limit"],
+        "rate-limit-resume": ["continue-automatic", "continue-rate-limit"],
+        "developer-retry": ["retry", "rewind-developer"],
+        "infrastructure-retry": ["retry", "cancel"]
+      }
+    },
     "retry.reason": {
       "description": "Why a reporting role stopped, as the coordinator records it in a retry routing record; it selects the recovery route.",
       "automatic_decisions": true,
@@ -769,6 +802,60 @@
         "verified": "The pinned native runtime_access implementation confirmed mode, network and filesystem for the worker launch.",
         "unverified": "No fresh native observation confirmed the plan; the send is refused with a remedy."
       }
+    },
+    "runtime_access.observation_source": {
+      "description": "Source a runtime_access extension names in its observation of a worker launch. With any other source the plan stays unverified, and preflight and every send refuse the dispatch.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "native-runtime": "The native runtime observed the reserved worker environment itself.",
+        "runtime-adapter": "The runtime adapter observed the reserved worker environment for the native runtime."
+      }
+    },
+    "runtime_access.observation_mechanism": {
+      "description": "How a runtime_access extension says the approved plan reaches the worker launch. With any other mechanism the plan stays unverified, and preflight and every send refuse the dispatch.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "native-apply": "The native runtime applies the plan's settings through its supported launch mechanism.",
+        "confirmed-inheritance": "The native runtime confirmed that the worker inherits an environment that satisfies the plan."
+      }
+    },
+    "operation_access.check_state": {
+      "description": "State of one access check in the evidence of a coordinator operation (qa, git or publish), taken before the operation changes anything. Every state other than verified stops the operation with the evidence and a remedy.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "verified": "The plan allows the access and the environment confirmed it, or the coordinator's mode is inherit or natively confirmed.",
+        "unverified": "The access could not be confirmed (a missing path, an unreachable or unconfigured remote, an error that is not a refusal); a retry needs a manual decision.",
+        "denied": "The approved plan does not allow the access, or the environment refused it; only a probe-confirmed denial qualifies for an automatic infrastructure retry.",
+        "unsupported": "Sentinel: the coordinator process cannot prove the plan's non-inherit mode. The operation stops before any change and no automatic retry exists; a human runs the coordinator in a runtime whose runtime_access extension confirms the mode, or sets the operation's mode to inherit."
+      },
+      "sentinels": ["unsupported"]
+    },
+    "operation_access.check_source": {
+      "description": "What established the state of an access check of a coordinator operation; only a check from probe can be infrastructure evidence for an automatic retry.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "plan": "The approved access plan decided the check without touching the environment: it does not allow the requirement or the network host.",
+        "probe": "The coordinator exercised the access itself: it created and removed a probe file, checked read access, or looked up and queried the Git remote.",
+        "inherit": "The plan mode is inherit: the coordinator runs in its own inherited environment.",
+        "native-runtime": "The pinned runtime_access implementation was asked to confirm the plan's non-inherit mode."
+      }
+    },
+    "operation_access.status": {
+      "description": "Overall status of the access evidence of a coordinator operation: legacy-inherit for a plan without authored access, otherwise the first of unsupported, denied and unverified among the failed checks, or verified when no check failed. The infrastructure retry policy authorizes an automatic retry only for denied.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "legacy-inherit": "The plan has only legacy sources: nothing is checked and the operation runs in the inherited environment.",
+        "verified": "Every check is verified; the operation proceeds.",
+        "unverified": "A check is unverified and none is denied or unsupported; the operation stops and a retry needs a manual decision.",
+        "denied": "A check is denied and none is unsupported; the operation stops, and an automatic infrastructure retry is allowed only when every failed check is a probe-confirmed denial.",
+        "unsupported": "Sentinel: a check is unsupported. The operation stops before any change and no automatic retry exists; a human decides after running the coordinator in a runtime that confirms the mode or setting the operation's mode to inherit."
+      },
+      "sentinels": ["unsupported"]
     },
     "extension.kind": {
       "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",

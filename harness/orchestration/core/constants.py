@@ -150,6 +150,40 @@ DECISIONS = {
 # Decisions that let the pipeline move past a reported stage. `accept-conditional` is a human
 # attestation that an infrastructure failure stopped the stage; it leaves an open condition.
 ACCEPTED_DECISIONS = frozenset({"accept", "override-warning", "accept-conditional"})
+# Every decision kind the coordinator records: `batch decide` records DECISIONS, the coordinator
+# records the others itself in coordinator_decisions, and `pause` and `startup-evidence` appear
+# only as the decision detail of a batch transition audit record.
+COORDINATOR_DECISIONS = (
+    "accept",
+    "accept-conditional",
+    "override-warning",
+    "retry",
+    "block",
+    "fail",
+    "abandon",
+    "continue",
+    "continue-automatic",
+    "continue-rate-limit",
+    "cancel",
+    "rewind-developer",
+    "resume",
+    "not-required",
+    "carry-over",
+    "supersede",
+    "resume-stop",
+    "rewind",
+    "pause",
+    "startup-evidence",
+)
+# coordinator_decisions entries the budgets count by these exact spellings: continuations and
+# rate-limit resumes per dispatch, developer retries per batch and infrastructure retries per
+# candidate.
+CONTINUATION_DECISIONS = frozenset(
+    {"continue", "continue-automatic", "continue-rate-limit"}
+)
+RATE_LIMIT_RESUME_DECISIONS = frozenset({"continue-automatic", "continue-rate-limit"})
+DEVELOPER_RETRY_DECISIONS = frozenset({"retry", "rewind-developer"})
+INFRASTRUCTURE_RETRY_DECISIONS = frozenset({"retry", "cancel"})
 TERMINAL_BATCH_STATES = {
     BatchState.COMPLETED,
     BatchState.NOT_REQUIRED,
