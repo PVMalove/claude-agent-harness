@@ -276,7 +276,10 @@ class ExactCliValueHandlerTests(unittest.TestCase):
                 self.assertEqual(
                     caught.exception.remedy,
                     "set --effort to exactly one of: high, low, max, medium, minimal, "
-                    f"none, ultra, xhigh {EXACT_SPELLING}",
+                    f"none, ultra, xhigh {EXACT_SPELLING}; report complete and an "
+                    "infrastructure retry reuse the previous brief's resolved_effort, so "
+                    "when that recorded value is not exact, create the next dispatch with "
+                    "dispatch create --effort and an exact value",
                 )
 
     def test_a_recorded_session_effort_replays_as_it_was_written(self) -> None:

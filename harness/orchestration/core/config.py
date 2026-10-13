@@ -492,7 +492,11 @@ def _resolve_assignment(
             problem := enum_problem("--effort", session_effort, EFFORT_LEVELS)
         ):
             raise CoordinatorError(
-                problem, remedy=enum_remedy("--effort", EFFORT_LEVELS)
+                problem,
+                remedy=enum_remedy("--effort", EFFORT_LEVELS)
+                + "; report complete and an infrastructure retry reuse the previous brief's "
+                "resolved_effort, so when that recorded value is not exact, create the next "
+                "dispatch with dispatch create --effort and an exact value",
             )
         # No project-owned provider profile exists; the invoking session handles the role.
         return (
