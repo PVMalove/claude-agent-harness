@@ -75,13 +75,6 @@ never as a code finding. A context limit is `context-pressure` only when a criti
 In this table and the Recovery route table, an operational reason is one of these three categories;
 `tooling` and `block-bypass` have their own routes.
 
-Startup failures are assessed before routing: a bounded `dispatch preflight` may diagnose
-unsupported adapter flags without launching a worker; an unavailable or timed-out probe is a
-recorded limitation, not a successful capability claim. A runtime/model-list or thread/start
-observation never replaces the worker's mandatory model self-report. Capacity, rate-limit and
-service-unavailable are separate infrastructure findings, and an absent/exited worker is required
-before bounded restart; a live or unknown worker is never restarted.
-
 | Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
 | architect | developer | new architect | terminal | `abandoned` |
@@ -482,9 +475,14 @@ auto-merge is forbidden.
 ## Operator recovery
 
 Inspect `batch auto-report`, `batch decision-packet`, `dispatch status` and `ledger validate` before
-recommending any recovery or abandon. Record the worker process state (absent, exited, live or
-unknown), the startup classification, and any unknowns; the read-only sequence itself does not
-change lifecycle state or cancel evidence.
+you recommend any recovery or abandon. These commands are read-only. For each dispatch,
+`dispatch status` reports a `startup` assessment: `worker_state`, `classification`,
+`restart_allowed` and `unknowns`. The worker states are `absent` (the adapter could not start the
+runtime), `reported` (the worker returned its final report), `rejected-at-startup` (the
+coordinator refused its self-report, so the process may still run), `stopped` (the operator
+confirmed the stop), `live` and `unknown`. Silence, a timeout or a stop acknowledgement never
+proves that a worker stopped. Capacity, rate-limit and service-unavailable are separate
+classifications.
 `ledger validate` is read-only: it validates the generation, checksums, audit, graph and current
 batch contracts; it never repairs, migrates or resets a ledger. A legacy generation receives its
 version's graph/audit validation; mutations require the normal explicit migration.
@@ -498,26 +496,46 @@ python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batc
   --batch <id> --to code-review --approved-by <operator> --approved-at <UTC> --note "repeat independent review"
 ```
 
-`resume-stop` accepts a structured worktree/model mismatch or an OS-confirmed adapter startup
-failure with no worker started. Missing self-report and unsupported runtime attestation remain
-fail-closed evidence, not a human abandon decision. Without structured evidence, a conservative
-text heuristic may name an infrastructure cause (capacity, rate limit, timeout, network, runtime
-crash, resources, service-unavailable or service outage) in the blocked report's `blockers` or
-the runtime error. Any sign of a test, lint, type, conflict, scope or requirements problem wins,
-and unknown text stays unknown. The sealed event records the match as `classification` with
-`method: heuristic`; it only proposes the cause and the human approval still decides. No report,
-or a blocked report with no changed files, failed checks or review findings, is eligible. Branch,
-known SHA and tracked/untracked cleanliness must match. A capacity/rate-limit/service error after
-thread/start is not `READY`: if the worker is live or its exit is unknown, recovery refuses until
-the runtime proves absence or termination.
+`resume-stop` restarts only a worker whose outcome is known: `absent`, `reported`,
+`rejected-at-startup` or `stopped`. For a refused self-report the existing contract holds: the
+human approval retires that dispatch and the ledger rejects its late writes. When `dispatch
+status` shows `live` or `unknown`, `resume-stop` refuses and changes nothing: stop the worker
+through its runtime and repeat the command with `--runtime-stopped`. A missing self-report is not
+a failure `resume-stop` confirms; stop the worker and record `dispatch cancel --runtime-stopped`
+(below). `resume-stop` accepts a structured worktree/model mismatch or a classified startup
+failure. Without structured evidence, a conservative text heuristic may name an infrastructure cause (capacity,
+rate limit, timeout, network, runtime crash, resources, service-unavailable or service outage) in
+the blocked report's `blockers` or the runtime error. Any sign of a test, lint, type, conflict,
+scope or requirements problem wins, and unknown text stays unknown. The sealed event records the
+match as `classification` with `method: heuristic`; it only proposes the cause and the human
+approval still decides. No report, or a blocked report with no changed files, failed checks or
+review findings, is eligible. Branch, known SHA and tracked/untracked cleanliness must match.
 The old dispatch is retired; the next dispatch has a new ID, context and transition digest under a
 fresh human approval. Role, purpose, scope, candidate and fix-forward handoff remain fixed. It
 spends an infrastructure attempt, not another developer retry. Repeating the same recovery before
 its next dispatch is created changes nothing. A budget/no-route pause with a pending report can
 resume that report boundary for a human decision; this does not invent a retry or accept its work.
-Unknown failures, drift or dirty files need an ordinary decision or human rewind. If the bounded
-infrastructure budget is exhausted, the batch pauses for a human choice among wait, launch repair,
-`resume-stop` and `rewind`; it does not loop indefinitely and does not select abandon by policy.
+Unknown failures, drift or dirty files need an ordinary decision or human rewind. When the
+infrastructure budget is exhausted, `resume-stop` refuses and the batch stays in its stop state for
+a human choice: wait, repair the launch, adjust the attention policy, rewind, or a separate
+abandon decision. Recovery never resets the counters.
+
+`dispatch send` checks each `--adapter-arg` option against the adapter's `dispatch --help` before
+the handoff. It refuses an unsupported option and leaves the dispatch approved and unsent. A help
+call that fails or times out is a `limitation` in the send result's `adapter_preflight`, not a
+capability claim. To diagnose an app-server runtime without a worker, run:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> dispatch runtime-probe \
+  --dispatch <id> --runtime-command <runtime> --runtime-arg=app-server
+```
+
+The probe sends `initialize`, `model/list`, `thread/start` and one `turn/start` on an ephemeral
+read-only thread without tools. It is `ready` only when the brief's model is listed, the
+`thread/start` model, `cwd` and reasoning effort match the brief, and the turn completes. A
+capacity, rate-limit or service error after `thread/start` is a classified failure, not READY.
+The probe writes nothing to the ledger, starts no worker and never replaces the worker's model
+self-report.
 
 `rewind --to architect|developer|code-review|qa|publish` selects a reached gate. `verification`
 requires an active registered candidate; `resolve-conflict` requires a resolver boundary. It cannot
@@ -551,8 +569,7 @@ python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> disp
 ```
 
 Cancel without `--runtime-stopped` still accepts only approved unsent work. Retired dispatches
-reject late worker writes. A live or unknown worker cannot be restarted. Recovery never silently
-resolves unrelated attention or runs a worker.
+reject late worker writes. Recovery never silently resolves unrelated attention or runs a worker.
 
 New recovery commands run on the installed runtime, even for an old pinned batch. When needed,
 the human recovery event binds the original runtime hash to the installed control-plane hash and
@@ -670,12 +687,9 @@ retry` and by `dispatch wait`. While it is set no next dispatch is created; noth
 the candidate is not touched. `batch attention resolve` (approval and note required) acknowledges the
 open findings, so the same occurrence is not raised again.
 
-For a stale dispatch, `last_safe_action` records the read-only sequence
-`batch auto-report`, `batch decision-packet`, `dispatch status` and `ledger validate`, including
-the observed worker state and unknowns. The human action is explicit: keep waiting, repair the
-launch, approve `batch resume-stop` only after absence/exit is proven, use `batch rewind`, or
-cancel an unsent dispatch. Silence, timeout, missing self-report and capacity do not select
-`batch abandon`; abandoning the whole batch remains a separate human decision.
+For a stale dispatch, `recommended_human_action` names the read-only evidence commands and the
+choices: keep waiting, or stop the runtime and record `dispatch cancel --runtime-stopped` before
+`batch resume-stop` or `batch rewind`. `batch abandon` remains a separate human decision.
 
 ## Pluggable operational interfaces
 
@@ -733,9 +747,8 @@ either.
 
 A dispatched role is not assumed to be alive because it was sent. Its first action after receiving
 its brief is a model self-report: it names the model it is actually running, and the coordinator
-compares that against `resolved_model` in the immutable brief. A runtime probe may attest
-executable capability or observed fields, but it never fills a missing self-report. For architect,
-developer,
+compares that against `resolved_model` in the immutable brief. A runtime probe never fills a
+missing self-report. For architect, developer,
 conflict-resolver, database-migrations, messaging-integration and code-review, and for other roles
 when the project enables `worker_attestation_required`, that same first action proves the canonical Git top-level, branch and
 pinned candidate from the runtime's actual CWD. A model or worktree mismatch blocks the dispatch

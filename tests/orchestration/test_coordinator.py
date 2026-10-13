@@ -7822,6 +7822,16 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         record = self._batch_record(batch["batch_id"])
         self.assertEqual(record["attention_reason"], "stale-dispatch")
         self.assertEqual(record["state"], "active")
+        # Silence routes to evidence and recovery; abandon stays a separate human decision (#679).
+        action = record["recommended_human_action"]
+        for evidence in (
+            "batch auto-report",
+            "batch decision-packet",
+            "ledger validate",
+        ):
+            self.assertIn(evidence, action)
+        self.assertIn("dispatch cancel --runtime-stopped", action)
+        self.assertIn("batch abandon is a separate human decision", action)
         self.assertEqual(record["dispatches"][0]["state"], "dispatched")
         self.assertEqual(
             (

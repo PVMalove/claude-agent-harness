@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, tzinfo
@@ -13,7 +14,12 @@ from harness.orchestration.core import git_utils, workspace
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.ledger.lifecycle import LifecycleLedger, BatchRecord
-from harness.orchestration.workflow import carried_items, commit_plan, decisions
+from harness.orchestration.workflow import (
+    carried_items,
+    commit_plan,
+    decisions,
+    recovery,
+)
 from tests.orchestration.test_coordinator import (
     _init_repo,
     _git,
@@ -200,7 +206,10 @@ class RecoveryTests(unittest.TestCase):
                     )
                 )
         before = self._ledger_bytes()
-        with self.assertRaisesRegex(coordinator.CoordinatorError, "budget exhausted"):
+        stopped_state = self._batch_record(batch["batch_id"])["state"]
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "budget exhausted"
+        ) as caught:
             coordinator.resume_stopped_batch(
                 self._args(
                     batch=batch["batch_id"],
@@ -208,9 +217,84 @@ class RecoveryTests(unittest.TestCase):
                     **self._approval(),
                 )
             )
+        # Exhaustion is a pause for a human choice: no abandon, no new attempt, no reset counter.
         self.assertEqual(before, self._ledger_bytes())
+        self.assertEqual(stopped_state, self._batch_record(batch["batch_id"])["state"])
+        self.assertIn(f"stays {stopped_state}", caught.exception.remedy)
+        self.assertIn("separate abandon decision", caught.exception.remedy)
+        self.assertIn("does not reset counters", caught.exception.remedy)
         self.assertEqual(original, self._batch_record(batch["batch_id"])["auto_stop"])
         coordinator.validate_ledger(self._args())
+
+    def test_resume_stop_after_a_refused_self_report_keeps_its_human_approved_route(
+        self,
+    ) -> None:
+        batch, old = self._failed_launch()
+        coordinator.auto_decide(self._args(batch=batch["batch_id"]))
+
+        result = coordinator.resume_stopped_batch(
+            self._args(
+                batch=batch["batch_id"], note="checkout fixed", **self._approval()
+            )
+        )
+
+        assessment = result["event"]["evidence"]["failure"]["startup_assessment"]
+        self.assertEqual(assessment["worker_state"], "rejected-at-startup")
+        self.assertEqual(assessment["classification"], "worktree-mismatch")
+        # The retired dispatch can no longer write to the ledger.
+        with self.assertRaises(coordinator.CoordinatorError):
+            coordinator.heartbeat_dispatch(
+                self._args(
+                    dispatch=old["dispatch_id"],
+                    note="late",
+                    context_tokens=None,
+                    context_source=None,
+                )
+            )
+
+    def test_resume_stop_records_the_operator_stop_proof(self) -> None:
+        batch, _ = self._failed_launch()
+        coordinator.auto_decide(self._args(batch=batch["batch_id"]))
+
+        result = coordinator.resume_stopped_batch(
+            self._args(
+                batch=batch["batch_id"],
+                note="runtime session stopped",
+                runtime_stopped=True,
+                **self._approval(),
+            )
+        )
+
+        assessment = result["event"]["evidence"]["failure"]["startup_assessment"]
+        self.assertEqual(assessment["worker_state"], "stopped")
+
+    def test_a_worker_with_an_unknown_outcome_is_restarted_only_after_runtime_stopped(
+        self,
+    ) -> None:
+        batch, _ = self._failed_launch()
+        stored = self._batch_record(batch["batch_id"])
+        entry = stored["dispatches"][-1]
+        root = ledger_ops._state_root(self._args(), self.repo)
+        unknown = {
+            "state": "blocked",
+            "runtime_failure": {"error": "provider is at capacity"},
+        }
+
+        with mock.patch.object(
+            ledger_ops, "_load_dispatch_status", return_value=unknown
+        ):
+            with self.assertRaisesRegex(
+                coordinator.CoordinatorError, "outcome is unknown"
+            ) as caught:
+                recovery._confirmed_failure(root, stored, entry)
+            evidence = recovery._confirmed_failure(
+                root, stored, entry, runtime_stopped=True
+            )
+
+        self.assertIn("--runtime-stopped", caught.exception.remedy)
+        self.assertIn("batch decision-packet", caught.exception.remedy)
+        self.assertEqual(evidence["startup_assessment"]["worker_state"], "stopped")
+        self.assertEqual(evidence["classification"]["category"], "capacity")
 
     def test_blocked_and_failed_stages_rewind_to_fresh_architecture(self) -> None:
         batch = self._create_batch()
@@ -257,7 +341,9 @@ class RecoveryTests(unittest.TestCase):
         coordinator.auto_decide(self._args(batch=batch["batch_id"]))
         coordinator.resume_stopped_batch(
             self._args(
-                batch=batch["batch_id"], note="fixed checkout", **self._approval()
+                batch=batch["batch_id"],
+                note="fixed checkout",
+                **self._approval(),
             )
         )
         stored = self._batch_record(batch["batch_id"])
@@ -1264,7 +1350,9 @@ class RecoveryTests(unittest.TestCase):
         coordinator.auto_decide(self._args(batch=batch["batch_id"]))
         coordinator.resume_stopped_batch(
             self._args(
-                batch=batch["batch_id"], note="fix worker directory", **self._approval()
+                batch=batch["batch_id"],
+                note="fix worker directory",
+                **self._approval(),
             )
         )
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
@@ -1413,9 +1501,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "architect")
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
 
-    def test_external_developer_adapter_runs_from_the_registered_issue_worktree(
-        self,
-    ) -> None:
+    def _use_external_developer(self) -> None:
         runtime = {"claude": {"profiles": ["p"], "model": "sonnet", "effort": "high"}}
         config_path = self.repo / ".harness/orchestration.json"
         config_path.write_text(
@@ -1449,6 +1535,11 @@ class RecoveryTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+
+    def test_external_developer_adapter_runs_from_the_registered_issue_worktree(
+        self,
+    ) -> None:
+        self._use_external_developer()
         batch = self._create_batch()
         self.assertEqual(batch["auto_retry_min_severity"], "warning")
         self._accepted_architect(batch["batch_id"])
@@ -1475,6 +1566,113 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(
             marker.read_text(encoding="utf-8"), str(self.worktree.resolve())
         )
+
+    def _dispatch_status(self, dispatch_id: str) -> JsonObject:
+        status = coordinator.dispatch_status(
+            self._args(dispatch=dispatch_id, batch=None, stale_after=None)
+        )
+        entry: JsonObject = status["dispatches"][0]
+        return entry
+
+    def test_issue_679_startup_failures_keep_an_explainable_batch_without_abandon(
+        self,
+    ) -> None:
+        """Unsupported flag, unavailable self-report, then capacity before any code (#679)."""
+        self._use_external_developer()
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        launched = self.tmp / "adapter.launched"
+        probed = self.tmp / "adapter.probed"
+        adapter = self.tmp / "adapter.py"
+        adapter.write_text(
+            "import sys\nfrom pathlib import Path\n"
+            "if '--help' in sys.argv:\n"
+            f"    Path({str(probed)!r}).write_text('probed', encoding='utf-8')\n"
+            "    print('usage: adapter dispatch [--profile PROFILE] --repo REPO --brief BRIEF')\n"
+            "    raise SystemExit(0)\n"
+            f"Path({str(launched)!r}).write_text('launched', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+        def send(dispatch_id: str, *flags: str) -> JsonObject:
+            return coordinator.send_dispatch(
+                self._args(
+                    dispatch=dispatch_id,
+                    adapter=str(adapter),
+                    adapter_arg=list(flags),
+                    checkout=None,
+                    worktree=str(self.worktree),
+                )
+            )
+
+        # 1. An unsupported adapter flag is refused before the brief is handed off.
+        first = self._dispatch(batch["batch_id"], "developer")["brief"]
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "--legacy-flag"
+        ) as caught:
+            send(first["dispatch_id"], "--legacy-flag")
+        self.assertIn("nothing was handed off", caught.exception.remedy)
+        self.assertFalse(launched.exists())
+        self.assertEqual(
+            self._dispatch_status(first["dispatch_id"])["state"], "approved"
+        )
+
+        # 2. The repaired launch starts a worker that never self-reports: it may still run.
+        sent = send(first["dispatch_id"], "--profile=fast")
+        self.assertEqual(sent["adapter_preflight"]["status"], "supported")
+        self.assertTrue(launched.exists())
+        startup = self._dispatch_status(first["dispatch_id"])["startup"]
+        self.assertEqual(
+            (
+                startup["worker_state"],
+                startup["classification"],
+                startup["restart_allowed"],
+            ),
+            ("live", "model-self-report-missing", False),
+        )
+        coordinator.cancel_dispatch(
+            self._args(
+                dispatch=first["dispatch_id"],
+                runtime_stopped=True,
+                reason="runtime stopped: the model self-report never arrived",
+                **self._approval(),
+            )
+        )
+        self.assertEqual(
+            self._batch_record(batch["batch_id"])["state"], "awaiting-approval"
+        )
+        # A send that fails its own checks never runs the adapter, not even to probe it.
+        probed.unlink()
+        with self.assertRaises(coordinator.CoordinatorError):
+            send(first["dispatch_id"], "--profile=fast")
+        self.assertFalse(probed.exists())
+
+        # 3. Capacity after thread/start, before any code: evidence only, not READY, no abandon.
+        second = self._dispatch(batch["batch_id"], "developer")["brief"]
+        before = self._ledger_bytes()
+        probe = coordinator.probe_dispatch_runtime(
+            self._args(
+                dispatch=second["dispatch_id"],
+                runtime_command=sys.executable,
+                runtime_arg=[
+                    str(Path(__file__).with_name("fake_app_server.py")),
+                    "--mode",
+                    "capacity",
+                ],
+                worktree=None,
+                timeout=20,
+            )
+        )
+        self.assertEqual(before, self._ledger_bytes())
+        self.assertEqual(
+            (probe["status"], probe["ready"], probe["classification"]["category"]),
+            ("failed", False, "capacity"),
+        )
+        self.assertNotEqual(self._batch_record(batch["batch_id"])["state"], "abandoned")
+        self.assertEqual(
+            self._dispatch_status(second["dispatch_id"])["state"], "approved"
+        )
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
 
     def _batch_in_state(self, state: str) -> JsonObject:
         """Build a batch in `state` through public commands only."""

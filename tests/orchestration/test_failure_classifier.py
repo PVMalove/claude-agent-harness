@@ -67,7 +67,10 @@ def test_startup_infrastructure_categories_stay_separate(
         ({"kind": "capacity", "worker_started": False}, "capacity"),
         ({"kind": "rate_limit", "worker_started": False}, "rate-limit"),
         ({"status_code": 503, "worker_started": False}, "service-unavailable"),
-        ({"kind": "runtime-unavailable", "worker_started": False}, "runtime-unavailable"),
+        (
+            {"kind": "runtime-unavailable", "worker_started": False},
+            "runtime-unavailable",
+        ),
     ],
 )
 def test_structured_runtime_categories_are_explicit(
@@ -76,4 +79,29 @@ def test_structured_runtime_categories_are_explicit(
     result = failure_classifier.classify_runtime_failure(failure)
     assert result is not None
     assert result["method"] == "structured"
+    assert result["category"] == category
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "the capacity error came after tests failed",
+        "capacity of the batch is unclear: requirements are ambiguous",
+    ],
+)
+def test_a_code_defect_sign_wins_over_a_capacity_sign(text: str) -> None:
+    assert failure_classifier.classify(text) is None
+
+
+@pytest.mark.parametrize(
+    ("text", "category"),
+    [
+        ("HTTP/1.1 503 from the gateway", "service-unavailable"),
+        ("status code: 503", "service-unavailable"),
+        ("gateway answered 502 Bad Gateway", "service"),
+    ],
+)
+def test_http_statuses_are_classified(text: str, category: str) -> None:
+    result = failure_classifier.classify(text)
+    assert result is not None
     assert result["category"] == category

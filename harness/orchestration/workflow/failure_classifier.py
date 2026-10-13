@@ -24,7 +24,7 @@ INFRASTRUCTURE_PATTERNS = (
     (
         "service-unavailable",
         r"service (?:is )?unavailable|provider (?:is )?unavailable"
-        r"|http\s*503|\b503\b|temporarily unavailable",
+        r"|temporarily unavailable|(?:http(?:/\d(?:\.\d)?)?|status(?: code)?)[\s:=]*503\b",
     ),
     ("timeout", r"timed? ?out|\btimeout\b|deadline exceeded"),
     (
@@ -73,64 +73,46 @@ def classify(*texts: object) -> JsonObject | None:
     return None
 
 
-_STRUCTURED_CATEGORIES = {
-    "capacity": "capacity",
-    "capacity-exhausted": "capacity",
-    "insufficient-capacity": "capacity",
-    "rate-limit": "rate-limit",
-    "rate_limit": "rate-limit",
-    "service-unavailable": "service-unavailable",
-    "service_unavailable": "service-unavailable",
-    "runtime-unavailable": "runtime-unavailable",
-    "runtime_unavailable": "runtime-unavailable",
-    "timeout": "timeout",
-    "network": "network",
-    "runtime-crash": "runtime-crash",
-    "resources": "resources",
-    "service": "service",
-}
+# Categories a runtime adapter or probe may name in a structured field, and the HTTP statuses
+# that name one; both are evidence, unlike the text heuristic above.
+STRUCTURED_CATEGORIES = frozenset(
+    {category for category, _ in INFRASTRUCTURE_PATTERNS} | {"runtime-unavailable"}
+)
+_STATUS_CATEGORIES = {429: "rate-limit", 503: "service-unavailable"}
+
+
+def _structured(
+    category: str, field: str, value: object, failure: Mapping[str, object]
+) -> JsonObject:
+    return {
+        "method": "structured",
+        "category": category,
+        "field": field,
+        "value": value,
+        "text": str(failure.get("error", ""))[:500],
+    }
 
 
 def classify_runtime_failure(failure: Mapping[str, object] | None) -> JsonObject | None:
-    """Classify structured runtime fields before falling back to bounded error text.
+    """Classify structured runtime fields before falling back to the text heuristic.
 
-    Capacity, rate-limit and service-unavailable are intentionally distinct.  A structured
-    category is evidence supplied by the runtime adapter; a free-form message remains a heuristic
-    and cannot by itself prove that a worker exited.
+    Capacity, rate-limit and service-unavailable stay distinct.  A structured category is evidence
+    supplied by the adapter or a runtime probe; a free-form message remains a heuristic and never
+    proves by itself that a worker exited.
     """
     if not isinstance(failure, Mapping):
         return None
-    for field in ("category", "failure_category", "kind"):
+    for field in ("category", "kind"):
         value = failure.get(field)
         if isinstance(value, str):
-            normalized = value.strip().lower().replace(" ", "-")
-            category = _STRUCTURED_CATEGORIES.get(normalized)
-            if category is not None:
-                return {
-                    "method": "structured",
-                    "category": category,
-                    "field": field,
-                    "value": value,
-                    "text": str(failure.get("error", ""))[:500],
-                }
-    status = failure.get("status_code") or failure.get("http_status")
-    if status == 429 or status == "429":
-        return {
-            "method": "structured",
-            "category": "rate-limit",
-            "field": "status_code",
-            "value": status,
-            "text": str(failure.get("error", ""))[:500],
-        }
-    if status in {503, "503"}:
-        return {
-            "method": "structured",
-            "category": "service-unavailable",
-            "field": "status_code",
-            "value": status,
-            "text": str(failure.get("error", ""))[:500],
-        }
-    return classify(failure.get("error"), failure.get("message"), failure.get("details"))
-
-
-classify_failure = classify_runtime_failure
+            category = value.strip().lower().replace("_", "-").replace(" ", "-")
+            if category in STRUCTURED_CATEGORIES:
+                return _structured(category, field, value, failure)
+    status = failure.get("status_code")
+    if isinstance(status, str) and status.isdigit():
+        status = int(status)
+    if isinstance(status, int) and status in _STATUS_CATEGORIES:
+        return _structured(_STATUS_CATEGORIES[status], "status_code", status, failure)
+    return classify(
+        failure.get("error"), failure.get("message"), failure.get("details")
+    )

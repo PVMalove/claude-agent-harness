@@ -6,7 +6,7 @@ import argparse
 import hashlib
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from harness.orchestration.core import utils
 from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
@@ -34,166 +34,100 @@ FIELDS = frozenset(
 )
 
 
-def worker_outcome(status: Mapping[str, object]) -> str:
-    """Return the strongest process-state fact available to startup recovery.
+WorkerProcessState = Literal[
+    "absent", "reported", "rejected-at-startup", "stopped", "live", "unknown"
+]
+# A restart needs a known worker outcome; silence, a timeout or a stop ACK is never one.
+RESTARTABLE_WORKER_STATES: frozenset[WorkerProcessState] = frozenset(
+    {"absent", "reported", "rejected-at-startup", "stopped"}
+)
 
-    A dispatch state alone is not a termination proof.  Explicit adapter evidence wins; a
-    completion report proves the worker returned, while a blocked or silent record without an exit
-    flag remains ``unknown`` and is never eligible for restart.
+
+def worker_process_state(
+    status: Mapping[str, object], *, runtime_stopped: bool = False
+) -> WorkerProcessState:
+    """Return the strongest recorded fact about the worker process, never a guess from silence.
+
+    ``absent``: the adapter could not start the runtime, so no worker exists.  ``reported``: the
+    worker returned its final report.  ``rejected-at-startup``: the coordinator refused its
+    model/worktree self-report; recovery retires that dispatch and the ledger rejects its late
+    writes, which is the existing ``resume-stop`` contract for a mismatch.  ``stopped``: the
+    operator confirmed with ``--runtime-stopped`` that the worker has stopped.  ``live`` and
+    ``unknown`` never allow a restart.
     """
-    failure = status.get("runtime_failure")
-    failure = failure if isinstance(failure, Mapping) else {}
-    explicit_state = status.get("worker_state") or failure.get("worker_state")
-    if isinstance(explicit_state, str) and explicit_state in {
-        "absent",
-        "never-started",
-        "exited",
-        "terminated",
-        "live",
-        "unknown",
-    }:
-        return "absent" if explicit_state == "never-started" else explicit_state
-    if failure.get("worker_started") is False:
-        return "absent"
-    if failure.get("worker_exited") is True or failure.get("terminated") is True:
-        return "exited"
-    if failure.get("worker_started") is True:
-        return "live" if status.get("state") in LIVE_DISPATCH_STATES else "unknown"
-    if status.get("state") in LIVE_DISPATCH_STATES:
+    state = status.get("state")
+    if state in LIVE_DISPATCH_STATES:
         return "live"
-    if status.get("state") == "reported":
-        return "exited"
-    model = status.get("model_self_report")
-    if isinstance(model, Mapping) and model.get("match") is False:
-        # The coordinator rejected the session at the startup gate.  This is not a physical
-        # termination claim, but it is distinct from a valid worker whose process may continue.
-        return "startup-rejected"
+    failure = status.get("runtime_failure")
+    if isinstance(failure, Mapping) and failure.get("worker_started") is False:
+        return "absent"
+    if state == "reported":
+        return "reported"
+    if runtime_stopped:
+        return "stopped"
+    if any(
+        isinstance(status.get(field), Mapping)
+        and cast(Mapping[str, object], status[field]).get("match") is False
+        for field in ("model_self_report", "worktree_attestation")
+    ):
+        return "rejected-at-startup"
     return "unknown"
 
 
 def assess_startup(
     dispatch: Mapping[str, object],
     status: Mapping[str, object],
-    runtime_evidence: Mapping[str, object] | None = None,
+    *,
+    runtime_stopped: bool = False,
 ) -> JsonObject:
-    """Assess startup evidence without inventing a model, readiness or process exit.
+    """Explain a stopped startup from recorded facts without inventing a model or an exit.
 
-    ``runtime_evidence`` is intentionally advisory: a model/list or thread/start observation is
-    recorded as unsupported for self-report purposes until the worker reports through the normal
-    coordinator command.
+    The classification names the strongest cause: a refused self-report (``model-mismatch``,
+    ``worktree-mismatch``, the stop reasons ``auto-report`` already uses), then a runtime failure,
+    then a missing self-report.  A runtime probe never fills a missing self-report.
     """
-    from harness.orchestration.runtime_attestation import (
-        requires_attestation,
-        validate_runtime_evidence,
-    )
+    from harness.orchestration.runtime_attestation import requires_attestation
     from harness.orchestration.workflow import failure_classifier
 
-    observed_model = status.get("model_self_report")
-    model_dispatch = dict(dispatch)
-    model_dispatch.pop("worktree", None)
-    model_dispatch.pop("worker_worktree", None)
-    # ``dispatch self-report`` records the model identity only.  Effort/provider/CWD may be
-    # observed by a runtime probe, but requiring them here would turn a valid model self-report
-    # into a fabricated mismatch.
-    model_dispatch.pop("resolved_effort", None)
-    model_dispatch.pop("effort", None)
-    model = (
-        validate_runtime_evidence(model_dispatch, observed_model)
-        if isinstance(observed_model, Mapping)
-        else {
-            "status": "missing",
-            "match": False,
-            "model_self_report_required": True,
-            "reasons": ["model self-report is missing"],
-        }
-    )
-    probe = (
-        validate_runtime_evidence(dispatch, runtime_evidence)
-        if isinstance(runtime_evidence, Mapping)
+    model = status.get("model_self_report")
+    model_match = (
+        cast(Mapping[str, object], model).get("match")
+        if isinstance(model, Mapping)
         else None
     )
     tree = status.get("worktree_attestation")
-    tree_match = (
-        True
-        if not requires_attestation(dispatch)
-        else isinstance(tree, Mapping) and tree.get("match") is True
+    tree_match = not requires_attestation(dispatch) or (
+        isinstance(tree, Mapping) and tree.get("match") is True
     )
     failure = status.get("runtime_failure")
-    failure = failure if isinstance(failure, Mapping) else {}
-    classification = failure_classifier.classify_runtime_failure(failure)
-    worker = worker_outcome(status)
-    if (
-        worker == "unknown"
-        and status.get("state") not in LIVE_DISPATCH_STATES
-        and model.get("match") is True
-        and requires_attestation(dispatch)
-        and isinstance(tree, Mapping)
-        and tree.get("match") is False
-    ):
-        worker = "startup-rejected"
-    reasons: list[str] = []
-    if probe is not None and probe.get("status") == "unsupported":
-        reasons.append("runtime attestation is unsupported and cannot replace worker self-report")
-    if model.get("status") == "missing":
-        reasons.append("model self-report is missing")
-    elif model.get("match") is not True:
-        reasons.append("model self-report does not match the immutable brief")
-    if requires_attestation(dispatch) and not tree_match:
-        reasons.append("worktree attestation is missing or mismatched")
-    if classification is not None:
-        reasons.append(f"runtime failure classified as {classification['category']}")
-    if worker in {"live", "unknown"}:
-        reasons.append(f"worker termination is not proven ({worker})")
-    if probe is not None and probe.get("status") != "verified":
-        reasons.append("runtime probe evidence is advisory only")
-    if probe is not None and probe.get("status") == "unsupported":
-        category = "unsupported-runtime-attestation"
-    elif model.get("status") == "missing":
-        category = "model-self-report-missing"
-    elif model.get("match") is not True:
-        category = "model-self-report-mismatch"
-    elif requires_attestation(dispatch) and not tree_match:
-        category = "worktree-attestation-mismatch"
-    elif classification is not None:
-        category = classification["category"]
-    else:
-        category = None
-    restart_allowed = worker in {"absent", "exited", "startup-rejected"}
-    ready = (
-        model.get("match") is True
-        and tree_match
-        and classification is None
-        and status.get("state") == "working"
-        and worker == "live"
+    runtime_failure = failure_classifier.classify_runtime_failure(
+        failure if isinstance(failure, Mapping) else None
     )
+    worker = worker_process_state(status, runtime_stopped=runtime_stopped)
+    if model_match is False:
+        classification: str | None = "model-mismatch"
+    elif model_match is True and not tree_match:
+        classification = "worktree-mismatch"
+    elif runtime_failure is not None:
+        classification = cast(str, runtime_failure["category"])
+    elif model_match is None:
+        classification = "model-self-report-missing"
+    else:
+        classification = None
     unknowns: list[str] = []
-    if worker == "unknown":
-        unknowns.append("runtime has not supplied a worker exit or never-started fact")
-    if model.get("status") == "missing":
+    if model_match is None:
         unknowns.append("the active model identity is not known")
-    if probe is not None:
-        unknowns.append("runtime probe fields do not satisfy the mandatory self-report")
+    if worker in {"live", "unknown", "rejected-at-startup"}:
+        unknowns.append(f"worker termination is not proven ({worker})")
     return {
-        "classification": category,
+        "classification": classification,
         "worker_state": worker,
-        "restart_allowed": restart_allowed,
-        "recovery_allowed": restart_allowed and category is not None,
-        "ready": ready,
-        "model_self_report": model,
-        "runtime_probe": probe,
+        "restart_allowed": worker in RESTARTABLE_WORKER_STATES,
+        "model_match": model_match,
         "worktree_match": tree_match,
-        "runtime_failure": classification,
-        "facts": {
-            "dispatch_state": status.get("state"),
-            "worker_started": failure.get("worker_started"),
-            "worker_exited": failure.get("worker_exited"),
-        },
-        "reasons": reasons,
+        "runtime_failure": runtime_failure,
         "unknowns": unknowns,
     }
-
-
-classify_startup = assess_startup
 
 
 def _scope(dispatch: JsonObject) -> str:
