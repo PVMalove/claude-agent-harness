@@ -86,26 +86,62 @@ guard, получив попытку записи `canary.txt` вне `test_path
 корректно возвращает `guard_hook_not_firing`; (c) изоляция runner проверена вызовом напрямую
 из шелла, без Claude Code и без guard, — на process-уровне защита не зависит от hook.
 
-**Контракт конфигурации.** Единственное новое поле — `test_paths` (список glob) в
-`.harness/project.json`, уже описанное в `project.schema.json` и `CONTEXT.md`. Схема,
-шаблон, validator и `harness health` для него не менялись в рамках #551. Зоны runner
-(временный каталог, каталог отчётов) в этом прототипе заданы в самом `bin/run-test.sh`, а не
-в конфиге проекта; если #553 потребует их настраиваемости, это новые поля, добавляемые как
-единый контракт (схема + шаблон + validator + руководство) — в этом ADR такого поля нет.
+**Контракт конфигурации.** В рамках #551 поле `test_paths` (список glob) в
+`.harness/project.json` было описано только в `CONTEXT.md`: в `project.schema.json` и в
+validator его не было, и `harness health` отклонял его как неизвестное. Схема, шаблон и
+validator в #551 не менялись. Зоны runner (временный каталог, каталог отчётов) в прототипе
+заданы в самом `bin/run-test.sh`, а не в конфиге проекта.
+
+**Устанавливаемый runner (#553).** Прототип перенесён в устанавливаемый runner
+`.claude/hooks/run-test.sh` (шаблон `harness/project/hooks/run-test.sh`) с ядром
+`.harness/health/isolated_runner.py`; руководство — [`docs/hooks/run-test.md`](../hooks/run-test.md).
+Набор флагов bwrap выше сохранён без ослаблений и дополнен `--tmpfs /run`, `--chdir <repo>` и
+`--json-status-fd`: отсутствие записи `child-pid` означает, что песочница не поднялась. Пустой
+tmpfs поверх `/run` закрывает обход, который прототип не проверял: `--ro-bind` не запрещает
+`connect()` к сокетам сервисов хоста, а через сессионную D-Bus в `/run/user/<uid>` systemd user
+manager запускает процессы вне песочницы.
+Конфигурация задаётся единым контрактом — `project.schema.json` и validator
+(`test_paths_problems`, `test_runner_problems` в `harness/health/project_files.py`), которые
+runner вызывает сам:
+
+- `test_paths` — непустой список уникальных относительных glob без сегментов `..`; смысл поля не
+  меняется. Runner монтирует на запись только записи вида `<каталог>/**` вне `.git`, `.harness`,
+  `.claude`, `.agents` и `.codex`, без symlink в пути, без вложенных зон и без файлов с
+  несколькими жёсткими ссылками; остальные формы дают отказ `write_zone_rejected`;
+- `test_runner` — `{"command": [...]}`: argv без шелла, ровно один элемент `{test_id}`, не первый.
+  Заменяет `runner.cfg` прототипа; CLI принимает только идентификатор теста или `--probe`, поэтому
+  вызывающий не может расширить зону записи.
+
+`project.json.tmpl` пишет новые поля только по флагам `harness init --test-path` и
+`--test-runner-command`: без них runner отказывает с `test_paths_missing` или
+`test_runner_missing`. Значение `test_paths` по умолчанию включило бы тест-автора в каждом новом
+проекте и предполагало бы раскладку проекта, поэтому его нет; opt-in остаётся за #554.
+Writable-зоны запуска — каталоги `test_paths`, `/tmp` (tmpfs) и свежие `cache/` и `reports/` в
+`.harness/.sandboxes/runs/isolated-test-<run_id>/`. Перед тестом runner выполняет probe с тем же
+набором монтирований: запись в корень checkout получает `EROFS`, а `/run` и `/var/run` пусты.
+Провал любой проверки до запуска даёт отказ `isolation_unavailable` с кодом `platform`,
+`bwrap_missing`, `checkout_masked`, `sandbox_failed` или `probe_failed`.
+Вывод — одна JSON-строка не длиннее 512 байт; коды выхода `0` (прошёл), `1` (упал или таймаут),
+`3` (отказ). `run-test.sh --probe` возвращает `{"status":"ok"}` или `unavailable` с кодом
+причины — это условие (2) preflight; сам `preflight.sh` с canary-проверкой guard — часть #554.
+Clean-room сценарий `scripts/clean_room/isolated_test_runner.py` проверяет runner на
+установленном проекте без сборки и БД, вызывая его из шелла без Claude Code и guard.
 
 ## Операционные последствия
 
 - #552–#554 переносят guard, runner и `proto-test-author`-подобного субагента из
   `.harness/.sandboxes/runs/proto-551/` (не коммитится) в сидируемые шаблоны
   `harness/project/agents/`, `harness/project/hooks/`, с учётом границы «guard не видит
-  вызовы, отклонённые встроенной проверкой Write-после-Read».
+  вызовы, отклонённые встроенной проверкой Write-после-Read». Runner перенесён в #553 (см.
+  «Устанавливаемый runner»); guard в форме `bin/run-test.sh <test-id>` должен разрешать вызов
+  `.claude/hooks/run-test.sh <test-id>`.
 - Runner в проекте со сборкой должен готовить сборочные артефакты до входа в bwrap-сэндбокс с
   read-only исходниками (эпик #549) — в прототипе сборка не проверялась (фикстура без шагов
   сборки).
 - Поддержанное окружение — Linux + bubblewrap 0.9.0+ при наличии user-namespaces без
   дополнительных привилегий (`unshare -U` работает без root). Windows и macOS не проверялись;
   там `preflight.sh` обязан вернуть `isolation_unavailable`, а не выполнить тест без изоляции.
-- Проект, чей checkout лежит внутри `/tmp` или другого пути, который runner монтирует как
+- Проект, чей checkout лежит внутри `/tmp`, `/run` или другого пути, который runner монтирует как
   tmpfs/приватный неймспейс, не поддерживается текущим набором флагов bwrap — `--probe`
   провалится и `preflight.sh` отключит тест-автора, а не выполнит тест в небезопасном режиме.
 - Разделение авторства, scoped guard и process-изоляция не гарантируют смысловую независимость

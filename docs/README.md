@@ -18,7 +18,7 @@
 | [Technical Russian](./technical-russian.md) | Правила технического русского языка и формат Keep a Changelog. |
 | [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards и pr-composer. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
-| [Hooks](./hooks/) | Русские описания двенадцати проектных hooks. |
+| [Hooks](./hooks/) | Русские описания тринадцати проектных hooks. |
 | [Runtime discovery](./runtime-discovery.md) | Обнаружение skills в Claude Code и Codex. |
 
 [releases.md](./agents/releases.md) описывает порядок выпуска версии, а также проверку приватных
