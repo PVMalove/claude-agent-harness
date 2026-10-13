@@ -12,29 +12,29 @@ integration, and end-to-end tests; choose the seam and test environment that mak
 real.
 
 Before writing a test, read `CONTEXT.md` when it exists and respect the ADRs for the area. Agree
-the public seam with the developer or user. In an orchestration dispatch, use the supplied
-Context Package and its approved seam instead of starting a new discovery process.
+the public seam with the developer or user, or use the seam that the task already names.
 
 ## One behavior at an observable seam
 
 A seam is the public boundary at which a caller can observe behavior. Test at the highest useful
-agreed seam. Use the real internal components and value objects that participate in that behavior;
-do not reach into private state, private methods, or implementation-only side channels.
+agreed seam. Use the real internal components and value objects that participate in that behavior,
+and observe the result only through the seam, so private state, private methods, and
+implementation-only side channels stay hidden.
 
 One test proves one behavior, not one assertion. A retry, transaction, workflow, or state
 transition may need several actions and several assertions. Keep those steps in one test when
-they describe one behavior. Separate blank lines between Arrange, Act, and Assert sections and
-between meaningful steps so the behavior is easy to read.
+they describe one behavior. Separate the Arrange, Act, and Assert sections, and meaningful steps,
+with blank lines so the behavior is easy to read.
 
 Name tests with a behavior phrase that says what the caller can observe, not how the code is
 implemented. Name the system under test `sut` when the local convention does not provide a clearer
-name. Keep the test independent: it must not depend on another test's order, mutable global state,
-or data left in a shared environment.
+name. Keep the test independent: it creates the state and data that it needs and passes in any
+order.
 
 ## Red → Green → Refactor
 
-Choose one next test from the behavior still missing. Do not write a batch of speculative tests
-before learning from the current implementation.
+Choose one next test from the behavior still missing, and write it after learning from the
+current implementation.
 
 1. **Red:** write the smallest test at the agreed seam. Derive its expectation independently and
    run the focused test so it fails for the intended missing behavior.
@@ -65,29 +65,29 @@ behavior together.
 
 ## Collaborators and unmanaged boundaries
 
-Use real internal collaborators. Do not mock your own modules, internal classes, value objects, or
-concrete classes merely to make a test convenient.
+Substitute only external unmanaged dependencies. Your own modules, internal classes, value
+objects, and concrete classes stay real in the test.
 
-At an external unmanaged boundary, **Distinguish commands from queries**:
+At an external unmanaged boundary, distinguish commands from queries:
 
 - A command asks the boundary to cause an effect. Test the sending contract and its observable
   effect, such as the message, request, or persisted result that the boundary receives.
 - A query supplies information. Stub the response needed by the scenario. Usually do not assert
   internal call counts, call order, or the number of queries.
 
-Do not turn a query stub into a copy of production logic. Do not assert a private collaborator
-call when the public behavior is the contract.
+Keep a query stub to the fixed response that the scenario needs, and assert the public behavior
+that the contract describes.
 
 ## Time, randomness, and determinism
 
 Deterministic substitutes for time and randomness are permitted. Give domain logic explicit time
-and boundary code an injectable clock or random source. Inject those substitutes at the boundary;
-do not extend a public production API solely to make a test possible. Tests must not depend on the
-wall clock, ambient timezone, unseeded randomness, network timing, or execution order.
+and boundary code an injectable clock or random source. Inject those substitutes through the
+existing boundary and keep the public production API unchanged. Each test fixes its time,
+timezone, and random source and waits on observable events instead of elapsed time, so its result
+is the same on every run and in any order.
 
-This skill does not require a project to add flaky-test policies, seed policies, property-based
-testing, or mutation-testing infrastructure. Add such tooling only when the project independently
-requires it.
+Add flaky-test policies, seed policies, property-based testing, or mutation-testing
+infrastructure only when the project already requires them.
 
 ## Database and integration isolation
 
@@ -97,8 +97,8 @@ transaction, locking, and constraint behavior are part of the contract. Keep the
 database disposable and independent for each test or test group according to the project's safe
 fixture policy.
 
-Test pure domain logic without a database. A domain test should not need persistence merely because
-the production adapter uses it.
+Test pure domain logic without a database. A domain test runs without persistence even when the
+production adapter uses it.
 
 ## Choosing cases
 
@@ -114,83 +114,26 @@ not the goal of this skill.
 
 ## Examples
 
-The examples use Python-like notation, but the rules apply to any test framework.
-
-### Parameterized literals and one behavior
-
-```python
-@pytest.mark.parametrize(
-    ("items", "expected_total"),
-    [
-        ([LineItem("tea", Money("10.00")), LineItem("cake", Money("5.00"))], Money("15.00")),
-        ([], Money("0.00")),
-    ],
-)
-def test_sut_reports_the_cart_total(items, expected_total):
-    sut = CartPricing()
-
-    result = sut.total(items)
-
-    assert result == expected_total
-```
-
-The expected totals are literals from the example contract. The test does not reimplement the
-production summation algorithm. Parameterization expresses variants without selecting an
-expectation conditionally inside the test.
-
-### A multi-step behavior with multiple assertions
-
-```python
-def test_sut_retries_once_and_confirms_the_order():
-    gateway = StubPaymentGateway(failures_before_success=1)
-    sut = Checkout(gateway=gateway, max_retries=1)
-
-    result = sut.checkout(order)
-
-    assert result.status == "confirmed"
-    assert result.attempts == 2
-```
-
-The retry and confirmation are one behavior, so both assertions stay together. `gateway` is a
-deterministic substitute at an external boundary; internal checkout components remain real.
-
-### Query response, command effect, and a fixed clock
-
-```python
-def test_sut_publishes_an_expiring_order_from_the_catalog():
-    catalog = StubCatalog(query_result=Product("tea", Money("10.00")))
-    publisher = RecordingPublisher()
-    clock = FixedClock("2026-01-15T10:00:00Z")
-    sut = PlaceOrder(catalog=catalog, publisher=publisher, clock=clock)
-
-    result = sut.place("tea", quantity=2)
-
-    assert result.expires_at == "2026-01-15T10:30:00Z"
-    assert publisher.messages == [OrderPlaced("tea", quantity=2, total=Money("20.00"))]
-```
-
-The catalog query is stubbed with a response. The publisher command is checked through the message
-it receives, not through an internal call count. `Product`, `Money`, and `OrderPlaced` remain real
-value objects. The fixed clock makes time deterministic without exposing private state.
+Open [examples.md](examples.md) when a test needs a worked pattern: parameterized literals, a
+multi-step behavior with several assertions, or a boundary with a query stub, a command effect,
+and a fixed clock.
 
 ## Review checklist
 
-Before handing off a slice, check the following:
+Before handing off a slice, confirm each item:
 
-- The test reaches an agreed public seam and observes behavior through that seam.
-- Real internal components and value objects are used; private state and concrete internal mocks
-  are absent.
-- The test name uses a behavior phrase and the `sut` name is clear.
-- Arrange, Act, and Assert are separated by blank lines. One behavior may have multiple steps and
-  assertions.
-- The expectation is independent of production. Variants use parameterization, not conditional
-  expected-result selection.
-- External commands are checked for observable effects, while external query responses are stubbed
-  without incidental call-count assertions.
-- Time and randomness are deterministic, and any substitute enters at a boundary.
-- Database behavior uses the production engine in an isolated environment; pure domain tests have
-  no database dependency.
-- The current test was red before the minimal implementation, Green was reached, and Refactor
-  followed Green without changing behavior.
-- The next test is explicit. No test was added only to raise coverage, and no mandatory flaky,
-  seed, property-based, or mutation policy was invented.
+- The test observes one behavior through an agreed public seam with real internal components and
+  value objects.
+- The name is a behavior phrase, `sut` is clear, and blank lines separate Arrange, Act, Assert, and
+  meaningful steps.
+- Several steps or assertions, when present, describe that same behavior.
+- The expectation has a source independent of production; variants use parameterization.
+- An external command is checked through the contract it sends; an external query returns a stubbed
+  response.
+- Time and randomness are deterministic and enter at a boundary.
+- Database behavior runs on the production engine in an isolated environment; pure domain tests run
+  without a database.
+- The test was red for the intended reason, Green came from a minimal change with the expectation
+  intact, and Refactor followed Green.
+- Each case protects contract behavior rather than a coverage number, and test tooling follows the
+  project's existing policy.
