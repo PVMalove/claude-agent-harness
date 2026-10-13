@@ -258,9 +258,12 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--branch-pattern` | Регулярное выражение для имён issue-веток |
 | `--qa-gate-command` | Команда полного гейта качества; повторяем, порядок сохраняется ([раздел 6](#qa-gate-skill-context-fork)) |
 | `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
+| `--test-path`, `--test-runner-command` | Поля `test_paths` (glob, повторяем) и `test_runner` (команда теста, делится на аргументы без шелла, один аргумент — `{test_id}`) изолированного runner ([run-test](./hooks/run-test.md)) |
 
-Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`, и CLI пишет их в
-`.harness/project.json`. Их можно опустить — тогда `init` спросит интерактивно.
+Флаги от `--language` до `--test-runner-command` читает только `pvmalove-suite`, и CLI пишет их в
+`.harness/project.json`. Их можно опустить — тогда `init` спросит интерактивно. Флаги `--test-*`
+`init` не спрашивает: без них поля `test_paths` и `test_runner` не пишутся, и тест-автор выключен.
+Некорректное значение харнесс отклоняет до записи файлов.
 
 **Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
 ([ADR 0011](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0011-explicit-project-tracker.md)).
