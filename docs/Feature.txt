@@ -15,26 +15,29 @@
 
 Порядок согласован 13 октября 2026 года. Он не заменяет зависимости и статусы
 задач. #549 — родительский эпик; его реализация выполняется через дочерние задачи.
+#679 — отдельное исправление рекомендаций восстановления; его можно начинать
+сейчас, не ожидая всей поставки #452.
 
 | № | Задача | Приоритет |
 | --- | --- | --- |
 | 1 | [#452 — Надёжный transport workers](https://github.com/PVMalove/claude-agent-harness/issues/452) | P1 |
-| 2 | [#519 — Доказательства выполнения требований](https://github.com/PVMalove/claude-agent-harness/issues/519) | P1 |
-| 3 | [#552 — TDD с проверяемыми ожиданиями](https://github.com/PVMalove/claude-agent-harness/issues/552) | P1 |
-| 4 | [#675 — Строгие машинные словари](https://github.com/PVMalove/claude-agent-harness/issues/675) | P1 |
-| 5 | [#634 — Контейнерный исполнитель](https://github.com/PVMalove/claude-agent-harness/issues/634) | P1 |
-| 6 | [#549 — Эпик тест-автора](https://github.com/PVMalove/claude-agent-harness/issues/549) | P1 |
-| 7 | [#553 — Изолированный runner теста](https://github.com/PVMalove/claude-agent-harness/issues/553) | P1 |
-| 8 | [#554 — Безопасное включение тест-автора](https://github.com/PVMalove/claude-agent-harness/issues/554) | P1 |
-| 9 | [#555 — Проверяемый Red→Green→Refactor](https://github.com/PVMalove/claude-agent-harness/issues/555) | P1 |
-| 10 | [#556 — Защищённая сборка и тестовая БД](https://github.com/PVMalove/claude-agent-harness/issues/556) | P2 |
-| 11 | [#557 — Тест-автор в fast-implement](https://github.com/PVMalove/claude-agent-harness/issues/557) | P2 |
-| 12 | [#455 — Доказательная телеметрия](https://github.com/PVMalove/claude-agent-harness/issues/455) | P2 |
-| 13 | [#578 — Устранение устаревшего gate](https://github.com/PVMalove/claude-agent-harness/issues/578) | P2 |
-| 14 | [#518 — Бюджеты выполнения](https://github.com/PVMalove/claude-agent-harness/issues/518) | P2 |
-| 15 | [#516 — Dashboard выполнения](https://github.com/PVMalove/claude-agent-harness/issues/516) | P2 |
-| 16 | [#577 — Глоссарий PR-prep refresh](https://github.com/PVMalove/claude-agent-harness/issues/577) | P3 |
-| 17 | [#520 — Рекомендации модели и effort](https://github.com/PVMalove/claude-agent-harness/issues/520) | P3 |
+| 2 | [#679 — Восстановление batch до предложения abandon](https://github.com/PVMalove/claude-agent-harness/issues/679) | P1 |
+| 3 | [#519 — Доказательства выполнения требований](https://github.com/PVMalove/claude-agent-harness/issues/519) | P1 |
+| 4 | [#552 — TDD с проверяемыми ожиданиями](https://github.com/PVMalove/claude-agent-harness/issues/552) | P1 |
+| 5 | [#675 — Строгие машинные словари](https://github.com/PVMalove/claude-agent-harness/issues/675) | P1 |
+| 6 | [#634 — Контейнерный исполнитель](https://github.com/PVMalove/claude-agent-harness/issues/634) | P1 |
+| 7 | [#549 — Эпик тест-автора](https://github.com/PVMalove/claude-agent-harness/issues/549) | P1 |
+| 8 | [#553 — Изолированный runner теста](https://github.com/PVMalove/claude-agent-harness/issues/553) | P1 |
+| 9 | [#554 — Безопасное включение тест-автора](https://github.com/PVMalove/claude-agent-harness/issues/554) | P1 |
+| 10 | [#555 — Проверяемый Red→Green→Refactor](https://github.com/PVMalove/claude-agent-harness/issues/555) | P1 |
+| 11 | [#556 — Защищённая сборка и тестовая БД](https://github.com/PVMalove/claude-agent-harness/issues/556) | P2 |
+| 12 | [#557 — Тест-автор в fast-implement](https://github.com/PVMalove/claude-agent-harness/issues/557) | P2 |
+| 13 | [#455 — Доказательная телеметрия](https://github.com/PVMalove/claude-agent-harness/issues/455) | P2 |
+| 14 | [#578 — Устранение устаревшего gate](https://github.com/PVMalove/claude-agent-harness/issues/578) | P2 |
+| 15 | [#518 — Бюджеты выполнения](https://github.com/PVMalove/claude-agent-harness/issues/518) | P2 |
+| 16 | [#516 — Dashboard выполнения](https://github.com/PVMalove/claude-agent-harness/issues/516) | P2 |
+| 17 | [#577 — Глоссарий PR-prep refresh](https://github.com/PVMalove/claude-agent-harness/issues/577) | P3 |
+| 18 | [#520 — Рекомендации модели и effort](https://github.com/PVMalove/claude-agent-harness/issues/520) | P3 |
 
 ## 1. Надёжный запуск и остановка внешнего worker
 
@@ -52,6 +55,37 @@ startup barrier, остановка всего дерева процессов �
 coordinator, evidence и независимую работу других batch.
 Результат: таблица требования → реализация → проверка → остаток работ
 и минимальная последовательность проверок и декомпозиции существующего эпика.
+```
+
+## 1а. Восстановление batch после проблем запуска worker
+
+Новая задача P1, связанная с transport:
+https://github.com/PVMalove/claude-agent-harness/issues/679
+
+Случай пользователя: до кода не дошли из-за несовместимых CLI-флагов,
+недоступного model self-report и затем capacity error у `gpt-6.1-sol`;
+coordinator слишком рано предложил отмену batch.
+
+В другой сессии найден `.harness/.sandboxes/scratch/issue-552-runtime-probe.py`:
+`codex app-server --stdio`, `model/list`, `thread/start` с чтением runtime-полей
+и `turn/start` с ожиданием результата. Файл прочитан; live-запуск здесь
+не перепроверен. Детали и критерии проверки добавлены непосредственно в #679
+и #452, поскольку локальный probe не поставляется вместе с репозиторием.
+
+```text
+Проверь #679 и дополнение #452 в claude-agent-harness. Сверь рекомендации
+/implement, stale-dispatch attention и существующие resume-stop/rewind.
+Если локальный issue-552-runtime-probe.py доступен, прочитай его; иначе используй
+описание контракта из issue. Оцени уже найденный app-server путь для диагностики
+CLI и runtime evidence; не начинай заново подбор несовместимых exec-флагов.
+Разбери последовательность CLI failure → missing model attestation → capacity
+до кода. Какие recovery уже допустимы, какие запрещены и какое evidence нужно?
+Проверь различия paused/needs_attention, отмены dispatch и abandon всего batch.
+Сначала диагностика и безопасное восстановление, затем объяснение ограничений;
+abandon — отдельное решение человека. Не обходи attestation и approvals,
+не меняй модель в immutable brief, не повторяй запуск при unknown/live worker.
+Результат: минимальное исправление рекомендаций и проверяемые сценарии recovery
+без бесконечных повторов и зависимости на всю реализацию transport.
 ```
 
 ## 2. Изоляция worker и исполняемого теста
