@@ -28,8 +28,10 @@ from harness.orchestration.core.constants import (
     INTEGRATION_SHA_PATTERN,
     LOCAL_QA_CI_CONDITIONS,
     STATE_REL,
+    EvidenceVerification,
     IntegrationCheckResult,
     LocalQaState,
+    QaOwnerKind,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -136,7 +138,9 @@ def _valid_result(root: Path, result: JsonObject) -> bool:
 
 def verified_evidence(root: Path, link: JsonObject) -> bool:
     """Recheck generated evidence; a manual assertion never verifies local fallback."""
-    if link.get("verification") != "verified" or not link.get("local_qa_request_id"):
+    if link.get("verification") != EvidenceVerification.VERIFIED or not link.get(
+        "local_qa_request_id"
+    ):
         return False
     return _verified_generated(root, link)
 
@@ -151,7 +155,7 @@ def _verified_generated(root: Path, link: JsonObject) -> bool:
             return False
         result = _read_object(_path(root, _result_id(request_id)), "local QA result")
         return (
-            result.get("verification") == "verified"
+            result.get("verification") == EvidenceVerification.VERIFIED
             and result.get("state") == LocalQaState.COMPLETED
             and link.get("local_qa_result_sha256") == integration._sha256(result)
             and all(
@@ -271,9 +275,8 @@ def _link_result(ledger: LifecycleLedger, root: Path, result: JsonObject) -> Jso
             "local_qa_result_sha256": integration._sha256(result),
         },
     )
-    if result["verification"] == "verified" and not _verified_generated(
-        root, linked["evidence"]
-    ):
+    verified = result["verification"] == EvidenceVerification.VERIFIED
+    if verified and not _verified_generated(root, linked["evidence"]):
         raise CoordinatorError(
             "existing link does not verify the generated result",
             remedy="retain the result and resolve the conflicting immutable evidence with the coordinator",
@@ -355,18 +358,17 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             existing = _read_object(result_path, "local QA result")
             try:
                 _observe_pair(repo, root, record, pair)
-                if existing.get("verification") == "verified" and not _valid_result(
-                    root, existing
-                ):
+                verified = existing.get("verification") == EvidenceVerification.VERIFIED
+                if verified and not _valid_result(root, existing):
                     return {
                         **existing,
-                        "verification": "unverified",
+                        "verification": EvidenceVerification.UNVERIFIED,
                         "verification_reason": "generated evidence failed integrity check",
                     }
             except (CoordinatorError, OSError) as exc:
                 return {
                     **existing,
-                    "verification": "unverified",
+                    "verification": EvidenceVerification.UNVERIFIED,
                     "verification_reason": sanitise(str(exc)),
                 }
             try:
@@ -375,10 +377,12 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
                 return {
                     **existing,
                     "state": LocalQaState.UNAVAILABLE,
-                    "verification": "unverified",
+                    "verification": EvidenceVerification.UNVERIFIED,
                     "reason": sanitise(str(exc)),
                 }
-        running = qa_lane.running_owner(ledger, request_id, owner_kind="local-qa")
+        running = qa_lane.running_owner(
+            ledger, request_id, owner_kind=QaOwnerKind.LOCAL_QA
+        )
         if running is not None:
             return {"request_id": request_id, **members, **running}
         previous = _attempts(root, request_id)
@@ -403,7 +407,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             observed = _observe_pair(repo, root, record, pair)
         except CoordinatorError as exc:
             started = _start_attempt(ledger, request_id, len(previous) + 1)
-            qa_lane.withdraw(ledger, request_id, owner_kind="local-qa")
+            qa_lane.withdraw(ledger, request_id, owner_kind=QaOwnerKind.LOCAL_QA)
             return _unavailable(
                 ledger, root, request_id, started, exc, "pair-observation"
             )
@@ -416,7 +420,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             )
         except operation_access.OperationAccessError as exc:
             started = _start_attempt(ledger, request_id, len(previous) + 1)
-            qa_lane.withdraw(ledger, request_id, owner_kind="local-qa")
+            qa_lane.withdraw(ledger, request_id, owner_kind=QaOwnerKind.LOCAL_QA)
             return _unavailable(
                 ledger, root, request_id, started, exc, "access", access=exc.evidence
             )
@@ -424,7 +428,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
         if seconds is None:
             seconds = _execution_policy(_config(repo))["qa_lease_seconds"]
         admission = qa_lane.acquire(
-            ledger, request_id, owner_kind="local-qa", lease_seconds=seconds
+            ledger, request_id, owner_kind=QaOwnerKind.LOCAL_QA, lease_seconds=seconds
         )
         if admission["state"] == "queued":
             return {"request_id": request_id, **members, **admission}
@@ -457,7 +461,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             "artifact": str(artifact),
             "artifact_sha256": checksum,
             "finished_at": utils._now(),
-            "verification": "unverified",
+            "verification": EvidenceVerification.UNVERIFIED,
             "observed_before_run": observed,
             "attempt": started["attempt"],
             "findings": [
@@ -475,7 +479,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             try:
                 result["observed_at_finish"] = _observe_pair(repo, root, record, pair)
                 if gate.passed and _valid_result(root, result):
-                    result["verification"] = "verified"
+                    result["verification"] = EvidenceVerification.VERIFIED
             except CoordinatorError as exc:
                 result["verification_reason"] = sanitise(exc.message)
             _write_record(ledger, IntegrationLocalQaRecord.from_dict(result))

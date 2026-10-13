@@ -72,6 +72,7 @@ V1_FIELDS = frozenset(
         "report.check_result",
         "report.evidence_status",
         "review.severity",
+        "review.recommendation",
         "finding.severity",
         "risk.trigger",
         "carried_item.source",
@@ -81,13 +82,16 @@ V1_FIELDS = frozenset(
         "qa.stage",
         "qa.code_checks_started",
         "qa.diagnosis_category",
+        "qa_lane.owner_kind",
         "context.telemetry_source",
         "context.pressure_level",
+        "telemetry.session_kind",
         "integration.evidence_kind",
         "integration.check_result",
         "integration.target_state",
         "integration.local_qa_ci_condition",
         "integration.ci_verification",
+        "integration.evidence_verification",
         "local_qa.attempt_state",
         "ci.checkout",
         "ci.verdict",
@@ -218,6 +222,7 @@ def test_the_defaults_and_groups_of_the_inventory() -> None:
         "repo_map.tier": "full",
         "context_package.role": "shared",
         "batch.required_gate": "none",
+        "qa_lane.owner_kind": "dispatch",
     }
     assert {
         field_id: set(field.groups)
@@ -253,6 +258,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "extension.kind",
         "context_package.role",
         "batch.required_gate",
+        "telemetry.session_kind",
     }
 
 
@@ -632,6 +638,7 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     },
     "report.evidence_status": {"EvidenceStatus": constants.EvidenceStatus},
     "review.severity": {"REVIEW_SEVERITIES": constants.REVIEW_SEVERITIES},
+    "review.recommendation": {"ReviewRecommendation": constants.ReviewRecommendation},
     "finding.severity": {"FINDING_SEVERITIES": constants.FINDING_SEVERITIES},
     "risk.trigger": {
         "contract.CODE_REVIEW_REQUIRED_RISK_TRIGGERS": (
@@ -655,11 +662,15 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "qa.diagnosis_category": {
         "QA_DIAGNOSIS_CATEGORIES": constants.QA_DIAGNOSIS_CATEGORIES
     },
+    "qa_lane.owner_kind": {"QaOwnerKind": constants.QaOwnerKind},
     "context.telemetry_source": {
         "CONTEXT_TELEMETRY_SOURCES": constants.CONTEXT_TELEMETRY_SOURCES
     },
     "context.pressure_level": {
         "operational_guards.CONTEXT_PRESSURE_LEVELS": operational_guards.CONTEXT_PRESSURE_LEVELS
+    },
+    "telemetry.session_kind": {
+        "TELEMETRY_SESSION_KINDS": constants.TELEMETRY_SESSION_KINDS
     },
     "integration.evidence_kind": {
         "INTEGRATION_EVIDENCE_KINDS": constants.INTEGRATION_EVIDENCE_KINDS
@@ -680,6 +691,9 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
             constants.INTEGRATION_CI_COLLECTED,
             constants.INTEGRATION_CI_COLLECTED_FAILURE,
         )
+    },
+    "integration.evidence_verification": {
+        "EvidenceVerification": constants.EvidenceVerification
     },
     "ci.checkout": {"ci_source.Checkout": get_args(ci_source.Checkout)},
     "ci.verdict": {"ci_source.Outcome": get_args(ci_source.Outcome)},

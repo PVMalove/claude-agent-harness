@@ -37,6 +37,7 @@ from harness.orchestration.core.constants import (
     RETRY_REASON_CATEGORIES,
     RecoveryRoute,
     RetryReason,
+    ReviewRecommendation,
     TOOLING_REASON_CATEGORY,
 )
 from harness.orchestration.core.git_utils import (
@@ -520,7 +521,7 @@ def _retry_evidence(
                 return (
                     RetryReason.REQUIREMENTS if axis == "spec" else RetryReason.CODE
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
-        if review.get("recommendation") == "retry":
+        if review.get("recommendation") == ReviewRecommendation.RETRY:
             return (
                 RetryReason.CODE,
                 "the reviewer explicitly recommends another developer pass",

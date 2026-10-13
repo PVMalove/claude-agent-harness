@@ -344,6 +344,15 @@
         "blocker": "The axis has a blocking finding."
       }
     },
+    "review.recommendation": {
+      "description": "A code-review report's optional overall recommendation in review.recommendation; an absent recommendation is not accept, so it blocks auto-accept whenever auto_retry_min_severity is above info.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "accept": "The candidate meets the required gates and its remaining findings need no further developer pass; auto-accept may proceed when nothing else obstructs it.",
+        "retry": "The candidate needs a fix; the report is never auto-accepted, and without an axis finding the retry reason is code."
+      }
+    },
     "finding.severity": {
       "description": "Severity of one review finding.",
       "automatic_decisions": true,
@@ -448,6 +457,16 @@
       },
       "sentinels": ["unknown"]
     },
+    "qa_lane.owner_kind": {
+      "description": "Kind of owner of a clean-room QA lane queue entry or lease; a legacy entry without owner_kind is a dispatch's.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "dispatch": "A QA dispatch; its ID is a dispatch ID, and its queue entry is released when the dispatch will never run.",
+        "local-qa": "An integration local-QA request; its ID is the request_id that integration local-qa returned, and only that request withdraws it."
+      },
+      "default": "dispatch"
+    },
     "context.telemetry_source": {
       "description": "Who observed a context measurement; a model's own claim is never telemetry.",
       "automatic_decisions": true,
@@ -466,6 +485,15 @@
         "ok": "Below the warning threshold.",
         "warning": "At or above the warning threshold.",
         "critical": "At or above the context limit."
+      }
+    },
+    "telemetry.session_kind": {
+      "description": "Kind of session a recorded telemetry payload measures; telemetry is data only and never alters role state, scheduling, approvals or model routing.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "worker": "A worker session of a dispatch.",
+        "coordinator": "The coordinator session."
       }
     },
     "integration.evidence_kind": {
@@ -516,6 +544,15 @@
       "values": {
         "collector-accepted": "The collector accepted the CI evidence for the pair.",
         "collector-failed": "The collector found a failed required check on the pair."
+      }
+    },
+    "integration.evidence_verification": {
+      "description": "Verification mark of an integration local-QA result and of a linked pair check other than the integration.ci_verification marks; integration status recomputes it for local-qa evidence from the generated result.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "verified": "Local-qa evidence the coordinator generated itself whose gate passed and whose result still matches its artifact, commands and pair; it may satisfy verification and select the local-qa route.",
+        "unverified": "Nothing confirmed the evidence, such as a check linked by hand, a failed local-QA gate or a result that failed its integrity recheck; it never satisfies verification."
       }
     },
     "local_qa.attempt_state": {

@@ -59,8 +59,10 @@ from harness.orchestration.core.constants import (
     REPORT_OUTCOMES,
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
+    TELEMETRY_SESSION_KINDS,
     TOOLING_BLOCKER_FIELDS,
     TOOLING_BLOCKER_UNCOMMITTED_FIELD,
+    ReviewRecommendation,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -430,7 +432,7 @@ def record_telemetry(args: argparse.Namespace) -> JsonObject:
             + INTERNAL_INVARIANT_REMEDY,
         )
     _reject_sensitive(payload, "telemetry payload")
-    if payload["session_kind"] not in {"worker", "coordinator"}:
+    if payload["session_kind"] not in TELEMETRY_SESSION_KINDS:
         raise CoordinatorError(
             "telemetry session_kind must be worker or coordinator",
             remedy="set session_kind to 'worker' or 'coordinator'",
@@ -1073,10 +1075,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
             "composite review must contain independent standards and spec evidence",
             remedy="submit composite review evidence with independent standards and spec findings",
         )
-    if review.get("recommendation") is not None and review["recommendation"] not in (
-        "accept",
-        "retry",
-    ):
+    recommendation = review.get("recommendation")
+    if recommendation is not None and recommendation not in tuple(ReviewRecommendation):
         raise CoordinatorError(
             "composite review recommendation must be accept or retry",
             remedy="set review.recommendation to accept or retry",

@@ -33,6 +33,7 @@ from harness.orchestration.core.constants import (
     INTEGRATION_RECORD_ID_PATTERN,
     INTEGRATION_REFERENCE_MAX_CHARS,
     INTEGRATION_SHA_PATTERN,
+    EvidenceVerification,
     IntegrationCheckResult,
     IntegrationTargetState,
 )
@@ -550,7 +551,9 @@ def integration_link_evidence(args: argparse.Namespace) -> JsonObject:
             "reference": reference,
             "artifact_sha256": artifact,
         }
-        return _store_evidence(root, ledger, members, "unverified", {})
+        return _store_evidence(
+            root, ledger, members, EvidenceVerification.UNVERIFIED, {}
+        )
 
 
 def _store_evidence(
@@ -741,9 +744,9 @@ def _pair_checks(
                 or local_pair_current
                 and link["candidate_sha"] == pair["candidate_sha"]
             ),
-            "verification": "verified"
+            "verification": EvidenceVerification.VERIFIED
             if link["kind"] == "local-qa" and verified_evidence(root, link)
-            else "unverified"
+            else EvidenceVerification.UNVERIFIED
             if link["kind"] == "local-qa"
             else link["verification"],
         }
@@ -1026,7 +1029,7 @@ def _verified_source(status: JsonObject) -> tuple[str, JsonObject]:
         if check["kind"] == "local-qa"
         and check["result"] == IntegrationCheckResult.PASSED
         and check["applies_to_current_pair"]
-        and check["verification"] == "verified"
+        and check["verification"] == EvidenceVerification.VERIFIED
     ]
     return "local-qa", {"evidence_id": local[-1]["evidence_id"]}
 
@@ -1040,7 +1043,8 @@ def _has_passed_check(
     usable = {
         check["evidence_id"]
         for check in pair_checks
-        if check["applies_to_current_pair"] and check["verification"] != "unverified"
+        if check["applies_to_current_pair"]
+        and check["verification"] != EvidenceVerification.UNVERIFIED
     }
     return any(
         link["evidence_id"] in usable and _satisfies(link, pair) for link in links

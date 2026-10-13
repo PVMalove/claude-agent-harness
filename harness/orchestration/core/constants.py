@@ -56,6 +56,25 @@ class LocalQaState(StrEnum):
     EXHAUSTED = "exhausted"
 
 
+# Verification mark of a local-QA result and of a linked pair check; integration collect-ci writes
+# its own marks (INTEGRATION_CI_COLLECTED, INTEGRATION_CI_COLLECTED_FAILURE) instead.
+class EvidenceVerification(StrEnum):
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+
+
+# A code-review report's optional overall recommendation (review.recommendation).
+class ReviewRecommendation(StrEnum):
+    ACCEPT = "accept"
+    RETRY = "retry"
+
+
+# Owner of a QA lane queue entry or lease; a legacy entry without owner_kind is a dispatch's.
+class QaOwnerKind(StrEnum):
+    DISPATCH = "dispatch"
+    LOCAL_QA = "local-qa"
+
+
 class ContextPackageFreshness(StrEnum):
     FRESH = "fresh"
     STALE = "stale"
@@ -716,6 +735,7 @@ TELEMETRY_FIELDS = {
     "restart_reason",
     "recorded_at",
 }
+TELEMETRY_SESSION_KINDS = ("worker", "coordinator")
 
 
 SANDBOXES_REL = Path(".harness") / ".sandboxes"
