@@ -1029,12 +1029,14 @@ Developer переносит коммиты над старой базой ро�
 `carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate, а ветку
 обновляет `integration refresh` при подготовке PR (ADR 0014).
 
-Новый batch на ветке, которую уже опубликовал завершённый batch того же тикета (его
-`branch_start_commit` строго потомок `integration_base_commit`), считает свои изменения от
-`branch_start_commit`. Так `changed_files` и `commit_map` отчётов developer и publish, их
-`scope_warnings`, checkpoint и `risk assess` (`--base-commit`, `review_scope`) не включают
-коммиты прошлого batch. Замещающий batch и batch без такого старта считают от
-`integration_base_commit`.
+Batch, созданный на ветке с коммитами более раннего batch того же тикета (его `branch_start_commit`
+строго потомок `integration_base_commit`), считает свои изменения от `branch_start_commit`. От него
+считаются `changed_files` и `commit_map` отчётов developer и publish, их `scope_warnings`,
+checkpoint и `risk assess` (`--base-commit`, `review_scope`). Замещающий batch считает от
+`integration_base_commit`; так же считает batch, чей старт не потомок этой базы (после принятого
+rebase и у resolver-batch). Бриф и Context Package (`--base-commit`) остаются на
+`integration_base_commit`. Правило не отличает принятые коммиты от непроверенных: коммиты
+оставленного (`abandon`) batch новый batch не ревьюит.
 
 Delta-review после fix-forward (#625) — тоже не новый переход и не новое решение. Coordinator сам
 выбирает объём следующего code-review в `dispatch propose` и `dispatch create --role code-review`

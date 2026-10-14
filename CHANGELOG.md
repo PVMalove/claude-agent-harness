@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- **[База повторного batch]:** отчёты developer и publish, `scope_warnings`, checkpoint и оценка риска batch, начатого на ветке с уже опубликованными коммитами прошлого batch того же тикета, считают изменения от `branch_start_commit`, а не от `integration_base_commit`. Коммиты прошлого batch больше не попадают в `changed_files`, `commit_map` и `review_scope` и не останавливают политику `auto`; `risk assess --base-commit` принимает эту базу (#686).
+- **[База повторного batch]:** Batch, созданный на ветке с коммитами более раннего batch того же тикета, считает свои изменения от `branch_start_commit`, а не от `integration_base_commit`. Отчёты developer и publish, `scope_warnings`, checkpoint и оценка риска больше не включают чужие коммиты в `changed_files`, `commit_map` и `review_scope`. `risk assess --base-commit` принимает эту базу; замещающий batch и бриф считают, как раньше (#686).
 
 ## [1.4.5] - 2026-10-13
 
