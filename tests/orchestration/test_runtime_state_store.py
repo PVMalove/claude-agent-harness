@@ -652,6 +652,33 @@ def test_an_invalid_write_is_refused_before_anything_is_written(
     assert runtime.read(BATCH) == done
 
 
+def test_a_write_checks_its_record_once_and_only_transitions_under_the_lock(
+    repos: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    first = _own(runtime)
+    runtime.write(first, expected_revision=0)
+    record = _next(first, state="running")
+    calls: list[str] = []
+
+    def spy(name: str) -> None:
+        real = getattr(store, name)
+
+        def counted(checked: object, *rest: object) -> list[str]:
+            if checked is record:
+                calls.append(name)
+            result: list[str] = real(checked, *rest)
+            return result
+
+        monkeypatch.setattr(store, name, counted)
+
+    for name in ("_shape_problems", "_content_problems", "transition_problems"):
+        spy(name)
+    runtime.write(record, expected_revision=1)
+
+    assert calls == ["_shape_problems", "_content_problems", "transition_problems"]
+
+
 def test_a_busy_lock_is_a_bounded_conflict_without_overwrite(
     repos: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -598,7 +598,7 @@ class RuntimeStateStore:
                     "read the record again and retry against its current revision",
                     revision,
                 )
-            if problems := validate_record(record, current):
+            if problems := transition_problems(record, current):
                 raise self._error(
                     "integrity-failure",
                     "validate",
