@@ -102,6 +102,10 @@ class LedgerLockBusy(LedgerError):
     """Another operation holds the ledger lock."""
 
 
+class LedgerWriteConflict(LedgerError):
+    """A record changed or appeared between the check of a write and the write itself."""
+
+
 def _parse_state[T: StrEnum](value: object, vocabulary: type[T]) -> T:
     if isinstance(value, str):
         try:
@@ -640,6 +644,59 @@ def _read(path: Path, label: str) -> JsonObject:
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _verified_audit(path: Path) -> JsonObject:
+    """An audit event whose ``record_sha256`` matches its content, or a ``LedgerError``."""
+    record = _read(path, "ledger audit record")
+    body = {key: value for key, value in record.items() if key != "record_sha256"}
+    if (
+        record.get("record_sha256")
+        != hashlib.sha256(_canonical(body).encode("utf-8")).hexdigest()
+    ):
+        raise LedgerError(
+            f"ledger audit record failed immutable integrity check: {path.name}",
+            remedy=f"{path} was modified after its record_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+        )
+    return record
+
+
+def audit_details(
+    mode: str,
+    relative: str,
+    sha256: str,
+    *,
+    before_sha256: str | None = None,
+    before: JsonObject | None = None,
+    after: JsonObject | None = None,
+) -> tuple[str, JsonObject]:
+    """The audit action and details of one write: the single source both the ledger writes and
+    a planner that records them in advance use, so the two can never diverge.
+
+    ``mode`` is ``create`` (an immutable JSON record), ``create-artifact`` (an immutable text
+    artifact) or ``replace`` (a record transition, whose batch states ``before`` and ``after``
+    name)."""
+    if mode == "create":
+        return "immutable-record", {"path": relative, "sha256": sha256}
+    if mode == "create-artifact":
+        return "immutable-artifact", {"path": relative, "sha256": sha256}
+    if mode != "replace":
+        raise LedgerError(
+            f"unknown ledger write mode {mode!r}", remedy=INTERNAL_INVARIANT_REMEDY
+        )
+    details: JsonObject = {
+        "path": relative,
+        "before_sha256": before_sha256,
+        "sha256": sha256,
+    }
+    if relative.startswith("batches/"):
+        details.update(
+            {
+                "from": (before or {}).get("state"),
+                "to": (after or {}).get("state"),
+            }
+        )
+    return "transition", details
 
 
 class LifecycleLedger:
@@ -1199,7 +1256,8 @@ class LifecycleLedger:
         owner = record.get("dispatch_id") if record is not None else None
         return isinstance(owner, str) and owner in referenced
 
-    def _record_path(self, record: LedgerRecordVO) -> Path:
+    def record_path(self, record: LedgerRecordVO) -> Path:
+        """Where a Value-Object-backed record lives in the selected generation."""
         self._check_record_id(record.record_id)
         return self.records_root() / record.directory / f"{record.record_id}.json"
 
@@ -1217,19 +1275,40 @@ class LifecycleLedger:
                 remedy="use a non-empty record id with no path separators and not '.' or '..'",
             )
 
-    def write_record(self, record: LedgerRecordVO) -> None:
+    def write_record(
+        self, record: LedgerRecordVO, *, audit_id: str | None = None
+    ) -> None:
         """Persist a new Value-Object-backed record, deriving its path from the record itself."""
-        self.write_immutable(self._record_path(record), record.to_dict())
+        self.write_immutable(
+            self.record_path(record), record.to_dict(), audit_id=audit_id
+        )
 
     def replace_record(
-        self, record: LedgerRecordVO, *, decision: JsonObject | None = None
+        self,
+        record: LedgerRecordVO,
+        *,
+        decision: JsonObject | None = None,
+        audit_id: str | None = None,
+        expected_before_sha256: str | None = None,
     ) -> None:
         """Persist a Value-Object-backed record transition, deriving its path from the record."""
-        self.replace(self._record_path(record), record.to_dict(), decision=decision)
+        self.replace(
+            self.record_path(record),
+            record.to_dict(),
+            decision=decision,
+            audit_id=audit_id,
+            expected_before_sha256=expected_before_sha256,
+        )
 
     def write_immutable(
-        self, path: Path, value: JsonObject, *, artifact: bool = False
+        self,
+        path: Path,
+        value: JsonObject,
+        *,
+        artifact: bool = False,
+        audit_id: str | None = None,
     ) -> None:
+        """Create an immutable record; ``audit_id`` makes its audit event deterministic."""
         if not artifact:
             _validate_record_state(path.parent.name, value)
         generation, relative = self._selected_path(path)
@@ -1238,20 +1317,18 @@ class LifecycleLedger:
             with path.open("x", encoding="utf-8", newline="\n") as stream:
                 stream.write(_canonical(value))
         except FileExistsError as exc:
-            raise LedgerError(
+            raise LedgerWriteConflict(
                 f"refusing to overwrite immutable record: {path.name}",
                 remedy=f"use a different record id, or 'ledger clean'/inspect {path} if it is orphaned evidence",
             ) from exc
-        self._append_audit(
-            generation,
-            "immutable-artifact" if artifact else "immutable-record",
-            {
-                "path": relative,
-                "sha256": _digest(path),
-            },
+        action, details = audit_details(
+            "create-artifact" if artifact else "create", relative, _digest(path)
         )
+        self._append_audit(generation, action, details, audit_id=audit_id)
 
-    def write_artifact(self, path: Path, value: str) -> None:
+    def write_artifact(
+        self, path: Path, value: str, *, audit_id: str | None = None
+    ) -> None:
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1259,24 +1336,58 @@ class LifecycleLedger:
                 stream.write(value)
         except FileExistsError as exc:
             if path.read_text(encoding="utf-8") != value:
-                raise LedgerError(
+                raise LedgerWriteConflict(
                     f"refusing to overwrite immutable artifact: {path.name}",
                     remedy=f"write a new artifact under a different name instead of overwriting {path}",
                 ) from exc
-        self._append_audit(
-            generation,
-            "immutable-artifact",
-            {"path": relative, "sha256": _digest(path)},
-        )
+        action, details = audit_details("create-artifact", relative, _digest(path))
+        self._append_audit(generation, action, details, audit_id=audit_id)
 
     def replace(
-        self, path: Path, value: JsonObject, *, decision: JsonObject | None = None
+        self,
+        path: Path,
+        value: JsonObject,
+        *,
+        decision: JsonObject | None = None,
+        audit_id: str | None = None,
+        expected_before_sha256: str | None = None,
     ) -> None:
         """Atomically persist one allowed record transition and append its immutable audit event.
 
         ``decision`` is the coordinator decision this transition records; it is stored in the same
         audit event, under the same checksum, so the decision and its transition cannot diverge.
+        ``expected_before_sha256`` makes the write a compare-and-swap: a record whose bytes no
+        longer have that digest is refused before anything is written.
         """
+        generation, relative, before, before_sha256 = self._check_replace(
+            path, value, decision
+        )
+        if (
+            expected_before_sha256 is not None
+            and before_sha256 != expected_before_sha256
+        ):
+            raise LedgerWriteConflict(
+                f"ledger record changed since its transition was planned: {relative}",
+                remedy="read the record again and repeat the command; another writer changed it",
+            )
+        self._atomic_write(path, value)
+        action, transition = audit_details(
+            "replace",
+            relative,
+            _digest(path),
+            before_sha256=before_sha256,
+            before=before,
+            after=value,
+        )
+        if decision is not None:
+            transition["decision"] = decision
+        self._append_audit(generation, action, transition, audit_id=audit_id)
+
+    def _check_replace(
+        self, path: Path, value: JsonObject, decision: JsonObject | None
+    ) -> tuple[Path, str, JsonObject, str]:
+        """Every check of ``replace`` that needs no write: the generation, relative path, current
+        record and its digest of an allowed transition, or a ``LedgerError``."""
         _validate_record_state(path.parent.name, value)
         generation, relative = self._selected_path(path)
         if not path.is_file():
@@ -1285,7 +1396,6 @@ class LifecycleLedger:
                 remedy=f"write the record at {path} before transitioning it",
             )
         before = _read(path, "current lifecycle record")
-        transition: JsonObject = {"path": relative, "before_sha256": _digest(path)}
         if relative.startswith("batches/"):
             self._validate_batch_transition(generation, before, value)
             events = cast(list[JsonObject], value.get("recovery_events", []))
@@ -1297,12 +1407,43 @@ class LifecycleLedger:
                         "recovery event requires its matching audit decision",
                         remedy="use the recovery command to bind approval and transition in one audit record",
                     )
-            transition.update({"from": before.get("state"), "to": value.get("state")})
-        self._atomic_write(path, value)
-        transition["sha256"] = _digest(path)
-        if decision is not None:
-            transition["decision"] = decision
-        self._append_audit(generation, "transition", transition)
+        return generation, relative, before, _digest(path)
+
+    def check_step(self, mode: str, path: Path, value: JsonObject | str) -> None:
+        """Refuse exactly what the write of ``mode`` would refuse, without writing anything.
+
+        ``mode`` is ``create`` or ``replace`` for a JSON record and ``create-artifact`` for a
+        text artifact; a create refuses a path that already exists."""
+        if mode == "replace":
+            self._check_replace(path, cast(JsonObject, value), None)
+            return
+        if mode == "create":
+            _validate_record_state(path.parent.name, cast(JsonObject, value))
+        elif mode != "create-artifact":
+            raise LedgerError(
+                f"unknown ledger write mode {mode!r}", remedy=INTERNAL_INVARIANT_REMEDY
+            )
+        self._selected_path(path)
+        if path.exists():
+            raise LedgerWriteConflict(
+                f"refusing to overwrite immutable record: {path.name}",
+                remedy=f"use a different record id, or 'ledger clean'/inspect {path} if it is orphaned evidence",
+            )
+
+    def read_audit(self, audit_id: str) -> JsonObject | None:
+        """The audit event ``audit_id`` of the selected generation with a verified checksum, or
+        ``None`` when it was never appended."""
+        self._check_record_id(audit_id)
+        path = self.records_root() / "audit" / f"{audit_id}.json"
+        return _verified_audit(path) if path.is_file() else None
+
+    def append_audit(
+        self, path: Path, action: str, details: JsonObject, *, audit_id: str
+    ) -> None:
+        """Append the audit event ``audit_id`` of a write to ``path`` that is already on disk;
+        an identical event already appended is kept, a different one is refused."""
+        generation, _ = self._selected_path(path)
+        self._append_audit(generation, action, details, audit_id=audit_id)
 
     def delete(self, path: Path, *, reason: str) -> None:
         """Delete a mutable coordination lease/queue record with immutable evidence of removal."""
@@ -1657,9 +1798,18 @@ class LifecycleLedger:
                 pass
         return pointer
 
-    def _append_audit(self, generation: Path, action: str, details: JsonObject) -> None:
+    def _append_audit(
+        self,
+        generation: Path,
+        action: str,
+        details: JsonObject,
+        *,
+        audit_id: str | None = None,
+    ) -> None:
+        """Append one audit event.  A given ``audit_id`` is created exclusively, so repeating the
+        same event is a no-op and a different event under that id is refused."""
         audit: JsonObject = {
-            "audit_id": f"audit-{uuid.uuid4()}",
+            "audit_id": audit_id or f"audit-{uuid.uuid4()}",
             "at": _now(),
             "action": action,
             "details": details,
@@ -1668,7 +1818,20 @@ class LifecycleLedger:
             _canonical(audit).encode("utf-8")
         ).hexdigest()
         path = generation / "audit" / f"{audit['audit_id']}.json"
-        path.write_text(_canonical(audit), encoding="utf-8", newline="\n")
+        if audit_id is None:
+            path.write_text(_canonical(audit), encoding="utf-8", newline="\n")
+            return
+        self._check_record_id(audit_id)
+        try:
+            with path.open("x", encoding="utf-8", newline="\n") as stream:
+                stream.write(_canonical(audit))
+        except FileExistsError:
+            existing = _verified_audit(path)
+            if existing.get("action") != action or existing.get("details") != details:
+                raise LedgerError(
+                    f"audit event {audit_id} already records a different write",
+                    remedy=f"inspect {path}; an audit event is append-only and never rewritten",
+                ) from None
 
     def _validate_legacy(self, root: Path) -> None:
         """Tolerantly validate a migration source: legacy (pre-ledger) state, or an older-schema

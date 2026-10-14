@@ -116,6 +116,8 @@ class QaWorkflowOps(Protocol):
         batch: JsonObject,
         dispatch: JsonObject,
         report: JsonObject,
+        *,
+        repo: Path,
     ) -> Path: ...
 
     def _approval(self, args: argparse.Namespace) -> dict[str, str]: ...
@@ -669,7 +671,7 @@ def _record_report(
         repo,
         batch.get("integration_base_commit") or batch.get("base_commit"),
     )
-    return ops._persist_report(ledger, root, batch, dispatch, report)
+    return ops._persist_report(ledger, root, batch, dispatch, report, repo=repo)
 
 
 def _recover_transient_failure(

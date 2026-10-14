@@ -773,7 +773,7 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             "next_coordinator_action": "accept publication or inspect remote evidence",
             "report_language": "ru",
         }
-        report_path = _persist_report(ledger, root, batch, dispatch, report)
+        report_path = _persist_report(ledger, root, batch, dispatch, report, repo=repo)
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
