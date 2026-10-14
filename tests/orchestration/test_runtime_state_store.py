@@ -475,6 +475,36 @@ def test_a_stored_settled_phase_without_a_confirmed_effect_is_refused_on_read(
     assert "requires a confirmed effect" in caught.value.message
 
 
+@pytest.mark.parametrize(
+    ("changes", "fragment"),
+    [
+        ({"updated_at": "2026-10-14T09:00:00"}, "updated_at must include a timezone"),
+        (
+            {
+                "failure": {
+                    "code": "execution-failure",
+                    "step": "send",
+                    "message": "token: ghp_" + "x" * 30,
+                }
+            },
+            "failure.message must be sanitized",
+        ),
+    ],
+)
+def test_a_stored_record_is_read_by_the_rules_a_write_is_checked_by(
+    repos: tuple[Path, Path], changes: JsonObject, fragment: str
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    placed = _own(runtime, **changes)
+    assert any(fragment in problem for problem in store.validate_record(placed, None))
+    _put(runtime, placed)
+
+    with _refusal("integrity-failure", "read") as caught:
+        runtime.read(BATCH)
+    assert fragment in caught.value.message
+    assert "ghp_" not in caught.value.message
+
+
 def test_outside_a_git_checkout_the_store_is_unavailable(tmp_path: Path) -> None:
     with _refusal("storage-unavailable", "resolve-root") as caught:
         RuntimeStateStore(tmp_path)

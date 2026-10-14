@@ -141,13 +141,21 @@ def _enum_problems(value: object, node: object, path: str) -> list[str]:
     return problems
 
 
-def record_problems(record: object) -> list[str]:
-    """Structure, closed enums and the contract of one record, without its predecessor."""
+def _shape_problems(record: object) -> list[str]:
+    """Structure, closed enums and the contract; the other checks index what these ensure."""
     if (problem := compatibility_problem(record)) is not None:
         return [problem]
     problems = value_problems(record, _structure(), _structure())
     problems += _enum_problems(record, _schema(), "record")
     return problems
+
+
+def record_problems(record: object) -> list[str]:
+    """Every reason one record is invalid on its own, without its predecessor; the store
+    checks a record read from disk by the same rules a write is checked by."""
+    if problems := _shape_problems(record):
+        return problems
+    return _content_problems(cast(JsonObject, record))
 
 
 def _timestamp_problem(value: object, label: str) -> str | None:
@@ -215,11 +223,9 @@ def _settled_problems(record: JsonObject) -> list[str]:
     return problems
 
 
-def validate_record(record: object, previous: JsonObject | None) -> list[str]:
-    """Every reason ``record`` may not follow ``previous`` (``None`` when creating); pure."""
-    problems = record_problems(record)
-    if problems or not isinstance(record, dict):
-        return problems
+def _content_problems(record: JsonObject) -> list[str]:
+    """Timestamps, a sanitized failure and settled phases of a well-shaped record."""
+    problems: list[str] = []
     for label, value in (
         ("updated_at", record["updated_at"]),
         (
@@ -241,7 +247,20 @@ def validate_record(record: object, previous: JsonObject | None) -> list[str]:
         problems.append(
             "failure.message must be sanitized: no secrets, absolute paths or excess length"
         )
-    problems += _settled_problems(record)
+    return problems + _settled_problems(record)
+
+
+def validate_record(record: object, previous: JsonObject | None) -> list[str]:
+    """Every reason ``record`` may not follow ``previous`` (``None`` when creating); pure."""
+    if problems := _shape_problems(record):
+        return problems
+    valid = cast(JsonObject, record)
+    return _content_problems(valid) + transition_problems(valid, previous)
+
+
+def transition_problems(record: JsonObject, previous: JsonObject | None) -> list[str]:
+    """Every reason a record that is valid on its own may not follow ``previous``."""
+    problems: list[str] = []
     if previous is None:
         if record["revision"] != 1:
             problems.append("a new runtime state record starts at revision 1")
@@ -486,8 +505,9 @@ class RuntimeStateStore:
                 f"read the record with a Harness that supports its contract; this one "
                 f"reads only {RUNTIME_STATE_CONTRACT!r}",
             )
-        # A settled phase without a confirmed effect is legacy metadata, never a success.
-        if problems := record_problems(record) or _settled_problems(record):
+        # A record placed beside write() meets its rules too: a settled phase without a
+        # confirmed effect is legacy metadata, never a success.
+        if problems := record_problems(record):
             raise self._error(
                 "integrity-failure",
                 "read",
