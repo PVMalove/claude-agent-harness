@@ -150,6 +150,7 @@ def test_checkpoint_survives_invalid_live_config() -> None:
 
 def test_qa_runner_preserves_report_if_gate_breaks_live_configuration() -> None:
     import shlex
+    import subprocess
     import sys
 
     case = fixtures.CoordinatorRetryRoutingTests()
@@ -158,7 +159,11 @@ def test_qa_runner_preserves_report_if_gate_breaks_live_configuration() -> None:
         case.state_dir = case.repo / ".harness/orchestration/state"
         path = case.repo / ".harness/orchestration.json"
         script = f"from pathlib import Path; Path({str(path)!r}).write_text('{{')"
-        command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+        command = (
+            subprocess.list2cmdline(["python", "-c", script])
+            if sys.platform == "win32"
+            else "python -c " + shlex.quote(script)
+        )
         path.write_text(json.dumps({"verification_commands": [command]}))
         batch_id, candidate = case._qa_batch()
         brief = case._dispatch(batch_id, "qa", candidate=candidate)["brief"]
