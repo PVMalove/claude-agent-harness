@@ -180,7 +180,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `symbol_graph_depth` | 2 | Глубина import-графа для каждого автоматического пакета. |
 | `max_related_tests` | 25 | Предохранитель: больше связанных тестов — ошибка сборки пакета. |
 | `min_starting_files` / `max_starting_files` | 5 / 10 | Число стартовых файлов при ручной регистрации пакета. |
-| `section_index_min_tokens` | 20000 | С какого размера Markdown попадает в пакет оглавлением, а не целиком. |
+| `section_index_min_tokens` | 20000 | С какого размера Markdown- или Python-файл попадает в пакет оглавлением или индексом символов, а не целиком. |
 
 ### `adaptive_continuation_policy`
 
