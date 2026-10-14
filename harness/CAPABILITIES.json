@@ -84,6 +84,9 @@
     "extends": "pvmalove-suite",
     "resources": [
       "orchestration",
+      "diagnostics.py",
+      "configuration_schema.py",
+      "configuration_store.py",
       "orchestration.example.json",
       "context_builder"
     ]

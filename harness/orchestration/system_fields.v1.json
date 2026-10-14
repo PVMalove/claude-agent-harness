@@ -1,8 +1,8 @@
 {
   "contract": "systemFields.v1",
-  "description": "Runtime-neutral registry of the orchestration system fields: every closed vocabulary that the coordinator branches on, validates at a boundary, or writes into the ledger, a brief, a report or a decision packet. For each field it lists the exact machine values with their semantics, the value assumed when the field is absent, the named subsets the code branches on, the sentinel values and their safe handling, and whether the field drives an automatic decision. Values are case-sensitive and have no aliases; an incompatible change needs a new contract version.",
+  "description": "Runtime-neutral registry of the orchestration system fields: every closed vocabulary that the coordinator branches on, validates at a boundary, or writes into the ledger, a brief, a report or a decision packet. For each field it lists the exact machine values with their semantics, the value assumed when the field is absent, the named subsets the code branches on, the sentinel values and their safe handling, and whether the field drives an automatic decision. Values are case-sensitive and have no aliases; an incompatible change needs a new contract version. Authored configuration may pass through a separate versioned field-specific normalizer before this canonical boundary; the registry never supplies aliases for machine records.",
   "unrecognized_policies": {
-    "reject": "The boundary refuses a value outside the list before anything is written; the refusal names the field, the allowed values and a remedy. A variant of a listed value that differs only by case, surrounding spaces or a separator is refused as well, never normalized.",
+    "reject": "The boundary refuses a value outside the list before anything is written; the refusal names the field, the allowed values and a remedy. A variant of a listed value that differs only by case, surrounding spaces or a separator is refused as well, never normalized. This describes canonical validation after any explicitly permitted config normalization.",
     "not-recognized": "The field also carries diagnostic text: a value outside the list is kept as text and never triggers the behavior of a listed value, while a variant of a listed value that differs only by case, surrounding spaces or a separator is refused with a remedy naming the exact spelling."
   },
   "fields": {
@@ -22,8 +22,13 @@
         "paused": "A recorded stop paused the batch until a human resumes or rewinds it."
       },
       "groups": {
-        "terminal": ["completed", "not-required", "abandoned"]
-      }
+        "terminal": [
+          "completed",
+          "not-required",
+          "abandoned"
+        ]
+      },
+      "transition_contract": "harness.orchestration.ledger.lifecycle:LifecycleLedger._validate_batch_transition"
     },
     "batch.next_action": {
       "description": "The next pipeline step a batch records after a decision; it selects the role and purpose of the next dispatch.",
@@ -59,8 +64,12 @@
         "cancelled": "An approved, unsent brief was cancelled with approval and a reason."
       },
       "groups": {
-        "live": ["dispatched", "working"]
-      }
+        "live": [
+          "dispatched",
+          "working"
+        ]
+      },
+      "transition_contract": "harness.orchestration.core.transition_contracts:DISPATCH_TRANSITION_VALIDATORS"
     },
     "dispatch.purpose": {
       "description": "Why a dispatch runs; it selects the brief shape and the evidence its report must carry.",
@@ -116,7 +125,11 @@
         "abandon": "Abandon the batch; a human only, with a reason."
       },
       "groups": {
-        "accepted": ["accept", "override-warning", "accept-conditional"]
+        "accepted": [
+          "accept",
+          "override-warning",
+          "accept-conditional"
+        ]
       }
     },
     "coordinator.decision": {
@@ -146,10 +159,23 @@
         "startup-evidence": "Audit record only: binds the startup evidence point of a restart or of the first rate-limit resume of a dispatch to the batch transition."
       },
       "groups": {
-        "continuation": ["continue", "continue-automatic", "continue-rate-limit"],
-        "rate-limit-resume": ["continue-automatic", "continue-rate-limit"],
-        "developer-retry": ["retry", "rewind-developer"],
-        "infrastructure-retry": ["retry", "cancel"]
+        "continuation": [
+          "continue",
+          "continue-automatic",
+          "continue-rate-limit"
+        ],
+        "rate-limit-resume": [
+          "continue-automatic",
+          "continue-rate-limit"
+        ],
+        "developer-retry": [
+          "retry",
+          "rewind-developer"
+        ],
+        "infrastructure-retry": [
+          "retry",
+          "cancel"
+        ]
       }
     },
     "retry.reason": {
@@ -168,10 +194,20 @@
         "unknown": "Sentinel: the cause is not established. No automatic route exists: attention unknown-reason and stop no-automatic-route; a human names the cause, and a manual retry takes the safe developer-retry route."
       },
       "groups": {
-        "operational": ["verification-infrastructure", "transport", "context-pressure"],
-        "developer": ["code", "requirements", "candidate-change"]
+        "operational": [
+          "verification-infrastructure",
+          "transport",
+          "context-pressure"
+        ],
+        "developer": [
+          "code",
+          "requirements",
+          "candidate-change"
+        ]
       },
-      "sentinels": ["unknown"]
+      "sentinels": [
+        "unknown"
+      ]
     },
     "retry.route": {
       "description": "Recovery route a retry or abandon decision records as routing.route; each value names a route the coordinator computes.",
@@ -286,7 +322,11 @@
           "deterministic-gate-failed",
           "ledger-validation-failed"
         ],
-        "no-automatic-route": ["unknown-reason", "abandon-dead-end", "supersede-dead-end"]
+        "no-automatic-route": [
+          "unknown-reason",
+          "abandon-dead-end",
+          "supersede-dead-end"
+        ]
       }
     },
     "completion.step": {
@@ -324,7 +364,13 @@
         "startup-failure": "The worker session failed to start; the operator confirms it stopped."
       },
       "groups": {
-        "planned": ["context-limit", "tdd-cycles", "failure-log", "vertical-slice", "human-decision"]
+        "planned": [
+          "context-limit",
+          "tdd-cycles",
+          "failure-log",
+          "vertical-slice",
+          "human-decision"
+        ]
       }
     },
     "continuation.termination_reason": {
@@ -465,7 +511,10 @@
         "gate": "A verification (code-check) command."
       },
       "groups": {
-        "primary": ["preparation", "gate"]
+        "primary": [
+          "preparation",
+          "gate"
+        ]
       }
     },
     "qa.code_checks_started": {
@@ -477,7 +526,9 @@
         "not_started": "The gate stage was never reached.",
         "unknown": "Sentinel: the reader cannot confirm whether a gate command started; it is never treated as not_started, so no infrastructure same-candidate rerun is derived from it."
       },
-      "sentinels": ["unknown"]
+      "sentinels": [
+        "unknown"
+      ]
     },
     "qa.diagnosis_category": {
       "description": "Diagnosis of a failed QA preparation stage.",
@@ -488,7 +539,9 @@
         "project-defect": "A failing project-file check or a corroborated defect signature; developer-retry with code.",
         "unknown": "Sentinel: no confirmation or contradicting facts; the report is blocked, a retry without --reason-category is refused, and the coordinator names the cause."
       },
-      "sentinels": ["unknown"]
+      "sentinels": [
+        "unknown"
+      ]
     },
     "qa_lane.owner_kind": {
       "description": "Kind of owner of a clean-room QA lane queue entry or lease; a legacy entry without owner_kind is a dispatch's.",
@@ -557,7 +610,9 @@
         "stale": "The integration ref moved; the pair needs a refresh before its evidence applies.",
         "unavailable": "Sentinel: the remote cannot say where the integration ref points; it is never treated as current, so no evidence applies to the pair and a refresh is required once the ref is readable."
       },
-      "sentinels": ["unavailable"]
+      "sentinels": [
+        "unavailable"
+      ]
     },
     "integration.local_qa_ci_condition": {
       "description": "Why combined-result CI cannot verify the pair, so integration local-qa runs.",
@@ -568,7 +623,9 @@
         "unavailable": "Sentinel: CI could not be reached; no CI evidence is assumed and only the local QA run may verify the pair.",
         "unusable": "CI ran, but its result cannot verify the combined pair."
       },
-      "sentinels": ["unavailable"]
+      "sentinels": [
+        "unavailable"
+      ]
     },
     "integration.ci_verification": {
       "description": "Verification mark only integration collect-ci writes on a linked CI check; a check without either mark, such as one linked by hand, is an unconfirmed link that never satisfies verification.",
@@ -598,7 +655,9 @@
         "unavailable": "Sentinel: the attempt could not observe the pair, run the gate or link its evidence; no evidence is linked, the pair stays unverified, and a new attempt needs an explicit --retry.",
         "exhausted": "The pair has spent its infrastructure retry budget; no new attempt starts."
       },
-      "sentinels": ["unavailable"]
+      "sentinels": [
+        "unavailable"
+      ]
     },
     "ci.checkout": {
       "description": "What a CI observation ran on.",
@@ -608,7 +667,9 @@
         "combined": "The merge result of exactly the candidate and the target.",
         "unknown": "Sentinel: the combined-result checkout cannot be confirmed; the verdict is fallback unknown_checkout, never accepted."
       },
-      "sentinels": ["unknown"]
+      "sentinels": [
+        "unknown"
+      ]
     },
     "ci.verdict": {
       "description": "Verdict of a CI observation for a candidate/target pair.",
@@ -639,7 +700,9 @@
         "inconclusive_check": "A required check ended without a verdict on the code.",
         "failed_check": "A required check failed on the combined result."
       },
-      "sentinels": ["unavailable"]
+      "sentinels": [
+        "unavailable"
+      ]
     },
     "resolver.event_kind": {
       "description": "Kind of a conflict-resolver audit event of an integration record.",
@@ -831,7 +894,9 @@
         "denied": "The approved plan does not allow the access, or the environment refused it; only a probe-confirmed denial qualifies for an automatic infrastructure retry.",
         "unsupported": "Sentinel: the coordinator process cannot prove the plan's non-inherit mode. The operation stops before any change and no automatic retry exists; a human runs the coordinator in a runtime whose runtime_access extension confirms the mode, or sets the operation's mode to inherit."
       },
-      "sentinels": ["unsupported"]
+      "sentinels": [
+        "unsupported"
+      ]
     },
     "operation_access.check_source": {
       "description": "What established the state of an access check of a coordinator operation; only a check from probe can be infrastructure evidence for an automatic retry.",
@@ -855,7 +920,9 @@
         "denied": "A check is denied and none is unsupported; the operation stops, and an automatic infrastructure retry is allowed only when every failed check is a probe-confirmed denial.",
         "unsupported": "Sentinel: a check is unsupported. The operation stops before any change and no automatic retry exists; a human decides after running the coordinator in a runtime that confirms the mode or setting the operation's mode to inherit."
       },
-      "sentinels": ["unsupported"]
+      "sentinels": [
+        "unsupported"
+      ]
     },
     "extension.kind": {
       "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",
@@ -907,6 +974,101 @@
         "none": "The plan names no additional gate.",
         "review": "The plan requires the code-review gate.",
         "qa": "The plan requires the qa gate."
+      }
+    },
+    "runtime.state": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "ready": "Ready at a confirmed boundary; no automatic approval.",
+        "running": "An authorized operation has a durable intent.",
+        "suspended": "No new effects until diagnostics and reconciliation succeed.",
+        "reconciling": "Read and reconcile existing evidence; no new external effect.",
+        "completed": "No further operational work; cannot reopen ledger lifecycle."
+      },
+      "transition_contract": "harness.orchestration.core.runtime_state_contract:RUNTIME_TRANSITIONS"
+    },
+    "runtime.operation_kind": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "dispatch-send": "Deliver an approved immutable dispatch.",
+        "checkpoint": "Capture a write-role checkpoint.",
+        "report-submit": "Capture a role completion report.",
+        "transition": "Perform an authorized lifecycle transition.",
+        "migrate": "Migrate a selected ledger generation.",
+        "local-write": "A recoverable local storage operation."
+      }
+    },
+    "runtime.operation_phase": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "prepared": "Intent persisted before any effect.",
+        "effect-observed": "Effect result is backed by evidence.",
+        "ledger-committed": "Relevant ledger records and matching audit confirmed.",
+        "committed": "Store commit reconciled to ledger evidence."
+      },
+      "transition_contract": "harness.orchestration.core.runtime_state_contract:RUNTIME_OPERATION_TRANSITIONS"
+    },
+    "runtime.effect_state": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "not-started": "No effect was started under this intent.",
+        "confirmed": "Result is confirmed by durable evidence.",
+        "unknown": "Sentinel: result is ambiguous; stop new effects and require reconciliation."
+      },
+      "sentinels": [
+        "unknown"
+      ],
+      "transition_contract": "harness.orchestration.core.runtime_state_contract:RUNTIME_EFFECT_TRANSITIONS"
+    },
+    "runtime.failure_code": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "config-invalid": "Current project config cannot authorize a new transition.",
+        "runtime-compatibility": "Contract version mismatch prevents continuation.",
+        "integrity-failure": "A record or approval binding failed verification.",
+        "execution-failure": "An authorized operation failed.",
+        "ambiguous-effect": "An external effect cannot be proven; never retry blindly.",
+        "storage-unavailable": "Storage cannot currently be read or written.",
+        "state-persist-failed": "New state could not be durably saved; do not claim success.",
+        "concurrency-conflict": "Another live writer or worker prevents this operation.",
+        "internal-error": "An internal invariant failed; collect sanitized diagnostics."
+      }
+    },
+    "diagnostic.code": {
+      "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-normalized": "Configuration boundary observation: config-normalized.",
+        "config-noncanonical": "Configuration boundary observation: config-noncanonical.",
+        "config-contract": "Configuration boundary observation: config-contract.",
+        "config-schema": "Configuration boundary observation: config-schema.",
+        "config-invalid": "Configuration boundary observation: config-invalid.",
+        "config-options": "Configuration boundary observation: config-options.",
+        "config-read": "Configuration boundary observation: config-read.",
+        "config-write": "Configuration boundary observation: config-write.",
+        "config-ambiguous": "Configuration boundary observation: config-ambiguous.",
+        "config-reference": "Configuration boundary observation: config-reference.",
+        "config-cycle": "Configuration boundary observation: config-cycle."
+      }
+    },
+    "diagnostic.severity": {
+      "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "error": "Configuration boundary observation: error.",
+        "warning": "Configuration boundary observation: warning."
       }
     }
   }

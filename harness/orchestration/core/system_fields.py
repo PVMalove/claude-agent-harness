@@ -37,7 +37,9 @@ REGISTRY_KEYS = frozenset(
 FIELD_REQUIRED_KEYS = frozenset(
     {"description", "automatic_decisions", "unrecognized", "values"}
 )
-FIELD_OPTIONAL_KEYS = frozenset({"default", "groups", "sentinels"})
+FIELD_OPTIONAL_KEYS = frozenset(
+    {"default", "groups", "sentinels", "transition_contract"}
+)
 # How an exact value is spelled, as every refusal of a variant states it.
 EXACT_SPELLING = "case-sensitive, no surrounding spaces, no synonyms"
 _SEPARATOR_RUN = re.compile(r"[\s_-]+")
@@ -59,6 +61,7 @@ class SystemField:
     default: str | None
     groups: Mapping[str, tuple[str, ...]]
     sentinels: tuple[str, ...]
+    transition_contract: str | None
 
     @property
     def allowed(self) -> tuple[str, ...]:
@@ -255,6 +258,11 @@ def _field(path: Path, field_id: str, value: object) -> SystemField:
         default=default,
         groups=MappingProxyType(groups),
         sentinels=sentinels,
+        transition_contract=(
+            _text(path, document["transition_contract"], f"{where} transition_contract")
+            if "transition_contract" in document
+            else None
+        ),
     )
 
 
