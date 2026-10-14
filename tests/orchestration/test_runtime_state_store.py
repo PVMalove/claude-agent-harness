@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import json
 import subprocess
@@ -14,7 +15,7 @@ import pytest
 from harness.cleanup import plan_cleanup
 from harness.json_types import JsonObject
 from harness.orchestration import runtime_state_store as store
-from harness.orchestration.core.constants import STATE_REL
+from harness.orchestration.core.constants import STATE_REL, BatchState
 from harness.orchestration.core.runtime_state_contract import (
     RUNTIME_STATE_CONTRACT,
     RUNTIME_STATE_DIR,
@@ -23,7 +24,7 @@ from harness.orchestration.core.runtime_state_contract import (
     transition_problem,
 )
 from harness.orchestration.core.system_fields import enum_problem, load_registry
-from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.ledger import BatchRecord, LifecycleLedger
 from harness.orchestration.ledger.lifecycle import _guard_byte
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -645,3 +646,97 @@ def test_a_busy_lock_is_a_bounded_conflict_without_overwrite(
     assert (
         runtime.write(_next(first, state="running"), expected_revision=1).revision == 2
     )
+
+
+# --- Ledger and legacy-metadata invariants -----------------------------------------------------
+
+LEDGER_WRITES = {"write_record", "replace_record", "write_immutable", "_atomic_write"}
+
+
+def test_the_store_never_reaches_a_ledger_write_api() -> None:
+    tree = ast.parse(Path(store.__file__).read_text(encoding="utf-8"))
+    names: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.alias):
+            names.add(node.name.rsplit(".", 1)[-1])
+        if isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+
+    assert names & LEDGER_WRITES == set()
+    assert not [m for m in modules if m.endswith(("ledger_ops", "ledger_admin"))]
+
+
+def test_runtime_progress_leaves_every_ledger_file_untouched(
+    repos: tuple[Path, Path],
+) -> None:
+    runtime = RuntimeStateStore(repos[1])
+    ledger = LifecycleLedger(runtime.location.state_root)
+    ledger.ensure()
+    batch = BatchRecord(
+        batch_id=BATCH,
+        state=BatchState.PLANNED,
+        dispatches=[],
+        coordinator_approval={"approved_by": "policy:auto", "approved_at": "2026"},
+    )
+    stored = ledger.records_root() / "batches" / f"{BATCH}.json"
+    stored.parent.mkdir(parents=True, exist_ok=True)
+    stored.write_text(json.dumps(batch.to_dict()), encoding="utf-8")
+    before = _tree(ledger.root)
+    record = _own(runtime)
+    runtime.write(record, expected_revision=0)
+    steps: list[JsonObject] = [
+        {"state": "running", "operation": _operation()},
+        {"operation": _operation("effect-observed", "confirmed")},
+        {"state": "suspended"},
+        {"state": "reconciling"},
+        {"operation": _operation("ledger-committed", "confirmed")},
+        {"operation": _operation("committed", "confirmed"), "state": "ready"},
+        {"state": "running"},
+        {"state": "completed"},
+    ]
+    record["ledger"] = _settled_ledger()
+
+    for changes in steps:
+        record = _next(record, **changes)
+        runtime.write(record, expected_revision=record["revision"] - 1)
+
+    assert runtime.read(BATCH) == record
+    assert _tree(ledger.root) == before
+    assert json.loads(stored.read_text("utf-8"))["state"] == "planned"
+
+
+def test_suspended_stays_a_runtime_state_and_never_a_batch_state() -> None:
+    batch_states = load_registry().fields["batch.state"].values
+
+    assert "suspended" in RUNTIME_VOCABULARIES["runtime.state"]
+    assert "suspended" not in batch_states
+    assert "suspended" not in {str(state) for state in BatchState}
+
+
+def test_the_store_never_accepts_legacy_metadata_as_success(
+    repos: tuple[Path, Path],
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    legacy = _own(runtime)
+    del legacy["contract"]
+    first = _own(runtime, operation=_operation(), ledger=_settled_ledger())
+    observed = _next(first, operation=_operation("effect-observed", "unknown"))
+
+    with _refusal("runtime-compatibility", "validate"):
+        runtime.write(legacy, expected_revision=0)
+    with _refusal("integrity-failure", "validate"):
+        runtime.write(_own(runtime, state="READY"), expected_revision=0)
+    runtime.write(first, expected_revision=0)
+    runtime.write(observed, expected_revision=1)
+    with _refusal("integrity-failure", "validate") as caught:
+        runtime.write(
+            _next(observed, operation=_operation("ledger-committed", "unknown")),
+            expected_revision=2,
+        )
+    assert "requires a confirmed effect" in caught.value.message
+    assert runtime.read(BATCH) == observed
