@@ -8,13 +8,12 @@
 
 from __future__ import annotations
 
-import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Iterator
 from pathlib import Path
 from typing import TypeGuard, cast
 
-from harness.configuration import read_config_file
+from harness.configuration import read_config_file, parse_config_json
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .core.constants import (
@@ -43,6 +42,12 @@ CONFIG_REQUIRED_FIELDS = (
     "concurrency_budget",
     "verification_commands",
 )
+EMPTY_SEED_CONFIG: JsonObject = {
+    "provider_profiles": {},
+    "assignment_plans": {},
+    "concurrency_budget": 1,
+    "verification_commands": [],
+}
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema",
     # Legacy zone model: still accepted so an existing project config keeps validating, never required.
@@ -111,6 +116,33 @@ CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
 
 class ContractError(HarnessError):
     """Манифест, назначение или неизменяемое задание нарушают переносимую ролевую политику."""
+
+
+def fallback_cycles(graph: Mapping[str, list[str]]) -> list[str]:
+    """Cycle members in declared fallback chains, without recursion or execution."""
+    visited: set[str] = set()
+    cyclic: set[str] = set()
+    for start in graph:
+        if start in visited:
+            continue
+        path = [start]
+        positions = {start: 0}
+        frames: list[tuple[str, Iterator[str]]] = [(start, iter(graph.get(start, [])))]
+        while frames:
+            node, edges = frames[-1]
+            target = next(edges, None)
+            if target is None:
+                frames.pop()
+                path.pop()
+                positions.pop(node)
+                visited.add(node)
+            elif target in positions:
+                cyclic.update(path[positions[target] :])
+            elif target not in visited:
+                positions[target] = len(path)
+                path.append(target)
+                frames.append((target, iter(graph.get(target, []))))
+    return sorted(cyclic)
 
 
 def non_empty(value: object) -> TypeGuard[str]:
@@ -455,6 +487,7 @@ def validate_brief_policy(
     roles_root: Path,
     *,
     expected_transport: str | None = None,
+    role_manifest: JsonObject | None = None,
 ) -> tuple[JsonObject, JsonObject]:
     """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации."""
     reject_sensitive(brief, "dispatch brief")
@@ -592,7 +625,11 @@ def validate_brief_policy(
             remedy=f"use an issue branch matching {pattern!r}, never {base!r} or an integration/* branch",
         )
     role_name = brief["role"]
-    role = load_role_manifest(roles_root / f"{role_name}.md")
+    role = (
+        role_manifest
+        if role_manifest is not None
+        else load_role_manifest(roles_root / f"{role_name}.md")
+    )
     assignment = resolve_assignment(
         config, role, role_name, brief.get("resolved_runtime")
     )
@@ -1069,7 +1106,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         raw = read_config_file(config_path)
         if raw is None:
             return problems
-        config = json.loads(raw)
+        config = parse_config_json(raw)
     except (OSError, ValueError) as exc:
         return [f"{config_path.as_posix()} is not valid JSON: {exc}"]
     if not isinstance(config, dict):
@@ -1082,6 +1119,20 @@ def configuration_problems(
 ) -> list[str]:
     """Validate a draft without writing it to the active project config."""
     problems: list[str] = []
+    # No shipped config field has a nullable type. Missing optional fields are different
+    # from explicitly authored nulls, including in nested policies.
+    pending: list[object] = [config]
+    while pending:
+        item = pending.pop()
+        if item is None:
+            problems.append(
+                "orchestration configuration does not allow explicit null values"
+            )
+            break
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
     reject_error: ContractError | None = None
     try:
         reject_sensitive(config, "project orchestration config")
@@ -1090,9 +1141,7 @@ def configuration_problems(
     if reject_error:
         problems.append(str(reject_error))
     # Access-only projects keep session assignments; validate authored values before defaults.
-    if (
-        "access_policy" in config or "infrastructure_retry_policy" in config
-    ) and not any(
+    if not any(
         config.get(key)
         for key in ("assignment_plans", "backend_zones", "provider_profiles")
     ):
@@ -1111,7 +1160,10 @@ def configuration_problems(
         problems.append(f"{location} has unknown field(s): {', '.join(extra)}")
     roles: dict[str, JsonObject] = {}
     if not roles_root.is_dir():
-        problems.append("missing .harness/orchestration/roles")
+        if {
+            key: value for key, value in config.items() if key != "$schema"
+        } != EMPTY_SEED_CONFIG:
+            problems.append("missing .harness/orchestration/roles")
     else:
         for path in sorted(roles_root.glob("*.md")):
             if path.stem == "_common":
@@ -1222,6 +1274,10 @@ def configuration_problems(
                 problems.append(
                     f"provider profile {profile_id!r} references unknown fallback profile {fallback_id!r}"
                 )
+    for profile_id in fallback_cycles(profile_fallbacks):
+        problems.append(
+            f"provider profile {profile_id!r} fallback chain contains a cycle"
+        )
     # backend_zones is a legacy declaration: optional, validated only when a project still states it.
     zones = config.get("backend_zones", {})
     if not isinstance(zones, dict):
