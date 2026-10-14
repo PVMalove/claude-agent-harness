@@ -381,9 +381,11 @@ def run(ctx: SimpleNamespace) -> None:
             entry.read_text(encoding="utf-8") + "\n@../../AGENTS.md\n", encoding="utf-8"
         )
     agent = pv_project / ".claude/agents/pr-composer.md"
+    test_author = pv_project / ".claude/agents/test-author.md"
     original_agent = (
         agent.read_bytes() + b"\nLocal review instructions without final newline"
     )
+    original_test_author = test_author.read_bytes()
     agent.write_bytes(original_agent)
     untouched = pv_project / "docs/local-agent-notes.md"
     untouched.write_text(
@@ -404,16 +406,25 @@ def run(ctx: SimpleNamespace) -> None:
     proposal = capture_json(HARNESS + ["diff", str(pv_project), "--json"])[
         "seed_link_proposals"
     ]
-    if [item["path"] for item in proposal] != [".claude/agents/pr-composer.md"]:
+    if [item["path"] for item in proposal] != [
+        ".claude/agents/pr-composer.md",
+        ".claude/agents/test-author.md",
+    ]:
         sys.exit(
             "update proposed links for already connected or unrelated entry points"
         )
     patch = output[output.index("diff --git ") :]
-    if patch != proposal[0]["diff"]:
+    expected_patch = "".join(item["diff"] for item in proposal)
+    if patch != expected_patch:
         sys.exit("JSON diff differs from the visible update proposal")
     apply_patch(patch, pv_project)
     assert_contract_link(
         agent, pv_project / ".harness/docs/technical-english.md", "installed agent seed"
+    )
+    assert_contract_link(
+        test_author,
+        pv_project / ".harness/docs/technical-english.md",
+        "installed test-author seed",
     )
     patched = agent.read_bytes()
     # A Windows checkout writes CRLF while the fixture suffix and the patch are LF.
@@ -439,6 +450,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("repeat pvmalove update changed local instructions")
     # Keep subsequent installer baseline checks independent of approved seed edits.
     agent.write_bytes(original_agent)
+    test_author.write_bytes(original_test_author)
 
     run_health(pv_project)
     repo_map_health = find_check(

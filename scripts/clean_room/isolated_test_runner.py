@@ -36,6 +36,7 @@ TEST_MODULE = "tests.test_runner_cases"
 BENIGN = f"{TEST_MODULE}.Benign.test_add"
 LEGIT = f"{TEST_MODULE}.Legit.test_writes"
 MARKER = f"{TEST_MODULE}.Marker.test_marker"
+RED_TEST = "tests.test_author_red.TestAuthorRed.test_behavior"
 # A read-only bind does not stop connect(): through the host session bus a test could start a
 # process outside the sandbox (systemd user manager), so the sandbox must hide it.
 SESSION_BUS = f"{TEST_MODULE}.HostSockets.test_session_bus"
@@ -132,6 +133,16 @@ class Marker(unittest.TestCase):
             handle.write("ran")
 """
 
+RED_TEST_SOURCE = """\
+from src.calc import add
+
+
+class TestAuthorRed:
+    def test_behavior(self):
+        # Requirement: add two prices; scenario: the sum is returned to the caller.
+        assert add(2, 3) == 6
+"""
+
 
 def run(ctx: SimpleNamespace) -> None:
     """Изолированный runner на установленном проекте.
@@ -150,6 +161,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
     else:
         detail = _verify_refusal(project, probe)
+        _verify_test_author_disabled(project, detail)
         print(
             f"isolated-test-runner: isolation unavailable ({detail}); "
             "verified fail-closed refusal only",
@@ -205,6 +217,19 @@ def _install(project: Path) -> Path:
         sys.exit("pvmalove-suite init did not scaffold run-test.sh")
     if not (project / ".harness" / "health" / "isolated_runner.py").is_file():
         sys.exit("pvmalove-suite init did not ship .harness/health/isolated_runner.py")
+    for relative in (
+        ".claude/agents/test-author.md",
+        ".claude/hooks/test-author-guard.py",
+        ".claude/hooks/test-author-preflight.sh",
+        "docs/agents/test-author.md",
+        ".harness/skills/tdd/SKILL.md",
+    ):
+        if not (project / relative).is_file():
+            sys.exit(f"pvmalove-suite init did not ship {relative}")
+    if "| `tdd` | `.harness/skills/tdd` |" not in (
+        project / ".harness" / "skills" / "REGISTRY.md"
+    ).read_text(encoding="utf-8"):
+        sys.exit("pvmalove-suite init did not register first-party tdd")
     return project
 
 
@@ -316,6 +341,142 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
     if _snapshot(project) != before:
         sys.exit("isolated-test-runner: a protected file changed")
     _verify_control_run(project, test_root)
+    _verify_test_author(project)
+
+
+def _preflight(project: Path) -> dict[str, object]:
+    """Run the installed activation check and enforce its bounded JSON output."""
+    result = run_step(
+        [SHELL, str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLAUDE_PROJECT_DIR=str(project)),
+        check=False,
+    )
+    if result.returncode != 0 or result.stderr or len(result.stdout.splitlines()) != 1:
+        sys.exit("test-author preflight did not return one clean JSON line")
+    try:
+        answer = json.loads(result.stdout)
+    except ValueError:
+        sys.exit("test-author preflight returned invalid JSON")
+    if not isinstance(answer, dict):
+        sys.exit("test-author preflight returned no JSON object")
+    return answer
+
+
+def _guard(project: Path, payload: dict[str, object]) -> dict[str, object] | None:
+    """Call the installed scoped guard as a Claude Code PreToolUse hook."""
+    result = run_step(
+        [sys.executable, str(project / ".claude" / "hooks" / "test-author-guard.py")],
+        cwd=project,
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, CLAUDE_PROJECT_DIR=str(project)),
+        check=False,
+    )
+    if result.returncode != 0 or result.stderr:
+        sys.exit("test-author guard did not return a clean soft decision")
+    if not result.stdout:
+        return None
+    try:
+        answer = json.loads(result.stdout)
+    except ValueError:
+        sys.exit("test-author guard returned invalid JSON")
+    if not isinstance(answer, dict):
+        sys.exit("test-author guard returned no JSON object")
+    return answer
+
+
+def _test_author_payload(
+    tool: str, tool_input: dict[str, object], agent: str = "test-author"
+) -> dict[str, object]:
+    """Build one installed-project hook payload."""
+    return {
+        "agent_type": agent,
+        "hook_event_name": "PreToolUse",
+        "tool_name": tool,
+        "tool_input": tool_input,
+    }
+
+
+def _assert_denied(answer: dict[str, object] | None) -> None:
+    """Require the fixed Claude Code deny envelope."""
+    if answer is None:
+        sys.exit("test-author guard allowed a protected action")
+    output = answer.get("hookSpecificOutput")
+    if not isinstance(output, dict) or output.get("permissionDecision") != "deny":
+        sys.exit("test-author guard returned no deny decision")
+    if not isinstance(output.get("permissionDecisionReason"), str):
+        sys.exit("test-author guard returned no sanitized reason")
+
+
+def _verify_test_author(project: Path) -> None:
+    """Verify activation, scoped soft denials and the ordinary route for other agents."""
+    if _preflight(project) != {"status": "ok"}:
+        sys.exit("test-author preflight did not activate in the protected project")
+    red_path = "tests/test_author_red.py"
+    if _guard(project, _test_author_payload("Write", {"file_path": red_path})) is not None:
+        sys.exit("test-author guard denied a configured test-path write")
+    (project / red_path).write_text(RED_TEST_SOURCE, encoding="utf-8")
+    red = _hook(project, RED_TEST)
+    _expect(
+        red,
+        "test-author Red evidence",
+        test_id=RED_TEST,
+        result="failed",
+        reason="test_failed",
+        exit_status=1,
+    )
+    if not isinstance(red.get("run_id"), str) or not red["run_id"]:
+        sys.exit("test-author Red evidence did not include a sanitized run id")
+    _assert_denied(
+        _guard(project, _test_author_payload("Write", {"file_path": "src/calc.py"}))
+    )
+    _assert_denied(
+        _guard(
+            project,
+            _test_author_payload(
+                "Bash",
+                {
+                    "command": (
+                        "python3 -m unittest "
+                        "tests.test_runner_cases.Benign.test_add"
+                    )
+                },
+            ),
+        )
+    )
+    if _guard(
+        project,
+        _test_author_payload(
+            "Write", {"file_path": "src/calc.py"}, agent="developer"
+        ),
+    ) is not None:
+        sys.exit("test-author guard changed the ordinary developer route")
+    config = project / ".harness" / "project.json"
+    data = json.loads(config.read_text(encoding="utf-8"))
+    original = json.dumps(data, ensure_ascii=False)
+    data.pop("test_paths", None)
+    config.write_text(json.dumps(data), encoding="utf-8")
+    try:
+        expected = {"status": "disabled", "reason": "test_paths_missing"}
+        if _preflight(project) != expected:
+            sys.exit("test-author preflight did not disable a project without test_paths")
+    finally:
+        config.write_text(original, encoding="utf-8")
+
+
+def _verify_test_author_disabled(project: Path, detail: str) -> None:
+    """When isolation is unavailable, require a sanitized disabled fallback."""
+    answer = _preflight(project)
+    expected = {"status": "disabled", "reason": "isolation_unavailable"}
+    if answer != expected:
+        sys.exit(
+            "test-author preflight did not fail closed: "
+            f"expected {expected}, got {answer} ({detail})"
+        )
 
 
 def _verify_zone_refusals(project: Path) -> None:

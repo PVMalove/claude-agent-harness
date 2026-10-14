@@ -36,6 +36,13 @@ Each role returns one completion report: its output, changed files, checks run a
 risks, and blockers. A write role also reports the commit SHA that contains its work. The coordinator
 records the selected provider and model separately; manifests never choose either.
 
+The optional `test-author` is an in-session Claude Code helper of the `developer`, not an
+orchestration role. The developer may spawn it only after `.claude/hooks/test-author-preflight.sh`
+returns `{"status":"ok"}`. A disabled preflight keeps the ordinary developer route and passes only
+the sanitized reason to the developer. The helper writes one behavior test inside `test_paths` and
+runs it through `.claude/hooks/run-test.sh`; it never receives a manifest, dispatch, brief/report,
+approval, or ledger lifecycle. Codex support is not claimed for this helper.
+
 Start with the Context Package and one startup probe: run `git rev-parse --show-toplevel`, `git branch
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
 worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-active-model>

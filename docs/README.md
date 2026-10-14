@@ -17,7 +17,7 @@
 | [Backend-оркестрация](./backend-orchestration.md) | Конфиг, coordinator, роли и lifecycle batch. |
 | [Technical English](../harness/docs/technical-english.md) | Общий контракт английской координации агентов, доставляемый в каждую установку. |
 | [Technical Russian](./technical-russian.md) | Правила технического русского языка и формат Keep a Changelog. |
-| [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards и pr-composer. |
+| [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards, pr-composer и test-author. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
 | [Hooks](./hooks/) | Русские описания тринадцати проектных hooks. |
 | [Runtime discovery](./runtime-discovery.md) | Обнаружение skills в Claude Code и Codex. |

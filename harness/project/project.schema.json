@@ -109,7 +109,7 @@
       "required": [
         "command"
       ],
-      "description": "Optional command of the isolated test runner (.claude/hooks/run-test.sh). Without it the runner refuses to run a test.",
+      "description": "Optional command of the isolated test runner (.claude/hooks/run-test.sh). Together with test_paths it is required for test-author activation; without it the runner refuses to run a test.",
       "properties": {
         "command": {
           "type": "array",
