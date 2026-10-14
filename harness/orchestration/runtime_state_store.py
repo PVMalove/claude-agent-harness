@@ -486,7 +486,8 @@ class RuntimeStateStore:
                 f"read the record with a Harness that supports its contract; this one "
                 f"reads only {RUNTIME_STATE_CONTRACT!r}",
             )
-        if problems := record_problems(record):
+        # A settled phase without a confirmed effect is legacy metadata, never a success.
+        if problems := record_problems(record) or _settled_problems(record):
             raise self._error(
                 "integrity-failure",
                 "read",

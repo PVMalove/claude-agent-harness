@@ -457,6 +457,23 @@ def test_unreadable_foreign_or_invalid_records_are_never_defaulted(
         runtime.read(BATCH)
 
 
+@pytest.mark.parametrize("effect", ["unknown", "not-started"])
+def test_a_stored_settled_phase_without_a_confirmed_effect_is_refused_on_read(
+    repos: tuple[Path, Path], effect: str
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    _put(
+        runtime,
+        _own(
+            runtime, operation=_operation("committed", effect), ledger=_settled_ledger()
+        ),
+    )
+
+    with _refusal("integrity-failure", "read") as caught:
+        runtime.read(BATCH)
+    assert "requires a confirmed effect" in caught.value.message
+
+
 def test_outside_a_git_checkout_the_store_is_unavailable(tmp_path: Path) -> None:
     with _refusal("storage-unavailable", "resolve-root") as caught:
         RuntimeStateStore(tmp_path)
