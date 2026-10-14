@@ -374,7 +374,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             if report
             else None,
             "report": str(_records_root(root) / entry["report"]) if report else None,
-            "diff": f"git diff {batch['base_commit']}..{candidate}"
+            "diff": f"git diff {rebase.batch_base(repo, batch)}..{candidate}"
             if candidate
             else None,
             "approval_reason": "a human decision is required before the ledger may advance this gate",

@@ -651,6 +651,7 @@ def _record_report(
             "QA report requires a running QA dispatch",
             remedy="the batch entry must be dispatched and the dispatch status working; if they are out of sync, abandon the batch and create a new QA dispatch",
         )
+    # QA is a read-only role: its report lists no changed files, so this base measures nothing.
     ops._validate_report(
         report,
         dispatch,
