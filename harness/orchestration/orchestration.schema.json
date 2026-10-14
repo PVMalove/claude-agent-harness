@@ -298,7 +298,7 @@
         },
         "min_starting_files": {"type": "integer", "minimum": 1, "default": 5, "description": "Минимальное количество стартовых файлов при ручной регистрации Context Package."},
         "max_starting_files": {"type": "integer", "minimum": 1, "default": 10, "description": "Максимальное количество стартовых файлов в Context Package."},
-        "section_index_min_tokens": {"type": "integer", "minimum": 1, "default": 20000, "description": "Порог оценки токенов, начиная с которого Markdown-файл попадает в Context Package как оглавление разделов с диапазонами строк, а не целиком (целое число, по умолчанию 20000)."}
+        "section_index_min_tokens": {"type": "integer", "minimum": 1, "default": 20000, "description": "Порог оценки токенов, начиная с которого Markdown- или Python-файл попадает в Context Package как индекс разделов или символов с диапазонами строк, а не целиком (целое число, по умолчанию 20000)."}
       }
     },
     "repo_map_policy": {
