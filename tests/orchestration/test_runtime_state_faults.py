@@ -107,6 +107,33 @@ def test_the_real_directory_fsync_runs_on_posix(tmp_path: Path) -> None:
     assert store._directory_durability(tmp_path) in {"done", "unsupported"}
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows sharing conflicts only")
+def test_the_replace_retries_a_transient_windows_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = tmp_path / "source.json"
+    target = tmp_path / "target.json"
+    source.write_text("new", encoding="utf-8")
+    target.write_text("old", encoding="utf-8")
+    replace = os.replace
+    attempts = 0
+
+    def conflict_once(src: Path, dst: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError(13, "transient sharing conflict")
+        replace(src, dst)
+
+    monkeypatch.setattr(
+        "harness.orchestration.runtime_state_store.os.replace", conflict_once
+    )
+    store._replace_atomically(source, target)
+
+    assert attempts == 2
+    assert target.read_text(encoding="utf-8") == "new"
+
+
 # --- Honest, sanitized storage failures --------------------------------------------------------
 
 SECRET = "ghp_" + "s" * 30
