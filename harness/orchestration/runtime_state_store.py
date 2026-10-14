@@ -7,8 +7,12 @@ wired into dispatch, intent or reconciliation (#684, #685).
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import subprocess
+from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
 from pathlib import Path
@@ -17,9 +21,16 @@ from typing import cast
 from harness.configuration_schema import resolve_ref, value_problems
 from harness.gate_runner.gate_runner import sanitise
 from harness.json_types import JsonObject
+from harness.storage import GIT_TIMEOUT_SECONDS, storage_root
 
-from .core.runtime_state_contract import RUNTIME_STATE_CONTRACT, transition_problem
+from .core.constants import STATE_REL
+from .core.runtime_state_contract import (
+    RUNTIME_STATE_CONTRACT,
+    RUNTIME_STATE_DIR,
+    transition_problem,
+)
 from .core.system_fields import enum_problem, load_registry
+from .core.utils import CoordinatorError, _safe_id
 
 SCHEMA_PATH = Path(__file__).with_name("runtime_state.v1.json")
 SYSTEM_FIELD = "x-system-field"
@@ -217,3 +228,233 @@ def validate_record(record: object, previous: JsonObject | None) -> list[str]:
     ) is not None:
         problems.append(problem)
     return problems + _operation_problems(record["operation"], previous["operation"])
+
+
+class RuntimeStateError(CoordinatorError):
+    """A runtime state request that stopped without persisting new progress."""
+
+    progress_saved = False
+
+    def __init__(
+        self,
+        code: str,
+        step: str,
+        detail: str,
+        *,
+        remedy: str,
+        durable_revision: int | None = None,
+        path: str | None = None,
+        error_name: str | None = None,
+        durability: str = "unchanged",
+    ) -> None:
+        if (
+            problem := enum_problem(
+                "runtime failure code", code, field_values("runtime.failure_code")
+            )
+        ) is not None:
+            raise ValueError(problem)
+        detail = sanitize_detail(detail)
+        known = "unknown" if durable_revision is None else str(durable_revision)
+        outcome = (
+            "new progress is not confirmed durable"
+            if durability == "unconfirmed"
+            else "new progress was not persisted"
+        )
+        super().__init__(
+            f"runtime state {step} stopped with {code}: {detail}; {outcome}, "
+            f"the last durable revision is {known}",
+            remedy=remedy,
+        )
+        self.code = code
+        self.step = step
+        self.durable_revision = durable_revision
+        self.diagnostics: JsonObject = {
+            "code": code,
+            "step": step,
+            "errno": error_name,
+            "path": path,
+            "detail": detail,
+            "durability": durability,
+        }
+
+
+def _git_common_dir(checkout: Path) -> Path | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value:
+        return None
+    common = Path(value)
+    return (common if common.is_absolute() else checkout / common).resolve()
+
+
+@dataclass(frozen=True)
+class RuntimeStateLocation:
+    """Where one state root's records live in the shared store, and the identity they carry.
+
+    Every checkout of a repository resolves to its main checkout's storage root, so linked
+    worktrees share one store; a non-default state root gets its own namespace there, named by
+    the hash of its full path."""
+
+    storage: Path
+    repo_root: Path
+    git_common_dir: Path
+    state_root: Path
+    namespace: str
+    directory: Path
+
+    @property
+    def base(self) -> Path:
+        return self.storage / RUNTIME_STATE_DIR
+
+    def identity(self, batch_id: str) -> JsonObject:
+        return {
+            "repo_root": str(self.repo_root),
+            "git_common_dir": str(self.git_common_dir),
+            "state_root": str(self.state_root),
+            "namespace": self.namespace,
+            "batch_id": batch_id,
+        }
+
+    def relative(self, path: Path) -> str:
+        """``path`` relative to the storage root, as diagnostics name it."""
+        try:
+            return path.relative_to(self.storage).as_posix()
+        except ValueError:
+            return path.name
+
+
+def resolve_location(
+    repo: Path, state_root: Path | None = None
+) -> RuntimeStateLocation:
+    """Bind ``repo`` and ``state_root`` (``None`` for the default) to the canonical store."""
+    unavailable = RuntimeStateError(
+        "storage-unavailable",
+        "resolve-root",
+        "the main checkout's shared storage cannot be located",
+        remedy="run from a Git checkout of the repository whose main checkout exists",
+    )
+    try:
+        storage = storage_root(repo, require_main_checkout=True)
+    except ValueError:
+        raise unavailable from None
+    main = storage.parent
+    common = _git_common_dir(main)
+    if common is None:
+        raise unavailable
+    default = (main / STATE_REL).resolve()
+    resolved = default if state_root is None else state_root.expanduser().resolve()
+    base = storage / RUNTIME_STATE_DIR
+    if resolved == default:
+        namespace, directory = "default", base
+    else:
+        digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
+        namespace, directory = f"alt-{digest}", base / "alternate" / digest
+    return RuntimeStateLocation(storage, main, common, resolved, namespace, directory)
+
+
+class RuntimeStateStore:
+    """Read and write ``runtimeState.v1`` records of one state root."""
+
+    def __init__(self, repo: Path, state_root: Path | None = None) -> None:
+        self.location = resolve_location(repo, state_root)
+
+    def _error(
+        self, code: str, step: str, detail: str, remedy: str
+    ) -> RuntimeStateError:
+        return RuntimeStateError(code, step, detail, remedy=remedy)
+
+    def path(self, batch_id: str) -> Path:
+        try:
+            _safe_id(batch_id, "batch_id")
+        except CoordinatorError:
+            batch_id = ""
+        if not batch_id.startswith("batch-"):
+            raise self._error(
+                "integrity-failure",
+                "identity",
+                "the batch ID is not a coordinator batch ID",
+                "pass the coordinator-generated batch-... ID",
+            )
+        return self.location.directory / f"{batch_id}.json"
+
+    def _refuse_links(self, *paths: Path) -> None:
+        for path in paths:
+            if path.is_symlink():
+                raise self._error(
+                    "integrity-failure",
+                    "prepare",
+                    f"{self.location.relative(path)} is a symbolic link",
+                    "replace the link with a plain directory or file of the store",
+                )
+
+    def _prepare(self) -> None:
+        """Create the store; its first directory ignores itself, so no checkout turns dirty
+        even without a root ``.harness/`` rule."""
+        base, directory = self.location.base, self.location.directory
+        self._refuse_links(base, base / "alternate", directory)
+        base.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(
+                base / ".gitignore", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+            )
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(b"*\n")
+        directory.mkdir(parents=True, exist_ok=True)
+        self._refuse_links(base, base / "alternate", directory)
+
+    def read(self, batch_id: str) -> JsonObject | None:
+        """The current record, ``None`` when none was written; a record that is unreadable or
+        bound to another identity stops instead of being repaired or defaulted."""
+        path = self.path(batch_id)
+        self._refuse_links(path)
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return None
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise self._error(
+                "integrity-failure",
+                "read",
+                f"{self.location.relative(path)} is not valid JSON",
+                "restore the record from a backup or remove it after review",
+            ) from None
+        if (problem := compatibility_problem(record)) is not None:
+            raise self._error(
+                "runtime-compatibility",
+                "read",
+                problem,
+                f"read the record with a Harness that supports its contract; this one "
+                f"reads only {RUNTIME_STATE_CONTRACT!r}",
+            )
+        if problems := record_problems(record):
+            raise self._error(
+                "integrity-failure",
+                "read",
+                "; ".join(problems),
+                "restore the record from a backup or remove it after review",
+            )
+        if record["identity"] != self.location.identity(batch_id):
+            raise self._error(
+                "integrity-failure",
+                "identity",
+                f"{self.location.relative(path)} belongs to another repository, state root "
+                "or batch",
+                "open the store with the repository and state directory that wrote it",
+            )
+        return cast(JsonObject, record)

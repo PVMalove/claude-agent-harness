@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
+from harness.cleanup import plan_cleanup
 from harness.json_types import JsonObject
 from harness.orchestration import runtime_state_store as store
+from harness.orchestration.core.constants import STATE_REL
 from harness.orchestration.core.runtime_state_contract import (
     RUNTIME_STATE_CONTRACT,
+    RUNTIME_STATE_DIR,
     RUNTIME_TRANSITIONS,
     RUNTIME_VOCABULARIES,
     transition_problem,
 )
 from harness.orchestration.core.system_fields import enum_problem, load_registry
+from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+)
 
 HASH = "a" * 64
 BATCH = "batch-0123abcd"
@@ -315,3 +325,212 @@ def test_transition_problem_refuses_unknown_tables_and_sources() -> None:
         transition_problem("runtime.operation_phase", "committed", "prepared")
         is not None
     )
+
+
+# --- Canonical binding, self-ignoring directory and cleanup ------------------------------------
+
+
+def _git(checkout: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(checkout), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+@pytest.fixture
+def repos(tmp_path: Path) -> tuple[Path, Path]:
+    """A main checkout without any root ``.gitignore`` and one linked worktree."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _git(main, "init", "-q")
+    _git(main, "config", "user.email", "test@example.invalid")
+    _git(main, "config", "user.name", "Test")
+    (main / "README.md").write_text("fixture\n", encoding="utf-8")
+    _git(main, "add", "README.md")
+    _git(main, "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    linked = tmp_path / "linked"
+    _git(main, "worktree", "add", "-q", str(linked))
+    return main.resolve(), linked.resolve()
+
+
+def _put(runtime: RuntimeStateStore, record: JsonObject) -> Path:
+    """Place a record on disk as an earlier writer left it."""
+    runtime._prepare()
+    path = runtime.path(record["identity"]["batch_id"])
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+def _own(
+    runtime: RuntimeStateStore, batch_id: str = BATCH, **changes: object
+) -> JsonObject:
+    return _record(identity=runtime.location.identity(batch_id), **changes)
+
+
+def _refusal(code: str, step: str | None = None) -> pytest.RaisesExc[RuntimeStateError]:
+    pattern = f"runtime state {step or '[a-z-]+'} stopped with {code}"
+    return pytest.raises(RuntimeStateError, match=pattern)
+
+
+def _tree(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_linked_worktrees_share_the_default_store(repos: tuple[Path, Path]) -> None:
+    main, linked = repos
+    from_main = RuntimeStateStore(main).location
+    from_linked = RuntimeStateStore(linked).location
+
+    assert from_linked == from_main
+    assert RuntimeStateStore(linked, main / STATE_REL).location == from_main
+    assert from_main.namespace == "default"
+    assert from_main.directory == main / ".harness" / RUNTIME_STATE_DIR
+    assert from_main.repo_root == main
+    assert from_main.git_common_dir == main / ".git"
+    assert from_main.state_root == main / STATE_REL
+
+
+def test_an_alternate_state_dir_is_an_isolated_namespace_of_the_same_store(
+    repos: tuple[Path, Path],
+) -> None:
+    main, linked = repos
+    scratch = main / ".harness" / ".sandboxes" / "scratch"
+    alternate = RuntimeStateStore(linked, scratch / "state").location
+    other = RuntimeStateStore(main, scratch / "other").location
+
+    assert RuntimeStateStore(main, scratch / "state").location == alternate
+    assert alternate.namespace.startswith("alt-") and other.namespace.startswith("alt-")
+    assert alternate.namespace != other.namespace
+    assert alternate.directory == (
+        main / ".harness" / RUNTIME_STATE_DIR / "alternate" / alternate.namespace[4:]
+    )
+    assert alternate.identity(BATCH)["state_root"] == str(scratch / "state")
+    assert (
+        store.validate_record(_record(identity=alternate.identity(BATCH)), None) == []
+    )
+
+
+def test_a_record_of_another_identity_is_a_controlled_stop(
+    repos: tuple[Path, Path],
+) -> None:
+    main, _ = repos
+    default = RuntimeStateStore(main)
+    alternate = RuntimeStateStore(main, main / "elsewhere")
+    foreign = _put(default, _own(alternate))
+    renamed = foreign.with_name("batch-ffff.json")
+    renamed.write_bytes(_put(default, _own(default)).read_bytes())
+
+    with _refusal("integrity-failure", "identity"):
+        RuntimeStateStore(main).read("batch-ffff")
+    foreign.write_text(json.dumps(_own(alternate)), encoding="utf-8")
+    with _refusal("integrity-failure", "identity"):
+        default.read(BATCH)
+    assert alternate.read(BATCH) is None
+
+
+def test_unreadable_foreign_or_invalid_records_are_never_defaulted(
+    repos: tuple[Path, Path],
+) -> None:
+    main, _ = repos
+    runtime = RuntimeStateStore(main)
+    path = _put(runtime, _own(runtime))
+
+    assert runtime.read(BATCH) == _own(runtime)
+    path.write_text("{not json", encoding="utf-8")
+    with _refusal("integrity-failure", "read"):
+        runtime.read(BATCH)
+    legacy = _own(runtime)
+    del legacy["contract"]
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    with _refusal("runtime-compatibility", "read"):
+        runtime.read(BATCH)
+    path.write_text(json.dumps(_own(runtime, state="Suspended")), encoding="utf-8")
+    with _refusal("integrity-failure", "read"):
+        runtime.read(BATCH)
+
+
+def test_outside_a_git_checkout_the_store_is_unavailable(tmp_path: Path) -> None:
+    with _refusal("storage-unavailable", "resolve-root") as caught:
+        RuntimeStateStore(tmp_path)
+
+    assert caught.value.progress_saved is False
+    assert caught.value.diagnostics["code"] == "storage-unavailable"
+
+
+@pytest.mark.parametrize("batch_id", ["../batch-1", "dispatch-12", "batch-XYZ", ""])
+def test_only_a_coordinator_batch_id_names_a_record(
+    repos: tuple[Path, Path], batch_id: str
+) -> None:
+    with _refusal("integrity-failure", "identity"):
+        RuntimeStateStore(repos[0]).path(batch_id)
+
+
+def test_a_symlinked_store_directory_is_refused(
+    repos: tuple[Path, Path], tmp_path: Path
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    runtime.location.base.parent.mkdir(parents=True)
+    target = tmp_path / "outside"
+    target.mkdir()
+    try:
+        runtime.location.base.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with _refusal("integrity-failure", "prepare"):
+        runtime._prepare()
+    assert list(target.iterdir()) == []
+
+
+def test_the_store_ignores_itself_and_keeps_every_checkout_clean(
+    repos: tuple[Path, Path],
+) -> None:
+    main, linked = repos
+    _put(RuntimeStateStore(linked), _own(RuntimeStateStore(linked)))
+    alternate = RuntimeStateStore(linked, linked / ".harness" / "state")
+    _put(alternate, _own(alternate))
+    ignore = main / ".harness" / RUNTIME_STATE_DIR / ".gitignore"
+
+    assert ignore.read_bytes() == b"*\n"
+    for checkout in repos:
+        assert _git(checkout, "status", "--porcelain", "--untracked-files=all") == ""
+    ignore.write_bytes(b"*\n# kept\n")
+    RuntimeStateStore(main)._prepare()
+    assert ignore.read_bytes() == b"*\n# kept\n"
+
+
+def test_generic_cleanup_and_ledger_maintenance_leave_the_store_alone(
+    repos: tuple[Path, Path],
+) -> None:
+    main, linked = repos
+    scratch = main / ".harness" / ".sandboxes" / "scratch"
+    stores = [
+        RuntimeStateStore(main),
+        RuntimeStateStore(linked, scratch / "state"),
+        RuntimeStateStore(linked, linked / ".harness" / "orchestration" / "state"),
+    ]
+    for runtime in stores:
+        _put(runtime, _own(runtime))
+    scratch.mkdir(parents=True, exist_ok=True)
+    (scratch / "transit.txt").write_text("old", encoding="utf-8")
+    base = stores[0].location.base
+    before = _tree(base)
+
+    for checkout in repos:
+        plan = plan_cleanup(checkout, "hard", min_age_hours=0)
+        removed = [Path(item["path"]).resolve() for item in plan["remove"]]
+        assert removed, checkout
+        assert not [path for path in removed if path.is_relative_to(base)], checkout
+    for runtime in stores:
+        ledger = LifecycleLedger(runtime.location.state_root)
+        ledger.ensure()
+        ledger.clean()
+        ledger.reset("RESET")
+    assert len(before) == 4
+    assert _tree(base) == before
