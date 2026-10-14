@@ -10,6 +10,7 @@ import pytest
 
 from harness.json_types import JsonObject
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
+from harness.orchestration import runtime_reconcile
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -286,3 +287,218 @@ def test_a_report_whose_markdown_write_stopped_is_finished_by_the_next_command(
         "awaiting-approval",
         "reported",
     )
+
+
+# --- Controlled stops --------------------------------------------------------------------------
+
+
+def stop_after_status(scene: Scene, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Interrupt a report write after its status replace, before that replace's audit; returns
+    the replaced status record."""
+    interrupted(
+        scene,
+        "report-submit",
+        lambda: crash_on(monkeypatch, LifecycleLedger, "_append_audit", 3),
+        monkeypatch,
+    )
+    return scene.records / f"dispatch-status/{DISPATCH}.json"
+
+
+def settle_error(scene: Scene) -> RuntimeStateError:
+    with pytest.raises(RuntimeStateError) as caught:
+        settle_scene(scene)
+    return caught.value
+
+
+def test_a_violated_record_hash_stops_with_evidence_and_no_new_revision_on_repeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene = make_scene(tmp_path)
+    status = stop_after_status(scene, monkeypatch)
+    planned = status.read_bytes()
+    status.write_text('{"dispatch_id": "dispatch-4e5f6a7b", "state": "failed"}\n')
+    ledger = scene.tree()
+
+    stopped = settle_error(scene)
+
+    assert (stopped.code, stopped.step) == (
+        "integrity-failure",
+        "reconcile:dispatch-status",
+    )
+    evidence = stopped.diagnostics["evidence"]
+    assert evidence["path"] == f"dispatch-status/{DISPATCH}.json"
+    assert len(evidence["expected_before"]) == len(evidence["actual"]) == 12
+    assert evidence["actual"] not in (
+        evidence["expected_before"],
+        evidence["expected_after"],
+    )
+    # The generation is still the planned one: the stop comes from the hash alone.
+    record = scene.runtime()
+    assert record is not None
+    assert scene.ledger.pointer()["generation"] == record["ledger"]["generation"]  # type: ignore[index]
+    assert (record["state"], record["failure"]["code"]) == (
+        "suspended",
+        "integrity-failure",
+    )
+    assert record["failure"]["step"] == "reconcile:dispatch-status"
+    assert scene.tree() == ledger
+    store = store_bytes(scene)
+
+    again = settle_error(scene)
+
+    assert (again.code, again.durable_revision) == (
+        "integrity-failure",
+        record["revision"],
+    )
+    assert (store_bytes(scene), scene.tree()) == (store, ledger)
+
+    status.write_bytes(planned)
+    assert settle_scene(scene) is True
+    assert_reconciled(scene, reference(tmp_path, "report-submit"))
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        pytest.param(
+            lambda steps: steps[0].update({"content": {"forged": True}}), id="content"
+        ),
+        pytest.param(
+            lambda steps: steps[3]["audit"]["details"].update({"to": "completed"}),
+            id="audit-details",
+        ),
+        pytest.param(
+            lambda steps: steps[2].update(
+                {"path": "dispatches/dispatch-4e5f6a7b.json"}
+            ),
+            id="path",
+        ),
+    ],
+)
+def test_a_tampered_intent_payload_stops_before_any_ledger_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: Callable[[list[JsonObject]], None],
+) -> None:
+    scene = make_scene(tmp_path)
+    stop_after_status(scene, monkeypatch)
+    record = scene.runtime()
+    assert record is not None
+    path = scene.store().location.directory / record["input_refs"][0]
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    tamper(payload["steps"])
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    ledger = scene.tree()
+
+    stopped = settle_error(scene)
+
+    assert (stopped.code, stopped.step) == ("integrity-failure", "reconcile:intent")
+    assert scene.tree() == ledger
+
+
+def test_a_tampered_audit_event_stops_the_reconcile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene = make_scene(tmp_path)
+    stop_after_status(scene, monkeypatch)
+    record = scene.runtime()
+    assert record is not None
+    payload = scene.store().read_intent(BATCH, record["input_refs"][0])
+    event = scene.records / f"audit/{payload['steps'][0]['audit']['audit_id']}.json"
+    value = json.loads(event.read_text(encoding="utf-8"))
+    value["details"]["sha256"] = "0" * 64
+    event.write_text(json.dumps(value), encoding="utf-8")
+
+    stopped = settle_error(scene)
+
+    # The selected generation's own validation already refuses the forged event.
+    assert (stopped.code, stopped.step) == ("integrity-failure", "reconcile:ledger")
+    assert "failed immutable integrity check" in str(stopped)
+    record = scene.runtime()
+    assert record is not None
+    assert (record["state"], record["failure"]["code"]) == (
+        "suspended",
+        "integrity-failure",
+    )
+
+
+def test_a_ready_state_with_an_unfinished_operation_is_unknown_and_stops_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene = make_scene(tmp_path)
+    stop_after_status(scene, monkeypatch)
+    path = scene.store().path(BATCH)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["state"] = "ready"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    store, ledger = store_bytes(scene), scene.tree()
+
+    stopped = settle_error(scene)
+
+    assert (stopped.code, stopped.step) == ("integrity-failure", "reconcile:state")
+    assert (store_bytes(scene), scene.tree()) == (store, ledger)
+
+
+def test_a_record_another_writer_changes_during_reconcile_is_a_concurrency_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene = make_scene(tmp_path)
+    status = stop_after_status(scene, monkeypatch)
+    batch = scene.records / f"batches/{BATCH}.json"
+    original = runtime_reconcile._reconciling
+
+    def foreign_writer(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
+        reconciling = original(store, record)
+        batch.write_text(batch.read_text(encoding="utf-8") + " ", encoding="utf-8")
+        return reconciling
+
+    monkeypatch.setattr(runtime_reconcile, "_reconciling", foreign_writer)
+    planned_status = status.read_bytes()
+
+    stopped = settle_error(scene)
+
+    assert (stopped.code, stopped.step) == ("concurrency-conflict", "reconcile:batches")
+    record = scene.runtime()
+    assert record is not None
+    assert (record["state"], record["failure"]["code"]) == (
+        "suspended",
+        "concurrency-conflict",
+    )
+    assert status.read_bytes() == planned_status
+    monkeypatch.undo()
+    # No blind retry: the foreign bytes are neither the planned before nor after content.
+    assert settle_error(scene).code == "integrity-failure"
+
+
+def test_a_record_another_writer_changes_during_the_write_suspends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene = make_scene(tmp_path)
+    write = WRITES["report-submit"](scene)
+    status = scene.records / f"dispatch-status/{DISPATCH}.json"
+    original = RuntimeStateStore.write_intent
+
+    def foreign_writer(
+        self: RuntimeStateStore, batch_id: str, operation_id: str, payload: JsonObject
+    ) -> str:
+        ref = original(self, batch_id, operation_id, payload)
+        status.write_text('{"dispatch_id": "dispatch-4e5f6a7b", "state": "working"} ')
+        return ref
+
+    monkeypatch.setattr(RuntimeStateStore, "write_intent", foreign_writer)
+
+    with pytest.raises(RuntimeStateError) as caught:
+        write.commit()
+
+    assert (caught.value.code, caught.value.step) == (
+        "concurrency-conflict",
+        "ledger:dispatch-status",
+    )
+    record = scene.runtime()
+    assert record is not None
+    assert (record["state"], record["failure"]["code"]) == (
+        "suspended",
+        "concurrency-conflict",
+    )
+    monkeypatch.undo()
+    assert settle_error(scene).code == "integrity-failure"

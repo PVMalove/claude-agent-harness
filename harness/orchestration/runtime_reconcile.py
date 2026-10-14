@@ -19,14 +19,19 @@ import hashlib
 from pathlib import Path, PurePosixPath
 
 from harness.orchestration.core.utils import JsonObject
-from harness.orchestration.ledger.ledger_ops import _ledger_errors
-from harness.orchestration.ledger.lifecycle import LifecycleLedger, audit_details
+from harness.orchestration.ledger.lifecycle import (
+    LedgerError,
+    LifecycleLedger,
+    audit_details,
+)
 from harness.orchestration.runtime_intent import (
     WRITE_MODES,
     apply_step,
     audit_id_for,
     content_bytes,
     digest,
+    error_detail,
+    failure_code,
     next_revision,
     operation_hashes,
     settle_phases,
@@ -35,6 +40,7 @@ from harness.orchestration.runtime_intent import (
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
     RuntimeStateStore,
+    sanitize_detail,
 )
 
 STOP_REMEDY = (
@@ -44,18 +50,30 @@ STOP_REMEDY = (
 
 
 class _Stop(Exception):
-    """Why an intent cannot be reconciled, found before anything is written."""
+    """A controlled stop: why an intent cannot be reconciled, with its evidence."""
 
-    def __init__(self, code: str, step: str, detail: str) -> None:
+    def __init__(
+        self, code: str, step: str, detail: str, evidence: JsonObject | None = None
+    ) -> None:
         super().__init__(detail)
         self.code = code
         self.step = step
         self.detail = detail
+        self.evidence = evidence or {}
+
+
+def short(sha256: object) -> str | None:
+    """A hash shortened for a diagnostic; ``None`` stays ``None`` (an absent file)."""
+    return sha256[:12] if isinstance(sha256, str) else None
 
 
 def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bool:
     """Finish the batch's unfinished composite write, if there is one; ``True`` when an
-    operation was rolled forward, so ledger records the caller read earlier may be stale."""
+    operation was rolled forward, so ledger records the caller read earlier may be stale.
+
+    A violated hash, an unknown state or a concurrent writer is a controlled stop: the store
+    is suspended with the failure, nothing is retried, and the same stop found again by the
+    next read-only check raises without a new revision."""
     store = RuntimeStateStore(repo, root)
     record = store.read(batch_id)
     if record is None:
@@ -65,21 +83,20 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
         if record["state"] in ("suspended", "reconciling"):
             _ready(store, _reconciling(store, record))
         return False
-    with _ledger_errors():
-        try:
-            records = ledger.records_root()
-            steps = _verified_steps(store, ledger, record)
-            pending = _pending(ledger, records, steps)
-        except _Stop as stop:
-            raise RuntimeStateError(
-                stop.code,
-                stop.step,
-                stop.detail,
-                remedy=STOP_REMEDY,
-                durable_revision=int(record["revision"]),
-            ) from None
-        record = _reconciling(store, record)
+    try:
+        records = ledger.records_root()
+        steps = _verified_steps(store, ledger, record)
+        pending = _pending(ledger, records, steps)
+    except _Stop as stop:
+        raise _stopped(store, batch_id, stop) from None
+    except LedgerError as exc:
+        broken = _Stop("integrity-failure", "reconcile:ledger", exc.message)
+        raise _stopped(store, batch_id, broken) from exc
+    record = _reconciling(store, record)
+    step_name = "reconcile:intent"
+    try:
         for step, status in pending:
+            step_name = _step_name(step)
             if status == "pending":
                 apply_step(ledger, records, step)
             else:
@@ -92,15 +109,46 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
                 )
         for step in steps:
             if (problem := step_problem(ledger, records, step)) is not None:
-                raise RuntimeStateError(
-                    "integrity-failure",
-                    _step_name(step),
-                    problem,
-                    remedy=STOP_REMEDY,
-                    durable_revision=int(record["revision"]),
-                )
-        _ready(store, settle_phases(store, record, steps))
+                raise _Stop("integrity-failure", _step_name(step), problem)
+        step_name = "reconcile:store-commit"
+        record = settle_phases(store, record, steps)
+    except _Stop as stop:
+        raise _stopped(store, batch_id, stop) from None
+    except RuntimeStateError:
+        raise
+    except Exception as exc:
+        raise _stopped(
+            store, batch_id, _Stop(failure_code(exc), step_name, error_detail(exc))
+        ) from exc
+    _ready(store, record)
     return True
+
+
+def _stopped(store: RuntimeStateStore, batch_id: str, stop: _Stop) -> RuntimeStateError:
+    """Record a controlled stop and return the error to raise.  The same failure already
+    recorded on a suspended record adds no revision; a ``ready`` record cannot take the stop
+    (its state table has no edge to ``suspended``), so its revision is kept as it is."""
+    record = store.read(batch_id)
+    failure: JsonObject = {
+        "code": stop.code,
+        "step": stop.step,
+        "message": sanitize_detail(stop.detail) or stop.code,
+    }
+    durable = None if record is None else int(record["revision"])
+    if (
+        record is not None
+        and record["state"] in ("running", "reconciling", "suspended")
+        and not (record["state"] == "suspended" and record["failure"] == failure)
+    ):
+        suspended = next_revision(record, state="suspended", failure=failure)
+        durable = store.write(
+            suspended, expected_revision=int(record["revision"])
+        ).revision
+    error = RuntimeStateError(
+        stop.code, stop.step, stop.detail, remedy=STOP_REMEDY, durable_revision=durable
+    )
+    error.diagnostics["evidence"] = stop.evidence
+    return error
 
 
 def _reconciling(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
@@ -167,7 +215,10 @@ def _verified_steps(
             "the unfinished operation does not name exactly one intent payload",
         )
     batch_id = record["identity"]["batch_id"]
-    payload = store.read_intent(batch_id, refs[0])
+    try:
+        payload = store.read_intent(batch_id, refs[0])
+    except RuntimeStateError as exc:
+        raise _Stop(exc.code, "reconcile:intent", exc.diagnostics["detail"]) from exc
     operation = record["operation"]
     pointer = ledger.pointer()
     bindings = (
@@ -190,6 +241,10 @@ def _verified_steps(
             "integrity-failure",
             "reconcile:generation",
             "the selected ledger generation is not the one the intent was planned in",
+            {
+                "expected": payload["generation"],
+                "actual": None if pointer is None else pointer.get("generation"),
+            },
         )
     steps = payload.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -265,7 +320,19 @@ def _pending(
     for step in steps:
         current = digest(records / step["path"])
         audit = step["audit"]
-        event = ledger.read_audit(audit["audit_id"])
+        evidence: JsonObject = {
+            "path": step["path"],
+            "audit_id": audit["audit_id"],
+            "expected_before": short(step["before_sha256"]),
+            "expected_after": short(step["after_sha256"]),
+            "actual": short(current),
+        }
+        try:
+            event = ledger.read_audit(audit["audit_id"])
+        except LedgerError as exc:
+            raise _Stop(
+                "integrity-failure", _step_name(step), exc.message, evidence
+            ) from exc
         described = event is not None and (
             event.get("action"),
             event.get("details"),
@@ -275,6 +342,7 @@ def _pending(
                 "integrity-failure",
                 _step_name(step),
                 f"the audit event of {step['path']} records another write",
+                evidence,
             )
         if current == step["after_sha256"] and (
             described or step["before_sha256"] != step["after_sha256"]
@@ -286,13 +354,17 @@ def _pending(
             raise _Stop(
                 "integrity-failure",
                 _step_name(step),
-                f"{step['path']} is neither its planned before nor after content",
+                f"{step['path']} holds {evidence['actual'] or 'no file'}, neither the "
+                f"planned before {evidence['expected_before'] or '(absent)'} nor after "
+                f"{evidence['expected_after']}",
+                evidence,
             )
         if work and status != "pending":
             raise _Stop(
                 "integrity-failure",
                 _step_name(step),
                 f"{step['path']} was written after an earlier planned step was not",
+                evidence,
             )
         if status != "done":
             work.append((step, status))
