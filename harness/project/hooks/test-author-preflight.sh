@@ -8,14 +8,6 @@
 set -u
 
 REASON_PATTERN='^[a-z_]+$'
-RUN_DIR=''
-
-cleanup() {
-  if [ -n "$RUN_DIR" ]; then
-    rm -rf -- "$RUN_DIR"
-  fi
-}
-trap cleanup EXIT
 
 disabled() {
   local reason="$1"
@@ -32,9 +24,21 @@ PY="$(command -v python3 || command -v python || true)"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P)"
 [ -n "$REPO" ] || disabled project_untrusted
 
+# Claude Code supplies this identity to scoped hooks and its Bash tool.  A matching canonical
+# path is required before this helper can enable the optional subagent.
+CLAUDE_REPO="${CLAUDE_PROJECT_DIR:-}"
+[ -n "$CLAUDE_REPO" ] || disabled project_untrusted
+CLAUDE_REPO="$(cd "$CLAUDE_REPO" 2>/dev/null && pwd -P || true)"
+[ "$CLAUDE_REPO" = "$REPO" ] || disabled project_untrusted
+[ "${CLAUDE_CODE_SIMPLE:-0}" = "1" ] && disabled claude_code_unsupported
+[ "${CLAUDE_CODE_SAFE_MODE:-0}" = "1" ] && disabled claude_code_unsupported
+
 GIT_ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null || true)"
 [ "$GIT_ROOT" = "$REPO" ] || disabled project_untrusted
+[ "$(git -C "$REPO" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ] || disabled project_untrusted
 
+AGENT="$REPO/.claude/agents/test-author.md"
+[ -f "$AGENT" ] && [ ! -L "$AGENT" ] || disabled agent_missing
 GUARD="$REPO/.claude/hooks/test-author-guard.py"
 RUNNER="$REPO/.claude/hooks/run-test.sh"
 [ -f "$GUARD" ] && [ -x "$GUARD" ] || disabled guard_hook_not_firing
@@ -58,7 +62,7 @@ else:
 ' 2>/dev/null || true)"
 case "$CONFIG_REASON" in
   ok) ;;
-  test_paths_missing|test_runner_missing|config_invalid|write_zone_rejected) disabled "$CONFIG_REASON" ;;
+  agent_missing|scoped_hook_unsupported|test_paths_missing|test_runner_missing|config_invalid|write_zone_rejected) disabled "$CONFIG_REASON" ;;
   *) disabled guard_hook_not_firing ;;
 esac
 
@@ -84,49 +88,5 @@ case "$PROBE_REASON" in
   isolation_unavailable|runner_unavailable) disabled "$PROBE_REASON" ;;
   *) disabled isolation_unavailable ;;
 esac
-
-RUNS="$REPO/.harness/.sandboxes/runs"
-mkdir -p "$RUNS" 2>/dev/null || disabled guard_hook_not_firing
-RUN_DIR="$(mktemp -d "$RUNS/test-author-preflight-XXXXXX" 2>/dev/null || true)"
-[ -n "$RUN_DIR" ] || disabled guard_hook_not_firing
-mkdir -p "$RUN_DIR/logs" 2>/dev/null || disabled guard_hook_not_firing
-
-NONCE="$($PY -c 'import secrets; print(secrets.token_hex(12))' 2>/dev/null || true)"
-[ -n "$NONCE" ] || disabled guard_hook_not_firing
-NONCE_FILE="$RUN_DIR/logs/canary-nonce"
-CANARY_LOG="$RUN_DIR/logs/canary.json"
-printf '%s\n' "$NONCE" >"$NONCE_FILE" 2>/dev/null || disabled guard_hook_not_firing
-
-CANARY_PAYLOAD='{"agent_type":"test-author","hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"canary.txt"}}'
-GUARD_OUTPUT="$(
-  printf '%s' "$CANARY_PAYLOAD" |
-    CLAUDE_PROJECT_DIR="$REPO" \
-    TEST_AUTHOR_CANARY_NONCE_FILE="$NONCE_FILE" \
-    TEST_AUTHOR_CANARY_LOG="$CANARY_LOG" \
-    "$PY" "$GUARD" 2>/dev/null
-)"
-
-if ! GUARD_OUTPUT="$GUARD_OUTPUT" NONCE_FILE="$NONCE_FILE" CANARY_LOG="$CANARY_LOG" REPO="$REPO" "$PY" - <<'PY'
-import json
-import os
-from pathlib import Path
-
-try:
-    answer = json.loads(os.environ["GUARD_OUTPUT"])
-    output = answer["hookSpecificOutput"]
-    if output["hookEventName"] != "PreToolUse" or output["permissionDecision"] != "deny":
-        raise ValueError
-    nonce = Path(os.environ["NONCE_FILE"]).read_text(encoding="utf-8").strip()
-    evidence = json.loads(Path(os.environ["CANARY_LOG"]).read_text(encoding="utf-8"))
-    if evidence != {"nonce": nonce, "decision": "deny"}:
-        raise ValueError
-    if (Path(os.environ["REPO"]) / "canary.txt").exists():
-        raise ValueError
-except (KeyError, OSError, ValueError, json.JSONDecodeError, TypeError):
-    raise SystemExit(1)
-PY
-then
-  disabled guard_hook_not_firing
-fi
 
 printf '{"status":"ok"}\n'

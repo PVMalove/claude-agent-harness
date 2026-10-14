@@ -12,6 +12,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -25,9 +27,11 @@ TEST_ID_PLACEHOLDER = "{test_id}"
 PROTECTED_TOP_LEVEL = frozenset({".git", ".harness", ".claude", ".agents", ".codex"})
 GLOB_CHARACTERS = frozenset("*?[]{}\\")
 TARGET_AGENTS = frozenset({"test-author", "proto-test-author"})
+AGENT_RELATIVE = Path(".claude/agents/test-author.md")
 RUNNER_RELATIVE = Path(".claude/hooks/run-test.sh")
-CANARY_NONCE_FILE = "TEST_AUTHOR_CANARY_NONCE_FILE"
-CANARY_LOG = "TEST_AUTHOR_CANARY_LOG"
+HOOK_EVIDENCE_NONCE_FILE = "TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE"
+HOOK_EVIDENCE_LOG = "TEST_AUTHOR_HOOK_EVIDENCE_LOG"
+HOOK_EVIDENCE_PATH = "src/canary.txt"
 SHELL_META = frozenset(";|&<>$`\\\n\r")
 
 
@@ -45,6 +49,73 @@ def project_dir() -> Path:
     if not value:
         value = str(Path.cwd())
     return Path(value).resolve()
+
+
+def _validate_agent(repo: Path) -> None:
+    """Require the installed Claude Code agent to keep its scoped hook enabled."""
+    agent = repo / AGENT_RELATIVE
+    try:
+        if agent.is_symlink() or not agent.is_file():
+            raise GuardRefusal("agent_missing")
+        text = agent.read_text(encoding="utf-8").replace("\r\n", "\n")
+    except GuardRefusal:
+        raise
+    except (OSError, UnicodeError):
+        raise GuardRefusal("scoped_hook_unsupported") from None
+
+    if not text.startswith("---\n"):
+        raise GuardRefusal("scoped_hook_unsupported")
+    end = text.find("\n---", 4)
+    if end < 0:
+        raise GuardRefusal("scoped_hook_unsupported")
+    frontmatter = text[4:end].splitlines()
+    required_lines = (
+        "name: test-author",
+        "tools: Read, Write, Edit, Bash, Grep, Glob",
+        "hooks:",
+        "  PreToolUse:",
+        '    - matcher: "Write|Edit|Bash"',
+        "      hooks:",
+        "        - type: command",
+        '          command: "python3 \\\"${CLAUDE_PROJECT_DIR}/.claude/hooks/test-author-guard.py\\\""',
+    )
+    if not all(line in frontmatter for line in required_lines):
+        raise GuardRefusal("scoped_hook_unsupported")
+
+
+def _trusted_bash_paths() -> frozenset[Path]:
+    """Return canonical system Bash paths that are safe for the wrapper form."""
+    paths: set[Path] = set()
+    for value in ("/bin/bash", "/usr/bin/bash"):
+        try:
+            path = Path(value).resolve(strict=True)
+            mode = path.stat()
+        except (OSError, RuntimeError):
+            continue
+        if (
+            stat.S_ISREG(mode.st_mode)
+            and os.access(path, os.X_OK)
+            and not mode.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            paths.add(path)
+    return frozenset(paths)
+
+
+def _trusted_bash(value: str) -> bool:
+    """Accept only a canonical, non-writable system Bash executable."""
+    if value == "bash":
+        candidate_name = shutil.which("bash")
+    elif Path(value).is_absolute():
+        candidate_name = value
+    else:
+        return False
+    if not candidate_name:
+        return False
+    try:
+        candidate = Path(candidate_name).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return candidate in _trusted_bash_paths()
 
 
 def _config(repo: Path) -> tuple[list[str], list[str]]:
@@ -134,6 +205,7 @@ def _has_linked_file(zone: Path) -> bool:
 
 def _activation_config(repo: Path) -> tuple[list[str], list[str]]:
     """Return settings only when the runner can mount all configured test zones."""
+    _validate_agent(repo)
     paths, command = _config(repo)
     _write_zones(repo, paths)
     return paths, command
@@ -178,7 +250,7 @@ def _runner_allowed(repo: Path, value: object) -> str | None:
         return "runner_only"
     if len(words) == 2:
         runner_word, test_id = words
-    elif len(words) == 3 and Path(words[0]).name.lower() == "bash":
+    elif len(words) == 3 and _trusted_bash(words[0]):
         runner_word, test_id = words[1:]
     else:
         return "runner_only"
@@ -189,19 +261,29 @@ def _runner_allowed(repo: Path, value: object) -> str | None:
         runner = repo / runner
     expected = repo / RUNNER_RELATIVE
     try:
-        if runner.resolve(strict=False) != expected.resolve() or not expected.is_file():
+        if (
+            runner.resolve(strict=False) != expected.resolve()
+            or expected.is_symlink()
+            or not expected.is_file()
+            or not os.access(expected, os.X_OK)
+        ):
             return "runner_only"
     except (OSError, RuntimeError):
         return "runner_only"
     return None
 
 
-def _record_canary(repo: Path, tool: str, tool_input: dict[str, object]) -> None:
-    """Write the optional preflight evidence only for its fixed canary request."""
-    if tool != "Write" or tool_input.get("file_path") != "canary.txt":
+def _record_hook_evidence(repo: Path, tool: str, tool_input: dict[str, object]) -> None:
+    """Record bounded evidence when Claude Code invokes this scoped hook for its canary."""
+    if tool != "Write":
         return
-    nonce_name = os.environ.get(CANARY_NONCE_FILE)
-    log_name = os.environ.get(CANARY_LOG)
+    try:
+        if _relative_target(repo, tool_input.get("file_path")) != HOOK_EVIDENCE_PATH:
+            return
+    except GuardRefusal:
+        return
+    nonce_name = os.environ.get(HOOK_EVIDENCE_NONCE_FILE)
+    log_name = os.environ.get(HOOK_EVIDENCE_LOG)
     if not nonce_name or not log_name:
         return
     sandbox_root = (repo / ".harness" / ".sandboxes").resolve()
@@ -217,7 +299,10 @@ def _record_canary(repo: Path, tool: str, tool_input: dict[str, object]) -> None
             return
         log_file.parent.mkdir(parents=True, exist_ok=True)
         log_file.write_text(
-            json.dumps({"nonce": nonce, "decision": "deny"}, separators=(",", ":")),
+            json.dumps(
+                {"nonce": nonce, "decision": "deny", "path": HOOK_EVIDENCE_PATH},
+                separators=(",", ":"),
+            ),
             encoding="utf-8",
         )
     except (OSError, ValueError, RuntimeError):
@@ -227,7 +312,7 @@ def _record_canary(repo: Path, tool: str, tool_input: dict[str, object]) -> None
 def _deny(repo: Path, reason: str, tool: str = "", tool_input: dict[str, object] | None = None) -> None:
     """Emit the Claude Code soft-deny envelope with no user-controlled values."""
     if tool_input is not None:
-        _record_canary(repo, tool, tool_input)
+        _record_hook_evidence(repo, tool, tool_input)
     print(
         json.dumps(
             {
@@ -281,7 +366,7 @@ def main() -> int:
         return 0
 
     try:
-        paths, _ = _config(repo)
+        paths, _ = _activation_config(repo)
         if tool in {"Write", "Edit"}:
             if not _write_allowed(repo, tool_input.get("file_path"), paths):
                 _deny(repo, "write_outside_test_paths", tool, tool_input)

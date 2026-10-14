@@ -13,18 +13,22 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 GUARD = ROOT / "harness" / "project" / "hooks" / "test-author-guard.py"
+AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
 
 
 def _project(tmp_path: Path) -> Path:
     """Create the smallest configured project used by guard tests."""
     project = tmp_path / "project"
     (project / ".harness").mkdir(parents=True)
-    (project / ".claude" / "hooks").mkdir(parents=True)
+    (project / ".claude" / "agents").mkdir(parents=True)
+    (project / ".claude" / "hooks").mkdir()
     (project / "tests" / "unit").mkdir(parents=True)
     (project / "src").mkdir()
     (project / ".claude" / "hooks" / "run-test.sh").write_text(
         "#!/bin/sh\n", encoding="utf-8"
     )
+    (project / ".claude" / "hooks" / "run-test.sh").chmod(0o755)
+    (project / ".claude" / "agents" / "test-author.md").write_bytes(AGENT.read_bytes())
     (project / ".harness" / "project.json").write_text(
         json.dumps(
             {
@@ -153,6 +157,39 @@ def test_only_one_test_runner_command_is_allowed(tmp_path: Path) -> None:
         )
 
 
+def test_bash_wrapper_requires_a_trusted_interpreter(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_bash = fake_bin / "bash"
+    fake_bash.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_bash.chmod(0o755)
+
+    result = _run_guard(
+        project,
+        _payload(
+            "Bash",
+            {"command": "bash .claude/hooks/run-test.sh tests.test_price.Price.test_total"},
+        ),
+        extra_env={"PATH": str(fake_bin)},
+    )
+
+    _deny(result)
+    absolute = _run_guard(
+        project,
+        _payload(
+            "Bash",
+            {
+                "command": (
+                    f"{fake_bash} .claude/hooks/run-test.sh "
+                    "tests.test_price.Price.test_total"
+                )
+            },
+        ),
+    )
+    _deny(absolute)
+
+
 def test_guard_does_not_change_other_agent_route(tmp_path: Path) -> None:
     project = _project(tmp_path)
 
@@ -188,7 +225,7 @@ def test_malformed_payload_is_denied_without_echoing_input(tmp_path: Path) -> No
     assert secret not in json.dumps(answer)
 
 
-def test_denial_records_only_the_preflight_canary(tmp_path: Path) -> None:
+def test_denial_records_only_the_claude_hook_evidence_canary(tmp_path: Path) -> None:
     project = _project(tmp_path)
     logs = project / ".harness" / ".sandboxes" / "logs"
     logs.mkdir(parents=True)
@@ -198,10 +235,10 @@ def test_denial_records_only_the_preflight_canary(tmp_path: Path) -> None:
 
     result = _run_guard(
         project,
-        _payload("Write", {"file_path": "canary.txt"}),
+        _payload("Write", {"file_path": "src/canary.txt"}),
         extra_env={
-            "TEST_AUTHOR_CANARY_NONCE_FILE": str(nonce_file),
-            "TEST_AUTHOR_CANARY_LOG": str(canary_log),
+            "TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE": str(nonce_file),
+            "TEST_AUTHOR_HOOK_EVIDENCE_LOG": str(canary_log),
         },
     )
 
@@ -209,5 +246,22 @@ def test_denial_records_only_the_preflight_canary(tmp_path: Path) -> None:
     assert json.loads(canary_log.read_text(encoding="utf-8")) == {
         "nonce": "nonce-123",
         "decision": "deny",
+        "path": "src/canary.txt",
     }
-    assert not (project / "canary.txt").exists()
+    assert not (project / "src" / "canary.txt").exists()
+
+
+def test_missing_agent_fails_closed(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    (project / ".claude" / "agents" / "test-author.md").unlink()
+
+    result = _run_guard(
+        project,
+        _payload("Write", {"file_path": "tests/unit/test_price.py"}),
+    )
+
+    answer = _deny(result)
+    output = cast(dict[str, object], answer["hookSpecificOutput"])
+    assert output["permissionDecisionReason"] == (
+        "test-author: agent_missing"
+    )

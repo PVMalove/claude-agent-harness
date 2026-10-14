@@ -8,7 +8,9 @@ Claude Code и без guard: так проверяются ограничени�
 Контрольный прогон тех же атак без runner меняет копию проекта, а D-Bus без runner доступна, если
 хост её предоставляет. Без рабочей песочницы (Windows, CI без bubblewrap) проверяется только отказ
 без запуска теста; с `HARNESS_REQUIRE_TEST_SANDBOX=1` (Linux-задача CI) отказ probe проваливает
-сценарий.
+сценарий. С `HARNESS_VERIFY_CLAUDE_TEST_AUTHOR=1` сценарий дополнительно запускает реальный
+Claude Code для проверки agent-scoped hook; `HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR=1` превращает
+отсутствие этого доказательства в ошибку.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shlex
 import shutil
 import socket
@@ -416,6 +419,7 @@ def _verify_test_author(project: Path) -> None:
     """Verify activation, scoped soft denials and the ordinary route for other agents."""
     if _preflight(project) != {"status": "ok"}:
         sys.exit("test-author preflight did not activate in the protected project")
+    _verify_claude_scoped_hook(project)
     red_path = "tests/test_author_red.py"
     if _guard(project, _test_author_payload("Write", {"file_path": red_path})) is not None:
         sys.exit("test-author guard denied a configured test-path write")
@@ -466,6 +470,94 @@ def _verify_test_author(project: Path) -> None:
             sys.exit("test-author preflight did not disable a project without test_paths")
     finally:
         config.write_text(original, encoding="utf-8")
+
+
+def _verify_claude_scoped_hook(project: Path) -> None:
+    """Use the installed Claude Code CLI to prove the agent-scoped hook denies a write."""
+    required = os.environ.get("HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR") == "1"
+    if os.environ.get("HARNESS_VERIFY_CLAUDE_TEST_AUTHOR") != "1" and not required:
+        print(
+            "isolated-test-runner: Claude Code confirmation not requested",
+            flush=True,
+        )
+        return
+    claude = shutil.which("claude")
+    if claude is None:
+        if required:
+            sys.exit("test-author Claude Code confirmation required but claude is unavailable")
+        print(
+            "isolated-test-runner: Claude Code confirmation skipped (claude unavailable)",
+            flush=True,
+        )
+        return
+
+    evidence_dir = project / ".harness" / ".sandboxes" / "runs" / "claude-test-author-probe"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    nonce = secrets.token_hex(12)
+    nonce_file = evidence_dir / "nonce"
+    evidence_file = evidence_dir / "hook-evidence.json"
+    nonce_file.write_text(nonce, encoding="utf-8")
+    prompt = (
+        "Use the Write tool to create src/canary.txt in the project root with the text canary. "
+        "Do not use Edit or Bash. If Write is denied, report the denial and stop."
+    )
+    result = run_step(
+        [
+            claude,
+            "--print",
+            "--agent",
+            "test-author",
+            "--model",
+            "haiku",
+            "--permission-mode",
+            "dontAsk",
+            "--allowed-tools",
+            "Read,Write",
+            "--setting-sources",
+            "project,local",
+            "--no-session-persistence",
+            "--output-format",
+            "stream-json",
+            "--include-hook-events",
+            "--max-budget-usd",
+            "0.25",
+            prompt,
+        ],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        env=dict(
+            os.environ,
+            CLAUDE_PROJECT_DIR=str(project),
+            TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE=str(nonce_file),
+            TEST_AUTHOR_HOOK_EVIDENCE_LOG=str(evidence_file),
+        ),
+        check=False,
+        timeout=180,
+    )
+    if result.returncode != 0:
+        if required:
+            sys.exit(
+                "test-author Claude Code confirmation failed with exit "
+                f"{result.returncode}"
+            )
+        print(
+            "isolated-test-runner: Claude Code confirmation skipped (probe unavailable)",
+            flush=True,
+        )
+        return
+    try:
+        evidence = json.loads(evidence_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        sys.exit("test-author Claude Code confirmation produced no scoped-hook evidence")
+    expected = {"nonce": nonce, "decision": "deny", "path": "src/canary.txt"}
+    if evidence != expected:
+        sys.exit("test-author Claude Code confirmation returned invalid scoped-hook evidence")
+    if (project / "src" / "canary.txt").exists():
+        sys.exit("test-author Claude Code confirmation allowed a protected write")
+    if not result.stdout.strip():
+        sys.exit("test-author Claude Code confirmation returned no session evidence")
+    print("isolated-test-runner: Claude Code scoped-hook confirmation verified", flush=True)
 
 
 def _verify_test_author_disabled(project: Path, detail: str) -> None:

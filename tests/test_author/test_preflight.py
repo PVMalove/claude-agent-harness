@@ -14,6 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 PREFLIGHT = ROOT / "harness" / "project" / "hooks" / "test-author-preflight.sh"
 GUARD = ROOT / "harness" / "project" / "hooks" / "test-author-guard.py"
+AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
 
 
 def _project(tmp_path: Path, *, test_paths: object = ["tests/**"]) -> Path:
@@ -22,6 +23,7 @@ def _project(tmp_path: Path, *, test_paths: object = ["tests/**"]) -> Path:
     (project / ".harness").mkdir(parents=True)
     hooks = project / ".claude" / "hooks"
     hooks.mkdir(parents=True)
+    (project / ".claude" / "agents").mkdir()
     (project / "tests").mkdir()
     (project / "src").mkdir()
     config = {
@@ -41,6 +43,7 @@ def _project(tmp_path: Path, *, test_paths: object = ["tests/**"]) -> Path:
     ):
         target.write_bytes(source.read_bytes())
         target.chmod(target.stat().st_mode | stat.S_IXUSR)
+    (project / ".claude" / "agents" / "test-author.md").write_bytes(AGENT.read_bytes())
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)
     return project
 
@@ -52,15 +55,23 @@ def _runner(project: Path, answer: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def _run(project: Path) -> subprocess.CompletedProcess[str]:
+def _run(
+    project: Path, *, env_overrides: dict[str, str | None] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run preflight and keep its machine-readable output bounded."""
+    environment = dict(os.environ, CLAUDE_PROJECT_DIR=str(project))
+    for key, value in (env_overrides or {}).items():
+        if value is None:
+            environment.pop(key, None)
+        else:
+            environment[key] = value
     return subprocess.run(
         [str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
         cwd=project,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        env=dict(os.environ, CLAUDE_PROJECT_DIR=str(project)),
+        env=environment,
         check=False,
     )
 
@@ -73,13 +84,64 @@ def _answer(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return cast(dict[str, object], json.loads(result.stdout))
 
 
-def test_preflight_activates_only_after_probe_and_canary_pass(tmp_path: Path) -> None:
+def test_preflight_activates_only_after_probe_and_scoped_hook_contract_passes(
+    tmp_path: Path,
+) -> None:
     project = _project(tmp_path)
     _runner(project, '{"status":"ok"}')
 
     answer = _answer(_run(project))
 
     assert answer == {"status": "ok"}
+
+
+def test_preflight_requires_a_trusted_claude_project_identity(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+
+    assert _answer(_run(project, env_overrides={"CLAUDE_PROJECT_DIR": None})) == {
+        "status": "disabled",
+        "reason": "project_untrusted",
+    }
+
+
+def test_preflight_requires_the_installed_test_author_agent(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    (project / ".claude" / "agents" / "test-author.md").unlink()
+    _runner(project, '{"status":"ok"}')
+
+    assert _answer(_run(project)) == {
+        "status": "disabled",
+        "reason": "agent_missing",
+    }
+
+
+def test_preflight_requires_an_enabled_scoped_hook(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    agent = project / ".claude" / "agents" / "test-author.md"
+    agent.write_text(
+        agent.read_text(encoding="utf-8").replace('  PreToolUse:\n', '  PreToolUse: {}\n'),
+        encoding="utf-8",
+    )
+    _runner(project, '{"status":"ok"}')
+
+    assert _answer(_run(project)) == {
+        "status": "disabled",
+        "reason": "scoped_hook_unsupported",
+    }
+
+
+@pytest.mark.parametrize("variable", ["CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_SAFE_MODE"])
+def test_preflight_disables_unsupported_claude_code_modes(
+    tmp_path: Path, variable: str
+) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+
+    assert _answer(_run(project, env_overrides={variable: "1"})) == {
+        "status": "disabled",
+        "reason": "claude_code_unsupported",
+    }
 
 
 def test_missing_test_paths_disables_test_author(tmp_path: Path) -> None:
