@@ -96,16 +96,18 @@ from harness.orchestration.ledger.ledger_ops import (
     _records_root,
     _replace_record,
     _state_root,
-    _write_exclusive,
-    _write_record,
-    _write_text_exclusive,
 )
 from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
     CheckpointRecord,
     DispatchStatusRecord,
-    LedgerError,
     LifecycleLedger,
+)
+from harness.orchestration.runtime_intent import CompositeWrite, idempotency_key
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
 )
 from harness.orchestration.runtime_attestation import (
     AttestationError,
@@ -630,7 +632,10 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
-        dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
+        dispatch_id = cast(str, checkpoint.get("dispatch_id"))
+        # Before any read of the batch or status: an unfinished write may still change them.
+        settle(repo, root, ledger, _load_dispatch(root, dispatch_id)["batch_id"])
+        dispatch, status = _live_status(root, dispatch_id)
         batch = _load_batch(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
@@ -675,7 +680,17 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
             **checkpoint,
         }
         _safe_id(record["checkpoint_id"], "checkpoint")
-        _write_record(ledger, CheckpointRecord.from_dict(record))
+        write = CompositeWrite(
+            ledger,
+            RuntimeStateStore(repo, root),
+            batch_id=batch["batch_id"],
+            dispatch_id=dispatch["dispatch_id"],
+            kind="checkpoint",
+            idempotency_key=idempotency_key(
+                "checkpoint", dispatch["dispatch_id"], {"checkpoint": checkpoint}
+            ),
+        )
+        write.write_record(CheckpointRecord.from_dict(record))
         entry["state"] = "checkpointed"
         # Batch-level pointer, the same ownership pattern as risk_assessments/context_packages;
         # dispatch_id is carried alongside since a checkpoint is dispatch-scoped, not batch-scoped.
@@ -689,11 +704,12 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
             }
         )
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        write.replace_record(BatchRecord.from_dict(batch))
         moment = utils._now()
         status.update({"state": "checkpointed", "updated_at": moment})
         _safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+        write.replace_record(DispatchStatusRecord.from_dict(status))
+        write.commit()
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "checkpointed",
@@ -1020,12 +1036,22 @@ def _persist_report(
     dispatch: JsonObject,
     report: JsonObject,
     *,
+    repo: Path,
     auto_accept_policy: str | None = None,
 ) -> Path:
-    """Persist a role report and advance its batch atomically under the coordinator lock.
+    """Persist a role report and advance its batch under the coordinator lock, behind a durable
+    intent in ``repo``'s runtime state store.
 
     ``auto_accept_policy`` is the policy ``report submit`` found authorized to decide the report; it
     is kept on the dispatch status so a stopped policy chain is completed with that same policy."""
+    if settle(repo, root, ledger, batch["batch_id"]):
+        raise RuntimeStateError(
+            "concurrency-conflict",
+            "reconcile",
+            "an unfinished composite write of this batch was reconciled after the request "
+            "read the batch",
+            remedy="repeat the command; it reads the reconciled ledger state",
+        )
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
@@ -1034,18 +1060,19 @@ def _persist_report(
             remedy="a completion report already exists at this immutable path -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
-    _write_exclusive(ledger, report_json, report)
-    try:
-        _write_text_exclusive(ledger, report_md, _report_markdown(report))
-    except CoordinatorError as exc:
-        try:
-            ledger.delete(report_json, reason="discard incomplete immutable report")
-        except LedgerError as cleanup:
-            raise CoordinatorError(cleanup.message, remedy=cleanup.remedy) from exc
-        raise CoordinatorError(
-            "refusing to overwrite immutable Markdown report",
-            remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",
-        ) from exc
+    report_sha256 = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
+    write = CompositeWrite(
+        ledger,
+        RuntimeStateStore(repo, root),
+        batch_id=batch["batch_id"],
+        dispatch_id=dispatch["dispatch_id"],
+        kind="report-submit",
+        idempotency_key=idempotency_key(
+            "report-submit", dispatch["dispatch_id"], {"report_sha256": report_sha256}
+        ),
+    )
+    write.write_immutable(report_json, report)
+    write.write_artifact(report_md, _report_markdown(report))
     entry = _dispatch_entry(batch, dispatch["dispatch_id"])
     if entry is None:
         raise CoordinatorError(
@@ -1055,9 +1082,7 @@ def _persist_report(
         )
     entry["state"] = "reported"
     entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
-    entry["report_sha256"] = hashlib.sha256(
-        _canonical(report).encode("utf-8")
-    ).hexdigest()
+    entry["report_sha256"] = report_sha256
     batch["state"] = "awaiting-approval"
     closed = _load_dispatch_status(root, dispatch["dispatch_id"])
     closed.update(
@@ -1070,9 +1095,10 @@ def _persist_report(
     if auto_accept_policy is not None:
         closed["auto_accept_policy"] = auto_accept_policy
     _safe_id(dispatch["dispatch_id"], "dispatch")
-    _replace_record(ledger, DispatchStatusRecord.from_dict(closed))
+    write.replace_record(DispatchStatusRecord.from_dict(closed))
     _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
+    write.replace_record(BatchRecord.from_dict(batch))
+    write.commit()
     return report_json
 
 
@@ -1807,6 +1833,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
+        settle(repo, root, ledger, dispatch["batch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
@@ -1931,7 +1958,13 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(
-            ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
+            ledger,
+            root,
+            batch,
+            dispatch,
+            report,
+            repo=repo,
+            auto_accept_policy=auto_accept_policy,
         )
         if resolver_state.is_resolver_brief(dispatch):
             resolver_state.record_report(ledger, root, batch, dispatch, report)
@@ -1956,10 +1989,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             }
         )
         return response
-    if (
-        dict(current_config) != dict(config)
-        or current_project != pinned["project"]
-    ):
+    if dict(current_config) != dict(config) or current_project != pinned["project"]:
         response.update(
             {
                 "transition_blocked": True,

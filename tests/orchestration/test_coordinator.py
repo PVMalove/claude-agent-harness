@@ -46,6 +46,10 @@ from harness.orchestration import (
 )
 from harness.orchestration.core import config, constants, git_utils, utils, workspace
 from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+)
 from harness.orchestration.ledger import (
     BatchRecord,
     DispatchStatusRecord,
@@ -86,21 +90,38 @@ INCOMPLETE_ITEM = {
 
 
 class ImmutableReportPersistenceTests(unittest.TestCase):
-    def test_markdown_failure_discards_the_incomplete_json_report(self) -> None:
+    def test_markdown_failure_keeps_the_json_report_behind_a_suspended_intent(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
-            root = Path(temporary) / "state"
+            repo = Path(temporary)
+            _git(repo, "init", "-q")
+            root = repo / constants.STATE_REL
             ledger = LifecycleLedger(root)
             ledger.ensure()
+            records = ledger.records_root()
             dispatch: JsonObject = {
                 "dispatch_id": "dispatch-0123456789abcdef",
                 "batch_id": "batch-0123456789abcdef",
             }
             batch: JsonObject = {
                 "batch_id": "batch-0123456789abcdef",
+                "state": "active",
                 "dispatches": [
                     {"dispatch_id": "dispatch-0123456789abcdef", "state": "dispatched"}
                 ],
             }
+            ledger.write_immutable(
+                records / "plans" / "batch-0123456789abcdef.json",
+                {"batch_id": "batch-0123456789abcdef"},
+            )
+            ledger.write_immutable(
+                records / "batches" / "batch-0123456789abcdef.json", batch
+            )
+            ledger.write_immutable(
+                records / "dispatch-status" / "dispatch-0123456789abcdef.json",
+                {"dispatch_id": "dispatch-0123456789abcdef", "state": "working"},
+            )
             report: JsonObject = {
                 "dispatch_id": "dispatch-0123456789abcdef",
                 "ticket": "291",
@@ -114,21 +135,31 @@ class ImmutableReportPersistenceTests(unittest.TestCase):
                 "blockers": {"status": "none", "details": ""},
                 "next_coordinator_action": "accept",
             }
-            failure = coordinator.CoordinatorError("disk full", remedy="free space")
             with (
                 mock.patch.object(
-                    reports,
-                    "_write_text_exclusive",
-                    side_effect=failure,
+                    LifecycleLedger, "write_artifact", side_effect=OSError("disk full")
                 ),
-                self.assertRaises(coordinator.CoordinatorError),
+                self.assertRaises(RuntimeStateError) as raised,
             ):
-                reports._persist_report(ledger, root, batch, dispatch, report)
+                reports._persist_report(
+                    ledger, root, batch, dispatch, report, repo=repo
+                )
 
-            report_path = (
-                ledger.records_root() / "reports" / "dispatch-0123456789abcdef.json"
+            self.assertEqual(raised.exception.code, "execution-failure")
+            self.assertTrue(
+                (records / "reports" / "dispatch-0123456789abcdef.json").exists()
             )
-            self.assertFalse(report_path.exists())
+            self.assertFalse(
+                (records / "reports" / "dispatch-0123456789abcdef.md").exists()
+            )
+            stored = RuntimeStateStore(repo, root).read("batch-0123456789abcdef")
+            assert stored is not None
+            self.assertEqual(stored["state"], "suspended")
+            self.assertEqual(stored["operation"]["phase"], "prepared")
+            self.assertEqual(
+                (stored["failure"]["code"], stored["failure"]["step"]),
+                ("execution-failure", "ledger:reports"),
+            )
 
 
 class GitUtilsValidationTests(unittest.TestCase):
@@ -1588,11 +1619,18 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         parameters = inspect.signature(coordinator._persist_report).parameters
         self.assertEqual(
             list(parameters),
-            ["ledger", "root", "batch", "dispatch", "report", "auto_accept_policy"],
+            [
+                "ledger",
+                "root",
+                "batch",
+                "dispatch",
+                "report",
+                "repo",
+                "auto_accept_policy",
+            ],
         )
-        self.assertIs(
-            parameters["auto_accept_policy"].kind, inspect.Parameter.KEYWORD_ONLY
-        )
+        for name in ("repo", "auto_accept_policy"):
+            self.assertIs(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
 
     def _ledger(self) -> LifecycleLedger:
         return LifecycleLedger(
@@ -3358,6 +3396,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     ledger_ops._load_batch(root, batch_id),
                     dispatch,
                     report,
+                    repo=self.repo,
                 )
 
     def _reported_qa(
@@ -8372,7 +8411,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256", "configuration_sha256"},
+            | {
+                "runtime_access_sha256",
+                "infrastructure_retry_sha256",
+                "configuration_sha256",
+            },
         )
         self.assertEqual(
             proposal["transition_digest"],

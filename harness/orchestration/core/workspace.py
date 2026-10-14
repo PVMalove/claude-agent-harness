@@ -21,6 +21,7 @@ from harness.orchestration.core.constants import (
     AGENT_INBOX_REL,
     NON_ENGLISH_BRIEF_PATTERN,
 )
+from harness.orchestration.core.runtime_state_contract import RUNTIME_STATE_DIR
 from harness.orchestration.core.git_utils import (
     _git,
 )
@@ -35,7 +36,9 @@ from harness.orchestration.core.utils import (
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 # Under the coordinator state root: one immutable runtime snapshot per pinned hash.
 RUNTIMES_DIR = "runtimes"
-RUNTIME_VOLATILE_PARTS = frozenset({"state", "__pycache__"})
+# The runtime state store shares the installed runtime's directory; its records are progress,
+# never part of the runtime a batch pins.
+RUNTIME_VOLATILE_PARTS = frozenset({"state", RUNTIME_STATE_DIR.name, "__pycache__"})
 
 
 def _agent_inbox(repo: Path) -> Path:

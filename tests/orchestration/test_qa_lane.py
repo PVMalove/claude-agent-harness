@@ -564,6 +564,8 @@ class QaLaneRunTests(QaLaneTestCase):
             batch: object,
             dispatch: object,
             report: dict[str, object],
+            *,
+            repo: Path,
         ) -> Path:
             if report_error is not None:
                 raise report_error
@@ -982,6 +984,8 @@ class QaLaneRunTests(QaLaneTestCase):
             batch: object,
             dispatch: object,
             report: dict[str, object],
+            *,
+            repo: Path,
         ) -> Path:
             persisted.append(report)
             return root / "report.json"

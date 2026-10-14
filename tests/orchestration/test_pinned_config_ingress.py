@@ -46,6 +46,8 @@ def dispatched_architect() -> (
         yield case, brief
     finally:
         case.tearDown()
+        # unittest runs cleanups only for its own runner: stop the config patch here too.
+        case.doCleanups()
 
 
 def architect_report(brief: JsonObject) -> JsonObject:
@@ -146,6 +148,8 @@ def test_checkpoint_survives_invalid_live_config() -> None:
         )
     finally:
         case.tearDown()
+        # unittest runs cleanups only for its own runner: stop the config patch here too.
+        case.doCleanups()
 
 
 def test_qa_runner_preserves_report_if_gate_breaks_live_configuration() -> None:
@@ -183,6 +187,8 @@ def test_qa_runner_preserves_report_if_gate_breaks_live_configuration() -> None:
         assert "next_dispatch_id" not in result
     finally:
         case.tearDown()
+        # unittest runs cleanups only for its own runner: stop the config patch here too.
+        case.doCleanups()
 
 
 @pytest.mark.parametrize("policy", [None, 42, []])
