@@ -7,15 +7,22 @@ wired into dispatch, intent or reconciliation (#684, #685).
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
 import re
 import subprocess
+import time
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import cast
 
 from harness.configuration_schema import resolve_ref, value_problems
@@ -30,7 +37,8 @@ from .core.runtime_state_contract import (
     transition_problem,
 )
 from .core.system_fields import enum_problem, load_registry
-from .core.utils import CoordinatorError, _safe_id
+from .core.utils import CoordinatorError, _canonical, _safe_id
+from .ledger.lifecycle import LifecycleLedger, _guard_byte
 
 SCHEMA_PATH = Path(__file__).with_name("runtime_state.v1.json")
 SYSTEM_FIELD = "x-system-field"
@@ -38,6 +46,27 @@ DETAIL_LIMIT = 240
 # An absolute POSIX or Windows path, not the tail of a relative one.
 _ABSOLUTE_PATH = re.compile(r"(?<![\w.~-])(?:[A-Za-z]:[\\/]|[\\/])[^\s'\"]*")
 _SETTLED_PHASES = frozenset({"ledger-committed", "committed"})
+LOCK_TIMEOUT_SECONDS = 2.0
+LOCK_RETRY_SECONDS = 0.05
+_LOCK_BUSY = frozenset({errno.EACCES, errno.EAGAIN, errno.EDEADLK})
+_DIRECTORY_FSYNC_UNSUPPORTED = frozenset(
+    {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}
+)
+# The platform flag the durability step reads; tests replace it to cover the Windows path.
+WINDOWS = os.name == "nt"
+# What a durable write cannot promise; a skipped step is reported, never hidden.
+DURABILITY_LIMITS = MappingProxyType(
+    {
+        "windows": "no directory fsync: the replace is atomic, but write() reports "
+        "directory_fsync 'unsupported'",
+        "posix-filesystem": "a filesystem refusing directory fsync with EINVAL, ENOTSUP or "
+        "EOPNOTSUPP makes write() report directory_fsync 'unsupported'",
+        "macos": "os.fsync does not issue F_FULLFSYNC, so the drive cache may still hold "
+        "the record",
+        "network-filesystem": "the lock is an advisory flock or msvcrt lock; a network "
+        "filesystem without reliable locking is not supported",
+    }
+)
 
 
 @cache
@@ -370,9 +399,16 @@ class RuntimeStateStore:
         self.location = resolve_location(repo, state_root)
 
     def _error(
-        self, code: str, step: str, detail: str, remedy: str
+        self,
+        code: str,
+        step: str,
+        detail: str,
+        remedy: str,
+        durable_revision: int | None = None,
     ) -> RuntimeStateError:
-        return RuntimeStateError(code, step, detail, remedy=remedy)
+        return RuntimeStateError(
+            code, step, detail, remedy=remedy, durable_revision=durable_revision
+        )
 
     def path(self, batch_id: str) -> Path:
         try:
@@ -458,3 +494,131 @@ class RuntimeStateStore:
                 "open the store with the repository and state directory that wrote it",
             )
         return cast(JsonObject, record)
+
+    @contextmanager
+    def _locked(self, batch_id: str) -> Iterator[None]:
+        """Hold the batch's operating-system lock, waiting at most ``LOCK_TIMEOUT_SECONDS``.
+
+        The system drops the lock when its holder dies, so no stale lock is ever left behind."""
+        path = self.location.directory / f"{batch_id}.lock"
+        self._refuse_links(path)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "r+b") as handle:
+            deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+            while True:
+                try:
+                    _guard_byte(handle, acquire=True)
+                    break
+                except OSError as exc:
+                    if exc.errno not in _LOCK_BUSY:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise self._error(
+                            "concurrency-conflict",
+                            "lock",
+                            f"another writer holds {self.location.relative(path)} longer "
+                            f"than {LOCK_TIMEOUT_SECONDS} seconds",
+                            "repeat the write once the other writer finishes",
+                        ) from None
+                    time.sleep(LOCK_RETRY_SECONDS)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    _guard_byte(handle, acquire=False)
+
+    def write(self, record: JsonObject, *, expected_revision: int) -> WriteResult:
+        """Persist ``record`` over ``expected_revision`` (0 when creating) or stop unchanged.
+
+        A stale revision or a lock held past the timeout is a concurrency conflict; an invalid
+        record or transition is refused before anything is written."""
+        if (problem := compatibility_problem(record)) is not None:
+            raise self._error(
+                "runtime-compatibility",
+                "validate",
+                problem,
+                f"write a {RUNTIME_STATE_CONTRACT!r} record",
+            )
+        if problems := record_problems(record):
+            raise self._error(
+                "integrity-failure",
+                "validate",
+                "; ".join(problems),
+                "fix the record so it matches runtimeState.v1",
+            )
+        batch_id = record["identity"]["batch_id"]
+        path = self.path(batch_id)
+        if record["identity"] != self.location.identity(batch_id):
+            raise self._error(
+                "integrity-failure",
+                "identity",
+                "the record identity does not match this repository and state root",
+                "take the identity from the store that writes the record",
+            )
+        self._prepare()
+        with self._locked(batch_id):
+            current = self.read(batch_id)
+            revision = 0 if current is None else int(current["revision"])
+            if revision != expected_revision:
+                raise self._error(
+                    "concurrency-conflict",
+                    "revision",
+                    f"expected revision {expected_revision}, the store holds {revision}",
+                    "read the record again and retry against its current revision",
+                    revision,
+                )
+            if problems := validate_record(record, current):
+                raise self._error(
+                    "integrity-failure",
+                    "validate",
+                    "; ".join(problems),
+                    "write a record that follows the current revision's transitions",
+                    revision,
+                )
+            directory_fsync = self._replace(path, record)
+        return WriteResult(int(record["revision"]), directory_fsync)
+
+    def _replace(self, path: Path, record: JsonObject) -> str:
+        """Write a flushed and fsynced temporary file, then replace the record atomically."""
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        try:
+            with os.fdopen(os.open(temporary, flags, 0o600), "wb") as stream:
+                stream.write(_canonical(record).encode("utf-8"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            LifecycleLedger._replace_with_windows_retry(temporary, path)
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+        return _directory_durability(path.parent)
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """The revision now on disk and whether its directory entry was flushed."""
+
+    revision: int
+    directory_fsync: str
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Flush a directory entry to disk; the seam the fault tests replace."""
+    fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _directory_durability(directory: Path) -> str:
+    """``done``, or ``unsupported`` where ``DURABILITY_LIMITS`` says the step cannot run."""
+    if WINDOWS:
+        return "unsupported"
+    try:
+        _fsync_directory(directory)
+    except OSError as exc:
+        if exc.errno in _DIRECTORY_FSYNC_UNSUPPORTED:
+            return "unsupported"
+        raise
+    return "done"

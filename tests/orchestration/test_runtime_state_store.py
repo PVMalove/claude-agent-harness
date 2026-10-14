@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from harness.orchestration.core.runtime_state_contract import (
 )
 from harness.orchestration.core.system_fields import enum_problem, load_registry
 from harness.orchestration.ledger import LifecycleLedger
+from harness.orchestration.ledger.lifecycle import _guard_byte
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
     RuntimeStateStore,
@@ -534,3 +536,95 @@ def test_generic_cleanup_and_ledger_maintenance_leave_the_store_alone(
         ledger.reset("RESET")
     assert len(before) == 4
     assert _tree(base) == before
+
+
+# --- Locked write with an expected revision ----------------------------------------------------
+
+
+def test_a_record_round_trips_revision_by_revision(repos: tuple[Path, Path]) -> None:
+    runtime = RuntimeStateStore(repos[1])
+    first = _own(runtime)
+    second = _next(first, state="running", stage="developer")
+
+    assert runtime.write(first, expected_revision=0).revision == 1
+    result = runtime.write(second, expected_revision=1)
+
+    assert result.revision == 2
+    assert result.directory_fsync in {"done", "unsupported"}
+    assert RuntimeStateStore(repos[0]).read(BATCH) == second
+    assert list(runtime.location.directory.glob(".*.tmp")) == []
+
+
+def test_a_stale_expected_revision_is_a_conflict_without_overwrite(
+    repos: tuple[Path, Path],
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    first = _own(runtime)
+    runtime.write(first, expected_revision=0)
+    path = runtime.path(BATCH)
+    runtime.write(_next(first, state="running"), expected_revision=1)
+    before = path.read_bytes()
+
+    with _refusal("concurrency-conflict", "revision") as caught:
+        runtime.write(_next(first, state="running", stage="other"), expected_revision=1)
+    with _refusal("concurrency-conflict", "revision"):
+        runtime.write(first, expected_revision=0)
+    assert caught.value.durable_revision == 2
+    assert path.read_bytes() == before
+
+
+def test_an_invalid_write_is_refused_before_anything_is_written(
+    repos: tuple[Path, Path],
+) -> None:
+    main, linked = repos
+    runtime = RuntimeStateStore(main)
+    other = RuntimeStateStore(main, main / "elsewhere")
+
+    with _refusal("integrity-failure", "validate"):
+        runtime.write(_own(runtime, state="paused"), expected_revision=0)
+    with _refusal("runtime-compatibility", "validate"):
+        runtime.write(_own(runtime, contract="runtimeState.v0"), expected_revision=0)
+    with _refusal("integrity-failure", "identity"):
+        runtime.write(_own(other), expected_revision=0)
+    assert not runtime.location.base.exists()
+
+    first = _own(runtime)
+    runtime.write(first, expected_revision=0)
+    with _refusal("integrity-failure", "validate"):
+        runtime.write(_next(first, revision=3), expected_revision=1)
+    with _refusal("integrity-failure", "validate"):
+        runtime.write(_next(first, state="completed"), expected_revision=1)
+    running = _next(first, state="running")
+    done = _next(running, state="completed")
+    runtime.write(running, expected_revision=1)
+    runtime.write(done, expected_revision=2)
+    with _refusal("integrity-failure", "validate") as caught:
+        RuntimeStateStore(linked).write(_next(done), expected_revision=3)
+    assert "completed runtime state record is immutable" in caught.value.message
+    assert runtime.read(BATCH) == done
+
+
+def test_a_busy_lock_is_a_bounded_conflict_without_overwrite(
+    repos: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    first = _own(runtime)
+    runtime.write(first, expected_revision=0)
+    before = runtime.path(BATCH).read_bytes()
+    monkeypatch.setattr(store, "LOCK_TIMEOUT_SECONDS", 0.3)
+
+    with (runtime.location.directory / f"{BATCH}.lock").open("r+b") as holder:
+        _guard_byte(holder, acquire=True)
+        started = time.monotonic()
+        with _refusal("concurrency-conflict", "lock"):
+            RuntimeStateStore(repos[1]).write(
+                _next(first, state="running"), expected_revision=1
+            )
+        elapsed = time.monotonic() - started
+        _guard_byte(holder, acquire=False)
+
+    assert 0.3 <= elapsed < 2.0
+    assert runtime.path(BATCH).read_bytes() == before
+    assert (
+        runtime.write(_next(first, state="running"), expected_revision=1).revision == 2
+    )
