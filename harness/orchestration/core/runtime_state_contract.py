@@ -1,5 +1,11 @@
 """Reserved operational-store vocabularies for #683–#684; no lifecycle authority."""
 
+from pathlib import Path
+
+RUNTIME_STATE_CONTRACT = "runtimeState.v1"
+# Relative to the shared storage root (`<main checkout>/.harness`), never to a state root.
+RUNTIME_STATE_DIR = Path("orchestration/runtime-state")
+
 RUNTIME_VOCABULARIES = {
     "runtime.state": ("ready", "running", "suspended", "reconciling", "completed"),
     "runtime.operation_kind": (
@@ -47,3 +53,22 @@ RUNTIME_EFFECT_TRANSITIONS = {
     "unknown": ("confirmed",),
     "confirmed": (),
 }
+_TRANSITION_TABLES = {
+    "runtime.state": RUNTIME_TRANSITIONS,
+    "runtime.operation_phase": RUNTIME_OPERATION_TRANSITIONS,
+    "runtime.effect_state": RUNTIME_EFFECT_TRANSITIONS,
+}
+
+
+def transition_problem(field_id: str, before: str, after: str) -> str | None:
+    """``None`` when ``after`` keeps ``before`` or follows its table, else a refusal naming the
+    allowed targets; an unknown field or source value is refused too, never treated as open."""
+    table = _TRANSITION_TABLES.get(field_id)
+    if table is None:
+        return f"{field_id} has no runtime transition table"
+    if before not in table:
+        return f"{field_id} {before!r} is not a known source value"
+    if after == before or after in table[before]:
+        return None
+    allowed = ", ".join(table[before]) or "none (terminal)"
+    return f"{field_id} cannot change from {before!r} to {after!r}; allowed: {allowed}"

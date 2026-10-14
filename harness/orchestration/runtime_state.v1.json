@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtimeState.v1",
+  "title": "Runtime state record",
+  "description": "One durable runtime state record per batch at .harness/orchestration/runtime-state. Every field is required and nullable fields say so explicitly; each enum names its systemFields.v1 field in x-system-field. The ledger stays the owner of lifecycle and approvals.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "identity",
+    "revision",
+    "updated_at",
+    "state",
+    "stage",
+    "dispatch_id",
+    "operation",
+    "ledger",
+    "policy_snapshot_sha256",
+    "input_refs",
+    "output_refs",
+    "last_confirmed_boundary",
+    "failure"
+  ],
+  "properties": {
+    "contract": {"const": "runtimeState.v1"},
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_root", "git_common_dir", "state_root", "namespace", "batch_id"],
+      "properties": {
+        "repo_root": {"$ref": "#/$defs/text"},
+        "git_common_dir": {"$ref": "#/$defs/text"},
+        "state_root": {"$ref": "#/$defs/text"},
+        "namespace": {"type": "string", "pattern": "^(default|alt-[0-9a-f]{16})$"},
+        "batch_id": {"type": "string", "pattern": "^batch-[0-9a-f-]+$"}
+      }
+    },
+    "revision": {"type": "integer", "minimum": 1},
+    "updated_at": {"$ref": "#/$defs/text"},
+    "state": {
+      "type": "string",
+      "x-system-field": "runtime.state",
+      "enum": ["ready", "running", "suspended", "reconciling", "completed"]
+    },
+    "stage": {"type": ["string", "null"], "minLength": 1},
+    "dispatch_id": {"type": ["string", "null"], "pattern": "^dispatch-[0-9a-f-]+$"},
+    "operation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "kind",
+        "phase",
+        "idempotency_key",
+        "expected_before_sha256",
+        "intended_after_sha256",
+        "effect"
+      ],
+      "properties": {
+        "operation_id": {"$ref": "#/$defs/text"},
+        "kind": {
+          "type": "string",
+          "x-system-field": "runtime.operation_kind",
+          "enum": [
+            "dispatch-send",
+            "checkpoint",
+            "report-submit",
+            "transition",
+            "migrate",
+            "local-write"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "x-system-field": "runtime.operation_phase",
+          "enum": ["prepared", "effect-observed", "ledger-committed", "committed"]
+        },
+        "idempotency_key": {"$ref": "#/$defs/text"},
+        "expected_before_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "intended_after_sha256": {"$ref": "#/$defs/nullableSha256"},
+        "effect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "evidence_ref", "observed_at"],
+          "properties": {
+            "state": {
+              "type": "string",
+              "x-system-field": "runtime.effect_state",
+              "enum": ["not-started", "confirmed", "unknown"]
+            },
+            "evidence_ref": {"type": ["string", "null"], "minLength": 1},
+            "observed_at": {"type": ["string", "null"], "minLength": 1}
+          }
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "record_hashes"],
+      "properties": {
+        "generation": {"type": ["string", "null"], "minLength": 1},
+        "record_hashes": {
+          "type": "object",
+          "propertyNames": {"$ref": "#/$defs/text"},
+          "additionalProperties": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "policy_snapshot_sha256": {"$ref": "#/$defs/nullableSha256"},
+    "input_refs": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "output_refs": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+    "last_confirmed_boundary": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["revision", "state", "confirmed_at"],
+      "properties": {
+        "revision": {"type": "integer", "minimum": 1},
+        "state": {
+          "type": "string",
+          "x-system-field": "runtime.state",
+          "enum": ["ready", "running", "suspended", "reconciling", "completed"]
+        },
+        "confirmed_at": {"$ref": "#/$defs/text"}
+      }
+    },
+    "failure": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["code", "step", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "x-system-field": "runtime.failure_code",
+          "enum": [
+            "config-invalid",
+            "runtime-compatibility",
+            "integrity-failure",
+            "execution-failure",
+            "ambiguous-effect",
+            "storage-unavailable",
+            "state-persist-failed",
+            "concurrency-conflict",
+            "internal-error"
+          ]
+        },
+        "step": {"$ref": "#/$defs/text"},
+        "message": {"$ref": "#/$defs/text"}
+      }
+    }
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+  }
+}
