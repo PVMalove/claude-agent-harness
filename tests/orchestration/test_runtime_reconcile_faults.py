@@ -502,3 +502,147 @@ def test_a_record_another_writer_changes_during_the_write_suspends_it(
     )
     monkeypatch.undo()
     assert settle_error(scene).code == "integrity-failure"
+
+
+# --- Fault matrix: every local write boundary of a composite write -----------------------------
+
+SEAMS: dict[str, tuple[type, str]] = {
+    "store": (RuntimeStateStore, "write"),
+    "intent": (RuntimeStateStore, "write_intent"),
+    "create": (LifecycleLedger, "write_immutable"),
+    "artifact": (LifecycleLedger, "write_artifact"),
+    "replace": (LifecycleLedger, "_atomic_write"),
+    "audit": (LifecycleLedger, "_append_audit"),
+}
+# Every write a clean run performs, in order, as (seam, call number of that seam).  Store
+# writes: the first record, prepared, effect-observed, ledger-committed, committed.
+SEQUENCES: dict[str, list[tuple[str, int]]] = {
+    "checkpoint": [
+        ("store", 1),
+        ("intent", 1),
+        ("store", 2),
+        ("create", 1),  # checkpoint record
+        ("audit", 1),
+        ("replace", 1),  # batch record
+        ("audit", 2),
+        ("replace", 2),  # status record
+        ("audit", 3),
+        ("store", 3),
+        ("store", 4),
+        ("store", 5),  # store commit
+    ],
+    "report-submit": [
+        ("store", 1),
+        ("intent", 1),
+        ("store", 2),
+        ("create", 1),  # report record
+        ("audit", 1),
+        ("artifact", 1),  # report Markdown
+        ("audit", 2),
+        ("replace", 1),  # status record
+        ("audit", 3),
+        ("replace", 2),  # batch record
+        ("audit", 4),
+        ("store", 3),
+        ("store", 4),
+        ("store", 5),  # store commit
+    ],
+}
+# The intent is durable once the prepared store record is written.
+DURABLE_FROM = ("store", 2)
+
+
+def test_the_matrix_lists_every_write_a_clean_run_performs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for kind, expected in SEQUENCES.items():
+        scene = make_scene(tmp_path / kind)
+        write = WRITES[kind](scene)
+        observed: list[tuple[str, int]] = []
+        counts: dict[str, int] = {}
+        for seam, (owner, name) in SEAMS.items():
+            original = owner.__dict__[name]
+            function = (
+                original.__func__ if isinstance(original, staticmethod) else original
+            )
+
+            def spy(
+                *arguments: object,
+                _seam: str = seam,
+                _function: object = function,
+                **keywords: object,
+            ) -> object:
+                counts[_seam] = counts.get(_seam, 0) + 1
+                observed.append((_seam, counts[_seam]))
+                return _function(*arguments, **keywords)  # type: ignore[operator]
+
+            monkeypatch.setattr(
+                owner,
+                name,
+                staticmethod(spy) if isinstance(original, staticmethod) else spy,
+            )
+
+        write.commit()
+        monkeypatch.undo()
+
+        assert observed == expected, kind
+
+
+MATRIX = [
+    pytest.param(
+        kind,
+        seam,
+        call,
+        after,
+        id=f"{kind}-{'after' if after else 'before'}-{seam}{call}",
+    )
+    for kind, sequence in SEQUENCES.items()
+    for seam, call in sequence
+    for after in (False, True)
+]
+
+
+@pytest.mark.parametrize(("kind", "seam", "call", "after"), MATRIX)
+def test_a_stop_at_any_write_boundary_is_reconciled_or_leaves_nothing_behind(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    seam: str,
+    call: int,
+    after: bool,
+) -> None:
+    scene = make_scene(tmp_path)
+    initial = ledger_state(scene)
+    owner, name = SEAMS[seam]
+    interrupted(
+        scene,
+        kind,
+        lambda: crash_on(monkeypatch, owner, name, call, after=after),
+        monkeypatch,
+    )
+    sequence = SEQUENCES[kind]
+    position = sequence.index((seam, call))
+    durable = position > sequence.index(DURABLE_FROM) or (
+        (seam, call) == DURABLE_FROM and after
+    )
+    committed = (seam, call) == sequence[-1] and after
+
+    settled = settle_scene(scene)
+
+    record = scene.runtime()
+    if not durable:
+        # Nothing reached the ledger, and nothing blocks the command from running again.
+        assert settled is False
+        assert ledger_state(scene) == initial
+        assert record is None or record["operation"] is None
+        WRITES[kind](scene).commit()
+        assert ledger_state(scene) == reference(tmp_path, kind)
+        return
+    assert settled is not committed
+    assert ledger_state(scene) == reference(tmp_path, kind)
+    assert record is not None
+    assert record["operation"]["phase"] == "committed"
+    assert record["state"] == ("running" if committed else "ready")
+    store, ledger = store_bytes(scene), scene.tree()
+    assert settle_scene(scene) is False
+    assert (store_bytes(scene), scene.tree()) == (store, ledger)
