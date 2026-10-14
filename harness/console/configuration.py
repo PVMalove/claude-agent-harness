@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import copy
-import difflib
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from harness.configuration import parse_object, read_config_bundle, reject_secrets
+from harness.configuration import bundle_diff as bundle_diff
 from harness.configuration_schema import PACKAGE
 from harness.configuration_store import json_bytes
 from harness.health.project_files import validate_project_data
@@ -69,27 +69,6 @@ def _changed_paths(
                 paths.extend(_changed_paths(old[key], new[key], (*prefix, key)))
         return paths
     return [] if old == new else [prefix]
-
-
-def bundle_diff(
-    before: dict[str, bytes | None],
-    after: dict[str, bytes | None],
-    old_label: str,
-    new_label: str,
-) -> str:
-    """Unified diff of two configuration sets; a deleted file is announced explicitly."""
-    lines: list[str] = []
-    for name, raw in after.items():
-        old = (before[name] or b"").decode("utf-8").splitlines(keepends=True)
-        new = (raw or b"").decode("utf-8").splitlines(keepends=True)
-        lines.extend(
-            difflib.unified_diff(
-                old, new, fromfile=f"{old_label}/{name}", tofile=f"{new_label}/{name}"
-            )
-        )
-        if raw is None and before[name] is not None:
-            lines.append(f"Удалить {name}\n")
-    return "".join(lines)
 
 
 @dataclass

@@ -34,6 +34,7 @@ from harness.orchestration.ledger import (
     PlanRecord,
 )
 from harness.orchestration.qa_lane import QaWorkflowOps
+from harness.orchestration.pinned_configuration import snapshot
 from harness.orchestration.workflow import reports, qa_integration
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
@@ -520,8 +521,17 @@ class QaLaneRunTests(QaLaneTestCase):
         )
 
     def _seed(
-        self, *, batch_state: str = "approved", status_state: str = "approved"
+        self,
+        *,
+        batch_state: str = "approved",
+        status_state: str = "approved",
+        policy: JsonObject | None = None,
     ) -> None:
+        approved = snapshot(policy or {}, {}, {"name": self.dispatch["role"]})
+        self.dispatch["orchestration_policy"] = {"configuration": approved}
+        self.dispatch["transition"] = {
+            "configuration_sha256": approved["canonical_sha256"]
+        }
         records = self.ledger.records_root()
         batch: JsonObject = {
             "batch_id": BATCH_ID,
@@ -963,7 +973,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def _run_staged(self, staged: QAStagesResult) -> dict[str, object]:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         persisted: list[dict[str, object]] = []
 
         def persist(
@@ -1099,7 +1109,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def test_stages_that_disagree_with_the_artifact_release_the_lane(self) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         staged = self._staged()
         tampered = QAStagesResult(
             **{**staged.__dict__, "artifact": format_command_log("other", 0, "x")}
@@ -1127,7 +1137,7 @@ class QaLaneRunTests(QaLaneTestCase):
         self,
     ) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         with (
             mock.patch.object(qa_lane, "run_qa_stages", return_value=self._staged()),
             mock.patch.object(

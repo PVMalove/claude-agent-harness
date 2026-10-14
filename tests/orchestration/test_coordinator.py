@@ -7286,6 +7286,54 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         )
 
+    def test_an_unrecognized_termination_reason_takes_the_planned_trigger_path(
+        self,
+    ) -> None:
+        batch = self._create_batch(
+            definition_of_done=["first slice", "remaining slice"]
+        )
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(brief, first, changed)
+        facts = {
+            "dispatch_id": brief["dispatch_id"],
+            "remaining_definition_of_done": checkpoint["remaining_definition_of_done"],
+            "risks": checkpoint["risks"],
+            "dependencies": brief["dependencies"],
+        }
+        path = workspace._prepare_agent_inbox(self.repo) / "continuation-facts.json"
+        path.write_text(json.dumps(facts), encoding="utf-8")
+        resume = {
+            "dispatch": brief["dispatch_id"],
+            "trigger": "vertical-slice",
+            "measured_value": None,
+            "file": str(path),
+            "note": "resume the recorded green slice",
+            **self._approval(),
+        }
+        before = self._ledger_bytes()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.resume_dispatch(
+                self._args(termination_reason="Rate_Limit", **resume)
+            )
+        self.assertIn(
+            "write exactly 'rate-limit' or 'rate_limit'", caught.exception.message
+        )
+        self.assertIn("or pass --trigger", caught.exception.remedy)
+        self.assertEqual(before, self._ledger_bytes())
+
+        resumed = coordinator.resume_dispatch(
+            self._args(termination_reason="worker-exited", **resume)
+        )
+
+        self.assertEqual(resumed["authorization"], "continue")
+        decision = self._batch_record(batch["batch_id"])["coordinator_decisions"][-1]
+        self.assertEqual(decision["decision"], "continue")
+        self.assertEqual(decision["note"], "resume the recorded green slice")
+
     def test_committed_checkpoint_continuation_attests_exact_progress_and_completes_plan(
         self,
     ) -> None:
@@ -8324,7 +8372,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256"},
+            | {"runtime_access_sha256", "infrastructure_retry_sha256", "configuration_sha256"},
         )
         self.assertEqual(
             proposal["transition_digest"],

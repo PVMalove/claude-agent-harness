@@ -7,12 +7,14 @@ the editor-facing constraints as well, including conditional and nested fields.
 from __future__ import annotations
 
 import json
+from difflib import get_close_matches
 import math
 import re
 from pathlib import Path
 
 from harness.configuration import parse_object
 from harness.json_types import JsonObject
+from harness.diagnostics import Diagnostic
 
 PACKAGE = Path(__file__).resolve().parent  # holds the shipped schemas and templates
 
@@ -31,29 +33,97 @@ def resolve_ref(schema: JsonObject, reference: object) -> JsonObject:
     for part in reference[2:].split("/"):
         if not isinstance(target, dict):
             raise ValueError("Повреждённая ссылка схемы")
-        target = target[part.replace("~1", "/").replace("~0", "~")]
+        key = part.replace("~1", "/").replace("~0", "~")
+        if key not in target:
+            raise ValueError("Повреждённая ссылка схемы")
+        target = target[key]
     if not isinstance(target, dict):
         raise ValueError("Повреждённая ссылка схемы")
     return target
 
 
 def _check(
-    value: object, node: object, schema: JsonObject, path: str, depth: int
-) -> list[str]:
+    value: object,
+    node: object,
+    schema: JsonObject,
+    path: str,
+    depth: int,
+    parts: tuple[str | int, ...] = (),
+    filename: str = "configuration",
+) -> list[Diagnostic]:
+    def issue(
+        message: str,
+        *,
+        at: tuple[str | int, ...] = parts,
+        received: object = value,
+        expected: object = node,
+    ) -> Diagnostic:
+        constraints = (
+            {
+                key: expected[key]
+                for key in (
+                    "type",
+                    "enum",
+                    "const",
+                    "minimum",
+                    "maximum",
+                    "minLength",
+                    "pattern",
+                    "required",
+                )
+                if key in expected
+            }
+            if isinstance(expected, dict)
+            else expected
+        )
+        choices = expected.get("enum", []) if isinstance(expected, dict) else []
+        suggestion = (
+            get_close_matches(
+                received,
+                [choice for choice in choices if isinstance(choice, str)],
+                n=3,
+                cutoff=0.7,
+            )
+            if isinstance(received, str)
+            else []
+        )
+        return Diagnostic(
+            "config-schema",
+            filename,
+            at,
+            path + ": " + message,
+            constraints,
+            received,
+            suggestion or None,
+        )
+
     if depth > 64:
-        return [path + ": слишком глубокая конфигурация"]
+        return [issue("слишком глубокая конфигурация")]
     if node is True:
         return []
     if node is False:
-        return [path + ": поле запрещено схемой"]
+        return [issue("поле запрещено схемой")]
     if not isinstance(node, dict):
         raise ValueError("Некорректная схема конфигурации")
     if "$ref" in node:
-        return _check(value, resolve_ref(schema, node["$ref"]), schema, path, depth + 1)
-    problems: list[str] = []
+        return _check(
+            value,
+            resolve_ref(schema, node["$ref"]),
+            schema,
+            path,
+            depth + 1,
+            parts,
+            filename,
+        )
+    problems: list[Diagnostic] = []
 
-    def check(item: object, child: object, location: str = path) -> list[str]:
-        return _check(item, child, schema, location, depth + 1)
+    def check(
+        item: object,
+        child: object,
+        location: str = path,
+        at: tuple[str | int, ...] = parts,
+    ) -> list[Diagnostic]:
+        return _check(item, child, schema, location, depth + 1, at, filename)
 
     for child in node.get("allOf", []):
         problems.extend(check(value, child))
@@ -61,9 +131,9 @@ def _check(
     if alternatives is not None and not any(
         not check(value, child) for child in alternatives
     ):
-        problems.append(path + ": заполните один из допустимых наборов связанных полей")
+        problems.append(issue("заполните один из допустимых наборов связанных полей"))
     if "not" in node and not check(value, node["not"]):
-        problems.append(path + ": сочетание полей запрещено")
+        problems.append(issue("сочетание полей запрещено"))
     if "if" in node:
         branch = "else" if check(value, node["if"]) else "then"
         if branch in node:
@@ -83,53 +153,69 @@ def _check(
             valid.get(kind, False)
             for kind in ([kinds] if isinstance(kinds, str) else kinds)
         ):
-            return problems + [path + ": неверный тип поля"]
+            return problems + [issue("неверный тип поля")]
     if "const" in node and not _same(value, node["const"]):
-        problems.append(path + ": требуется фиксированное значение схемы")
+        problems.append(issue("требуется фиксированное значение схемы"))
     if "enum" in node and not any(_same(value, choice) for choice in node["enum"]):
-        problems.append(path + ": значение вне допустимых вариантов")
+        problems.append(issue("значение вне допустимых вариантов"))
     if isinstance(value, dict):
         for key in node.get("required", []):
             if key not in value:
-                problems.append(path + "." + key + ": обязательное поле отсутствует")
+                problems.append(
+                    Diagnostic(
+                        "config-schema",
+                        filename,
+                        (*parts, key),
+                        path + "." + key + ": обязательное поле отсутствует",
+                        "required",
+                        None,
+                    )
+                )
         if len(value) < node.get("minProperties", 0) or len(value) > node.get(
             "maxProperties", len(value)
         ):
-            problems.append(path + ": неверное число полей объекта")
+            problems.append(issue("неверное число полей объекта"))
         properties = node.get("properties", {})
         for key, item in value.items():
+            child_parts = (*parts, key)
             if "propertyNames" in node:
-                problems.extend(check(key, node["propertyNames"], path + "." + key))
+                problems.extend(
+                    check(key, node["propertyNames"], path + "." + key, child_parts)
+                )
             child = properties.get(key, node.get("additionalProperties", True))
-            problems.extend(check(item, child, path + "." + key))
+            problems.extend(check(item, child, path + "." + key, child_parts))
     elif isinstance(value, list):
         if len(value) < node.get("minItems", 0):
-            problems.append(path + ": недостаточно элементов списка")
+            problems.append(issue("недостаточно элементов списка"))
         if node.get("uniqueItems") and len(
             {json.dumps(v, sort_keys=True, allow_nan=False) for v in value}
         ) != len(value):
-            problems.append(path + ": повторяющиеся элементы")
+            problems.append(issue("повторяющиеся элементы"))
         for index, item in enumerate(value):
-            problems.extend(check(item, node.get("items", True), f"{path}[{index}]"))
+            problems.extend(
+                check(
+                    item, node.get("items", True), f"{path}[{index}]", (*parts, index)
+                )
+            )
     elif isinstance(value, str):
         if len(value) < node.get("minLength", 0) or len(value) > node.get(
             "maxLength", len(value)
         ):
-            problems.append(path + ": неверная длина строки")
+            problems.append(issue("неверная длина строки"))
         if "pattern" in node and re.search(node["pattern"], value) is None:
-            problems.append(path + ": неверный формат строки")
+            problems.append(issue("неверный формат строки"))
         if node.get("format") == "regex":
             try:
                 re.compile(value)
             except re.error:
-                problems.append(path + ": неверное регулярное выражение")
+                problems.append(issue("неверное регулярное выражение"))
     elif isinstance(value, (int, float)) and not isinstance(value, bool):
         if isinstance(value, float) and not math.isfinite(value):
-            problems.append(path + ": число должно быть конечным")
+            problems.append(issue("число должно быть конечным"))
         if value < node.get("minimum", value) or value > node.get("maximum", value):
-            problems.append(path + ": число вне допустимого диапазона")
+            problems.append(issue("число вне допустимого диапазона"))
         if "exclusiveMinimum" in node and value <= node["exclusiveMinimum"]:
-            problems.append(path + ": число должно быть больше нижней границы")
+            problems.append(issue("число должно быть больше нижней границы"))
     return problems
 
 
@@ -156,14 +242,22 @@ def load_schema(repo: Path, name: str) -> JsonObject:
 def value_problems(value: object, node: JsonObject, schema: JsonObject) -> list[str]:
     """Problems of one value against one node of ``schema``, labelled ``значение``."""
     try:
-        return _check(value, node, schema, "значение", 0)
+        return [item.message for item in _check(value, node, schema, "значение", 0)]
     except (KeyError, TypeError, RecursionError):
         raise ValueError("Повреждённая схема конфигурации; обновите Harness") from None
 
 
 def schema_problems(repo: Path, name: str, document: JsonObject) -> list[str]:
+    try:
+        return [item.message for item in schema_diagnostics(repo, name, document)]
+    except (KeyError, TypeError, RecursionError):
+        raise ValueError("Повреждённая схема конфигурации; обновите Harness") from None
+
+
+def schema_diagnostics(repo: Path, name: str, document: JsonObject) -> list[Diagnostic]:
+    """Structured constraints with exact JSON pointers; same engine as editor checks."""
     schema = load_schema(repo, name)
     try:
-        return _check(document, schema, schema, name, 0)
+        return _check(document, schema, schema, name, 0, (), name)
     except (KeyError, TypeError, RecursionError):
         raise ValueError("Повреждённая схема конфигурации; обновите Harness") from None
