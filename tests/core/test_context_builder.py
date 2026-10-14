@@ -517,6 +517,33 @@ class ContextBuilderTests(ContextBuilderFixture):
                 section_index_min_tokens=100,
             )
 
+    def test_redact_symbols_does_not_turn_a_large_python_file_back_into_full_content(
+        self,
+    ) -> None:
+        """Проверить, что скрытые символы после def не отключают индекс крупного модуля."""
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"redact_symbols": ["func_3"]}}),
+            encoding="utf-8",
+        )
+        module = self._large_module()
+        snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["pkg/big.py"],
+            section_index_min_tokens=1_000,
+        )
+
+        (starting,) = package.starting_files
+        self.assertIn(
+            "def [REDACTED-SYMBOL]", [item.heading for item in starting.sections]
+        )
+        self.assertLess(package.estimated_tokens, estimate_tokens(module) // 10)
+
     def test_a_large_python_file_with_a_syntax_error_stays_whole(self) -> None:
         """Проверить, что неразбираемый Python-файл остаётся целиком без индекса."""
         module = self._large_module() + "def broken(:\n"
@@ -1106,6 +1133,65 @@ class PythonSectionsTests(unittest.TestCase):
             ],
         )
 
+    def test_covers_module_code_between_after_and_inside_blocks_of_definitions(
+        self,
+    ) -> None:
+        """Проверить, что код вне определений (между ними, в хвосте и в блоке if) попадает в индекс."""
+        source = "\n".join(
+            [
+                "import os",
+                "",
+                "def a():",
+                "    return 1",
+                "X = 1",
+                "Y = 2",
+                "def b():",
+                "    return 2",
+                "",
+                "if os.name:",
+                "    def c():",
+                "        return 3",
+                "",
+            ]
+        )
+
+        sections = _python_sections(source)
+
+        self.assertEqual(
+            [(item.heading, item.start_line, item.end_line) for item in sections],
+            [
+                ("module header", 1, 2),
+                ("def a", 3, 4),
+                ("module code", 5, 6),
+                ("def b", 7, 8),
+                ("module code", 9, 12),
+            ],
+        )
+
+    def test_a_redacted_symbol_marker_does_not_break_the_index(self) -> None:
+        """Проверить, что маркер скрытого символа после def, class и import не ломает разбор."""
+        source = "\n".join(
+            [
+                "from pkg import [REDACTED-SYMBOL]",
+                "",
+                "class [REDACTED-SYMBOL]:",
+                "    def [REDACTED-SYMBOL](self):",
+                "        return pkg.[REDACTED-SYMBOL]",
+                "",
+            ]
+        )
+
+        sections = _python_sections(source)
+
+        self.assertEqual(
+            [(item.heading, item.start_line, item.end_line) for item in sections],
+            [
+                ("module header", 1, 2),
+                ("class [REDACTED-SYMBOL]", 3, 5),
+                ("def [REDACTED-SYMBOL]", 4, 5),
+            ],
+        )
+
     def test_a_file_that_starts_with_a_definition_has_no_module_header(self) -> None:
         """Проверить, что без кода перед первым определением заголовок модуля не добавляется."""
         sections = _python_sections("def only():\n    return 1\n")
@@ -1115,6 +1201,7 @@ class PythonSectionsTests(unittest.TestCase):
     def test_invalid_empty_or_definition_free_python_has_no_index(self) -> None:
         """Проверить, что синтаксическая ошибка, пустой файл и файл без определений дают пустой индекс."""
         self.assertEqual(_python_sections("def broken(:\n    pass\n"), [])
+        self.assertEqual(_python_sections("x = 1\0\n"), [])
         self.assertEqual(_python_sections(""), [])
         self.assertEqual(_python_sections("LIMIT = 3\nNAME = 'x'\n"), [])
 

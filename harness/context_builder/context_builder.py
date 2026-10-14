@@ -564,34 +564,61 @@ _PYTHON_DEFINITION_KEYWORDS: dict[type[ast.AST], str] = {
     ast.AsyncFunctionDef: "async def",
     ast.FunctionDef: "def",
 }
+# The redaction marker is not a valid identifier: parse it as one, and show the marker again in headings.
+_REDACTED_SYMBOL_PLACEHOLDER = "REDACTED_SYMBOL"
 
 
 def _definition_pointer(node: _PythonDefinition, level: int) -> SectionPointer:
     """Построить указатель на определение: диапазон начинается с первого декоратора."""
+    name: str = node.name.replace(_REDACTED_SYMBOL_PLACEHOLDER, _REDACTED_SYMBOL_MARKER)
     return SectionPointer(
-        heading=f"{_PYTHON_DEFINITION_KEYWORDS[type(node)]} {node.name}",
+        heading=f"{_PYTHON_DEFINITION_KEYWORDS[type(node)]} {name}",
         level=level,
         start_line=min([node.lineno, *(item.lineno for item in node.decorator_list)]),
         end_line=cast(int, node.end_lineno),
     )
 
 
-def _python_sections(text: str) -> list[SectionPointer]:
-    """Извлечь верхнеуровневые определения Python и методы классов с диапазонами строк.
+def _module_code_pointer(
+    lines: list[str], covered: int, until: int
+) -> SectionPointer | None:
+    """Указатель на код вне определений между строками `covered` и `until`, если там есть код."""
+    if not any(line.strip() for line in lines[covered:until]):
+        return None
+    return SectionPointer(
+        heading="module header" if covered == 0 else "module code",
+        level=1,
+        start_line=covered + 1,
+        end_line=until,
+    )
 
-    Перед первым определением добавляется указатель `module header` (импорты и константы).
-    Вложенное в функции и методы не перечисляется. Синтаксическая ошибка, пустой файл или файл без
-    определений дают пустой список: вызывающий код оставляет такой файл целиком.
+
+def _python_sections(text: str) -> list[SectionPointer]:
+    """Извлечь индекс Python-файла: код вне определений, функции, классы и методы классов с диапазонами строк.
+
+    Указатели `module header` (до первого определения) и `module code` (между определениями, после
+    последнего и блоки вроде `if TYPE_CHECKING:`) покрывают остальной код файла, поэтому индекс не
+    скрывает ничего. Вложенное в функции и методы не перечисляется. Маркер скрытого символа
+    разбирается как идентификатор. Синтаксическая ошибка, пустой файл или файл без определений дают
+    пустой список: вызывающий код оставляет такой файл целиком.
     """
     try:
-        tree: ast.Module = ast.parse(text)
+        tree: ast.Module = ast.parse(
+            text.replace(_REDACTED_SYMBOL_MARKER, _REDACTED_SYMBOL_PLACEHOLDER)
+        )
     except (SyntaxError, ValueError):
         return []
+    lines: list[str] = text.splitlines()
     sections: list[SectionPointer] = []
+    covered: int = 0
     for node in tree.body:
         if not isinstance(node, _PythonDefinition):
             continue
-        sections.append(_definition_pointer(node, 1))
+        pointer: SectionPointer = _definition_pointer(node, 1)
+        gap = _module_code_pointer(lines, covered, pointer.start_line - 1)
+        sections.extend([gap] if gap else [])
+        sections.append(pointer)
+        covered = pointer.end_line
         if isinstance(node, ast.ClassDef):
             sections.extend(
                 _definition_pointer(child, 2)
@@ -600,18 +627,8 @@ def _python_sections(text: str) -> list[SectionPointer]:
             )
     if not sections:
         return []
-    first_start: int = sections[0].start_line
-    if any(line.strip() for line in text.split("\n")[: first_start - 1]):
-        sections.insert(
-            0,
-            SectionPointer(
-                heading="module header",
-                level=1,
-                start_line=1,
-                end_line=first_start - 1,
-            ),
-        )
-    return sections
+    tail = _module_code_pointer(lines, covered, len(lines))
+    return [*sections, *([tail] if tail else [])]
 
 
 def _file_sections(path: str, text: str) -> list[SectionPointer]:
@@ -619,7 +636,10 @@ def _file_sections(path: str, text: str) -> list[SectionPointer]:
     if path.endswith(".md"):
         return _markdown_sections(text)
     if path.endswith(".py"):
-        return _python_sections(text)
+        sections = _python_sections(text)
+        # An index dearer than the file (e.g. thousands of one-line functions) saves nothing.
+        if estimate_tokens(_sections_payload(sections)) < estimate_tokens(text):
+            return sections
     return []
 
 
@@ -838,10 +858,7 @@ def build_context_package(
         if path in mirror_of or file_tokens[path] < min_tokens:
             return
         sections = _file_sections(path, contents[path])
-        if (
-            sections
-            and estimate_tokens(_sections_payload(sections)) < file_tokens[path]
-        ):
+        if sections:
             sections_by_path[path] = sections
 
     if section_index_min_tokens is not None:
