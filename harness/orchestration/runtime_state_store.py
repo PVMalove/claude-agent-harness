@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -23,7 +24,7 @@ from datetime import datetime
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import cast
+from typing import BinaryIO, cast
 
 from harness.configuration_schema import resolve_ref, value_problems
 from harness.gate_runner.gate_runner import sanitise
@@ -38,7 +39,6 @@ from .core.runtime_state_contract import (
 )
 from .core.system_fields import enum_problem, load_registry
 from .core.utils import CoordinatorError, _canonical, _safe_id
-from .ledger.lifecycle import LifecycleLedger, _guard_byte
 
 SCHEMA_PATH = Path(__file__).with_name("runtime_state.v1.json")
 SYSTEM_FIELD = "x-system-field"
@@ -623,7 +623,7 @@ class RuntimeStateStore:
                     with self._storage_step("fsync-file", failed, temporary, durable):
                         os.fsync(stream.fileno())
             with self._storage_step("replace", failed, path, durable):
-                LifecycleLedger._replace_with_windows_retry(temporary, path)
+                _replace_atomically(temporary, path)
         finally:
             with contextlib.suppress(OSError):
                 temporary.unlink()
@@ -672,6 +672,39 @@ class WriteResult:
 
     revision: int
     directory_fsync: str
+
+
+def _guard_byte(handle: BinaryIO, *, acquire: bool) -> None:
+    """Take without waiting, or drop, the operating-system lock on a file's first byte.
+
+    The store's own seam, so it never reaches into ledger internals; it locks only the
+    store's ``.lock`` files, which nothing else locks."""
+    handle.seek(0)
+    if sys.platform == "win32":
+        import msvcrt
+
+        msvcrt.locking(
+            handle.fileno(), msvcrt.LK_NBLCK if acquire else msvcrt.LK_UNLCK, 1
+        )
+    else:
+        import fcntl
+
+        fcntl.flock(
+            handle.fileno(),
+            (fcntl.LOCK_EX | fcntl.LOCK_NB) if acquire else fcntl.LOCK_UN,
+        )
+
+
+def _replace_atomically(source: Path, target: Path) -> None:
+    """``os.replace``, retrying the brief sharing conflicts a Windows reader causes."""
+    for attempt in range(5):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if os.name != "nt" or attempt == 4:
+                raise
+            time.sleep(0.02 * (attempt + 1))
 
 
 def _owner_only(path: str, flags: int) -> int:

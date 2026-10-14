@@ -25,7 +25,6 @@ from harness.orchestration.core.runtime_state_contract import (
 )
 from harness.orchestration.core.system_fields import enum_problem, load_registry
 from harness.orchestration.ledger import BatchRecord, LifecycleLedger
-from harness.orchestration.ledger.lifecycle import _guard_byte
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
     RuntimeStateStore,
@@ -689,14 +688,14 @@ def test_a_busy_lock_is_a_bounded_conflict_without_overwrite(
     monkeypatch.setattr(store, "LOCK_TIMEOUT_SECONDS", 0.3)
 
     with (runtime.location.directory / f"{BATCH}.lock").open("r+b") as holder:
-        _guard_byte(holder, acquire=True)
+        store._guard_byte(holder, acquire=True)
         started = time.monotonic()
         with _refusal("concurrency-conflict", "lock"):
             RuntimeStateStore(repos[1]).write(
                 _next(first, state="running"), expected_revision=1
             )
         elapsed = time.monotonic() - started
-        _guard_byte(holder, acquire=False)
+        store._guard_byte(holder, acquire=False)
 
     assert 0.3 <= elapsed < 2.0
     assert runtime.path(BATCH).read_bytes() == before
@@ -726,6 +725,8 @@ def test_the_store_never_reaches_a_ledger_write_api() -> None:
 
     assert names & LEDGER_WRITES == set()
     assert not [m for m in modules if m.endswith(("ledger_ops", "ledger_admin"))]
+    # Not even private ledger internals: the store keeps its own lock and replace seam.
+    assert not [m for m in modules if "ledger" in m.split(".")]
 
 
 def test_runtime_progress_leaves_every_ledger_file_untouched(

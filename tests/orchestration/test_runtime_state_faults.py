@@ -13,7 +13,6 @@ import pytest
 from harness.json_types import JsonObject
 from harness.orchestration import runtime_state_store as store
 from harness.orchestration.core.runtime_state_contract import RUNTIME_STATE_CONTRACT
-from harness.orchestration.ledger.lifecycle import LifecycleLedger, _guard_byte
 from harness.orchestration.runtime_state_store import RuntimeStateStore
 
 BATCH = "batch-0123abcd"
@@ -267,7 +266,7 @@ def test_the_lock_is_held_until_the_record_is_replaced(
     runtime: RuntimeStateStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[int | None] = []
-    replace = LifecycleLedger._replace_with_windows_retry
+    replace = store._replace_atomically
 
     def probe(source: Path, target: Path) -> None:
         with (runtime.location.directory / f"{BATCH}.lock").open("r+b") as other:
@@ -277,17 +276,15 @@ def test_the_lock_is_held_until_the_record_is_replaced(
                 seen.append(exc.errno)
         replace(source, target)
 
-    monkeypatch.setattr(
-        LifecycleLedger, "_replace_with_windows_retry", staticmethod(probe)
-    )
+    monkeypatch.setattr(store, "_replace_atomically", probe)
     runtime.write(_record(runtime), expected_revision=0)
 
     assert len(seen) == 1 and seen[0] in store._LOCK_BUSY
 
 
 def store_guard(handle: BinaryIO) -> None:
-    _guard_byte(handle, acquire=True)
-    _guard_byte(handle, acquire=False)
+    store._guard_byte(handle, acquire=True)
+    store._guard_byte(handle, acquire=False)
 
 
 def test_a_failure_code_outside_the_registry_is_an_internal_error() -> None:
