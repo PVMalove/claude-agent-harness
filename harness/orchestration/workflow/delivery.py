@@ -68,12 +68,12 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
+from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
-    _effective_base,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -738,9 +738,10 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
+        base = rebase.batch_base(repo, batch)
         changed = (
-            _changed_files_between(repo, _effective_base(batch), candidate)
-            if batch.get("base_commit")
+            _changed_files_between(repo, base, candidate)
+            if base
             else _commit_changed_files(repo, candidate)
         )
         report = {

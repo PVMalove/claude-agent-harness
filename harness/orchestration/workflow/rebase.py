@@ -109,18 +109,43 @@ def approved_target(
     return None
 
 
+def batch_base(repo: Path, batch: JsonObject) -> str | None:
+    """The commit the batch's own changes are measured from: ``branch_start_commit`` when it is a
+    strict descendant of the pinned integration base, else that base. A batch started on a branch
+    that an earlier batch of the ticket already published thus never owns the earlier commits. A
+    superseding batch (issue #506) is the exception: the progress on its branch is its own to finish."""
+    base = batch.get("integration_base_commit") or batch.get("base_commit")
+    start = batch.get("branch_start_commit")
+    if not isinstance(base, str):
+        return None
+    if (
+        isinstance(start, str)
+        and start
+        and start != base
+        and not batch.get("supersedes")
+    ):
+        try:
+            if _git_is_ancestor(repo, base, start):
+                return start
+        except CoordinatorError:
+            # A start commit that cannot be resolved is not provably newer than the base.
+            pass
+    return base
+
+
 def report_base(
     repo: Path, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> str | None:
     """The commit a report's ``changed_files`` are measured from: the pinned integration base,
     or, for a developer brief whose snapshot already sits on a not yet accepted rebase target (a
     retry or tooling-retry of a rebase-fix-forward report), that target, so upstream files the
-    rebase brought in are never attributed to the ticket."""
-    base = batch.get("integration_base_commit") or batch.get("base_commit")
+    rebase brought in are never attributed to the ticket. Without such a target the base is the
+    batch's own start (``batch_base``), so commits of an earlier published batch are not either."""
+    base = batch_base(repo, batch)
     snapshot = dispatch.get("snapshot_commit")
     if dispatch.get("role") == "developer" and isinstance(snapshot, str):
         return approved_target(repo, root, batch, snapshot) or base
-    return base if isinstance(base, str) else None
+    return base
 
 
 def previous_commits(repo: Path, dispatch: JsonObject) -> list[str]:
