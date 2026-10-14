@@ -1,8 +1,9 @@
 """Durable runtime state store (``runtimeState.v1``), one record per batch.
 
 The store keeps operational progress beside the lifecycle ledger, never inside it: the ledger
-stays the owner of lifecycle and approvals, and nothing here writes a ledger record.  Not yet
-wired into dispatch, intent or reconciliation (#684, #685).
+stays the owner of lifecycle and approvals, and nothing here writes a ledger record.  The intent
+payload of a composite ledger write is kept here too, write-once beside its record; the bridge to
+the ledger lives in ``runtime_intent`` and ``runtime_reconcile``.
 """
 
 from __future__ import annotations
@@ -46,6 +47,11 @@ DETAIL_LIMIT = 240
 # An absolute POSIX or Windows path, not the tail of a relative one.
 _ABSOLUTE_PATH = re.compile(r"(?<![\w.~-])(?:[A-Za-z]:[\\/]|[\\/])[^\s'\"]*")
 _SETTLED_PHASES = frozenset({"ledger-committed", "committed"})
+# Intent payloads of composite writes, relative to a namespace's record directory.
+INTENTS_DIR = "intents"
+_OPERATION_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 LOCK_TIMEOUT_SECONDS = 2.0
 LOCK_RETRY_SECONDS = 0.05
 _LOCK_BUSY = frozenset({errno.EACCES, errno.EAGAIN, errno.EDEADLK})
@@ -608,6 +614,89 @@ class RuntimeStateStore:
                 )
             directory_fsync = self._replace(path, record, revision)
         return WriteResult(int(record["revision"]), directory_fsync)
+
+    def intent_ref(self, batch_id: str, operation_id: str) -> str:
+        """Where an operation's intent payload lives, relative to the store directory."""
+        self.path(batch_id)
+        if _OPERATION_ID.fullmatch(operation_id) is None:
+            raise self._error(
+                "integrity-failure",
+                "intent",
+                "the operation ID is not a generated operation ID",
+                "pass the operation ID the composite write generated",
+            )
+        return f"{INTENTS_DIR}/{batch_id}/{operation_id}.json"
+
+    def write_intent(
+        self, batch_id: str, operation_id: str, payload: JsonObject
+    ) -> str:
+        """Persist an operation's write-once intent payload durably and return its reference.
+
+        The payload is written before the record that references it; repeating the identical
+        payload is a no-op, a different one under the same operation is refused."""
+        ref = self.intent_ref(batch_id, operation_id)
+        path = self.location.directory / ref
+        data = _canonical(payload).encode("utf-8")
+        self._prepare()
+        with self._storage_step("intent", "storage-unavailable", path.parent):
+            self._refuse_links(path.parent.parent, path.parent, path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._refuse_links(path.parent.parent, path.parent)
+            existing = path.read_bytes() if path.exists() else None
+        if existing is not None:
+            if existing == data:
+                return ref
+            raise self._error(
+                "integrity-failure",
+                "intent",
+                f"{self.location.relative(path)} already holds another intent payload",
+                "an intent payload is write-once; start a new operation instead",
+            )
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        failed = "state-persist-failed"
+        try:
+            with self._storage_step("intent", failed, temporary):
+                with open(temporary, "xb", opener=_owner_only) as stream:
+                    stream.write(data)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _replace_atomically(temporary, path)
+                _directory_durability(path.parent)
+        finally:
+            with contextlib.suppress(OSError):
+                temporary.unlink()
+        return ref
+
+    def read_intent(self, batch_id: str, ref: str) -> JsonObject:
+        """The intent payload ``ref`` of ``batch_id`` names; a missing, foreign or unreadable
+        payload stops instead of being guessed."""
+        operation_id = ref.removeprefix(f"{INTENTS_DIR}/{batch_id}/")
+        if ref != self.intent_ref(batch_id, operation_id.removesuffix(".json")):
+            raise self._error(
+                "integrity-failure",
+                "intent",
+                "the intent reference does not name this batch's intent payload",
+                "restore the runtime state record from a backup or remove it after review",
+            )
+        path = self.location.directory / ref
+        with self._storage_step("intent", "storage-unavailable", path):
+            self._refuse_links(path.parent.parent, path.parent, path)
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                raw = None
+        try:
+            payload = None if raw is None else json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            raise self._error(
+                "integrity-failure",
+                "intent",
+                f"{self.location.relative(path)} is missing or not a JSON object",
+                "restore the intent payload from a backup; nothing was reconciled",
+            )
+        return cast(JsonObject, payload)
 
     def _replace(self, path: Path, record: JsonObject, durable: int) -> str:
         """Write a flushed and fsynced temporary file, then replace the record atomically.
