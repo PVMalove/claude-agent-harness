@@ -104,7 +104,11 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.runtime_intent import CompositeWrite, idempotency_key
-from harness.orchestration.runtime_state_store import RuntimeStateStore
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+)
 from harness.orchestration.runtime_attestation import (
     AttestationError,
     requires_attestation,
@@ -628,7 +632,10 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
-        dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
+        dispatch_id = cast(str, checkpoint.get("dispatch_id"))
+        # Before any read of the batch or status: an unfinished write may still change them.
+        settle(repo, root, ledger, _load_dispatch(root, dispatch_id)["batch_id"])
+        dispatch, status = _live_status(root, dispatch_id)
         batch = _load_batch(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
@@ -1037,6 +1044,14 @@ def _persist_report(
 
     ``auto_accept_policy`` is the policy ``report submit`` found authorized to decide the report; it
     is kept on the dispatch status so a stopped policy chain is completed with that same policy."""
+    if settle(repo, root, ledger, batch["batch_id"]):
+        raise RuntimeStateError(
+            "concurrency-conflict",
+            "reconcile",
+            "an unfinished composite write of this batch was reconciled after the request "
+            "read the batch",
+            remedy="repeat the command; it reads the reconciled ledger state",
+        )
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
@@ -1818,6 +1833,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
+        settle(repo, root, ledger, dispatch["batch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,

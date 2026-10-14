@@ -71,7 +71,7 @@ class Scene:
 
 def make_scene(tmp_path: Path) -> Scene:
     repo = tmp_path / "repo"
-    repo.mkdir()
+    repo.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     root = repo / STATE_REL
     ledger = LifecycleLedger(root)
