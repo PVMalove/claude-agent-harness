@@ -559,20 +559,17 @@ def _markdown_sections(text: str) -> list[SectionPointer]:
 
 
 _PythonDefinition = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
-_PYTHON_DEFINITIONS = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+_PYTHON_DEFINITION_KEYWORDS: dict[type[ast.AST], str] = {
+    ast.ClassDef: "class",
+    ast.AsyncFunctionDef: "async def",
+    ast.FunctionDef: "def",
+}
 
 
 def _definition_pointer(node: _PythonDefinition, level: int) -> SectionPointer:
     """Построить указатель на определение: диапазон начинается с первого декоратора."""
-    prefix: str = (
-        "class"
-        if isinstance(node, ast.ClassDef)
-        else "async def"
-        if isinstance(node, ast.AsyncFunctionDef)
-        else "def"
-    )
     return SectionPointer(
-        heading=f"{prefix} {node.name}",
+        heading=f"{_PYTHON_DEFINITION_KEYWORDS[type(node)]} {node.name}",
         level=level,
         start_line=min([node.lineno, *(item.lineno for item in node.decorator_list)]),
         end_line=cast(int, node.end_lineno),
@@ -592,14 +589,14 @@ def _python_sections(text: str) -> list[SectionPointer]:
         return []
     sections: list[SectionPointer] = []
     for node in tree.body:
-        if not isinstance(node, _PYTHON_DEFINITIONS):
+        if not isinstance(node, _PythonDefinition):
             continue
         sections.append(_definition_pointer(node, 1))
         if isinstance(node, ast.ClassDef):
             sections.extend(
                 _definition_pointer(child, 2)
                 for child in node.body
-                if isinstance(child, _PYTHON_DEFINITIONS)
+                if isinstance(child, _PythonDefinition)
             )
     if not sections:
         return []
@@ -629,11 +626,6 @@ def _file_sections(path: str, text: str) -> list[SectionPointer]:
 def _sections_payload(sections: list[SectionPointer]) -> str:
     """Сериализовать индекс разделов так, как он попадает в полезную нагрузку пакета."""
     return json.dumps([asdict(section) for section in sections], ensure_ascii=False)
-
-
-def _sections_tokens(sections: list[SectionPointer]) -> int:
-    """Оценить токены индекса разделов: индекс применяется, только если он дешевле файла."""
-    return estimate_tokens(_sections_payload(sections))
 
 
 def _keywords_for(paths: list[str]) -> set[str]:
@@ -837,16 +829,24 @@ def build_context_package(
     # so the role reads only the sections the task needs instead of the whole file.
     sections_by_path: dict[str, list[SectionPointer]] = {}
 
-    def index_section(path: str, *, min_tokens: int) -> None:
-        if path in mirror_of or estimate_tokens(contents[path]) < min_tokens:
+    file_tokens: dict[str, int] = {
+        path: estimate_tokens(content) for path, content in contents.items()
+    }
+
+    def seed_section_index(path: str, *, min_tokens: int) -> None:
+        """Заменить содержимое файла индексом, если файл не зеркало, не меньше порога и индекс дешевле."""
+        if path in mirror_of or file_tokens[path] < min_tokens:
             return
         sections = _file_sections(path, contents[path])
-        if sections and _sections_tokens(sections) < estimate_tokens(contents[path]):
+        if (
+            sections
+            and estimate_tokens(_sections_payload(sections)) < file_tokens[path]
+        ):
             sections_by_path[path] = sections
 
     if section_index_min_tokens is not None:
         for path in starting_paths:
-            index_section(path, min_tokens=section_index_min_tokens)
+            seed_section_index(path, min_tokens=section_index_min_tokens)
 
     # An added file's unified diff already contains 100% of its content as `+` lines, so counting
     # `contents[path]` again for the token/size estimate would double-count the exact same bytes
@@ -905,11 +905,11 @@ def build_context_package(
                 for path in starting_paths
                 if path not in sections_by_path and path not in added_paths
             ),
-            key=lambda path: -estimate_tokens(contents[path]),
+            key=lambda path: -file_tokens[path],
         ):
             if within_budget(render_payload(frozen_memory)):
                 break
-            index_section(path, min_tokens=0)
+            seed_section_index(path, min_tokens=0)
     starting_files = [
         replace(
             item,
