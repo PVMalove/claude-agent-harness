@@ -627,15 +627,30 @@ class RuntimeStateStore:
         finally:
             with contextlib.suppress(OSError):
                 temporary.unlink()
-        with self._storage_step("fsync-directory", failed, path.parent, durable):
+        # The replace already put the new revision on disk; only its durability is unknown.
+        unconfirmed = (
+            f"repair the filesystem, then read the record again: it already holds revision "
+            f"{record['revision']}, so continue from the revision it holds instead of "
+            f"retrying against revision {durable}"
+        )
+        with self._storage_step(
+            "fsync-directory", failed, path.parent, durable, remedy=unconfirmed
+        ):
             return _directory_durability(path.parent)
 
     @contextmanager
     def _storage_step(
-        self, step: str, code: str, path: Path, durable_revision: int | None = None
+        self,
+        step: str,
+        code: str,
+        path: Path,
+        durable_revision: int | None = None,
+        *,
+        remedy: str | None = None,
     ) -> Iterator[None]:
         """Turn an ``OSError`` of one storage step into a sanitized refusal; the raw error,
-        its absolute paths and the record never reach the diagnostics."""
+        its absolute paths and the record never reach the diagnostics.  ``remedy`` replaces
+        the code's default one when the step knows better."""
         try:
             yield
         except OSError as exc:
@@ -643,7 +658,7 @@ class RuntimeStateStore:
                 code,
                 step,
                 exc.strerror or type(exc).__name__,
-                remedy=_STEP_REMEDIES[code],
+                remedy=remedy or _STEP_REMEDIES[code],
                 durable_revision=durable_revision,
                 path=self.location.relative(path),
                 error_name=errno.errorcode.get(exc.errno) if exc.errno else None,

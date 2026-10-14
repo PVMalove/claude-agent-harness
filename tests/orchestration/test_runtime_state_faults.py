@@ -189,6 +189,33 @@ def test_a_failed_directory_fsync_does_not_claim_durability(
     assert caught.value.diagnostics["durability"] == "unconfirmed"
     assert caught.value.diagnostics["path"] == "orchestration/runtime-state"
     assert "not confirmed durable" in caught.value.message
+    assert "already holds revision 2" in caught.value.remedy
+    assert "instead of retrying against revision 1" in caught.value.remedy
+
+    # Following the remedy works; the generic retry against revision 1 would conflict.
+    monkeypatch.undo()
+    assert runtime.read(BATCH) == _record(runtime, 2, "running")
+    with pytest.raises(store.RuntimeStateError, match="concurrency-conflict"):
+        runtime.write(_record(runtime, 2, "running"), expected_revision=1)
+    assert (
+        runtime.write(_record(runtime, 3, "completed"), expected_revision=2).revision
+        == 3
+    )
+
+
+def test_a_failure_before_the_replace_keeps_the_generic_retry_remedy(
+    runtime: RuntimeStateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _written(runtime)
+
+    def fail(fd: int) -> None:
+        raise _leaky_error(errno.ENOSPC)
+
+    monkeypatch.setattr(os, "fsync", fail)
+    with pytest.raises(store.RuntimeStateError) as caught:
+        runtime.write(_record(runtime, 2, "running"), expected_revision=1)
+
+    assert caught.value.remedy == store._STEP_REMEDIES["state-persist-failed"]
 
 
 def test_an_unreadable_record_is_storage_unavailable(
