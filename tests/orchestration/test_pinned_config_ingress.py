@@ -183,3 +183,26 @@ def test_qa_runner_preserves_report_if_gate_breaks_live_configuration() -> None:
         assert "next_dispatch_id" not in result
     finally:
         case.tearDown()
+
+
+@pytest.mark.parametrize("policy", [None, 42, []])
+def test_invalid_policy_container_is_rejected_with_a_domain_error(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+    policy: object,
+) -> None:
+    case, brief = dispatched_architect
+    path = case._records_root() / "dispatches" / f"{brief['dispatch_id']}.json"
+    record = json.loads(path.read_bytes())
+    record["orchestration_policy"] = policy
+    path.write_text(json.dumps(record))
+    with pytest.raises(coordinator.CoordinatorError):
+        coordinator.send_dispatch(
+            fixtures._ns(
+                repo=str(case.repo),
+                state_dir=str(case.state_dir),
+                dispatch=brief["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )

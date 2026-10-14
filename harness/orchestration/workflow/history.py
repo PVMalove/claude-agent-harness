@@ -1287,7 +1287,8 @@ def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
     pinned: JsonObject | None = None
-    if "configuration" in dispatch.get("orchestration_policy", {}):
+    policy = dispatch.get("orchestration_policy")
+    if isinstance(policy, dict) and "configuration" in policy:
         from harness.orchestration.pinned_configuration import read_snapshot
 
         pinned = read_snapshot(dispatch)
