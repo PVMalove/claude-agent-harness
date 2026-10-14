@@ -28,7 +28,6 @@ from harness.orchestration.core.config import (
     _continuation_policy,
     _execution_policy,
     _reject_sensitive,
-    _role,
 )
 from harness.orchestration.core.constants import (
     CHECKPOINT_INPUT_FIELDS,
@@ -633,10 +632,21 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
-        role = _role(repo, dispatch["role"])
+        from harness.orchestration.pinned_configuration import (
+            read_snapshot,
+            capture_unaccepted,
+        )
+
+        try:
+            _validate_batch_integrity(root, batch)
+            pinned = read_snapshot(dispatch)
+            _validate_dispatch(repo, pinned["config"], root, batch, dispatch)
+        except CoordinatorError as exc:
+            path = capture_unaccepted(root, dispatch, checkpoint, exc)
+            raise CoordinatorError(
+                exc.message, remedy=f"{exc.remedy}; unaccepted evidence: {path}"
+            ) from exc
+        role = pinned["role"]
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if not entry or entry.get("state") != "dispatched":
             raise CoordinatorError(
@@ -1798,9 +1808,21 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
+        from harness.orchestration.pinned_configuration import (
+            read_snapshot,
+            capture_unaccepted,
+        )
+
+        try:
+            _validate_batch_integrity(root, batch)
+            pinned = read_snapshot(dispatch)
+            _validate_dispatch(repo, pinned["config"], root, batch, dispatch)
+        except CoordinatorError as exc:
+            path = capture_unaccepted(root, dispatch, report, exc)
+            raise CoordinatorError(
+                exc.message, remedy=f"{exc.remedy}; unaccepted evidence: {path}"
+            ) from exc
+        config = pinned["config"]
         if dispatch["role"] == "qa":
             raise CoordinatorError(
                 "QA reports must be produced by the clean-room QA runner",
@@ -1831,7 +1853,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 "a dispatched role must attest its canonical Git worktree before reporting",
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
-        role = _role(repo, dispatch["role"])
+        role = pinned["role"]
         _validate_report_in_batch(repo, root, batch, dispatch, report, role)
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
@@ -1918,6 +1940,34 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "state": "reported",
         "report": str(report_json),
     }
+    # Acceptance belongs to the approved snapshot; progression belongs to a newly validated
+    # transition. Never invite resubmission of evidence already durably accepted.
+    try:
+        current_config = core_config._config(repo)
+        current_project = getattr(current_config, "project_snapshot", None)
+        if not isinstance(current_project, dict):
+            current_project = core_config._project(repo)
+    except CoordinatorError as exc:
+        response.update(
+            {
+                "transition_blocked": True,
+                "diagnostic": exc.message,
+                "remedy": exc.remedy,
+            }
+        )
+        return response
+    if (
+        dict(current_config) != dict(config)
+        or current_project != pinned["project"]
+    ):
+        response.update(
+            {
+                "transition_blocked": True,
+                "diagnostic": "configuration changed since dispatch approval",
+                "remedy": "review the pending report and approve the next transition under current policy",
+            }
+        )
+        return response
     if rebase_check is not None:
         # The patch-id comparison of a rebase-fix-forward report (issue #504), for delta-review.
         response["rebase_check"] = rebase_check

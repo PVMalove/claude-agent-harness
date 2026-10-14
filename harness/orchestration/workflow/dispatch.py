@@ -1145,7 +1145,17 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             transition["recovery_event_sha256"] = batch["recovery_events"][-1][
                 "record_sha256"
             ]
+        from harness.orchestration import pinned_configuration
+
         orchestration_policy = _orchestration_policy(config)
+        project_snapshot = getattr(config, "project_snapshot", None)
+        if not isinstance(project_snapshot, dict):
+            project_snapshot = core_config._project(repo)
+        pinned_config = pinned_configuration.snapshot(config, project_snapshot, role)
+        orchestration_policy["configuration"] = pinned_config
+        transition[pinned_configuration.TRANSITION_FIELD] = pinned_config[
+            "canonical_sha256"
+        ]
         transition[infrastructure_retry.TRANSITION_FIELD] = (
             operational_guards.policy_digest(
                 orchestration_policy["infrastructure_retry"]

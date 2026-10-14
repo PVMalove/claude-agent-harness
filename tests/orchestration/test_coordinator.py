@@ -8372,7 +8372,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256"},
+            | {"runtime_access_sha256", "infrastructure_retry_sha256", "configuration_sha256"},
         )
         self.assertEqual(
             proposal["transition_digest"],

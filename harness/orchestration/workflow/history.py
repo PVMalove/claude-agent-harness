@@ -1148,7 +1148,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="create a fresh approved dispatch after a recorded recovery event",
         )
     policy = dispatch["orchestration_policy"]
-    if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
+    if not isinstance(policy, dict) or set(policy) - {
+        "infrastructure_retry",
+        "configuration",
+    } != {
         "approval_ttl_seconds",
         "attention",
         "context_pressure",
@@ -1159,6 +1162,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    if "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        read_snapshot(dispatch)
     from harness.orchestration.infrastructure_retry import pinned
 
     pinned(dispatch)
@@ -1279,6 +1286,12 @@ def _validate_resolver_section(dispatch: JsonObject) -> None:
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
+    pinned: JsonObject | None = None
+    if "configuration" in dispatch.get("orchestration_policy", {}):
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        pinned = read_snapshot(dispatch)
+        config = pinned["config"]
     _validate_harness_runtime_snapshot(repo, batch)
     _reject_sensitive(dispatch, "dispatch record")
     try:
@@ -1473,9 +1486,10 @@ def _validate_dispatch(
         try:
             _, assignment = validate_brief_policy(
                 dispatch,
-                _project(repo),
+                pinned["project"] if pinned is not None else _project(repo),
                 config,
                 _roles_dir(repo),
+                role_manifest=pinned["role"] if pinned is not None else None,
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
@@ -1493,6 +1507,7 @@ def _validate_dispatch(
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
                 replay=True,
+                role_manifest=pinned["role"] if pinned is not None else None,
             )
         )
         if (

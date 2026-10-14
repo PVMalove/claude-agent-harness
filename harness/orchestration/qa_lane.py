@@ -23,6 +23,7 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
+from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _qa_preparation_commands
 from .core.constants import (
     QA_NOT_RUN_RESULT,
@@ -639,8 +640,16 @@ def _record_report(
     ops: QaWorkflowOps,
 ) -> Path:
     batch = ops._load_batch(root, dispatch["batch_id"])
-    ops._validate_batch_integrity(root, batch)
-    ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
+    try:
+        ops._validate_batch_integrity(root, batch)
+        policy = read_snapshot(dispatch)
+        ops._validate_dispatch(repo, policy["config"], root, batch, dispatch)
+    except CoordinatorError as exc:
+        path = capture_unaccepted(root, dispatch, report, exc)
+        raise CoordinatorError(
+            exc.message,
+            remedy=f"QA evidence captured without acceptance at {path}; {exc.remedy}",
+        ) from exc
     status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
     entry = _batch_entry(batch, dispatch["dispatch_id"])
     if (
@@ -655,7 +664,7 @@ def _record_report(
     ops._validate_report(
         report,
         dispatch,
-        ops._role(repo, "qa"),
+        policy["role"],
         repo,
         batch.get("integration_base_commit") or batch.get("base_commit"),
     )
@@ -866,7 +875,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
         policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
         from .infrastructure_retry import pinned
 
-        config = ops._config(repo)
+        config = read_snapshot(dispatch)["config"]
         pinned_commands = pinned(dispatch)
         if pinned_commands is not None:
             config = {**config, **pinned_commands}
