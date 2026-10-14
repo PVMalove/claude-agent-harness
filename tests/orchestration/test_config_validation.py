@@ -49,6 +49,7 @@ def run_cli(project: Path, *flags: str) -> subprocess.CompletedProcess[str]:
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
 
@@ -345,6 +346,7 @@ def test_incomplete_installed_registry_returns_safe_diagnostics(
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert result.returncode == 2
@@ -396,6 +398,7 @@ def test_overlapping_alias_rule_is_diagnosed_without_guessing(
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=30,
     )
     assert result.returncode == 2
