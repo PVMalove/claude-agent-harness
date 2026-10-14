@@ -31,6 +31,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_STAGES,
     INCOMPLETE_ITEM_TARGET_ROLES,
     TERMINAL_BATCH_STATES,
+    ReviewRecommendation,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -224,9 +225,9 @@ def accept_obstacles(
             obstacles.append(
                 f"the review has findings at or above the {auto_retry_min_severity} retry threshold"
             )
-        if review.get("recommendation") == "retry" or (
+        if review.get("recommendation") == ReviewRecommendation.RETRY or (
             auto_retry_min_severity != "info"
-            and review.get("recommendation") != "accept"
+            and review.get("recommendation") != ReviewRecommendation.ACCEPT
         ):
             obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(

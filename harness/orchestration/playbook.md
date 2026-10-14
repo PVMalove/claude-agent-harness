@@ -20,6 +20,38 @@ Every batch has one ticket, one issue branch, and one isolated worktree. The coo
 the resolved provider profile and model in the dispatch brief. Credentials never belong in the
 brief, project configuration, or reports.
 
+## Configuration validation and pinned evidence
+
+Runtime configuration passes through `normalization.v1` in memory before strict canonical
+validation. Only the enum fields listed in `config_boundary.NORMALIZATION_FIELDS` support
+unambiguous trimming and case folding. Documented aliases are `manual-all` → `manual_all` and
+`low-risk` → `low_risk` for `approval_policy`, and `in_process` → `in-process` for assignment
+transport. Each applied rule emits a structured warning with its field ID and version. IDs,
+models, paths, commands, extensions, ledger records, reports and approvals are never normalized.
+Explicit nulls, duplicate JSON keys, nonfinite numbers, secrets and ambiguous values are errors.
+Fuzzy spelling suggestions are diagnostics only.
+
+Inspect a configuration without writing it:
+
+```bash
+python .harness/orchestration/coordinator.py config validate --repo . --json
+python .harness/orchestration/coordinator.py config validate --repo . --canonical --json
+python .harness/orchestration/coordinator.py config validate --repo . --fix --dry-run --json
+python .harness/orchestration/coordinator.py config validate --repo . --fix --json
+```
+
+`--canonical` rejects spelling that requires normalization. `--fix` writes only a valid authored
+configuration through the shared transaction store, with expected-byte concurrency protection
+and a backup; `--dry-run` previews the diff. Headless validation never waits for input and returns
+exit code 2 for an invalid configuration. Runtime loading never writes the configuration file.
+
+Each new dispatch binds a complete canonical config, project and role snapshot to its approval
+digest, with separate source and canonical hashes. Checkpoints and manual or clean-room QA reports
+use that snapshot. Invalid or changed live configuration blocks a subsequent transition while
+accepted evidence remains saved. Missing or corrupt snapshots allow only unaccepted evidence
+capture with a remedy; they never reconstruct approval from current files. Runtime state-store
+reconciliation and recovery UI are separate follow-up work.
+
 ## Lifecycle
 
 The coordinator records exactly one current state for each batch. A role may report progress or a

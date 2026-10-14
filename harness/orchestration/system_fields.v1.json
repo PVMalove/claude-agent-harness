@@ -1,0 +1,1087 @@
+{
+  "contract": "systemFields.v1",
+  "description": "Runtime-neutral registry of the orchestration system fields: every closed vocabulary that the coordinator branches on, validates at a boundary, or writes into the ledger, a brief, a report or a decision packet. For each field it lists the exact machine values with their semantics, the value assumed when the field is absent, the named subsets the code branches on, the sentinel values and their safe handling, and whether the field drives an automatic decision. Values are case-sensitive and have no aliases; an incompatible change needs a new contract version. Authored configuration may pass through a separate versioned field-specific normalizer before this canonical boundary; the registry never supplies aliases for machine records.",
+  "unrecognized_policies": {
+    "reject": "The boundary refuses a value outside the list before anything is written; the refusal names the field, the allowed values and a remedy. A variant of a listed value that differs only by case, surrounding spaces or a separator is refused as well, never normalized. This describes canonical validation after any explicitly permitted config normalization.",
+    "not-recognized": "The field also carries diagnostic text: a value outside the list is kept as text and never triggers the behavior of a listed value, while a variant of a listed value that differs only by case, surrounding spaces or a separator is refused with a remedy naming the exact spelling."
+  },
+  "fields": {
+    "batch.state": {
+      "description": "Lifecycle state of a batch record; the coordinator branches on it before every batch command.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "planned": "Created and frozen, waiting for the batch plan approval.",
+        "awaiting-approval": "Waiting for a human or policy approval of the next dispatch or decision.",
+        "active": "A dispatch of the batch is approved, sent or working.",
+        "blocked": "Stopped by a blocker; recoverable by a decision, a resume or an abandon.",
+        "failed": "A stage failed; recoverable by a decision or an abandon.",
+        "completed": "Terminal: every required stage was accepted and the candidate was published.",
+        "not-required": "Terminal: the pinned snapshot already satisfies the definition of done.",
+        "abandoned": "Terminal: a human abandoned the batch; its evidence stays in the ledger.",
+        "paused": "A recorded stop paused the batch until a human resumes or rewinds it."
+      },
+      "groups": {
+        "terminal": [
+          "completed",
+          "not-required",
+          "abandoned"
+        ]
+      },
+      "transition_contract": "harness.orchestration.ledger.lifecycle:LifecycleLedger._validate_batch_transition"
+    },
+    "batch.next_action": {
+      "description": "The next pipeline step a batch records after a decision; it selects the role and purpose of the next dispatch.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "architect": "Dispatch the architect role.",
+        "developer-retry": "Dispatch a developer that continues or replaces the candidate after a retry decision.",
+        "verification": "Dispatch the read-only verification role on a registered blocked developer candidate.",
+        "code-review": "Dispatch the code-review role on the assessed candidate.",
+        "qa": "Dispatch the qa role on the reviewed candidate.",
+        "publish": "Dispatch the developer role with purpose publish to push the accepted candidate.",
+        "resolve-conflict": "Dispatch the conflict-resolver role for a textual conflict with the integration target.",
+        "developer": "Dispatch the first developer after an accepted architect report.",
+        "risk-assessment": "Run the risk assessment of the candidate before any further role."
+      }
+    },
+    "dispatch.state": {
+      "description": "Lifecycle state of a dispatch brief and its status record.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "proposed": "The transition was rendered for approval; no brief exists yet.",
+        "approved": "The immutable brief is approved and not yet sent to a runtime.",
+        "dispatched": "The brief was handed to the runtime transport.",
+        "working": "The worker self-reported and sends heartbeats.",
+        "blocked": "The worker or the coordinator stopped the dispatch with a blocker.",
+        "failed": "The dispatch failed and produces no further report.",
+        "reported": "A completion report is recorded for the dispatch.",
+        "checkpointed": "The worker recorded a checkpoint and waits for a continuation.",
+        "rate_limited": "The provider rate limit stopped the worker; a continuation may resume it.",
+        "abandoned": "The dispatch was abandoned together with its batch.",
+        "cancelled": "An approved, unsent brief was cancelled with approval and a reason."
+      },
+      "groups": {
+        "live": [
+          "dispatched",
+          "working"
+        ]
+      },
+      "transition_contract": "harness.orchestration.core.transition_contracts:DISPATCH_TRANSITION_VALIDATORS"
+    },
+    "dispatch.purpose": {
+      "description": "Why a dispatch runs; it selects the brief shape and the evidence its report must carry.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "work",
+      "values": {
+        "work": "The role does its stage work on the batch.",
+        "verification": "A read-only check of a registered blocked developer candidate.",
+        "publish": "The developer pushes the accepted candidate; no new commits."
+      }
+    },
+    "pipeline.role": {
+      "description": "Name of a shipped role manifest (harness/orchestration/roles/*.md without _common); a dispatch, an access policy and a retry role name one.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "architect": "Read-only design role that writes the decision brief and the commit plan.",
+        "code-review": "Read-only review of the candidate along the Standards and Spec axes.",
+        "conflict-resolver": "Writer that resolves a textual conflict with the integration target.",
+        "database-migrations": "Writer specialised in database migrations.",
+        "developer": "Writer that implements the plan, retries a candidate or publishes it.",
+        "messaging-integration": "Writer specialised in messaging integrations.",
+        "qa": "Read-only independent quality gate on the reviewed candidate.",
+        "verification": "Read-only verification of a registered blocked developer candidate."
+      }
+    },
+    "pipeline.rewind_stage": {
+      "description": "Earlier gate a human selects with batch rewind --to; Git history is never changed.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "architect": "Return to the architect stage.",
+        "developer": "Return to the developer stage; a new writing attempt spends developer retry budget.",
+        "code-review": "Return to the code-review stage.",
+        "qa": "Return to the qa stage.",
+        "publish": "Return to the publish boundary.",
+        "verification": "Return to the verification stage.",
+        "resolve-conflict": "Return to the conflict-resolver stage."
+      }
+    },
+    "batch.decision": {
+      "description": "Decision recorded on a pending report by batch decide or by the automatic policy.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "accept": "Accept the report and move the pipeline past its stage.",
+        "accept-conditional": "Human attestation that an infrastructure failure stopped the stage; it leaves an open condition a later stage covers.",
+        "override-warning": "Accept a report with warnings as an explicit human override.",
+        "retry": "Retry the stage on the route the coordinator computes from structured evidence.",
+        "block": "Stop the batch as blocked.",
+        "fail": "Stop the batch as failed.",
+        "abandon": "Abandon the batch; a human only, with a reason."
+      },
+      "groups": {
+        "accepted": [
+          "accept",
+          "override-warning",
+          "accept-conditional"
+        ]
+      }
+    },
+    "coordinator.decision": {
+      "description": "Kind of a decision the coordinator records: the decision of an entry in a batch's coordinator_decisions, and the decision detail of a batch transition audit record. batch decide records the batch.decision kinds; the coordinator records the others itself. The budgets count coordinator_decisions entries by these exact spellings and stop the automatic path when one is spent.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "accept": "batch decide accepted the report and moved the pipeline past its stage.",
+        "accept-conditional": "batch decide recorded a human attestation that an infrastructure failure stopped the stage; an open condition stays until a later stage covers it.",
+        "override-warning": "batch decide accepted a report with warnings as an explicit human override.",
+        "retry": "batch decide retried the stage on the recorded route; with next_role developer it spends one developer retry unless the route is tooling-retry, and with reason verification-infrastructure it spends one infrastructure retry of its candidate.",
+        "block": "batch decide stopped the batch as blocked.",
+        "fail": "batch decide stopped the batch as failed.",
+        "abandon": "batch decide or batch abandon: a human abandoned the batch with a reason.",
+        "continue": "A planned continuation or a startup-failure restart resumed the dispatch; it spends one continuation of that dispatch.",
+        "continue-automatic": "The runtime adapter resumed a rate-limited dispatch after a recognized termination reason; it spends one continuation and one rate-limit resume of that dispatch.",
+        "continue-rate-limit": "A human approved a rate-limit resume after an automatic stop or a manual recovery; it spends one continuation and one rate-limit resume of that dispatch.",
+        "cancel": "An approved, unsent brief was cancelled; with reason verification-infrastructure it spends one infrastructure retry of its candidate.",
+        "rewind-developer": "A new developer dispatch was created after a human rewind; it spends one developer retry.",
+        "resume": "batch resume retired a blocked dispatch and returned the batch to its recorded next action.",
+        "not-required": "batch not-required closed the batch without implementation: the pinned snapshot already satisfies the definition of done.",
+        "carry-over": "Coordinator findings or incomplete items were carried into later briefs without a retry.",
+        "supersede": "A new batch resumed from the last accepted record of an abandoned batch.",
+        "resume-stop": "batch resume-stop: a human retired a proven environment failure of a stopped batch for a new same-stage dispatch; a recovery event binds the approval.",
+        "rewind": "batch rewind: a human returned the batch to an earlier gate; a recovery event binds the approval and Git history is unchanged.",
+        "pause": "Audit record only: the automatic policy paused the batch with a recovery event; a human resumes or rewinds it.",
+        "startup-evidence": "Audit record only: binds the startup evidence point of a restart or of the first rate-limit resume of a dispatch to the batch transition."
+      },
+      "groups": {
+        "continuation": [
+          "continue",
+          "continue-automatic",
+          "continue-rate-limit"
+        ],
+        "rate-limit-resume": [
+          "continue-automatic",
+          "continue-rate-limit"
+        ],
+        "developer-retry": [
+          "retry",
+          "rewind-developer"
+        ],
+        "infrastructure-retry": [
+          "retry",
+          "cancel"
+        ]
+      }
+    },
+    "retry.reason": {
+      "description": "Why a reporting role stopped, as the coordinator records it in a retry routing record; it selects the recovery route.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "verification-infrastructure": "Operational: the verification environment failed; a read-only stage may re-run on the same candidate.",
+        "transport": "Operational: the runtime transport failed; a read-only stage may re-run on the same candidate.",
+        "context-pressure": "Operational: the context window was exhausted; a read-only stage may re-run on the same candidate.",
+        "tooling": "A hook, the safety classifier or the ledger blocked a legitimate action; route tooling-retry, proven only by a structured tooling_blocker.",
+        "block-bypass": "A read-only role worked around a block; route bypass-rerun under an explicit approval, and none of the report is evidence.",
+        "code": "The code needs a change; route developer-retry.",
+        "requirements": "The requirements need a change; route developer-retry.",
+        "candidate-change": "The candidate changed; route developer-retry.",
+        "unknown": "Sentinel: the cause is not established. No automatic route exists: attention unknown-reason and stop no-automatic-route; a human names the cause, and a manual retry takes the safe developer-retry route."
+      },
+      "groups": {
+        "operational": [
+          "verification-infrastructure",
+          "transport",
+          "context-pressure"
+        ],
+        "developer": [
+          "code",
+          "requirements",
+          "candidate-change"
+        ]
+      },
+      "sentinels": [
+        "unknown"
+      ]
+    },
+    "retry.route": {
+      "description": "Recovery route a retry or abandon decision records as routing.route; each value names a route the coordinator computes.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "developer-retry": "A new developer dispatch changes the candidate; it spends one developer retry.",
+        "same-candidate-rerun": "A new dispatch of the same read-only stage on the unchanged candidate.",
+        "verification": "A read-only verification dispatch on the registered blocked developer candidate.",
+        "architect-retry": "A new architect dispatch.",
+        "abandon": "The batch is abandoned; a human only.",
+        "report-completion": "Named by report submit when the policy chain after a recorded report stopped; report complete finishes it.",
+        "carry-over": "Coordinator findings or incomplete items are carried into later briefs without a retry.",
+        "tooling-retry": "The stage a tool blocked re-runs on the same candidate without spending a developer retry.",
+        "bypass-rerun": "A read-only stage whose role worked around a block re-runs on the same candidate.",
+        "narrowed-retry": "A read-only stage re-runs on the same candidate for its incomplete items only.",
+        "fix-forward": "A developer-retry whose brief carries a closed list of carried items closed by new commits.",
+        "rebase-fix-forward": "A fix-forward that first rebases the candidate onto the approved moved integration tip.",
+        "supersede": "A new batch resumes from the last accepted record of an abandoned batch.",
+        "environmental-restart": "A proven startup failure resumes in the same batch with a new same-contract dispatch.",
+        "rewind": "A human selects an earlier reached gate.",
+        "accept-conditional": "A conditional accept after an infrastructure failure leaves an open condition."
+      }
+    },
+    "recovery.environment_reason": {
+      "description": "Kind of a proven runtime startup failure that an environmental restart may recover.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "worktree-mismatch": "The worker started outside the expected worker checkout.",
+        "model-mismatch": "The worker runs a model other than the resolved one.",
+        "runtime-unavailable": "The selected runtime could not be started."
+      }
+    },
+    "attention.reason": {
+      "description": "Why a batch needs a human; the automatic path never resolves attention.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "unknown-reason": "A retry reason is unknown; stop no-automatic-route.",
+        "infrastructure-retry-repeated": "Infrastructure retries exceeded attention_policy.max_infrastructure_retries.",
+        "tooling-retry-repeated": "A tool blocked the same candidate repeatedly; the tool needs a fix.",
+        "retry-queued-too-long": "A queued retry waited longer than attention_policy.retry_queue_seconds.",
+        "stale-evidence": "Evidence a decision rests on is no longer current.",
+        "stale-dispatch": "A live dispatch sent no heartbeat within the stale threshold."
+      }
+    },
+    "attention.event_kind": {
+      "description": "Kind of an attention event appended to a batch.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "raised": "Attention was raised and dispatching waits for a human.",
+        "resolved": "A human acknowledged the findings and dispatching may resume."
+      }
+    },
+    "auto.decision_kind": {
+      "description": "Kind of an approval the automatic policy recorded in batch.auto_decisions; each kind fixes its evidence fields.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "batch-approve": "The policy approved the batch plan.",
+        "dispatch": "The policy approved a dispatch transition.",
+        "continuation": "The policy authorized a worker continuation.",
+        "decision": "The policy decided a pending report.",
+        "carry-over": "The policy carried coordinator findings into review."
+      }
+    },
+    "auto.stop_category": {
+      "description": "Category of a condition that halts the automatic path of a batch.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "budget-exhausted": "A retry, continuation or infrastructure budget is spent.",
+        "integrity-failure": "The ledger, the runtime or the evidence cannot be trusted.",
+        "no-automatic-route": "No route exists that the policy may take without a human."
+      }
+    },
+    "auto.stop_reason": {
+      "description": "Reason of an automatic-path stop; each reason belongs to exactly one stop category.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "retry_policy.max_developer_retries": "The developer retry budget is spent.",
+        "continuation_policy.max_continuations": "The continuation budget is spent.",
+        "continuation_policy.max_rate_limit_resumes": "The rate-limit resume budget is spent.",
+        "attention_policy.max_infrastructure_retries": "The infrastructure retry budget is spent.",
+        "tooling-retry-repeated": "A tool blocked the same candidate repeatedly.",
+        "stale": "A dispatch, a queued retry or decision evidence is stale.",
+        "model-mismatch": "The worker runs a model other than the resolved one.",
+        "worktree-mismatch": "The worker started outside the expected worker checkout.",
+        "harness-snapshot-changed": "The installed harness runtime differs from the pinned snapshot.",
+        "deterministic-gate-failed": "A deterministic gate of the policy failed.",
+        "ledger-validation-failed": "Ledger validation failed.",
+        "unknown-reason": "The retry reason is unknown.",
+        "abandon-dead-end": "The only remaining route is an abandon, which needs a human.",
+        "supersede-dead-end": "The only remaining route is a supersede, which needs a human.",
+        "qa-environment-failure": "The QA gate failed on its environment with no code-defect sign."
+      },
+      "groups": {
+        "budget-exhausted": [
+          "retry_policy.max_developer_retries",
+          "continuation_policy.max_continuations",
+          "continuation_policy.max_rate_limit_resumes",
+          "attention_policy.max_infrastructure_retries",
+          "tooling-retry-repeated"
+        ],
+        "integrity-failure": [
+          "stale",
+          "model-mismatch",
+          "worktree-mismatch",
+          "harness-snapshot-changed",
+          "deterministic-gate-failed",
+          "ledger-validation-failed"
+        ],
+        "no-automatic-route": [
+          "unknown-reason",
+          "abandon-dead-end",
+          "supersede-dead-end",
+          "qa-environment-failure"
+        ]
+      }
+    },
+    "completion.step": {
+      "description": "Step of the policy chain that report complete runs after a recorded report, in this order.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "policy-decide": "Record the decision that the report's pinned policy takes.",
+        "risk-assess": "Assess the risk of the accepted candidate of a risk-assessed role.",
+        "next-dispatch": "Create the next dispatch that the policy routes the batch to."
+      }
+    },
+    "completion.step_status": {
+      "description": "What report complete did with one policy chain step; the first failed step stops the chain.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "done": "The step ran now and its effect is recorded.",
+        "already-done": "The ledger already records the step's effect; it is not repeated.",
+        "not-applicable": "The report's policy or the batch state does not call for the step.",
+        "not-run": "The step did not run because an earlier step stopped the chain.",
+        "failed": "The step failed; the chain stops and the result names the step and its error with a remedy."
+      }
+    },
+    "continuation.trigger": {
+      "description": "Kind of a continuation of a checkpointed worker given by dispatch resume --trigger.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "context-limit": "Planned: the measured context reached adaptive_continuation_policy.context_limit.",
+        "tdd-cycles": "Planned: the TDD cycle count reached adaptive_continuation_policy.tdd_cycle_count.",
+        "failure-log": "Planned: the failure log reached adaptive_continuation_policy.failure_log_bytes.",
+        "vertical-slice": "Planned: one vertical slice of the work is complete.",
+        "human-decision": "Planned: the worker waits for a human decision.",
+        "startup-failure": "The worker session failed to start; the operator confirms it stopped."
+      },
+      "groups": {
+        "planned": [
+          "context-limit",
+          "tdd-cycles",
+          "failure-log",
+          "vertical-slice",
+          "human-decision"
+        ]
+      }
+    },
+    "continuation.termination_reason": {
+      "description": "Runtime adapter termination reason given by dispatch resume --termination-reason; a recognized rate limit authorizes the continuation automatically.",
+      "automatic_decisions": true,
+      "unrecognized": "not-recognized",
+      "values": {
+        "rate_limit": "The provider rate limit ended the session; the continuation is authorized automatically.",
+        "rate-limit": "The provider rate limit ended the session; the continuation is authorized automatically.",
+        "429": "The provider answered HTTP 429; the continuation is authorized automatically."
+      }
+    },
+    "report.outcome": {
+      "description": "Outcome of a role completion report.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "completed": "The role finished its brief.",
+        "blocked": "The role stopped on a blocker it could not resolve.",
+        "failed": "The role's work failed."
+      }
+    },
+    "report.check_result": {
+      "description": "Result of one verification command in a report's checks_run.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "pass": "The command ran and succeeded.",
+        "fail": "The command ran and failed.",
+        "not_run": "The command was never reached; neither a pass nor a failure."
+      }
+    },
+    "report.evidence_status": {
+      "description": "Status of a report's blockers and risks, also in every review axis.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "none": "Nothing to report; the details are empty.",
+        "present": "There is something to report; the details describe it."
+      }
+    },
+    "review.severity": {
+      "description": "Severity of a code-review axis.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "none": "The axis has no findings.",
+        "clean": "The axis was reviewed and is clean.",
+        "warning": "The axis has a warning finding.",
+        "blocker": "The axis has a blocking finding."
+      }
+    },
+    "review.recommendation": {
+      "description": "A code-review report's optional overall recommendation in review.recommendation; an absent recommendation is not accept, so it blocks auto-accept whenever auto_retry_min_severity is above info.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "accept": "The candidate meets the required gates and its remaining findings need no further developer pass; auto-accept may proceed when nothing else obstructs it.",
+        "retry": "The candidate needs a fix; the report is never auto-accepted, and without an axis finding the retry reason is code."
+      }
+    },
+    "finding.severity": {
+      "description": "Severity of one review finding.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "info": "Informational finding.",
+        "warning": "Finding that should be fixed.",
+        "blocker": "Finding that blocks acceptance."
+      }
+    },
+    "risk.trigger": {
+      "description": "Risk trigger of the code-review gate: risk assess matches it against the candidate's changed files and the developer's declared triggers, and a matched trigger makes code-review mandatory. The code-review role manifest must list every value; a project may add triggers to that manifest, and a trigger outside the manifest is refused.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "api-public-contract": "The change touches an API or another public contract.",
+        "schema-change": "The change alters a database schema.",
+        "data-migration": "The change migrates stored data.",
+        "outbox": "The change touches an outbox.",
+        "queues": "The change touches message queues.",
+        "message-schema-routing": "The change alters a message schema or message routing.",
+        "transactions": "The change alters transaction boundaries.",
+        "authorization-security": "The change touches authorization or security.",
+        "concurrency-retry": "The change touches concurrency or retry behavior.",
+        "retry-dlq": "The change touches retry or dead-letter queue handling."
+      }
+    },
+    "carried_item.source": {
+      "description": "Kind of source that raised a carried item in a brief's carried_items section.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "coordinator-finding": "A finding the coordinator attached to an accepted developer report.",
+        "review-finding": "A finding of a retried code-review.",
+        "incomplete-item": "A brief item a read-only role left undone."
+      }
+    },
+    "carried_item.status": {
+      "description": "How a code-review report accounts for one carried item.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "closed": "The item is settled; only this status counts as clean.",
+        "open": "The item is still open.",
+        "unverified": "The reviewer could not verify the item; it is not settled."
+      }
+    },
+    "delta_review.mode": {
+      "description": "Scope of a code-review after an accepted fix-forward developer-retry.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "delta": "The review covers only the new commits.",
+        "full": "The review covers the whole candidate."
+      }
+    },
+    "delta_review.escalation": {
+      "description": "Reason that escalates a delta review to a full review.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "new-risk-trigger": "The new commits match a risk trigger the prior review did not.",
+        "file-outside-carried-items": "A new commit changes a file outside the carried items.",
+        "patch-id-mismatch": "A reviewed commit's copy has a different patch id.",
+        "dropped-commit": "A reviewed commit is missing from the candidate.",
+        "no-new-commits": "The fix-forward produced no new commits."
+      }
+    },
+    "qa.stage": {
+      "description": "Name of one stage of a clean-room QA run in qa_stages.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "preparation": "A project qa_preparation command.",
+        "environment-probe": "A qa_environment_probes command, run only after a failed preparation.",
+        "project-file-check": "A qa_project_file_checks command, run only after a failed preparation.",
+        "gate": "A verification (code-check) command."
+      },
+      "groups": {
+        "primary": [
+          "preparation",
+          "gate"
+        ]
+      }
+    },
+    "qa.code_checks_started": {
+      "description": "Whether any gate (code-check) command of a QA run started.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "started": "At least one gate command started.",
+        "not_started": "The gate stage was never reached.",
+        "unknown": "Sentinel: the reader cannot confirm whether a gate command started; it is never treated as not_started, so no infrastructure same-candidate rerun is derived from it."
+      },
+      "sentinels": [
+        "unknown"
+      ]
+    },
+    "qa.diagnosis_category": {
+      "description": "Diagnosis of a failed QA preparation stage.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "infrastructure": "A failed environment probe while every project-file check passed and no code check started; same-candidate rerun with verification-infrastructure.",
+        "project-defect": "A failing project-file check or a corroborated defect signature; developer-retry with code.",
+        "unknown": "Sentinel: no confirmation or contradicting facts; the report is blocked, a retry without --reason-category is refused, and the coordinator names the cause."
+      },
+      "sentinels": [
+        "unknown"
+      ]
+    },
+    "qa_lane.owner_kind": {
+      "description": "Kind of owner of a clean-room QA lane queue entry or lease; a legacy entry without owner_kind is a dispatch's.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "dispatch": "A QA dispatch; its ID is a dispatch ID, and its queue entry is released when the dispatch will never run.",
+        "local-qa": "An integration local-QA request; its ID is the request_id that integration local-qa returned, and only that request withdraws it."
+      },
+      "default": "dispatch"
+    },
+    "context.telemetry_source": {
+      "description": "Who observed a context measurement; a model's own claim is never telemetry.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "probe": "A coordinator-run live context probe.",
+        "provider-usage": "The provider's usage report.",
+        "runtime-adapter": "The runtime adapter's measurement."
+      }
+    },
+    "context.pressure_level": {
+      "description": "Level of a recorded context-pressure measurement.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "ok": "Below the warning threshold.",
+        "warning": "At or above the warning threshold.",
+        "critical": "At or above the context limit."
+      }
+    },
+    "telemetry.session_kind": {
+      "description": "Kind of session a recorded telemetry payload measures; telemetry is data only and never alters role state, scheduling, approvals or model routing.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "worker": "A worker session of a dispatch.",
+        "coordinator": "The coordinator session."
+      }
+    },
+    "integration.evidence_kind": {
+      "description": "Route whose check evidence may be linked to an integration record.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "ci": "A CI check of the candidate/target pair.",
+        "local-qa": "A full local QA run of the pair.",
+        "resolver": "A conflict resolution of the pair; never the verification of the result."
+      }
+    },
+    "integration.check_result": {
+      "description": "Result a registered integration check carries.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "passed": "The check passed on the pair.",
+        "failed": "The check failed on the pair."
+      }
+    },
+    "integration.target_state": {
+      "description": "Where the integration ref points now, compared with the target SHA the integration record pinned; only a current pair can use its evidence.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "current": "The integration ref still points at the recorded target; the pair's evidence applies.",
+        "stale": "The integration ref moved; the pair needs a refresh before its evidence applies.",
+        "unavailable": "Sentinel: the remote cannot say where the integration ref points; it is never treated as current, so no evidence applies to the pair and a refresh is required once the ref is readable."
+      },
+      "sentinels": [
+        "unavailable"
+      ]
+    },
+    "integration.local_qa_ci_condition": {
+      "description": "Why combined-result CI cannot verify the pair, so integration local-qa runs.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "absent": "The project has no CI for the pair.",
+        "unavailable": "Sentinel: CI could not be reached; no CI evidence is assumed and only the local QA run may verify the pair.",
+        "unusable": "CI ran, but its result cannot verify the combined pair."
+      },
+      "sentinels": [
+        "unavailable"
+      ]
+    },
+    "integration.ci_verification": {
+      "description": "Verification mark only integration collect-ci writes on a linked CI check; a check without either mark, such as one linked by hand, is an unconfirmed link that never satisfies verification.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "collector-accepted": "The collector accepted the CI evidence for the pair.",
+        "collector-failed": "The collector found a failed required check on the pair."
+      }
+    },
+    "integration.evidence_verification": {
+      "description": "Verification mark of an integration local-QA result and of a linked pair check other than the integration.ci_verification marks; integration status recomputes it for local-qa evidence from the generated result.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "verified": "Local-qa evidence the coordinator generated itself whose gate passed and whose result still matches its artifact, commands and pair; it may satisfy verification and select the local-qa route.",
+        "unverified": "Nothing confirmed the evidence, such as a check linked by hand, a failed local-QA gate or a result that failed its integrity recheck; it never satisfies verification."
+      }
+    },
+    "local_qa.attempt_state": {
+      "description": "State of an integration local-QA attempt, of its result and of a request's pair observation; only a result links local-qa evidence to the pair.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "completed": "Every gate command passed on the pair; the result links passed local-qa evidence.",
+        "failed": "A gate command failed on the pair; the result links failed local-qa evidence.",
+        "unavailable": "Sentinel: the attempt could not observe the pair, run the gate or link its evidence; no evidence is linked, the pair stays unverified, and a new attempt needs an explicit --retry.",
+        "exhausted": "The pair has spent its infrastructure retry budget; no new attempt starts."
+      },
+      "sentinels": [
+        "unavailable"
+      ]
+    },
+    "ci.checkout": {
+      "description": "What a CI observation ran on.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "combined": "The merge result of exactly the candidate and the target.",
+        "unknown": "Sentinel: the combined-result checkout cannot be confirmed; the verdict is fallback unknown_checkout, never accepted."
+      },
+      "sentinels": [
+        "unknown"
+      ]
+    },
+    "ci.verdict": {
+      "description": "Verdict of a CI observation for a candidate/target pair.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "accepted": "Every required check passed on the combined result.",
+        "failed": "A required check failed on the combined result.",
+        "fallback": "The observation is not CI evidence for the pair; another route must verify it."
+      }
+    },
+    "ci.verdict_reason": {
+      "description": "Reason of a fallback or failed CI verdict.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "not_configured": "The project names no required CI checks.",
+        "unavailable": "Sentinel: the CI observation could not be made; the verdict is fallback and no CI evidence is assumed.",
+        "wrong_repository": "The observation is of another repository.",
+        "wrong_pull_request": "The observation is of another pull request.",
+        "wrong_base": "The pull request targets another branch.",
+        "stale_candidate": "The pull request head or merge result is not the linked candidate.",
+        "stale_target": "The merge result was not built on the linked target.",
+        "unknown_checkout": "The combined-result checkout cannot be confirmed.",
+        "head_only": "A required check ran on the head commit, not on the combined result.",
+        "missing_check": "A required check has no run.",
+        "pending_check": "A required check is not finished.",
+        "inconclusive_check": "A required check ended without a verdict on the code.",
+        "failed_check": "A required check failed on the combined result."
+      },
+      "sentinels": [
+        "unavailable"
+      ]
+    },
+    "resolver.event_kind": {
+      "description": "Kind of a conflict-resolver audit event of an integration record.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "cycle-spent": "A resolver report on a new target SHA spent one automatic cycle.",
+        "same-target-fix": "A fix on an already spent target; it spends the internal fix budget.",
+        "human-decision": "A human answered the resolver; it may extend the budget.",
+        "scope-change": "A human changed the scope of the resolver dispatch.",
+        "exhausted": "The resolver budget is spent; the cause decides the route."
+      }
+    },
+    "resolver.cause": {
+      "description": "Cause a conflict-resolver report names; it decides the route after a retry or an exhausted budget.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "resolved": "The conflict is resolved.",
+        "integration-incompatibility": "The two sides are incompatible; a resolver on the same target follows.",
+        "task-defect": "The task branch is defective; route developer-retry."
+      }
+    },
+    "config.approval_policy": {
+      "description": "Project orchestration approval_policy: which approvals and decisions the policy takes without a human.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "manual_all",
+      "values": {
+        "manual_all": "A human accepts every report.",
+        "milestone": "The policy accepts a clean report, except QA, publish and batches with matched risk triggers.",
+        "low_risk": "As milestone, only for a batch whose allowed paths lie inside low_risk_paths.",
+        "auto": "The policy takes every path decision and records each as a hashed auto decision; a closed list of stops halts it."
+      }
+    },
+    "config.human_approval_gate": {
+      "description": "Project orchestration human_approval_gate: how a human approval is given.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "trusted",
+      "values": {
+        "trusted": "An approval is given with --approved-by and --approved-at.",
+        "tty": "An approval is given only interactively in a terminal; incompatible with approval_policy auto."
+      }
+    },
+    "config.auto_retry_min_severity": {
+      "description": "Minimum review finding severity that triggers an automatic retry, in the project config and batch create --auto-retry-min-severity.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "info",
+      "values": {
+        "info": "Every finding triggers a retry.",
+        "warning": "A warning or blocker finding triggers a retry.",
+        "error": "Threshold only: ranks with blocker.",
+        "blocker": "Only a blocker finding triggers a retry."
+      }
+    },
+    "config.communication_language": {
+      "description": "Language of communication_policy.agent_to_agent_language and coordinator_report_language.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "en": "English.",
+        "ru": "Russian."
+      }
+    },
+    "role.mode": {
+      "description": "Mode of a role manifest; it selects the default tool set and the write permission of the role.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "write": "The role may change files inside its write paths.",
+        "read-only": "The role only reads; its retries never change the candidate."
+      }
+    },
+    "role.transport": {
+      "description": "Transport of a role assignment plan.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "in-process",
+      "values": {
+        "in-process": "A subagent of the coordinator session that the coordinator launches right after dispatch send.",
+        "external": "An externally dispatched isolated worker; it must be selected explicitly and needs an adapter."
+      }
+    },
+    "assignment.effort": {
+      "description": "Reasoning effort of a runtime assignment and of dispatch --effort without assignment plans.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "none": "No extended reasoning.",
+        "minimal": "Minimal reasoning effort.",
+        "low": "Low reasoning effort.",
+        "medium": "Medium reasoning effort.",
+        "high": "High reasoning effort.",
+        "xhigh": "Extra-high reasoning effort.",
+        "max": "Maximum reasoning effort.",
+        "ultra": "Ultra reasoning effort."
+      }
+    },
+    "access.mode": {
+      "description": "Mode of a runtime access plan component in access_policy.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "inherit",
+      "values": {
+        "inherit": "The worker inherits the runtime's own access settings.",
+        "sandbox": "The runtime must prove and apply a sandbox with the listed resources.",
+        "unsandboxed": "The worker runs without a sandbox."
+      }
+    },
+    "access.resource": {
+      "description": "Filesystem resource of an access plan requirement.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "checkout": "The worker checkout.",
+        "git_common": "The common Git directory of the checkout.",
+        "shared_storage": "The shared storage of the main checkout.",
+        "cache": "A tool cache directory."
+      }
+    },
+    "access.container_engine": {
+      "description": "Container engine of the container access component in access_policy.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "docker",
+      "values": {
+        "docker": "The Docker engine.",
+        "podman": "The Podman engine."
+      }
+    },
+    "access.operation": {
+      "description": "Coordinator operation an access policy section names.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "qa": "The QA run.",
+        "git": "Git operations of the coordinator.",
+        "publish": "The publish push."
+      }
+    },
+    "access.permission": {
+      "description": "Permission of an access plan filesystem requirement.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "read": "Read access.",
+        "write": "Write access."
+      }
+    },
+    "runtime_access.source": {
+      "description": "Layer that set one component (mode, network or filesystem) of a pinned runtime access plan. The roles and operations layers are written qualified, as 'roles.<pipeline.role>' and 'operations.<access.operation>'; every other source is one bare listed value.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "legacy": "The project has no access_policy: every component is legacy and the plan must stay an empty inherit.",
+        "default": "No access_policy layer set the component; the built-in default applies.",
+        "defaults": "The access_policy defaults layer set the component.",
+        "roles": "The access_policy override of the dispatched role set the component.",
+        "operations": "The access_policy override of the coordinator operation set the component."
+      }
+    },
+    "runtime_access.status": {
+      "description": "Verification status of a pinned runtime access plan at preflight and at every send; only a verified or legacy-inherit plan is handed to a worker.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "legacy-inherit": "A legacy empty inherit plan; the worker inherits the session's access and no native proof is required.",
+        "verified": "The pinned native runtime_access implementation confirmed mode, network and filesystem for the worker launch.",
+        "unverified": "No fresh native observation confirmed the plan; the send is refused with a remedy."
+      }
+    },
+    "runtime_access.observation_source": {
+      "description": "Source a runtime_access extension names in its observation of a worker launch. With any other source the plan stays unverified, and preflight and every send refuse the dispatch.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "native-runtime": "The native runtime observed the reserved worker environment itself.",
+        "runtime-adapter": "The runtime adapter observed the reserved worker environment for the native runtime."
+      }
+    },
+    "runtime_access.observation_mechanism": {
+      "description": "How a runtime_access extension says the approved plan reaches the worker launch. With any other mechanism the plan stays unverified, and preflight and every send refuse the dispatch.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "native-apply": "The native runtime applies the plan's settings through its supported launch mechanism.",
+        "confirmed-inheritance": "The native runtime confirmed that the worker inherits an environment that satisfies the plan."
+      }
+    },
+    "operation_access.check_state": {
+      "description": "State of one access check in the evidence of a coordinator operation (qa, git or publish), taken before the operation changes anything. Every state other than verified stops the operation with the evidence and a remedy.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "verified": "The plan allows the access and the environment confirmed it, or the coordinator's mode is inherit or natively confirmed.",
+        "unverified": "The access could not be confirmed (a missing path, an unreachable or unconfigured remote, an error that is not a refusal); a retry needs a manual decision.",
+        "denied": "The approved plan does not allow the access, or the environment refused it; only a probe-confirmed denial qualifies for an automatic infrastructure retry.",
+        "unsupported": "Sentinel: the coordinator process cannot prove the plan's non-inherit mode. The operation stops before any change and no automatic retry exists; a human runs the coordinator in a runtime whose runtime_access extension confirms the mode, or sets the operation's mode to inherit."
+      },
+      "sentinels": [
+        "unsupported"
+      ]
+    },
+    "operation_access.check_source": {
+      "description": "What established the state of an access check of a coordinator operation; only a check from probe can be infrastructure evidence for an automatic retry.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "plan": "The approved access plan decided the check without touching the environment: it does not allow the requirement or the network host.",
+        "probe": "The coordinator exercised the access itself: it created and removed a probe file, checked read access, or looked up and queried the Git remote.",
+        "inherit": "The plan mode is inherit: the coordinator runs in its own inherited environment.",
+        "native-runtime": "The pinned runtime_access implementation was asked to confirm the plan's non-inherit mode."
+      }
+    },
+    "operation_access.status": {
+      "description": "Overall status of the access evidence of a coordinator operation: legacy-inherit for a plan without authored access, otherwise the first of unsupported, denied and unverified among the failed checks, or verified when no check failed. The infrastructure retry policy authorizes an automatic retry only for denied.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "legacy-inherit": "The plan has only legacy sources: nothing is checked and the operation runs in the inherited environment.",
+        "verified": "Every check is verified; the operation proceeds.",
+        "unverified": "A check is unverified and none is denied or unsupported; the operation stops and a retry needs a manual decision.",
+        "denied": "A check is denied and none is unsupported; the operation stops, and an automatic infrastructure retry is allowed only when every failed check is a probe-confirmed denial.",
+        "unsupported": "Sentinel: a check is unsupported. The operation stops before any change and no automatic retry exists; a human decides after running the coordinator in a runtime that confirms the mode or setting the operation's mode to inherit."
+      },
+      "sentinels": [
+        "unsupported"
+      ]
+    },
+    "extension.kind": {
+      "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "transport_health": "Probes the health of a runtime transport.",
+        "verification_environment_health": "Probes the health of the verification environment.",
+        "retry_reason_classifier": "Classifies a retry reason hint from observed evidence.",
+        "context_telemetry_provider": "Observes the context usage of a dispatch.",
+        "human_notifier": "Notifies a human.",
+        "runtime_access": "Observes whether the runtime can prove and apply a runtime access plan."
+      }
+    },
+    "repo_map.tier": {
+      "description": "Repo Map tier of repo_map_policy.tier, min_tier and min_tier_by_role.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "default": "full",
+      "values": {
+        "minimal": "A path-only map without the parser bundle's symbols and signatures.",
+        "full": "A map with symbols and signatures from the parser bundle."
+      }
+    },
+    "context_package.role": {
+      "description": "Role a registered context package is frozen for, given by context-package register --role.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "default": "shared",
+      "values": {
+        "shared": "The package is shared across role sessions."
+      }
+    },
+    "context_package.freshness": {
+      "description": "Freshness of a registered context package against the batch base, the current developer candidate and its frozen memory sources; recorded in the batch and the brief.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "fresh": "The package matches the current base, candidate and memory sources.",
+        "stale": "The base, the candidate or a frozen memory source changed since registration; dispatch create registers a new package and refuses one that is already stale."
+      }
+    },
+    "batch.required_gate": {
+      "description": "Gate a batch plan names with batch create --required-gate; recorded in the plan's required_gates.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "default": "none",
+      "values": {
+        "none": "The plan names no additional gate.",
+        "review": "The plan requires the code-review gate.",
+        "qa": "The plan requires the qa gate."
+      }
+    },
+    "runtime.state": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "ready": "Ready at a confirmed boundary; no automatic approval.",
+        "running": "An authorized operation has a durable intent.",
+        "suspended": "No new effects until diagnostics and reconciliation succeed.",
+        "reconciling": "Read and reconcile existing evidence; no new external effect.",
+        "completed": "No further operational work; cannot reopen ledger lifecycle."
+      },
+      "transition_contract": "harness.orchestration.core.runtime_state_contract:RUNTIME_TRANSITIONS"
+    },
+    "runtime.operation_kind": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "dispatch-send": "Deliver an approved immutable dispatch.",
+        "checkpoint": "Capture a write-role checkpoint.",
+        "report-submit": "Capture a role completion report.",
+        "transition": "Perform an authorized lifecycle transition.",
+        "migrate": "Migrate a selected ledger generation.",
+        "local-write": "A recoverable local storage operation."
+      }
+    },
+    "runtime.operation_phase": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "prepared": "Intent persisted before any effect.",
+        "effect-observed": "Effect result is backed by evidence.",
+        "ledger-committed": "Relevant ledger records and matching audit confirmed.",
+        "committed": "Store commit reconciled to ledger evidence."
+      },
+      "transition_contract": "harness.orchestration.core.runtime_state_contract:RUNTIME_OPERATION_TRANSITIONS"
+    },
+    "runtime.effect_state": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "not-started": "No effect was started under this intent.",
+        "confirmed": "Result is confirmed by durable evidence.",
+        "unknown": "Sentinel: result is ambiguous; stop new effects and require reconciliation."
+      },
+      "sentinels": [
+        "unknown"
+      ],
+      "transition_contract": "harness.orchestration.core.runtime_state_contract:RUNTIME_EFFECT_TRANSITIONS"
+    },
+    "runtime.failure_code": {
+      "description": "Reserved runtimeState.v1 operational field for #683/#684; never replaces ledger lifecycle/approval authority.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "config-invalid": "Current project config cannot authorize a new transition.",
+        "runtime-compatibility": "Contract version mismatch prevents continuation.",
+        "integrity-failure": "A record or approval binding failed verification.",
+        "execution-failure": "An authorized operation failed.",
+        "ambiguous-effect": "An external effect cannot be proven; never retry blindly.",
+        "storage-unavailable": "Storage cannot currently be read or written.",
+        "state-persist-failed": "New state could not be durably saved; do not claim success.",
+        "concurrency-conflict": "Another live writer or worker prevents this operation.",
+        "internal-error": "An internal invariant failed; collect sanitized diagnostics."
+      }
+    },
+    "diagnostic.code": {
+      "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-normalized": "Configuration boundary observation: config-normalized.",
+        "config-noncanonical": "Configuration boundary observation: config-noncanonical.",
+        "config-contract": "Configuration boundary observation: config-contract.",
+        "config-schema": "Configuration boundary observation: config-schema.",
+        "config-invalid": "Configuration boundary observation: config-invalid.",
+        "config-options": "Configuration boundary observation: config-options.",
+        "config-read": "Configuration boundary observation: config-read.",
+        "config-write": "Configuration boundary observation: config-write.",
+        "config-ambiguous": "Configuration boundary observation: config-ambiguous.",
+        "config-reference": "Configuration boundary observation: config-reference.",
+        "config-cycle": "Configuration boundary observation: config-cycle."
+      }
+    },
+    "diagnostic.severity": {
+      "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "error": "Configuration boundary observation: error.",
+        "warning": "Configuration boundary observation: warning."
+      }
+    }
+  }
+}
