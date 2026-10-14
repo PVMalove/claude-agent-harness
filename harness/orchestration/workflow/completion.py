@@ -30,6 +30,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
+from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.decisions import decide_batch
 from harness.orchestration.workflow.dispatch import create_dispatch
 from harness.orchestration.workflow.history import (
@@ -279,7 +280,9 @@ def _run_policy_chain(
             if report.get("role") == "verification":
                 # Nor a diff of its own: measure the pinned candidate as risk assess does.
                 changed_files = _candidate_changed_files(
-                    repo, state["batch"], _candidate_commit(repo, candidate)
+                    repo,
+                    rebase.batch_base(repo, state["batch"]),
+                    _candidate_commit(repo, candidate),
                 )
             assess_risk(
                 argparse.Namespace(

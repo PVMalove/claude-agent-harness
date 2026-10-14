@@ -123,11 +123,9 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
-def _candidate_changed_files(
-    repo: Path, batch: JsonObject, candidate: str
-) -> list[str]:
-    """The files ``candidate`` changes against the batch base, as a risk assessment measures them."""
-    base = rebase.batch_base(repo, batch)
+def _candidate_changed_files(repo: Path, base: str | None, candidate: str) -> list[str]:
+    """The files ``candidate`` changes against ``base`` (``rebase.batch_base``), as a risk
+    assessment measures them."""
     return (
         _changed_files_between(repo, base, candidate)
         if base
@@ -178,7 +176,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "risk assessment base must be an ancestor of the candidate commit",
                 remedy="pass a risk assessment base that is an ancestor of candidate_commit",
             )
-        if _candidate_changed_files(repo, batch, candidate) != changed_files:
+        if _candidate_changed_files(repo, base, candidate) != changed_files:
             raise CoordinatorError(
                 "changed_files must exactly match the candidate diff",
                 remedy="regenerate changed_files from the actual diff for candidate_commit",
