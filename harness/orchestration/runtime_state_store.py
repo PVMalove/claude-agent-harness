@@ -52,6 +52,12 @@ _LOCK_BUSY = frozenset({errno.EACCES, errno.EAGAIN, errno.EDEADLK})
 _DIRECTORY_FSYNC_UNSUPPORTED = frozenset(
     {errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP}
 )
+_STEP_REMEDIES = {
+    "storage-unavailable": "make the runtime state directory readable and writable, then "
+    "retry; nothing new was written",
+    "state-persist-failed": "free space or repair the filesystem, then retry the write "
+    "against the last durable revision",
+}
 # The platform flag the durability step reads; tests replace it to cover the Windows path.
 WINDOWS = os.name == "nt"
 # What a durable write cannot promise; a skipped step is reported, never hidden.
@@ -438,29 +444,31 @@ class RuntimeStateStore:
         """Create the store; its first directory ignores itself, so no checkout turns dirty
         even without a root ``.harness/`` rule."""
         base, directory = self.location.base, self.location.directory
-        self._refuse_links(base, base / "alternate", directory)
-        base.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(
-                base / ".gitignore", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
-            )
-        except FileExistsError:
-            pass
-        else:
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(b"*\n")
-        directory.mkdir(parents=True, exist_ok=True)
-        self._refuse_links(base, base / "alternate", directory)
+        with self._storage_step("prepare", "storage-unavailable", directory):
+            self._refuse_links(base, base / "alternate", directory)
+            base.mkdir(parents=True, exist_ok=True)
+            try:
+                fd = os.open(
+                    base / ".gitignore", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644
+                )
+            except FileExistsError:
+                pass
+            else:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(b"*\n")
+            directory.mkdir(parents=True, exist_ok=True)
+            self._refuse_links(base, base / "alternate", directory)
 
     def read(self, batch_id: str) -> JsonObject | None:
         """The current record, ``None`` when none was written; a record that is unreadable or
         bound to another identity stops instead of being repaired or defaulted."""
         path = self.path(batch_id)
-        self._refuse_links(path)
-        try:
-            raw = path.read_bytes()
-        except FileNotFoundError:
-            return None
+        with self._storage_step("read", "storage-unavailable", path):
+            self._refuse_links(path)
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                return None
         try:
             record = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -501,26 +509,28 @@ class RuntimeStateStore:
 
         The system drops the lock when its holder dies, so no stale lock is ever left behind."""
         path = self.location.directory / f"{batch_id}.lock"
-        self._refuse_links(path)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
-        with os.fdopen(fd, "r+b") as handle:
-            deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
-            while True:
-                try:
-                    _guard_byte(handle, acquire=True)
-                    break
-                except OSError as exc:
-                    if exc.errno not in _LOCK_BUSY:
-                        raise
-                    if time.monotonic() >= deadline:
-                        raise self._error(
-                            "concurrency-conflict",
-                            "lock",
-                            f"another writer holds {self.location.relative(path)} longer "
-                            f"than {LOCK_TIMEOUT_SECONDS} seconds",
-                            "repeat the write once the other writer finishes",
-                        ) from None
-                    time.sleep(LOCK_RETRY_SECONDS)
+        with self._storage_step("lock", "storage-unavailable", path):
+            self._refuse_links(path)
+            handle = open(path, "a+b", opener=_owner_only)
+        with handle:
+            with self._storage_step("lock", "storage-unavailable", path):
+                deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+                while True:
+                    try:
+                        _guard_byte(handle, acquire=True)
+                        break
+                    except OSError as exc:
+                        if exc.errno not in _LOCK_BUSY:
+                            raise
+                        if time.monotonic() >= deadline:
+                            raise self._error(
+                                "concurrency-conflict",
+                                "lock",
+                                f"another writer holds {self.location.relative(path)} "
+                                f"longer than {LOCK_TIMEOUT_SECONDS} seconds",
+                                "repeat the write once the other writer finishes",
+                            ) from None
+                        time.sleep(LOCK_RETRY_SECONDS)
             try:
                 yield
             finally:
@@ -575,23 +585,49 @@ class RuntimeStateStore:
                     "write a record that follows the current revision's transitions",
                     revision,
                 )
-            directory_fsync = self._replace(path, record)
+            directory_fsync = self._replace(path, record, revision)
         return WriteResult(int(record["revision"]), directory_fsync)
 
-    def _replace(self, path: Path, record: JsonObject) -> str:
-        """Write a flushed and fsynced temporary file, then replace the record atomically."""
+    def _replace(self, path: Path, record: JsonObject, durable: int) -> str:
+        """Write a flushed and fsynced temporary file, then replace the record atomically.
+
+        A failure before the replace leaves revision ``durable`` byte for byte intact."""
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        failed = "state-persist-failed"
         try:
-            with os.fdopen(os.open(temporary, flags, 0o600), "wb") as stream:
-                stream.write(_canonical(record).encode("utf-8"))
-                stream.flush()
-                os.fsync(stream.fileno())
-            LifecycleLedger._replace_with_windows_retry(temporary, path)
+            with self._storage_step("write-temp", failed, temporary, durable):
+                with open(temporary, "xb", opener=_owner_only) as stream:
+                    stream.write(_canonical(record).encode("utf-8"))
+                    stream.flush()
+                    with self._storage_step("fsync-file", failed, temporary, durable):
+                        os.fsync(stream.fileno())
+            with self._storage_step("replace", failed, path, durable):
+                LifecycleLedger._replace_with_windows_retry(temporary, path)
         finally:
             with contextlib.suppress(OSError):
                 temporary.unlink()
-        return _directory_durability(path.parent)
+        with self._storage_step("fsync-directory", failed, path.parent, durable):
+            return _directory_durability(path.parent)
+
+    @contextmanager
+    def _storage_step(
+        self, step: str, code: str, path: Path, durable_revision: int | None = None
+    ) -> Iterator[None]:
+        """Turn an ``OSError`` of one storage step into a sanitized refusal; the raw error,
+        its absolute paths and the record never reach the diagnostics."""
+        try:
+            yield
+        except OSError as exc:
+            raise RuntimeStateError(
+                code,
+                step,
+                exc.strerror or type(exc).__name__,
+                remedy=_STEP_REMEDIES[code],
+                durable_revision=durable_revision,
+                path=self.location.relative(path),
+                error_name=errno.errorcode.get(exc.errno) if exc.errno else None,
+                durability="unconfirmed" if step == "fsync-directory" else "unchanged",
+            ) from None
 
 
 @dataclass(frozen=True)
@@ -600,6 +636,11 @@ class WriteResult:
 
     revision: int
     directory_fsync: str
+
+
+def _owner_only(path: str, flags: int) -> int:
+    """Open a store file readable by its owner only; ``open`` closes it if wrapping fails."""
+    return os.open(path, flags, 0o600)
 
 
 def _fsync_directory(directory: Path) -> None:
