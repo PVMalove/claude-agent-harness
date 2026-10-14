@@ -5,16 +5,15 @@
   "type": "object",
   "additionalProperties": false,
   "anyOf": [
-    {"required": ["provider_profiles", "assignment_plans", "concurrency_budget", "verification_commands"]},
-    {"required": ["access_policy"], "properties": {
-      "provider_profiles": {"maxProperties": 0},
-      "assignment_plans": {"maxProperties": 0},
-      "backend_zones": {"maxProperties": 0}
-    }},
     {
       "required": [
-        "infrastructure_retry_policy"
-      ],
+        "provider_profiles",
+        "assignment_plans",
+        "concurrency_budget",
+        "verification_commands"
+      ]
+    },
+    {
       "properties": {
         "provider_profiles": {
           "maxProperties": 0

@@ -10,6 +10,7 @@ import contextlib
 import uuid
 
 from . import operational_guards
+from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS
 from .core.utils import CoordinatorError, JsonObject
 
 TRANSITION_FIELD = "infrastructure_retry_sha256"
@@ -66,7 +67,7 @@ def _retry_budget(batch: JsonObject, brief: JsonObject, policy: JsonObject) -> i
         1
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("dispatch_id") != brief["dispatch_id"]
-        and decision.get("decision") in {"retry", "cancel"}
+        and decision.get("decision") in INFRASTRUCTURE_RETRY_DECISIONS
         and decision.get("routing", {}).get("reason_category")
         == "verification-infrastructure"
         and decision.get("routing", {}).get("candidate_commit")
@@ -336,6 +337,11 @@ def authorize_unsent(
     from . import operation_access, runtime_access
     from .core import config as core_config
     from .ledger.ledger_ops import _load_dispatch_status
+    from .operation_access import (
+        AccessCheckSource,
+        AccessCheckState,
+        OperationAccessStatus,
+    )
     from .workflow.history import _latest_developer_candidate
 
     policy = _enabled_policy(brief)
@@ -351,16 +357,17 @@ def authorize_unsent(
     failed = [
         check
         for check in evidence.get("checks", [])
-        if check.get("state") != "verified"
+        if check.get("state") != AccessCheckState.VERIFIED
     ]
     if (
         failure.get("sha256") != operational_guards.policy_digest(attempt)
         or attempt.get("dispatch_id") != brief["dispatch_id"]
         or evidence.get("plan_digest") != brief["runtime_access"]["plan_digest"]
-        or evidence.get("status") != "denied"
+        or evidence.get("status") != OperationAccessStatus.DENIED
         or not failed
         or any(
-            check.get("source") != "probe" or check.get("state") != "denied"
+            check.get("source") != AccessCheckSource.PROBE
+            or check.get("state") != AccessCheckState.DENIED
             for check in failed
         )
     ):
@@ -498,14 +505,14 @@ def stop_attention(
     locked: bool = False,
 ) -> None:
     """Persist policy refusal without deciding the report or rewriting evidence."""
-    from .operation_access import OperationAccessError
+    from .operation_access import OperationAccessError, OperationAccessStatus
 
     reason = (
         error.attention_reason if isinstance(error, _RetryRefusal) else "unknown-reason"
     )
     if reason is None or (
         isinstance(error, OperationAccessError)
-        and error.evidence.get("status") == "denied"
+        and error.evidence.get("status") == OperationAccessStatus.DENIED
     ):
         return
     from .core import utils

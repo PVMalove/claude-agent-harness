@@ -27,7 +27,9 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.constants import (
     ACCEPTED_DECISIONS,
     AUTO_REPORT_FIELDS,
+    CONTINUATION_DECISIONS,
     OPERATIONAL_REASON_CATEGORIES,
+    RATE_LIMIT_RESUME_DECISIONS,
 )
 from harness.orchestration.core.git_utils import _candidate_commit
 from harness.orchestration.core.utils import CoordinatorError, JsonObject, _repo
@@ -127,10 +129,7 @@ def _budget(config: JsonObject, batch: JsonObject) -> JsonObject:
     candidate, so ``spent`` compares with its ``max``."""
     recorded = batch.get("coordinator_decisions", [])
     continuations = [
-        item
-        for item in recorded
-        if item.get("decision")
-        in {"continue", "continue-automatic", "continue-rate-limit"}
+        item for item in recorded if item.get("decision") in CONTINUATION_DECISIONS
     ]
     continuation = _continuation_policy(config)
     return {
@@ -146,7 +145,7 @@ def _budget(config: JsonObject, batch: JsonObject) -> JsonObject:
             "spent": _highest(
                 item.get("dispatch_id")
                 for item in continuations
-                if item["decision"] in {"continue-automatic", "continue-rate-limit"}
+                if item["decision"] in RATE_LIMIT_RESUME_DECISIONS
             ),
             "max_per_dispatch": continuation["max_rate_limit_resumes"],
         },

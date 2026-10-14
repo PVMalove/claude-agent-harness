@@ -23,6 +23,7 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
+from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _qa_preparation_commands
 from .core.constants import (
     QA_NOT_RUN_RESULT,
@@ -30,6 +31,7 @@ from .core.constants import (
     QA_QUEUE_FIELDS,
     QA_LEASE_FIELDS,
     STATE_REL,
+    QaOwnerKind,
 )
 from .core.utils import (
     CoordinatorError,
@@ -224,7 +226,7 @@ def _queue_entries(ledger: LifecycleLedger) -> list[tuple[Path, JsonObject]]:
 def _owner(value: JsonObject) -> tuple[str, str]:
     """Normalize legacy dispatch records without rewriting their history."""
     return (
-        str(value.get("owner_kind", "dispatch")),
+        str(value.get("owner_kind", QaOwnerKind.DISPATCH)),
         str(value.get("owner_id", value.get("dispatch_id"))),
     )
 
@@ -232,7 +234,7 @@ def _owner(value: JsonObject) -> tuple[str, str]:
 def _owner_document(kind: str, identity: str) -> JsonObject:
     return (
         {"dispatch_id": identity}
-        if kind == "dispatch"
+        if kind == QaOwnerKind.DISPATCH
         else {"owner_kind": kind, "owner_id": identity}
     )
 
@@ -246,11 +248,11 @@ def _valid_owner_schema(value: JsonObject, legacy_fields: set[str]) -> bool:
 
 def _validate_owner(value: JsonObject) -> None:
     kind, identity = _owner(value)
-    if kind not in {"dispatch", "local-qa"}:
+    if kind not in tuple(QaOwnerKind):
         raise CoordinatorError(
             "QA owner kind is invalid", remedy="use a dispatch or local-qa owner"
         )
-    if kind == "dispatch":
+    if kind == QaOwnerKind.DISPATCH:
         _safe_id(identity, "QA owner")
     elif re.fullmatch(r"local-qa-[0-9a-f]{32}", identity) is None:
         raise CoordinatorError(
@@ -284,7 +286,7 @@ def acquire(
     ledger: LifecycleLedger,
     owner_id: str,
     *,
-    owner_kind: str = "dispatch",
+    owner_kind: str = QaOwnerKind.DISPATCH,
     lease_seconds: int,
 ) -> JsonObject:
     """Enqueue and acquire the one FIFO lane. Caller holds the short ledger lock."""
@@ -380,7 +382,7 @@ def _enqueue(
     ledger: LifecycleLedger,
     dispatch_id: str,
     *,
-    owner_kind: str = "dispatch",
+    owner_kind: str = QaOwnerKind.DISPATCH,
 ) -> tuple[Path, JsonObject]:
     for path, entry in _queue_entries(ledger):
         if _owner(entry) == (owner_kind, dispatch_id):
@@ -425,7 +427,7 @@ def release_queue(ledger: LifecycleLedger, dispatch_ids: list[str]) -> list[str]
     released = []
     for path, entry in _queue_entries(ledger):
         kind, identity = _owner(entry)
-        if kind == "dispatch" and identity in dispatch_ids:
+        if kind == QaOwnerKind.DISPATCH and identity in dispatch_ids:
             _delete_record(ledger, path, reason="release abandoned QA queue entry")
             released.append(identity)
     return released
@@ -638,8 +640,16 @@ def _record_report(
     ops: QaWorkflowOps,
 ) -> Path:
     batch = ops._load_batch(root, dispatch["batch_id"])
-    ops._validate_batch_integrity(root, batch)
-    ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
+    try:
+        ops._validate_batch_integrity(root, batch)
+        policy = read_snapshot(dispatch)
+        ops._validate_dispatch(repo, policy["config"], root, batch, dispatch)
+    except CoordinatorError as exc:
+        path = capture_unaccepted(root, dispatch, report, exc)
+        raise CoordinatorError(
+            exc.message,
+            remedy=f"QA evidence captured without acceptance at {path}; {exc.remedy}",
+        ) from exc
     status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
     entry = _batch_entry(batch, dispatch["dispatch_id"])
     if (
@@ -655,7 +665,7 @@ def _record_report(
     ops._validate_report(
         report,
         dispatch,
-        ops._role(repo, "qa"),
+        policy["role"],
         repo,
         batch.get("integration_base_commit") or batch.get("base_commit"),
     )
@@ -692,7 +702,10 @@ def _recover_transient_failure(
         current = _lease(ledger)
         # An expired lease may have been cleared and the lane taken by another owner, including a
         # local QA run without a dispatch_id; only this dispatch's own lease is released.
-        if current and _owner(current) == ("dispatch", dispatch["dispatch_id"]):
+        if current and _owner(current) == (
+            QaOwnerKind.DISPATCH,
+            dispatch["dispatch_id"],
+        ):
             _delete_record(ledger, lease_path, reason="release transient QA lease")
         batch = ops._load_batch(root, dispatch["batch_id"])
         entry = next(
@@ -863,7 +876,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
         policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
         from .infrastructure_retry import pinned
 
-        config = ops._config(repo)
+        config = read_snapshot(dispatch)["config"]
         pinned_commands = pinned(dispatch)
         if pinned_commands is not None:
             config = {**config, **pinned_commands}

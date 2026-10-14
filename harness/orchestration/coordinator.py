@@ -42,6 +42,7 @@ if _HARNESS_ROOT.name != "harness" or not (_HARNESS_ROOT / "__init__.py").is_fil
     sys.modules["harness"] = importlib.util.module_from_spec(_spec)
 
 from harness.errors import HarnessError, print_and_exit
+from harness.orchestration.config_commands import validate_config as validate_config
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration.core import constants
 
@@ -233,6 +234,8 @@ def main() -> int:
     except HarnessError as exc:
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+    if args.command == "config" and output.get("valid") is False:
+        return 2
     return 0
 
 

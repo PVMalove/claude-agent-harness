@@ -33,7 +33,9 @@ from harness.orchestration.core.constants import (
     INTEGRATION_RECORD_ID_PATTERN,
     INTEGRATION_REFERENCE_MAX_CHARS,
     INTEGRATION_SHA_PATTERN,
+    EvidenceVerification,
     IntegrationCheckResult,
+    IntegrationTargetState,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -96,7 +98,7 @@ def _qa_replacement(
         if link["kind"] == "ci" and link.get("verification") == INTEGRATION_CI_COLLECTED
     ]
     current = [link for link in collected if _satisfies(link, pair)]
-    if current and state == "current":
+    if current and state == IntegrationTargetState.CURRENT:
         verified = current[-1]["collector"]
         return {
             "applies": True,
@@ -117,7 +119,11 @@ def _qa_replacement(
             },
         }
     if current:
-        reason = "integration_moved" if state == "stale" else "integration_unreadable"
+        reason = (
+            "integration_moved"
+            if state == IntegrationTargetState.STALE
+            else "integration_unreadable"
+        )
         verified = current[-1]["collector"]
         return {
             "applies": False,
@@ -293,14 +299,22 @@ def _observe(repo: Path, identity: JsonObject) -> JsonObject:
     try:
         tip = _remote_branch_tip(repo, identity["remote"], identity["integration_ref"])
     except CoordinatorError as exc:
-        return {"state": "unavailable", "integration_tip": None, "reason": exc.message}
+        return {
+            "state": IntegrationTargetState.UNAVAILABLE,
+            "integration_tip": None,
+            "reason": exc.message,
+        }
     if tip is None:
         return {
-            "state": "unavailable",
+            "state": IntegrationTargetState.UNAVAILABLE,
             "integration_tip": None,
             "reason": f"{identity['integration_ref']!r} is not a branch of remote {identity['remote']!r}",
         }
-    state = "current" if tip == identity["target_sha"] else "stale"
+    state = (
+        IntegrationTargetState.CURRENT
+        if tip == identity["target_sha"]
+        else IntegrationTargetState.STALE
+    )
     return {"state": state, "integration_tip": tip}
 
 
@@ -428,7 +442,10 @@ def integration_prepare(args: argparse.Namespace) -> JsonObject:
             _write_record(ledger, IntegrationRecord.from_dict(record))
             links, created = [], True
     state = (
-        {"state": "current", "integration_tip": record["identity"]["target_sha"]}
+        {
+            "state": IntegrationTargetState.CURRENT,
+            "integration_tip": record["identity"]["target_sha"],
+        }
         if created
         else _observe(repo, record["identity"])
     )
@@ -534,7 +551,9 @@ def integration_link_evidence(args: argparse.Namespace) -> JsonObject:
             "reference": reference,
             "artifact_sha256": artifact,
         }
-        return _store_evidence(root, ledger, members, "unverified", {})
+        return _store_evidence(
+            root, ledger, members, EvidenceVerification.UNVERIFIED, {}
+        )
 
 
 def _store_evidence(
@@ -649,7 +668,7 @@ def _notice(
 ) -> str:
     target = pair["target_sha"]
     if (
-        state == "current"
+        state == IntegrationTargetState.CURRENT
         and pair["candidate_sha"] != record["identity"]["candidate_sha"]
     ):
         if verified:
@@ -663,9 +682,9 @@ def _notice(
             "integration QA (register it with 'integration link-evidence') of the new pair is required. No re-review is "
             "required because of the refresh alone."
         )
-    if state == "current":
+    if state == IntegrationTargetState.CURRENT:
         return f"The integration ref still points at the recorded target {target}."
-    if state == "stale":
+    if state == IntegrationTargetState.STALE:
         return (
             f"The integration ref moved from {target} to {observed['integration_tip']}. The initial "
             "evidence covers only the recorded pair; a new check of the new candidate/target pair "
@@ -686,7 +705,10 @@ def _local_pair_current(
 ) -> bool:
     """Whether the remote issue branch still is the candidate of the pair: only then does a local
     QA of that candidate say anything about what a pull request carries."""
-    if not any(link["kind"] == "local-qa" for link in links) or state != "current":
+    if (
+        not any(link["kind"] == "local-qa" for link in links)
+        or state != IntegrationTargetState.CURRENT
+    ):
         return False
     try:
         return bool(
@@ -722,9 +744,9 @@ def _pair_checks(
                 or local_pair_current
                 and link["candidate_sha"] == pair["candidate_sha"]
             ),
-            "verification": "verified"
+            "verification": EvidenceVerification.VERIFIED
             if link["kind"] == "local-qa" and verified_evidence(root, link)
-            else "unverified"
+            else EvidenceVerification.UNVERIFIED
             if link["kind"] == "local-qa"
             else link["verification"],
         }
@@ -777,10 +799,11 @@ def integration_status(args: argparse.Namespace) -> JsonObject:
         "original_target_sha": identity["target_sha"],
         "state": state,
         "integration_tip": tip,
-        "refresh_required": state != "current",
+        "refresh_required": state != IntegrationTargetState.CURRENT,
         "source_evidence": {
             "pair": record["source"]["pair"],
-            "applies_to_current_pair": state == "current" and not refreshes,
+            "applies_to_current_pair": state == IntegrationTargetState.CURRENT
+            and not refreshes,
             "qa": record["source"]["qa"],
             "publish": record["source"]["publish"],
         },
@@ -1006,7 +1029,7 @@ def _verified_source(status: JsonObject) -> tuple[str, JsonObject]:
         if check["kind"] == "local-qa"
         and check["result"] == IntegrationCheckResult.PASSED
         and check["applies_to_current_pair"]
-        and check["verification"] == "verified"
+        and check["verification"] == EvidenceVerification.VERIFIED
     ]
     return "local-qa", {"evidence_id": local[-1]["evidence_id"]}
 
@@ -1020,7 +1043,8 @@ def _has_passed_check(
     usable = {
         check["evidence_id"]
         for check in pair_checks
-        if check["applies_to_current_pair"] and check["verification"] != "unverified"
+        if check["applies_to_current_pair"]
+        and check["verification"] != EvidenceVerification.UNVERIFIED
     }
     return any(
         link["evidence_id"] in usable and _satisfies(link, pair) for link in links
@@ -1126,7 +1150,7 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
         "state": status["state"],
         "refreshed": refreshed,
     }
-    if status["state"] == "unavailable":
+    if status["state"] == IntegrationTargetState.UNAVAILABLE:
         return {
             **result,
             "step": "unavailable",
@@ -1148,7 +1172,7 @@ def integration_next(args: argparse.Namespace) -> JsonObject:
                 "the coordinator workflow continues the open resolver batch; wait"
             ],
         }
-    if status["state"] != "current":
+    if status["state"] != IntegrationTargetState.CURRENT:
         return {
             **result,
             "step": "refresh",
