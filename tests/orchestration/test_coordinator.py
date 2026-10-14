@@ -3225,7 +3225,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     def _rerun_batch_candidate(self) -> tuple[str, str, list[str]]:
         """A batch started on a branch that an earlier batch of the ticket left one commit on
-        (issue #686), with an accepted developer report of its own single commit."""
+        (issue #686), with a developer report of its own single commit submitted: the files and the
+        commit map of the report name only that commit. The earlier commit's message carries a risk
+        trigger, so a risk assessment that counted it would match the trigger."""
         _git(
             self.repo,
             "worktree",
@@ -3240,7 +3242,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             "OLD = 1\n", encoding="utf-8"
         )
         _git(self.worktree, "add", "-A")
-        _git(self.worktree, "commit", "-m", "feat: old")
+        _git(self.worktree, "commit", "-m", "feat: old transactions")
         plan = {**self._batch_plan(), "allowed_path": ["services/new.py"]}
         batch = coordinator.create_batch(self._args(**plan))
         coordinator.approve_batch(
@@ -3255,34 +3257,101 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         brief = self._dispatch(batch_id, "developer")["brief"]
         self._start(brief["dispatch_id"])
         candidate, _ = self._developer_commit("new")
-        changed = git_utils._changed_files_between(
-            self.repo, record["branch_start_commit"], candidate
-        )
-        self.assertEqual(changed, ["services/new.py"])
+        changed = ["services/new.py"]
         self._submit(
-            brief["dispatch_id"], self._developer_report(brief, candidate, changed)
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                candidate,
+                changed,
+                commit_map=[
+                    {"commit_sha": candidate, "plan_entry_id": entry["id"]}
+                    for entry in brief["commit_plan"]
+                ],
+            ),
         )
-        self._decide(batch_id, "accept")
         return batch_id, candidate, changed
 
-    def test_a_batch_on_a_branch_with_earlier_commits_reports_only_its_own_change(
+    def _assess_with(
+        self,
+        batch_id: str,
+        candidate: str,
+        changed: list[str],
+        base_commit: str | None = None,
+        triggers: list[str] | None = None,
+    ) -> JsonObject:
+        return coordinator.assess_risk(
+            self._args(
+                batch=batch_id,
+                candidate_commit=candidate,
+                base_commit=base_commit,
+                changed_file=changed,
+                developer_trigger=triggers,
+            )
+        )
+
+    def test_a_batch_on_a_branch_with_earlier_commits_shows_no_scope_warning(
         self,
     ) -> None:
-        """Commits an earlier batch left on the branch are neither listed in the report, nor
-        mapped to the plan, nor part of the risk assessment (issue #686)."""
-        batch_id, candidate, changed = self._rerun_batch_candidate()
+        """The decision packet of a developer report that lists only its own file has no scope
+        warning, and the diff hint of a review packet starts where the batch started (issue #686)."""
+        batch_id, candidate, _ = self._rerun_batch_candidate()
 
-        self._assess(batch_id, candidate, changed)
+        packet = coordinator.decision_packet(self._args(batch=batch_id, dispatch=None))
+
+        self.assertEqual(packet["scope_warnings"], [])
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, candidate, ["services/new.py"])
+        brief = self._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
+        review = coordinator.decision_packet(
+            self._args(batch=batch_id, dispatch=brief["dispatch_id"])
+        )
+        self.assertEqual(
+            review["diff"],
+            f"git diff {self._batch_record(batch_id)['branch_start_commit']}..{candidate}",
+        )
+
+    def test_the_risk_assessment_of_a_batch_on_a_branch_with_earlier_commits_counts_only_its_own_diff(
+        self,
+    ) -> None:
+        batch_id, candidate, changed = self._rerun_batch_candidate()
+        self._decide(batch_id, "accept")
+        record = self._batch_record(batch_id)
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "changed_files must exactly match"
+        ):
+            self._assess_with(
+                batch_id, candidate, ["services/new.py", "services/old.py"]
+            )
+        with self.assertRaises(coordinator.CoordinatorError) as refused:
+            self._assess_with(
+                batch_id, candidate, changed, record["integration_base_commit"]
+            )
+        assessed = self._assess_with(
+            batch_id, candidate, changed, record["branch_start_commit"]
+        )
 
         self.assertEqual(
-            self._batch_record(batch_id)["risk_assessments"][-1]["candidate_commit"],
-            candidate,
+            refused.exception.remedy,
+            f"omit --base-commit, or pass the batch base commit {record['branch_start_commit']}",
         )
+        self.assertEqual(
+            (
+                assessed["changed_files"],
+                assessed["review_scope"],
+                assessed["base_commit"],
+            ),
+            (changed, changed, record["branch_start_commit"]),
+        )
+        # Only the earlier commit's message carries this trigger.
+        self.assertNotIn("transactions", assessed["matched_triggers"])
 
     def test_publish_of_a_batch_on_a_branch_with_earlier_commits_lists_only_its_own_files(
         self,
     ) -> None:
         batch_id, candidate, changed = self._rerun_batch_candidate()
+        self._decide(batch_id, "accept")
         self._assess(batch_id, candidate, changed)
         self._accepted_review_and_qa(batch_id, candidate)
         brief = self._dispatch(

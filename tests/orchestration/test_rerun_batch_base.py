@@ -3,18 +3,14 @@ changes from ``branch_start_commit`` (issue #686)."""
 
 from __future__ import annotations
 
-import argparse
-import contextlib
 import subprocess
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from harness.orchestration.core.git_utils import _changed_files_between
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
-from harness.orchestration.ledger.lifecycle import BatchRecord, RiskAssessmentRecord
-from harness.orchestration.workflow import rebase, reports, risk
+from harness.orchestration.workflow import rebase, reports
 from harness.orchestration.workflow.fix_forward import FixForwardHistory
 
 DEVELOPER = {"mode": "write", "name": "developer"}
@@ -53,6 +49,7 @@ def published_branch(tmp_path: Path) -> tuple[Path, dict[str, str]]:
 
     ``base`` is the integration base, ``old1`` and ``old2`` the commits of the earlier batch (the
     batch under test starts at ``old2``) and ``new`` the one commit of the batch under test.
+    ``side`` sits on a side branch off ``base`` and ``unrelated`` names no commit at all.
     """
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -61,6 +58,10 @@ def published_branch(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     commits["old1"] = _commit(repo, "old1.py")
     commits["old2"] = _commit(repo, "old2.py")
     commits["new"] = _commit(repo, "new.py")
+    _git(repo, "switch", "-q", "-c", "side", commits["base"])
+    commits["side"] = _commit(repo, "side.py")
+    _git(repo, "switch", "-q", "-")
+    commits["unrelated"] = "0" * 40
     return repo, commits
 
 
@@ -95,6 +96,8 @@ def _developer(commits: dict[str, str], **fields: object) -> JsonObject:
         ({"branch_start_commit": "base"}, "base"),
         # An integration base that moved past the branch start is not an ancestor of it.
         ({"integration_base_commit": "new"}, "new"),
+        # A resolver batch starts on a candidate that is not a descendant of the new target.
+        ({"integration_base_commit": "new", "branch_start_commit": "side"}, "new"),
         # The progress a superseding batch continues on its branch is its own.
         ({"supersedes": {"batch_id": "batch-0"}}, "base"),
         ({"branch_start_commit": None}, "base"),
@@ -109,7 +112,6 @@ def test_batch_base_is_the_branch_start_only_when_it_follows_the_integration_bas
     expected: str,
 ) -> None:
     repo, commits = published_branch
-    commits["unrelated"] = "0" * 40
     resolved = {
         key: commits[value] if isinstance(value, str) and value in commits else value
         for key, value in batch_fields.items()
@@ -141,6 +143,21 @@ def test_a_checkpoint_of_a_rerun_batch_is_measured_from_its_branch_start(
     )
 
     assert base == commits["old2"]
+
+
+def test_a_rebase_target_takes_priority_over_the_branch_start(
+    published_branch: tuple[Path, dict[str, str]],
+) -> None:
+    repo, commits = published_branch
+    batch = _batch(
+        commits, base_rebase_required=True, rebase_target_commit=commits["old1"]
+    )
+
+    base = reports._checkpoint_base(
+        repo, repo, batch, _developer(commits), commits["new"]
+    )
+
+    assert base == commits["old1"]
 
 
 def test_a_developer_report_lists_only_the_files_of_its_own_batch(
@@ -188,90 +205,3 @@ def test_a_rerun_developer_report_has_no_scope_warnings(
     }
 
     assert reports.report_scope_warnings(report, dispatch) == []
-
-
-@contextlib.contextmanager
-def _no_lock(ledger: object) -> Iterator[None]:
-    yield
-
-
-def _assess(
-    monkeypatch: pytest.MonkeyPatch,
-    repo: Path,
-    commits: dict[str, str],
-    changed_file: list[str],
-    base_commit: str | None,
-) -> JsonObject:
-    batch = {
-        **_batch(commits),
-        "batch_id": "batch-1",
-        "state": "awaiting-approval",
-        "definition_of_done": ["first"],
-    }
-    monkeypatch.setattr(risk, "_ledger_lock", _no_lock)
-    monkeypatch.setattr(risk, "_load_batch", lambda *_: batch)
-    monkeypatch.setattr(risk, "_validate_batch_integrity", lambda *_: None)
-    monkeypatch.setattr(risk, "_risk_triggers", lambda _repo: ["public api"])
-    monkeypatch.setattr(risk, "_retry_pinned_candidate", lambda *_: None)
-    monkeypatch.setattr(risk, "_latest_developer_candidate", lambda *_: commits["new"])
-    monkeypatch.setattr(risk, "open_coordinator_findings", lambda *_: [])
-    monkeypatch.setattr(risk, "open_incomplete_items", lambda *_: [])
-    monkeypatch.setattr(risk, "_write_record", lambda *_: None)
-    monkeypatch.setattr(risk, "_replace_record", lambda *_: None)
-    monkeypatch.setattr(RiskAssessmentRecord, "from_dict", staticmethod(lambda r: r))
-    monkeypatch.setattr(BatchRecord, "from_dict", staticmethod(lambda r: r))
-    return risk.assess_risk(
-        argparse.Namespace(
-            repo=str(repo),
-            state_dir=str(repo / "state"),
-            batch="batch-1",
-            candidate_commit=commits["new"],
-            base_commit=base_commit,
-            changed_file=changed_file,
-            developer_trigger=None,
-        )
-    )
-
-
-def test_a_risk_assessment_measures_only_the_batch_diff(
-    monkeypatch: pytest.MonkeyPatch, published_branch: tuple[Path, dict[str, str]]
-) -> None:
-    repo, commits = published_branch
-
-    assessed = _assess(monkeypatch, repo, commits, ["new.py"], None)
-
-    assert assessed["changed_files"] == ["new.py"]
-    assert assessed["review_scope"] == ["new.py"]
-    assert assessed["base_commit"] == commits["old2"]
-
-
-def test_a_risk_assessment_refuses_the_files_of_the_whole_branch(
-    monkeypatch: pytest.MonkeyPatch, published_branch: tuple[Path, dict[str, str]]
-) -> None:
-    repo, commits = published_branch
-
-    with pytest.raises(CoordinatorError, match="changed_files must exactly match"):
-        _assess(monkeypatch, repo, commits, ["new.py", "old1.py", "old2.py"], None)
-
-
-def test_a_risk_assessment_accepts_the_branch_start_as_its_base(
-    monkeypatch: pytest.MonkeyPatch, published_branch: tuple[Path, dict[str, str]]
-) -> None:
-    repo, commits = published_branch
-
-    assessed = _assess(monkeypatch, repo, commits, ["new.py"], commits["old2"])
-
-    assert assessed["base_commit"] == commits["old2"]
-
-
-def test_a_risk_assessment_refuses_the_integration_base_and_names_the_batch_base(
-    monkeypatch: pytest.MonkeyPatch, published_branch: tuple[Path, dict[str, str]]
-) -> None:
-    repo, commits = published_branch
-
-    with pytest.raises(CoordinatorError) as refused:
-        _assess(monkeypatch, repo, commits, ["new.py"], commits["base"])
-
-    assert refused.value.remedy == (
-        f"omit --base-commit, or pass the batch base commit {commits['old2']}"
-    )

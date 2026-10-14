@@ -112,25 +112,24 @@ def approved_target(
 def batch_base(repo: Path, batch: JsonObject) -> str | None:
     """The commit the batch's own changes are measured from: ``branch_start_commit`` when it is a
     strict descendant of the pinned integration base, else that base. A batch started on a branch
-    that an earlier batch of the ticket already published thus never owns the earlier commits. A
-    superseding batch (issue #506) is the exception: the progress on its branch is its own to finish."""
+    that an earlier batch of the ticket already left commits on thus never owns those commits. A
+    superseding batch (issue #506) is the exception: the progress on its branch is its own to
+    finish.
+
+    This is the base of reports, checkpoints and risk assessments only. A brief, a Context Package
+    and its freshness check stay on the pinned integration base (``history._effective_base``). The
+    value is computed on each call, not recorded in the batch."""
     base = batch.get("integration_base_commit") or batch.get("base_commit")
     start = batch.get("branch_start_commit")
     if not isinstance(base, str):
         return None
-    if (
-        isinstance(start, str)
-        and start
-        and start != base
-        and not batch.get("supersedes")
-    ):
-        try:
-            if _git_is_ancestor(repo, base, start):
-                return start
-        except CoordinatorError:
-            # A start commit that cannot be resolved is not provably newer than the base.
-            pass
-    return base
+    if not isinstance(start, str) or not start or batch.get("supersedes"):
+        return base
+    try:
+        return start if _git_is_ancestor(repo, base, start) else base
+    except CoordinatorError:
+        # A start commit that cannot be resolved is not provably newer than the base.
+        return base
 
 
 def report_base(
@@ -141,11 +140,12 @@ def report_base(
     retry or tooling-retry of a rebase-fix-forward report), that target, so upstream files the
     rebase brought in are never attributed to the ticket. Without such a target the base is the
     batch's own start (``batch_base``), so commits of an earlier published batch are not either."""
-    base = batch_base(repo, batch)
     snapshot = dispatch.get("snapshot_commit")
     if dispatch.get("role") == "developer" and isinstance(snapshot, str):
-        return approved_target(repo, root, batch, snapshot) or base
-    return base
+        target = approved_target(repo, root, batch, snapshot)
+        if target:
+            return target
+    return batch_base(repo, batch)
 
 
 def previous_commits(repo: Path, dispatch: JsonObject) -> list[str]:
