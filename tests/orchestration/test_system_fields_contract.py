@@ -1530,5 +1530,7 @@ def test_a_cli_value_variant_exits_2_naming_every_allowed_value(
         stderr = capsys.readouterr().err
         assert caught.value.code == 2, (option, variant)
         assert "invalid choice" in stderr, (option, variant)
-        assert all(repr(value) in stderr for value in choices), (option, stderr)
+        # argparse quotes the choices (`'info'`) in 3.12.3 and prints them plain in 3.12.15.
+        listed = stderr.split("choose from", 1)[-1]
+        assert all(value in listed for value in choices), (option, stderr)
         assert "<" not in stderr, (option, stderr)
