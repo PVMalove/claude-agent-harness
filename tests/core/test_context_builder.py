@@ -26,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 from harness.context_builder.context_builder import (
+    ContextPackage,
     ContextPackageError,
     _dependency_context,
     _fallback_excerpt,
@@ -368,12 +369,30 @@ class ContextBuilderTests(ContextBuilderFixture):
         self.assertEqual(starting.sections, [])
         self.assertGreaterEqual(package.estimated_tokens, estimate_tokens(guide))
 
-    def _commit_module(self, path: str, text: str, message: str) -> str:
-        """Закоммитить модуль и вернуть хэш коммита."""
-        _write(self.repo, path, text)
+    def _commit_files(self, files: dict[str, str], message: str) -> str:
+        """Закоммитить файлы и вернуть хэш коммита."""
+        for path, text in files.items():
+            _write(self.repo, path, text)
         _run("add", ".", cwd=self.repo)
         _run("commit", "-qm", message, cwd=self.repo)
         return _head(self.repo)
+
+    def _commit_module(self, path: str, text: str, message: str) -> str:
+        """Закоммитить один модуль и вернуть хэш коммита."""
+        return self._commit_files({path: text}, message)
+
+    def _seeded_package(
+        self, snapshot: str, *, section_index_min_tokens: int | None
+    ) -> ContextPackage:
+        """Собрать пакет по одному стартовому файлу `pkg/big.py` из снимка `snapshot`."""
+        return build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["pkg/big.py"],
+            section_index_min_tokens=section_index_min_tokens,
+        )
 
     @staticmethod
     def _large_module(functions: int = 60, body_lines: int = 40) -> str:
@@ -392,14 +411,7 @@ class ContextBuilderTests(ContextBuilderFixture):
         module = self._large_module()
         snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
 
-        package = build_context_package(
-            self.repo,
-            snapshot,
-            snapshot,
-            min_starting_files=1,
-            seed_paths=["pkg/big.py"],
-            section_index_min_tokens=1_000,
-        )
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
 
         (starting,) = package.starting_files
         self.assertIn("section index", starting.reason)
@@ -415,13 +427,8 @@ class ContextBuilderTests(ContextBuilderFixture):
         module = self._large_module()
         snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
 
-        package = build_context_package(
-            self.repo,
-            snapshot,
-            snapshot,
-            min_starting_files=1,
-            seed_paths=["pkg/big.py"],
-            section_index_min_tokens=estimate_tokens(module) + 1,
+        package = self._seeded_package(
+            snapshot, section_index_min_tokens=estimate_tokens(module) + 1
         )
 
         (starting,) = package.starting_files
@@ -432,17 +439,11 @@ class ContextBuilderTests(ContextBuilderFixture):
         self,
     ) -> None:
         """Проверить, что индекс не применяется, если он дороже самого файла."""
+        # One-line bodies make each index entry (~70 bytes) larger than the function itself.
         module = self._large_module(functions=1500, body_lines=1)
         snapshot = self._commit_module("pkg/big.py", module, "feat: add many tiny defs")
 
-        package = build_context_package(
-            self.repo,
-            snapshot,
-            snapshot,
-            min_starting_files=1,
-            seed_paths=["pkg/big.py"],
-            section_index_min_tokens=1_000,
-        )
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
 
         (starting,) = package.starting_files
         self.assertEqual(starting.sections, [])
@@ -454,11 +455,7 @@ class ContextBuilderTests(ContextBuilderFixture):
             "pkg/medium.py": self._large_module(functions=30),
             "pkg/small.py": self._large_module(functions=20),
         }
-        for path, text in modules.items():
-            _write(self.repo, path, text)
-        _run("add", ".", cwd=self.repo)
-        _run("commit", "-qm", "feat: add three modules", cwd=self.repo)
-        return _head(self.repo), modules
+        return self._commit_files(modules, "feat: add three modules"), modules
 
     def test_a_package_over_budget_indexes_its_heaviest_starting_files_first(
         self,
@@ -529,20 +526,53 @@ class ContextBuilderTests(ContextBuilderFixture):
         module = self._large_module()
         snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
 
-        package = build_context_package(
-            self.repo,
-            snapshot,
-            snapshot,
-            min_starting_files=1,
-            seed_paths=["pkg/big.py"],
-            section_index_min_tokens=1_000,
-        )
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
 
         (starting,) = package.starting_files
         self.assertIn(
             "def [REDACTED-SYMBOL]", [item.heading for item in starting.sections]
         )
         self.assertLess(package.estimated_tokens, estimate_tokens(module) // 10)
+
+    def test_a_mirror_copy_stays_a_pointer_when_the_budget_forces_an_index(
+        self,
+    ) -> None:
+        """Проверить, что зеркальная копия при деградации остаётся указателем, а оригинал получает индекс."""
+        module = self._large_module()
+        snapshot = self._commit_files(
+            {"pkg/a.py": module, "pkg/b.py": module}, "feat: add a mirrored module"
+        )
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["pkg/a.py", "pkg/b.py"],
+            max_package_tokens=estimate_tokens(module) // 2,
+            section_index_min_tokens=estimate_tokens(module) + 1,
+        )
+
+        by_path = {item.path: item for item in package.starting_files}
+        self.assertTrue(by_path["pkg/a.py"].sections)
+        self.assertEqual(by_path["pkg/b.py"].sections, [])
+        self.assertIn("byte-identical mirror of pkg/a.py", by_path["pkg/b.py"].reason)
+
+    def test_a_large_added_python_file_is_not_saved_by_its_index(self) -> None:
+        """Проверить, что добавленный большой файл по-прежнему упирается в лимит: его текст уже в diff."""
+        before = self._commit_module("pkg/small.py", "VALUE = 1\n", "feat: add small")
+        module = self._large_module()
+        after = self._commit_module("pkg/big.py", module, "feat: add a big module")
+
+        with self.assertRaisesRegex(ContextPackageError, "exceeds max_package_tokens"):
+            build_context_package(
+                self.repo,
+                before,
+                after,
+                min_starting_files=1,
+                max_package_tokens=estimate_tokens(module) // 2,
+                section_index_min_tokens=1_000,
+            )
 
     def test_a_large_python_file_with_a_syntax_error_stays_whole(self) -> None:
         """Проверить, что неразбираемый Python-файл остаётся целиком без индекса."""
@@ -551,14 +581,7 @@ class ContextBuilderTests(ContextBuilderFixture):
             "pkg/big.py", module, "feat: add a broken module"
         )
 
-        package = build_context_package(
-            self.repo,
-            snapshot,
-            snapshot,
-            min_starting_files=1,
-            seed_paths=["pkg/big.py"],
-            section_index_min_tokens=1_000,
-        )
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
 
         (starting,) = package.starting_files
         self.assertEqual(starting.sections, [])
