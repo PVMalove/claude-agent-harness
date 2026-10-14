@@ -139,6 +139,13 @@ accept of its report, or of a later retry whose candidate sits on that target, p
 error refuses the retry with a remedy; a `tooling-retry` and a candidate that already contains the
 tip propose no target.
 
+A batch created on an issue branch that an earlier, finished batch of the ticket already published
+(its `branch_start_commit` is a strict descendant of `integration_base_commit`) measures its own
+changes from `branch_start_commit`: the `changed_files` and `commit_map` of its developer and publish
+reports, their `scope_warnings`, a checkpoint and `risk assess` (`--base-commit`, `review_scope`)
+never count the earlier commits. A superseding batch and a batch without such a start measure from
+`integration_base_commit`.
+
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
 `command`, `message`), when no finding, failed check, moved candidate or developer category
