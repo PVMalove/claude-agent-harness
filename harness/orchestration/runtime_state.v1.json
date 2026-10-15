@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "runtimeState.v1",
   "title": "Runtime state record",
-  "description": "One durable runtime state record per batch at .harness/orchestration/runtime-state. Every field is required and nullable fields say so explicitly; each enum names its systemFields.v1 field in x-system-field. The ledger stays the owner of lifecycle and approvals.",
+  "description": "One durable runtime state record per batch at .harness/orchestration/runtime-state, and one ledger-scope record (identity.batch_id null) for operations on the whole ledger, such as its migration. Every field is required and nullable fields say so explicitly; each enum names its systemFields.v1 field in x-system-field. The ledger stays the owner of lifecycle and approvals.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -32,7 +32,7 @@
         "git_common_dir": {"$ref": "#/$defs/text"},
         "state_root": {"$ref": "#/$defs/text"},
         "namespace": {"type": "string", "pattern": "^(default|alt-[0-9a-f]{16})$"},
-        "batch_id": {"type": "string", "pattern": "^batch-[0-9a-f-]+$"}
+        "batch_id": {"type": ["string", "null"], "pattern": "^batch-[0-9a-f-]+$"}
       }
     },
     "revision": {"type": "integer", "minimum": 1},

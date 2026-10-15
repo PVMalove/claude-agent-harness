@@ -34,7 +34,7 @@ HASH = "a" * 64
 BATCH = "batch-0123abcd"
 
 
-def _identity(batch_id: str = BATCH) -> JsonObject:
+def _identity(batch_id: str | None = BATCH) -> JsonObject:
     return {
         "repo_root": "/repo",
         "git_common_dir": "/repo/.git",
@@ -316,6 +316,11 @@ def test_sanitize_detail_masks_secrets_and_absolute_paths_and_is_idempotent() ->
     )
 
 
+def test_a_ledger_scope_record_names_no_batch() -> None:
+    assert store.validate_record(_record(identity=_identity(None)), None) == []
+    assert store.validate_record(_record(identity=_identity("dispatch-0abc")), None)
+
+
 def test_transition_problem_refuses_unknown_tables_and_sources() -> None:
     assert transition_problem("runtime.state", "ready", "ready") is None
     assert transition_problem("runtime.state", "ready", "running") is None
@@ -366,7 +371,7 @@ def _put(runtime: RuntimeStateStore, record: JsonObject) -> Path:
 
 
 def _own(
-    runtime: RuntimeStateStore, batch_id: str = BATCH, **changes: object
+    runtime: RuntimeStateStore, batch_id: str | None = BATCH, **changes: object
 ) -> JsonObject:
     return _record(identity=runtime.location.identity(batch_id), **changes)
 
@@ -583,6 +588,80 @@ def test_generic_cleanup_and_ledger_maintenance_leave_the_store_alone(
         ledger.reset("RESET")
     assert len(before) == 4
     assert _tree(base) == before
+
+
+# --- Ledger-scope record -----------------------------------------------------------------------
+
+OPERATION = "0f1e2d3c-4b5a-4968-8776-655443322110"
+
+
+def test_the_ledger_scope_record_lives_beside_the_batches_and_is_no_batch(
+    repos: tuple[Path, Path],
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    assert runtime.batch_ids() == []
+    scope = _own(runtime, None)
+    running = _next(scope, state="running")
+
+    runtime.write(scope, expected_revision=0)
+    runtime.write(running, expected_revision=1)
+    runtime.write(_own(runtime), expected_revision=0)
+    runtime.write_emergency(
+        "ledger migrate",
+        {"batch_id": None, "dispatch_id": None},
+        {"code": "internal-error", "step": "test", "message": "x"},
+    )
+
+    assert runtime.path(None) == runtime.location.directory / "ledger-scope.json"
+    assert RuntimeStateStore(repos[1]).read(None) == running
+    assert runtime.read(BATCH) == _own(runtime)
+    assert runtime.batch_ids() == [BATCH]
+    assert (runtime.location.directory / "ledger-scope.lock").is_file()
+
+
+def test_a_batch_record_in_the_ledger_scope_place_is_another_identity(
+    repos: tuple[Path, Path],
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    runtime._prepare()
+    runtime.path(None).write_text(json.dumps(_own(runtime)), encoding="utf-8")
+
+    with _refusal("integrity-failure", "identity"):
+        runtime.read(None)
+    with _refusal("integrity-failure", "identity"):
+        runtime.write(_own(runtime, None), expected_revision=0)
+
+
+def test_a_ledger_scope_intent_payload_has_its_own_directory(
+    repos: tuple[Path, Path],
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    payload: JsonObject = {"operation_id": OPERATION, "kind": "migrate"}
+
+    ref = runtime.write_intent(None, OPERATION, payload)
+
+    assert ref == f"intents/ledger-scope/{OPERATION}.json"
+    assert runtime.read_intent(None, ref) == payload
+    with _refusal("integrity-failure", "intent"):
+        runtime.read_intent(BATCH, ref)
+    with _refusal("integrity-failure", "intent"):
+        runtime.write_intent(None, OPERATION, {**payload, "kind": "other"})
+
+
+def test_a_symlinked_batch_record_stops_the_batch_listing(
+    repos: tuple[Path, Path], tmp_path: Path
+) -> None:
+    runtime = RuntimeStateStore(repos[0])
+    runtime.write(_own(runtime), expected_revision=0)
+    target = tmp_path / "outside.json"
+    target.write_text("{}", encoding="utf-8")
+    try:
+        (runtime.location.directory / "batch-ffff.json").symlink_to(target)
+    except OSError:
+        pytest.skip("symbolic links are unavailable on this platform")
+
+    with _refusal("integrity-failure", "prepare"):
+        runtime.batch_ids()
 
 
 # --- Locked write with an expected revision ----------------------------------------------------

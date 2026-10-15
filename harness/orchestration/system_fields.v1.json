@@ -1044,6 +1044,16 @@
         "internal-error": "An internal invariant failed; collect sanitized diagnostics."
       }
     },
+    "ledger.migration_disposition": {
+      "description": "Disposition of one historical value the system-fields ledger migration found at a bound ledger location. It is written only into the migration manifest and the quarantine evidence, never into the source field.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "mapped": "An explicit migration rule maps the historical value to its canonical value; the record keeps its bytes and the migration manifest records the mapping.",
+        "legacy-unknown": "Neither a registry value nor a migration rule matches the historical value; the batch is quarantined with this evidence and the source field keeps its value.",
+        "unreadable": "The record file is not a JSON object; the batch is quarantined with this evidence and the file keeps its bytes."
+      }
+    },
     "diagnostic.code": {
       "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
       "automatic_decisions": false,
