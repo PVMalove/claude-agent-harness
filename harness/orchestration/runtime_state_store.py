@@ -1,5 +1,8 @@
 """Durable runtime state store (``runtimeState.v1``), one record per batch.
 
+Beside the batch records lives one ledger-scope record (``identity.batch_id`` null): the progress
+of an operation on the whole ledger, such as its migration to a new generation.
+
 The store keeps operational progress beside the lifecycle ledger, never inside it: the ledger
 stays the owner of lifecycle and approvals, and nothing here writes a ledger record.  The intent
 payload of a composite ledger write is kept here too, write-once beside its record; the bridge to
@@ -55,6 +58,8 @@ _OPERATION_ID = re.compile(
 )
 # One emergency record per namespace, under its own lock, beside the batch records.
 EMERGENCY = "emergency"
+# The record, lock and intent directory name of the ledger-scope record (no batch).
+LEDGER_SCOPE = "ledger-scope"
 _EMERGENCY_PARTS = {
     "identity": ("repo_root", "git_common_dir", "state_root", "namespace"),
     "subject": ("batch_id", "dispatch_id"),
@@ -440,7 +445,7 @@ class RuntimeStateLocation:
     def base(self) -> Path:
         return self.storage / RUNTIME_STATE_DIR
 
-    def identity(self, batch_id: str) -> JsonObject:
+    def identity(self, batch_id: str | None) -> JsonObject:
         return {
             "repo_root": str(self.repo_root),
             "git_common_dir": str(self.git_common_dir),
@@ -504,7 +509,10 @@ class RuntimeStateStore:
             code, step, detail, remedy=remedy, durable_revision=durable_revision
         )
 
-    def path(self, batch_id: str) -> Path:
+    def path(self, batch_id: str | None) -> Path:
+        """The record of ``batch_id``, or the ledger-scope record for ``None``."""
+        if batch_id is None:
+            return self.location.directory / f"{LEDGER_SCOPE}.json"
         try:
             _safe_id(batch_id, "batch_id")
         except CoordinatorError:
@@ -547,7 +555,18 @@ class RuntimeStateStore:
             directory.mkdir(parents=True, exist_ok=True)
             self._refuse_links(base, base / "alternate", directory)
 
-    def read(self, batch_id: str) -> JsonObject | None:
+    def batch_ids(self) -> list[str]:
+        """The IDs of every batch with a record, sorted; the ledger-scope and emergency records
+        are not batches.  A record replaced by a symbolic link stops instead of being skipped."""
+        directory = self.location.directory
+        with self._storage_step("read", "storage-unavailable", directory):
+            if not directory.is_dir():
+                return []
+            paths = sorted(directory.glob("batch-*.json"))
+            self._refuse_links(*paths)
+        return [path.stem for path in paths]
+
+    def read(self, batch_id: str | None) -> JsonObject | None:
         """The current record, ``None`` when none was written; a record that is unreadable or
         bound to another identity stops instead of being repaired or defaulted."""
         path = self.path(batch_id)
@@ -595,8 +614,8 @@ class RuntimeStateStore:
 
     @contextmanager
     def _locked(self, name: str) -> Iterator[None]:
-        """Hold the operating-system lock ``name`` (a batch ID, or the emergency record's),
-        waiting at most ``LOCK_TIMEOUT_SECONDS``.
+        """Hold the operating-system lock ``name`` (a batch ID, the ledger scope's or the
+        emergency record's), waiting at most ``LOCK_TIMEOUT_SECONDS``.
 
         The system drops the lock when its holder dies, so no stale lock is ever left behind."""
         path = self.location.directory / f"{name}.lock"
@@ -657,7 +676,7 @@ class RuntimeStateStore:
                 "take the identity from the store that writes the record",
             )
         self._prepare()
-        with self._locked(batch_id):
+        with self._locked(batch_id or LEDGER_SCOPE):
             current = self.read(batch_id)
             revision = 0 if current is None else int(current["revision"])
             if revision != expected_revision:
@@ -750,7 +769,7 @@ class RuntimeStateStore:
         del identity["batch_id"]
         return identity
 
-    def intent_ref(self, batch_id: str, operation_id: str) -> str:
+    def intent_ref(self, batch_id: str | None, operation_id: str) -> str:
         """Where an operation's intent payload lives, relative to the store directory."""
         self.path(batch_id)
         if _OPERATION_ID.fullmatch(operation_id) is None:
@@ -760,10 +779,10 @@ class RuntimeStateStore:
                 "the operation ID is not a generated operation ID",
                 "pass the operation ID the composite write generated",
             )
-        return f"{INTENTS_DIR}/{batch_id}/{operation_id}.json"
+        return f"{INTENTS_DIR}/{batch_id or LEDGER_SCOPE}/{operation_id}.json"
 
     def write_intent(
-        self, batch_id: str, operation_id: str, payload: JsonObject
+        self, batch_id: str | None, operation_id: str, payload: JsonObject
     ) -> str:
         """Persist an operation's write-once intent payload durably and return its reference.
 
@@ -802,10 +821,10 @@ class RuntimeStateStore:
                 temporary.unlink()
         return ref
 
-    def read_intent(self, batch_id: str, ref: str) -> JsonObject:
+    def read_intent(self, batch_id: str | None, ref: str) -> JsonObject:
         """The intent payload ``ref`` of ``batch_id`` names; a missing, foreign or unreadable
         payload stops instead of being guessed."""
-        operation_id = ref.removeprefix(f"{INTENTS_DIR}/{batch_id}/")
+        operation_id = ref.removeprefix(f"{INTENTS_DIR}/{batch_id or LEDGER_SCOPE}/")
         if ref != self.intent_ref(batch_id, operation_id.removesuffix(".json")):
             raise self._error(
                 "integrity-failure",

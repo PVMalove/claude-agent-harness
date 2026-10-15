@@ -11,6 +11,7 @@ import pytest
 from harness.json_types import JsonObject
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration import runtime_reconcile
+from harness.orchestration.runtime_intent import next_revision
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -232,6 +233,60 @@ def test_settling_without_an_unfinished_operation_changes_nothing(
 
     assert settle_scene(scene) is False
     assert (store_bytes(scene), scene.tree()) == (store, ledger)
+
+
+@pytest.mark.parametrize("committed_first", [False, True])
+def test_a_quarantined_batch_is_never_settled_and_takes_no_composite_write(
+    tmp_path: Path, committed_first: bool
+) -> None:
+    scene = make_scene(tmp_path)
+    store = scene.store()
+    if committed_first:
+        WRITES["checkpoint"](scene).commit()
+    else:
+        store.write(
+            {
+                "contract": "runtimeState.v1",
+                "identity": store.location.identity(BATCH),
+                "revision": 1,
+                "updated_at": "2026-10-15T09:00:00+00:00",
+                "state": "ready",
+                "stage": None,
+                "dispatch_id": None,
+                "operation": None,
+                "ledger": {"generation": None, "record_hashes": {}},
+                "policy_snapshot_sha256": None,
+                "input_refs": [],
+                "output_refs": [],
+                "last_confirmed_boundary": None,
+                "failure": None,
+            },
+            expected_revision=0,
+        )
+    current = scene.runtime()
+    assert current is not None
+    failure: JsonObject = {
+        "code": "integrity-failure",
+        "step": "quarantine",
+        "message": "the ledger migration quarantined the batch",
+    }
+    quarantined = next_revision(current, state="suspended", failure=failure)
+    store.write(quarantined, expected_revision=int(current["revision"]))
+    before, ledger = store_bytes(scene), scene.tree()
+
+    for _ in range(2):
+        with pytest.raises(RuntimeStateError) as caught:
+            settle_scene(scene)
+        assert (caught.value.code, caught.value.step) == (
+            "integrity-failure",
+            "quarantine",
+        )
+        assert caught.value.durable_revision == quarantined["revision"]
+        assert "ledger inspect --batch" in caught.value.remedy
+    with pytest.raises(RuntimeStateError, match="concurrency-conflict"):
+        WRITES["report-submit"](scene).commit()
+
+    assert (store_bytes(scene), scene.tree()) == (before, ledger)
 
 
 def _report() -> JsonObject:
