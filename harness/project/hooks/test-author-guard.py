@@ -26,12 +26,9 @@ TEST_PATH_PATTERN = re.compile(
 TEST_ID_PLACEHOLDER = "{test_id}"
 PROTECTED_TOP_LEVEL = frozenset({".git", ".harness", ".claude", ".agents", ".codex"})
 GLOB_CHARACTERS = frozenset("*?[]{}\\")
-TARGET_AGENTS = frozenset({"test-author", "proto-test-author"})
+TARGET_AGENT = "test-author"
 AGENT_RELATIVE = Path(".claude/agents/test-author.md")
 RUNNER_RELATIVE = Path(".claude/hooks/run-test.sh")
-HOOK_EVIDENCE_NONCE_FILE = "TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE"
-HOOK_EVIDENCE_LOG = "TEST_AUTHOR_HOOK_EVIDENCE_LOG"
-HOOK_EVIDENCE_PATH = "src/canary.txt"
 SHELL_META = frozenset(";|&<>$`\\\n\r")
 
 
@@ -273,46 +270,8 @@ def _runner_allowed(repo: Path, value: object) -> str | None:
     return None
 
 
-def _record_hook_evidence(repo: Path, tool: str, tool_input: dict[str, object]) -> None:
-    """Record bounded evidence when Claude Code invokes this scoped hook for its canary."""
-    if tool != "Write":
-        return
-    try:
-        if _relative_target(repo, tool_input.get("file_path")) != HOOK_EVIDENCE_PATH:
-            return
-    except GuardRefusal:
-        return
-    nonce_name = os.environ.get(HOOK_EVIDENCE_NONCE_FILE)
-    log_name = os.environ.get(HOOK_EVIDENCE_LOG)
-    if not nonce_name or not log_name:
-        return
-    sandbox_root = (repo / ".harness" / ".sandboxes").resolve()
-    try:
-        nonce_file = Path(nonce_name).resolve()
-        log_file = Path(log_name).resolve()
-        if not nonce_file.is_relative_to(sandbox_root) or not log_file.is_relative_to(
-            sandbox_root
-        ):
-            return
-        nonce = nonce_file.read_text(encoding="utf-8").strip()
-        if not nonce or len(nonce) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", nonce):
-            return
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_file.write_text(
-            json.dumps(
-                {"nonce": nonce, "decision": "deny", "path": HOOK_EVIDENCE_PATH},
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
-        )
-    except (OSError, ValueError, RuntimeError):
-        return
-
-
-def _deny(repo: Path, reason: str, tool: str = "", tool_input: dict[str, object] | None = None) -> None:
+def _deny(reason: str) -> None:
     """Emit the Claude Code soft-deny envelope with no user-controlled values."""
-    if tool_input is not None:
-        _record_hook_evidence(repo, tool, tool_input)
     print(
         json.dumps(
             {
@@ -351,36 +310,36 @@ def main() -> int:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, OSError, RecursionError):
-        _deny(repo, "malformed_payload")
+        _deny("malformed_payload")
         return 0
     if not isinstance(payload, dict):
-        _deny(repo, "malformed_payload")
+        _deny("malformed_payload")
         return 0
     agent_type = payload.get("agent_type")
-    if agent_type is not None and agent_type not in TARGET_AGENTS:
+    if agent_type is not None and agent_type != TARGET_AGENT:
         return 0
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input")
     if not isinstance(tool, str) or not isinstance(tool_input, dict):
-        _deny(repo, "malformed_payload")
+        _deny("malformed_payload")
         return 0
 
     try:
         paths, _ = _activation_config(repo)
         if tool in {"Write", "Edit"}:
             if not _write_allowed(repo, tool_input.get("file_path"), paths):
-                _deny(repo, "write_outside_test_paths", tool, tool_input)
+                _deny("write_outside_test_paths")
             return 0
         if tool == "Bash":
             reason = _runner_allowed(repo, tool_input.get("command"))
             if reason is not None:
-                _deny(repo, reason, tool, tool_input)
+                _deny(reason)
             return 0
-        _deny(repo, "tool_not_allowed", tool, tool_input)
+        _deny("tool_not_allowed")
     except GuardRefusal as refusal:
-        _deny(repo, refusal.reason, tool, tool_input)
+        _deny(refusal.reason)
     except Exception:
-        _deny(repo, "guard_unavailable", tool, tool_input)
+        _deny("guard_unavailable")
     return 0
 
 

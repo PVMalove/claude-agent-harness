@@ -225,30 +225,15 @@ def test_malformed_payload_is_denied_without_echoing_input(tmp_path: Path) -> No
     assert secret not in json.dumps(answer)
 
 
-def test_denial_records_only_the_claude_hook_evidence_canary(tmp_path: Path) -> None:
+def test_denial_leaves_the_project_and_the_sandbox_untouched(tmp_path: Path) -> None:
     project = _project(tmp_path)
-    logs = project / ".harness" / ".sandboxes" / "logs"
-    logs.mkdir(parents=True)
-    nonce_file = logs / "canary-nonce"
-    canary_log = logs / "canary.json"
-    nonce_file.write_text("nonce-123", encoding="utf-8")
+    before = sorted(path.relative_to(project).as_posix() for path in project.rglob("*"))
 
-    result = _run_guard(
-        project,
-        _payload("Write", {"file_path": "src/canary.txt"}),
-        extra_env={
-            "TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE": str(nonce_file),
-            "TEST_AUTHOR_HOOK_EVIDENCE_LOG": str(canary_log),
-        },
-    )
+    result = _run_guard(project, _payload("Write", {"file_path": "src/canary.txt"}))
 
     _deny(result)
-    assert json.loads(canary_log.read_text(encoding="utf-8")) == {
-        "nonce": "nonce-123",
-        "decision": "deny",
-        "path": "src/canary.txt",
-    }
-    assert not (project / "src" / "canary.txt").exists()
+    after = sorted(path.relative_to(project).as_posix() for path in project.rglob("*"))
+    assert after == before
 
 
 def test_missing_agent_fails_closed(tmp_path: Path) -> None:
