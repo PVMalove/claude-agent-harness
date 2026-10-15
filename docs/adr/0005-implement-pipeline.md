@@ -62,3 +62,14 @@ Read-only роли используют новый dispatch. Продолжен�
 Отчёт роли является evidence, а не разрешением на следующий шаг. Candidate, base, Context
 Package, review и QA должны совпадать по закреплённым идентификаторам. Локальный workflow
 после принятых проверок публикует issue-ветку; PR требует отдельного подтверждения.
+
+## Уточнение: тест-автор внутри шага developer (#555)
+
+Конвейер `architect → developer → code-review → qa → publish` не меняется. Внутри одного
+developer-dispatch, если `test-author-preflight.sh` вернул `{"status":"ok"}`, шаг реализации идёт
+циклом Red → Green → Refactor с необязательным субагентом: developer передаёт требование и seam из
+brief architect, получает один тест и санитизированное Red evidence, проверяет ожидание по
+требованию, пишет минимальную реализацию и рефакторит на Green. Субагент не роль конвейера:
+нового dispatch, состояния или записи ledger нет, независимая QA и её граница прежние. Не
+согласованный в brief seam идёт по обычному пути blocker. Контракт цикла описывает раздел
+«Red-Green-Refactor with the optional test author» в `harness/orchestration/roles/developer.md`.
