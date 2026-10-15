@@ -519,6 +519,7 @@ def _verify_claude_scoped_hook(project: Path) -> None:
             "--output-format",
             "stream-json",
             "--include-hook-events",
+            "--verbose",
             "--max-budget-usd",
             "0.25",
             prompt,
