@@ -29,6 +29,10 @@
 считать доверенным и каталог, чей родитель или корень Git принят; для такого пути записи нет, и
 скрипт отвечает `project_untrusted`. Это безопасное направление ошибки.
 
+**Режимы Claude Code.** Переменные `CLAUDE_CODE_SIMPLE` и `CLAUDE_CODE_SAFE_MODE` отключают
+hooks; скрипт при значении `1` отвечает `claude_code_unsupported`. Обе переменные присутствуют в
+бинарнике Claude Code 2.1.300; при смене версии эту проверку стоит повторить.
+
 **Статический характер.** Скрипт не запускает Claude Code. Проверки agent, frontmatter и guard
 статические, поэтому `guard_hook_unavailable` означает неисправный или неисполняемый guard, а не
 доказательство срабатывания hook в живой сессии.
@@ -50,9 +54,12 @@
 квоту, поэтому её запускают вручную перед PR:
 
 ```bash
-HARNESS_REQUIRE_TEST_SANDBOX=1 HARNESS_VERIFY_CLAUDE_TEST_AUTHOR=1 \
-HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR=1 .harness/.venv/bin/python scripts/test_clean_room.py
+make test-author-probe
 ```
+
+Цель выставляет `HARNESS_REQUIRE_TEST_SANDBOX=1`, `HARNESS_VERIFY_CLAUDE_TEST_AUTHOR=1` и
+`HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR=1` и запускает весь clean-room (`scripts/test_clean_room.py`).
+Нужны Linux с bubblewrap, `claude` в `PATH` и выполненный вход; результат пробы приводят в теле PR.
 
 Проба запускает `claude --agent test-author` в доверенном clean-room проекте дважды. Первый запуск
 просит три вызова: запись `src/canary.txt`, команду `touch bash-probe.txt` и запись
