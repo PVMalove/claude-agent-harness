@@ -40,6 +40,7 @@ from scripts.clean_room.support import (
     run_ok,
     run_step,
 )
+from scripts.clean_room.test_author_cycle import Execute, verify
 
 TEST_MODULE = "tests.test_runner_cases"
 BENIGN = f"{TEST_MODULE}.Benign.test_add"
@@ -166,6 +167,8 @@ def run(ctx: SimpleNamespace) -> None:
     if probe.get("status") == "ok":
         _verify_isolation(project, ctx.test_root)
         print("isolated-test-runner: process isolation verified", flush=True)
+        verify(project, _runner_execute(project))
+        print("isolated-test-runner: test-author cycle verified", flush=True)
     elif os.environ.get("HARNESS_REQUIRE_TEST_SANDBOX") == "1":
         sys.exit(
             "isolated-test-runner: HARNESS_REQUIRE_TEST_SANDBOX=1, but the probe refused "
@@ -174,11 +177,43 @@ def run(ctx: SimpleNamespace) -> None:
     else:
         detail = _verify_refusal(project, probe)
         _verify_test_author_disabled(project, detail)
+        verify(project, _direct_execute(project))
+        print("isolated-test-runner: test-author cycle verified without isolation", flush=True)
         print(
             f"isolated-test-runner: isolation unavailable ({detail}); "
             "verified fail-closed refusal only",
             flush=True,
         )
+
+
+def _runner_execute(project: Path) -> Execute:
+    """Cycle tests run through the installed runner; the log is its local artifact."""
+
+    def execute(test_id: str) -> tuple[bool, str]:
+        answer = _hook(project, test_id)
+        run_id = answer.get("run_id")
+        log = ""
+        if isinstance(run_id, str) and run_id:
+            log = (_run_dir(project, answer) / "log.txt").read_text(encoding="utf-8")
+        return answer.get("result") == "passed", log
+
+    return execute
+
+
+def _direct_execute(project: Path) -> Execute:
+    """Without a working sandbox the cycle stubs run the disposable scenario tests directly."""
+
+    def execute(test_id: str) -> tuple[bool, str]:
+        result = run_step(
+            [sys.executable, "-B", "-m", "unittest", test_id],
+            cwd=project,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0, result.stdout + result.stderr
+
+    return execute
 
 
 def _install(project: Path) -> Path:
