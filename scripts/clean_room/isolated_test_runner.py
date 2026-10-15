@@ -9,8 +9,9 @@ Claude Code и без guard: так проверяются ограничени�
 хост её предоставляет. Без рабочей песочницы (Windows, CI без bubblewrap) проверяется только отказ
 без запуска теста; с `HARNESS_REQUIRE_TEST_SANDBOX=1` (Linux-задача CI) отказ probe проваливает
 сценарий. С `HARNESS_VERIFY_CLAUDE_TEST_AUTHOR=1` сценарий дополнительно запускает реальный
-Claude Code для проверки agent-scoped hook; `HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR=1` превращает
-отсутствие этого доказательства в ошибку.
+Claude Code (`scripts/clean_room/claude_probe.py`) для проверки agent-scoped hook и полного цикла
+Red; `HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR=1` превращает отсутствие `claude` в ошибку, а любой сбой
+запрошенной пробы проваливает сценарий.
 """
 
 from __future__ import annotations
@@ -18,7 +19,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import secrets
 import shlex
 import shutil
 import socket
@@ -26,6 +26,12 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from scripts.clean_room.claude_probe import (
+    UNTRUSTED_STATES,
+    claude_environment,
+    project_environment,
+    verify_scoped_hook,
+)
 from scripts.clean_room.support import (
     BASH,
     HARNESS,
@@ -39,6 +45,7 @@ TEST_MODULE = "tests.test_runner_cases"
 BENIGN = f"{TEST_MODULE}.Benign.test_add"
 LEGIT = f"{TEST_MODULE}.Legit.test_writes"
 MARKER = f"{TEST_MODULE}.Marker.test_marker"
+RED_TEST_FILE = "tests/test_author_red.py"
 RED_TEST = "tests.test_author_red.TestAuthorRed.test_behavior"
 # A read-only bind does not stop connect(): through the host session bus a test could start a
 # process outside the sandbox (systemd user manager), so the sandbox must hide it.
@@ -137,56 +144,16 @@ class Marker(unittest.TestCase):
 """
 
 RED_TEST_SOURCE = """\
+import unittest
+
 from src.calc import add
 
 
-class TestAuthorRed:
+class TestAuthorRed(unittest.TestCase):
     def test_behavior(self):
-        # Requirement: add two prices; scenario: the sum is returned to the caller.
-        assert add(2, 3) == 6
+        # Requirement: add two prices plus a fee of 1; scenario: the total is returned.
+        self.assertEqual(add(2, 3), 6)
 """
-
-
-def _trusted_claude_environment(project: Path) -> dict[str, str]:
-    """Create isolated Claude workspace trust state while preserving the auth config source."""
-    home = project / ".harness" / ".sandboxes" / "runs" / "claude-test-author-home"
-    home.mkdir(parents=True, exist_ok=True)
-    config_dir = home / ".claude"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    environment = dict(os.environ)
-    source_config_dir = environment.get("CLAUDE_CONFIG_DIR")
-    if source_config_dir:
-        source_credentials = Path(source_config_dir).expanduser() / ".credentials.json"
-    else:
-        source_credentials = Path.home() / ".claude" / ".credentials.json"
-    try:
-        source_credentials = source_credentials.resolve(strict=True)
-    except (OSError, RuntimeError):
-        source_credentials = None
-    if source_credentials is not None:
-        try:
-            (config_dir / ".credentials.json").symlink_to(source_credentials)
-        except FileExistsError:
-            pass
-    (home / ".claude.json").write_text(
-        json.dumps(
-            {
-                "projects": {
-                    str(project.resolve()): {"hasTrustDialogAccepted": True}
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    environment.pop("CLAUDE_CONFIG_DIR", None)
-    environment.update(
-        {
-            "CLAUDE_PROJECT_DIR": str(project),
-            "HOME": str(home),
-            "USERPROFILE": str(home),
-        }
-    )
-    return environment
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -389,53 +356,64 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
     _verify_test_author(project)
 
 
-def _preflight(
-    project: Path, *, env: dict[str, str] | None = None
-) -> dict[str, object]:
-    """Run the installed activation check and enforce its bounded JSON output."""
-    environment = dict(env or os.environ)
-    environment["CLAUDE_PROJECT_DIR"] = str(project)
+def _run_json(
+    label: str,
+    command: list[str],
+    project: Path,
+    *,
+    env: dict[str, str],
+    payload: dict[str, object] | None = None,
+    allow_empty: bool = False,
+) -> dict[str, object] | None:
+    """Run an installed hook and enforce its clean, bounded, one-line JSON answer."""
     result = run_step(
-        [SHELL, str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
+        command,
         cwd=project,
+        input=None if payload is None else json.dumps(payload),
         capture_output=True,
         text=True,
-        env=environment,
+        env=env,
         check=False,
     )
-    if result.returncode != 0 or result.stderr or len(result.stdout.splitlines()) != 1:
-        sys.exit("test-author preflight did not return one clean JSON line")
+    if result.returncode != 0 or result.stderr:
+        sys.exit(f"{label} did not return a clean answer")
+    if allow_empty and not result.stdout:
+        return None
+    if len(result.stdout.splitlines()) != 1:
+        sys.exit(f"{label} did not return one JSON line")
     try:
         answer = json.loads(result.stdout)
     except ValueError:
-        sys.exit("test-author preflight returned invalid JSON")
+        sys.exit(f"{label} returned invalid JSON")
     if not isinstance(answer, dict):
-        sys.exit("test-author preflight returned no JSON object")
+        sys.exit(f"{label} returned no JSON object")
+    return answer
+
+
+def _preflight(
+    project: Path, *, env: dict[str, str] | None = None
+) -> dict[str, object]:
+    """Run the installed activation check; its answer is never empty."""
+    answer = _run_json(
+        "test-author preflight",
+        [SHELL, str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
+        project,
+        env=project_environment(project, env),
+    )
+    assert answer is not None
     return answer
 
 
 def _guard(project: Path, payload: dict[str, object]) -> dict[str, object] | None:
-    """Call the installed scoped guard as a Claude Code PreToolUse hook."""
-    result = run_step(
+    """Call the installed scoped guard as a Claude Code PreToolUse hook; None means allow."""
+    return _run_json(
+        "test-author guard",
         [sys.executable, str(project / ".claude" / "hooks" / "test-author-guard.py")],
-        cwd=project,
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        env=dict(os.environ, CLAUDE_PROJECT_DIR=str(project)),
-        check=False,
+        project,
+        env=project_environment(project),
+        payload=payload,
+        allow_empty=True,
     )
-    if result.returncode != 0 or result.stderr:
-        sys.exit("test-author guard did not return a clean soft decision")
-    if not result.stdout:
-        return None
-    try:
-        answer = json.loads(result.stdout)
-    except ValueError:
-        sys.exit("test-author guard returned invalid JSON")
-    if not isinstance(answer, dict):
-        sys.exit("test-author guard returned no JSON object")
-    return answer
 
 
 def _test_author_payload(
@@ -462,160 +440,91 @@ def _assert_denied(answer: dict[str, object] | None) -> None:
 
 
 def _verify_test_author(project: Path) -> None:
-    """Verify activation, scoped soft denials and the ordinary route for other agents."""
-    claude_environment = _trusted_claude_environment(project)
-    if _preflight(project, env=claude_environment) != {"status": "ok"}:
+    """Verify activation, the real-Claude probe, Red evidence, soft denials and deactivation."""
+    _verify_activation(project)
+    verify_scoped_hook(project)
+    _verify_red_evidence(project)
+    _verify_guard_decisions(project)
+    _verify_missing_test_paths(project)
+
+
+def _verify_activation(project: Path) -> None:
+    """A trusted project activates; every untrusted trust state keeps the author disabled."""
+    if _preflight(project, env=claude_environment(project)) != {"status": "ok"}:
         sys.exit("test-author preflight did not activate in the protected project")
-    _verify_claude_scoped_hook(project, env=claude_environment)
-    red_path = "tests/test_author_red.py"
-    if _guard(project, _test_author_payload("Write", {"file_path": red_path})) is not None:
+    expected = {"status": "disabled", "reason": "project_untrusted"}
+    for trust in UNTRUSTED_STATES:
+        answer = _preflight(project, env=claude_environment(project, trust=trust))
+        if answer != expected:
+            sys.exit(
+                f"test-author preflight did not fail closed for trust state {trust}: "
+                f"expected {expected}, got {answer}"
+            )
+
+
+def _verify_red_evidence(project: Path) -> None:
+    """The runner reports a behavioral Red: a failed assertion, not a test that cannot load."""
+    red_path = project / RED_TEST_FILE
+    write = _test_author_payload("Write", {"file_path": RED_TEST_FILE})
+    if _guard(project, write) is not None:
         sys.exit("test-author guard denied a configured test-path write")
-    (project / red_path).write_text(RED_TEST_SOURCE, encoding="utf-8")
-    red = _hook(project, RED_TEST)
-    _expect(
-        red,
-        "test-author Red evidence",
-        test_id=RED_TEST,
-        result="failed",
-        reason="test_failed",
-        exit_status=1,
-    )
-    if not isinstance(red.get("run_id"), str) or not red["run_id"]:
-        sys.exit("test-author Red evidence did not include a sanitized run id")
+    red_path.write_text(RED_TEST_SOURCE, encoding="utf-8")
+    try:
+        red = _hook(project, RED_TEST)
+        _expect(
+            red,
+            "test-author Red evidence",
+            test_id=RED_TEST,
+            result="failed",
+            reason="test_failed",
+            exit_status=1,
+        )
+        if not isinstance(red.get("run_id"), str) or not red["run_id"]:
+            sys.exit("test-author Red evidence did not include a sanitized run id")
+        log = (_run_dir(project, red) / "log.txt").read_text(encoding="utf-8")
+        if "AssertionError" not in log or "TypeError" in log or "ImportError" in log:
+            sys.exit("test-author Red evidence is not a failed behavioral assertion")
+    finally:
+        red_path.unlink(missing_ok=True)
+
+
+def _verify_guard_decisions(project: Path) -> None:
+    """Soft denials for unsafe calls, a pass for the runner, and the ordinary developer route."""
     _assert_denied(
         _guard(project, _test_author_payload("Write", {"file_path": "src/calc.py"}))
     )
-    _assert_denied(
-        _guard(
-            project,
-            _test_author_payload(
-                "Bash",
-                {
-                    "command": (
-                        "python3 -m unittest "
-                        "tests.test_runner_cases.Benign.test_add"
-                    )
-                },
-            ),
-        )
+    benign = f".claude/hooks/run-test.sh {BENIGN}"
+    if _guard(project, _test_author_payload("Bash", {"command": benign})) is not None:
+        sys.exit("test-author guard denied the protected runner call")
+    unsafe: dict[str, object] = {"command": f"python3 -m unittest {BENIGN}"}
+    _assert_denied(_guard(project, _test_author_payload("Bash", unsafe)))
+    developer = _test_author_payload(
+        "Write", {"file_path": "src/calc.py"}, agent="developer"
     )
-    if _guard(
-        project,
-        _test_author_payload(
-            "Write", {"file_path": "src/calc.py"}, agent="developer"
-        ),
-    ) is not None:
+    if _guard(project, developer) is not None:
         sys.exit("test-author guard changed the ordinary developer route")
+
+
+def _verify_missing_test_paths(project: Path) -> None:
+    """Removing test_paths disables the author; the original file text comes back unchanged."""
     config = project / ".harness" / "project.json"
-    data = json.loads(config.read_text(encoding="utf-8"))
-    original = json.dumps(data, ensure_ascii=False)
+    original = config.read_text(encoding="utf-8")
+    data = json.loads(original)
     data.pop("test_paths", None)
     config.write_text(json.dumps(data), encoding="utf-8")
     try:
         expected = {"status": "disabled", "reason": "test_paths_missing"}
-        if _preflight(project, env=claude_environment) != expected:
-            sys.exit("test-author preflight did not disable a project without test_paths")
+        if _preflight(project, env=claude_environment(project)) != expected:
+            sys.exit(
+                "test-author preflight did not disable a project without test_paths"
+            )
     finally:
         config.write_text(original, encoding="utf-8")
 
 
-def _verify_claude_scoped_hook(
-    project: Path, *, env: dict[str, str] | None = None
-) -> None:
-    """Use the installed Claude Code CLI to prove the agent-scoped hook denies a write."""
-    required = os.environ.get("HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR") == "1"
-    if os.environ.get("HARNESS_VERIFY_CLAUDE_TEST_AUTHOR") != "1" and not required:
-        print(
-            "isolated-test-runner: Claude Code confirmation not requested",
-            flush=True,
-        )
-        return
-    claude = shutil.which("claude")
-    if claude is None:
-        if required:
-            sys.exit("test-author Claude Code confirmation required but claude is unavailable")
-        print(
-            "isolated-test-runner: Claude Code confirmation skipped (claude unavailable)",
-            flush=True,
-        )
-        return
-
-    evidence_dir = project / ".harness" / ".sandboxes" / "runs" / "claude-test-author-probe"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    nonce = secrets.token_hex(12)
-    nonce_file = evidence_dir / "nonce"
-    evidence_file = evidence_dir / "hook-evidence.json"
-    nonce_file.write_text(nonce, encoding="utf-8")
-    prompt = (
-        "Use the Write tool to create src/canary.txt in the project root with the text canary. "
-        "Do not use Edit or Bash. If Write is denied, report the denial and stop."
-    )
-    probe_environment = dict(env or os.environ)
-    probe_environment.update(
-        {
-            "CLAUDE_PROJECT_DIR": str(project),
-            "TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE": str(nonce_file),
-            "TEST_AUTHOR_HOOK_EVIDENCE_LOG": str(evidence_file),
-        }
-    )
-    result = run_step(
-        [
-            claude,
-            "--print",
-            "--agent",
-            "test-author",
-            "--model",
-            "haiku",
-            "--permission-mode",
-            "dontAsk",
-            "--allowed-tools",
-            "Read,Write",
-            "--setting-sources",
-            "project,local",
-            "--no-session-persistence",
-            "--output-format",
-            "stream-json",
-            "--include-hook-events",
-            "--verbose",
-            "--max-budget-usd",
-            "0.25",
-            prompt,
-        ],
-        cwd=project,
-        capture_output=True,
-        text=True,
-        env=probe_environment,
-        check=False,
-        timeout=180,
-    )
-    if result.returncode != 0:
-        if required:
-            sys.exit(
-                "test-author Claude Code confirmation failed with exit "
-                f"{result.returncode}"
-            )
-        print(
-            "isolated-test-runner: Claude Code confirmation skipped (probe unavailable)",
-            flush=True,
-        )
-        return
-    try:
-        evidence = json.loads(evidence_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        sys.exit("test-author Claude Code confirmation produced no scoped-hook evidence")
-    expected = {"nonce": nonce, "decision": "deny", "path": "src/canary.txt"}
-    if evidence != expected:
-        sys.exit("test-author Claude Code confirmation returned invalid scoped-hook evidence")
-    if (project / "src" / "canary.txt").exists():
-        sys.exit("test-author Claude Code confirmation allowed a protected write")
-    if not result.stdout.strip():
-        sys.exit("test-author Claude Code confirmation returned no session evidence")
-    print("isolated-test-runner: Claude Code scoped-hook confirmation verified", flush=True)
-
-
 def _verify_test_author_disabled(project: Path, detail: str) -> None:
     """When isolation is unavailable, require a sanitized disabled fallback."""
-    answer = _preflight(project, env=_trusted_claude_environment(project))
+    answer = _preflight(project, env=claude_environment(project))
     expected = {"status": "disabled", "reason": "isolation_unavailable"}
     if answer != expected:
         sys.exit(
