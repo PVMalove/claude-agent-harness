@@ -20,10 +20,11 @@ planned digest.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
 
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import DispatchState
 from harness.orchestration.core.utils import JsonObject
 from harness.errors import HarnessError
 from harness.orchestration.ledger.lifecycle import (
@@ -32,16 +33,18 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     audit_details,
 )
+from harness.orchestration.runtime_access import RuntimeAccessStatus
 from harness.orchestration.runtime_effect import (
     CHANNELS,
     KIND,
     OUTCOMES,
+    EffectResult,
+    build_observation,
     dispatch_send_records,
-    observation,
     observation_id,
-    observe_launch,
-    observed,
+    query_launch,
     record_paths,
+    store_observation,
 )
 from harness.orchestration.runtime_intent import (
     WRITE_MODES,
@@ -118,13 +121,14 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
         if record["state"] in ("suspended", "reconciling"):
             _ready(store, _reconciling(store, record))
         return False
-    seen: JsonObject | None = None
+    observation: JsonObject | None = None
     try:
         records = ledger.records_root()
         payload = _intent(store, ledger, record)
         if operation["kind"] == KIND:
-            seen = _effect_observation(store, ledger, repo, records, record, payload)
-            steps = seen["steps"]
+            hand_off = _HandOff(store, ledger, repo, records, record, payload)
+            observation = hand_off.observation()
+            steps = observation["steps"]
         else:
             steps = _composite_steps(record, payload)
         pending = _pending(ledger, records, steps)
@@ -136,9 +140,9 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
     record = _reconciling(store, record)
     step_name = "reconcile:intent"
     try:
-        if seen is not None:
+        if observation is not None:
             step_name = "reconcile:effect-observe"
-            record = observed(store, record, seen)
+            record = store_observation(store, record, observation)
         for step, status in pending:
             step_name = _step_name(step)
             if status == "pending":
@@ -320,107 +324,219 @@ def _composite_steps(record: JsonObject, payload: JsonObject) -> list[JsonObject
     return steps
 
 
-def _effect_observation(
-    store: RuntimeStateStore,
-    ledger: LifecycleLedger,
-    repo: Path,
-    records: Path,
-    record: JsonObject,
-    payload: JsonObject,
-) -> JsonObject:
-    """The observation of an unfinished hand-off: the one it persisted, or one this read-only
-    check proves; an effect nothing proves stops, and the hand-off is never repeated."""
-    operation = record["operation"]
-    dispatch_id = str(payload["dispatch_id"])
-    effect, before = payload.get("effect"), payload.get("before")
-    if (
-        not isinstance(effect, dict)
-        or effect.get("channel") not in CHANNELS
-        or not isinstance(before, dict)
-        or sorted(before) != sorted(record_paths(payload["batch_id"], dispatch_id))
-        or idempotency_key(KIND, dispatch_id, {"effect": effect})
-        != operation["idempotency_key"]
-        or canonical_sha256(before) != operation["expected_before_sha256"]
-    ):
+@dataclass(frozen=True)
+class _HandOff:
+    """An unfinished hand-off under reconciliation: the stores, the repository its adapter runs
+    in, the selected generation's records, and the store record with its checked intent."""
+
+    store: RuntimeStateStore
+    ledger: LifecycleLedger
+    repo: Path
+    records: Path
+    record: JsonObject
+    payload: JsonObject
+
+    @property
+    def dispatch_id(self) -> str:
+        return str(self.payload["dispatch_id"])
+
+    def observation(self) -> JsonObject:
+        """The hand-off's observation: the one it stored, or one this read-only check proves;
+        an effect nothing proves stops, and the hand-off is never repeated."""
+        before = self._intended_before()
+        current: JsonObject = {path: digest(self.records / path) for path in before}
+        stored = self._stored_observation(current)
+        if stored is not None:
+            return stored
+        changed = [path for path in before if current[path] != before[path]]
+        _, status_path = record_paths(self.payload["batch_id"], self.dispatch_id)
+        status = LifecycleLedger.read_record_lenient(self.records / status_path) or {}
+        state = self.record["operation"]["effect"]["state"]
+        if state == "not-started" and (
+            not changed or status.get("state") == DispatchState.CANCELLED
+        ):
+            return self._proved(EffectResult("unchanged", "not-started"))
+        if state == "unknown" and (not changed or _retired(status)):
+            return self._queried(status, changed=bool(changed))
+        path = changed[0] if changed else next(iter(before))
         raise _Stop(
             "integrity-failure",
-            "reconcile:intent",
-            "the hand-off intent payload does not match the runtime state record",
+            "reconcile:effect",
+            f"the {state} hand-off of {self.dispatch_id} has no observation, and {path} "
+            "does not prove its outcome",
+            {
+                "path": path,
+                "expected_before": short(before[path]),
+                "actual": short(current[path]),
+            },
         )
-    current: JsonObject = {path: digest(records / path) for path in before}
-    seen = _persisted_observation(store, record, payload, current)
-    if seen is not None:
-        return seen
-    state = operation["effect"]["state"]
-    batch_path, status_path = record_paths(payload["batch_id"], dispatch_id)
-    status = LifecycleLedger.read_record_lenient(records / status_path) or {}
-    changed = [path for path in before if current[path] != before[path]]
-    if state == "not-started" and (not changed or status.get("state") == "cancelled"):
-        return _proved(ledger, store, payload, "unchanged", "not-started", [])
-    if state == "unknown" and (not changed or _retired(status)):
-        launch = observe_launch(repo, records, payload)
-        source = (
-            "adapter-observe" if effect["channel"] == "adapter" else "provider-observe"
-        )
+
+    def _intended_before(self) -> JsonObject:
+        """The record hashes the hand-off was planned over, once its intent payload is bound
+        to the store record; a mismatch stops."""
+        operation = self.record["operation"]
+        effect, before = self.payload.get("effect"), self.payload.get("before")
+        if (
+            not isinstance(effect, dict)
+            or effect.get("channel") not in CHANNELS
+            or not isinstance(before, dict)
+            or sorted(before)
+            != sorted(record_paths(self.payload["batch_id"], self.dispatch_id))
+            or idempotency_key(KIND, self.dispatch_id, {"effect": effect})
+            != operation["idempotency_key"]
+            or canonical_sha256(before) != operation["expected_before_sha256"]
+        ):
+            raise _Stop(
+                "integrity-failure",
+                "reconcile:intent",
+                "the hand-off intent payload does not match the runtime state record",
+            )
+        return before
+
+    def _queried(self, status: JsonObject, *, changed: bool) -> JsonObject:
+        """The observation of a hand-off whose worker may have started, as its adapter or
+        provider answers; a live worker against the outcome, or no answer, stops."""
+        effect, operation = self.payload["effect"], self.record["operation"]
+        launch = query_launch(self.repo, self.records, self.payload)
+        adapter = effect["channel"] == "adapter"
+        source = "adapter-observe" if adapter else "provider-observe"
+        if launch is not None and launch.launched and not changed:
+            access: JsonObject = {
+                "status": RuntimeAccessStatus.LEGACY_INHERIT
+                if adapter
+                else RuntimeAccessStatus.UNVERIFIED,
+                "reconciled_launch": {"source": source, "launch_id": launch.launch_id},
+            }
+            batch_path, _ = record_paths(self.payload["batch_id"], self.dispatch_id)
+            changes = dispatch_send_records(
+                "dispatched",
+                _ledger_record(self.records, batch_path),
+                status,
+                effect,
+                access,
+                utils._now(),
+            )
+            return self._proved(EffectResult("dispatched", source, access), changes)
         evidence: JsonObject = {
-            "dispatch_id": dispatch_id,
+            "dispatch_id": self.dispatch_id,
             "channel": effect["channel"],
             "marked_at": operation["effect"]["observed_at"],
             "observation": None if launch is None else asdict(launch),
         }
-        remedy = AMBIGUOUS_REMEDY.format(dispatch=dispatch_id)
-        if launch is not None and launch.launched and not changed:
-            access: JsonObject = {
-                "status": "legacy-inherit"
-                if effect["channel"] == "adapter"
-                else "unverified",
-                "reconciled_launch": {"source": source, "launch_id": launch.launch_id},
-            }
-            batch = _ledger_record(records, batch_path)
-            moment = utils._now()
-            changes = dispatch_send_records(
-                "dispatched", batch, status, effect, access, moment
-            )
-            return _proved(ledger, store, payload, "dispatched", source, changes)
+        remedy = AMBIGUOUS_REMEDY.format(dispatch=self.dispatch_id)
         if launch is not None and launch.live:
             raise _Stop(
                 "concurrency-conflict",
                 "reconcile:effect",
-                f"a live worker of {dispatch_id} contradicts the observed outcome",
+                f"a live worker of {self.dispatch_id} contradicts the observed outcome",
                 evidence,
                 remedy=remedy,
             )
         if changed:
-            return _proved(ledger, store, payload, "unchanged", "human-retired", [])
+            return self._proved(EffectResult("unchanged", "human-retired"))
         if launch is not None:
-            return _proved(ledger, store, payload, "unchanged", source, [])
+            return self._proved(EffectResult("unchanged", source))
         raise _Stop(
             "ambiguous-effect",
             "reconcile:effect",
-            f"the hand-off of {dispatch_id} may have started a worker and nothing proves "
-            "whether it did",
+            f"the hand-off of {self.dispatch_id} may have started a worker and nothing "
+            "proves whether it did",
             evidence,
             remedy=remedy,
         )
-    path = changed[0] if changed else next(iter(before))
-    raise _Stop(
-        "integrity-failure",
-        "reconcile:effect",
-        f"the {state} hand-off of {dispatch_id} has no observation, and {path} does not "
-        "prove its outcome",
-        {
-            "path": path,
-            "expected_before": short(before[path]),
-            "actual": short(current[path]),
-        },
-    )
+
+    def _proved(
+        self, result: EffectResult, changes: list[LedgerRecordVO] | None = None
+    ) -> JsonObject:
+        """The observation this reconcile proved; a ledger that refuses its steps stops."""
+        try:
+            return build_observation(
+                self.ledger,
+                self.store,
+                self.payload,
+                result,
+                changes or [],
+                utils._now(),
+            )
+        except HarnessError as exc:
+            raise _Stop("integrity-failure", "reconcile:effect", exc.message) from exc
+
+    def _stored_observation(self, current: JsonObject) -> JsonObject | None:
+        """The observation the hand-off stored, bound to its intent and the store record, or
+        ``None`` when none was stored; a mismatch stops."""
+        operation, payload = self.record["operation"], self.payload
+        batch_id = str(payload["batch_id"])
+        ref = self.store.intent_ref(batch_id, observation_id(operation["operation_id"]))
+        effect = operation["effect"]
+        if effect["evidence_ref"] not in (None, ref):
+            raise _Stop(
+                "integrity-failure",
+                "reconcile:observation",
+                "the confirmed effect names another observation payload",
+            )
+        if (
+            effect["state"] != "confirmed"
+            and not (self.store.location.directory / ref).is_file()
+        ):
+            return None
+        try:
+            observation = self.store.read_intent(batch_id, ref)
+        except RuntimeStateError as exc:
+            raise _Stop(
+                exc.code, "reconcile:observation", exc.diagnostics["detail"]
+            ) from exc
+        steps, hashes = observation.get("steps"), observation.get("record_hashes")
+        if (
+            observation.get("operation_id") != payload["operation_id"]
+            or observation.get("generation") != payload["generation"]
+            or observation.get("outcome") not in OUTCOMES
+            or not isinstance(steps, list)
+            or not isinstance(hashes, dict)
+            or sorted(hashes) != sorted(current)
+            or (
+                operation["phase"] != "prepared"
+                and self.record["ledger"]["record_hashes"] != hashes
+            )
+        ):
+            raise _Stop(
+                "integrity-failure",
+                "reconcile:observation",
+                "the observation payload does not match the hand-off intent and runtime "
+                "state",
+            )
+        for index, step in enumerate(steps):
+            problem = _step_shape_problem(operation["operation_id"], index, step)
+            if problem is None and (
+                step["mode"] != "replace"
+                or payload["before"].get(step["path"]) != step["before_sha256"]
+                or hashes[step["path"]] != step["after_sha256"]
+            ):
+                problem = (
+                    f"observation step {index} does not follow the hand-off intent"
+                )
+            if problem is not None:
+                raise _Stop("integrity-failure", "reconcile:observation", problem)
+        planned = {step["path"] for step in steps}
+        for path, sha256 in hashes.items():
+            if path not in planned and current[path] != sha256:
+                raise _Stop(
+                    "integrity-failure",
+                    "reconcile:observation",
+                    f"{path} changed after the hand-off was observed",
+                    {
+                        "path": path,
+                        "expected": short(sha256),
+                        "actual": short(current[path]),
+                    },
+                )
+        return observation
 
 
 def _retired(status: JsonObject) -> bool:
     """Whether a person cancelled the dispatch and confirmed its worker runtime stopped."""
     cancellation = status.get("cancellation")
     return (
-        status.get("state") == "cancelled"
+        status.get("state") == DispatchState.CANCELLED
         and isinstance(cancellation, dict)
         and cancellation.get("runtime_stopped") is True
         and isinstance(cancellation.get("approved_by"), str)
@@ -433,96 +549,6 @@ def _ledger_record(records: Path, path: str) -> JsonObject:
     if record is None:
         raise _Stop("integrity-failure", "reconcile:effect", f"{path} cannot be read")
     return record
-
-
-def _proved(
-    ledger: LifecycleLedger,
-    store: RuntimeStateStore,
-    payload: JsonObject,
-    outcome: str,
-    reason: str,
-    changes: list[LedgerRecordVO],
-) -> JsonObject:
-    """The observation payload this reconcile proved; a ledger that refuses its steps stops."""
-    try:
-        return observation(
-            ledger, store, payload, outcome, reason, reason, changes, utils._now()
-        )
-    except HarnessError as exc:
-        raise _Stop("integrity-failure", "reconcile:effect", exc.message) from exc
-
-
-def _persisted_observation(
-    store: RuntimeStateStore,
-    record: JsonObject,
-    payload: JsonObject,
-    current: JsonObject,
-) -> JsonObject | None:
-    """The observation payload the hand-off persisted, bound to its intent and the store
-    record, or ``None`` when none was persisted; a mismatch stops."""
-    operation = record["operation"]
-    batch_id = str(payload["batch_id"])
-    ref = store.intent_ref(batch_id, observation_id(operation["operation_id"]))
-    effect = operation["effect"]
-    if effect["evidence_ref"] not in (None, ref):
-        raise _Stop(
-            "integrity-failure",
-            "reconcile:observation",
-            "the confirmed effect names another observation payload",
-        )
-    if (
-        effect["state"] != "confirmed"
-        and not (store.location.directory / ref).is_file()
-    ):
-        return None
-    try:
-        seen = store.read_intent(batch_id, ref)
-    except RuntimeStateError as exc:
-        raise _Stop(
-            exc.code, "reconcile:observation", exc.diagnostics["detail"]
-        ) from exc
-    steps, hashes = seen.get("steps"), seen.get("record_hashes")
-    if (
-        seen.get("operation_id") != payload["operation_id"]
-        or seen.get("generation") != payload["generation"]
-        or seen.get("outcome") not in OUTCOMES
-        or not isinstance(steps, list)
-        or not isinstance(hashes, dict)
-        or sorted(hashes) != sorted(current)
-        or (
-            operation["phase"] != "prepared"
-            and record["ledger"]["record_hashes"] != hashes
-        )
-    ):
-        raise _Stop(
-            "integrity-failure",
-            "reconcile:observation",
-            "the observation payload does not match the hand-off intent and runtime state",
-        )
-    for index, step in enumerate(steps):
-        problem = _step_shape_problem(operation["operation_id"], index, step)
-        if problem is None and (
-            step["mode"] != "replace"
-            or payload["before"].get(step["path"]) != step["before_sha256"]
-            or hashes[step["path"]] != step["after_sha256"]
-        ):
-            problem = f"observation step {index} does not follow the hand-off intent"
-        if problem is not None:
-            raise _Stop("integrity-failure", "reconcile:observation", problem)
-    planned = {step["path"] for step in steps}
-    for path, sha256 in hashes.items():
-        if path not in planned and current[path] != sha256:
-            raise _Stop(
-                "integrity-failure",
-                "reconcile:observation",
-                f"{path} changed after the hand-off was observed",
-                {
-                    "path": path,
-                    "expected": short(sha256),
-                    "actual": short(current[path]),
-                },
-            )
-    return seen
 
 
 def _step_shape_problem(operation_id: str, index: int, step: object) -> str | None:

@@ -8,6 +8,14 @@ the call leaves durable evidence that the worker may run, and ``not-started`` pr
 The observed outcome and the ledger steps it implies are persisted as a second write-once payload
 before any ledger record changes; the steps are then written and verified as a composite write.
 
+An observation always moves the effect to ``confirmed``: the outcome is proved, and the outcome
+itself, including that no worker started, is in the observation payload.  The runtime state
+contract leads from ``unknown`` only to ``confirmed``; ``not-started`` means the transport was
+never called.
+
+Three steps carry an observation: ``build_observation`` plans the payload, ``store_observation``
+persists it, and ``query_launch`` asks the adapter or provider when no observation was stored.
+
 ``runtime_reconcile`` finishes an operation a process left unfinished, or stops on it; nothing
 here or there repeats the hand-off.  Nothing here issues an approval.
 """
@@ -15,7 +23,6 @@ here or there repeats the hand-off.  Nothing here issues an approval.
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import subprocess
 import sys
@@ -23,11 +30,13 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, get_args
 
 from harness.errors import HarnessError
 from harness.orchestration import extensions
 from harness.orchestration.core import utils
-from harness.orchestration.core.utils import JsonObject, _canonical
+from harness.orchestration.core.constants import BatchState, DispatchState
+from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger.ledger_ops import _ledger_errors
 from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
@@ -56,9 +65,14 @@ from harness.orchestration.runtime_state_store import (
 )
 
 KIND = "dispatch-send"
-# How the brief reaches its worker: ``none`` starts nothing (the session runs the role itself).
-CHANNELS = ("none", "adapter", "native")
-OUTCOMES = ("dispatched", "blocked", "unchanged")
+# How the brief reaches its worker: ``none`` starts nothing (the session runs the role itself);
+# ``adapter`` and ``native`` start a worker outside both stores.  A ``Literal`` keeps the values
+# checked without adding a vocabulary to the ``systemFields.v1`` registry.
+type EffectChannel = Literal["none", "adapter", "native"]
+# What a hand-off changed; ``unchanged`` leaves its ledger records as they were.
+type EffectOutcome = Literal["dispatched", "blocked", "unchanged"]
+CHANNELS: frozenset[str] = frozenset(get_args(EffectChannel.__value__))
+OUTCOMES: frozenset[str] = frozenset(get_args(EffectOutcome.__value__))
 UNKNOWN_REMEDY = (
     "repeat the command: it reconciles the hand-off from its durable intent and never starts "
     "the worker again"
@@ -72,10 +86,15 @@ class EffectResult:
     """The classified outcome of a hand-off: ``evidence`` is what the ledger records about it,
     ``error`` what the command raises once the outcome is committed."""
 
-    outcome: str
+    outcome: EffectOutcome
     reason: str
     evidence: JsonObject | None = None
     error: HarnessError | None = None
+
+    @property
+    def detail(self) -> str:
+        """What the observation records about the outcome: its error, else its reason."""
+        return self.error.message if self.error is not None else self.reason
 
 
 def adapter_command(adapter: Path) -> list[str]:
@@ -85,7 +104,7 @@ def adapter_command(adapter: Path) -> list[str]:
     return [str(adapter)]
 
 
-def observe_launch(
+def query_launch(
     repo: Path, records: Path, payload: JsonObject
 ) -> extensions.LaunchObservation | None:
     """Ask the adapter or the native provider that took an unconfirmed hand-off whether its
@@ -118,11 +137,11 @@ def observe_launch(
                 timeout=OBSERVE_TIMEOUT_SECONDS,
             )
             if result.returncode == 0:
-                answer = _observation_object(json.loads(result.stdout))
+                answer = _adapter_answer(json.loads(result.stdout))
         except (OSError, subprocess.TimeoutExpired, ValueError):
             answer = None
     elif effect["channel"] == "native":
-        answer = _provider_observation(brief, effect)
+        answer = _provider_answer(brief, effect)
     if (
         not isinstance(answer, extensions.LaunchObservation)
         or answer.dispatch_id != dispatch_id
@@ -137,7 +156,7 @@ def observe_launch(
     return answer
 
 
-def _observation_object(value: object) -> extensions.LaunchObservation | None:
+def _adapter_answer(value: object) -> extensions.LaunchObservation | None:
     """An adapter's JSON answer with exactly the observation fields, or ``None``."""
     fields = {"dispatch_id", "launched", "live", "launch_id"}
     if (
@@ -148,15 +167,11 @@ def _observation_object(value: object) -> extensions.LaunchObservation | None:
     return extensions.LaunchObservation(**value)
 
 
-def _provider_observation(brief_path: Path, effect: JsonObject) -> object:
+def _provider_answer(brief_path: Path, effect: JsonObject) -> object:
     """The native provider's optional ``observe_launch`` answer for the brief the hand-off
     sent; a changed brief, a missing method or any failure of the provider is no answer."""
     brief = LifecycleLedger.read_record_lenient(brief_path)
-    if (
-        brief is None
-        or hashlib.sha256(_canonical(brief).encode("utf-8")).hexdigest()
-        != effect["brief_sha256"]
-    ):
+    if brief is None or canonical_sha256(brief) != effect["brief_sha256"]:
         return None
     plan = brief.get("runtime_access")
     name = plan.get("runtime_extension") if isinstance(plan, dict) else None
@@ -184,7 +199,7 @@ def observation_id(operation_id: str) -> str:
 
 
 def dispatch_send_records(
-    outcome: str,
+    outcome: EffectOutcome,
     batch: JsonObject,
     status: JsonObject,
     effect: JsonObject,
@@ -202,10 +217,10 @@ def dispatch_send_records(
         if item["dispatch_id"] == status["dispatch_id"]
     )
     if outcome == "dispatched":
-        entry["state"] = "dispatched"
+        entry["state"] = DispatchState.DISPATCHED
         status.update(
             {
-                "state": "dispatched",
+                "state": DispatchState.DISPATCHED,
                 "updated_at": moment,
                 "heartbeat_at": moment,
                 "runtime_access": evidence,
@@ -214,26 +229,30 @@ def dispatch_send_records(
             }
         )
     else:
-        entry["state"] = batch["state"] = "blocked"
+        entry["state"] = DispatchState.BLOCKED
+        batch["state"] = BatchState.BLOCKED
         status.update(
-            {"state": "blocked", "updated_at": moment, "runtime_failure": evidence}
+            {
+                "state": DispatchState.BLOCKED,
+                "updated_at": moment,
+                "runtime_failure": evidence,
+            }
         )
     return [BatchRecord.from_dict(batch), DispatchStatusRecord.from_dict(status)]
 
 
-def observation(
+def build_observation(
     ledger: LifecycleLedger,
     store: RuntimeStateStore,
     payload: JsonObject,
-    outcome: str,
-    reason: str,
-    detail: str,
+    result: EffectResult,
     changes: list[LedgerRecordVO],
     moment: str,
 ) -> JsonObject:
-    """The observation payload of the intent ``payload``: the outcome and the checked ledger
-    steps it implies, under the operation's deterministic audit IDs, and the hash every record
-    the hand-off may change holds once they are written."""
+    """The observation payload of the intent ``payload``, built but not persisted: the
+    hand-off's ``result``, the checked ledger steps of ``changes`` under the operation's
+    deterministic audit IDs, and the hash every record the hand-off may change holds once they
+    are written."""
     planner = CompositeWrite(
         ledger,
         store,
@@ -252,9 +271,9 @@ def observation(
     hashes.update({step["path"]: step["after_sha256"] for step in steps})
     return {
         "operation_id": payload["operation_id"],
-        "outcome": outcome,
-        "reason": reason,
-        "evidence": sanitize_detail(detail),
+        "outcome": result.outcome,
+        "reason": result.reason,
+        "evidence": sanitize_detail(result.detail),
         "observed_at": moment,
         "generation": payload["generation"],
         "steps": steps,
@@ -262,21 +281,23 @@ def observation(
     }
 
 
-def observed(
-    store: RuntimeStateStore, record: JsonObject, payload: JsonObject
+def store_observation(
+    store: RuntimeStateStore, record: JsonObject, observation: JsonObject
 ) -> JsonObject:
-    """Persist the observation ``payload`` and move the operation to ``effect-observed`` with a
-    confirmed effect, unless the record already is there; returns the record now on disk."""
+    """Persist ``observation`` and move the operation to ``effect-observed`` with a confirmed
+    effect, unless the record already is there; returns the record now on disk."""
     batch_id = record["identity"]["batch_id"]
-    ref = store.write_intent(batch_id, observation_id(payload["operation_id"]), payload)
+    ref = store.write_intent(
+        batch_id, observation_id(observation["operation_id"]), observation
+    )
     if record["operation"]["phase"] != "prepared":
         return record
     following = with_phase(
         record,
         "effect-observed",
         ledger={
-            "generation": payload["generation"],
-            "record_hashes": payload["record_hashes"],
+            "generation": observation["generation"],
+            "record_hashes": observation["record_hashes"],
         },
     )
     return write_next(
@@ -286,7 +307,7 @@ def observed(
         {
             "state": "confirmed",
             "evidence_ref": ref,
-            "observed_at": payload["observed_at"],
+            "observed_at": observation["observed_at"],
         },
     )
 
@@ -329,14 +350,11 @@ class DispatchSend:
             kind=KIND,
             idempotency_key=key,
         )
-        existing = writer.current_record()
-        with _ledger_errors():
-            generation, root, _ = writer.plan()
+        current, generation, root, _ = writer.begin()
         before = {
             path: digest(root / path)
             for path in record_paths(self.batch_id, self.dispatch_id)
         }
-        current = writer.first_record() if existing is None else existing
         payload: JsonObject = {
             "operation_id": str(uuid.uuid4()),
             "idempotency_key": key,
@@ -378,18 +396,10 @@ class DispatchSend:
                 result.evidence,
                 moment,
             )
-            detail = result.error.message if result.error else result.reason
-            seen = observation(
-                self.ledger,
-                self.store,
-                payload,
-                result.outcome,
-                result.reason,
-                detail,
-                changes,
-                moment,
+            observation = build_observation(
+                self.ledger, self.store, payload, result, changes, moment
             )
-            record = observed(self.store, record, seen)
+            record = store_observation(self.store, record, observation)
         except Exception as exc:
             state = record["operation"]["effect"]["state"]
             raise suspended_error(
@@ -401,7 +411,7 @@ class DispatchSend:
                 f"durable; the store keeps the effect {state}",
                 remedy=UNKNOWN_REMEDY,
             ) from exc
-        finish(self.ledger, self.store, root, record, seen["steps"])
+        finish(self.ledger, self.store, root, record, observation["steps"])
         if result.error is not None:
             raise result.error
         return result

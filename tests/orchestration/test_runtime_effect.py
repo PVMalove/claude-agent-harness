@@ -6,7 +6,7 @@ from __future__ import annotations
 import errno
 import json
 import subprocess
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -476,15 +476,6 @@ if sys.argv[1] == "observe" and answer.exists():
     sys.exit(0)
 sys.exit(2)
 """
-
-
-@pytest.fixture
-def recovery() -> Iterator[test_recovery.RecoveryTests]:
-    """The recovery fixture, by composition so its own suite does not run again."""
-    fixture = test_recovery.RecoveryTests()
-    fixture.setUp()
-    yield fixture
-    fixture.tearDown()
 
 
 def external_brief(fixture: test_recovery.RecoveryTests) -> tuple[JsonObject, Path]:

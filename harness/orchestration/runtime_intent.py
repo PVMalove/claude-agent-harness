@@ -320,10 +320,7 @@ class CompositeWrite:
 
         A refusal before the intent is recorded leaves both stores unchanged; a failure after it
         suspends the operation with its failure, for the next command to reconcile."""
-        existing = self.current_record()
-        with _ledger_errors():
-            generation, root, steps = self.plan()
-        current = self.first_record() if existing is None else existing
+        current, generation, root, steps = self.begin()
         operation_id = str(uuid.uuid4())
         for index, step in enumerate(steps):
             step["audit"]["audit_id"] = audit_id_for(operation_id, index)
@@ -345,6 +342,16 @@ class CompositeWrite:
             {step["path"]: step["after_sha256"] for step in steps},
         )
         finish(self.ledger, self.store, root, record, steps)
+
+    def begin(self) -> tuple[JsonObject, str, Path, list[JsonObject]]:
+        """The store record a new operation follows, the selected generation, its directory and
+        the checked steps.  The batch's first store record is created only once the plan passed,
+        so a refusal leaves both stores unchanged."""
+        existing = self._current_record()
+        with _ledger_errors():
+            generation, root, steps = self.plan()
+        current = self._first_record() if existing is None else existing
+        return current, generation, root, steps
 
     def prepare(
         self,
@@ -384,7 +391,7 @@ class CompositeWrite:
         )
         return write_next(self.store, current, prepared)
 
-    def current_record(self) -> JsonObject | None:
+    def _current_record(self) -> JsonObject | None:
         """The store record a new operation follows, ``None`` before the first one; an
         unfinished operation must be reconciled before another one starts."""
         record = self.store.read(self.batch_id)
@@ -402,7 +409,7 @@ class CompositeWrite:
             )
         return record
 
-    def first_record(self) -> JsonObject:
+    def _first_record(self) -> JsonObject:
         """Create the batch's store record, ``ready`` and without an operation."""
         first: JsonObject = {
             "contract": RUNTIME_STATE_CONTRACT,

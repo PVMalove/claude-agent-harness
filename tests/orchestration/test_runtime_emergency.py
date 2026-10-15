@@ -7,7 +7,7 @@ import copy
 import errno
 import json
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -22,14 +22,6 @@ from harness.orchestration.runtime_state_store import (
 )
 from tests.orchestration import test_recovery
 from tests.orchestration.test_coordinator import _git
-
-
-@pytest.fixture
-def recovery() -> Iterator[test_recovery.RecoveryTests]:
-    fixture = test_recovery.RecoveryTests()
-    fixture.setUp()
-    yield fixture
-    fixture.tearDown()
 
 
 def approved(fixture: test_recovery.RecoveryTests) -> JsonObject:

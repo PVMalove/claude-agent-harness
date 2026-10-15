@@ -264,14 +264,6 @@ def test_a_provider_without_an_observation_leaves_the_handoff_ambiguous(
 # --- The public commands -----------------------------------------------------------------------
 
 
-@pytest.fixture
-def recovery() -> Iterator[test_recovery.RecoveryTests]:
-    fixture = test_recovery.RecoveryTests()
-    fixture.setUp()
-    yield fixture
-    fixture.tearDown()
-
-
 def stop_after_adapter(monkeypatch: pytest.MonkeyPatch, *, ran: bool) -> None:
     """The sender stops right after (``ran``) or right before the adapter call."""
     original = delivery._run_adapter

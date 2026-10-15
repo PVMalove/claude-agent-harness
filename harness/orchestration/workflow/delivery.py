@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import subprocess
 import time
 from pathlib import Path
@@ -41,7 +40,6 @@ from harness.orchestration.core.git_utils import (
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
-    _canonical,
     _non_empty,
     _read_object,
     _repo,
@@ -71,9 +69,11 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
 from harness.orchestration.runtime_effect import (
     DispatchSend,
+    EffectChannel,
     EffectResult,
     adapter_command,
 )
+from harness.orchestration.runtime_intent import canonical_sha256
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow.attention import (
@@ -193,7 +193,7 @@ def _hand_off(
             handoff=True,
             command=tuple(command) if command is not None else None,
         )
-        if evidence["status"] != "legacy-inherit":
+        if evidence["status"] != runtime_access.RuntimeAccessStatus.LEGACY_INHERIT:
             reason = "native-receipt"
         elif command is None:
             reason = "in-process"
@@ -354,9 +354,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
         plan = dispatch.get("runtime_access")
         if not runtime_access.is_legacy_plan(plan):
-            channel = "native"
+            channel: EffectChannel = "native"
+        elif command is None:
+            channel = "none"
         else:
-            channel = "none" if command is None else "adapter"
+            channel = "adapter"
         effect: JsonObject = {
             "channel": channel,
             "transport": transport,
@@ -364,9 +366,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             "adapter_args": adapter_args,
             "worker_worktree": launch["worktree"],
             "worker_snapshot_commit": launch["head_commit"],
-            "brief_sha256": hashlib.sha256(
-                _canonical(dispatch).encode("utf-8")
-            ).hexdigest(),
+            "brief_sha256": canonical_sha256(dispatch),
             "plan_digest": plan.get("plan_digest") if isinstance(plan, dict) else None,
         }
         _safe_id(batch["batch_id"], "batch")
