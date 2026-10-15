@@ -64,6 +64,7 @@ from harness.orchestration.core.workspace import (
     _validate_worktree,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    LedgerUnreadableError,
     _ledger_lock,
     _load_batch,
     _load_dispatch_status,
@@ -450,7 +451,8 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         try:
             ledger.ensure()
         except LedgerError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+            # No readable current generation: bootstrap diagnostics name an unreadable ledger.
+            raise LedgerUnreadableError(exc.message, remedy=exc.remedy) from exc
         _safe_id(record["batch_id"], "batch")
         _reject_duplicate_work(
             root, record["ticket"], record["branch"], record["worktree"]

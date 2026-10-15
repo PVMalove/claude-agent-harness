@@ -326,6 +326,17 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
   записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
 - `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
 
+Runtime adapter для `transport: external` реализует два глагола. `<adapter> dispatch [args] --repo
+<repo> --brief <brief>` запускает worker; ненулевой код выхода означает, что worker не запущен.
+`<adapter> observe [args] --repo <repo> --brief <brief>` только сообщает, запущен ли worker этого
+brief: за 30 секунд, с кодом 0 и одним JSON-объектом `{"dispatch_id", "launched", "live",
+"launch_id"?}`. Coordinator вызывает `observe`, если `dispatch send` остановился во время запуска, и
+никогда не повторяет `dispatch`. Нативный провайдер `runtime_access` отвечает на тот же вопрос
+необязательным методом `observe_launch(brief)`. Если ответа нет или он не по контракту, batch
+останавливается с `ambiguous-effect`: оператор останавливает worker и выполняет
+`dispatch cancel --runtime-stopped`. Контракт подробно описан в
+[Role order, liveness, and transport](playbook.md#role-order-liveness-and-transport).
+
 Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
 новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет
 известный чистый startup SHA отдельным evidence без фиктивного checkpoint. После recovery даже
