@@ -11,7 +11,7 @@ import pytest
 from harness.json_types import JsonObject
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration import runtime_reconcile
-from harness.orchestration.runtime_intent import next_revision
+from harness.orchestration.runtime_intent import mark_reconciling, next_revision
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -500,12 +500,11 @@ def test_a_record_another_writer_changes_during_reconcile_is_a_concurrency_confl
     scene = make_scene(tmp_path)
     status = stop_after_status(scene, monkeypatch)
     batch = scene.records / f"batches/{BATCH}.json"
-    original = runtime_reconcile.mark_reconciling
 
     def foreign_writer(
         store: RuntimeStateStore, record: JsonObject, *, interrupted: str
     ) -> JsonObject:
-        reconciling = original(store, record, interrupted=interrupted)
+        reconciling = mark_reconciling(store, record, interrupted=interrupted)
         batch.write_text(batch.read_text(encoding="utf-8") + " ", encoding="utf-8")
         return reconciling
 

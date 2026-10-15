@@ -29,7 +29,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.ledger_admin import export_ledger, inspect_ledger
-from harness.orchestration.ledger.ledger_ops import _load_batch
+from harness.orchestration.ledger.ledger_ops import LedgerUnreadableError, _load_batch
 from harness.orchestration.runtime_intent import CompositeWrite
 from harness.orchestration.runtime_migration import migrate_system_fields
 from harness.orchestration.runtime_reconcile import settle
@@ -611,12 +611,58 @@ def _content(file: JsonObject) -> bytes:
     return str(file["content"]).encode("utf-8")
 
 
-@pytest.mark.parametrize("migrated", [False, True], ids=["unreadable", "quarantined"])
-def test_inspect_and_export_read_a_denied_batch_without_writing(
-    scene: Scene, migrated: bool
+# A batch the ordinary loader cannot read: its defect and the finding inspect shows for it.
+DENIED: dict[str, tuple[Callable[[Scene], None], str, str | None, str]] = {
+    "unknown value": (
+        _unknown_batch_state,
+        "legacy-unknown",
+        "batch.state",
+        "'on-hold'",
+    ),
+    "unreadable record": (_unreadable_batch, "unreadable", None, "None"),
+}
+
+
+@pytest.mark.parametrize("defect", sorted(DENIED))
+def test_before_migrate_a_loader_failure_denies_every_action_without_a_store_record(
+    scene: Scene, defect: str
 ) -> None:
     scene.seed(BATCH_A, DISPATCH_A)
-    _unknown_batch_state(scene)
+    DENIED[defect][0](scene)
+    write = CompositeWrite(
+        scene.ledger,
+        scene.store(),
+        batch_id=BATCH_B,
+        dispatch_id=DISPATCH_B,
+        kind="checkpoint",
+        idempotency_key="key",
+    )
+    write.write_immutable(scene.generation / "checkpoints/checkpoint-0b.json", {})
+    before = tree(scene.root)
+
+    # The validating loader stops on the record, so every batch's actions stay denied.
+    for batch_id in (BATCH_A, BATCH_B):
+        with pytest.raises(LedgerUnreadableError):
+            _load_batch(scene.root, batch_id)
+    with pytest.raises(CoordinatorError):
+        write.commit()
+
+    # Only `ledger migrate` writes a denial to the store; until then it holds nothing.
+    assert settle(scene.repo, scene.root, scene.ledger, BATCH_B) is False
+    assert scene.store_bytes() == {}
+    assert tree(scene.root) == before
+
+
+@pytest.mark.parametrize("defect", sorted(DENIED))
+@pytest.mark.parametrize(
+    "migrated", [False, True], ids=["before-migrate", "after-migrate"]
+)
+def test_inspect_and_export_read_a_denied_batch_without_writing(
+    scene: Scene, migrated: bool, defect: str
+) -> None:
+    make, disposition, field_id, value = DENIED[defect]
+    scene.seed(BATCH_A, DISPATCH_A)
+    make(scene)
     if migrated:
         scene.run()
     with pytest.raises(CoordinatorError):
@@ -638,9 +684,9 @@ def test_inspect_and_export_read_a_denied_batch_without_writing(
     [shown] = only["batches"]
     [finding] = shown["findings"]
     assert (finding["disposition"], finding["field_id"], finding["value"]) == (
-        "legacy-unknown",
-        "batch.state",
-        "'on-hold'",
+        disposition,
+        field_id,
+        value,
     )
     if migrated:
         assert report["migration"]["current"] is True

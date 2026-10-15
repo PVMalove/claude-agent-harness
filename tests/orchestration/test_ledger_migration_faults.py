@@ -85,26 +85,38 @@ def stop_at(owner: type, name: str, call: int, *, after: bool = False) -> Stop:
     return lambda monkeypatch: crash_on(monkeypatch, owner, name, call, after=after)
 
 
-# Store writes of a clean run: the ledger scope's first record, prepared, effect-observed,
-# ledger-committed, the quarantined batch's first record and its denial, committed.
+# Store writes of a clean run: 1 the ledger scope's first record, 2 prepared (after the intent),
+# 3 effect-observed, 4 ledger-committed, 5 the quarantined batch's first record, 6 its denial,
+# 7 committed.  A stop lands before each of them, after the intent and around the switch.
 SEAMS: dict[str, Stop] = {
-    "S1 while the staging is built": stop_at(LifecycleLedger, "_append_audit", 2),
-    "S2 after the intent, before prepared": stop_at(RuntimeStateStore, "write", 2),
-    "S3 after prepared, before the rename": stop_at(Path, "rename", 1),
-    "S4 after the rename, before the pointer": stop_at(
+    "S1 while the staging is built": stop_at(
+        LifecycleLedger, "append_generation_audit", 2
+    ),
+    "S2 before the ledger scope's first record": stop_at(RuntimeStateStore, "write", 1),
+    "S3 after the intent, before prepared": stop_at(
+        RuntimeStateStore, "write_intent", 1, after=True
+    ),
+    "S4 after prepared, before the rename": stop_at(Path, "rename", 1),
+    "S5 after the rename, before the pointer": stop_at(
         LifecycleLedger, "select_generation", 1
     ),
     "S6 after the pointer, before effect-observed": stop_at(
         RuntimeStateStore, "write", 3
     ),
-    "S7 after ledger-committed, before the denial": stop_at(
+    "S7 after effect-observed, before ledger-committed": stop_at(
+        RuntimeStateStore, "write", 4
+    ),
+    "S8 after ledger-committed, before the batch's first record": stop_at(
         RuntimeStateStore, "write", 5
     ),
-    "S8 after the denial, before committed": stop_at(RuntimeStateStore, "write", 7),
+    "S9 after the batch's first record, before its denial": stop_at(
+        RuntimeStateStore, "write", 6
+    ),
+    "S10 after the denial, before committed": stop_at(RuntimeStateStore, "write", 7),
 }
 
 
-@pytest.mark.parametrize("seam", sorted(SEAMS))
+@pytest.mark.parametrize("seam", list(SEAMS))
 def test_a_stop_at_any_boundary_is_finished_by_the_next_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seam: str
 ) -> None:
@@ -165,7 +177,7 @@ def test_a_pointer_on_another_generation_stops_without_a_new_revision(
 ) -> None:
     scene = seeded(tmp_path / "scene")
     source = scene.generation
-    SEAMS["S3 after prepared, before the rename"](monkeypatch)
+    SEAMS["S4 after prepared, before the rename"](monkeypatch)
     with pytest.raises(Crash):
         scene.run()
     monkeypatch.undo()
@@ -195,7 +207,7 @@ def test_a_source_changed_after_a_stop_is_migrated_as_it_is_now(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scene = seeded(tmp_path / "scene")
-    SEAMS["S3 after prepared, before the rename"](monkeypatch)
+    SEAMS["S4 after prepared, before the rename"](monkeypatch)
     with pytest.raises(Crash):
         scene.run()
     monkeypatch.undo()
