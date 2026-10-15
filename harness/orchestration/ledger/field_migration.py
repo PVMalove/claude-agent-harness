@@ -73,8 +73,9 @@ class MigrationRule:
     evidence: str
 
 
-# `continuation.termination_reason` has a rule but no ledger location: the coordinator keeps it
-# only inside a free-text authorization note, which no rule rewrites.
+# `continuation.termination_reason` has rules but no ledger location: the coordinator keeps it
+# only inside a free-text authorization note, which no rule rewrites.  Its two rules are checked
+# against the registry like every other one, yet `ledger migrate` never applies them.
 MIGRATION_RULES: tuple[MigrationRule, ...] = (
     MigrationRule(
         "continuation.termination_reason",
@@ -194,11 +195,7 @@ def classify(
     """The finding of ``value`` at a location bound to ``field_id``; ``None`` for an exact
     registry value that no rule retires."""
     for rule in MIGRATION_RULES:
-        if (
-            rule.field_id == field_id
-            and isinstance(value, str)
-            and value == rule.legacy
-        ):
+        if rule.field_id == field_id and value == rule.legacy:
             return Finding(
                 location, field_id, value, MAPPED, rule.canonical, rule.evidence
             )
