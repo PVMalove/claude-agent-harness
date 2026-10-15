@@ -18,8 +18,14 @@ from harness.orchestration.core.constants import (
     LEDGER_LOCK_STALE_SECONDS,
     TERMINAL_BATCH_STATES,
 )
-from harness.orchestration.core.utils import CoordinatorError, JsonObject, _repo
+from harness.orchestration.core.utils import (
+    CoordinatorError,
+    JsonObject,
+    _repo,
+    _safe_id,
+)
 from harness.orchestration.core.workspace import _runtime_matches
+from harness.orchestration.ledger.generation_migration import export, inspection
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_errors,
     _ledger_lock,
@@ -27,6 +33,11 @@ from harness.orchestration.ledger.ledger_ops import (
 )
 from harness.orchestration.ledger.lifecycle import LifecycleLedger, LEDGER_VERSION
 from harness.orchestration.runtime_migration import migrate_system_fields
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+    sanitize_detail,
+)
 
 
 def ledger_status(args: argparse.Namespace) -> JsonObject:
@@ -76,6 +87,92 @@ def migrate_ledger(args: argparse.Namespace) -> JsonObject:
         "migrated": bool(upgraded["migrated"] or system["migrated"]),
         "schema_upgraded": upgraded["migrated"],
         "system_fields": system,
+    }
+
+
+def inspect_ledger(args: argparse.Namespace) -> JsonObject:
+    """Read-only inspection of the selected generation, its migration and its quarantine, and of
+    the runtime state that denies a batch.  It takes no lock, loads no config and never reads a
+    record through the ledger's validating loader, so a quarantined or unreadable batch is shown
+    as a finding instead of stopping it."""
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    generation = _lenient_generation(LifecycleLedger(root))
+    report: JsonObject = (
+        {"generation": None, "migration": None, "unowned": [], "batches": []}
+        if generation is None
+        else inspection(generation)
+    )
+    batches = cast(list[JsonObject], report["batches"])
+    if (batch_id := getattr(args, "batch", None)) is not None:
+        batches = [batch for batch in batches if batch["batch_id"] == batch_id]
+        if not batches:
+            raise _no_batch(batch_id, generation)
+    for batch in batches:
+        batch["findings"] = [
+            {
+                **finding,
+                "value": sanitize_detail(repr(finding["value"])),
+                "reason": sanitize_detail(str(finding["reason"])),
+            }
+            for finding in batch["findings"]
+        ]
+    report["batches"] = batches
+    try:
+        store: RuntimeStateStore | None = RuntimeStateStore(repo, root)
+    except RuntimeStateError as exc:
+        store, report["runtime_state"] = None, {"available": False, "code": exc.code}
+    if store is not None:
+        report["runtime_state"] = {
+            "available": True,
+            "ledger_scope": _runtime(store, None),
+        }
+        for batch in batches:
+            batch["runtime"] = _runtime(store, str(batch["batch_id"]))
+    return report
+
+
+def export_ledger(args: argparse.Namespace) -> JsonObject:
+    """Read-only export of one batch, byte for byte: its graph and reports, or its quarantined
+    graph and evidence.  It takes no lock and writes nothing; the JSON goes to stdout."""
+    repo = _repo(args)
+    batch_id = _safe_id(args.batch, "batch")
+    generation = _lenient_generation(LifecycleLedger(_state_root(args, repo)))
+    exported = None if generation is None else export(generation, batch_id)
+    if exported is None:
+        raise _no_batch(batch_id, generation)
+    return exported
+
+
+def _lenient_generation(ledger: LifecycleLedger) -> Path | None:
+    """The generation the pointer names, never validated; ``None`` without a generation."""
+    path = ledger.records_root_lenient()
+    return None if path is None or path == ledger.root else path
+
+
+def _no_batch(batch_id: str, generation: Path | None) -> CoordinatorError:
+    where = "the ledger" if generation is None else generation.name
+    return CoordinatorError(
+        f"{where} holds no batch {batch_id}, neither operational nor quarantined",
+        remedy="list the batches with 'coordinator.py ledger inspect'",
+    )
+
+
+def _runtime(store: RuntimeStateStore, batch_id: str | None) -> JsonObject | None:
+    """The runtime state of ``batch_id`` (``None``: the ledger scope) as inspection shows it."""
+    try:
+        record = store.read(batch_id)
+    except RuntimeStateError as exc:
+        return {"error": exc.code}
+    if record is None:
+        return None
+    operation = record["operation"]
+    return {
+        "state": record["state"],
+        "failure": record["failure"],
+        "operation": None
+        if operation is None
+        else {"kind": operation["kind"], "phase": operation["phase"]},
     }
 
 

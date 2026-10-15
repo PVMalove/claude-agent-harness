@@ -19,6 +19,7 @@ This module works only on the ledger; ``runtime_migration`` binds it to the runt
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -497,3 +498,124 @@ def discard(ledger: LifecycleLedger, name: str) -> None:
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
     shutil.rmtree(ledger.root / GENERATIONS / name, ignore_errors=True)
+
+
+def inspection(generation: Path) -> JsonObject:
+    """A read-only view of ``generation`` that a bad record never stops: every batch with its
+    area (``operational`` or ``quarantine``) and findings, the migration that produced the
+    generation, and the files whose finding no batch owns.  Values are returned as found."""
+    found = survey(generation)
+    try:
+        manifest, problem = read_manifest(generation), None
+    except LedgerError as exc:
+        manifest, problem = None, exc.message
+    batches: dict[str, JsonObject] = {
+        owner: {"batch_id": owner, "area": "operational", "findings": []}
+        for owner in found.owners.values()
+    }
+    for path in sorted(found.findings):
+        if (owner := found.owners.get(path)) is not None:
+            batches[owner]["findings"] += [
+                _shown(path, f) for f in found.findings[path]
+            ]
+    quarantine = generation / MIGRATION_DIRECTORY / QUARANTINE
+    for directory in sorted(quarantine.iterdir() if quarantine.is_dir() else []):
+        # Evidence is shown only once the manifest vouched for its bytes.
+        evidence = (
+            _object((directory / EVIDENCE).read_bytes())
+            if manifest is not None and (directory / EVIDENCE).is_file()
+            else None
+        )
+        batches[directory.name] = {
+            "batch_id": directory.name,
+            "area": QUARANTINE,
+            "findings": [] if evidence is None else evidence.get("findings", []),
+        }
+    rules = rules_sha256(checked_registry())
+    migration: JsonObject | None = None
+    if manifest is not None:
+        migration = {
+            "source_generation": manifest[0]["source_generation"],
+            "rules_sha256": manifest[0]["rules_sha256"],
+            "current": manifest[0]["rules_sha256"] == rules,
+            "problem": None,
+        }
+    elif problem is not None:
+        migration = {
+            "source_generation": None,
+            "rules_sha256": None,
+            "current": False,
+            "problem": problem,
+        }
+    return {
+        "generation": generation.name,
+        "rules_sha256": rules,
+        "migration": migration,
+        "unowned": found.unowned(),
+        "batches": [batches[batch_id] for batch_id in sorted(batches)],
+    }
+
+
+def _shown(path: str, finding: Finding) -> JsonObject:
+    return {
+        "path": path,
+        "location": finding.location,
+        "field_id": finding.field_id,
+        "value": finding.value,
+        "disposition": finding.disposition,
+        "reason": finding.reason,
+    }
+
+
+def export(generation: Path, batch_id: str) -> JsonObject | None:
+    """Every file of ``batch_id`` in ``generation``, byte for byte: its quarantined graph and
+    evidence, or its operational graph, and the reports of its dispatches.  ``None`` when the
+    generation holds no such batch.  Nothing is parsed through the ledger and nothing written."""
+    base = generation / MIGRATION_DIRECTORY / QUARANTINE / batch_id
+    if base.is_dir() and not base.is_symlink():
+        area = QUARANTINE
+        files = [
+            path.relative_to(generation).as_posix()
+            for path in sorted(base.rglob("*"))
+            if path.is_file() and not path.is_symlink()
+        ]
+        dispatches = [
+            path.stem for path in sorted((base / "dispatches").glob("*.json"))
+        ]
+    else:
+        found = survey(generation)
+        files = sorted(
+            path for path, owner in found.owners.items() if owner == batch_id
+        )
+        if not files:
+            return None
+        area = "operational"
+        dispatches = [
+            PurePosixPath(path).stem for path in files if path.startswith("dispatches/")
+        ]
+    for dispatch_id in dispatches:
+        for suffix in (".json", ".md"):
+            report = f"reports/{dispatch_id}{suffix}"
+            path = generation / report
+            if path.is_file() and not path.is_symlink() and report not in files:
+                files.append(report)
+    return {
+        "batch_id": batch_id,
+        "generation": generation.name,
+        "area": area,
+        "files": [_exported(generation, relative) for relative in files],
+    }
+
+
+def _exported(generation: Path, relative: str) -> JsonObject:
+    data = (generation / relative).read_bytes()
+    try:
+        content, encoding = data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        content, encoding = base64.b64encode(data).decode("ascii"), "base64"
+    return {
+        "path": relative,
+        "sha256": digest(data),
+        "encoding": encoding,
+        "content": content,
+    }

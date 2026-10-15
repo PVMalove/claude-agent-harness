@@ -469,6 +469,28 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
             "planned",
         )
 
+    def test_ledger_inspect_and_export_run_on_the_installed_runtime_under_a_held_lock(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        parser = coordinator.parser()
+        common = ["--repo", str(self.repo), "--state-dir", str(self.state_dir)]
+        inspect = parser.parse_args(["ledger", "inspect", *common, "--batch", batch_id])
+        export = parser.parse_args(["ledger", "export", *common, "--batch", batch_id])
+
+        self.assertIs(inspect.handler, coordinator.inspect_ledger)
+        self.assertIs(export.handler, coordinator.export_ledger)
+        self.assertIsNone(coordinator.pinned_runtime_command(inspect))
+        self.assertIsNone(coordinator.pinned_runtime_command(export))
+        with LifecycleLedger(self.state_dir).lock():
+            [shown] = inspect.handler(inspect)["batches"]
+            exported = export.handler(export)
+        self.assertEqual((shown["batch_id"], shown["area"]), (batch_id, "operational"))
+        self.assertEqual(exported["area"], "operational")
+        self.assertIn(
+            f"batches/{batch_id}.json", [file["path"] for file in exported["files"]]
+        )
+
     def test_batch_approve_transitions_state_via_ledger_replace(self) -> None:
         batch = self._create_batch()
 

@@ -3,6 +3,8 @@ an overlay of explicitly mapped values and a quarantine of unknown or unreadable
 
 from __future__ import annotations
 
+import argparse
+import base64
 import hashlib
 import json
 import subprocess
@@ -16,6 +18,7 @@ import pytest
 from harness.json_types import JsonObject
 from harness.orchestration.core.constants import STATE_REL
 from harness.orchestration.core.system_fields import load_registry
+from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import field_migration, generation_migration
 from harness.orchestration.ledger.field_migration import MigrationRule, rules_sha256
 from harness.orchestration.ledger.lifecycle import (
@@ -24,6 +27,9 @@ from harness.orchestration.ledger.lifecycle import (
     LedgerWriteConflict,
     LifecycleLedger,
 )
+from harness.orchestration.ledger.ledger_admin import export_ledger, inspect_ledger
+from harness.orchestration.ledger.ledger_ops import _load_batch
+from harness.orchestration.runtime_intent import CompositeWrite
 from harness.orchestration.runtime_migration import migrate_system_fields
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
@@ -589,3 +595,124 @@ def test_an_empty_state_has_nothing_to_migrate(tmp_path: Path) -> None:
         [],
     )
     assert not ledger.root.exists()
+
+
+# --- Safe inspection and export of quarantined and unreadable batches (DoD 6) -----------------
+
+
+def _args(scene: Scene, **values: object) -> argparse.Namespace:
+    return argparse.Namespace(repo=str(scene.repo), state_dir=str(scene.root), **values)
+
+
+def _content(file: JsonObject) -> bytes:
+    if file["encoding"] == "base64":
+        return base64.b64decode(file["content"])
+    return str(file["content"]).encode("utf-8")
+
+
+@pytest.mark.parametrize("migrated", [False, True], ids=["unreadable", "quarantined"])
+def test_inspect_and_export_read_a_denied_batch_without_writing(
+    scene: Scene, migrated: bool
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    _unknown_batch_state(scene)
+    if migrated:
+        scene.run()
+    with pytest.raises(CoordinatorError):
+        _load_batch(scene.root, BATCH_B)
+
+    with scene.ledger.lock():
+        before = (tree(scene.root), scene.store_bytes())
+        report = inspect_ledger(_args(scene, batch=None))
+        only = inspect_ledger(_args(scene, batch=BATCH_B))
+        exported = export_ledger(_args(scene, batch=BATCH_B))
+        after = (tree(scene.root), scene.store_bytes())
+
+    assert after == before
+    area = "quarantine" if migrated else "operational"
+    assert [(b["batch_id"], b["area"]) for b in report["batches"]] == [
+        (BATCH_A, "operational"),
+        (BATCH_B, area),
+    ]
+    [shown] = only["batches"]
+    [finding] = shown["findings"]
+    assert (finding["disposition"], finding["field_id"], finding["value"]) == (
+        "legacy-unknown",
+        "batch.state",
+        "'on-hold'",
+    )
+    if migrated:
+        assert report["migration"]["current"] is True
+    else:
+        assert report["migration"] is None
+    assert exported["area"] == area
+    prefix = f"migration/quarantine/{BATCH_B}/" if migrated else ""
+    paths = {file["path"] for file in exported["files"]}
+    assert {
+        f"{prefix}batches/{BATCH_B}.json",
+        f"{prefix}dispatches/{DISPATCH_B}.json",
+        f"reports/{DISPATCH_B}.json",
+        f"reports/{DISPATCH_B}.md",
+    } <= paths
+    for file in exported["files"]:
+        data = (scene.generation / str(file["path"])).read_bytes()
+        assert _content(file) == data and file["sha256"] == sha(data)
+    runtime = shown["runtime"]
+    if migrated:
+        assert runtime["state"] == "suspended"
+        assert runtime["failure"]["step"] == "quarantine"
+    else:
+        assert runtime is None
+
+
+def test_a_quarantined_batch_stays_denied_in_the_operational_store(
+    scene: Scene,
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    _unknown_batch_state(scene)
+    scene.run()
+    before = scene.store_bytes()
+    write = CompositeWrite(
+        scene.ledger,
+        scene.store(),
+        batch_id=BATCH_B,
+        dispatch_id=DISPATCH_B,
+        kind="checkpoint",
+        idempotency_key="key",
+    )
+    write.write_immutable(scene.generation / "checkpoints/checkpoint-0b.json", {})
+
+    with pytest.raises(RuntimeStateError, match="quarantine"):
+        settle(scene.repo, scene.root, scene.ledger, BATCH_B)
+    with pytest.raises(RuntimeStateError, match="concurrency-conflict"):
+        write.commit()
+
+    assert scene.store_bytes() == before
+
+
+def test_an_export_keeps_bytes_that_are_not_utf8(scene: Scene) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    scene.seed(BATCH_B, DISPATCH_B)
+    broken = scene.put(f"reports/{DISPATCH_B}.json", b"\xff\xfe not a report")
+    scene.run()
+
+    exported = export_ledger(_args(scene, batch=BATCH_B))
+
+    [file] = [
+        file
+        for file in exported["files"]
+        if file["path"] == f"migration/quarantine/{BATCH_B}/reports/{DISPATCH_B}.json"
+    ]
+    assert file["encoding"] == "base64" and _content(file) == broken
+
+
+@pytest.mark.parametrize("batch", ["batch-00000fff", "../batch-0000000a"])
+def test_an_unknown_batch_is_refused_by_inspect_and_export(
+    scene: Scene, batch: str
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+
+    with pytest.raises(CoordinatorError):
+        inspect_ledger(_args(scene, batch=batch))
+    with pytest.raises(CoordinatorError):
+        export_ledger(_args(scene, batch=batch))
