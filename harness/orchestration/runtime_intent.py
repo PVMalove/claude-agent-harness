@@ -187,7 +187,9 @@ def error_detail(exc: BaseException) -> str:
     )
 
 
-def suspend(store: RuntimeStateStore, batch_id: str, failure: JsonObject) -> int | None:
+def suspend(
+    store: RuntimeStateStore, batch_id: str | None, failure: JsonObject
+) -> int | None:
     """Best effort: move an unfinished operation to ``suspended`` with ``failure`` and return
     the durable revision; a store that cannot take the write keeps its last revision."""
     try:
@@ -211,7 +213,7 @@ def suspend(store: RuntimeStateStore, batch_id: str, failure: JsonObject) -> int
 
 def suspended_error(
     store: RuntimeStateStore,
-    batch_id: str,
+    batch_id: str | None,
     step: str,
     exc: BaseException,
     *,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -14,12 +15,20 @@ import pytest
 
 from harness.json_types import JsonObject
 from harness.orchestration.core.constants import STATE_REL
-from harness.orchestration.ledger import generation_migration
+from harness.orchestration.core.system_fields import load_registry
+from harness.orchestration.ledger import field_migration, generation_migration
+from harness.orchestration.ledger.field_migration import MigrationRule, rules_sha256
 from harness.orchestration.ledger.lifecycle import (
     RECORD_DIRECTORIES,
     LedgerError,
     LedgerWriteConflict,
     LifecycleLedger,
+)
+from harness.orchestration.runtime_migration import migrate_system_fields
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
 )
 
 BATCH_A = "batch-0000000a"
@@ -122,6 +131,17 @@ class Scene:
     def pointer_sha256(self) -> str:
         return sha(self.ledger.pointer_path.read_bytes())
 
+    def store(self) -> RuntimeStateStore:
+        return RuntimeStateStore(self.repo, self.root)
+
+    def store_bytes(self) -> dict[str, bytes]:
+        directory = self.store().location.directory
+        return tree(directory) if directory.is_dir() else {}
+
+    def run(self) -> JsonObject:
+        """``ledger migrate`` of the system fields, behind its durable intent."""
+        return migrate_system_fields(self.repo, self.root, self.ledger)
+
     def migrate(self) -> tuple[str, JsonObject]:
         """Build the migration of the selected generation, then select it."""
         before = self.pointer_sha256()
@@ -141,7 +161,10 @@ class Scene:
 
 
 def make_scene(tmp_path: Path) -> Scene:
+    """A ledger in a Git checkout, whose runtime state store the migration reaches."""
     repo = tmp_path / "repo"
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
     ledger = LifecycleLedger(repo / STATE_REL)
     ledger.ensure()
     return Scene(repo.resolve(), ledger)
@@ -416,3 +439,153 @@ def test_a_later_migration_carries_an_earlier_quarantine(scene: Scene) -> None:
     assert again["quarantine"] == manifest["quarantine"]
     assert tree(scene.generation / "migration" / "quarantine") == quarantine
     assert again["source_generation"] == first
+
+
+# --- ledger migrate behind the durable intent (DoD 3) -----------------------------------------
+
+PASSED_REPORT: JsonObject = {
+    **REPORT,
+    "checks_run": [{"command": "make test", "result": "passed"}],
+}
+
+
+def test_ledger_migrate_selects_the_migration_and_denies_the_quarantined_batch(
+    scene: Scene,
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A, report=PASSED_REPORT)
+    _unknown_batch_state(scene)
+    source = scene.generation.name
+
+    result = scene.run()
+
+    assert result == {
+        "migrated": True,
+        "rules_sha256": rules_sha256(load_registry()),
+        "mapped": 1,
+        "quarantined": [BATCH_B],
+        "source_generation": source,
+    }
+    scope = scene.store().read(None)
+    assert scope is not None
+    assert (
+        scope["state"],
+        scope["operation"]["kind"],
+        scope["operation"]["phase"],
+    ) == (
+        "running",
+        "migrate",
+        "committed",
+    )
+    assert scope["ledger"]["generation"] == scene.generation.name
+    denied = scene.store().read(BATCH_B)
+    assert denied is not None
+    assert (denied["state"], denied["failure"]["code"], denied["failure"]["step"]) == (
+        "suspended",
+        "integrity-failure",
+        "quarantine",
+    )
+    assert f"ledger inspect --batch {BATCH_B}" in denied["failure"]["message"]
+    assert scene.store().read(BATCH_A) is None
+
+
+def test_a_repeated_migrate_and_reconcile_change_nothing(scene: Scene) -> None:
+    scene.seed(BATCH_A, DISPATCH_A, report=PASSED_REPORT)
+    _unknown_batch_state(scene)
+    first = scene.run()
+    generations = scene.root / "generations"
+    snapshot = (
+        scene.ledger.pointer_path.read_bytes(),
+        sorted(path.name for path in generations.iterdir()),
+        scene.store_bytes(),
+        tree(scene.root),
+    )
+
+    again = scene.run()
+    with pytest.raises(RuntimeStateError, match="integrity-failure"):
+        settle(scene.repo, scene.root, scene.ledger, BATCH_B)
+    assert settle(scene.repo, scene.root, scene.ledger, BATCH_A) is False
+
+    assert again == {**first, "migrated": False}
+    assert snapshot == (
+        scene.ledger.pointer_path.read_bytes(),
+        sorted(path.name for path in generations.iterdir()),
+        scene.store_bytes(),
+        tree(scene.root),
+    )
+
+
+def test_a_migrated_ledger_migrates_again_only_under_changed_rules(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    first = scene.run()
+    migrated = scene.generation.name
+    extra = MigrationRule("report.outcome", "done", "completed", "a test rule")
+    monkeypatch.setattr(
+        field_migration, "MIGRATION_RULES", (*field_migration.MIGRATION_RULES, extra)
+    )
+
+    again = scene.run()
+    third = scene.run()
+
+    assert again["migrated"] is True and third["migrated"] is False
+    assert again["rules_sha256"] != first["rules_sha256"]
+    assert again["source_generation"] == migrated != scene.generation.name
+
+
+def test_a_batch_with_an_unfinished_operation_holds_the_migration(scene: Scene) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    store = scene.store()
+    ready: JsonObject = {
+        "contract": "runtimeState.v1",
+        "identity": store.location.identity(BATCH_A),
+        "revision": 1,
+        "updated_at": "2026-10-15T09:00:00+00:00",
+        "state": "ready",
+        "stage": None,
+        "dispatch_id": None,
+        "operation": None,
+        "ledger": {"generation": None, "record_hashes": {}},
+        "policy_snapshot_sha256": None,
+        "input_refs": [],
+        "output_refs": [],
+        "last_confirmed_boundary": None,
+        "failure": None,
+    }
+    store.write(ready, expected_revision=0)
+    operation: JsonObject = {
+        "operation_id": str(uuid.uuid4()),
+        "kind": "checkpoint",
+        "phase": "prepared",
+        "idempotency_key": "key",
+        "expected_before_sha256": None,
+        "intended_after_sha256": None,
+        "effect": {"state": "not-started", "evidence_ref": None, "observed_at": None},
+    }
+    store.write(
+        {**ready, "revision": 2, "state": "running", "operation": operation},
+        expected_revision=1,
+    )
+    before = (tree(scene.root), scene.store_bytes())
+
+    with pytest.raises(RuntimeStateError, match="concurrency-conflict") as caught:
+        scene.run()
+
+    assert BATCH_A in caught.value.message
+    assert (tree(scene.root), scene.store_bytes()) == before
+
+
+def test_an_empty_state_has_nothing_to_migrate(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    ledger = LifecycleLedger(repo / STATE_REL)
+
+    result = migrate_system_fields(repo, ledger.root, ledger)
+
+    assert (result["migrated"], result["source_generation"], result["quarantined"]) == (
+        False,
+        None,
+        [],
+    )
+    assert not ledger.root.exists()

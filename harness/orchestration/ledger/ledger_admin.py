@@ -26,6 +26,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import LifecycleLedger, LEDGER_VERSION
+from harness.orchestration.runtime_migration import migrate_system_fields
 
 
 def ledger_status(args: argparse.Namespace) -> JsonObject:
@@ -59,13 +60,23 @@ def validate_ledger(args: argparse.Namespace) -> JsonObject:
 
 
 def migrate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Explicitly validate legacy state and atomically select its versioned replacement."""
+    """Explicitly validate legacy state and atomically select its versioned replacement, then
+    migrate the selected generation to the canonical system fields behind a durable intent."""
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         _refuse_upgrade_under_pinned_batches(repo, ledger)
-        return ledger.migrate()
+        upgraded = ledger.migrate()
+        system = migrate_system_fields(repo, root, ledger)
+        pointer = ledger.pointer()
+    return {
+        "version": 0 if pointer is None else pointer["version"],
+        "generation": None if pointer is None else pointer["generation"],
+        "migrated": bool(upgraded["migrated"] or system["migrated"]),
+        "schema_upgraded": upgraded["migrated"],
+        "system_fields": system,
+    }
 
 
 def _refuse_upgrade_under_pinned_batches(repo: Path, ledger: LifecycleLedger) -> None:
