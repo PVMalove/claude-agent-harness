@@ -3,10 +3,11 @@ observation, a person's confirmed stop, a live worker, and the commands that set
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,11 @@ from harness.orchestration.runtime_effect import (
     EffectResult,
     adapter_command,
 )
-from harness.orchestration.runtime_state_store import RuntimeStateStore
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+)
 from harness.orchestration.workflow import delivery
 from tests.orchestration import test_recovery
 from tests.orchestration.test_runtime_effect import (
@@ -373,4 +378,60 @@ def test_only_a_confirmed_stop_cancels_an_unknown_hand_off(
     record = store.read(brief["batch_id"])
     assert record is not None
     assert (record["state"], record["operation"]["phase"]) == ("ready", "committed")
+    assert len(launches(recovery)) == 1
+
+
+def fill_disk_on_ledger_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The hand-off's ledger records cannot be written, as on a full disk, after the store
+    recorded the observed outcome."""
+
+    def full_disk(*arguments: object, **keywords: object) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(LifecycleLedger, "replace", full_disk)
+
+
+def stop_after_the_observation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The sender stops once the observation payload is durable, before the store record."""
+    crash_on(monkeypatch, RuntimeStateStore, "write_intent", 2, after=True)
+
+
+@pytest.mark.parametrize("stopped", [False, True])
+@pytest.mark.parametrize(
+    "interrupt", [fill_disk_on_ledger_write, stop_after_the_observation]
+)
+def test_a_cancel_commits_an_observed_hand_off_before_it_decides(
+    recovery: test_recovery.RecoveryTests,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupt: Callable[[pytest.MonkeyPatch], None],
+    stopped: bool,
+) -> None:
+    brief, adapter = external_brief(recovery)
+    interrupt(monkeypatch)
+    with pytest.raises((Crash, RuntimeStateError)):
+        send_external(recovery, brief, adapter)
+    monkeypatch.undo()
+    store = RuntimeStateStore(recovery.repo, recovery.state_dir)
+    assert (store.read(brief["batch_id"]) or {})["operation"]["phase"] != "committed"
+
+    if stopped:
+        assert cancel(recovery, brief, stopped=True)["state"] == "cancelled"
+    else:
+        # The launch is committed first, so a cancel without a confirmed stop is refused.
+        with pytest.raises(CoordinatorError) as refused:
+            cancel(recovery, brief, stopped=False)
+        assert "only an approved, unsent dispatch" in refused.value.message
+
+    record = store.read(brief["batch_id"])
+    assert record is not None
+    assert (record["state"], record["operation"]["phase"]) == ("ready", "committed")
+    records = LifecycleLedger(recovery.state_dir).records_root()
+    status = json.loads(
+        (records / "dispatch-status" / f"{brief['dispatch_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert status["state"] == ("cancelled" if stopped else "dispatched")
+    ledger = LifecycleLedger(recovery.state_dir)
+    assert settle(recovery.repo, recovery.state_dir, ledger, brief["batch_id"]) is False
     assert len(launches(recovery)) == 1

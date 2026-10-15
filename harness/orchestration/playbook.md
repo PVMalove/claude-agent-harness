@@ -781,8 +781,12 @@ native provider's optional `observe_launch(brief)`. The adapter must answer with
 exit code 0 and one JSON object `{"dispatch_id", "launched", "live", "launch_id"?}`. Any other
 answer proves nothing, and the batch stops with `ambiguous-effect`. A person then stops the worker
 and runs `dispatch cancel --runtime-stopped` with an approval. A cancel without that flag is refused
-while the effect is unknown. A worker that is still live contradicts a cancellation and stops the
-batch with `concurrency-conflict`. A non-zero `dispatch` exit still means no worker started.
+while the effect is unknown. When the outcome is already observed but its ledger records are not
+yet written, `dispatch cancel` commits that outcome first and then decides on the records it left,
+so a launched worker still needs `--runtime-stopped`. A worker that is still live contradicts a
+cancellation and stops the batch with `concurrency-conflict`. A non-zero `dispatch` exit still
+means no worker started. The orchestration [README](README.md) lists both adapter verbs for
+adapter authors.
 
 An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
 The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator

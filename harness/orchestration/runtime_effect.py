@@ -198,6 +198,31 @@ def observation_id(operation_id: str) -> str:
     return str(uuid.uuid5(AUDIT_NAMESPACE, f"{operation_id}:observation"))
 
 
+def unfinished_hand_off(
+    store: RuntimeStateStore, batch_id: str, dispatch_id: str
+) -> str | None:
+    """How far the batch's unfinished hand-off of ``dispatch_id`` got, read only: ``observed``
+    once its outcome is stored, else its effect state (``unknown`` while its worker may run,
+    ``not-started`` before the call); ``None`` when the batch holds no such hand-off."""
+    record = store.read(batch_id)
+    operation = None if record is None else record["operation"]
+    if (
+        record is None
+        or operation is None
+        or record["dispatch_id"] != dispatch_id
+        or operation["kind"] != KIND
+        or operation["phase"] == "committed"
+    ):
+        return None
+    ref = store.intent_ref(batch_id, observation_id(operation["operation_id"]))
+    if (
+        operation["effect"]["state"] == "confirmed"
+        or (store.location.directory / ref).is_file()
+    ):
+        return "observed"
+    return str(operation["effect"]["state"])
+
+
 def dispatch_send_records(
     outcome: EffectOutcome,
     batch: JsonObject,
