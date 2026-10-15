@@ -726,12 +726,18 @@ without an owner record only once it is stale, and never releases a lock whose o
 be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
 
 A command stopped by an invalid current config, a busy ledger or an unreadable ledger prints one
-`DIAGNOSTICS: {json}` line before `ERROR` and `REMEDY`. When the command named a batch or dispatch,
-it also overwrites the independent emergency record `runtimeEmergency.v1` (`emergency.json` beside
-the runtime state records), under its own bounded lock and after the ledger lock is released. The
+`DIAGNOSTICS: {json}` line before `ERROR` and `REMEDY`. An unreadable ledger has no readable
+current generation, or a pointer or any record of the selected generation that cannot be parsed;
+an ID with no record is an ordinary refusal. When the command named a batch or dispatch, it also
+overwrites the independent emergency record `runtimeEmergency.v1` (`emergency.json` beside the
+runtime state records), under its own bounded lock and after the ledger lock is released. The
 record is `suspended` diagnostics only: it carries no approval and no ledger state, nothing decides
-on it, and `suspended` never becomes a batch state. A failed `batch create` or `batch preflight`
-names no batch, so it prints diagnostics and records nothing.
+on it, and `suspended` never becomes a batch state. A runtime state store failure prints its own
+`DIAGNOSTICS` line with the store's code, step and durable revision, and records nothing, because
+the emergency record lives in that same store. A failed `batch create` or `batch preflight` names
+no batch, so it prints diagnostics for these failures and records nothing. Every other failure is
+an ordinary refusal and prints only `ERROR` and `REMEDY`. Diagnostics that cannot be built print
+`DIAGNOSTICS` with the code `internal-error` instead.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from harness.json_types import JsonObject
-from harness.orchestration import coordinator, runtime_state_store
+from harness.orchestration import coordinator, runtime_emergency, runtime_state_store
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -203,9 +203,53 @@ def test_an_unreadable_ledger_invents_no_state(
     assert batch_state(recovery) == before
 
 
+def test_a_corrupt_record_is_an_unreadable_ledger_and_an_unknown_id_is_not(
+    recovery: test_recovery.RecoveryTests,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    brief = approved(recovery)
+    unknown = brief["dispatch_id"][:-4] + "0000"
+    code, err, diagnostics = run(
+        recovery, monkeypatch, capsys, "dispatch", "heartbeat", "--dispatch", unknown
+    )
+    assert (code, diagnostics) == (2, None)
+    assert "ERROR: " in err
+    records = LifecycleLedger(recovery.state_dir).records_root()
+    (records / "batches" / f"{brief['batch_id']}.json").write_text("{", "utf-8")
+    before = batch_state(recovery)
+
+    code, _, diagnostics = run(
+        recovery,
+        monkeypatch,
+        capsys,
+        "dispatch",
+        "heartbeat",
+        "--dispatch",
+        brief["dispatch_id"],
+    )
+
+    assert code == 2
+    assert diagnostics is not None
+    assert (diagnostics["code"], diagnostics["step"]) == (
+        "integrity-failure",
+        "ledger-read",
+    )
+    assert diagnostics["emergency_record"]["written"] is True
+    assert batch_state(recovery) == before
+
+
+def corrupt_ledger(fixture: test_recovery.RecoveryTests) -> None:
+    (fixture.state_dir / "ledger.json").write_text("{", encoding="utf-8")
+
+
 @pytest.mark.parametrize(
     ("fault", "code"),
-    [(invalidate_config, "config-invalid"), (hold_ledger, "concurrency-conflict")],
+    [
+        (invalidate_config, "config-invalid"),
+        (hold_ledger, "concurrency-conflict"),
+        (corrupt_ledger, "integrity-failure"),
+    ],
 )
 def test_a_failed_bootstrap_prints_diagnostics_and_records_nothing(
     recovery: test_recovery.RecoveryTests,
@@ -224,9 +268,10 @@ def test_a_failed_bootstrap_prints_diagnostics_and_records_nothing(
         str(recovery.worktree),
         "master",
     )
-    fault(recovery)
     records = LifecycleLedger(recovery.state_dir).records_root()
-    before = (files(records), files(store(recovery).location.base))
+    fault(recovery)
+    pointer = (recovery.state_dir / "ledger.json").read_bytes()
+    before = (files(records), pointer, files(store(recovery).location.base))
     argv = [
         "batch",
         "create",
@@ -259,7 +304,8 @@ def test_a_failed_bootstrap_prints_diagnostics_and_records_nothing(
     assert (diagnostics["code"], diagnostics["command"]) == (code, "batch create")
     assert diagnostics["subject"] == {"batch_id": None, "dispatch_id": None}
     assert diagnostics["emergency_record"] is None
-    assert (files(records), files(store(recovery).location.base)) == before
+    pointer = (recovery.state_dir / "ledger.json").read_bytes()
+    assert (files(records), pointer, files(store(recovery).location.base)) == before
 
 
 def test_a_held_emergency_lock_leaves_the_record_unwritten(
@@ -376,3 +422,37 @@ def test_an_emergency_record_authorizes_nothing(
     with pytest.raises(RuntimeStateError) as caught:
         store(recovery).read_emergency()
     assert caught.value.code == "integrity-failure"
+
+
+def test_diagnostics_that_cannot_be_built_still_print_a_line(
+    recovery: test_recovery.RecoveryTests,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    brief = approved(recovery)
+    invalidate_config(recovery)
+
+    def broken(*arguments: object) -> JsonObject:
+        raise RuntimeError("diagnostics broke")
+
+    monkeypatch.setattr(runtime_emergency, "_diagnostics", broken)
+
+    code, err, diagnostics = run(
+        recovery,
+        monkeypatch,
+        capsys,
+        "dispatch",
+        "send",
+        "--dispatch",
+        brief["dispatch_id"],
+    )
+
+    assert code == 2
+    assert err.index("DIAGNOSTICS: ") < err.index("ERROR: ")
+    assert diagnostics == {
+        "code": "internal-error",
+        "step": "diagnostics",
+        "detail": "diagnostics broke",
+        "emergency_record": None,
+    }
+    assert store(recovery).read_emergency() is None

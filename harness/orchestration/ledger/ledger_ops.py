@@ -82,6 +82,9 @@ def _state_root(args: argparse.Namespace, repo: Path) -> Path:
 
 
 def _records_root(root: Path) -> Path:
+    """The selected generation.  ``records_root`` parses and state-checks every record in it,
+    so a corrupt pointer or record anywhere in the generation stops every loader that starts
+    here as ``LedgerUnreadableError``; a missing record is an unknown ID, not a corrupt ledger."""
     try:
         return LifecycleLedger(root).records_root()
     except LedgerError as exc:

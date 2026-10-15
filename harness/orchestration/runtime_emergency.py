@@ -10,7 +10,8 @@ lock, never writes the ledger or a batch's runtime state, and never loads the cu
 
 A runtime state failure prints its own diagnostics and writes no emergency record: the record
 lives in that same store.  A bootstrap command (``batch create``, ``batch preflight``) names no
-batch or dispatch, so it prints diagnostics and writes nothing.
+batch or dispatch, so it prints diagnostics and writes nothing.  Any other failure is an ordinary
+refusal of the command and prints only its error and remedy.
 """
 
 from __future__ import annotations
@@ -43,11 +44,18 @@ _CLASSES: tuple[tuple[type[HarnessError], str, str], ...] = (
 
 def report_failure(args: argparse.Namespace, exc: HarnessError) -> None:
     """Print the ``DIAGNOSTICS`` line of a classified failure and record it; never raises, so
-    the original error is always the one reported."""
+    the original error is always the one reported.  Diagnostics that cannot be built print an
+    ``internal-error`` line instead, so the failure stays visible."""
+    diagnostics: JsonObject | None
     try:
         diagnostics = _diagnostics(args, exc)
-    except Exception:  # noqa: BLE001 -- the original failure is the one to report
-        return
+    except Exception as error:  # noqa: BLE001 -- the original failure is the one to report
+        diagnostics = {
+            "code": "internal-error",
+            "step": "diagnostics",
+            "detail": sanitize_detail(str(error)) or type(error).__name__,
+            "emergency_record": None,
+        }
     if diagnostics is not None:
         print(
             "DIAGNOSTICS: "
