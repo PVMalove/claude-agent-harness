@@ -73,17 +73,27 @@ Production-код, `.git`, конфигурация runner (`runner.cfg`, `bin/r
 guard, получив попытку записи `canary.txt` вне `test_paths`, обязан создать `logs/canary.json`
 с тем же nonce, что лежит в `logs/canary-nonce`, и `decision: "deny"`, а сам `canary.txt` не
 должен появиться. Отсутствие любого условия → `disabled` с причиной `test_paths_missing`,
-`isolation_unavailable` или `guard_hook_not_firing` соответственно; developer получает эту
+`isolation_unavailable` или `guard_hook_unavailable` (в первой редакции — `guard_hook_not_firing`,
+см. уточнение ниже) соответственно; developer получает эту
 причину и продолжает обычный маршрут без тест-автора. `test_paths` — необходимое, но
 недостаточное условие: guard активируется только вместе с подтверждённой изоляцией и
 подтверждённым срабатыванием hook.
+
+**Уточнение реализации (#554).** Preflight не запускает Claude Code и не пишет canary: он
+статически проверяет agent, frontmatter и исполняемый guard, поэтому причина названа
+`guard_hook_unavailable`, а не `guard_hook_not_firing`. Срабатывание scoped hook подтверждает
+проба на реальном Claude Code в clean-room (`scripts/clean_room/claude_probe.py`): hook обязан
+отказать на запись вне `test_paths` и на произвольный `Bash` с причинами guard и пропустить запись
+в `test_paths`, а production guard не содержит кода для этой проверки. Preflight дополнительно
+требует принятое в Claude Code решение о доверии к точному пути проекта (`project_untrusted`):
+нативный режим `--print` диалог доверия пропускает.
 
 **Отрицательные проверки (обязательны, не вывод из успешного отказа).** Проверено раздельно:
 (a) при недоверенной папке (`No` в диалоге доверия) сессия завершается, вызовов инструментов
 нет вовсе; (b) при снятом `hooks:` из frontmatter целевого субагента запись в production
 **проходит** (встроенная защита отсутствует без guard) — это подтверждает, что именно guard,
 а не что-то иное, блокировал запись в штатном режиме; в этом состоянии `preflight.sh`
-корректно возвращает `guard_hook_not_firing`; (c) изоляция runner проверена вызовом напрямую
+корректно возвращает `guard_hook_unavailable`; (c) изоляция runner проверена вызовом напрямую
 из шелла, без Claude Code и без guard, — на process-уровне защита не зависит от hook.
 
 **Контракт конфигурации.** В рамках #551 поле `test_paths` (список glob) в

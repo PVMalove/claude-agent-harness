@@ -312,7 +312,7 @@ python harness\bin\harness.py init C:\path\to\repository `
 продолжения PR: refresh, resolver, маршрут провала проверки, подтверждение, проверку или handoff для
 ручного merge. Подробности — в [руководстве по backend-оркестрации](./backend-orchestration.md).
 
-При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
+При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/{pr-composer,test-author}.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
 
 - Этот справочник и руководство по backend-оркестрации — документация для разработчика: они лежат
   в `docs/` исходного репозитория и в целевой проект **не** попадают. Контракт интерактивного поиска

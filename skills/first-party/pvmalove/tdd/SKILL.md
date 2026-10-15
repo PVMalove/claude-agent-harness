@@ -43,6 +43,20 @@ current implementation.
 3. **Refactor:** after Green, improve the production or test design without changing behavior.
    Rerun the focused test and the relevant project checks after the refactor.
 
+## Optional test-author subagent
+
+The developer may delegate the next Red test to the installed Claude Code `test-author` subagent
+only after running `.claude/hooks/test-author-preflight.sh`. The preflight must return exactly
+`{"status":"ok"}`. Any `disabled` result keeps the ordinary developer route; pass its sanitized
+`reason` to the developer and do not spawn an unprotected test-author.
+
+When preflight is `ok`, give the subagent one behavior requirement, one scenario, and the agreed
+public seam. The subagent may write only one test in `test_paths` and may run only that test through
+`.claude/hooks/run-test.sh <test-id>`. It must return the requirement, inputs, independent
+expectation source, test id, and sanitized evidence of behavioral Red. It must not write production
+code or a skeleton and it does not receive an orchestration manifest, dispatch, brief/report,
+approval, or ledger lifecycle.
+
 For a bug fix, begin with a minimal reproducer at the seam where the bug is observable. Keep the
 expectation that describes the bug. Weakening it for Green only hides the regression and leaves no
 evidence that the fix is correct.
