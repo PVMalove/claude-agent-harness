@@ -795,6 +795,54 @@ remain untouched as migration evidence. `ledger reset --confirm RESET` selects a
 only after the literal confirmation, and refuses while any batch is `active`; prior generations
 remain immutable audit history.
 
+After that schema step, `ledger migrate` moves the selected generation to the canonical
+`systemFields.v1` values without rewriting a record. It builds a new generation that copies every
+record and audit event of its source byte for byte, so every `brief_sha256`, `report_sha256` and
+audit checksum stays valid, and the source generation stays as it was. Explicit rules, checked
+against the registry, map the known historical spellings `passed`, `not-run` and
+`not_run_architect_read_only` of `report.check_result`. Nothing is normalized by similarity. The
+rules apply only at the bound locations of fields that drive automatic decisions, and
+`migration/manifest.json` (`ledgerMigration.v1`) records each mapped value with the digest of its
+file. The rules for `rate-limit` and `429` of `continuation.termination_reason` are checked against
+the registry too, but the ledger has no location for that field: the coordinator keeps the value
+only inside a free-text note, so `ledger migrate` never applies them. A batch with a value that is
+neither a registry value nor the legacy spelling of a rule (`legacy-unknown`), or with a record
+file that is not a JSON object (`unreadable`), is quarantined. Its batch, plan, dispatch and status
+records move byte for byte to `migration/quarantine/<batch>/` beside its `legacy-unknown.json`
+evidence; its reports stay in place. No field receives a sentinel, a default or a success.
+`ledger migrate` moves the runtime state record of each quarantined batch to `suspended` with the
+failure step `quarantine`, creating the record when the batch has none; a `completed` record stays
+as it is, because it allows no further action. No command settles a quarantined batch back to
+`ready`, and no command releases a quarantine yet.
+
+Before `ledger migrate`, a record the validating loader cannot read stops that loader for every
+batch of the generation: each command that loads a batch or writes the ledger fails, which keeps
+every action denied, while the runtime state store records nothing for it. Only `ledger migrate`
+writes a denial to the store, for the batches it quarantines.
+
+The migration runs behind the durable intent of the runtime state store's ledger-scope record
+(`identity.batch_id: null`). It records the intent before it renames the checked staging
+generation to its target and switches the pointer by compare-and-swap. The next `ledger migrate`
+finishes a stopped migration from the selected target, or rebuilds the target from the unchanged
+source; a pointer on any other generation is a controlled `integrity-failure` stop. A migrated
+generation is migrated again only when the rules or the values of a bound field change.
+`ledger migrate` waits while a batch has an unfinished operation, and it needs a Git checkout to
+reach the runtime state store.
+
+`ledger inspect [--batch ID]` and `ledger export --batch ID` read a quarantined or unreadable batch
+without the validating loader. They take no lock, load no config and write nothing. `inspect` shows
+each batch's area (`operational` or `quarantine`), its findings and its runtime state; `export`
+prints the batch's records, reports and quarantine evidence as JSON, byte for byte (`utf-8` text or
+`base64`). On legacy state that no migration selected yet, both read the records in the state
+directory and report `generation: null`.
+
+Every other command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
+`acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
+`dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
+held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
+owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
+without an owner record only once it is stale, and never releases a lock whose owner record cannot
+be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
 Every coordinator command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
 `acquired_at`, and where the platform has `/proc` its `pid_namespace` and `boot_id`, plus the
 coordinator `operation` when known). A busy lock fails a write command with a remedy to repeat it;

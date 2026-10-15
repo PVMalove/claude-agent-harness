@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- **[Миграция ledger по generations]:** `ledger migrate` создаёт проверенную generation с каноническими значениями `systemFields.v1`, а исходная generation и её история не меняются. Старые результаты проверок `passed`, `not-run` и `not_run_architect_read_only` сопоставляются явными правилами без нечёткой нормализации, а batch с неизвестным значением или нечитаемой записью уходит в quarantine, и действия по нему запрещены. Прерванную миграцию завершает следующий запуск, а повторный запуск ничего не меняет (#696).
+- **[Просмотр и экспорт ledger]:** `ledger inspect [--batch]` и `ledger export --batch` показывают и выгружают batch из quarantine или с нечитаемыми записями, не блокируя ledger и ничего не записывая (#696).
+
+### Changed
+
+- **[Ответ ledger migrate]:** `ledger migrate` требует Git checkout. В ответе появились поля `schema_upgraded` и `system_fields`, а `migrated` равно `true`, если изменилась схема ledger или значения полей (#696).
 ## [1.5.1] - 2026-10-18
 
 ### Added

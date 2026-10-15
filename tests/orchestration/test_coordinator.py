@@ -427,13 +427,69 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         original = architect.read_text(encoding="utf-8")
         architect.write_text("reinstalled\n", encoding="utf-8")
 
-        with mock.patch("harness.orchestration.ledger.lifecycle.LEDGER_VERSION", 99):
+        lifecycle_module = "harness.orchestration.ledger.lifecycle"
+        with (
+            mock.patch(f"{lifecycle_module}.LEDGER_VERSION", 99),
+            mock.patch(f"{lifecycle_module}.SUPPORTED_LEDGER_VERSIONS", (1, 2, 3, 99)),
+        ):
             with self.assertRaises(coordinator.CoordinatorError) as refused:
                 coordinator.migrate_ledger(args)
             self.assertIn(batch["batch_id"], refused.exception.message)
 
             architect.write_text(original, encoding="utf-8")
-            self.assertTrue(coordinator.migrate_ledger(args)["migrated"])
+            migrated = coordinator.migrate_ledger(args)
+            self.assertTrue(migrated["migrated"])
+            self.assertTrue(migrated["schema_upgraded"])
+
+    def test_ledger_migrate_moves_the_ledger_to_the_system_fields_once(self) -> None:
+        batch = self._create_batch()
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir))
+        source = self._records_root().name
+
+        first = coordinator.migrate_ledger(args)
+        again = coordinator.migrate_ledger(args)
+
+        self.assertEqual(first["version"], 3)
+        self.assertTrue(first["migrated"])
+        self.assertFalse(first["schema_upgraded"])
+        self.assertNotEqual(first["generation"], source)
+        self.assertEqual(first["system_fields"]["source_generation"], source)
+        self.assertEqual(first["system_fields"]["quarantined"], [])
+        self.assertEqual(
+            again,
+            {
+                **first,
+                "migrated": False,
+                "system_fields": {**first["system_fields"], "migrated": False},
+            },
+        )
+        self.assertEqual(self._records_root().name, first["generation"])
+        self.assertEqual(
+            coordinator._load_batch(self.state_dir, batch["batch_id"])["state"],
+            "planned",
+        )
+
+    def test_ledger_inspect_and_export_run_on_the_installed_runtime_under_a_held_lock(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        parser = coordinator.parser()
+        common = ["--repo", str(self.repo), "--state-dir", str(self.state_dir)]
+        inspect = parser.parse_args(["ledger", "inspect", *common, "--batch", batch_id])
+        export = parser.parse_args(["ledger", "export", *common, "--batch", batch_id])
+
+        self.assertIs(inspect.handler, coordinator.inspect_ledger)
+        self.assertIs(export.handler, coordinator.export_ledger)
+        self.assertIsNone(coordinator.pinned_runtime_command(inspect))
+        self.assertIsNone(coordinator.pinned_runtime_command(export))
+        with LifecycleLedger(self.state_dir).lock():
+            [shown] = inspect.handler(inspect)["batches"]
+            exported = export.handler(export)
+        self.assertEqual((shown["batch_id"], shown["area"]), (batch_id, "operational"))
+        self.assertEqual(exported["area"], "operational")
+        self.assertIn(
+            f"batches/{batch_id}.json", [file["path"] for file in exported["files"]]
+        )
 
     def test_batch_approve_transitions_state_via_ledger_replace(self) -> None:
         batch = self._create_batch()

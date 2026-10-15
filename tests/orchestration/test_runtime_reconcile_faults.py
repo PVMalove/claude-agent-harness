@@ -11,6 +11,7 @@ import pytest
 from harness.json_types import JsonObject
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration import runtime_reconcile
+from harness.orchestration.runtime_intent import mark_reconciling, next_revision
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -234,6 +235,60 @@ def test_settling_without_an_unfinished_operation_changes_nothing(
     assert (store_bytes(scene), scene.tree()) == (store, ledger)
 
 
+@pytest.mark.parametrize("committed_first", [False, True])
+def test_a_quarantined_batch_is_never_settled_and_takes_no_composite_write(
+    tmp_path: Path, committed_first: bool
+) -> None:
+    scene = make_scene(tmp_path)
+    store = scene.store()
+    if committed_first:
+        WRITES["checkpoint"](scene).commit()
+    else:
+        store.write(
+            {
+                "contract": "runtimeState.v1",
+                "identity": store.location.identity(BATCH),
+                "revision": 1,
+                "updated_at": "2026-10-15T09:00:00+00:00",
+                "state": "ready",
+                "stage": None,
+                "dispatch_id": None,
+                "operation": None,
+                "ledger": {"generation": None, "record_hashes": {}},
+                "policy_snapshot_sha256": None,
+                "input_refs": [],
+                "output_refs": [],
+                "last_confirmed_boundary": None,
+                "failure": None,
+            },
+            expected_revision=0,
+        )
+    current = scene.runtime()
+    assert current is not None
+    failure: JsonObject = {
+        "code": "integrity-failure",
+        "step": "quarantine",
+        "message": "the ledger migration quarantined the batch",
+    }
+    quarantined = next_revision(current, state="suspended", failure=failure)
+    store.write(quarantined, expected_revision=int(current["revision"]))
+    before, ledger = store_bytes(scene), scene.tree()
+
+    for _ in range(2):
+        with pytest.raises(RuntimeStateError) as caught:
+            settle_scene(scene)
+        assert (caught.value.code, caught.value.step) == (
+            "integrity-failure",
+            "quarantine",
+        )
+        assert caught.value.durable_revision == quarantined["revision"]
+        assert "ledger inspect --batch" in caught.value.remedy
+    with pytest.raises(RuntimeStateError, match="concurrency-conflict"):
+        WRITES["report-submit"](scene).commit()
+
+    assert (store_bytes(scene), scene.tree()) == (before, ledger)
+
+
 def _report() -> JsonObject:
     return {
         "dispatch_id": DISPATCH,
@@ -445,14 +500,15 @@ def test_a_record_another_writer_changes_during_reconcile_is_a_concurrency_confl
     scene = make_scene(tmp_path)
     status = stop_after_status(scene, monkeypatch)
     batch = scene.records / f"batches/{BATCH}.json"
-    original = runtime_reconcile._reconciling
 
-    def foreign_writer(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-        reconciling = original(store, record)
+    def foreign_writer(
+        store: RuntimeStateStore, record: JsonObject, *, interrupted: str
+    ) -> JsonObject:
+        reconciling = mark_reconciling(store, record, interrupted=interrupted)
         batch.write_text(batch.read_text(encoding="utf-8") + " ", encoding="utf-8")
         return reconciling
 
-    monkeypatch.setattr(runtime_reconcile, "_reconciling", foreign_writer)
+    monkeypatch.setattr(runtime_reconcile, "mark_reconciling", foreign_writer)
     planned_status = status.read_bytes()
 
     stopped = settle_error(scene)

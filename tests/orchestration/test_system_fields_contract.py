@@ -40,6 +40,7 @@ from harness.orchestration.core.system_fields import (
     vocabulary_drift,
 )
 from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.ledger import field_migration
 from harness.orchestration.workflow import (
     auto_policy,
     carried_items,
@@ -132,6 +133,7 @@ V1_FIELDS = frozenset(
         "context_package.role",
         "context_package.freshness",
         "batch.required_gate",
+        "ledger.migration_disposition",
     }
 )
 
@@ -783,6 +785,9 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
     "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
+    "ledger.migration_disposition": {
+        "field_migration.MIGRATION_DISPOSITIONS": field_migration.MIGRATION_DISPOSITIONS
+    },
     "context_package.freshness": {
         "ContextPackageFreshness": constants.ContextPackageFreshness
     },

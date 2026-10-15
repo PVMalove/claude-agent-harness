@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 
 from harness.orchestration.core import utils
 from harness.orchestration.core.constants import DispatchState
+from harness.orchestration.core.runtime_state_contract import QUARANTINE_STEP
 from harness.orchestration.core.utils import JsonObject
 from harness.errors import HarnessError
 from harness.orchestration.ledger.lifecycle import (
@@ -56,6 +57,8 @@ from harness.orchestration.runtime_intent import (
     error_detail,
     failure_code,
     idempotency_key,
+    mark_ready,
+    mark_reconciling,
     next_revision,
     operation_hashes,
     settle_phases,
@@ -70,6 +73,13 @@ from harness.orchestration.runtime_state_store import (
 STOP_REMEDY = (
     "inspect the named ledger record against the intent; restore it to the planned before or "
     "after content and repeat the command, which reconciles again"
+)
+
+INTERRUPTED = "the composite write stopped before its store commit"
+
+QUARANTINE_REMEDY = (
+    "run 'coordinator.py ledger inspect --batch {batch}' and 'ledger export --batch {batch}' to "
+    "read the quarantined evidence; the batch stays denied until a recovery command releases it"
 )
 
 AMBIGUOUS_REMEDY = (
@@ -111,15 +121,27 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
 
     A violated hash, an unknown state or a concurrent writer is a controlled stop: the store
     is suspended with the failure, nothing is retried, and the same stop found again by the
-    next read-only check raises without a new revision."""
+    next read-only check raises without a new revision.  A batch the ledger migration
+    quarantined is never released here: it raises, and its record keeps its revision."""
     store = RuntimeStateStore(repo, root)
     record = store.read(batch_id)
     if record is None:
         return False
+    if (
+        record["state"] == "suspended"
+        and (record["failure"] or {}).get("step") == QUARANTINE_STEP
+    ):
+        raise RuntimeStateError(
+            "integrity-failure",
+            QUARANTINE_STEP,
+            record["failure"]["message"],
+            remedy=QUARANTINE_REMEDY.format(batch=batch_id),
+            durable_revision=int(record["revision"]),
+        )
     operation = record["operation"]
     if operation is None or operation["phase"] == "committed":
         if record["state"] in ("suspended", "reconciling"):
-            _ready(store, _reconciling(store, record))
+            mark_ready(store, mark_reconciling(store, record, interrupted=INTERRUPTED))
         return False
     observation: JsonObject | None = None
     try:
@@ -137,7 +159,7 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
     except LedgerError as exc:
         broken = _Stop("integrity-failure", "reconcile:ledger", exc.message)
         raise _stopped(store, batch_id, broken) from exc
-    record = _reconciling(store, record)
+    record = mark_reconciling(store, record, interrupted=INTERRUPTED)
     step_name = "reconcile:intent"
     try:
         if observation is not None:
@@ -168,14 +190,14 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
         raise _stopped(
             store, batch_id, _Stop(failure_code(exc), step_name, error_detail(exc))
         ) from exc
-    _ready(store, record)
+    mark_ready(store, record)
     return True
 
 
 def _stopped(store: RuntimeStateStore, batch_id: str, stop: _Stop) -> RuntimeStateError:
     """Record a controlled stop and return the error to raise.  The same failure already
-    recorded on a suspended record adds no revision; a ``ready`` record cannot take the stop
-    (its state table has no edge to ``suspended``), so its revision is kept as it is."""
+    recorded on a suspended record adds no revision; a ``ready`` record keeps its revision as
+    it is, because only a quarantine moves an idle record to ``suspended``."""
     record = store.read(batch_id)
     failure: JsonObject = {
         "code": stop.code,
@@ -197,47 +219,6 @@ def _stopped(store: RuntimeStateStore, batch_id: str, stop: _Stop) -> RuntimeSta
     )
     error.diagnostics["evidence"] = stop.evidence
     return error
-
-
-def _reconciling(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-    """Move a stopped or interrupted record to ``reconciling``: an interrupted ``running`` one
-    passes through ``suspended``, as the state table requires."""
-    if record["state"] == "running":
-        record = _write(
-            store,
-            record,
-            next_revision(
-                record,
-                state="suspended",
-                failure={
-                    "code": "execution-failure",
-                    "step": "reconcile:detect",
-                    "message": "the composite write stopped before its store commit",
-                },
-            ),
-        )
-    if record["state"] == "suspended":
-        record = _write(
-            store, record, next_revision(record, state="reconciling", failure=None)
-        )
-    return record
-
-
-def _ready(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-    ready = next_revision(record, state="ready", failure=None)
-    ready["last_confirmed_boundary"] = {
-        "revision": ready["revision"],
-        "state": "ready",
-        "confirmed_at": ready["updated_at"],
-    }
-    return _write(store, record, ready)
-
-
-def _write(
-    store: RuntimeStateStore, current: JsonObject, following: JsonObject
-) -> JsonObject:
-    store.write(following, expected_revision=int(current["revision"]))
-    return following
 
 
 def _step_name(step: JsonObject) -> str:

@@ -32,15 +32,25 @@ def build_parser(
     root.add_argument("--state-dir", help="coordinator state directory")
     commands = root.add_subparsers(dest="command", required=True)
 
-    config = commands.add_parser("config", help="inspect or explicitly normalize project config")
+    config = commands.add_parser(
+        "config", help="inspect or explicitly normalize project config"
+    )
     config_commands = config.add_subparsers(dest="config_command", required=True)
-    validate = config_commands.add_parser("validate", help="validate without changing lifecycle state")
+    validate = config_commands.add_parser(
+        "validate", help="validate without changing lifecycle state"
+    )
     _common(validate)
     validate.add_argument("--json", action="store_true", help="structured diagnostics")
     mode = validate.add_mutually_exclusive_group()
-    mode.add_argument("--canonical", action="store_true", help="require canonical source spelling")
-    mode.add_argument("--fix", action="store_true", help="explicitly persist safe normalization")
-    validate.add_argument("--dry-run", action="store_true", help="preview --fix without writing")
+    mode.add_argument(
+        "--canonical", action="store_true", help="require canonical source spelling"
+    )
+    mode.add_argument(
+        "--fix", action="store_true", help="explicitly persist safe normalization"
+    )
+    validate.add_argument(
+        "--dry-run", action="store_true", help="preview --fix without writing"
+    )
     validate.set_defaults(handler=handlers.validate_config)
 
     ledger = commands.add_parser(
@@ -107,6 +117,25 @@ def build_parser(
         "--confirm", required=True, help="literal RESET acknowledgement"
     )
     ledger_reset.set_defaults(handler=handlers.reset_ledger)
+    # Read-only and lock-free, so they run on the installed runtime even for a pinned batch.
+    ledger_inspect = ledger_commands.add_parser(
+        "inspect",
+        help="Read-only view of the selected generation, its migration and quarantine",
+    )
+    _common(ledger_inspect)
+    ledger_inspect.add_argument("--batch", help="show only this batch")
+    ledger_inspect.set_defaults(
+        handler=handlers.inspect_ledger, installed_runtime_only=True
+    )
+    ledger_export = ledger_commands.add_parser(
+        "export",
+        help="Read-only JSON export of one batch's records, reports and quarantine evidence",
+    )
+    _common(ledger_export)
+    ledger_export.add_argument("--batch", required=True)
+    ledger_export.set_defaults(
+        handler=handlers.export_ledger, installed_runtime_only=True
+    )
 
     batch = commands.add_parser("batch")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)

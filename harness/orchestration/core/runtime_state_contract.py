@@ -7,6 +7,8 @@ RUNTIME_STATE_CONTRACT = "runtimeState.v1"
 RUNTIME_EMERGENCY_CONTRACT = "runtimeEmergency.v1"
 # Relative to the shared storage root (`<main checkout>/.harness`), never to a state root.
 RUNTIME_STATE_DIR = Path("orchestration/runtime-state")
+# The failure step of a batch the ledger migration quarantined: nothing settles it back to ready.
+QUARANTINE_STEP = "quarantine"
 
 RUNTIME_VOCABULARIES = {
     "runtime.state": ("ready", "running", "suspended", "reconciling", "completed"),
@@ -38,7 +40,8 @@ RUNTIME_VOCABULARIES = {
     ),
 }
 RUNTIME_TRANSITIONS = {
-    "ready": ("running",),
+    # `ready -> suspended` is the quarantine of an idle batch; `running` would claim an operation.
+    "ready": ("running", "suspended"),
     "running": ("completed", "suspended"),
     "suspended": ("reconciling",),
     "reconciling": ("ready", "suspended"),
