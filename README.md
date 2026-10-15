@@ -188,7 +188,7 @@ snapshot, `harness update` обновляет его и сохраняет ло�
 `.harness/docs/project-memory.md` (контракт интерактивного поиска по памяти) и
 `.harness/docs/technical-english.md`, а при `pvmalove-suite` и `backend-orchestration` ещё и шаблоны
 проектных руководств из `harness/project/docs-agents/`, которые разворачиваются как
-`docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`. `harness update`
+`docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`. `harness update`
 обновляет эти файлы. Для существующего проекта следуйте
 [инструкции обновления и включения памяти](./docs/harness-guide.md#обновление-существующего-проекта-и-включение-памяти):
 обновление сохраняет `project.json`, поэтому schema и opt-in поля памяти нужно перенести отдельно.

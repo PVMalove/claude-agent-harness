@@ -20,5 +20,19 @@ Vendor-версия держала примеры и правила подмен
 версии правила подмен вошли в `SKILL.md`, а примеры — в
 [`examples.md`](../../skills/first-party/pvmalove/tdd/examples.md).
 
+## Необязательный тест-автор
+
+Developer может передать следующий Red-тест установленному в Claude Code субагенту `test-author`
+только после запуска `.claude/hooks/test-author-preflight.sh`. Preflight обязан вернуть ровно
+`{"status":"ok"}`. Ответ `disabled` сохраняет обычный маршрут developer: передайте ему
+санитизированную `reason` и не запускайте незащищённого тест-автора.
+
+При успешном preflight передайте субагенту одно поведенческое требование, один сценарий и
+согласованный public seam. Субагент пишет ровно один тест только в `test_paths`, запускает его
+через `.claude/hooks/run-test.sh <test-id>` и возвращает требование, входные данные, независимый
+источник ожидания, id теста и санитизированное доказательство поведенческого Red. Production-код,
+скелет и orchestration остаются у developer; test-author не получает manifest, dispatch,
+brief/report, approval или ledger lifecycle.
+
 `mattpocock-suite` продолжает поставлять неизменённый
 [vendor-снапшот](../../skills/vendor/mattpocock/engineering/tdd/SKILL.md).
