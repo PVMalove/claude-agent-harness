@@ -30,7 +30,6 @@ VERIFY_VARIABLE = "HARNESS_VERIFY_CLAUDE_TEST_AUTHOR"
 REQUIRE_VARIABLE = "HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR"
 PROBE_BUDGET_USD = "0.50"
 PROBE_TIMEOUT_SECONDS = 240
-HOME_RELATIVE = Path(".harness") / ".sandboxes" / "runs" / "claude-test-author-home"
 UNTRUSTED_STATES = ("not-accepted", "other-project", "no-file")
 
 GUARD_PROMPT = (
@@ -77,11 +76,16 @@ def project_environment(
     return environment
 
 
+def claude_home(project: Path) -> Path:
+    """The isolated Claude home beside the project: its credentials link is outside the tree."""
+    return project.parent / f"{project.name}-claude-home"
+
+
 def claude_environment(
     project: Path, *, trust: str = "trusted", credentials: bool = False
 ) -> dict[str, str]:
     """An isolated Claude home whose trust file says `trust`; credentials only on request."""
-    home = project / HOME_RELATIVE
+    home = claude_home(project)
     config_dir = home / ".claude"
     config_dir.mkdir(parents=True, exist_ok=True)
     _write_trust_state(home, project, trust)
@@ -126,7 +130,7 @@ def _link_credentials(config_dir: Path) -> None:
 
 def remove_credentials(project: Path) -> None:
     """Drop the credentials link so the project tree never keeps a path to them."""
-    (project / HOME_RELATIVE / ".claude" / ".credentials.json").unlink(missing_ok=True)
+    (claude_home(project) / ".claude" / ".credentials.json").unlink(missing_ok=True)
 
 
 def _text(content: object) -> str:
@@ -211,10 +215,26 @@ def check_guard_calls(project: Path, calls: list[ToolCall]) -> None:
         sys.exit("claude probe: the allowed write inside test_paths did not land")
 
 
+def _runner_call(calls: list[ToolCall]) -> ToolCall:
+    """The last Bash call that starts the runner; a hook-denied look at its source is not one."""
+    started = [
+        call
+        for call in calls
+        if call.name == "Bash"
+        and str(call.tool_input.get("command", ""))
+        .split(" ", 1)[0]
+        .endswith("run-test.sh")
+    ]
+    if not started:
+        sys.exit("claude probe: the subagent never started the runner")
+    return started[-1]
+
+
 def check_red_cycle(project: Path, calls: list[ToolCall], source_digest: str) -> None:
     """The subagent wrote one test and the runner reported a behavioral failure, not a load error."""
-    run = _call(calls, "Bash", ".claude/hooks/run-test.sh")
-    if run.is_error or '"result":"failed"' not in run.result.replace(" ", ""):
+    run = _runner_call(calls)
+    # A failed test makes the runner exit non-zero, so Claude Code marks this result as an error.
+    if '"result":"failed"' not in run.result.replace(" ", ""):
         sys.exit(
             "claude probe: the runner did not report a failed test for the subagent test"
         )

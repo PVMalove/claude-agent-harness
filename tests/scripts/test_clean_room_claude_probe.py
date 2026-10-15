@@ -177,7 +177,9 @@ def _red_project(project: Path, log: str | None) -> str:
 
 def _red_calls() -> list[object]:
     command = ".claude/hooks/run-test.sh tests.test_probe.TestProbe.test_total"
-    return [ToolCall("Bash", {"command": command}, RUNNER_RESULT, False)]
+    return [
+        ToolCall("Bash", {"command": command}, "Exit code 1 " + RUNNER_RESULT, True)
+    ]
 
 
 def test_red_cycle_accepts_a_failed_behavioral_assertion(project: Path) -> None:
@@ -216,7 +218,18 @@ def test_red_cycle_rejects_changed_production_code(project: Path) -> None:
 @pytest.mark.parametrize(
     ("calls", "message"),
     [
-        ([], "no Bash call"),
+        ([], "never started the runner"),
+        (
+            [
+                ToolCall(
+                    "Bash",
+                    {"command": "sed -n 1,9p .claude/hooks/run-test.sh"},
+                    DENY_BASH,
+                    True,
+                )
+            ],
+            "never started the runner",
+        ),
         (
             [
                 ToolCall(
@@ -278,7 +291,7 @@ def test_credentials_are_linked_only_on_request_and_recreated(
     source = tmp_path_factory.mktemp("claude-config")
     (source / ".credentials.json").write_text("{}", encoding="utf-8")
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(source))
-    link = project / claude_probe.HOME_RELATIVE / ".claude" / ".credentials.json"
+    link = claude_probe.claude_home(project) / ".claude" / ".credentials.json"
 
     claude_probe.claude_environment(project)
     assert not link.exists() and not link.is_symlink()
@@ -338,7 +351,7 @@ def test_a_requested_probe_fails_on_a_nonzero_claude_exit(
     with pytest.raises(SystemExit, match="exited with 1 .*usage_limit_reached"):
         claude_probe.verify_scoped_hook(project)
 
-    link = project / claude_probe.HOME_RELATIVE / ".claude" / ".credentials.json"
+    link = claude_probe.claude_home(project) / ".claude" / ".credentials.json"
     assert not link.is_symlink()
 
 
@@ -368,3 +381,23 @@ def test_a_verified_probe_cleans_up_what_the_agent_left(
 
     assert "scoped-hook confirmation verified" in capsys.readouterr().out
     assert not (project / "tests" / "test_probe.py").exists()
+
+
+def test_the_isolated_home_and_its_credentials_link_stay_outside_the_project(
+    project: Path,
+) -> None:
+    home = claude_probe.claude_home(project)
+
+    assert not home.is_relative_to(project)
+    assert home.parent == project.parent
+
+
+def test_red_cycle_judges_the_runner_call_not_a_denied_look_at_its_source(
+    project: Path,
+) -> None:
+    digest = _red_project(project, "AssertionError: 5 != 6\n")
+    look = ToolCall(
+        "Bash", {"command": "sed -n 1,9p .claude/hooks/run-test.sh"}, DENY_BASH, True
+    )
+
+    claude_probe.check_red_cycle(project, [look, *_red_calls()], digest)
