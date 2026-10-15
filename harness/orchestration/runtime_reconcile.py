@@ -20,6 +20,7 @@ planned digest.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 
 from harness.orchestration.core import utils
@@ -35,8 +36,10 @@ from harness.orchestration.runtime_effect import (
     CHANNELS,
     KIND,
     OUTCOMES,
+    dispatch_send_records,
     observation,
     observation_id,
+    observe_launch,
     observed,
     record_paths,
 )
@@ -67,8 +70,9 @@ STOP_REMEDY = (
 )
 
 AMBIGUOUS_REMEDY = (
-    "find out whether the worker of {dispatch} runs and stop it; the next command reconciles "
-    "the hand-off again and never starts the worker a second time"
+    "stop the worker of {dispatch} or let its adapter answer observe, then run dispatch cancel "
+    "--dispatch {dispatch} --runtime-stopped with an approval; the next command reconciles the "
+    "hand-off and never starts the worker a second time"
 )
 
 
@@ -119,7 +123,7 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
         records = ledger.records_root()
         payload = _intent(store, ledger, record)
         if operation["kind"] == KIND:
-            seen = _effect_observation(store, ledger, records, record, payload)
+            seen = _effect_observation(store, ledger, repo, records, record, payload)
             steps = seen["steps"]
         else:
             steps = _composite_steps(record, payload)
@@ -319,6 +323,7 @@ def _composite_steps(record: JsonObject, payload: JsonObject) -> list[JsonObject
 def _effect_observation(
     store: RuntimeStateStore,
     ledger: LifecycleLedger,
+    repo: Path,
     records: Path,
     record: JsonObject,
     payload: JsonObject,
@@ -347,26 +352,55 @@ def _effect_observation(
     if seen is not None:
         return seen
     state = operation["effect"]["state"]
-    status_path = record_paths(payload["batch_id"], dispatch_id)[1]
+    batch_path, status_path = record_paths(payload["batch_id"], dispatch_id)
     status = LifecycleLedger.read_record_lenient(records / status_path) or {}
-    if state == "not-started" and (
-        current == before or status.get("state") == "cancelled"
-    ):
-        return _proved(ledger, store, payload, "unchanged", "not-started", [])
     changed = [path for path in before if current[path] != before[path]]
-    if state == "unknown" and not changed:
+    if state == "not-started" and (not changed or status.get("state") == "cancelled"):
+        return _proved(ledger, store, payload, "unchanged", "not-started", [])
+    if state == "unknown" and (not changed or _retired(status)):
+        launch = observe_launch(repo, records, payload)
+        source = (
+            "adapter-observe" if effect["channel"] == "adapter" else "provider-observe"
+        )
+        evidence: JsonObject = {
+            "dispatch_id": dispatch_id,
+            "channel": effect["channel"],
+            "marked_at": operation["effect"]["observed_at"],
+            "observation": None if launch is None else asdict(launch),
+        }
+        remedy = AMBIGUOUS_REMEDY.format(dispatch=dispatch_id)
+        if launch is not None and launch.launched and not changed:
+            access: JsonObject = {
+                "status": "legacy-inherit"
+                if effect["channel"] == "adapter"
+                else "unverified",
+                "reconciled_launch": {"source": source, "launch_id": launch.launch_id},
+            }
+            batch = _ledger_record(records, batch_path)
+            moment = utils._now()
+            changes = dispatch_send_records(
+                "dispatched", batch, status, effect, access, moment
+            )
+            return _proved(ledger, store, payload, "dispatched", source, changes)
+        if launch is not None and launch.live:
+            raise _Stop(
+                "concurrency-conflict",
+                "reconcile:effect",
+                f"a live worker of {dispatch_id} contradicts the observed outcome",
+                evidence,
+                remedy=remedy,
+            )
+        if changed:
+            return _proved(ledger, store, payload, "unchanged", "human-retired", [])
+        if launch is not None:
+            return _proved(ledger, store, payload, "unchanged", source, [])
         raise _Stop(
             "ambiguous-effect",
             "reconcile:effect",
             f"the hand-off of {dispatch_id} may have started a worker and nothing proves "
             "whether it did",
-            {
-                "dispatch_id": dispatch_id,
-                "channel": effect["channel"],
-                "marked_at": operation["effect"]["observed_at"],
-                "observation": None,
-            },
-            remedy=AMBIGUOUS_REMEDY.format(dispatch=dispatch_id),
+            evidence,
+            remedy=remedy,
         )
     path = changed[0] if changed else next(iter(before))
     raise _Stop(
@@ -380,6 +414,25 @@ def _effect_observation(
             "actual": short(current[path]),
         },
     )
+
+
+def _retired(status: JsonObject) -> bool:
+    """Whether a person cancelled the dispatch and confirmed its worker runtime stopped."""
+    cancellation = status.get("cancellation")
+    return (
+        status.get("state") == "cancelled"
+        and isinstance(cancellation, dict)
+        and cancellation.get("runtime_stopped") is True
+        and isinstance(cancellation.get("approved_by"), str)
+        and bool(cancellation["approved_by"].strip())
+    )
+
+
+def _ledger_record(records: Path, path: str) -> JsonObject:
+    record = LifecycleLedger.read_record_lenient(records / path)
+    if record is None:
+        raise _Stop("integrity-failure", "reconcile:effect", f"{path} cannot be read")
+    return record
 
 
 def _proved(

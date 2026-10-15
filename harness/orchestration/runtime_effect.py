@@ -15,6 +15,9 @@ here or there repeats the hand-off.  Nothing here issues an approval.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+import subprocess
 import sys
 import uuid
 from collections.abc import Callable
@@ -22,11 +25,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from harness.errors import HarnessError
+from harness.orchestration import extensions
 from harness.orchestration.core import utils
-from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.core.utils import JsonObject, _canonical
 from harness.orchestration.ledger.ledger_ops import _ledger_errors
 from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
+    DispatchRecord,
     DispatchStatusRecord,
     LedgerRecordVO,
     LifecycleLedger,
@@ -58,6 +63,8 @@ UNKNOWN_REMEDY = (
     "repeat the command: it reconciles the hand-off from its durable intent and never starts "
     "the worker again"
 )
+# An adapter's observe runs under the ledger lock, so its answer is bounded.
+OBSERVE_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -76,6 +83,91 @@ def adapter_command(adapter: Path) -> list[str]:
     if adapter.suffix.lower() == ".py":
         return [sys.executable, str(adapter)]
     return [str(adapter)]
+
+
+def observe_launch(
+    repo: Path, records: Path, payload: JsonObject
+) -> extensions.LaunchObservation | None:
+    """Ask the adapter or the native provider that took an unconfirmed hand-off whether its
+    worker was launched and still runs; ``None`` when nothing answers in a provable way.
+
+    Only an observation is requested: neither the adapter's ``dispatch`` verb nor a provider's
+    ``handoff`` is ever called again."""
+    effect, dispatch_id = payload["effect"], str(payload["dispatch_id"])
+    brief = records / DispatchRecord.directory / f"{dispatch_id}.json"
+    answer: object = None
+    if effect["channel"] == "adapter" and isinstance(effect.get("adapter"), str):
+        command = [
+            *adapter_command(Path(effect["adapter"])),
+            "observe",
+            *effect["adapter_args"],
+            "--repo",
+            str(repo),
+            "--brief",
+            str(brief),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                cwd=effect["worker_worktree"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=OBSERVE_TIMEOUT_SECONDS,
+            )
+            if result.returncode == 0:
+                answer = _observation_object(json.loads(result.stdout))
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            answer = None
+    elif effect["channel"] == "native":
+        answer = _provider_observation(brief, effect)
+    if (
+        not isinstance(answer, extensions.LaunchObservation)
+        or answer.dispatch_id != dispatch_id
+        or not isinstance(answer.launched, bool)
+        or not isinstance(answer.live, bool)
+        or not (
+            answer.launch_id is None
+            or (isinstance(answer.launch_id, str) and answer.launch_id)
+        )
+    ):
+        return None
+    return answer
+
+
+def _observation_object(value: object) -> extensions.LaunchObservation | None:
+    """An adapter's JSON answer with exactly the observation fields, or ``None``."""
+    fields = {"dispatch_id", "launched", "live", "launch_id"}
+    if (
+        not isinstance(value, dict)
+        or not {"dispatch_id", "launched", "live"} <= set(value) <= fields
+    ):
+        return None
+    return extensions.LaunchObservation(**value)
+
+
+def _provider_observation(brief_path: Path, effect: JsonObject) -> object:
+    """The native provider's optional ``observe_launch`` answer for the brief the hand-off
+    sent; a changed brief, a missing method or any failure of the provider is no answer."""
+    brief = LifecycleLedger.read_record_lenient(brief_path)
+    if (
+        brief is None
+        or hashlib.sha256(_canonical(brief).encode("utf-8")).hexdigest()
+        != effect["brief_sha256"]
+    ):
+        return None
+    plan = brief.get("runtime_access")
+    name = plan.get("runtime_extension") if isinstance(plan, dict) else None
+    if not isinstance(name, str):
+        return None
+    try:
+        provider = extensions.runtime_access(name)
+        observe = getattr(provider, "observe_launch", None)
+        return observe(brief) if callable(observe) else None
+    except Exception:  # noqa: BLE001 -- a project-supplied provider proves nothing by failing
+        return None
 
 
 def record_paths(batch_id: str, dispatch_id: str) -> list[str]:

@@ -49,8 +49,9 @@ Each new dispatch binds a complete canonical config, project and role snapshot t
 digest, with separate source and canonical hashes. Checkpoints and manual or clean-room QA reports
 use that snapshot. Invalid or changed live configuration blocks a subsequent transition while
 accepted evidence remains saved. Missing or corrupt snapshots allow only unaccepted evidence
-capture with a remedy; they never reconstruct approval from current files. Runtime state-store
-reconciliation and recovery UI are separate follow-up work.
+capture with a remedy; they never reconstruct approval from current files. The runtime state
+store reconciles an unfinished composite write or hand-off at the start of the next command; a
+recovery UI is separate follow-up work.
 
 ## Lifecycle
 
@@ -762,6 +763,18 @@ to the approval digest. `dispatch send` blocks the handoff, with a reason and a 
 action, when the selected `runtime_access` implementation cannot prove and natively apply the plan
 for that exact worker; it never falls back to `inherit`. A blocker is a question for the human, not
 something to work around: do not edit the brief or the config to make the check pass.
+
+`dispatch send` records the hand-off's intent in the runtime state store before the transport is
+called, and marks the effect `unknown` right before an adapter or native launch. An outcome it
+observes is committed with its ledger records. When the process stops mid-call, or the launch gives
+no bound receipt, the next command for the batch reconciles the hand-off and never starts the
+worker again. It asks the adapter `<adapter> observe [args] --repo <repo> --brief <brief>`, or the
+native provider's optional `observe_launch(brief)`. The adapter must answer within 30 seconds with
+exit code 0 and one JSON object `{"dispatch_id", "launched", "live", "launch_id"?}`. Any other
+answer proves nothing, and the batch stops with `ambiguous-effect`. A person then stops the worker
+and runs `dispatch cancel --runtime-stopped` with an approval. A cancel without that flag is refused
+while the effect is unknown. A worker that is still live contradicts a cancellation and stops the
+batch with `concurrency-conflict`. A non-zero `dispatch` exit still means no worker started.
 
 An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
 The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator

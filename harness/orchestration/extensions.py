@@ -130,6 +130,20 @@ class RuntimeAccessObservation:
     handed_off: bool = False
 
 
+@dataclass(frozen=True)
+class LaunchObservation:
+    """Whether the worker of an unconfirmed hand-off was launched and still runs.
+
+    A runtime_access provider may answer it through an optional ``observe_launch(brief)``
+    method, and a runtime adapter through its ``observe`` verb; reconciliation only reads it and
+    never launches a worker."""
+
+    dispatch_id: str
+    launched: bool
+    live: bool
+    launch_id: str | None = None
+
+
 class RuntimeAccess(Protocol):
     """Confirm and apply permissions for a specific native worker launch."""
 

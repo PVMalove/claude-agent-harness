@@ -88,6 +88,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches
+from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review
@@ -508,6 +509,21 @@ def _reject_active_duplicate(root: Path, batch: JsonObject, key: str) -> None:
             )
 
 
+def _unknown_hand_off(repo: Path, root: Path, dispatch: JsonObject) -> bool:
+    """Whether the batch's runtime state holds an unfinished hand-off of ``dispatch`` whose
+    worker may have started; a read only, never a reconcile."""
+    record = RuntimeStateStore(repo, root).read(dispatch["batch_id"])
+    operation = None if record is None else record["operation"]
+    return (
+        record is not None
+        and operation is not None
+        and record["dispatch_id"] == dispatch["dispatch_id"]
+        and operation["kind"] == "dispatch-send"
+        and operation["phase"] != "committed"
+        and operation["effect"]["state"] == "unknown"
+    )
+
+
 def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
     """Cancel one approved brief before it reaches any runtime.
 
@@ -552,6 +568,13 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
         runtime_stopped = (
             bool(getattr(args, "runtime_stopped", False)) and not policy_retry
         )
+        if not runtime_stopped and _unknown_hand_off(repo, root, dispatch):
+            raise CoordinatorError(
+                "the hand-off of this dispatch may have started a worker, so cancelling it "
+                "requires a confirmed stop",
+                remedy="stop the worker, then cancel with --runtime-stopped and an approval; "
+                "the next command reconciles the hand-off",
+            )
         cancellable = (
             {"approved", "dispatched", "checkpointed", "rate_limited"}
             if runtime_stopped
