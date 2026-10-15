@@ -147,6 +147,48 @@ class TestAuthorRed:
 """
 
 
+def _trusted_claude_environment(project: Path) -> dict[str, str]:
+    """Create isolated Claude workspace trust state while preserving the auth config source."""
+    home = project / ".harness" / ".sandboxes" / "runs" / "claude-test-author-home"
+    home.mkdir(parents=True, exist_ok=True)
+    config_dir = home / ".claude"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    environment = dict(os.environ)
+    source_config_dir = environment.get("CLAUDE_CONFIG_DIR")
+    if source_config_dir:
+        source_credentials = Path(source_config_dir).expanduser() / ".credentials.json"
+    else:
+        source_credentials = Path.home() / ".claude" / ".credentials.json"
+    try:
+        source_credentials = source_credentials.resolve(strict=True)
+    except (OSError, RuntimeError):
+        source_credentials = None
+    if source_credentials is not None:
+        try:
+            (config_dir / ".credentials.json").symlink_to(source_credentials)
+        except FileExistsError:
+            pass
+    (home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(project.resolve()): {"hasTrustDialogAccepted": True}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    environment.pop("CLAUDE_CONFIG_DIR", None)
+    environment.update(
+        {
+            "CLAUDE_PROJECT_DIR": str(project),
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+        }
+    )
+    return environment
+
+
 def run(ctx: SimpleNamespace) -> None:
     """Изолированный runner на установленном проекте.
 
@@ -347,14 +389,18 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
     _verify_test_author(project)
 
 
-def _preflight(project: Path) -> dict[str, object]:
+def _preflight(
+    project: Path, *, env: dict[str, str] | None = None
+) -> dict[str, object]:
     """Run the installed activation check and enforce its bounded JSON output."""
+    environment = dict(env or os.environ)
+    environment["CLAUDE_PROJECT_DIR"] = str(project)
     result = run_step(
         [SHELL, str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
         cwd=project,
         capture_output=True,
         text=True,
-        env=dict(os.environ, CLAUDE_PROJECT_DIR=str(project)),
+        env=environment,
         check=False,
     )
     if result.returncode != 0 or result.stderr or len(result.stdout.splitlines()) != 1:
@@ -417,9 +463,10 @@ def _assert_denied(answer: dict[str, object] | None) -> None:
 
 def _verify_test_author(project: Path) -> None:
     """Verify activation, scoped soft denials and the ordinary route for other agents."""
-    if _preflight(project) != {"status": "ok"}:
+    claude_environment = _trusted_claude_environment(project)
+    if _preflight(project, env=claude_environment) != {"status": "ok"}:
         sys.exit("test-author preflight did not activate in the protected project")
-    _verify_claude_scoped_hook(project)
+    _verify_claude_scoped_hook(project, env=claude_environment)
     red_path = "tests/test_author_red.py"
     if _guard(project, _test_author_payload("Write", {"file_path": red_path})) is not None:
         sys.exit("test-author guard denied a configured test-path write")
@@ -466,13 +513,15 @@ def _verify_test_author(project: Path) -> None:
     config.write_text(json.dumps(data), encoding="utf-8")
     try:
         expected = {"status": "disabled", "reason": "test_paths_missing"}
-        if _preflight(project) != expected:
+        if _preflight(project, env=claude_environment) != expected:
             sys.exit("test-author preflight did not disable a project without test_paths")
     finally:
         config.write_text(original, encoding="utf-8")
 
 
-def _verify_claude_scoped_hook(project: Path) -> None:
+def _verify_claude_scoped_hook(
+    project: Path, *, env: dict[str, str] | None = None
+) -> None:
     """Use the installed Claude Code CLI to prove the agent-scoped hook denies a write."""
     required = os.environ.get("HARNESS_REQUIRE_CLAUDE_TEST_AUTHOR") == "1"
     if os.environ.get("HARNESS_VERIFY_CLAUDE_TEST_AUTHOR") != "1" and not required:
@@ -501,6 +550,14 @@ def _verify_claude_scoped_hook(project: Path) -> None:
         "Use the Write tool to create src/canary.txt in the project root with the text canary. "
         "Do not use Edit or Bash. If Write is denied, report the denial and stop."
     )
+    probe_environment = dict(env or os.environ)
+    probe_environment.update(
+        {
+            "CLAUDE_PROJECT_DIR": str(project),
+            "TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE": str(nonce_file),
+            "TEST_AUTHOR_HOOK_EVIDENCE_LOG": str(evidence_file),
+        }
+    )
     result = run_step(
         [
             claude,
@@ -527,12 +584,7 @@ def _verify_claude_scoped_hook(project: Path) -> None:
         cwd=project,
         capture_output=True,
         text=True,
-        env=dict(
-            os.environ,
-            CLAUDE_PROJECT_DIR=str(project),
-            TEST_AUTHOR_HOOK_EVIDENCE_NONCE_FILE=str(nonce_file),
-            TEST_AUTHOR_HOOK_EVIDENCE_LOG=str(evidence_file),
-        ),
+        env=probe_environment,
         check=False,
         timeout=180,
     )
@@ -563,7 +615,7 @@ def _verify_claude_scoped_hook(project: Path) -> None:
 
 def _verify_test_author_disabled(project: Path, detail: str) -> None:
     """When isolation is unavailable, require a sanitized disabled fallback."""
-    answer = _preflight(project)
+    answer = _preflight(project, env=_trusted_claude_environment(project))
     expected = {"status": "disabled", "reason": "isolation_unavailable"}
     if answer != expected:
         sys.exit(

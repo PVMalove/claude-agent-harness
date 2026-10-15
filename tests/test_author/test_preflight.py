@@ -45,6 +45,16 @@ def _project(tmp_path: Path, *, test_paths: object = ["tests/**"]) -> Path:
         target.chmod(target.stat().st_mode | stat.S_IXUSR)
     (project / ".claude" / "agents" / "test-author.md").write_bytes(AGENT.read_bytes())
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+    (tmp_path / ".claude.json").write_text(
+        json.dumps(
+            {
+                "projects": {
+                    str(project.resolve()): {"hasTrustDialogAccepted": True}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     return project
 
 
@@ -59,7 +69,13 @@ def _run(
     project: Path, *, env_overrides: dict[str, str | None] | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run preflight and keep its machine-readable output bounded."""
-    environment = dict(os.environ, CLAUDE_PROJECT_DIR=str(project))
+    environment = dict(
+        os.environ,
+        CLAUDE_PROJECT_DIR=str(project),
+        HOME=str(project.parent),
+        USERPROFILE=str(project.parent),
+    )
+    environment.pop("CLAUDE_CONFIG_DIR", None)
     for key, value in (env_overrides or {}).items():
         if value is None:
             environment.pop(key, None)
@@ -100,6 +116,20 @@ def test_preflight_requires_a_trusted_claude_project_identity(tmp_path: Path) ->
     _runner(project, '{"status":"ok"}')
 
     assert _answer(_run(project, env_overrides={"CLAUDE_PROJECT_DIR": None})) == {
+        "status": "disabled",
+        "reason": "project_untrusted",
+    }
+
+
+def test_preflight_fails_closed_without_claude_workspace_trust(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    state = tmp_path / ".claude.json"
+    data = json.loads(state.read_text(encoding="utf-8"))
+    data["projects"][str(project.resolve())]["hasTrustDialogAccepted"] = False
+    state.write_text(json.dumps(data), encoding="utf-8")
+
+    assert _answer(_run(project)) == {
         "status": "disabled",
         "reason": "project_untrusted",
     }

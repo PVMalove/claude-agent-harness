@@ -37,6 +37,30 @@ GIT_ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null || true)"
 [ "$GIT_ROOT" = "$REPO" ] || disabled project_untrusted
 [ "$(git -C "$REPO" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ] || disabled project_untrusted
 
+# Claude Code keeps workspace trust decisions in ~/.claude.json.  The native --print mode skips
+# the trust dialog, so the preflight must verify the decision itself before enabling an agent whose
+# safety depends on a frontmatter hook.
+TRUSTED_PROJECT="$($PY -c '
+import json
+import os
+from pathlib import Path
+
+try:
+    project = str(Path(os.environ["CLAUDE_PROJECT_DIR"]).resolve())
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    state_path = (
+        Path(config_dir).expanduser() / ".claude.json"
+        if config_dir
+        else Path.home() / ".claude.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    entry = state.get("projects", {}).get(project)
+except (AttributeError, OSError, TypeError, ValueError, RecursionError):
+    entry = None
+print("ok" if isinstance(entry, dict) and entry.get("hasTrustDialogAccepted") is True else "disabled")
+' 2>/dev/null || true)"
+[ "$TRUSTED_PROJECT" = "ok" ] || disabled project_untrusted
+
 AGENT="$REPO/.claude/agents/test-author.md"
 [ -f "$AGENT" ] && [ ! -L "$AGENT" ] || disabled agent_missing
 GUARD="$REPO/.claude/hooks/test-author-guard.py"
