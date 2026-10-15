@@ -151,6 +151,8 @@ def survey(generation: Path) -> Survey:
     raw: dict[str, bytes] = {}
     for directory in GRAPH_DIRECTORIES:
         for file in sorted((generation / directory).glob("*.json")):
+            # Read as the ledger's own loader reads it, through a link, so the migration
+            # quarantines whatever that loader would stop on.
             if file.is_file():
                 raw[f"{directory}/{file.name}"] = file.read_bytes()
     parsed = {path: _object(data) for path, data in raw.items()}
@@ -184,6 +186,7 @@ def survey(generation: Path) -> Survey:
             findings[path] = tuple(found)
     for report, owner in reports.items():
         target = generation / report
+        # A record names this path, so a link here could lead out of the generation.
         if target.is_file() and not target.is_symlink():
             data = raw[report] = target.read_bytes()
             owners.setdefault(report, owner)

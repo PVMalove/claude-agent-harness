@@ -6,12 +6,12 @@
 
 ### Added
 
-- **[Миграция ledger по generations]:** `ledger migrate` переводит выбранную generation на канонические значения `systemFields.v1` и не переписывает записи. Новая generation копирует записи и audit источника байт в байт, источник не меняется. Известные исторические значения (`passed`, `not-run`, `not_run_architect_read_only`, `rate-limit`, `429`) отображаются явными правилами в `migration/manifest.json`, без нечёткой нормализации. Batch с неизвестным или нечитаемым значением переносится в `migration/quarantine/<batch>/` с evidence `legacy-unknown`, а runtime state store держит его в `suspended`. Выбор generation проходит через intent и восстанавливается после сбоя на любом шаге; повторный запуск ничего не меняет (#696).
-- **[Просмотр и экспорт ledger]:** `ledger inspect [--batch]` и `ledger export --batch` читают quarantined и нечитаемые batch без блокировки ledger и ничего не записывают. Экспорт передаёт файлы batch байт в байт (#696).
+- **[Миграция ledger по generations]:** `ledger migrate` создаёт проверенную generation с каноническими значениями `systemFields.v1`, а исходная generation и её история не меняются. Старые результаты проверок `passed`, `not-run` и `not_run_architect_read_only` сопоставляются явными правилами без нечёткой нормализации, а batch с неизвестным значением или нечитаемой записью уходит в quarantine, и действия по нему запрещены. Прерванную миграцию завершает следующий запуск, а повторный запуск ничего не меняет (#696).
+- **[Просмотр и экспорт ledger]:** `ledger inspect [--batch]` и `ledger export --batch` показывают и выгружают batch из quarantine или с нечитаемыми записями, не блокируя ledger и ничего не записывая (#696).
 
 ### Changed
 
-- **[Runtime state store]:** `runtimeState.v1` допускает запись области ledger (`identity.batch_id: null`) для операций над всем ledger. Переход `ready → suspended` удерживает quarantined batch, и `settle` не возвращает его в `ready`. `ledger migrate` теперь требует Git checkout, чтобы найти runtime state store (#696).
+- **[Ответ ledger migrate]:** `ledger migrate` требует Git checkout. В ответе появились поля `schema_upgraded` и `system_fields`, а `migrated` равно `true`, если изменилась схема ledger или значения полей (#696).
 
 ## [1.4.4] - 2026-10-12
 
