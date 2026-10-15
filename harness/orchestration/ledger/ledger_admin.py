@@ -91,17 +91,18 @@ def migrate_ledger(args: argparse.Namespace) -> JsonObject:
 
 
 def inspect_ledger(args: argparse.Namespace) -> JsonObject:
-    """Read-only inspection of the selected generation, its migration and its quarantine, and of
+    """Read-only inspection of the selected generation, its migration and its quarantine, or of
+    the records of a legacy ledger no migration selected yet (``generation`` ``None``), and of
     the runtime state that denies a batch.  It takes no lock, loads no config and never reads a
     record through the ledger's validating loader, so a quarantined or unreadable batch is shown
     as a finding instead of stopping it."""
     repo = _repo(args)
     root = _state_root(args, repo)
-    generation = _lenient_generation(LifecycleLedger(root))
+    records, generation = _lenient_records(LifecycleLedger(root))
     report: JsonObject = (
         {"generation": None, "migration": None, "unowned": [], "batches": []}
-        if generation is None
-        else inspection(generation)
+        if records is None
+        else {**inspection(records), "generation": generation}
     )
     batches = cast(list[JsonObject], report["batches"])
     if (batch_id := getattr(args, "batch", None)) is not None:
@@ -137,21 +138,25 @@ def export_ledger(args: argparse.Namespace) -> JsonObject:
     graph and evidence.  It takes no lock and writes nothing; the JSON goes to stdout."""
     repo = _repo(args)
     batch_id = _safe_id(args.batch, "batch")
-    generation = _lenient_generation(LifecycleLedger(_state_root(args, repo)))
-    exported = None if generation is None else export(generation, batch_id)
+    records, generation = _lenient_records(LifecycleLedger(_state_root(args, repo)))
+    exported = None if records is None else export(records, batch_id)
     if exported is None:
         raise _no_batch(batch_id, generation)
-    return exported
+    return {**exported, "generation": generation}
 
 
-def _lenient_generation(ledger: LifecycleLedger) -> Path | None:
-    """The generation the pointer names, never validated; ``None`` without a generation."""
+def _lenient_records(ledger: LifecycleLedger) -> tuple[Path | None, str | None]:
+    """The directory of the records the pointer names and its generation, never validated.  A
+    legacy ledger that no migration selected yet keeps its records in the state directory itself,
+    outside any generation; ``(None, None)`` without records."""
     path = ledger.records_root_lenient()
-    return None if path is None or path == ledger.root else path
+    if path is None or path == ledger.root:
+        return path, None
+    return path, path.name
 
 
-def _no_batch(batch_id: str, generation: Path | None) -> CoordinatorError:
-    where = "the ledger" if generation is None else generation.name
+def _no_batch(batch_id: str, generation: str | None) -> CoordinatorError:
+    where = "the ledger" if generation is None else generation
     return CoordinatorError(
         f"{where} holds no batch {batch_id}, neither operational nor quarantined",
         remedy="list the batches with 'coordinator.py ledger inspect'",

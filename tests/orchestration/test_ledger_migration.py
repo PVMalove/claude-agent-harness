@@ -7,6 +7,7 @@ import argparse
 import base64
 import hashlib
 import json
+import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -688,6 +689,40 @@ def test_a_quarantined_batch_stays_denied_in_the_operational_store(
         write.commit()
 
     assert scene.store_bytes() == before
+
+
+def test_inspect_and_export_read_a_legacy_ledger_no_migration_selected(
+    scene: Scene,
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    _unknown_batch_state(scene)
+    # The pre-ledger layout: the records lie in the state directory, and no pointer selects a
+    # generation.
+    generation = scene.generation
+    for directory in generation.iterdir():
+        shutil.move(directory, scene.root / directory.name)
+    scene.ledger.pointer_path.unlink()
+    shutil.rmtree(scene.root / "generations")
+    with pytest.raises(LedgerError, match="legacy"):
+        scene.ledger.records_root()
+    before = (tree(scene.root), scene.store_bytes())
+
+    report = inspect_ledger(_args(scene, batch=None))
+    exported = export_ledger(_args(scene, batch=BATCH_B))
+
+    assert (tree(scene.root), scene.store_bytes()) == before
+    assert report["generation"] is None and exported["generation"] is None
+    assert [(b["batch_id"], b["area"]) for b in report["batches"]] == [
+        (BATCH_A, "operational"),
+        (BATCH_B, "operational"),
+    ]
+    [finding] = report["batches"][1]["findings"]
+    assert (finding["disposition"], finding["value"]) == ("legacy-unknown", "'on-hold'")
+    assert {f"batches/{BATCH_B}.json", f"reports/{DISPATCH_B}.json"} <= {
+        file["path"] for file in exported["files"]
+    }
+    for file in exported["files"]:
+        assert _content(file) == (scene.root / str(file["path"])).read_bytes()
 
 
 def test_an_export_keeps_bytes_that_are_not_utf8(scene: Scene) -> None:
