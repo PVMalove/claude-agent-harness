@@ -17,12 +17,14 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 MAX_FAILED_CALLS = 3
 FORBIDDEN_HANDOFF_KEYS = ("algorithm", "implementation", "snippet")
 FEE_REQUIREMENT = "R1: the total is the sum of the prices plus a fee of 1"
 # `execute(test_id)` -> (the test passed, the bounded log of the run)
 Execute = Callable[[str], tuple[bool, str]]
+Kind = Literal["green", "behavioral_red", "non_behavioral"]
 
 TEST_SOURCE = """\
 import unittest
@@ -103,7 +105,7 @@ def author_test_path(project: Path, test_id: str) -> Path:
     return project / package / f"{module}.py"
 
 
-def classify(passed: bool, log: str) -> str:
+def classify(passed: bool, log: str) -> Kind:
     """`green`, `behavioral_red` (a failed assertion only) or `non_behavioral`."""
     if passed:
         return "green"
@@ -145,17 +147,20 @@ class DeveloperCycle:
                 handoff = clarify(handoff, reply)
                 clarify = None
                 continue
-            kind = classify(*self.execute(reply["test_id"]))
-            if status == "needs_skeleton" and kind == "non_behavioral" and not skeleton_done:
-                write_skeleton()
-                skeleton_done = True
-                continue
-            problem = self._problem(status, kind, reply, handoff)
-            if problem is None:
-                self.accepted[reply["test_id"]] = _digest(
-                    author_test_path(self.project, reply["test_id"])
-                )
-                return reply["test_id"]
+            if status == "guard_denied":
+                problem = "guard_denied"  # no test ran; the denied call is not rephrased
+            else:
+                kind = classify(*self.execute(reply["test_id"]))
+                if status == "needs_skeleton" and kind == "non_behavioral" and not skeleton_done:
+                    write_skeleton()
+                    skeleton_done = True
+                    continue
+                problem = self._problem(status, kind, reply, handoff)
+                if problem is None:
+                    self.accepted[reply["test_id"]] = _digest(
+                        author_test_path(self.project, reply["test_id"])
+                    )
+                    return reply["test_id"]
             self.failures.append(problem)
             failed += 1
             if failed >= MAX_FAILED_CALLS:
@@ -163,7 +168,7 @@ class DeveloperCycle:
 
     @staticmethod
     def _problem(
-        status: str | None, kind: str, reply: dict[str, str], handoff: dict[str, str]
+        status: str | None, kind: Kind, reply: dict[str, str], handoff: dict[str, str]
     ) -> str | None:
         """Why the reply is a failed call, or None when it is an accepted behavioral Red."""
         if status != "red":
@@ -222,17 +227,26 @@ def _red(module: str, status: str = "red", source: str | None = None) -> dict[st
     }
 
 
-def _write(project: Path, module: str, text: str) -> Callable[[], None]:
-    def write() -> None:
-        (project / "src" / f"{module}.py").write_text(text, encoding="utf-8")
+@dataclass(frozen=True)
+class Scenario:
+    """The installed project and the way its tests run; they always travel together."""
 
-    return write
+    project: Path
+    execute: Execute
+
+    def case(self, steps: list[Step]) -> tuple[ScriptedAuthor, DeveloperCycle]:
+        author = ScriptedAuthor(self.project, steps)
+        return author, DeveloperCycle(self.project, author, self.execute)
+
+    def writer(self, module: str, text: str) -> Callable[[], None]:
+        def write() -> None:
+            (self.project / "src" / f"{module}.py").write_text(text, encoding="utf-8")
+
+        return write
 
 
-def _case(project: Path, name: str, steps: list[Step], execute: Execute):
-    module = f"cyc_{name}"
-    author = ScriptedAuthor(project, steps)
-    return module, author, DeveloperCycle(project, author, execute)
+def _module(name: str) -> str:
+    return f"cyc_{name}"
 
 
 def _expect_blocker(label: str, action: Callable[[], object]) -> None:
@@ -243,43 +257,43 @@ def _expect_blocker(label: str, action: Callable[[], object]) -> None:
     sys.exit(f"test-author cycle {label}: expected the blocker path")
 
 
-def _full_cycle(project: Path, execute: Execute) -> None:
+def _full_cycle(scenario: Scenario) -> None:
     """Normal cycle: Red, minimal implementation, Refactor on Green, then the next test."""
-    module, author, cycle = _case(
-        project, "normal", [Step(_red("cyc_normal"), TEST_SOURCE.format(module="cyc_normal"))], execute
-    )
-    _write(project, module, SKELETON)()
-    test_id = cycle.request_test(_handoff(module), write_skeleton=_write(project, module, SKELETON))
+    module = _module("normal")
+    steps = [Step(_red(module), TEST_SOURCE.format(module=module))]
+    author, cycle = scenario.case(steps)
+    scenario.writer(module, SKELETON)()
+    test_id = cycle.request_test(_handoff(module), write_skeleton=scenario.writer(module, SKELETON))
     if author.calls != 1 or cycle.failures:
         sys.exit("test-author cycle: the normal cycle needed more than one author call")
-    cycle.implement(test_id, _write(project, module, IMPLEMENTATION))
-    cycle.refactor(test_id, _write(project, module, REFACTORED))
+    cycle.implement(test_id, scenario.writer(module, IMPLEMENTATION))
+    cycle.refactor(test_id, scenario.writer(module, REFACTORED))
 
 
-def _skeleton(project: Path, execute: Execute) -> None:
+def _skeleton(scenario: Scenario) -> None:
     """`needs_skeleton`: the developer writes signatures only, then the author reruns."""
-    module = "cyc_skeleton"
+    module = _module("skeleton")
     steps = [
         Step(_red(module, "needs_skeleton"), TEST_SOURCE.format(module=module)),
         Step(_red(module)),
     ]
-    _, author, cycle = _case(project, "skeleton", steps, execute)
-    cycle.request_test(_handoff(module), write_skeleton=_write(project, module, SKELETON))
+    author, cycle = scenario.case(steps)
+    cycle.request_test(_handoff(module), write_skeleton=scenario.writer(module, SKELETON))
     if author.calls != 2 or cycle.failures:
         sys.exit("test-author cycle: needs_skeleton was not handled by one skeleton and a rerun")
-    if "sum(" in (project / "src" / f"{module}.py").read_text(encoding="utf-8"):
+    if "sum(" in (scenario.project / "src" / f"{module}.py").read_text(encoding="utf-8"):
         sys.exit("test-author cycle: the skeleton carries logic")
 
 
-def _contract_gap(project: Path, execute: Execute) -> None:
+def _contract_gap(scenario: Scenario) -> None:
     """`contract_gap`: a clarified seam continues, an unagreed seam is the blocker path."""
-    module = "cyc_gap"
+    module = _module("gap")
     steps = [
         Step(_red(module, "contract_gap")),
         Step(_red(module), TEST_SOURCE.format(module=module)),
     ]
-    _, author, cycle = _case(project, "gap", steps, execute)
-    _write(project, module, SKELETON)()
+    author, cycle = scenario.case(steps)
+    scenario.writer(module, SKELETON)()
     clarified = {}
 
     def clarify(handoff: dict[str, str], reply: dict[str, str]) -> dict[str, str]:
@@ -287,30 +301,30 @@ def _contract_gap(project: Path, execute: Execute) -> None:
         return clarified
 
     cycle.request_test(
-        _handoff(module), write_skeleton=_write(project, module, SKELETON), clarify=clarify
+        _handoff(module), write_skeleton=scenario.writer(module, SKELETON), clarify=clarify
     )
     if author.calls != 2 or author.handoffs[1]["seam"] == author.handoffs[0]["seam"]:
         sys.exit("test-author cycle: the contract gap was not clarified before the rerun")
-    unagreed = ScriptedAuthor(project, [Step(_red(module, "contract_gap"))])
+    unagreed = ScriptedAuthor(scenario.project, [Step(_red(module, "contract_gap"))])
     _expect_blocker(
         "contract_gap without a clarification",
-        lambda: DeveloperCycle(project, unagreed, execute).request_test(
-            _handoff(module), write_skeleton=_write(project, module, SKELETON)
+        lambda: DeveloperCycle(scenario.project, unagreed, scenario.execute).request_test(
+            _handoff(module), write_skeleton=scenario.writer(module, SKELETON)
         ),
     )
 
 
-def _not_behavioral(project: Path, execute: Execute) -> None:
+def _not_behavioral(scenario: Scenario) -> None:
     """Syntax, fixture and unsupported-expectation replies are failed calls, not Red."""
-    module = "cyc_nonbeh"
+    module = _module("nonbeh")
     steps = [
         Step(_red(module), SYNTAX_ERROR_SOURCE),
         Step(_red(module), FIXTURE_ERROR_SOURCE.format(module=module)),
         Step(_red(module), TEST_SOURCE.format(module=module)),
     ]
-    _, _, cycle = _case(project, "nonbeh", steps, execute)
-    _write(project, module, SKELETON)()
-    cycle.request_test(_handoff(module), write_skeleton=_write(project, module, SKELETON))
+    _, cycle = scenario.case(steps)
+    scenario.writer(module, SKELETON)()
+    cycle.request_test(_handoff(module), write_skeleton=scenario.writer(module, SKELETON))
     if cycle.failures != ["not_behavioral_red", "not_behavioral_red"]:
         sys.exit(f"test-author cycle: a non-behavioral failure counted as Red: {cycle.failures}")
     steps = [
@@ -320,62 +334,86 @@ def _not_behavioral(project: Path, execute: Execute) -> None:
         ),
         Step(_red(module)),
     ]
-    _, _, cycle = _case(project, "nonbeh", steps, execute)
-    cycle.request_test(_handoff(module), write_skeleton=_write(project, module, SKELETON))
+    _, cycle = scenario.case(steps)
+    cycle.request_test(_handoff(module), write_skeleton=scenario.writer(module, SKELETON))
     if cycle.failures != ["unsupported_expectation"]:
         sys.exit(f"test-author cycle: an unsupported expectation was accepted: {cycle.failures}")
 
 
-def _immediately_green(project: Path, execute: Execute) -> None:
+def _immediately_green(scenario: Scenario) -> None:
     """A test that passes at once is returned explicitly and is not a successful cycle."""
-    module = "cyc_green"
+    module = _module("green")
     steps = [
         Step(_red(module), TEST_SOURCE.format(module=module)),
         Step(_red(module), TEST_SOURCE.format(module=module).replace("6)", "7)")),
     ]
-    _write(project, module, IMPLEMENTATION)()
-    _, author, cycle = _case(project, "green", steps, execute)
-    cycle.request_test(_handoff(module), write_skeleton=_write(project, module, SKELETON))
+    scenario.writer(module, IMPLEMENTATION)()
+    author, cycle = scenario.case(steps)
+    cycle.request_test(_handoff(module), write_skeleton=scenario.writer(module, SKELETON))
     if cycle.failures != ["immediately_green"] or author.calls != 2:
         sys.exit(f"test-author cycle: an immediately green test was accepted: {cycle.failures}")
 
 
-def _attempt_limit(project: Path, execute: Execute) -> None:
+def _attempt_limit(scenario: Scenario) -> None:
     """Three failed calls in a row end in the blocker path, with no dispatch and no ledger."""
-    module = "cyc_limit"
+    module = _module("limit")
     steps = [Step(_red(module), SYNTAX_ERROR_SOURCE) for _ in range(MAX_FAILED_CALLS + 1)]
-    _, author, cycle = _case(project, "limit", steps, execute)
-    before = _digest(project / ".harness" / "project.json")
+    author, cycle = scenario.case(steps)
+    before = _digest(scenario.project / ".harness" / "project.json")
     _expect_blocker(
         "attempt limit",
         lambda: cycle.request_test(
-            _handoff(module), write_skeleton=_write(project, module, SKELETON)
+            _handoff(module), write_skeleton=scenario.writer(module, SKELETON)
         ),
     )
     if author.calls != MAX_FAILED_CALLS:
         sys.exit(f"test-author cycle: the author was called {author.calls} times")
-    if (project / ".harness" / "orchestration").exists():
+    if (scenario.project / ".harness" / "orchestration").exists():
         sys.exit("test-author cycle: a local author retry created orchestration state")
-    if _digest(project / ".harness" / "project.json") != before:
+    if _digest(scenario.project / ".harness" / "project.json") != before:
         sys.exit("test-author cycle: a local author retry changed project.json")
 
 
-def _weakening(project: Path, execute: Execute) -> None:
-    """An accepted expectation is never weakened to reach Green."""
-    module = "cyc_weak"
-    source = TEST_SOURCE.format(module=module)
-    steps = [Step(_red(module), source)]
-    _, _, cycle = _case(project, "weak", steps, execute)
-    _write(project, module, SKELETON)()
-    test_id = cycle.request_test(
-        _handoff(module), write_skeleton=_write(project, module, SKELETON)
+def _guard_denial(scenario: Scenario) -> None:
+    """A guard denial is one failed call; the denied call is not rephrased."""
+    module = _module("guard")
+    denied = {"status": "guard_denied", "test_id": f"tests.{module}.Case.test_behavior"}
+    author, cycle = scenario.case([Step(denied) for _ in range(MAX_FAILED_CALLS)])
+    _expect_blocker(
+        "guard denials",
+        lambda: cycle.request_test(
+            _handoff(module), write_skeleton=scenario.writer(module, SKELETON)
+        ),
     )
+    if cycle.failures != ["guard_denied"] * MAX_FAILED_CALLS:
+        sys.exit(f"test-author cycle: guard denials were not failed calls: {cycle.failures}")
+    if any(handoff != author.handoffs[0] for handoff in author.handoffs):
+        sys.exit("test-author cycle: a denied call was rephrased")
+
+
+def _weakening(scenario: Scenario) -> None:
+    """An accepted expectation is never weakened; a justified contract change is re-verified."""
+    module = _module("weak")
+    changed = "R1: the total is the sum of the prices plus a fee of 2"
+    steps = [
+        Step(_red(module), TEST_SOURCE.format(module=module)),
+        Step(
+            _red(module, source=f"{changed}: 2 + 3 + 2 = 7"),
+            TEST_SOURCE.format(module=module).replace("6)", "7)"),
+        ),
+    ]
+    _, cycle = scenario.case(steps)
+    scenario.writer(module, SKELETON)()
+    test_id = cycle.request_test(
+        _handoff(module), write_skeleton=scenario.writer(module, SKELETON)
+    )
+    first_digest = cycle.accepted[test_id]
 
     def weaken_and_pass() -> None:
-        author_test_path(project, test_id).write_text(
+        author_test_path(scenario.project, test_id).write_text(
             WEAKENED_SOURCE.format(module=module), encoding="utf-8"
         )
-        _write(project, module, SKELETON.replace("0", "5"))()
+        scenario.writer(module, SKELETON.replace("0", "5"))()
 
     try:
         cycle.implement(test_id, weaken_and_pass)
@@ -392,9 +430,16 @@ def _weakening(project: Path, execute: Execute) -> None:
     cycle.change_contract(test_id, "R1 now defines a fee of 2")
     if test_id in cycle.accepted:
         sys.exit("test-author cycle: a changed contract kept the old accepted expectation")
+    cycle.request_test(
+        _handoff(module, requirement=changed),
+        write_skeleton=scenario.writer(module, SKELETON),
+    )
+    if cycle.accepted[test_id] == first_digest:
+        sys.exit("test-author cycle: the changed contract was not verified again")
+    cycle.implement(test_id, scenario.writer(module, "def total(prices):\n    return sum(prices) + 2\n"))
 
 
-def verify(project: Path, execute: Execute) -> None:
+def verify_cycle(project: Path, execute: Execute) -> None:
     """Run every cycle case on the installed project, and remove the scenario files afterwards."""
     cases = (
         _full_cycle,
@@ -403,11 +448,13 @@ def verify(project: Path, execute: Execute) -> None:
         _not_behavioral,
         _immediately_green,
         _attempt_limit,
+        _guard_denial,
         _weakening,
     )
+    scenario = Scenario(project, execute)
     try:
         for case in cases:
-            case(project, execute)
+            case(scenario)
     finally:
         for pattern, directory in (("cyc_*.py", "src"), ("cyc_*.py", "tests")):
             for path in (project / directory).glob(pattern):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 from pathlib import Path
 
 import pytest
@@ -55,10 +54,15 @@ def test_guide_copies_are_identical() -> None:
     assert _text(GUIDE) == _text(ROOT_GUIDE)
 
 
-def test_cycle_scenario_runs_from_the_runner_scenario() -> None:
-    source = inspect.getsource(isolated_test_runner.run)
-    assert "verify(project, _runner_execute(project))" in source
-    assert "verify(project, _direct_execute(project))" in source
+def test_cycle_scenario_passes_on_a_minimal_project(tmp_path: Path) -> None:
+    for package in ("src", "tests"):
+        (tmp_path / package).mkdir()
+        (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "project.json").write_text("{}", encoding="utf-8")
+    test_author_cycle.verify_cycle(tmp_path, isolated_test_runner._direct_execute(tmp_path))
+    assert not list((tmp_path / "src").glob("cyc_*.py"))
+    assert not list((tmp_path / "tests").glob("cyc_*.py"))
 
 
 def test_cycle_scenario_limit_matches_the_protocol() -> None:
