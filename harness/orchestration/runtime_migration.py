@@ -27,11 +27,7 @@ import uuid
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration.core import utils
-from harness.orchestration.core.runtime_state_contract import (
-    QUARANTINE_STEP,
-    RUNTIME_STATE_CONTRACT,
-)
+from harness.orchestration.core.runtime_state_contract import QUARANTINE_STEP
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger.field_migration import checked_registry, rules_sha256
 from harness.orchestration.ledger.generation_migration import (
@@ -52,7 +48,12 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.runtime_intent import (
     audit_id_for,
     canonical_sha256,
+    commit_operation,
+    first_record,
+    mark_ready,
+    mark_reconciling,
     next_revision,
+    observe_effect,
     suspended_error,
     with_phase,
     write_next,
@@ -76,6 +77,7 @@ QUARANTINE_MESSAGE = (
     "the system-fields ledger migration quarantined this batch; read it with "
     "'coordinator.py ledger inspect --batch {batch}'"
 )
+INTERRUPTED = "the ledger migration stopped before its store commit"
 
 
 class _Stop(Exception):
@@ -103,7 +105,9 @@ def migrate_system_fields(
     if record is not None and resumed:
         record = _resume(store, ledger, record)
     elif record is not None and record["state"] in ("suspended", "reconciling"):
-        record = _ready(store, _reconciling(store, record))
+        record = mark_ready(
+            store, mark_reconciling(store, record, interrupted=INTERRUPTED)
+        )
     with _ledger_errors():
         pointer = ledger.pointer()
         if pointer is None:
@@ -139,7 +143,7 @@ def migrate_system_fields(
         "source_pointer_sha256": before,
         "rules_sha256": rules,
     }
-    record = _prepare(store, record or _initial(store, None), payload)
+    record = _prepare(store, record or first_record(store, None), payload)
     step = "migrate:select"
     try:
         _select(ledger, payload)
@@ -240,28 +244,6 @@ def _refuse_unfinished_batches(store: RuntimeStateStore) -> None:
         )
 
 
-def _initial(store: RuntimeStateStore, batch_id: str | None) -> JsonObject:
-    """Create the ``ready`` record of ``batch_id`` (``None``: the ledger scope)."""
-    first: JsonObject = {
-        "contract": RUNTIME_STATE_CONTRACT,
-        "identity": store.location.identity(batch_id),
-        "revision": 1,
-        "updated_at": utils._now(),
-        "state": "ready",
-        "stage": None,
-        "dispatch_id": None,
-        "operation": None,
-        "ledger": {"generation": None, "record_hashes": {}},
-        "policy_snapshot_sha256": None,
-        "input_refs": [],
-        "output_refs": [],
-        "last_confirmed_boundary": None,
-        "failure": None,
-    }
-    store.write(first, expected_revision=0)
-    return first
-
-
 def _prepare(
     store: RuntimeStateStore, current: JsonObject, payload: JsonObject
 ) -> JsonObject:
@@ -339,14 +321,7 @@ def _commit(
         )
     manifest_ref = f"{GENERATIONS}/{target}/{MIGRATION_DIRECTORY}/{MANIFEST}"
     if record["operation"]["phase"] == "prepared":
-        effect: JsonObject = {
-            "state": "confirmed",
-            "evidence_ref": f"{GENERATIONS}/{target}",
-            "observed_at": utils._now(),
-        }
-        record = write_next(
-            store, record, with_phase(record, "effect-observed"), effect
-        )
+        record = observe_effect(store, record, f"{GENERATIONS}/{target}")
     if record["operation"]["phase"] == "effect-observed":
         hashes = {
             POINTER_NAME: _pointer_sha256(ledger),
@@ -365,13 +340,7 @@ def _commit(
         )
     for entry in cast(list[JsonObject], manifest["quarantine"]):
         _deny(store, str(entry["batch_id"]))
-    committed = with_phase(record, "committed", output_refs=[manifest_ref])
-    committed["last_confirmed_boundary"] = {
-        "revision": committed["revision"],
-        "state": committed["state"],
-        "confirmed_at": committed["updated_at"],
-    }
-    return write_next(store, record, committed), manifest
+    return commit_operation(store, record, [manifest_ref]), manifest
 
 
 def _deny(store: RuntimeStateStore, batch_id: str) -> None:
@@ -382,7 +351,7 @@ def _deny(store: RuntimeStateStore, batch_id: str) -> None:
         "step": QUARANTINE_STEP,
         "message": sanitize_detail(QUARANTINE_MESSAGE.format(batch=batch_id)),
     }
-    record = store.read(batch_id) or _initial(store, batch_id)
+    record = store.read(batch_id) or first_record(store, batch_id)
     if record["state"] == "completed" or (
         record["state"] == "suspended" and record["failure"] == failure
     ):
@@ -414,7 +383,7 @@ def _resume(
         raise _suspended(store, stop.step, stop) from None
     if rebuild:
         _refuse_unfinished_batches(store)
-    record = _reconciling(store, record)
+    record = mark_reconciling(store, record, interrupted=INTERRUPTED)
     step = "reconcile:commit"
     try:
         rules = payload["rules_sha256"]
@@ -438,7 +407,7 @@ def _resume(
             _select(ledger, payload)
             step = "reconcile:commit"
         record, _ = _commit(store, ledger, record, payload, rules)
-        return _ready(store, record)
+        return mark_ready(store, record)
     except Exception as exc:
         raise _suspended(store, step, exc) from exc
 
@@ -501,37 +470,3 @@ def _intent(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
             "the intent payload names invalid generations or rules",
         )
     return payload
-
-
-def _reconciling(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-    """Move a stopped or interrupted record to ``reconciling``: an interrupted ``running`` one
-    passes through ``suspended``, as the state table requires."""
-    if record["state"] == "running":
-        record = write_next(
-            store,
-            record,
-            next_revision(
-                record,
-                state="suspended",
-                failure={
-                    "code": "execution-failure",
-                    "step": "reconcile:detect",
-                    "message": "the ledger migration stopped before its store commit",
-                },
-            ),
-        )
-    if record["state"] == "suspended":
-        record = write_next(
-            store, record, next_revision(record, state="reconciling", failure=None)
-        )
-    return record
-
-
-def _ready(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-    ready = next_revision(record, state="ready", failure=None)
-    ready["last_confirmed_boundary"] = {
-        "revision": ready["revision"],
-        "state": "ready",
-        "confirmed_at": ready["updated_at"],
-    }
-    return write_next(store, record, ready)

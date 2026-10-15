@@ -500,14 +500,16 @@ def test_a_record_another_writer_changes_during_reconcile_is_a_concurrency_confl
     scene = make_scene(tmp_path)
     status = stop_after_status(scene, monkeypatch)
     batch = scene.records / f"batches/{BATCH}.json"
-    original = runtime_reconcile._reconciling
+    original = runtime_reconcile.mark_reconciling
 
-    def foreign_writer(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-        reconciling = original(store, record)
+    def foreign_writer(
+        store: RuntimeStateStore, record: JsonObject, *, interrupted: str
+    ) -> JsonObject:
+        reconciling = original(store, record, interrupted=interrupted)
         batch.write_text(batch.read_text(encoding="utf-8") + " ", encoding="utf-8")
         return reconciling
 
-    monkeypatch.setattr(runtime_reconcile, "_reconciling", foreign_writer)
+    monkeypatch.setattr(runtime_reconcile, "mark_reconciling", foreign_writer)
     planned_status = status.read_bytes()
 
     stopped = settle_error(scene)

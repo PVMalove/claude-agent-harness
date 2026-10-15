@@ -135,13 +135,8 @@ def settle_phases(
     """Advance a verified operation through the remaining phases up to ``committed``; the store
     commit is the last write.  Returns the record now on disk."""
     if record["operation"]["phase"] == "prepared":
-        effect: JsonObject = {
-            "state": "confirmed",
-            "evidence_ref": f"{GENERATIONS}/{record['ledger']['generation']}",
-            "observed_at": utils._now(),
-        }
-        record = write_next(
-            store, record, with_phase(record, "effect-observed"), effect
+        record = observe_effect(
+            store, record, f"{GENERATIONS}/{record['ledger']['generation']}"
         )
     if record["operation"]["phase"] == "effect-observed":
         record = write_next(store, record, with_phase(record, "ledger-committed"))
@@ -150,14 +145,35 @@ def settle_phases(
             [step["path"] for step in steps]
             + [f"audit/{step['audit']['audit_id']}.json" for step in steps]
         )
-        committed = with_phase(record, "committed", output_refs=outputs)
-        committed["last_confirmed_boundary"] = {
-            "revision": committed["revision"],
-            "state": committed["state"],
-            "confirmed_at": committed["updated_at"],
-        }
-        record = write_next(store, record, committed)
+        record = commit_operation(store, record, outputs)
     return record
+
+
+def observe_effect(
+    store: RuntimeStateStore, record: JsonObject, evidence_ref: str
+) -> JsonObject:
+    """Advance a ``prepared`` operation to ``effect-observed`` with its confirmed effect at
+    ``evidence_ref``; returns the record now on disk."""
+    effect: JsonObject = {
+        "state": "confirmed",
+        "evidence_ref": evidence_ref,
+        "observed_at": utils._now(),
+    }
+    return write_next(store, record, with_phase(record, "effect-observed"), effect)
+
+
+def commit_operation(
+    store: RuntimeStateStore, record: JsonObject, output_refs: list[str]
+) -> JsonObject:
+    """Commit a ``ledger-committed`` operation with its ``output_refs`` as the last confirmed
+    boundary: the store commit, the operation's last write.  Returns the record now on disk."""
+    committed = with_phase(record, "committed", output_refs=output_refs)
+    committed["last_confirmed_boundary"] = {
+        "revision": committed["revision"],
+        "state": committed["state"],
+        "confirmed_at": committed["updated_at"],
+    }
+    return write_next(store, record, committed)
 
 
 def write_next(
@@ -170,6 +186,68 @@ def write_next(
         following["operation"]["effect"] = effect
     store.write(following, expected_revision=int(current["revision"]))
     return following
+
+
+def first_record(store: RuntimeStateStore, batch_id: str | None) -> JsonObject:
+    """Create the store record of ``batch_id`` (``None``: the ledger scope), ``ready`` and
+    without an operation; returns it."""
+    first: JsonObject = {
+        "contract": RUNTIME_STATE_CONTRACT,
+        "identity": store.location.identity(batch_id),
+        "revision": 1,
+        "updated_at": utils._now(),
+        "state": "ready",
+        "stage": None,
+        "dispatch_id": None,
+        "operation": None,
+        "ledger": {"generation": None, "record_hashes": {}},
+        "policy_snapshot_sha256": None,
+        "input_refs": [],
+        "output_refs": [],
+        "last_confirmed_boundary": None,
+        "failure": None,
+    }
+    store.write(first, expected_revision=0)
+    return first
+
+
+def mark_reconciling(
+    store: RuntimeStateStore, record: JsonObject, *, interrupted: str
+) -> JsonObject:
+    """Move a stopped or interrupted record to ``reconciling``: an interrupted ``running`` one
+    passes through ``suspended`` with the failure message ``interrupted``, as the state table
+    requires.  Returns the record now on disk."""
+    if record["state"] == "running":
+        record = write_next(
+            store,
+            record,
+            next_revision(
+                record,
+                state="suspended",
+                failure={
+                    "code": "execution-failure",
+                    "step": "reconcile:detect",
+                    "message": interrupted,
+                },
+            ),
+        )
+    if record["state"] == "suspended":
+        record = write_next(
+            store, record, next_revision(record, state="reconciling", failure=None)
+        )
+    return record
+
+
+def mark_ready(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
+    """Return a reconciled record to ``ready`` as its last confirmed boundary; returns the record
+    now on disk."""
+    ready = next_revision(record, state="ready", failure=None)
+    ready["last_confirmed_boundary"] = {
+        "revision": ready["revision"],
+        "state": "ready",
+        "confirmed_at": ready["updated_at"],
+    }
+    return write_next(store, record, ready)
 
 
 def failure_code(exc: BaseException) -> str:
@@ -352,7 +430,9 @@ class CompositeWrite:
         existing = self._current_record()
         with _ledger_errors():
             generation, root, steps = self.plan()
-        current = self._first_record() if existing is None else existing
+        current = (
+            first_record(self.store, self.batch_id) if existing is None else existing
+        )
         return current, generation, root, steps
 
     def prepare(
@@ -410,27 +490,6 @@ class CompositeWrite:
                 durable_revision=int(record["revision"]),
             )
         return record
-
-    def _first_record(self) -> JsonObject:
-        """Create the batch's store record, ``ready`` and without an operation."""
-        first: JsonObject = {
-            "contract": RUNTIME_STATE_CONTRACT,
-            "identity": self.store.location.identity(self.batch_id),
-            "revision": 1,
-            "updated_at": utils._now(),
-            "state": "ready",
-            "stage": None,
-            "dispatch_id": None,
-            "operation": None,
-            "ledger": {"generation": None, "record_hashes": {}},
-            "policy_snapshot_sha256": None,
-            "input_refs": [],
-            "output_refs": [],
-            "last_confirmed_boundary": None,
-            "failure": None,
-        }
-        self.store.write(first, expected_revision=0)
-        return first
 
     def plan(self) -> tuple[str, Path, list[JsonObject]]:
         """The selected generation, its directory and the checked steps; refuses exactly what

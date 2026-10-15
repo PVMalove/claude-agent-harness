@@ -57,6 +57,8 @@ from harness.orchestration.runtime_intent import (
     error_detail,
     failure_code,
     idempotency_key,
+    mark_ready,
+    mark_reconciling,
     next_revision,
     operation_hashes,
     settle_phases,
@@ -72,6 +74,8 @@ STOP_REMEDY = (
     "inspect the named ledger record against the intent; restore it to the planned before or "
     "after content and repeat the command, which reconciles again"
 )
+
+INTERRUPTED = "the composite write stopped before its store commit"
 
 QUARANTINE_REMEDY = (
     "run 'coordinator.py ledger inspect --batch {batch}' and 'ledger export --batch {batch}' to "
@@ -137,7 +141,7 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
     operation = record["operation"]
     if operation is None or operation["phase"] == "committed":
         if record["state"] in ("suspended", "reconciling"):
-            _ready(store, _reconciling(store, record))
+            mark_ready(store, mark_reconciling(store, record, interrupted=INTERRUPTED))
         return False
     observation: JsonObject | None = None
     try:
@@ -155,7 +159,7 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
     except LedgerError as exc:
         broken = _Stop("integrity-failure", "reconcile:ledger", exc.message)
         raise _stopped(store, batch_id, broken) from exc
-    record = _reconciling(store, record)
+    record = mark_reconciling(store, record, interrupted=INTERRUPTED)
     step_name = "reconcile:intent"
     try:
         if observation is not None:
@@ -186,7 +190,7 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
         raise _stopped(
             store, batch_id, _Stop(failure_code(exc), step_name, error_detail(exc))
         ) from exc
-    _ready(store, record)
+    mark_ready(store, record)
     return True
 
 
@@ -215,47 +219,6 @@ def _stopped(store: RuntimeStateStore, batch_id: str, stop: _Stop) -> RuntimeSta
     )
     error.diagnostics["evidence"] = stop.evidence
     return error
-
-
-def _reconciling(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-    """Move a stopped or interrupted record to ``reconciling``: an interrupted ``running`` one
-    passes through ``suspended``, as the state table requires."""
-    if record["state"] == "running":
-        record = _write(
-            store,
-            record,
-            next_revision(
-                record,
-                state="suspended",
-                failure={
-                    "code": "execution-failure",
-                    "step": "reconcile:detect",
-                    "message": "the composite write stopped before its store commit",
-                },
-            ),
-        )
-    if record["state"] == "suspended":
-        record = _write(
-            store, record, next_revision(record, state="reconciling", failure=None)
-        )
-    return record
-
-
-def _ready(store: RuntimeStateStore, record: JsonObject) -> JsonObject:
-    ready = next_revision(record, state="ready", failure=None)
-    ready["last_confirmed_boundary"] = {
-        "revision": ready["revision"],
-        "state": "ready",
-        "confirmed_at": ready["updated_at"],
-    }
-    return _write(store, record, ready)
-
-
-def _write(
-    store: RuntimeStateStore, current: JsonObject, following: JsonObject
-) -> JsonObject:
-    store.write(following, expected_revision=int(current["revision"]))
-    return following
 
 
 def _step_name(step: JsonObject) -> str:
