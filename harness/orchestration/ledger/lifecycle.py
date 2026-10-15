@@ -605,7 +605,7 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _verified_audit(path: Path) -> JsonObject:
+def verified_audit(path: Path) -> JsonObject:
     """An audit event whose ``record_sha256`` matches its content, or a ``LedgerError``."""
     record = _read(path, "ledger audit record")
     body = {key: value for key, value in record.items() if key != "record_sha256"}
@@ -1339,7 +1339,7 @@ class LifecycleLedger:
         ``None`` when it was never appended."""
         self._check_record_id(audit_id)
         path = self.records_root() / "audit" / f"{audit_id}.json"
-        return _verified_audit(path) if path.is_file() else None
+        return verified_audit(path) if path.is_file() else None
 
     def append_audit(
         self, path: Path, action: str, details: JsonObject, *, audit_id: str
@@ -1722,6 +1722,19 @@ class LifecycleLedger:
             )
         return self._select(self.root / GENERATIONS / name)
 
+    def validate_generation(self, generation: Path) -> None:
+        """Validate the complete generation directory ``generation``, selected or not, as the
+        ledger validates a generation before it selects it; any defect is a ``LedgerError``."""
+        self._validate_generation(generation, complete=True)
+
+    def append_generation_audit(
+        self, generation: Path, action: str, details: JsonObject, *, audit_id: str
+    ) -> None:
+        """Append the audit event ``audit_id`` to ``generation``, a generation under construction
+        that no pointer selects yet; an identical event already appended is kept, a different
+        one is refused."""
+        self._append_audit(generation, action, details, audit_id=audit_id)
+
     def _append_audit(
         self,
         generation: Path,
@@ -1750,7 +1763,7 @@ class LifecycleLedger:
             with path.open("x", encoding="utf-8", newline="\n") as stream:
                 stream.write(_canonical(audit))
         except FileExistsError:
-            existing = _verified_audit(path)
+            existing = verified_audit(path)
             if existing.get("action") != action or existing.get("details") != details:
                 raise LedgerError(
                     f"audit event {audit_id} already records a different write",

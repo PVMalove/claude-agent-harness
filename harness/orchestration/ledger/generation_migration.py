@@ -32,6 +32,7 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.json_types import JsonObject
 from harness.orchestration.core.system_fields import CONTRACT_VERSION
+from harness.orchestration.core.utils import _canonical
 from harness.orchestration.ledger.field_migration import (
     COMPLETION_REPORTS,
     MAPPED,
@@ -47,8 +48,7 @@ from harness.orchestration.ledger.lifecycle import (
     RECORD_DIRECTORIES,
     LedgerError,
     LifecycleLedger,
-    _canonical,
-    _verified_audit,
+    verified_audit,
 )
 
 MANIFEST_CONTRACT = "ledgerMigration.v1"
@@ -287,14 +287,14 @@ def migration_event(generation: Path, manifest: JsonObject) -> JsonObject:
         or not path.is_file()
     ):
         raise _broken(generation, "lacks the audit event of its migration")
-    return cast(JsonObject, _verified_audit(path))
+    return verified_audit(path)
 
 
 def verify(ledger: LifecycleLedger, generation: Path, rules: str) -> JsonObject:
     """Check a migrated generation: every record and audit event as the ledger requires, every
     migration file as the manifest names it, and an audit event that records this manifest under
     the current rules.  Returns the manifest; any deviation is a ``LedgerError``."""
-    ledger._validate_generation(generation, complete=True)
+    ledger.validate_generation(generation)
     found = read_manifest(generation)
     if found is None:
         raise _broken(generation, "has no migration manifest")
@@ -373,7 +373,7 @@ def build(
     staging.mkdir(parents=True)
     try:
         (staging / "audit").mkdir()
-        ledger._append_audit(
+        ledger.append_generation_audit(
             staging,
             "generation-created",
             {"purpose": MIGRATION_ACTION},
@@ -404,7 +404,7 @@ def build(
         data = _canonical(manifest).encode("utf-8")
         (staging / MIGRATION_DIRECTORY).mkdir(exist_ok=True)
         (staging / MIGRATION_DIRECTORY / MANIFEST).write_bytes(data)
-        ledger._append_audit(
+        ledger.append_generation_audit(
             staging,
             MIGRATION_ACTION,
             {
@@ -505,10 +505,13 @@ def inspection(generation: Path) -> JsonObject:
     area (``operational`` or ``quarantine``) and findings, the migration that produced the
     generation, and the files whose finding no batch owns.  Values are returned as found."""
     found = survey(generation)
+    manifest: JsonObject | None = None
+    problem: str | None = None
     try:
-        manifest, problem = read_manifest(generation), None
+        if (recorded := read_manifest(generation)) is not None:
+            manifest = recorded[0]
     except LedgerError as exc:
-        manifest, problem = None, exc.message
+        problem = exc.message
     batches: dict[str, JsonObject] = {
         owner: {"batch_id": owner, "area": "operational", "findings": []}
         for owner in found.owners.values()
@@ -535,9 +538,9 @@ def inspection(generation: Path) -> JsonObject:
     migration: JsonObject | None = None
     if manifest is not None:
         migration = {
-            "source_generation": manifest[0]["source_generation"],
-            "rules_sha256": manifest[0]["rules_sha256"],
-            "current": manifest[0]["rules_sha256"] == rules,
+            "source_generation": manifest["source_generation"],
+            "rules_sha256": manifest["rules_sha256"],
+            "current": manifest["rules_sha256"] == rules,
             "problem": None,
         }
     elif problem is not None:
