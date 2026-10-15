@@ -34,12 +34,13 @@ from harness.storage import GIT_TIMEOUT_SECONDS, storage_root
 
 from .core.constants import STATE_REL
 from .core.runtime_state_contract import (
+    RUNTIME_EMERGENCY_CONTRACT,
     RUNTIME_STATE_CONTRACT,
     RUNTIME_STATE_DIR,
     transition_problem,
 )
 from .core.system_fields import enum_problem, load_registry
-from .core.utils import CoordinatorError, _canonical, _safe_id
+from .core.utils import CoordinatorError, _canonical, _now, _safe_id
 
 SCHEMA_PATH = Path(__file__).with_name("runtime_state.v1.json")
 SYSTEM_FIELD = "x-system-field"
@@ -52,6 +53,13 @@ INTENTS_DIR = "intents"
 _OPERATION_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
+# One emergency record per namespace, under its own lock, beside the batch records.
+EMERGENCY = "emergency"
+_EMERGENCY_PARTS = {
+    "identity": ("repo_root", "git_common_dir", "state_root", "namespace"),
+    "subject": ("batch_id", "dispatch_id"),
+    "failure": ("code", "step", "message"),
+}
 LOCK_TIMEOUT_SECONDS = 2.0
 LOCK_RETRY_SECONDS = 0.05
 _LOCK_BUSY = frozenset({errno.EACCES, errno.EAGAIN, errno.EDEADLK})
@@ -254,6 +262,61 @@ def _content_problems(record: JsonObject) -> list[str]:
             "failure.message must be sanitized: no secrets, absolute paths or excess length"
         )
     return problems + _settled_problems(record)
+
+
+def _emergency_text(part: str, item: object) -> bool:
+    """A subject may be unnamed; other values are non-empty text, sanitized except the
+    identity's own paths."""
+    if part == "subject" and item is None:
+        return True
+    if not isinstance(item, str) or not item:
+        return False
+    return part == "identity" or sanitize_detail(item) == item
+
+
+def emergency_problems(record: object) -> list[str]:
+    """Every reason an emergency record is not ``runtimeEmergency.v1``.  The schema is closed:
+    no field can carry a decision, an approval or ledger state."""
+    fields = {
+        "contract",
+        "sequence",
+        "recorded_at",
+        "state",
+        "command",
+        *_EMERGENCY_PARTS,
+    }
+    if not isinstance(record, dict) or set(record) != fields:
+        return [f"an emergency record holds exactly the fields {sorted(fields)}"]
+    problems: list[str] = []
+    for part, keys in _EMERGENCY_PARTS.items():
+        value = record[part]
+        if not isinstance(value, dict) or set(value) != set(keys):
+            problems.append(f"emergency {part} holds exactly {list(keys)}")
+        elif not all(_emergency_text(part, item) for item in value.values()):
+            problems.append(f"emergency {part} values must be sanitized non-empty text")
+    sequence = record["sequence"]
+    if record["contract"] != RUNTIME_EMERGENCY_CONTRACT:
+        problems.append(f"emergency contract must be {RUNTIME_EMERGENCY_CONTRACT!r}")
+    if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
+        problems.append("emergency sequence must be a positive integer")
+    if record["state"] != "suspended":
+        problems.append("an emergency record is always 'suspended'")
+    if not isinstance(record["command"], str) or not record["command"]:
+        problems.append("emergency command must be non-empty text")
+    if not isinstance(record["recorded_at"], str) or _timestamp_problem(
+        record["recorded_at"], "recorded_at"
+    ):
+        problems.append("emergency recorded_at must be an ISO-8601 timestamp")
+    failure = record["failure"]
+    if not problems and (
+        problem := enum_problem(
+            "emergency failure code",
+            failure["code"],
+            field_values("runtime.failure_code"),
+        )
+    ):
+        problems.append(problem)
+    return problems
 
 
 def validate_record(record: object, previous: JsonObject | None) -> list[str]:
@@ -531,11 +594,12 @@ class RuntimeStateStore:
         return cast(JsonObject, record)
 
     @contextmanager
-    def _locked(self, batch_id: str) -> Iterator[None]:
-        """Hold the batch's operating-system lock, waiting at most ``LOCK_TIMEOUT_SECONDS``.
+    def _locked(self, name: str) -> Iterator[None]:
+        """Hold the operating-system lock ``name`` (a batch ID, or the emergency record's),
+        waiting at most ``LOCK_TIMEOUT_SECONDS``.
 
         The system drops the lock when its holder dies, so no stale lock is ever left behind."""
-        path = self.location.directory / f"{batch_id}.lock"
+        path = self.location.directory / f"{name}.lock"
         with self._storage_step("lock", "storage-unavailable", path):
             self._refuse_links(path)
             handle = open(path, "a+b", opener=_owner_only)
@@ -612,8 +676,79 @@ class RuntimeStateStore:
                     "write a record that follows the current revision's transitions",
                     revision,
                 )
-            directory_fsync = self._replace(path, record, revision)
+            directory_fsync = self._replace(
+                path, record, revision, int(record["revision"])
+            )
         return WriteResult(int(record["revision"]), directory_fsync)
+
+    @property
+    def emergency_path(self) -> Path:
+        return self.location.directory / f"{EMERGENCY}.json"
+
+    def read_emergency(self) -> JsonObject | None:
+        """The state root's emergency record, ``None`` when none was written.  Nothing decides
+        on it: it is diagnostics of the last command that failed before reaching its batch."""
+        path = self.emergency_path
+        with self._storage_step("read", "storage-unavailable", path):
+            self._refuse_links(path)
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                return None
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            record = None
+        problems = emergency_problems(record)
+        if not problems and record["identity"] != self._emergency_identity():
+            problems = [
+                "the emergency record belongs to another repository or state root"
+            ]
+        if problems:
+            raise self._error(
+                "integrity-failure",
+                "read",
+                "; ".join(problems),
+                "review the emergency record and remove it; it authorizes nothing",
+            )
+        return cast(JsonObject, record)
+
+    def write_emergency(
+        self, command: str, subject: JsonObject, failure: JsonObject
+    ) -> JsonObject:
+        """Record that ``command`` on ``subject`` stopped with ``failure`` before it could reach
+        its batch's runtime state; the next failure overwrites the record with the next sequence.
+
+        It takes only its own bounded lock: never the coordinator lock, a batch record's lock or
+        the ledger, so it neither waits for nor bypasses the command that holds them."""
+        self._prepare()
+        with self._locked(EMERGENCY):
+            previous = self.read_emergency()
+            sequence = 0 if previous is None else int(previous["sequence"])
+            record: JsonObject = {
+                "contract": RUNTIME_EMERGENCY_CONTRACT,
+                "identity": self._emergency_identity(),
+                "sequence": sequence + 1,
+                "recorded_at": _now(),
+                "state": "suspended",
+                "command": command,
+                "subject": subject,
+                "failure": failure,
+            }
+            if problems := emergency_problems(record):
+                raise self._error(
+                    "integrity-failure",
+                    "validate",
+                    "; ".join(problems),
+                    "report the failure from its printed diagnostics instead",
+                )
+            self._replace(self.emergency_path, record, sequence, sequence + 1)
+        return record
+
+    def _emergency_identity(self) -> JsonObject:
+        identity = self.location.identity("")
+        del identity["batch_id"]
+        return identity
 
     def intent_ref(self, batch_id: str, operation_id: str) -> str:
         """Where an operation's intent payload lives, relative to the store directory."""
@@ -698,10 +833,13 @@ class RuntimeStateStore:
             )
         return cast(JsonObject, payload)
 
-    def _replace(self, path: Path, record: JsonObject, durable: int) -> str:
+    def _replace(
+        self, path: Path, record: JsonObject, durable: int, following: int
+    ) -> str:
         """Write a flushed and fsynced temporary file, then replace the record atomically.
 
-        A failure before the replace leaves revision ``durable`` byte for byte intact."""
+        A failure before the replace leaves revision ``durable`` byte for byte intact; after it,
+        the file holds revision ``following``."""
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         failed = "state-persist-failed"
         try:
@@ -719,7 +857,7 @@ class RuntimeStateStore:
         # The replace already put the new revision on disk; only its durability is unknown.
         unconfirmed = (
             f"repair the filesystem, then read the record again: it already holds revision "
-            f"{record['revision']}, so continue from the revision it holds instead of "
+            f"{following}, so continue from the revision it holds instead of "
             f"retrying against revision {durable}"
         )
         with self._storage_step(

@@ -45,6 +45,7 @@ from harness.errors import HarnessError, print_and_exit
 from harness.orchestration.config_commands import validate_config as validate_config
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration.core import constants
+from harness.orchestration.runtime_emergency import report_failure
 
 # -- Compatibility exports ----------------------------------------------------------------------
 # Existing Python callers use these lifecycle helpers through the CLI module. Batch QA gets its
@@ -232,6 +233,8 @@ def main() -> int:
             return subprocess.call(pinned)
         output = args.handler(args)
     except HarnessError as exc:
+        # The handler has returned, so the ledger lock is released before anything is recorded.
+        report_failure(args, exc)
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     if args.command == "config" and output.get("valid") is False:

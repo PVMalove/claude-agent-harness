@@ -89,6 +89,9 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches
+from harness.orchestration.runtime_effect import unfinished_hand_off
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review
@@ -560,6 +563,23 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
+        runtime_stopped = (
+            bool(getattr(args, "runtime_stopped", False)) and not policy_retry
+        )
+        hand_off = unfinished_hand_off(
+            RuntimeStateStore(repo, root), dispatch["batch_id"], dispatch["dispatch_id"]
+        )
+        if hand_off == "observed":
+            # The hand-off's outcome is stored but not yet in the ledger: commit it first, so
+            # the cancellation is checked against the records the hand-off left.
+            settle(repo, root, ledger, dispatch["batch_id"])
+        elif hand_off == "unknown" and not runtime_stopped:
+            raise CoordinatorError(
+                "the hand-off of this dispatch may have started a worker, so cancelling it "
+                "requires a confirmed stop",
+                remedy="stop the worker, then cancel with --runtime-stopped and an approval; "
+                "the next command reconciles the hand-off",
+            )
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         entry = next(
@@ -580,9 +600,6 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="the dispatch record was modified after its brief integrity hash was recorded -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-        runtime_stopped = (
-            bool(getattr(args, "runtime_stopped", False)) and not policy_retry
-        )
         cancellable = (
             {"approved", "dispatched", "checkpointed", "rate_limited"}
             if runtime_stopped

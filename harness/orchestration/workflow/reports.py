@@ -172,6 +172,8 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
+        # A hand-off its sender left unfinished may still have to write this dispatch's status.
+        settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
         progress = dispatch.get("preserved_progress")
         if (
@@ -310,6 +312,7 @@ def heartbeat_dispatch(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
+        settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
         moment = utils._now()
         status["updated_at"] = moment
