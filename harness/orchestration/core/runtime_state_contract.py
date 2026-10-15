@@ -3,6 +3,8 @@
 from pathlib import Path
 
 RUNTIME_STATE_CONTRACT = "runtimeState.v1"
+# The independent emergency record of a state root: diagnostics only, never an authorization.
+RUNTIME_EMERGENCY_CONTRACT = "runtimeEmergency.v1"
 # Relative to the shared storage root (`<main checkout>/.harness`), never to a state root.
 RUNTIME_STATE_DIR = Path("orchestration/runtime-state")
 

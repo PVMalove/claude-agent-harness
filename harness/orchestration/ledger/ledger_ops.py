@@ -37,9 +37,14 @@ class LedgerBusyError(CoordinatorError):
     """Another coordinator operation holds the ledger lock."""
 
 
+class LedgerUnreadableError(CoordinatorError):
+    """The selected ledger generation cannot be read: its pointer or records are invalid."""
+
+
 @contextmanager
 def _ledger_errors() -> Iterator[None]:
-    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``."""
+    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``; an
+    unreadable generation already raised as ``LedgerUnreadableError`` passes unchanged."""
     try:
         yield
     except LedgerError as exc:
@@ -77,8 +82,10 @@ def _state_root(args: argparse.Namespace, repo: Path) -> Path:
 
 
 def _records_root(root: Path) -> Path:
-    with _ledger_errors():
+    try:
         return LifecycleLedger(root).records_root()
+    except LedgerError as exc:
+        raise LedgerUnreadableError(exc.message, remedy=exc.remedy) from exc
 
 
 @contextmanager

@@ -59,6 +59,10 @@ from harness.orchestration.core.utils import (
 )
 
 
+class ConfigInvalidError(CoordinatorError):
+    """The current project configuration cannot be read or is invalid."""
+
+
 def _reject_sensitive(value: object, location: str) -> None:
     try:
         reject_sensitive(value, location)
@@ -70,11 +74,11 @@ def _configuration_data(raw: bytes | None, label: str) -> JsonObject:
     try:
         data = parse_config_json(raw) if raw is not None else {}
     except ValueError:
-        raise CoordinatorError(
+        raise ConfigInvalidError(
             f"cannot read {label}", remedy="repair the configuration"
         ) from None
     if not isinstance(data, dict):
-        raise CoordinatorError(
+        raise ConfigInvalidError(
             f"{label} must be an object", remedy="repair the configuration"
         )
     return data
@@ -84,7 +88,7 @@ def _configuration_object(path: Path, label: str) -> JsonObject:
     try:
         raw = read_config_file(path)
     except (OSError, ValueError):
-        raise CoordinatorError(
+        raise ConfigInvalidError(
             f"cannot read {label}",
             remedy="repair the configuration or recover its transaction",
         ) from None
@@ -147,7 +151,7 @@ def _config(repo: Path) -> JsonObject:
     try:
         bundle = read_config_bundle(repo)
     except (OSError, ValueError):
-        raise CoordinatorError(
+        raise ConfigInvalidError(
             "cannot read project configuration",
             remedy="repair the configuration or recover its transaction",
         ) from None
@@ -155,7 +159,7 @@ def _config(repo: Path) -> JsonObject:
         repo, bundle["orchestration.json"], roles_root=_roles_dir(repo)
     )
     if not result.valid:
-        raise CoordinatorError(
+        raise ConfigInvalidError(
             "invalid project orchestration config: "
             + "; ".join(
                 item.message

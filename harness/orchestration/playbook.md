@@ -725,6 +725,14 @@ owner process is alive or runs on another host, releases a dead owner's lock, re
 without an owner record only once it is stale, and never releases a lock whose owner record cannot
 be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
 
+A command stopped by an invalid current config, a busy ledger or an unreadable ledger prints one
+`DIAGNOSTICS: {json}` line before `ERROR` and `REMEDY`. When the command named a batch or dispatch,
+it also overwrites the independent emergency record `runtimeEmergency.v1` (`emergency.json` beside
+the runtime state records), under its own bounded lock and after the ledger lock is released. The
+record is `suspended` diagnostics only: it carries no approval and no ledger state, nothing decides
+on it, and `suspended` never becomes a batch state. A failed `batch create` or `batch preflight`
+names no batch, so it prints diagnostics and records nothing.
+
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
 chosen action, and author/time. The original brief remains immutable. If the fact changes the
