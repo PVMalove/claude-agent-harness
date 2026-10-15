@@ -47,6 +47,10 @@ class AccessError(HarnessError):
     """The requested role access cannot be safely resolved or verified."""
 
 
+class HandoffUnconfirmed(AccessError):
+    """The native launch was called, but no bound receipt proves whether the worker started."""
+
+
 def _digest(plan: Mapping[str, object]) -> str:
     data = {key: value for key, value in plan.items() if key != "plan_digest"}
     return hashlib.sha256(
@@ -385,18 +389,31 @@ _REMEDY = (
 )
 
 
+def is_legacy_plan(plan: object) -> bool:
+    """Whether a pinned plan (``None`` in a brief older than access plans) only inherits the
+    session's access, so no native provider launches the worker; a malformed plan is not."""
+    if plan is None:
+        return True
+    if not isinstance(plan, dict):
+        return False
+    sources, network = plan.get("sources"), plan.get("network")
+    return (
+        plan.get("mode") == "inherit"
+        and isinstance(sources, dict)
+        and all(source == "legacy" for source in sources.values())
+        and not plan.get("filesystem")
+        and not plan.get("requirements")
+        and isinstance(network, dict)
+        and not network.get("hosts")
+    )
+
+
 def verify_plan(
     plan: JsonObject, transport: str
 ) -> tuple[JsonObject, extensions.RuntimeAccessObservation | None]:
     """Ask the pinned native implementation for fresh, worker-scoped evidence."""
     validate_plan(plan)
-    if (
-        plan["mode"] == "inherit"
-        and all(source == "legacy" for source in plan["sources"].values())
-        and not plan["filesystem"]
-        and not plan["requirements"]
-        and not plan["network"]["hosts"]
-    ):
+    if is_legacy_plan(plan):
         return {
             "status": RuntimeAccessStatus.LEGACY_INHERIT,
             "verified": [],
@@ -527,11 +544,14 @@ def apply_plan(
         )
     # Set only for a handoff; the gate above refuses a provider without a callable handoff.
     if callable(launch):
-        # A project-supplied launch may fail in any way; the handoff must fail closed.
+        # A project-supplied launch may fail in any way; the handoff must fail closed, and
+        # from here on the worker may have started, so every refusal is unconfirmed.
         try:
             receipt = launch(brief, applied, command)
         except Exception as exc:
-            raise AccessError("native worker handoff failed", remedy=_REMEDY) from exc
+            raise HandoffUnconfirmed(
+                "native worker handoff failed", remedy=_REMEDY
+            ) from exc
         reason = _observation_problem(plan, transport, receipt)
         if (
             reason
@@ -542,7 +562,7 @@ def apply_plan(
             or receipt.launch_id != applied.launch_id
             or receipt.environment_id != applied.environment_id
         ):
-            raise AccessError(
+            raise HandoffUnconfirmed(
                 reason
                 or "native worker handoff receipt does not bind the approved dispatch and launch",
                 remedy=_REMEDY,

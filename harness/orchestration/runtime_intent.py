@@ -50,10 +50,10 @@ def audit_id_for(operation_id: str, index: int) -> str:
 
 def idempotency_key(kind: str, dispatch_id: str, request: JsonObject) -> str:
     """The key of a composite write, derived from its request and never from generated IDs."""
-    return _sha256({"kind": kind, "dispatch_id": dispatch_id, **request})
+    return canonical_sha256({"kind": kind, "dispatch_id": dispatch_id, **request})
 
 
-def _sha256(value: JsonObject) -> str:
+def canonical_sha256(value: JsonObject) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
 
@@ -76,7 +76,7 @@ def operation_hashes(steps: list[JsonObject]) -> tuple[str, str]:
     """``expected_before_sha256`` and ``intended_after_sha256`` of a plan's steps."""
     before: JsonObject = {step["path"]: step["before_sha256"] for step in steps}
     after: JsonObject = {step["path"]: step["after_sha256"] for step in steps}
-    return _sha256(before), _sha256(after)
+    return canonical_sha256(before), canonical_sha256(after)
 
 
 def apply_step(ledger: LifecycleLedger, root: Path, step: JsonObject) -> None:
@@ -140,9 +140,11 @@ def settle_phases(
             "evidence_ref": f"{GENERATIONS}/{record['ledger']['generation']}",
             "observed_at": utils._now(),
         }
-        record = _write(store, record, with_phase(record, "effect-observed"), effect)
+        record = write_next(
+            store, record, with_phase(record, "effect-observed"), effect
+        )
     if record["operation"]["phase"] == "effect-observed":
-        record = _write(store, record, with_phase(record, "ledger-committed"))
+        record = write_next(store, record, with_phase(record, "ledger-committed"))
     if record["operation"]["phase"] == "ledger-committed":
         outputs = sorted(
             [step["path"] for step in steps]
@@ -154,11 +156,11 @@ def settle_phases(
             "state": committed["state"],
             "confirmed_at": committed["updated_at"],
         }
-        record = _write(store, record, committed)
+        record = write_next(store, record, committed)
     return record
 
 
-def _write(
+def write_next(
     store: RuntimeStateStore,
     current: JsonObject,
     following: JsonObject,
@@ -205,6 +207,58 @@ def suspend(store: RuntimeStateStore, batch_id: str, failure: JsonObject) -> int
         ).revision
     except Exception:  # noqa: BLE001 -- the original failure is the one to report
         return None
+
+
+def suspended_error(
+    store: RuntimeStateStore,
+    batch_id: str,
+    step: str,
+    exc: BaseException,
+    *,
+    code: str | None = None,
+    detail: str | None = None,
+    remedy: str = RECONCILE_REMEDY,
+) -> RuntimeStateError:
+    """Suspend the unfinished operation with the failure ``exc`` caused at ``step`` and return
+    the error to raise; ``code`` and ``detail`` replace the ones derived from ``exc``."""
+    code = code or failure_code(exc)
+    detail = sanitize_detail(detail) if detail else error_detail(exc)
+    durable = suspend(
+        store, batch_id, {"code": code, "step": step, "message": detail or code}
+    )
+    return RuntimeStateError(
+        code, step, detail, remedy=remedy, durable_revision=durable
+    )
+
+
+def finish(
+    ledger: LifecycleLedger,
+    store: RuntimeStateStore,
+    root: Path,
+    record: JsonObject,
+    steps: list[JsonObject],
+) -> JsonObject:
+    """Write every planned step of the operation ``record`` holds, verify them and commit the
+    store; a failure suspends the operation for the next command to reconcile."""
+    step_name = "intent"
+    try:
+        for step in steps:
+            step_name = f"ledger:{step['path'].split('/')[0]}"
+            apply_step(ledger, root, step)
+        step_name = "verify"
+        for step in steps:
+            if (problem := step_problem(ledger, root, step)) is not None:
+                raise RuntimeStateError(
+                    "integrity-failure",
+                    step_name,
+                    problem,
+                    remedy="inspect the ledger record and its audit event",
+                )
+        step_name = "store-commit"
+        return settle_phases(store, record, steps)
+    except Exception as exc:
+        batch_id = record["identity"]["batch_id"]
+        raise suspended_error(store, batch_id, step_name, exc) from exc
 
 
 @dataclass(frozen=True)
@@ -266,10 +320,10 @@ class CompositeWrite:
 
         A refusal before the intent is recorded leaves both stores unchanged; a failure after it
         suspends the operation with its failure, for the next command to reconcile."""
-        existing = self._current_record()
+        existing = self.current_record()
         with _ledger_errors():
-            generation, root, steps = self._plan()
-        current = self._first_record() if existing is None else existing
+            generation, root, steps = self.plan()
+        current = self.first_record() if existing is None else existing
         operation_id = str(uuid.uuid4())
         for index, step in enumerate(steps):
             step["audit"]["audit_id"] = audit_id_for(operation_id, index)
@@ -283,13 +337,32 @@ class CompositeWrite:
             "generation": generation,
             "steps": steps,
         }
-        ref = self.store.write_intent(self.batch_id, operation_id, payload)
+        record = self.prepare(
+            current,
+            payload,
+            before,
+            after,
+            {step["path"]: step["after_sha256"] for step in steps},
+        )
+        finish(self.ledger, self.store, root, record, steps)
+
+    def prepare(
+        self,
+        current: JsonObject,
+        payload: JsonObject,
+        before: str,
+        after: str | None,
+        record_hashes: JsonObject,
+    ) -> JsonObject:
+        """Persist the intent ``payload``, then record its operation ``prepared`` over
+        ``current``; returns the record now on disk."""
+        ref = self.store.write_intent(self.batch_id, payload["operation_id"], payload)
         prepared = next_revision(
             current,
             state="running",
             dispatch_id=self.dispatch_id,
             operation={
-                "operation_id": operation_id,
+                "operation_id": payload["operation_id"],
                 "kind": self.kind,
                 "phase": "prepared",
                 "idempotency_key": self.idempotency_key,
@@ -302,47 +375,16 @@ class CompositeWrite:
                 },
             },
             ledger={
-                "generation": generation,
-                "record_hashes": {step["path"]: step["after_sha256"] for step in steps},
+                "generation": payload["generation"],
+                "record_hashes": record_hashes,
             },
             input_refs=[ref],
             output_refs=[],
             failure=None,
         )
-        record = _write(self.store, current, prepared)
-        step_name = "intent"
-        try:
-            for step in steps:
-                step_name = f"ledger:{step['path'].split('/')[0]}"
-                apply_step(self.ledger, root, step)
-            step_name = "verify"
-            for step in steps:
-                if (problem := step_problem(self.ledger, root, step)) is not None:
-                    raise RuntimeStateError(
-                        "integrity-failure",
-                        step_name,
-                        problem,
-                        remedy="inspect the ledger record and its audit event",
-                    )
-            step_name = "store-commit"
-            settle_phases(self.store, record, steps)
-        except Exception as exc:
-            code = failure_code(exc)
-            detail = error_detail(exc)
-            durable = suspend(
-                self.store,
-                self.batch_id,
-                {"code": code, "step": step_name, "message": detail or code},
-            )
-            raise RuntimeStateError(
-                code,
-                step_name,
-                detail,
-                remedy=RECONCILE_REMEDY,
-                durable_revision=durable,
-            ) from exc
+        return write_next(self.store, current, prepared)
 
-    def _current_record(self) -> JsonObject | None:
+    def current_record(self) -> JsonObject | None:
         """The store record a new operation follows, ``None`` before the first one; an
         unfinished operation must be reconciled before another one starts."""
         record = self.store.read(self.batch_id)
@@ -360,7 +402,7 @@ class CompositeWrite:
             )
         return record
 
-    def _first_record(self) -> JsonObject:
+    def first_record(self) -> JsonObject:
         """Create the batch's store record, ``ready`` and without an operation."""
         first: JsonObject = {
             "contract": RUNTIME_STATE_CONTRACT,
@@ -381,7 +423,7 @@ class CompositeWrite:
         self.store.write(first, expected_revision=0)
         return first
 
-    def _plan(self) -> tuple[str, Path, list[JsonObject]]:
+    def plan(self) -> tuple[str, Path, list[JsonObject]]:
         """The selected generation, its directory and the checked steps; refuses exactly what
         the ledger writes would refuse, before anything is written."""
         pointer = self.ledger.pointer()

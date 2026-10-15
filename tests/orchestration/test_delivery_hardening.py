@@ -115,7 +115,7 @@ def test_an_adapter_that_cannot_start_is_a_coordinator_error(tmp_path: Path) -> 
 def test_an_adapter_rejection_carries_its_output() -> None:
     script = "import sys; sys.stderr.write('brief refused'); sys.exit(3)"
 
-    with pytest.raises(CoordinatorError) as raised:
+    with pytest.raises(delivery.AdapterRejected) as raised:
         delivery._run_adapter([sys.executable, "-c", script])
 
     assert "brief refused" in raised.value.message

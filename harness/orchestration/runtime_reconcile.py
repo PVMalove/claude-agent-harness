@@ -8,6 +8,10 @@ whose audit event is missing gets that event, and the store reaches ``committed`
 every record and event is verified.  An operation already committed is left alone, so repeating
 ``settle`` changes nothing.
 
+An unfinished hand-off (``dispatch send``) is finished from the observation it persisted; without
+one, its effect is proved read-only or the reconcile stops with ``ambiguous-effect``.  The
+hand-off itself is never repeated, so no second worker starts for the same dispatch.
+
 Reconciliation writes only the paths and audit IDs of the verified intent: it records no
 decision or approval, never creates over an existing file and never replaces without the
 planned digest.
@@ -18,20 +22,34 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path, PurePosixPath
 
+from harness.orchestration.core import utils
 from harness.orchestration.core.utils import JsonObject
+from harness.errors import HarnessError
 from harness.orchestration.ledger.lifecycle import (
     LedgerError,
+    LedgerRecordVO,
     LifecycleLedger,
     audit_details,
+)
+from harness.orchestration.runtime_effect import (
+    CHANNELS,
+    KIND,
+    OUTCOMES,
+    observation,
+    observation_id,
+    observed,
+    record_paths,
 )
 from harness.orchestration.runtime_intent import (
     WRITE_MODES,
     apply_step,
     audit_id_for,
+    canonical_sha256,
     content_bytes,
     digest,
     error_detail,
     failure_code,
+    idempotency_key,
     next_revision,
     operation_hashes,
     settle_phases,
@@ -48,18 +66,31 @@ STOP_REMEDY = (
     "after content and repeat the command, which reconciles again"
 )
 
+AMBIGUOUS_REMEDY = (
+    "find out whether the worker of {dispatch} runs and stop it; the next command reconciles "
+    "the hand-off again and never starts the worker a second time"
+)
+
 
 class _Stop(Exception):
-    """A controlled stop: why an intent cannot be reconciled, with its evidence."""
+    """A controlled stop: why an intent cannot be reconciled, with its evidence and the remedy
+    a person applies before the next command reconciles again."""
 
     def __init__(
-        self, code: str, step: str, detail: str, evidence: JsonObject | None = None
+        self,
+        code: str,
+        step: str,
+        detail: str,
+        evidence: JsonObject | None = None,
+        *,
+        remedy: str = STOP_REMEDY,
     ) -> None:
         super().__init__(detail)
         self.code = code
         self.step = step
         self.detail = detail
         self.evidence = evidence or {}
+        self.remedy = remedy
 
 
 def short(sha256: object) -> str | None:
@@ -68,8 +99,8 @@ def short(sha256: object) -> str | None:
 
 
 def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bool:
-    """Finish the batch's unfinished composite write, if there is one; ``True`` when an
-    operation was rolled forward, so ledger records the caller read earlier may be stale.
+    """Finish the batch's unfinished composite write or hand-off, if there is one; ``True``
+    when an operation was rolled forward, so ledger records the caller read may be stale.
 
     A violated hash, an unknown state or a concurrent writer is a controlled stop: the store
     is suspended with the failure, nothing is retried, and the same stop found again by the
@@ -83,9 +114,15 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
         if record["state"] in ("suspended", "reconciling"):
             _ready(store, _reconciling(store, record))
         return False
+    seen: JsonObject | None = None
     try:
         records = ledger.records_root()
-        steps = _verified_steps(store, ledger, record)
+        payload = _intent(store, ledger, record)
+        if operation["kind"] == KIND:
+            seen = _effect_observation(store, ledger, records, record, payload)
+            steps = seen["steps"]
+        else:
+            steps = _composite_steps(record, payload)
         pending = _pending(ledger, records, steps)
     except _Stop as stop:
         raise _stopped(store, batch_id, stop) from None
@@ -95,6 +132,9 @@ def settle(repo: Path, root: Path, ledger: LifecycleLedger, batch_id: str) -> bo
     record = _reconciling(store, record)
     step_name = "reconcile:intent"
     try:
+        if seen is not None:
+            step_name = "reconcile:effect-observe"
+            record = observed(store, record, seen)
         for step, status in pending:
             step_name = _step_name(step)
             if status == "pending":
@@ -145,7 +185,7 @@ def _stopped(store: RuntimeStateStore, batch_id: str, stop: _Stop) -> RuntimeSta
             suspended, expected_revision=int(record["revision"])
         ).revision
     error = RuntimeStateError(
-        stop.code, stop.step, stop.detail, remedy=STOP_REMEDY, durable_revision=durable
+        stop.code, stop.step, stop.detail, remedy=stop.remedy, durable_revision=durable
     )
     error.diagnostics["evidence"] = stop.evidence
     return error
@@ -196,11 +236,11 @@ def _step_name(step: JsonObject) -> str:
     return f"reconcile:{str(step.get('path', '')).split('/')[0] or 'intent'}"
 
 
-def _verified_steps(
+def _intent(
     store: RuntimeStateStore, ledger: LifecycleLedger, record: JsonObject
-) -> list[JsonObject]:
-    """The intent payload's steps, once the payload is bound to the store record by its
-    operation, idempotency key, generation and every hash; a mismatch stops."""
+) -> JsonObject:
+    """The unfinished operation's intent payload, once it is bound to the store record by its
+    operation, idempotency key and generation; a mismatch stops."""
     if record["state"] == "ready":
         raise _Stop(
             "integrity-failure",
@@ -246,6 +286,12 @@ def _verified_steps(
                 "actual": None if pointer is None else pointer.get("generation"),
             },
         )
+    return payload
+
+
+def _composite_steps(record: JsonObject, payload: JsonObject) -> list[JsonObject]:
+    """A composite write's steps, once every hash binds them to the store record."""
+    operation = record["operation"]
     steps = payload.get("steps")
     if not isinstance(steps, list) or not steps:
         raise _Stop(
@@ -268,6 +314,162 @@ def _verified_steps(
             "the intent payload's hashes do not match the runtime state record",
         )
     return steps
+
+
+def _effect_observation(
+    store: RuntimeStateStore,
+    ledger: LifecycleLedger,
+    records: Path,
+    record: JsonObject,
+    payload: JsonObject,
+) -> JsonObject:
+    """The observation of an unfinished hand-off: the one it persisted, or one this read-only
+    check proves; an effect nothing proves stops, and the hand-off is never repeated."""
+    operation = record["operation"]
+    dispatch_id = str(payload["dispatch_id"])
+    effect, before = payload.get("effect"), payload.get("before")
+    if (
+        not isinstance(effect, dict)
+        or effect.get("channel") not in CHANNELS
+        or not isinstance(before, dict)
+        or sorted(before) != sorted(record_paths(payload["batch_id"], dispatch_id))
+        or idempotency_key(KIND, dispatch_id, {"effect": effect})
+        != operation["idempotency_key"]
+        or canonical_sha256(before) != operation["expected_before_sha256"]
+    ):
+        raise _Stop(
+            "integrity-failure",
+            "reconcile:intent",
+            "the hand-off intent payload does not match the runtime state record",
+        )
+    current: JsonObject = {path: digest(records / path) for path in before}
+    seen = _persisted_observation(store, record, payload, current)
+    if seen is not None:
+        return seen
+    state = operation["effect"]["state"]
+    status_path = record_paths(payload["batch_id"], dispatch_id)[1]
+    status = LifecycleLedger.read_record_lenient(records / status_path) or {}
+    if state == "not-started" and (
+        current == before or status.get("state") == "cancelled"
+    ):
+        return _proved(ledger, store, payload, "unchanged", "not-started", [])
+    changed = [path for path in before if current[path] != before[path]]
+    if state == "unknown" and not changed:
+        raise _Stop(
+            "ambiguous-effect",
+            "reconcile:effect",
+            f"the hand-off of {dispatch_id} may have started a worker and nothing proves "
+            "whether it did",
+            {
+                "dispatch_id": dispatch_id,
+                "channel": effect["channel"],
+                "marked_at": operation["effect"]["observed_at"],
+                "observation": None,
+            },
+            remedy=AMBIGUOUS_REMEDY.format(dispatch=dispatch_id),
+        )
+    path = changed[0] if changed else next(iter(before))
+    raise _Stop(
+        "integrity-failure",
+        "reconcile:effect",
+        f"the {state} hand-off of {dispatch_id} has no observation, and {path} does not "
+        "prove its outcome",
+        {
+            "path": path,
+            "expected_before": short(before[path]),
+            "actual": short(current[path]),
+        },
+    )
+
+
+def _proved(
+    ledger: LifecycleLedger,
+    store: RuntimeStateStore,
+    payload: JsonObject,
+    outcome: str,
+    reason: str,
+    changes: list[LedgerRecordVO],
+) -> JsonObject:
+    """The observation payload this reconcile proved; a ledger that refuses its steps stops."""
+    try:
+        return observation(
+            ledger, store, payload, outcome, reason, reason, changes, utils._now()
+        )
+    except HarnessError as exc:
+        raise _Stop("integrity-failure", "reconcile:effect", exc.message) from exc
+
+
+def _persisted_observation(
+    store: RuntimeStateStore,
+    record: JsonObject,
+    payload: JsonObject,
+    current: JsonObject,
+) -> JsonObject | None:
+    """The observation payload the hand-off persisted, bound to its intent and the store
+    record, or ``None`` when none was persisted; a mismatch stops."""
+    operation = record["operation"]
+    batch_id = str(payload["batch_id"])
+    ref = store.intent_ref(batch_id, observation_id(operation["operation_id"]))
+    effect = operation["effect"]
+    if effect["evidence_ref"] not in (None, ref):
+        raise _Stop(
+            "integrity-failure",
+            "reconcile:observation",
+            "the confirmed effect names another observation payload",
+        )
+    if (
+        effect["state"] != "confirmed"
+        and not (store.location.directory / ref).is_file()
+    ):
+        return None
+    try:
+        seen = store.read_intent(batch_id, ref)
+    except RuntimeStateError as exc:
+        raise _Stop(
+            exc.code, "reconcile:observation", exc.diagnostics["detail"]
+        ) from exc
+    steps, hashes = seen.get("steps"), seen.get("record_hashes")
+    if (
+        seen.get("operation_id") != payload["operation_id"]
+        or seen.get("generation") != payload["generation"]
+        or seen.get("outcome") not in OUTCOMES
+        or not isinstance(steps, list)
+        or not isinstance(hashes, dict)
+        or sorted(hashes) != sorted(current)
+        or (
+            operation["phase"] != "prepared"
+            and record["ledger"]["record_hashes"] != hashes
+        )
+    ):
+        raise _Stop(
+            "integrity-failure",
+            "reconcile:observation",
+            "the observation payload does not match the hand-off intent and runtime state",
+        )
+    for index, step in enumerate(steps):
+        problem = _step_shape_problem(operation["operation_id"], index, step)
+        if problem is None and (
+            step["mode"] != "replace"
+            or payload["before"].get(step["path"]) != step["before_sha256"]
+            or hashes[step["path"]] != step["after_sha256"]
+        ):
+            problem = f"observation step {index} does not follow the hand-off intent"
+        if problem is not None:
+            raise _Stop("integrity-failure", "reconcile:observation", problem)
+    planned = {step["path"] for step in steps}
+    for path, sha256 in hashes.items():
+        if path not in planned and current[path] != sha256:
+            raise _Stop(
+                "integrity-failure",
+                "reconcile:observation",
+                f"{path} changed after the hand-off was observed",
+                {
+                    "path": path,
+                    "expected": short(sha256),
+                    "actual": short(current[path]),
+                },
+            )
+    return seen
 
 
 def _step_shape_problem(operation_id: str, index: int, step: object) -> str | None:
