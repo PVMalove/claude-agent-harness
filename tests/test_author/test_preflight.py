@@ -339,3 +339,23 @@ def test_unknown_reasons_from_guard_or_probe_are_not_passed_through(
 
     assert probe == {"status": "disabled", "reason": "isolation_unavailable"}
     assert config == {"status": "disabled", "reason": "guard_hook_unavailable"}
+
+
+def test_trust_given_only_to_a_parent_directory_keeps_the_author_disabled(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    (tmp_path / ".claude.json").write_text(
+        json.dumps(
+            {"projects": {str(tmp_path.resolve()): {"hasTrustDialogAccepted": True}}}
+        ),
+        encoding="utf-8",
+    )
+
+    # Claude Code may trust the project through its parent, but without an entry for the exact
+    # path the preflight stays on the safe side (docs/agents/test-author.md, section 3).
+    assert _answer(_run(project)) == {
+        "status": "disabled",
+        "reason": "project_untrusted",
+    }

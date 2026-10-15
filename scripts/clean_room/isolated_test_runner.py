@@ -215,6 +215,14 @@ def _install(project: Path) -> Path:
     if config.get("test_runner") != {"command": RUNNER_COMMAND}:
         sys.exit("pvmalove-suite init did not write the --test-* flags to project.json")
     fill_agents(project)
+    _write_project_files(project)
+    run_health(project)
+    _check_shipped_files(project)
+    return project
+
+
+def _write_project_files(project: Path) -> None:
+    """The small production source and the unittest cases the scenario runs."""
     for relative, text in (
         ("src/__init__.py", ""),
         ("src/calc.py", "def add(a, b):\n    return a + b\n"),
@@ -224,7 +232,10 @@ def _install(project: Path) -> Path:
         path = project / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", newline="\n")
-    run_health(project)
+
+
+def _check_shipped_files(project: Path) -> None:
+    """Everything the installer must scaffold for the runner and the test author is present."""
     if not (project / ".claude" / "hooks" / "run-test.sh").is_file():
         sys.exit("pvmalove-suite init did not scaffold run-test.sh")
     if not (project / ".harness" / "health" / "isolated_runner.py").is_file():
@@ -238,11 +249,9 @@ def _install(project: Path) -> Path:
     ):
         if not (project / relative).is_file():
             sys.exit(f"pvmalove-suite init did not ship {relative}")
-    if "| `tdd` | `.harness/skills/tdd` |" not in (
-        project / ".harness" / "skills" / "REGISTRY.md"
-    ).read_text(encoding="utf-8"):
+    registry = project / ".harness" / "skills" / "REGISTRY.md"
+    if "| `tdd` | `.harness/skills/tdd` |" not in registry.read_text(encoding="utf-8"):
         sys.exit("pvmalove-suite init did not register first-party tdd")
-    return project
 
 
 def _hook(
@@ -303,6 +312,21 @@ def _run_dir(project: Path, data: dict[str, object]) -> Path:
 
 def _verify_isolation(project: Path, test_root: Path) -> None:
     """The working-sandbox branch: protection, legitimate writes, refusals and the control run."""
+    _verify_benign_run(project)
+    before = _snapshot(project)
+    _verify_attacks_fail(project, before)
+    _verify_legitimate_writes(project)
+    _verify_injected_ids_refused(project)
+    _verify_zone_refusals(project)
+    _verify_missing_bwrap(project, test_root)
+    if _snapshot(project) != before:
+        sys.exit("isolated-test-runner: a protected file changed")
+    _verify_control_run(project, test_root)
+    _verify_test_author(project)
+
+
+def _verify_benign_run(project: Path) -> None:
+    """A harmless test passes and its bytecode lands in the run cache, not in src/."""
     benign = _hook(project, BENIGN)
     _expect(benign, "benign test", result="passed", exit_status=0)
     if (
@@ -311,7 +335,9 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
     ):
         sys.exit("isolated-test-runner: bytecode was not redirected into the run cache")
 
-    before = _snapshot(project)
+
+def _verify_attacks_fail(project: Path, before: dict[str, str]) -> None:
+    """Every attack test fails and leaves the protected files as `before` recorded them."""
     for name, target in ATTACKS.items():
         answer = _hook(project, f"{TEST_MODULE}.Attacks.{name}")
         _expect(answer, name, result="failed", reason="test_failed", exit_status=1)
@@ -325,6 +351,9 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
         exit_status=1,
     )
 
+
+def _verify_legitimate_writes(project: Path) -> None:
+    """The allowed writes land: run cache, reports, the test zone, and the local run log."""
     legit = _hook(project, LEGIT)
     _expect(legit, "legitimate writes", result="passed", reason="test_passed")
     run_dir = _run_dir(project, legit)
@@ -338,6 +367,9 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
     if not (run_dir / "log.txt").is_file():
         sys.exit("isolated-test-runner: the run kept no local log")
 
+
+def _verify_injected_ids_refused(project: Path) -> None:
+    """Injected ids and extra arguments are refused before anything runs or is created."""
     runs = project / ".harness" / ".sandboxes" / "runs"
     runs_before = set(runs.iterdir())
     for test_id in INJECTED_IDS:
@@ -348,24 +380,16 @@ def _verify_isolation(project: Path, test_root: Path) -> None:
     if (project / "pwned").exists() or set(runs.iterdir()) != runs_before:
         sys.exit("isolated-test-runner: a refused id left a side effect")
 
-    _verify_zone_refusals(project)
-    _verify_missing_bwrap(project, test_root)
-    if _snapshot(project) != before:
-        sys.exit("isolated-test-runner: a protected file changed")
-    _verify_control_run(project, test_root)
-    _verify_test_author(project)
 
-
-def _run_json(
+def _run_hook(
     label: str,
     command: list[str],
     project: Path,
     *,
     env: dict[str, str],
     payload: dict[str, object] | None = None,
-    allow_empty: bool = False,
-) -> dict[str, object] | None:
-    """Run an installed hook and enforce its clean, bounded, one-line JSON answer."""
+) -> str:
+    """Run an installed hook; it must exit 0 with an empty stderr. Returns its stdout."""
     result = run_step(
         command,
         cwd=project,
@@ -377,12 +401,15 @@ def _run_json(
     )
     if result.returncode != 0 or result.stderr:
         sys.exit(f"{label} did not return a clean answer")
-    if allow_empty and not result.stdout:
-        return None
-    if len(result.stdout.splitlines()) != 1:
+    return str(result.stdout)
+
+
+def _json_line(label: str, text: str) -> dict[str, object]:
+    """Parse the one JSON object line a hook printed."""
+    if len(text.splitlines()) != 1:
         sys.exit(f"{label} did not return one JSON line")
     try:
-        answer = json.loads(result.stdout)
+        answer = json.loads(text)
     except ValueError:
         sys.exit(f"{label} returned invalid JSON")
     if not isinstance(answer, dict):
@@ -393,27 +420,23 @@ def _run_json(
 def _preflight(
     project: Path, *, env: dict[str, str] | None = None
 ) -> dict[str, object]:
-    """Run the installed activation check; its answer is never empty."""
-    answer = _run_json(
-        "test-author preflight",
-        [SHELL, str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
-        project,
-        env=project_environment(project, env),
-    )
-    assert answer is not None
-    return answer
+    """Run the installed activation check; it always prints one JSON line."""
+    label = "test-author preflight"
+    command = [SHELL, str(project / ".claude" / "hooks" / "test-author-preflight.sh")]
+    environment = project_environment(project, env)
+    return _json_line(label, _run_hook(label, command, project, env=environment))
 
 
 def _guard(project: Path, payload: dict[str, object]) -> dict[str, object] | None:
     """Call the installed scoped guard as a Claude Code PreToolUse hook; None means allow."""
-    return _run_json(
-        "test-author guard",
-        [sys.executable, str(project / ".claude" / "hooks" / "test-author-guard.py")],
-        project,
-        env=project_environment(project),
-        payload=payload,
-        allow_empty=True,
-    )
+    label = "test-author guard"
+    command = [
+        sys.executable,
+        str(project / ".claude" / "hooks" / "test-author-guard.py"),
+    ]
+    environment = project_environment(project)
+    text = _run_hook(label, command, project, env=environment, payload=payload)
+    return _json_line(label, text) if text else None
 
 
 def _test_author_payload(
