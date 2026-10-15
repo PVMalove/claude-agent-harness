@@ -7,14 +7,8 @@
 
 set -u
 
-REASON_PATTERN='^[a-z_]+$'
-
 disabled() {
-  local reason="$1"
-  if [[ ! "$reason" =~ $REASON_PATTERN ]]; then
-    reason='preflight_failed'
-  fi
-  printf '{"status":"disabled","reason":"%s"}\n' "$reason"
+  printf '{"status":"disabled","reason":"%s"}\n' "$1"
   exit 0
 }
 
@@ -37,10 +31,12 @@ GIT_ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null || true)"
 [ "$GIT_ROOT" = "$REPO" ] || disabled project_untrusted
 [ "$(git -C "$REPO" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ] || disabled project_untrusted
 
-# Claude Code keeps workspace trust decisions in ~/.claude.json.  The native --print mode skips
-# the trust dialog, so the preflight must verify the decision itself before enabling an agent whose
-# safety depends on a frontmatter hook.
-TRUSTED_PROJECT="$($PY -c '
+# Claude Code keeps workspace trust decisions in ~/.claude.json (or $CLAUDE_CONFIG_DIR/.claude.json).
+# The native --print mode skips the trust dialog, so the preflight must verify the decision itself
+# before enabling an agent whose safety depends on a frontmatter hook.  Only an entry for this exact
+# project path counts: Claude Code may also trust a directory through its parent or Git root, and
+# the preflight then answers project_untrusted, which is the safe direction.
+TRUSTED_PROJECT="$("$PY" -c '
 import json
 import os
 from pathlib import Path
@@ -65,52 +61,51 @@ AGENT="$REPO/.claude/agents/test-author.md"
 [ -f "$AGENT" ] && [ ! -L "$AGENT" ] || disabled agent_missing
 GUARD="$REPO/.claude/hooks/test-author-guard.py"
 RUNNER="$REPO/.claude/hooks/run-test.sh"
-[ -f "$GUARD" ] && [ -x "$GUARD" ] || disabled guard_hook_not_firing
+[ -f "$GUARD" ] && [ -x "$GUARD" ] || disabled guard_hook_unavailable
 [ -f "$RUNNER" ] && [ -x "$RUNNER" ] || disabled runner_unavailable
 
-CONFIG="$($PY "$GUARD" --validate-config 2>/dev/null || true)"
-CONFIG_REASON="$(printf '%s' "$CONFIG" | "$PY" -c '
+# Print "ok" for {"status":"ok"}, the reason of a {"status":<$1>} answer when it is one of the
+# remaining arguments, and "invalid" for anything else read from stdin.
+answer_reason() {
+  "$PY" -c '
 import json
 import sys
 
+wanted, allowed = sys.argv[1], set(sys.argv[2:])
 try:
     value = json.load(sys.stdin)
-except (json.JSONDecodeError, TypeError):
-    raise SystemExit(1)
+except (json.JSONDecodeError, TypeError, RecursionError):
+    value = None
 if value == {"status": "ok"}:
     print("ok")
-elif isinstance(value, dict) and value.get("status") == "disabled" and isinstance(value.get("reason"), str):
+elif (
+    isinstance(value, dict)
+    and value.get("status") == wanted
+    and value.get("reason") in allowed
+):
     print(value["reason"])
 else:
-    raise SystemExit(1)
-' 2>/dev/null || true)"
+    print("invalid")
+' "$@" 2>/dev/null || echo invalid
+}
+
+CONFIG="$("$PY" "$GUARD" --validate-config 2>/dev/null || true)"
+CONFIG_REASON="$(printf '%s' "$CONFIG" | answer_reason disabled \
+  agent_missing scoped_hook_unsupported test_paths_missing test_runner_missing \
+  config_invalid write_zone_rejected)"
 case "$CONFIG_REASON" in
   ok) ;;
-  agent_missing|scoped_hook_unsupported|test_paths_missing|test_runner_missing|config_invalid|write_zone_rejected) disabled "$CONFIG_REASON" ;;
-  *) disabled guard_hook_not_firing ;;
+  invalid) disabled guard_hook_unavailable ;;
+  *) disabled "$CONFIG_REASON" ;;
 esac
 
-PROBE="$($RUNNER --probe 2>/dev/null || true)"
-PROBE_REASON="$(printf '%s' "$PROBE" | "$PY" -c '
-import json
-import sys
-
-try:
-    value = json.load(sys.stdin)
-except (json.JSONDecodeError, TypeError):
-    raise SystemExit(1)
-if value == {"status": "ok"}:
-    print("ok")
-elif isinstance(value, dict) and value.get("status") == "unavailable":
-    reason = value.get("reason")
-    print(reason if reason in {"isolation_unavailable", "runner_unavailable"} else "invalid")
-else:
-    print("invalid")
-' 2>/dev/null || true)"
+PROBE="$("$RUNNER" --probe 2>/dev/null || true)"
+PROBE_REASON="$(printf '%s' "$PROBE" | answer_reason unavailable \
+  isolation_unavailable runner_unavailable)"
 case "$PROBE_REASON" in
   ok) ;;
-  isolation_unavailable|runner_unavailable) disabled "$PROBE_REASON" ;;
-  *) disabled isolation_unavailable ;;
+  invalid) disabled isolation_unavailable ;;
+  *) disabled "$PROBE_REASON" ;;
 esac
 
 printf '{"status":"ok"}\n'

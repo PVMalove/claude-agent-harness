@@ -17,9 +17,11 @@ GUARD = ROOT / "harness" / "project" / "hooks" / "test-author-guard.py"
 AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
 
 
-def _project(tmp_path: Path, *, test_paths: object = ["tests/**"]) -> Path:
+def _project(
+    tmp_path: Path, *, test_paths: object = ["tests/**"], name: str = "project"
+) -> Path:
     """Create a trusted project with a controllable isolation probe."""
-    project = tmp_path / "project"
+    project = tmp_path / name
     (project / ".harness").mkdir(parents=True)
     hooks = project / ".claude" / "hooks"
     hooks.mkdir(parents=True)
@@ -236,4 +238,104 @@ def test_unverifiable_guard_or_probe_fails_closed(
 
     answer = _answer(_run(project))
 
-    assert answer == {"status": "disabled", "reason": "guard_hook_not_firing" if bad_answer == "not-json" else "isolation_unavailable"}
+    expected = "guard_hook_unavailable" if bad_answer == "not-json" else "isolation_unavailable"
+    assert answer == {"status": "disabled", "reason": expected}
+
+
+def _trust_state(project: Path, entry: object) -> dict[str, object]:
+    """A `.claude.json` body with one project entry."""
+    return {"projects": {str(project.resolve()): entry}}
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "missing-file",
+        "invalid-json",
+        "not-an-object",
+        "projects-not-an-object",
+        "other-project-only",
+        "entry-not-an-object",
+        "trust-is-a-string",
+        "trust-not-accepted",
+        "entry-without-trust",
+    ],
+)
+def test_every_unverifiable_trust_state_fails_closed(tmp_path: Path, state: str) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    path = tmp_path / ".claude.json"
+    bodies: dict[str, object] = {
+        "invalid-json": "{not json",
+        "not-an-object": "[]",
+        "projects-not-an-object": json.dumps({"projects": []}),
+        "other-project-only": json.dumps(
+            {"projects": {"/elsewhere": {"hasTrustDialogAccepted": True}}}
+        ),
+        "entry-not-an-object": json.dumps(_trust_state(project, True)),
+        "trust-is-a-string": json.dumps(
+            _trust_state(project, {"hasTrustDialogAccepted": "true"})
+        ),
+        "trust-not-accepted": json.dumps(
+            _trust_state(project, {"hasTrustDialogAccepted": False})
+        ),
+        "entry-without-trust": json.dumps(_trust_state(project, {})),
+    }
+    if state == "missing-file":
+        path.unlink()
+    else:
+        path.write_text(str(bodies[state]), encoding="utf-8")
+
+    assert _answer(_run(project)) == {
+        "status": "disabled",
+        "reason": "project_untrusted",
+    }
+
+
+def test_claude_config_dir_overrides_the_default_trust_file(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    config_dir = tmp_path / "claude-config"
+    config_dir.mkdir()
+    overrides: dict[str, str | None] = {"CLAUDE_CONFIG_DIR": str(config_dir)}
+
+    # The default file trusts the project, but the configured directory has no decision.
+    assert _answer(_run(project, env_overrides=overrides)) == {
+        "status": "disabled",
+        "reason": "project_untrusted",
+    }
+
+    (config_dir / ".claude.json").write_text(
+        json.dumps(_trust_state(project, {"hasTrustDialogAccepted": True})),
+        encoding="utf-8",
+    )
+    assert _answer(_run(project, env_overrides=overrides)) == {"status": "ok"}
+
+
+def test_project_path_with_a_space_still_activates(tmp_path: Path) -> None:
+    project = _project(tmp_path, name="my project")
+    _runner(project, '{"status":"ok"}')
+
+    assert _answer(_run(project)) == {"status": "ok"}
+
+
+def test_unknown_reasons_from_guard_or_probe_are_not_passed_through(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    _runner(
+        project,
+        '{"status":"unavailable","reason":"secret detail","detail":"/home/user"}',
+    )
+    probe = _answer(_run(project))
+
+    guard = project / ".claude" / "hooks" / "test-author-guard.py"
+    guard.write_text(
+        "import json\nprint(json.dumps({'status': 'disabled', 'reason': 'leak /home/user'}))\n",
+        encoding="utf-8",
+    )
+    _runner(project, '{"status":"ok"}')
+    config = _answer(_run(project))
+
+    assert probe == {"status": "disabled", "reason": "isolation_unavailable"}
+    assert config == {"status": "disabled", "reason": "guard_hook_unavailable"}
