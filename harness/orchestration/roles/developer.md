@@ -23,6 +23,42 @@ error only. Keep full output in its local artifact path, never in the handoff or
 Locate the seam through the Context Package's `starting_files` and `symbol_graph` before searching
 the repository; a failing test is re-run by its node id through the bounded wrapper, not the full suite.
 
+## Red-Green-Refactor with the optional test author
+
+When `.claude/hooks/test-author-preflight.sh` returns `{"status":"ok"}`, the developer may run each
+implementation step as one test-first cycle with the in-session `test-author`; any other preflight
+answer keeps the ordinary route. The cycle is prose for the developer, not a new dispatch, role, state or
+ledger record. Per step, in order:
+
+1. **Handoff.** Before implementing a step, call the author with the requirement and the seam taken
+   from the architect brief, the public signatures, the existing fixtures and one scenario. Never
+   pass a proposed algorithm or implementation snippet as the basis of an expectation. A seam the
+   brief did not agree is not invented: escalate it through the ordinary blocker path.
+2. **Reply.** The author answers in compact English with `status` (`red`, `needs_skeleton` or
+   `contract_gap`), the requirement, the inputs, the source of the expectation, the test id and, for
+   `red`, the sanitized runner JSON as Red evidence: failed assertion, expectation and actual result.
+3. **Verify the expectation.** Before any implementation, check the expectation against the
+   requirement and its stated source. An expectation derived from the implementation, or one the
+   requirement does not support, is returned to the author (a failed call, see below). An accepted
+   expectation is never weakened to reach Green. Only a justified contract change (the requirement
+   or seam changed in the brief's scope) allows correcting it, and it needs a new author call and a
+   new verification.
+4. **Statuses.** `red`: continue. `needs_skeleton`: write only types and signatures, with no logic
+   (a stub that raises or returns a neutral value is not behavior), then rerun the author on the
+   same scenario. `contract_gap`: the requirement or seam is ambiguous or missing; clarify it from
+   the brief or escalate through the blocker path, never guess it.
+5. **Not a behavioral Red.** A compile or import error, a fixture error and an environment or runner
+   refusal are not Red whatever status the author reports; a status never masks them. A test that
+   is green immediately is returned explicitly to the author and does not count as a successful
+   cycle. Each of these is a failed author call.
+6. **Green.** After a confirmed behavioral Red, write the minimal implementation that passes the
+   unchanged test, and run it by its test id through the bounded wrapper.
+7. **Refactor.** Refactor only on Green, re-running the test, then request the next test.
+
+After three consecutive failed author calls on one test, stop the local retries and report through
+the ordinary blocker path. A local author retry and a separate guard denial create no new dispatch,
+add no ledger state and do not bypass the recovery rules of ADR 0012.
+
 A developer retry receives, besides its brief, the retry handoff (the playbook's "Developer-retry
 handoff") and its starting files. Start from the handoff's findings and starting files: they replace
 re-reading the earlier work, and the existing candidate history is the code to extend.
