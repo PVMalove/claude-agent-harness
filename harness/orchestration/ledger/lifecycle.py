@@ -53,6 +53,9 @@ RECORD_DIRECTORIES = (
     "qa-artifacts",
     "audit",
 )
+# The system-fields migration's manifest and quarantine beside the record directories: no record
+# directory, so no ordinary loader reads it and an older generation never lacks it.
+MIGRATION_DIRECTORY = "migration"
 
 # Ledger records are persisted JSON.  Keep the dynamic boundary at ``_read`` explicit while
 # preserving arbitrary, forward-compatible JSON in each record's ``extra`` fields.
@@ -1026,6 +1029,11 @@ class LifecycleLedger:
             source = source_root / directory
             if source.exists():
                 shutil.copytree(source, generation / directory, dirs_exist_ok=True)
+        # A schema upgrade keeps the system-fields migration's evidence with the records it covers.
+        if pointer is not None and (source_root / MIGRATION_DIRECTORY).is_dir():
+            shutil.copytree(
+                source_root / MIGRATION_DIRECTORY, generation / MIGRATION_DIRECTORY
+            )
         self._validate_generation(generation)
         imported: JsonObject = {
             path.relative_to(source_root).as_posix(): _digest(path)
@@ -1117,6 +1125,13 @@ class LifecycleLedger:
                     dispatch_id := entry.get("dispatch_id"), str
                 ):
                     referenced.add(dispatch_id)
+        # A quarantined batch keeps its reports and checkpoints in place: they are its evidence.
+        quarantine = root / MIGRATION_DIRECTORY / "quarantine"
+        referenced.update(
+            path.stem
+            for directory in ("dispatches", "dispatch-status")
+            for path in quarantine.glob(f"*/{directory}/*.json")
+        )
 
         removed = 0
         for directory in ("dispatches", "dispatch-status", "reports", "checkpoints"):
@@ -1686,6 +1701,26 @@ class LifecycleLedger:
             except FileNotFoundError:
                 pass
         return pointer
+
+    def select_generation(
+        self, name: str, *, expected_pointer_sha256: str | None
+    ) -> JsonObject:
+        """Select the complete generation ``name`` while the pointer still holds the bytes whose
+        digest is ``expected_pointer_sha256`` (``None``: no pointer exists).  A pointer that
+        changed meanwhile is a ``LedgerWriteConflict`` and stays as it is; the replace itself is
+        atomic.  The caller holds the ledger lock."""
+        if not name.startswith("generation-") or "/" in name or "\\" in name:
+            raise LedgerError(
+                f"not a ledger generation name: {name!r}",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+            )
+        current = _digest(self.pointer_path) if self.pointer_path.is_file() else None
+        if current != expected_pointer_sha256:
+            raise LedgerWriteConflict(
+                "the ledger pointer changed since the generation switch was planned",
+                remedy="repeat the command; it plans the switch against the current pointer",
+            )
+        return self._select(self.root / GENERATIONS / name)
 
     def _append_audit(
         self,
