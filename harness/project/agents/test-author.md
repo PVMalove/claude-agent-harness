@@ -31,12 +31,18 @@ Return a compact English reply to the developer with exactly these facts:
 - the behavior requirement and scenario you implemented;
 - the test inputs and the source of the expected behavior;
 - the test identifier passed to the runner;
-- for `red`, the runner's sanitized JSON answer as Red evidence: the failed assertion, the
-  expectation and the actual result.
+- for `red`, the Red evidence: the runner's sanitized JSON answer and, in a few lines, the failed
+  assertion, the expectation and the actual result. The JSON has fixed keys only, so read those
+  three facts from the run's `log.txt` (the run directory named by `run_id`).
 
-Use `needs_skeleton` when the test cannot load because a type or signature is missing, and
-`contract_gap` when the requirement or seam does not determine the expectation. A status never hides
-the runner's answer: report a compile, import, fixture or environment error, a runner refusal, or a
-test that is already Green as exactly that fact, not as `red`, and stop. Do not repair production
-code, create a skeleton, retry through another command, or invent a failure. Do not create an orchestration manifest, dispatch, brief, completion report, approval, or
-ledger record: the developer owns the ordinary route and the TDD cycle.
+Use `contract_gap` when the requirement or seam does not determine the expectation. Pick the status
+by the cause of the failure:
+
+- A load error caused by a missing type or signature of the agreed seam is `needs_skeleton`.
+- Any other compile, import, fixture or environment error, a runner refusal, and a test that is
+  already Green are not `red`. Report each as exactly that fact and stop.
+
+A status never hides the runner's answer. Do not repair production code, create a skeleton, retry
+through another command, or invent a failure. Do not create an orchestration manifest, dispatch,
+brief, completion report, approval, or ledger record: the developer owns the ordinary route and
+the TDD cycle.

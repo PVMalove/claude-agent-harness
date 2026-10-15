@@ -25,7 +25,7 @@ the repository; a failing test is re-run by its node id through the bounded wrap
 
 ## Red-Green-Refactor with the optional test author
 
-When `.claude/hooks/test-author-preflight.sh` returns `{"status":"ok"}`, the developer may run each
+When `.claude/hooks/test-author-preflight.sh` returns `{"status":"ok"}`, the developer runs each
 implementation step as one test-first cycle with the in-session `test-author`; any other preflight
 answer keeps the ordinary route. The cycle is prose for the developer, not a new dispatch, role, state or
 ledger record. Per step, in order:
@@ -36,7 +36,10 @@ ledger record. Per step, in order:
    brief did not agree is not invented: escalate it through the ordinary blocker path.
 2. **Reply.** The author answers in compact English with `status` (`red`, `needs_skeleton` or
    `contract_gap`), the requirement, the inputs, the source of the expectation, the test id and, for
-   `red`, the sanitized runner JSON as Red evidence: failed assertion, expectation and actual result.
+   `red`, the Red evidence. The runner JSON has fixed keys only (`test_id`, `result`, `reason`,
+   `detail`, `exit_code`, `run_id`), so the evidence is that sanitized JSON plus the failed
+   assertion, the expectation and the actual result, which the author reads from the run's
+   `log.txt` (the run directory named by `run_id`) and quotes in a few lines.
 3. **Verify the expectation.** Before any implementation, check the expectation against the
    requirement and its stated source. An expectation derived from the implementation, or one the
    requirement does not support, is returned to the author (a failed call, see below). An accepted
@@ -56,8 +59,10 @@ ledger record. Per step, in order:
 7. **Refactor.** Refactor only on Green, re-running the test, then request the next test.
 
 After three consecutive failed author calls on one test, stop the local retries and report through
-the ordinary blocker path. A local author retry and a separate guard denial create no new dispatch,
-add no ledger state and do not bypass the recovery rules of ADR 0012.
+the ordinary blocker path. A guard denial counts as one failed call, and the denied call is never
+rephrased (see "Never work around a hook" in `_common.md`). A local author retry and a separate
+guard denial create no new dispatch, add no ledger state and do not bypass the recovery rules of
+ADR 0012.
 
 A developer retry receives, besides its brief, the retry handoff (the playbook's "Developer-retry
 handoff") and its starting files. Start from the handoff's findings and starting files: they replace
