@@ -25,7 +25,6 @@ from harness.orchestration.ledger.field_migration import (
     rules_sha256,
 )
 from harness.orchestration.ledger.generation_migration import (
-    MIGRATION_ACTION,
     Survey,
     migration_event,
     read_manifest,
@@ -36,6 +35,7 @@ from harness.orchestration.ledger.lifecycle import (
     LEDGER_MIGRATE,
     LEDGER_MIGRATE_ROUTE,
     MIGRATION_DIRECTORY,
+    SYSTEM_FIELDS_MIGRATION,
     LedgerError,
     LedgerUnmigrated,
 )
@@ -117,7 +117,7 @@ def _migration(generation: Path) -> tuple[JsonObject, bool] | None:
     event = migration_event(generation, manifest)
     details = event.get("details")
     if (
-        event.get("action") != MIGRATION_ACTION
+        event.get("action") != SYSTEM_FIELDS_MIGRATION
         or not isinstance(details, dict)
         or details.get("manifest_sha256") != manifest_sha256
         or details.get("rules_sha256") != manifest["rules_sha256"]

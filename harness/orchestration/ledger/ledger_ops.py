@@ -49,32 +49,18 @@ class LedgerUnmigratedError(LedgerUnreadableError):
 
 
 @contextmanager
-def _translated(error: type[CoordinatorError]) -> Iterator[None]:
+def _ledger_errors(
+    error: type[CoordinatorError] = CoordinatorError,
+) -> Iterator[None]:
     """Translate a ``LedgerError`` raised inside the block into ``error``, and unmigrated
-    history into its ``LedgerUnmigratedError``, keeping the message and remedy."""
+    history into its ``LedgerUnmigratedError``, keeping the message and remedy; an unreadable
+    generation already raised as ``LedgerUnreadableError`` passes unchanged."""
     try:
         yield
     except LedgerUnmigrated as exc:
         raise LedgerUnmigratedError(exc.message, remedy=exc.remedy) from exc
     except LedgerError as exc:
         raise error(exc.message, remedy=exc.remedy) from exc
-
-
-@contextmanager
-def _unreadable() -> Iterator[None]:
-    """Translate a ``LedgerError`` raised inside the block into ``LedgerUnreadableError``, and
-    unmigrated history into its ``LedgerUnmigratedError``."""
-    with _translated(LedgerUnreadableError):
-        yield
-
-
-@contextmanager
-def _ledger_errors() -> Iterator[None]:
-    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``, and
-    unmigrated history into its ``LedgerUnmigratedError``; an unreadable generation already
-    raised as ``LedgerUnreadableError`` passes unchanged."""
-    with _translated(CoordinatorError):
-        yield
 
 
 def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:
@@ -111,7 +97,7 @@ def _records_root(root: Path) -> Path:
     """The selected generation.  ``records_root`` parses and state-checks every record in it,
     so a corrupt pointer or record anywhere in the generation stops every loader that starts
     here as ``LedgerUnreadableError``; a missing record is an unknown ID, not a corrupt ledger."""
-    with _unreadable():
+    with _ledger_errors(LedgerUnreadableError):
         return LifecycleLedger(root).records_root()
 
 
@@ -120,7 +106,7 @@ def _canonical_records_root(root: Path) -> Path:
     canonical or vouched for by its current migration: the root of every read an automatic
     decision makes.  It writes nothing, so a caller outside the ledger lock may use it."""
     records = _records_root(root)
-    with _unreadable():
+    with _ledger_errors(LedgerUnreadableError):
         require_canonical(records)
     return records
 
@@ -158,7 +144,7 @@ def _read_batch(records: Path, batch_id: str) -> JsonObject:
         name = f"{_safe_id(batch_id, 'batch')}.json"
         batch = _read_object(records / BatchRecord.directory / name, "batch record")
         record = BatchRecord.from_dict(batch)
-        with _unreadable():
+        with _ledger_errors(LedgerUnreadableError):
             LifecycleLedger.check_batch_references(records, batch, name)
             LifecycleLedger.check_batch_transitions(records, batch, name)
         return record.to_dict()
