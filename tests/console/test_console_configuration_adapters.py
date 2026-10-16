@@ -123,6 +123,7 @@ def test_settings_screen_shows_status_and_requires_modal_confirmation(
             await pilot.pause()
             assert not any((project / ".harness/adapters").glob("*.py"))
             await pilot.click("#preview-adapters")
+            await pilot.pause()
             await pilot.click("#confirm")
             for _ in range(30):
                 await pilot.pause(0.1)
