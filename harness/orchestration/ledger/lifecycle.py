@@ -148,9 +148,15 @@ def _validate_record_write(directory: str, value: JsonObject) -> None:
         )
 
 
-def _audit_problem(action: str, details: JsonObject) -> tuple[str, str] | None:
+def _audit_problem(action: object, details: object) -> tuple[str, str] | None:
     """The refusal and remedy of an audit event outside its closed vocabularies, else ``None``:
-    its action, a new generation's purpose and the batch states of a batch transition."""
+    its action, a new generation's purpose and the batch states of a batch transition.  A write
+    refuses such an event before it is written, and a read refuses one found on disk."""
+    if not isinstance(details, dict):
+        return (
+            "ledger audit details must be a JSON object",
+            "write the audit details as one JSON object",
+        )
     checks: list[tuple[str, object, tuple[str, ...]]] = [
         ("ledger audit action", action, AUDIT_ACTIONS)
     ]
@@ -724,6 +730,23 @@ def verified_audit(path: Path) -> JsonObject:
             remedy=f"{path} was modified after its record_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
         )
     return record
+
+
+def _audited_at(event: JsonObject, path: Path) -> datetime:
+    """When the audit event ``event`` of ``path`` was appended: the ledger writes an aware UTC
+    time, so another value is a ``LedgerError``."""
+    at = event.get("at")
+    try:
+        moment = datetime.fromisoformat(at) if isinstance(at, str) else None
+    except ValueError:
+        moment = None
+    if moment is None or moment.tzinfo is None:
+        raise LedgerError(
+            f"ledger audit record has no valid time: {path.name}",
+            remedy=f"read {path.name} with {LEDGER_INSPECT}: the ledger writes an aware UTC "
+            f"time and rewrites no event -- {INTERNAL_INVARIANT_REMEDY}",
+        )
+    return moment
 
 
 def audit_details(
@@ -2053,7 +2076,50 @@ class LifecycleLedger:
         return referenced
 
     @staticmethod
+    def check_batch_transitions(root: Path, batch: JsonObject, name: str) -> None:
+        """Check that the batch record ``name`` of the generation ``root`` holds the state its
+        recorded transitions left: in audit order each batch transition starts in the state the
+        previous one ended in, and the last one ends in the batch's current state.  A batch no
+        transition moved -- created and never replaced, or imported by a migration -- passes.
+
+        Only the strict read runs this check, after a command reconciled its batch: a transition
+        whose audit event an interrupted write has not appended yet stops the read, never the
+        reconciliation that appends it.  A violation is a ``LedgerError``; nothing is written."""
+        relative = f"batches/{name}"
+        recorded: list[tuple[datetime, JsonObject]] = []
+        for path in (root / "audit").glob("*.json"):
+            event = _read(path, "ledger audit record")
+            details = event.get("details")
+            if (
+                event.get("action") == "transition"
+                and isinstance(details, dict)
+                and details.get("path") == relative
+            ):
+                recorded.append((_audited_at(event, path), details))
+        recorded.sort(key=lambda item: item[0])
+        for (_, earlier), (_, later) in zip(recorded, recorded[1:]):
+            if later.get("from") != earlier.get("to"):
+                raise LedgerError(
+                    f"batch transitions are not one recorded chain: {name} moved from "
+                    f"{later.get('from')!r} after a transition that left it {earlier.get('to')!r}",
+                    remedy=f"the batch record was changed outside the ledger between two "
+                    f"recorded transitions; read it with {LEDGER_INSPECT} and restore it from "
+                    "its audit trail -- the ledger rewrites nothing",
+                )
+        if recorded and batch.get("state") != (last := recorded[-1][1].get("to")):
+            raise LedgerError(
+                f"batch state is not the one its last recorded transition left: {name} holds "
+                f"{batch.get('state')!r}, its audit trail ends in {last!r}",
+                remedy="if a coordinator operation on this batch was interrupted, repeat it so "
+                "reconciliation appends the missing transition; otherwise the batch record was "
+                f"changed outside the ledger -- read it with {LEDGER_INSPECT} and restore it "
+                "from its audit trail; the ledger rewrites nothing",
+            )
+
+    @staticmethod
     def _validate_audit(root: Path) -> None:
+        """Verify each audit event's checksum and its closed vocabularies: an event the ledger
+        never writes stops every read, and no migration takes it over."""
         for path in root.glob("*.json"):
             record = _read(path, "ledger audit record")
             checksum = record.pop("record_sha256", None)
@@ -2062,4 +2128,12 @@ class LifecycleLedger:
                 raise LedgerError(
                     f"ledger audit record failed immutable integrity check: {path.name}",
                     remedy=f"{path} was modified after its record_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                )
+            refusal = _audit_problem(record.get("action"), record.get("details"))
+            if refusal is not None:
+                raise LedgerError(
+                    f"ledger audit record {path.name} holds a non-canonical machine value: "
+                    f"{refusal[0]}",
+                    remedy=f"read {path.name} with {LEDGER_INSPECT}: the ledger never writes "
+                    f"such an event and rewrites none -- {INTERNAL_INVARIANT_REMEDY}",
                 )

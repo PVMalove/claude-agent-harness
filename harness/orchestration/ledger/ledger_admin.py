@@ -51,8 +51,9 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
 
 
 def validate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Read-only generation, audit, record graph, canonical machine field and batch-contract
-    validation; history no migration vouches for names the 'ledger migrate' route."""
+    """Read-only generation, audit, record graph, canonical machine field, recorded batch
+    transition and batch-contract validation; history no migration vouches for names the
+    'ledger migrate' route."""
     from harness.orchestration.workflow.history import _validate_batch_integrity
     from harness.orchestration.core.utils import _read_object
 
@@ -66,10 +67,10 @@ def validate_ledger(args: argparse.Namespace) -> JsonObject:
             records = ledger.records_root()
             require_canonical(records)
             for batch_id in cast(list[str], result["batches"]):
-                _validate_batch_integrity(
-                    root,
-                    _read_object(records / "batches" / f"{batch_id}.json", "batch"),
-                )
+                name = f"{batch_id}.json"
+                batch = _read_object(records / "batches" / name, "batch")
+                LifecycleLedger.check_batch_transitions(records, batch, name)
+                _validate_batch_integrity(root, batch)
         return result
 
 

@@ -36,6 +36,8 @@ from harness.orchestration.ledger.ledger_ops import (
 )
 from harness.orchestration.ledger.lifecycle import (
     AUDIT_ACTIONS,
+    GENERATION_PURPOSES,
+    SYSTEM_FIELDS_MIGRATION,
     BatchRecord,
     LedgerError,
     LedgerUnmigrated,
@@ -272,25 +274,26 @@ def test_every_audit_event_a_ledger_writes_has_a_canonical_action(scene: Scene) 
     assert actions <= set(AUDIT_ACTIONS)
 
 
-@pytest.mark.parametrize(
-    ("action", "details", "match"),
-    [
-        ("Immutable-Record", {"path": "reports/x.md", "sha256": "0" * 64}, "action"),
-        ("record created", {"path": "reports/x.md", "sha256": "0" * 64}, "action"),
-        ("generation-created", {"purpose": "init"}, "purpose"),
-        ("generation-created", {}, "purpose"),
-        (
-            "transition",
-            {"path": f"batches/{BATCH_A}.json", "from": "Active", "to": "completed"},
-            "from",
-        ),
-        (
-            "transition",
-            {"path": f"batches/{BATCH_A}.json", "from": "active", "to": "done"},
-            "to",
-        ),
-    ],
-)
+# Audit events outside their closed vocabularies, with the word their refusal names.
+NON_CANONICAL_AUDIT: list[tuple[str, JsonObject, str]] = [
+    ("Immutable-Record", {"path": "reports/x.md", "sha256": "0" * 64}, "action"),
+    ("record created", {"path": "reports/x.md", "sha256": "0" * 64}, "action"),
+    ("generation-created", {"purpose": "init"}, "purpose"),
+    ("generation-created", {}, "purpose"),
+    (
+        "transition",
+        {"path": f"batches/{BATCH_A}.json", "from": "Active", "to": "completed"},
+        "from",
+    ),
+    (
+        "transition",
+        {"path": f"batches/{BATCH_A}.json", "from": "active", "to": "done"},
+        "to",
+    ),
+]
+
+
+@pytest.mark.parametrize(("action", "details", "match"), NON_CANONICAL_AUDIT)
 def test_an_audit_event_outside_its_vocabulary_is_refused_before_it_is_written(
     scene: Scene, action: str, details: JsonObject, match: str
 ) -> None:
@@ -779,6 +782,216 @@ def test_the_intermediate_states_of_a_composite_write_are_read(scene: Scene) -> 
     assert _load_dispatch_status(scene.root, DISPATCH_A)["state"] == "working"
     with pytest.raises(LedgerError, match="orphaned dispatch evidence"):
         scene.ledger.validate()
+
+
+# --- Audit vocabularies and recorded batch transitions on read (DoD 3) --------------------------
+
+
+def _event(
+    scene: Scene,
+    number: int,
+    action: str,
+    details: JsonObject,
+    at: str = "2026-09-14T10:51:25.000001+00:00",
+) -> None:
+    """An audit event put on disk byte by byte, with the checksum the ledger gives it."""
+    body: JsonObject = {
+        "audit_id": f"audit-history-{number}",
+        "at": at,
+        "action": action,
+        "details": details,
+    }
+    scene.put(
+        f"audit/audit-history-{number}.json",
+        {**body, "record_sha256": sha(canonical(body))},
+    )
+
+
+def _legacy_history(scene: Scene) -> None:
+    """Batch A and one audit event of every action and generation purpose, in the shapes earlier
+    harness versions wrote them; the one batch transition left the state the batch holds."""
+    scene.seed(BATCH_A, DISPATCH_A)
+    digest = "0" * 64
+    events: list[tuple[str, JsonObject]] = [
+        *(
+            ("generation-created", {"purpose": purpose})
+            for purpose in GENERATION_PURPOSES
+        ),
+        ("immutable-record", {"path": f"plans/{BATCH_A}.json", "sha256": digest}),
+        ("immutable-artifact", {"path": f"reports/{DISPATCH_A}.md", "sha256": digest}),
+        (
+            "transition",
+            {
+                "path": f"batches/{BATCH_A}.json",
+                "before_sha256": digest,
+                "sha256": digest,
+                "from": "planned",
+                "to": "awaiting-approval",
+            },
+        ),
+        (
+            "transition",
+            {
+                "path": f"dispatch-status/{DISPATCH_A}.json",
+                "before_sha256": digest,
+                "sha256": digest,
+            },
+        ),
+        ("deletion", {"path": "qa-lane/lease.json", "sha256": digest, "reason": "x"}),
+        ("migration", {"legacy_records": {}}),
+        (
+            "schema-upgrade",
+            {
+                "previous_generation": "generation-0000000a",
+                "previous_version": 2,
+                "legacy_records": {},
+            },
+        ),
+        ("reset", {"previous_generation": None, "confirmation": "RESET"}),
+        (
+            SYSTEM_FIELDS_MIGRATION,
+            {
+                "source_generation": "generation-0000000b",
+                "source_pointer_sha256": digest,
+                "rules_sha256": digest,
+                "manifest_sha256": digest,
+                "mapped": 0,
+                "quarantined": [],
+            },
+        ),
+    ]
+    for number, (action, details) in enumerate(events):
+        _event(scene, number, action, details)
+
+
+def test_history_of_every_audit_action_reads_cleanly(scene: Scene) -> None:
+    _legacy_history(scene)
+    actions = {
+        verified_audit(path)["action"]
+        for path in (scene.generation / "audit").glob("*.json")
+    }
+    assert actions == set(AUDIT_ACTIONS)
+    before = _state(scene)
+
+    assert scene.ledger.records_root() == scene.generation
+    assert scene.ledger.validate()["valid"] is True
+    require_canonical(scene.generation)
+    assert _load_batch(scene.root, BATCH_A)["state"] == "awaiting-approval"
+    assert _state(scene) == before
+
+
+@pytest.mark.parametrize(("action", "details", "match"), NON_CANONICAL_AUDIT)
+def test_an_audit_event_outside_its_vocabulary_on_disk_stops_every_read(
+    scene: Scene, action: str, details: JsonObject, match: str
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    _event(scene, 0, action, details)
+    before = _state(scene)
+
+    with pytest.raises(LedgerError, match=match):
+        scene.ledger.records_root()
+    with pytest.raises(LedgerUnreadableError, match=match) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert not isinstance(caught.value, LedgerUnmigratedError)
+    assert "non-canonical machine value" in caught.value.message
+    assert "ledger inspect" in caught.value.remedy
+    assert _state(scene) == before
+
+
+def _moved(scene: Scene) -> None:
+    """Batch A written through the ledger awaiting approval, then moved to blocked and failed."""
+    scene.ledger.write_immutable(
+        scene.generation / f"plans/{BATCH_A}.json", {"batch_id": BATCH_A}
+    )
+    scene.ledger.write_record(BatchRecord.from_dict(_batch()))
+    for state in ("blocked", "failed"):
+        scene.ledger.replace_record(BatchRecord.from_dict(_batch(state)))
+
+
+def _set_state(scene: Scene, state: str) -> None:
+    """Change the state of batch A on disk, outside the ledger."""
+    scene.put(f"batches/{BATCH_A}.json", _batch(state))
+
+
+def _hidden_by_a_transition(scene: Scene) -> None:
+    """A state set outside the ledger that a later recorded transition starts from."""
+    _set_state(scene, "abandoned")
+    scene.ledger.replace_record(BatchRecord.from_dict(_batch("abandoned", ticket="#1")))
+
+
+UNRECORDED_STATE: dict[str, tuple[Callable[[Scene], None], str]] = {
+    "an allowed state no transition recorded": (
+        lambda scene: _set_state(scene, "completed"),
+        "last recorded transition",
+    ),
+    "an earlier recorded state": (
+        lambda scene: _set_state(scene, "blocked"),
+        "last recorded transition",
+    ),
+    "a state a later transition starts from": (
+        _hidden_by_a_transition,
+        "not one recorded chain",
+    ),
+}
+
+
+def test_a_batch_in_the_state_its_transitions_left_is_read(scene: Scene) -> None:
+    _moved(scene)
+
+    assert _load_batch(scene.root, BATCH_A)["state"] == "failed"
+
+
+@pytest.mark.parametrize("change", sorted(UNRECORDED_STATE))
+def test_a_batch_state_its_transitions_did_not_leave_is_a_controlled_stop(
+    scene: Scene, change: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _moved(scene)
+    make, match = UNRECORDED_STATE[change]
+    make(scene)
+    before = _state(scene)
+
+    with pytest.raises(LedgerUnreadableError, match=match) as caught:
+        _load_batch(scene.root, BATCH_A)
+    with pytest.raises(CoordinatorError, match=match):
+        ledger_admin.validate_ledger(_args(scene))
+    runtime_emergency.report_failure(
+        argparse.Namespace(command="batch", batch_command="show"), caught.value
+    )
+
+    assert not isinstance(caught.value, LedgerUnmigratedError)
+    assert '"code": "integrity-failure"' in capsys.readouterr().err
+    # The container check under every read, reconciliation's included, still passes.
+    assert scene.ledger.records_root() == scene.generation
+    assert _state(scene) == before
+
+
+def test_an_interrupted_batch_transition_is_read_once_reconciled(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _moved(scene)
+    write = CompositeWrite(
+        scene.ledger,
+        scene.store(),
+        batch_id=BATCH_A,
+        dispatch_id=DISPATCH_A,
+        kind="checkpoint",
+        idempotency_key="key",
+    )
+    write.replace_record(BatchRecord.from_dict(_batch("completed")))
+    crash_on(monkeypatch, LifecycleLedger, "_append_audit", 1)
+    with pytest.raises(Crash):
+        write.commit()
+    monkeypatch.undo()
+
+    with pytest.raises(
+        LedgerUnreadableError, match="last recorded transition"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+    assert "interrupted" in caught.value.remedy
+    assert settle(scene.repo, scene.root, scene.ledger, BATCH_A) is True
+
+    assert _load_batch(scene.root, BATCH_A)["state"] == "completed"
 
 
 # --- An unmigrated ledger names the ledger migrate route (DoD 4) --------------------------------
