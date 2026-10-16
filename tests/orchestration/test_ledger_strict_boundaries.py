@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
 from harness.json_types import JsonObject
+from harness.orchestration.core.constants import STATE_REL
 from harness.orchestration.core.utils import CoordinatorError
-from harness.orchestration import runtime_emergency
+from harness.orchestration import coordinator, runtime_emergency
 from harness.orchestration.ledger import field_migration, ledger_admin
 from harness.orchestration.ledger.field_migration import (
     FIELD_BINDINGS,
@@ -59,6 +61,7 @@ from tests.orchestration.test_ledger_migration import (
     sha,
     tree,
 )
+from tests.orchestration.test_integration_record import PublishedBranch
 from tests.orchestration.test_runtime_reconcile_faults import Crash, crash_on
 
 
@@ -505,6 +508,91 @@ def test_an_unmigrated_read_is_a_classified_integrity_stop(
     assert '"code": "integrity-failure"' in line and '"step": "ledger-read"' in line
     assert "ledger migrate" in line
     assert tree(scene.root / "generations") == ledger
+
+
+# --- QA and publish evidence is read behind the strict boundary (DoD 2, 4) ----------------------
+
+
+@pytest.fixture
+def published() -> Iterator[PublishedBranch]:
+    branch = PublishedBranch()
+    # `qa evidence` reads only the repository's own ledger, so the branch keeps its state there.
+    branch.fixture.state_dir = branch.repo / STATE_REL
+    yield branch
+    branch.close()
+
+
+# Values an earlier harness may have left in an accepted QA report: an unknown outcome, which the
+# migration quarantines, and a retired check result, which it maps.
+LEGACY_QA: dict[str, Callable[[JsonObject], None]] = {
+    "an unknown outcome": lambda report: report.update(outcome="done"),
+    "a retired check result": lambda report: report["checks_run"][0].update(
+        result="passed"
+    ),
+}
+
+
+def _qa_report_as_history_left_it(
+    branch: PublishedBranch, batch_id: str, change: Callable[[JsonObject], None]
+) -> None:
+    """Rewrite the accepted QA report of ``batch_id`` on disk as an earlier harness would have
+    left it: ``change`` applied, and its batch entry's ``report_sha256`` naming the result."""
+    records = branch.records()
+    batch_path = records / f"batches/{batch_id}.json"
+    batch = _json(batch_path)
+    [entry] = [item for item in batch["dispatches"] if item["role"] == "qa"]
+    report_path = records / entry["report"]
+    report = _json(report_path)
+    change(report)
+    report_path.write_bytes(data := canonical(report))
+    entry["report_sha256"] = sha(data)
+    batch_path.write_bytes(canonical(batch))
+
+
+def _assert_migrate_route(error: CoordinatorError) -> None:
+    assert isinstance(error, LedgerUnmigratedError)
+    assert error.message.startswith(MIGRATE_ROUTE)
+    assert "ledger inspect" in error.remedy and "ledger migrate" in error.remedy
+
+
+@pytest.mark.parametrize("legacy", sorted(LEGACY_QA))
+def test_qa_evidence_of_unmigrated_history_names_the_migrate_route(
+    published: PublishedBranch, legacy: str
+) -> None:
+    done = published.publish()
+    args = argparse.Namespace(
+        repo=str(published.repo),
+        state_dir=None,
+        ticket=published.ticket,
+        branch=published.branch,
+        candidate_commit=done["candidate"],
+        batch=None,
+    )
+    assert coordinator.qa_evidence(args)["batch_id"] == done["batch_id"]
+    _qa_report_as_history_left_it(published, done["batch_id"], LEGACY_QA[legacy])
+    before = tree(published.state_root() / "generations")
+
+    with pytest.raises(CoordinatorError) as caught:
+        coordinator.qa_evidence(args)
+
+    _assert_migrate_route(caught.value)
+    assert tree(published.state_root() / "generations") == before
+
+
+@pytest.mark.parametrize("legacy", sorted(LEGACY_QA))
+def test_integration_prepare_of_unmigrated_history_names_the_migrate_route(
+    published: PublishedBranch, legacy: str
+) -> None:
+    done = published.publish()
+    _qa_report_as_history_left_it(published, done["batch_id"], LEGACY_QA[legacy])
+    before = tree(published.state_root() / "generations")
+
+    with pytest.raises(CoordinatorError) as caught:
+        published.prepare()
+
+    _assert_migrate_route(caught.value)
+    assert published.record_files() == []
+    assert tree(published.state_root() / "generations") == before
 
 
 # --- A value or migration evidence that changed after the migration (DoD 2, 3) ------------------
