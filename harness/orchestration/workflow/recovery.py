@@ -571,7 +571,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
             "retired_dispatches": retired,
             "target": target,
             "superseded_candidate_registrations": [
-                r["dispatch_id"] for r in batch.get("candidate_registrations", [])
+                r["source_dispatch_id"] for r in batch.get("candidate_registrations", [])
             ]
             if target_rank <= CANDIDATE_INVALIDATING_RANK
             else [],
