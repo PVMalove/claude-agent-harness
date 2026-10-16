@@ -12,6 +12,12 @@ import pytest
 
 from harness.json_types import JsonObject
 from harness.orchestration.ledger.generation_migration import read_manifest
+from harness.orchestration.ledger.ledger_ops import (
+    LedgerUnmigratedError,
+    _load_batch,
+    _load_dispatch_status,
+)
+from harness.orchestration.ledger.strict_read import require_canonical
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -145,6 +151,27 @@ def test_a_stop_at_any_boundary_is_finished_by_the_next_run(
     assert scene.run()["migrated"] is False
     assert sorted(path.name for path in source.parent.iterdir()) == generations
     assert scene.store_bytes() == store
+
+
+@pytest.mark.parametrize("seam", list(SEAMS))
+def test_a_migration_finished_after_any_stop_passes_the_strict_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seam: str
+) -> None:
+    scene = seeded(tmp_path / "scene")
+    with pytest.raises(LedgerUnmigratedError):
+        _load_batch(scene.root, BATCH_A)
+    SEAMS[seam](monkeypatch)
+    with pytest.raises(Crash):
+        scene.run()
+    monkeypatch.undo()
+
+    assert scene.run()["migrated"] is True
+    before = (tree(scene.root), scene.store_bytes())
+
+    require_canonical(scene.generation)
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+    assert _load_dispatch_status(scene.root, DISPATCH_A)["state"] == "reported"
+    assert (tree(scene.root), scene.store_bytes()) == before
 
 
 def test_a_failed_pointer_replace_suspends_and_keeps_the_pointer(

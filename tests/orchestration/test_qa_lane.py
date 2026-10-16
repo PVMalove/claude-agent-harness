@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -21,6 +22,7 @@ from harness.gate_runner.gate_runner import (
 )
 from harness.orchestration import coordinator, operation_access, qa_lane
 from harness.storage import storage_path
+from harness.orchestration.core import utils
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import (
     BatchRecord,
@@ -533,11 +535,21 @@ class QaLaneRunTests(QaLaneTestCase):
             "configuration_sha256": approved["canonical_sha256"]
         }
         records = self.ledger.records_root()
+        # The batch pins the brief by its digest, as the strict read of a batch requires.
+        brief_sha256 = hashlib.sha256(
+            utils._canonical(self.dispatch).encode("utf-8")
+        ).hexdigest()
         batch: JsonObject = {
             "batch_id": BATCH_ID,
             "state": "active",
             "coordinator_approval": None,
-            "dispatches": [{"dispatch_id": DISPATCH_ID, "state": batch_state}],
+            "dispatches": [
+                {
+                    "dispatch_id": DISPATCH_ID,
+                    "state": batch_state,
+                    "brief_sha256": brief_sha256,
+                }
+            ],
         }
         self.ledger.write_immutable(
             records / PlanRecord.directory / f"{BATCH_ID}.json", {"batch_id": BATCH_ID}

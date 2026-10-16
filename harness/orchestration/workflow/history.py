@@ -87,11 +87,13 @@ from harness.orchestration.core.workspace import (
 )
 from harness.orchestration.ledger import JsonValue
 from harness.orchestration.ledger.ledger_ops import (
+    _canonical_records_root,
     _load_checkpoint,
     _load_context_package,
     _load_dispatch,
     _load_dispatch_status,
     _load_risk,
+    _read_batch,
     _records_root,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches, active_risks
@@ -1026,9 +1028,12 @@ def _batches_for_ticket_branch(
     """Every integrity-checked batch recorded for this ticket and issue branch.
 
     A coordinator can retain abandoned planning attempts for the same ticket and issue branch;
-    they are audit evidence, so this lists them all and leaves the choice to the caller.
+    they are audit evidence, so this lists them all and leaves the choice to the caller.  The
+    QA and publish evidence of ``qa evidence`` and ``integration prepare`` is read from here, so
+    the generation passes the strict read boundary first and each batch its own graph check.
     """
-    batches_dir = _records_root(root) / "batches"
+    records = _canonical_records_root(root)
+    batches_dir = records / "batches"
     if not batches_dir.is_dir():
         raise CoordinatorError(
             "no orchestration batches exist for the ticket branch",
@@ -1038,6 +1043,7 @@ def _batches_for_ticket_branch(
     for path in sorted(batches_dir.glob("*.json")):
         batch = _read_object(path, "batch record")
         if batch.get("ticket") == ticket and batch.get("branch") == branch:
+            batch = _read_batch(records, path.stem)
             _validate_batch_integrity(root, batch)
             matches.append(batch)
     if not matches:

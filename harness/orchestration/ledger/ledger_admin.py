@@ -8,6 +8,7 @@ only ones allowed to discard state -- each behind its own explicit subcommand.
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 from collections.abc import Callable
 from pathlib import Path
@@ -31,7 +32,13 @@ from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
     _state_root,
 )
-from harness.orchestration.ledger.lifecycle import LifecycleLedger, LEDGER_VERSION
+from harness.orchestration.ledger.lifecycle import (
+    LEDGER_VERSION,
+    BatchRecord,
+    LedgerError,
+    LifecycleLedger,
+)
+from harness.orchestration.ledger.strict_read import require_canonical
 from harness.orchestration.runtime_migration import migrate_system_fields
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -50,7 +57,9 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
 
 
 def validate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Read-only generation, audit, record graph and batch-contract validation."""
+    """Read-only generation, audit, record graph, canonical machine field, recorded batch
+    transition and batch-contract validation; history no migration vouches for names the
+    'ledger migrate' route."""
     from harness.orchestration.workflow.history import _validate_batch_integrity
     from harness.orchestration.core.utils import _read_object
 
@@ -62,11 +71,12 @@ def validate_ledger(args: argparse.Namespace) -> JsonObject:
         result = ledger.validate()
         if result["version"] == LEDGER_VERSION:
             records = ledger.records_root()
+            require_canonical(records)
             for batch_id in cast(list[str], result["batches"]):
-                _validate_batch_integrity(
-                    root,
-                    _read_object(records / "batches" / f"{batch_id}.json", "batch"),
-                )
+                name = f"{batch_id}.json"
+                batch = _read_object(records / "batches" / name, "batch")
+                LifecycleLedger.check_batch_transitions(records, batch, name)
+                _validate_batch_integrity(root, batch)
         return result
 
 
@@ -95,7 +105,9 @@ def inspect_ledger(args: argparse.Namespace) -> JsonObject:
     the records of a legacy ledger no migration selected yet (``generation`` ``None``), and of
     the runtime state that denies a batch.  It takes no lock, loads no config and never reads a
     record through the ledger's validating loader, so a quarantined or unreadable batch is shown
-    as a finding instead of stopping it."""
+    as a finding instead of stopping it.  The refusal the strict read's check of recorded
+    transitions gives an operational batch is shown as its ``transition_problem`` instead of
+    stopping it too."""
     repo = _repo(args)
     root = _state_root(args, repo)
     records, generation = _lenient_records(LifecycleLedger(root))
@@ -118,6 +130,9 @@ def inspect_ledger(args: argparse.Namespace) -> JsonObject:
             }
             for finding in batch["findings"]
         ]
+        batch["transition_problem"] = (
+            None if records is None else _transition_problem(records, batch)
+        )
     report["batches"] = batches
     try:
         store: RuntimeStateStore | None = RuntimeStateStore(repo, root)
@@ -143,6 +158,28 @@ def export_ledger(args: argparse.Namespace) -> JsonObject:
     if exported is None:
         raise _no_batch(batch_id, generation)
     return {**exported, "generation": generation}
+
+
+def _transition_problem(records: Path, batch: JsonObject) -> str | None:
+    """The bounded refusal the strict read gives the recorded transitions of ``batch``, as
+    inspection shows it; ``None`` when they pass or nothing is there to check: a quarantined
+    batch, or a batch record its findings already show unreadable."""
+    path = records / BatchRecord.directory / f"{batch['batch_id']}.json"
+    if batch["area"] != "operational" or not path.is_file():
+        return None
+    try:
+        record: object = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    try:
+        LifecycleLedger.check_batch_transitions(
+            records, cast(JsonObject, record), path.name
+        )
+    except LedgerError as exc:
+        return sanitize_detail(exc.message)
+    return None
 
 
 def _lenient_records(ledger: LifecycleLedger) -> tuple[Path | None, str | None]:

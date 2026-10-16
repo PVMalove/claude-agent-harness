@@ -1054,6 +1054,34 @@
         "unreadable": "The record file is not a JSON object; the batch is quarantined with this evidence and the file keeps its bytes."
       }
     },
+    "ledger.audit_action": {
+      "description": "Action of one ledger audit event: what the audited write did. The ledger refuses an event with another action before it is written; reconciliation and the idempotency of a deterministic audit event compare it exactly.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "immutable-record": "An immutable JSON record was created.",
+        "immutable-artifact": "An immutable text artifact was created.",
+        "transition": "A record was replaced by an allowed transition; a batch transition names its states.",
+        "deletion": "A mutable coordination record was deleted with evidence of its removal.",
+        "generation-created": "A new ledger generation was created for its recorded purpose.",
+        "migration": "Pre-ledger state was imported into a new generation.",
+        "schema-upgrade": "An older-schema generation was copied into a current-schema generation.",
+        "reset": "An empty generation replaced the selected one after an explicit confirmation.",
+        "system-fields-migration": "A generation was migrated to the canonical system fields under its manifest."
+      }
+    },
+    "ledger.generation_purpose": {
+      "description": "Purpose of a new ledger generation, recorded in its generation-created audit event. Evidence only; it never authorizes a lifecycle transition.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "initialize": "The first empty generation of a ledger.",
+        "migration": "The generation that imports pre-ledger state.",
+        "schema-upgrade": "The generation that moves an older-schema generation to the current schema.",
+        "reset": "The empty generation of an explicitly confirmed reset.",
+        "system-fields-migration": "The generation that migrates the selected one to the canonical system fields."
+      }
+    },
     "diagnostic.code": {
       "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
       "automatic_decisions": false,

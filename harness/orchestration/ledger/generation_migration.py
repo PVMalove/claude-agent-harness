@@ -44,8 +44,10 @@ from harness.orchestration.ledger.field_migration import (
 )
 from harness.orchestration.ledger.lifecycle import (
     GENERATIONS,
+    MIGRATED_DIRECTORIES,
     MIGRATION_DIRECTORY,
     RECORD_DIRECTORIES,
+    SYSTEM_FIELDS_MIGRATION,
     LedgerError,
     LifecycleLedger,
     verified_audit,
@@ -57,9 +59,6 @@ QUARANTINE = "quarantine"
 EVIDENCE = "legacy-unknown.json"
 # A generation under construction: never a `generation-` name, so no pointer can select it.
 STAGING_PREFIX = ".migrating-"
-MIGRATION_ACTION = "system-fields-migration"
-# The records a quarantine moves: a batch, its plan, its dispatches and their status records.
-GRAPH_DIRECTORIES = ("batches", "plans", "dispatches", "dispatch-status")
 BATCH_ID = re.compile(r"batch-[0-9a-f-]+")
 _MANIFEST_KEYS = frozenset(
     {
@@ -111,7 +110,7 @@ class Survey:
             for path, owner in self.owners.items()
             if owner == batch_id
             and (
-                path.split("/")[0] in GRAPH_DIRECTORIES
+                path.split("/")[0] in MIGRATED_DIRECTORIES
                 or any(f.disposition == UNREADABLE for f in self.findings.get(path, ()))
             )
         )
@@ -149,7 +148,7 @@ def survey(generation: Path) -> Survey:
     own reference first, then by the dispatch's ``batch_id``; its reports by its references."""
     registry = checked_registry()
     raw: dict[str, bytes] = {}
-    for directory in GRAPH_DIRECTORIES:
+    for directory in MIGRATED_DIRECTORIES:
         for file in sorted((generation / directory).glob("*.json")):
             # Read as the ledger's own loader reads it, through a link, so the migration
             # quarantines whatever that loader would stop on.
@@ -306,7 +305,7 @@ def verify(ledger: LifecycleLedger, generation: Path, rules: str) -> JsonObject:
     details = event.get("details")
     if (
         manifest["rules_sha256"] != rules
-        or event.get("action") != MIGRATION_ACTION
+        or event.get("action") != SYSTEM_FIELDS_MIGRATION
         or not isinstance(details, dict)
         or details.get("manifest_sha256") != manifest_sha256
         or details.get("rules_sha256") != rules
@@ -331,7 +330,7 @@ def current_manifest(ledger: LifecycleLedger, generation: str) -> JsonObject | N
     event = migration_event(path, manifest)
     details = event.get("details")
     if (
-        event.get("action") != MIGRATION_ACTION
+        event.get("action") != SYSTEM_FIELDS_MIGRATION
         or not isinstance(details, dict)
         or details.get("manifest_sha256") != manifest_sha256
     ):
@@ -379,7 +378,7 @@ def build(
         ledger.append_generation_audit(
             staging,
             "generation-created",
-            {"purpose": MIGRATION_ACTION},
+            {"purpose": SYSTEM_FIELDS_MIGRATION},
             audit_id=audit_ids[0],
         )
         for directory in RECORD_DIRECTORIES:
@@ -409,7 +408,7 @@ def build(
         (staging / MIGRATION_DIRECTORY / MANIFEST).write_bytes(data)
         ledger.append_generation_audit(
             staging,
-            MIGRATION_ACTION,
+            SYSTEM_FIELDS_MIGRATION,
             {
                 "source_generation": source,
                 "source_pointer_sha256": source_pointer_sha256,

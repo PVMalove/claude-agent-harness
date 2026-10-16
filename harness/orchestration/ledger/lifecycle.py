@@ -29,7 +29,9 @@ from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..core.constants import BatchState, DispatchState
+from ..core.system_fields import enum_refusal
 from ..core.utils import sealed
+from .field_migration import write_problems
 from .recovery_chain import event_audit, terminal
 
 LEDGER_VERSION = 3
@@ -56,6 +58,40 @@ RECORD_DIRECTORIES = (
 # The system-fields migration's manifest and quarantine beside the record directories: no record
 # directory, so no ordinary loader reads it and an older generation never lacks it.
 MIGRATION_DIRECTORY = "migration"
+# The routes of persisted history no migration vouches for: inspection shows it, export copies a
+# batch byte for byte, clean removes dispatch evidence no batch owns, and the system-fields
+# migration maps a known historical value or quarantines the batch that holds it.
+LEDGER_INSPECT = "'coordinator.py ledger inspect'"
+LEDGER_EXPORT = "'coordinator.py ledger export'"
+LEDGER_CLEAN = "'coordinator.py ledger clean'"
+LEDGER_MIGRATE = "'coordinator.py ledger migrate'"
+LEDGER_MIGRATE_ROUTE = f"run {LEDGER_MIGRATE}"
+# The record directories whose unreadable or unknown value the migration quarantines; the
+# generation migration moves exactly these records of a quarantined batch.
+MIGRATED_DIRECTORIES = ("batches", "plans", "dispatches", "dispatch-status")
+# The action and the generation purpose of the system-fields migration.
+SYSTEM_FIELDS_MIGRATION = "system-fields-migration"
+# The `ledger.audit_action` values: what one audited write did.  Reconciliation and the
+# idempotency of a deterministic audit event compare it exactly.
+AUDIT_ACTIONS = (
+    "immutable-record",
+    "immutable-artifact",
+    "transition",
+    "deletion",
+    "generation-created",
+    "migration",
+    "schema-upgrade",
+    "reset",
+    SYSTEM_FIELDS_MIGRATION,
+)
+# The `ledger.generation_purpose` values: why a `generation-created` event made a generation.
+GENERATION_PURPOSES = (
+    "initialize",
+    "migration",
+    "schema-upgrade",
+    "reset",
+    SYSTEM_FIELDS_MIGRATION,
+)
 
 # Ledger records are persisted JSON.  Keep the dynamic boundary at ``_read`` explicit while
 # preserving arbitrary, forward-compatible JSON in each record's ``extra`` fields.
@@ -74,6 +110,11 @@ class LedgerLockBusy(LedgerError):
 
 class LedgerWriteConflict(LedgerError):
     """A record changed or appeared between the check of a write and the write itself."""
+
+
+class LedgerUnmigrated(LedgerError):
+    """The selected generation holds history no current migration vouches for: only
+    ``ledger inspect``, ``ledger export`` and ``ledger migrate`` read it."""
 
 
 def _parse_state[T: StrEnum](value: object, vocabulary: type[T]) -> T:
@@ -97,6 +138,58 @@ def _validate_record_state(directory: str, value: JsonObject) -> None:
                 _parse_state(entry["state"], DispatchState)
     elif directory in {"dispatches", "dispatch-status"}:
         _parse_state(value.get("state"), DispatchState)
+
+
+def _validate_record_write(directory: str, value: JsonObject) -> None:
+    """Refuse a record about to be written to ``directory`` whose machine fields are not exactly
+    canonical, before anything is written; its explanations stay in its own text fields."""
+    _validate_record_state(directory, value)
+    if problems := write_problems(directory, value):
+        problem, remedy = problems[0]
+        raise LedgerError(
+            f"refusing a non-canonical machine value: {problem}", remedy=remedy
+        )
+
+
+def _audit_problem(action: object, details: object) -> tuple[str, str] | None:
+    """The refusal and remedy of an audit event outside its closed vocabularies, else ``None``:
+    its action, a new generation's purpose and the batch states of a batch transition.  A write
+    refuses such an event before it is written, and a read refuses one found on disk."""
+    if not isinstance(details, dict):
+        return (
+            "ledger audit details must be a JSON object",
+            "write the audit details as one JSON object",
+        )
+    checks: list[tuple[str, object, tuple[str, ...]]] = [
+        ("ledger audit action", action, AUDIT_ACTIONS)
+    ]
+    if action == "generation-created":
+        checks.append(
+            ("generation-created purpose", details.get("purpose"), GENERATION_PURPOSES)
+        )
+    path = details.get("path")
+    if action == "transition" and isinstance(path, str) and path.startswith("batches/"):
+        states = tuple(state.value for state in BatchState)
+        checks += [
+            ("batch transition from", details.get("from"), states),
+            ("batch transition to", details.get("to"), states),
+        ]
+    for subject, value, allowed in checks:
+        if (refusal := enum_refusal(subject, value, allowed)) is not None:
+            return refusal
+    return None
+
+
+def _path_segment(value: object) -> bool:
+    """Whether ``value`` names one entry of a directory: a non-empty string without a path
+    separator that is neither ``.`` nor ``..``."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and "/" not in value
+        and "\\" not in value
+        and value not in {".", ".."}
+    )
 
 
 def _lock_busy() -> LedgerLockBusy:
@@ -582,14 +675,22 @@ def _canonical(value: JsonObject) -> str:
 
 
 def _read(path: Path, label: str) -> JsonObject:
+    """A persisted record of ``path``.  A record the system-fields migration takes over -- an
+    unreadable file or an unknown state in a batch, plan, dispatch or status -- is
+    ``LedgerUnmigrated``, whose message and remedy name ``ledger migrate``."""
+    migrated = path.parent.name in MIGRATED_DIRECTORIES
     try:
         value: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
+        if migrated and isinstance(exc, ValueError):
+            raise _unmigrated(path, f"{label} is not valid JSON: {path.name}") from exc
         raise LedgerError(
             f"{label} is not valid JSON: {path.name}",
             remedy=f"fix the JSON syntax in {path}",
         ) from exc
     if not isinstance(value, dict):
+        if migrated:
+            raise _unmigrated(path, f"{label} must be a JSON object: {path.name}")
         raise LedgerError(
             f"{label} must be a JSON object: {path.name}",
             remedy=f"rewrite {path} as a JSON object",
@@ -597,8 +698,22 @@ def _read(path: Path, label: str) -> JsonObject:
     # json.loads is a dynamic boundary; after confirming the top-level object, JSON itself
     # guarantees string object keys and recursive JSON-compatible values.
     record = cast(JsonObject, value)
-    _validate_record_state(path.parent.name, record)
+    try:
+        _validate_record_state(path.parent.name, record)
+    except LedgerError as exc:
+        relative = f"{path.parent.name}/{path.name}"
+        raise _unmigrated(path, f"{label} {relative} holds {exc.message}") from exc
     return record
+
+
+def _unmigrated(path: Path, problem: str) -> LedgerUnmigrated:
+    """The refusal of persisted history at ``path`` that only the migration takes over."""
+    return LedgerUnmigrated(
+        f"{LEDGER_MIGRATE_ROUTE}: {problem}",
+        remedy=f"run {LEDGER_INSPECT} to see {path.parent.name}/{path.name}, "
+        f"then {LEDGER_MIGRATE}, which maps a known historical value or "
+        "quarantines its batch; the ledger rewrites nothing",
+    )
 
 
 def _digest(path: Path) -> str:
@@ -618,6 +733,127 @@ def verified_audit(path: Path) -> JsonObject:
             remedy=f"{path} was modified after its record_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
         )
     return record
+
+
+def _transition_chain(
+    name: str, transitions: list[JsonObject], current: str
+) -> list[JsonObject]:
+    """The recorded transitions of the batch record ``name`` in the order their hash chain links
+    them: each one starts from the version of the record (``before_sha256``) the one before it
+    wrote (``sha256``).  Audit times decide nothing: two transitions may share one, and the clock
+    may step back between them.  A version the record returns to -- a write that changed
+    nothing, or bytes it held before -- is walked again, so the chain is the one walk over every
+    transition; a chain that ends where it started ends at the ``current`` digest of the record.
+    Transitions that fork from one version, leave a gap between two versions or cannot be walked
+    as one chain, and a chain that ends where it started without the ``current`` version, are a
+    ``LedgerError`` that names the versions.  The walk takes the transitions in the given order,
+    so a fixed order makes it deterministic."""
+    following: dict[str, list[JsonObject]] = {}
+    # Per version: the transitions that leave it minus the transitions that reach it.  One
+    # chain leaves its first version once more than it reaches it, reaches its last version
+    # once more than it leaves it and balances every other one; a chain that ends in the version
+    # it started from balances every version.
+    leaves_minus_reaches: dict[str, int] = {}
+    for details in transitions:
+        before, after = details.get("before_sha256"), details.get("sha256")
+        if not isinstance(before, str) or not isinstance(after, str):
+            raise _not_one_chain(
+                name, "a transition names no record version it starts from or writes"
+            )
+        following.setdefault(before, []).append(details)
+        leaves_minus_reaches[before] = leaves_minus_reaches.get(before, 0) + 1
+        leaves_minus_reaches[after] = leaves_minus_reaches.get(after, 0) - 1
+    starts = sorted(v for v, count in leaves_minus_reaches.items() if count > 0)
+    if len(starts) > 1 or any(
+        abs(count) > 1 for count in leaves_minus_reaches.values()
+    ):
+        ends = sorted(v for v, count in leaves_minus_reaches.items() if count < 0)
+        raise _not_one_chain(
+            name,
+            f"they leave the versions {_shown_versions(starts)} more often than they reach "
+            f"them and reach {_shown_versions(ends)} more often than they leave them, while "
+            "one chain has a single first and a single last version; the record holds "
+            f"{_shown_versions([current])}",
+        )
+    if not starts and current not in leaves_minus_reaches:
+        raise _changed_after_last_transition(
+            name,
+            f"batch record changed after its last recorded transition: {name} holds the "
+            f"version {_shown_versions([current])}, which none of its {len(transitions)} "
+            "recorded transitions wrote, and they end in the version they started from",
+        )
+    for steps in following.values():
+        steps.reverse()  # pop() takes them in the given order
+    # Hierholzer's walk: follow unused transitions until a version has none left, then settle
+    # the transition that led there, so every return to a version is walked in its place.
+    first = starts[0] if starts else current
+    chain: list[JsonObject] = []
+    walk: list[tuple[str, JsonObject | None]] = [(first, None)]
+    while walk:
+        version, step = walk[-1]
+        if following.get(version):
+            taken = following[version].pop()
+            walk.append((cast(str, taken["sha256"]), taken))
+        else:
+            walk.pop()
+            if step is not None:
+                chain.append(step)
+    if len(chain) != len(transitions):
+        apart = sorted(version for version, steps in following.items() if steps)
+        raise _not_one_chain(
+            name,
+            f"the transitions that start from {_shown_versions(apart)} are not reached from "
+            f"{'its first version' if starts else 'the version the record holds'} "
+            f"{_shown_versions([first])}",
+        )
+    chain.reverse()
+    return chain
+
+
+def _shown_versions(versions: list[str]) -> str:
+    """Record versions as a refusal names them: the first 12 characters of each digest."""
+    return ", ".join(version[:12] for version in versions)
+
+
+def _not_one_chain(name: str, detail: str) -> LedgerError:
+    """The refusal of the batch record ``name`` whose recorded transitions do not link into one
+    sequence of record versions, each starting from the version the one before it wrote:
+    ``detail`` names the versions where the sequence breaks."""
+    return LedgerError(
+        f"batch transitions are not one recorded chain: {name}: {detail}",
+        remedy="a version of the batch record has no recorded transition, or two transitions "
+        "start from one version: the record was changed outside the ledger, or a harness "
+        "without durable write intents stopped between a write and its audit event, and a "
+        f"later transition started from the changed version; {_no_repair(name)}",
+    )
+
+
+def _changed_after_last_transition(name: str, problem: str) -> LedgerError:
+    """The refusal ``problem`` of the batch record ``name`` that changed after its last
+    recorded transition: only reconciliation of an interrupted coordinator operation can append
+    the transition that wrote it."""
+    return LedgerError(
+        problem,
+        remedy="if the runtime state holds an unfinished coordinator operation on this batch, "
+        "repeat the interrupted command so reconciliation appends the transition it planned; "
+        "without one nothing can append it -- the batch record was changed outside the "
+        "ledger, or a harness without durable write intents stopped between its write and its "
+        f"audit event; {_no_repair(name)}",
+    )
+
+
+def _no_repair(name: str) -> str:
+    """What the operator of a batch record that no ledger command repairs can do: keep the
+    evidence the read-only routes show and escalate, since this release restores nothing."""
+    return (
+        f"run {LEDGER_INSPECT} and {LEDGER_EXPORT}, each with --batch "
+        f"{name.removesuffix('.json')}, keep their output as evidence and escalate the batch "
+        "to a human: no command of this release restores a batch record or re-links its "
+        "transitions, and the audit trail keeps the digests and states of its versions, not "
+        "their contents; recovering such a batch belongs to the harness recovery tooling "
+        "(issue #684). Do not edit the record by hand: the next transition would record the "
+        "edit. The ledger rewrites nothing"
+    )
 
 
 def audit_details(
@@ -1167,13 +1403,7 @@ class LifecycleLedger:
 
     @staticmethod
     def _check_record_id(record_id: object) -> None:
-        if (
-            not isinstance(record_id, str)
-            or not record_id
-            or "/" in record_id
-            or "\\" in record_id
-            or record_id in {".", ".."}
-        ):
+        if not _path_segment(record_id):
             raise LedgerError(
                 "record id is not a valid path segment",
                 remedy="use a non-empty record id with no path separators and not '.' or '..'",
@@ -1214,7 +1444,7 @@ class LifecycleLedger:
     ) -> None:
         """Create an immutable record; ``audit_id`` makes its audit event deterministic."""
         if not artifact:
-            _validate_record_state(path.parent.name, value)
+            _validate_record_write(path.parent.name, value)
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1292,7 +1522,7 @@ class LifecycleLedger:
     ) -> tuple[Path, str, JsonObject, str]:
         """Every check of ``replace`` that needs no write: the generation, relative path, current
         record and its digest of an allowed transition, or a ``LedgerError``."""
-        _validate_record_state(path.parent.name, value)
+        _validate_record_write(path.parent.name, value)
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
@@ -1322,7 +1552,7 @@ class LifecycleLedger:
             self._check_replace(path, cast(JsonObject, value), None)
             return
         if mode == "create":
-            _validate_record_state(path.parent.name, cast(JsonObject, value))
+            _validate_record_write(path.parent.name, cast(JsonObject, value))
         elif mode != "create-artifact":
             raise LedgerError(
                 f"unknown ledger write mode {mode!r}", remedy=INTERNAL_INVARIANT_REMEDY
@@ -1744,7 +1974,13 @@ class LifecycleLedger:
         audit_id: str | None = None,
     ) -> None:
         """Append one audit event.  A given ``audit_id`` is created exclusively, so repeating the
-        same event is a no-op and a different event under that id is refused."""
+        same event is a no-op and a different event under that id is refused.  An event outside
+        its closed vocabularies is refused before anything is written."""
+        if (refusal := _audit_problem(action, details)) is not None:
+            problem, remedy = refusal
+            raise LedgerError(
+                f"refusing a non-canonical audit event: {problem}", remedy=remedy
+            )
         audit: JsonObject = {
             "audit_id": audit_id or f"audit-{uuid.uuid4()}",
             "at": _now(),
@@ -1852,91 +2088,152 @@ class LifecycleLedger:
     @staticmethod
     def _validate_record_graph(root: Path) -> None:
         """Reject syntactically-valid but incomplete or orphaned lifecycle evidence."""
-        dispatches = {path.stem: path for path in (root / "dispatches").glob("*.json")}
-        statuses = {
-            path.stem: path for path in (root / "dispatch-status").glob("*.json")
-        }
+        dispatches = {path.stem for path in (root / "dispatches").glob("*.json")}
+        statuses = {path.stem for path in (root / "dispatch-status").glob("*.json")}
         referenced: set[str] = set()
         for batch_path in (root / "batches").glob("*.json"):
-            batch = _read(batch_path, "batch record")
-            entries = batch.get("dispatches", [])
-            if not isinstance(entries, list):
-                raise LedgerError(
-                    f"batch dispatches are invalid: {batch_path.name}",
-                    remedy=f"fix {batch_path.name} so its dispatches field is a list",
-                )
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(
-                    dispatch_id := entry.get("dispatch_id"), str
-                ):
-                    raise LedgerError(
-                        f"batch has an invalid dispatch entry: {batch_path.name}",
-                        remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
-                    )
-                referenced.add(dispatch_id)
-                dispatch_path = dispatches.get(dispatch_id)
-                status_path = statuses.get(dispatch_id)
-                if dispatch_path is None or status_path is None:
-                    raise LedgerError(
-                        f"batch dispatch evidence is incomplete: {dispatch_id}",
-                        remedy=f"restore the missing dispatches/{dispatch_id}.json and/or dispatch-status/{dispatch_id}.json records",
-                    )
-                dispatch = _read(dispatch_path, "dispatch record")
-                status = _read(status_path, "dispatch status")
-                if dispatch.get("dispatch_id") != dispatch_id or dispatch.get(
-                    "batch_id"
-                ) != batch.get("batch_id"):
-                    raise LedgerError(
-                        f"dispatch does not belong to its batch: {dispatch_id}",
-                        remedy=f"fix dispatches/{dispatch_id}.json's dispatch_id/batch_id fields, or remove it from {batch_path.name}",
-                    )
-                if status.get("dispatch_id") != dispatch_id or not isinstance(
-                    status.get("state"), str
-                ):
-                    raise LedgerError(
-                        f"dispatch status is invalid: {dispatch_id}",
-                        remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields",
-                    )
-                expected_brief = entry.get("brief_sha256")
-                if (
-                    expected_brief
-                    != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
-                ):
-                    raise LedgerError(
-                        f"dispatch failed immutable brief integrity check: {dispatch_id}",
-                        remedy=f"dispatches/{dispatch_id}.json was modified after its brief_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
-                    )
-                if entry.get("state") == "reported":
-                    report_name = entry.get("report")
-                    if (
-                        not isinstance(report_name, str)
-                        or Path(report_name).is_absolute()
-                        or ".." in Path(report_name).parts
-                    ):
-                        raise LedgerError(
-                            f"reported dispatch has an invalid report path: {dispatch_id}",
-                            remedy=f"fix {batch_path.name}'s report path for dispatch {dispatch_id} to a relative path inside the generation",
-                        )
-                    report_path = root / report_name
-                    report = _read(report_path, "completion report")
-                    if (
-                        entry.get("report_sha256")
-                        != hashlib.sha256(
-                            _canonical(report).encode("utf-8")
-                        ).hexdigest()
-                    ):
-                        raise LedgerError(
-                            f"completion report failed immutable integrity check: {dispatch_id}",
-                            remedy=f"{report_path} was modified after its report_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
-                        )
-        if set(dispatches) != referenced or set(statuses) != referenced:
+            referenced |= LifecycleLedger.check_batch_references(
+                root, _read(batch_path, "batch record"), batch_path.name
+            )
+        if dispatches != referenced or statuses != referenced:
             raise LedgerError(
                 "lifecycle state contains orphaned dispatch evidence (run 'ledger clean' to fix)",
                 remedy="run 'coordinator.py ledger clean' to remove dispatch/status records no batch references",
             )
 
     @staticmethod
+    def check_batch_references(root: Path, batch: JsonObject, name: str) -> set[str]:
+        """Check what the batch record ``name`` names in the generation ``root``: the brief and
+        status of each dispatch entry, the brief's ``brief_sha256`` and, for a reported entry,
+        its completion report and ``report_sha256``; returns the dispatch IDs it references.
+        A violation is a ``LedgerError``, and nothing is written.  A dispatch and status no
+        batch names yet pass: a composite write creates them before it names them."""
+        entries = batch.get("dispatches", [])
+        if not isinstance(entries, list):
+            raise LedgerError(
+                f"batch dispatches are invalid: {name}",
+                remedy=f"its dispatches field is not a list; {_no_repair(name)}",
+            )
+        referenced: set[str] = set()
+        for entry in entries:
+            # The ID is joined under the generation: a separator would lead out of it.
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(dispatch_id := entry.get("dispatch_id"), str)
+                or not _path_segment(dispatch_id)
+            ):
+                raise LedgerError(
+                    f"batch has an invalid dispatch entry: {name}",
+                    remedy="a dispatches entry is not an object with a dispatch_id that is "
+                    f"one path segment; {_no_repair(name)}",
+                )
+            referenced.add(dispatch_id)
+            dispatch_path = root / "dispatches" / f"{dispatch_id}.json"
+            status_path = root / "dispatch-status" / f"{dispatch_id}.json"
+            if not dispatch_path.is_file() or not status_path.is_file():
+                raise LedgerError(
+                    f"batch dispatch evidence is incomplete: {dispatch_id}",
+                    remedy=f"restore the missing dispatches/{dispatch_id}.json and/or dispatch-status/{dispatch_id}.json records",
+                )
+            dispatch = _read(dispatch_path, "dispatch record")
+            status = _read(status_path, "dispatch status")
+            if dispatch.get("dispatch_id") != dispatch_id or dispatch.get(
+                "batch_id"
+            ) != batch.get("batch_id"):
+                raise LedgerError(
+                    f"dispatch does not belong to its batch: {dispatch_id}",
+                    remedy=f"dispatches/{dispatch_id}.json names another dispatch_id or "
+                    f"batch_id than {name} gives it; {_no_repair(name)}",
+                )
+            if status.get("dispatch_id") != dispatch_id or not isinstance(
+                status.get("state"), str
+            ):
+                raise LedgerError(
+                    f"dispatch status is invalid: {dispatch_id}",
+                    remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields",
+                )
+            expected_brief = entry.get("brief_sha256")
+            if (
+                expected_brief
+                != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
+            ):
+                raise LedgerError(
+                    f"dispatch failed immutable brief integrity check: {dispatch_id}",
+                    remedy=f"dispatches/{dispatch_id}.json was modified after its brief_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                )
+            if entry.get("state") == "reported":
+                report_name = entry.get("report")
+                if (
+                    not isinstance(report_name, str)
+                    or Path(report_name).is_absolute()
+                    or ".." in Path(report_name).parts
+                ):
+                    raise LedgerError(
+                        f"reported dispatch has an invalid report path: {dispatch_id}",
+                        remedy=f"the report path {name} gives dispatch {dispatch_id} is not a "
+                        f"relative path inside the generation; {_no_repair(name)}",
+                    )
+                report_path = root / report_name
+                report = _read(report_path, "completion report")
+                if (
+                    entry.get("report_sha256")
+                    != hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
+                ):
+                    raise LedgerError(
+                        f"completion report failed immutable integrity check: {dispatch_id}",
+                        remedy=f"{report_path} was modified after its report_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                    )
+        return referenced
+
+    @staticmethod
+    def check_batch_transitions(root: Path, batch: JsonObject, name: str) -> None:
+        """Check that the batch record ``name`` of the generation ``root`` holds the state its
+        recorded transitions left: the transitions form one hash chain (``_transition_chain``),
+        each starts in the state the one before it ended in, and the last one ends in the
+        batch's current state.  A batch no transition moved -- created and never replaced, or
+        imported by a migration -- passes.
+
+        Only the strict read runs this check, after a command reconciled its batch: a transition
+        whose audit event an interrupted write has not appended yet stops the read, never the
+        reconciliation that appends it.  A violation is a ``LedgerError``; nothing is written."""
+        relative = f"batches/{name}"
+        recorded: dict[str, JsonObject] = {}
+        for path in (root / "audit").glob("*.json"):
+            event = _read(path, "ledger audit record")
+            details = event.get("details")
+            if (
+                event.get("action") == "transition"
+                and isinstance(details, dict)
+                and details.get("path") == relative
+            ):
+                recorded[path.name] = details
+        if not recorded:
+            return
+        chain = _transition_chain(
+            name,
+            [recorded[audit_name] for audit_name in sorted(recorded)],
+            _digest(root / relative),
+        )
+        for earlier, later in zip(chain, chain[1:]):
+            if later.get("from") != earlier.get("to"):
+                raise LedgerError(
+                    f"batch transitions name two states for one record version: {name} moved "
+                    f"from {later.get('from')!r} after a transition that left it "
+                    f"{earlier.get('to')!r}",
+                    remedy="two linked transitions name different states for one version of "
+                    f"the batch record, which the ledger never writes; {_no_repair(name)}",
+                )
+        if batch.get("state") != (last := chain[-1].get("to")):
+            raise _changed_after_last_transition(
+                name,
+                f"batch state is not the one its last recorded transition left: {name} holds "
+                f"{batch.get('state')!r}, its audit trail ends in {last!r}",
+            )
+
+    @staticmethod
     def _validate_audit(root: Path) -> None:
+        """Verify each audit event's checksum and its closed vocabularies: an event the ledger
+        never writes stops every read, and no migration takes it over."""
         for path in root.glob("*.json"):
             record = _read(path, "ledger audit record")
             checksum = record.pop("record_sha256", None)
@@ -1945,4 +2242,12 @@ class LifecycleLedger:
                 raise LedgerError(
                     f"ledger audit record failed immutable integrity check: {path.name}",
                     remedy=f"{path} was modified after its record_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                )
+            refusal = _audit_problem(record.get("action"), record.get("details"))
+            if refusal is not None:
+                raise LedgerError(
+                    f"ledger audit record {path.name} holds a non-canonical machine value: "
+                    f"{refusal[0]}",
+                    remedy=f"read {path.name} with {LEDGER_INSPECT}: the ledger never writes "
+                    f"such an event and rewrites none -- {INTERNAL_INVARIANT_REMEDY}",
                 )
