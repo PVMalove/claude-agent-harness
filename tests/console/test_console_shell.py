@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("textual")
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.widgets import Button, ListItem, ListView, Static
 
 from harness.console.app import HarnessConsoleApp
@@ -223,5 +224,68 @@ def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:
             return before[0], before[1], labels(), crumbs()
 
     ru_labels, ru_crumbs, en_labels, en_crumbs = asyncio.run(scenario())
-    assert ru_labels[4] == "5 Оркестрация" and ru_crumbs == "Главная  ›  Отчёты"
-    assert en_labels[4] == "5 Orchestration" and en_crumbs == "Home  ›  Reports"
+    assert ru_labels[5] == "5 Оркестрация" and ru_crumbs == "Главная  ›  Отчёты"
+    assert en_labels[5] == "5 Orchestration" and en_crumbs == "Home  ›  Reports"
+    assert ru_labels[0] == "0 Главная" and en_labels[0] == "0 Home"
+
+
+def test_home_is_item_zero_and_keys_one_to_nine_keep_their_sections() -> None:
+    assert SECTIONS == (
+        "Home",
+        "Open project",
+        "Update Harness",
+        "Diagnostics",
+        "Harness",
+        "Orchestration",
+        "Reports",
+        "Repo Map",
+        "Configuration",
+        "Help",
+    )
+    actions = {
+        binding.key: binding.action
+        for binding in ConsoleShell.BINDINGS
+        if isinstance(binding, Binding)
+    }
+    for number in range(10):
+        assert actions[str(number)] == f"section({number})"
+
+
+def test_the_dashboard_highlights_home(tmp_path: Path) -> None:
+    async def scenario() -> tuple[int | None, list[bool]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            menu = app.screen.query_one("#section-menu", ListView)
+            return menu.index, [item.has_class("-active") for item in menu.children]
+
+    index, active = asyncio.run(scenario())
+    assert index == SECTIONS.index("Home")
+    assert active == [True] + [False] * (len(SECTIONS) - 1)
+
+
+@pytest.mark.parametrize("how", ["key", "menu"])
+def test_home_from_another_screen_returns_to_the_dashboard_and_runs_nothing(
+    tmp_path: Path, how: str
+) -> None:
+    async def scenario() -> tuple[bool, int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await _open(app, pilot)
+            screen = await _open(app, pilot)  # two screens above the dashboard
+            if how == "key":
+                await pilot.press("0")
+            else:
+                menu = screen.query_one("#stub-sections", ListView)
+                menu.focus()
+                menu.index = SECTIONS.index("Home")
+                await pilot.pause()
+                await pilot.press("enter")
+            for _ in range(4):
+                await pilot.pause()
+            return isinstance(app.screen, DashboardScreen), len(app.screen_stack)
+
+    on_dashboard, depth = asyncio.run(scenario())
+    assert on_dashboard
+    assert depth == 2  # the app's default screen and the dashboard

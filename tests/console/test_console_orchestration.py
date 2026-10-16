@@ -466,7 +466,7 @@ def test_orchestration_switches_language_and_goes_back_with_escape(
             await _settle(pilot, app)
             crumbs = str(screen.query_one("#shell-breadcrumbs", Static).content)
             item = screen.query("#shell-sections > ListItem").results(ListItem)
-            label = str(list(item)[4].query_one(Static).content)
+            label = str(list(item)[5].query_one(Static).content)
             await pilot.press("escape")
             await _settle(pilot, app)
             return crumbs, label, app.screen is not screen

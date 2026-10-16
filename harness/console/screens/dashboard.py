@@ -21,6 +21,7 @@ from ..chrome import TopBar
 from ..session_card import session_card
 from ..shell import (
     CONFIGURATION_SECTION,
+    HOME_SECTION,
     SECTIONS,
     SHELL_CSS,
     ConsoleShell,
@@ -276,6 +277,7 @@ class DashboardScreen(ConsoleShell):
 
     # The section menu owns the keyboard on arrival.
     AUTO_FOCUS = "#section-menu"
+    SECTION = HOME_SECTION
     CRUMBS = "Главная › Рабочее пространство"
     HAS_CONTEXT = True
     IDS = ShellIds(

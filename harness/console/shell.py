@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from rich.table import Table
 from rich.text import Text
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
@@ -19,8 +19,10 @@ from .chrome import WorkspaceHeader
 from .translate import Translated
 
 CONFIGURATION_SECTION = "Configuration"
-# The numbered main menu, in the order of the number keys.
+HOME_SECTION = "Home"
+# The numbered main menu, in the order of the number keys 0-9.
 SECTIONS = (
+    HOME_SECTION,
     "Open project",
     "Update Harness",
     "Diagnostics",
@@ -182,6 +184,14 @@ Screen.shell { background: $background; }
 """)
 
 
+async def _return_home(app: App[None]) -> None:
+    """Close the screens above the dashboard."""
+    from .screens.dashboard import DashboardScreen
+
+    while not isinstance(app.screen, DashboardScreen) and len(app.screen_stack) > 1:
+        await app.pop_screen()
+
+
 class ConsoleShell(Translated, Screen[None]):
     """The console's common frame: top bar, numbered main menu with the active section marked,
     breadcrumbs, a context strip, the screen's content, an optional context panel and the footer.
@@ -199,8 +209,8 @@ class ConsoleShell(Translated, Screen[None]):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         *(
-            Binding(str(number), f"section({number - 1})", show=False)
-            for number in range(1, len(SECTIONS) + 1)
+            Binding(str(number), f"section({number})", show=False)
+            for number in range(len(SECTIONS))
         ),
     ]
     IDS = ShellIds()
@@ -243,7 +253,7 @@ class ConsoleShell(Translated, Screen[None]):
                     id=self.menu_item_id(name),
                     classes="-active" if name == self.SECTION else "",
                 )
-                for number, name in enumerate(SECTIONS, start=1)
+                for number, name in enumerate(SECTIONS)
             ),
             id=self.IDS.menu,
         )
@@ -285,18 +295,21 @@ class ConsoleShell(Translated, Screen[None]):
             )
 
     def sync_language(self) -> None:
-        for number, item in enumerate(
-            self.query(f"#{self.IDS.menu} > ListItem"), start=1
-        ):
+        for number, item in enumerate(self.query(f"#{self.IDS.menu} > ListItem")):
             item.query_one(Static).update(self.menu_label(number, item.name or ""))
         for grid in self.query(FieldGrid):
             grid.relabel()
 
     # Navigation: opening a section is the only effect.
     async def open_section(self, index: int) -> None:
-        """Open section `index` through the home screen's opener."""
+        """Open section `index` through the home screen's opener; Home returns to it."""
         from .screens.dashboard import DashboardScreen
 
+        if SECTIONS[index] == HOME_SECTION:
+            if any(isinstance(item, DashboardScreen) for item in self.app.screen_stack):
+                # From the app's loop: popping this screen from inside its own handler would wait on itself.
+                self.app.call_later(_return_home, self.app)
+            return
         for screen in self.app.screen_stack:
             if isinstance(screen, DashboardScreen):
                 await screen.action_open_section(index)

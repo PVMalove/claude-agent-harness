@@ -19,6 +19,7 @@ from textual.widgets import RichLog, Static, Select, TabbedContent, Button
 from harness.orchestration.core.utils import JsonObject
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.worker_observation import WorkerObservationScreen
+from harness.console.shell import SECTIONS
 
 
 async def settle(pilot: Pilot[None], done: Callable[[], bool]) -> None:
@@ -415,7 +416,7 @@ def test_context_panel_keeps_full_id_path_and_block_reason_at_every_width(
             )
             navigation = screen.query_one("#worker-navigation")
             menu = screen.query_one("#worker-sections", ListView)
-            assert menu.index == 4  # Orchestration is the open section
+            assert menu.index == SECTIONS.index("Orchestration")  # the open section
             if size[0] < 130:
                 assert not navigation.display
                 assert context.region.y > screen.query_one("#worker-output").region.y
@@ -457,7 +458,7 @@ def test_worker_menu_navigation_runs_no_command_and_back_keys_work(
             await app.workers.wait_for_complete()
             await pilot.press("3")
             await pilot.pause()
-            assert opened == [2]
+            assert opened == [SECTIONS.index("Diagnostics")]
             await pilot.press("f2")
             await pilot.pause()
             await pilot.pause()

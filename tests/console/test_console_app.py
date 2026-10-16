@@ -78,11 +78,14 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
             assert sections.query_one("#open-project", ListItem)
             assert sections.query_one("#update-harness", ListItem)
             menu_items = list(sections.query("#section-menu > ListItem"))
-            assert [item.name for item in menu_items[:2]] == [
+            assert [item.name for item in menu_items[:3]] == [
+                "Home",
                 "Open project",
                 "Update Harness",
             ]
-            assert len(menu_items) == 9
+            assert len(menu_items) == 10
+            assert menu_items[0].has_class("-active")
+            assert not menu_items[1].has_class("-active")
             assert not sections.query(Button)
             assert screen.query_one("#dashboard-summary").display
             assert (
@@ -183,14 +186,14 @@ def test_dashboard_project_entries_switch_language_without_changing_order(
         async with app.run_test(size=(120, 36)):
             await app.push_screen(screen)
             for language, expected in (
-                ("ru", ("1 Открыть проект", "2 Обновить Harness")),
-                ("en", ("1 Open project", "2 Update Harness")),
+                ("ru", ("0 Главная", "1 Открыть проект", "2 Обновить Harness")),
+                ("en", ("0 Home", "1 Open project", "2 Update Harness")),
             ):
                 setattr(app, "language", language)
                 screen.sync_language()
                 items = list(screen.query("#section-menu > ListItem").results(ListItem))
                 assert [item.name for item in items] == list(SECTIONS)
-                for item, label in zip(items[:2], expected):
+                for item, label in zip(items[:3], expected):
                     output = StringIO()
                     Console(file=output, width=30).print(item.query_one(Static).content)
                     assert label in output.getvalue()
