@@ -18,6 +18,11 @@ from tests.orchestration import test_recovery as recovery_tests
 
 external_worker = startup_tests.launch
 
+# The fake runtimes below are shebang scripts the adapter executes directly.
+posix_runtime = pytest.mark.skipif(
+    sys.platform == "win32", reason="the fake runtime is a POSIX shebang script"
+)
+
 ADAPTER = (
     Path(__file__).resolve().parents[2]
     / "harness/orchestration/adapters/claude_code.py"
@@ -74,6 +79,7 @@ def test_visible_launch_never_silently_becomes_a_hidden_process(
     assert "visible" in evidence["error"]
 
 
+@posix_runtime
 def test_background_choice_preserves_runtime_stream_and_exit_evidence(
     external_worker: recovery_tests.RecoveryTests,
     reachable_endpoint: str,
@@ -185,7 +191,7 @@ def test_worker_context_probe_keeps_the_exact_filesystem_refusal(
 ) -> None:
     import pytest
 
-    if os.name != "posix" or os.geteuid() == 0:
+    if sys.platform == "win32" or os.geteuid() == 0:
         pytest.skip("root can bypass the fixture directory mode")
     batch = external_worker._create_batch()
     result = external_worker._dispatch(batch["batch_id"], "architect")
@@ -222,6 +228,7 @@ def test_worker_context_probe_keeps_the_exact_filesystem_refusal(
         external_worker.state_dir.chmod(0o755)
 
 
+@posix_runtime
 @pytest.mark.parametrize("panel_open", [False, True], ids=["panel-closed", "panel-open"])
 def test_native_permission_uses_control_frames_without_extra_model_messages(
     external_worker: recovery_tests.RecoveryTests,
