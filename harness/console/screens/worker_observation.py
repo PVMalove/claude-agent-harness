@@ -131,7 +131,7 @@ class WorkerObservationScreen(ConsoleShell):
     WorkerObservationScreen #worker-session-count { height: 2; padding: 0 1; color: $text-muted; }
     WorkerObservationScreen #worker-picker { height: 1fr; border: none; margin: 0; padding: 0; }
     WorkerObservationScreen #worker-picker > ListItem { height: auto; min-height: 7; padding: 1; border-left: solid transparent; }
-    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: $row-highlight; border-left: solid $primary; text-style: none; }
+    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: $row-highlight; border-left: solid $selection-edge; text-style: none; }
     WorkerObservationScreen #worker-picker Static { height: auto; }
     WorkerObservationScreen #worker-list-foot { height: auto; border-top: solid $border-subtle; padding: 1; color: $text-muted; }
     WorkerObservationScreen #worker-main { width: 1fr; min-width: 0; height: 1fr; }
@@ -171,7 +171,7 @@ class WorkerObservationScreen(ConsoleShell):
     .shell #worker-picker > ListItem.-highlight, .shell #worker-picker:focus > ListItem.-highlight {
         background: $row-highlight; color: $text; text-style: none;
     }
-    .shell #worker-actions Button { border: round $control-border; color: $text; }
+    .shell #worker-actions Button { border: round $component-border; color: $text; }
     .shell #worker-actions Button:hover, .shell #worker-actions Button:focus { border: round $primary; color: $primary; }
     .shell #worker-actions #worker-stop { color: $error; }
     """)

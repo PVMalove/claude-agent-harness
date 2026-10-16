@@ -304,8 +304,8 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 1; }
     DashboardScreen #home-sessions-title { height: 2; color: $text-muted; }
     DashboardScreen #home-sessions { height: 1fr; min-height: 3; border: none; }
-    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; }
-    DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $text; }
+    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; border-left: solid transparent; }
+    DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $text; border-left: solid $selection-edge; }
     DashboardScreen #home-sessions Static { height: auto; }
     DashboardScreen #dashboard-details { height: auto; max-height: 16; border-top: solid $border-subtle; padding: 0; }
     DashboardScreen #dashboard-details > Contents { overflow-y: auto; max-height: 12; }
@@ -324,7 +324,7 @@ class DashboardScreen(ConsoleShell):
     # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
     CSS = SHELL_CSS + brand.shell_css("""
     .shell #home-sessions, .shell #home-sessions:focus { border: none; }
-    .shell #home-sessions > ListItem.-highlight { background: $row-highlight; color: $text; text-style: none; }
+    .shell #home-sessions > ListItem.-highlight { background: $row-highlight; color: $text; text-style: none; border-left: solid $selection-edge; }
     """)
 
     def __init__(
