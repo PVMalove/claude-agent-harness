@@ -6,7 +6,13 @@
 
 ### Added
 
+- **[Внешние runtime-адаптеры]:** Claude Code и Codex запускают отдельный worker в назначенном checkout по параметрам брифа. CLI устанавливает и обновляет адаптеры вместе с `backend-orchestration`, а настройки консоли показывают их состояние и требуют просмотра с подтверждением. Локальные файлы защищены от неявной замены; общий seed добавляет шесть разрешений для наблюдения за оркестрацией (#715).
+
 - **[Запуск Claude worker в issue-worktree]:** Установка `backend-orchestration` добавляет `.harness/adapters/claude_worker.py` — runtime adapter для `transport: external`. Инструмент Agent не умеет стартовать subagent в существующем checkout (subagent стартует в основном checkout, `EnterWorktree` его там отклоняет), поэтому Claude in-process worker не может стартовать в `worker_worktree`. `dispatch send --adapter` запускает адаптер в `worker_worktree`, а он стартует отделённый headless `claude -p` на модели, effort и `allowed_tools` из брифа с `dontAsk`. Адаптер лежит вне хешируемого runtime-пакета, поэтому его установка не меняет пин открытого batch. Skill `implement` и руководство `worktrees.md` описывают оба пути: адаптер даёт настоящий cwd, а in-process subagent работает по абсолютным путям и `git -C`, и его self-report доказывает checkout, в котором он работает, а не cwd (#718).
+
+### Fixed
+
+- **[Кандидат после rewind]:** История и проверка ledger используют `source_dispatch_id` регистрации кандидата, поэтому повторный rewind после регистрации сохраняет читаемый ledger (#715).
 
 ## [1.4.6] - 2026-10-14
 

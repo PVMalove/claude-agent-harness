@@ -775,6 +775,48 @@ same completion report comes back. For an in-process handoff, `dispatch send` re
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
 
+The `backend-orchestration` capability installs standalone stdlib adapters at
+`.harness/adapters/claude_worker.py` and `.harness/adapters/codex_worker.py` through `harness init`
+or `harness adopt`. If that capability is already selected, use the ordinary managed lifecycle:
+
+```bash
+python /path/to/agent-harness/harness/bin/harness.py diff /path/to/project
+python /path/to/agent-harness/harness/bin/harness.py update /path/to/project
+```
+
+For an approved `external` dispatch, choose the adapter for its assigned runtime. Use the main
+repository path for both the coordinator and adapter; send selects the worker checkout as CWD:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/claude_worker.py
+```
+
+For a Codex dispatch, use:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/codex_worker.py
+```
+
+Python adapters are invoked through the coordinator's Python interpreter, so executable mode is
+not required. Both expose `dispatch --help`, `--repo`, `--brief`, `--dry-run` and
+`--extra-prompt-file`; binary overrides are `--claude-bin` and `--codex-bin`. A retry prompt file
+can be passed with `--adapter-arg=--extra-prompt-file --adapter-arg=/absolute/path/to/retry.txt`.
+
+Adapters pass the lifecycle prompt through stdin and return after detached startup. An early
+exit, including exit zero, is a launch failure with a bounded log tail. They reject `qa`,
+`purpose: publish`, a transport other than `external`, and absent or empty `allowed_tools`.
+Claude uses the brief's model, effort and native tool allowlist; its only additional directory is
+the incoming reports directory. Codex uses `codex exec` with the brief's model and effort,
+`read-only` for read-only roles and `workspace-write` for writers. Its prompt carries the tool
+allowlist; this is not a native Codex tool filter. Neither adapter grants `danger-full-access`.
+The worker still must self-report, send heartbeats and submit its report. An adapter does not
+accept reports or select the next role. QA and publish keep their coordinator boundaries.
+
+Managed updates refresh unchanged adapters. Unknown targets and symlinks are protected; local
+regular managed edits require an explicit force option. Capability removal and uninstall retain
+modified and unknown adapters. Console settings show missing/current/outdated status and require
+a fresh preview and explicit confirmation; they preserve capability selection and never enable force.
+
 When the project authors `access_policy`, the resolved access plan is pinned in the brief and bound
 to the approval digest. `dispatch send` blocks the handoff, with a reason and a concrete preparation
 action, when the selected `runtime_access` implementation cannot prove and natively apply the plan
