@@ -93,8 +93,16 @@ ISOLATION_DETAILS = frozenset(
 # root must fail with EROFS, every hidden root must be empty or absent, and a write to the second
 # path in the run cache must pass. The runner checks the files from outside and removes them.
 PROBE_SCRIPT = (
-    "import errno, os, sys\n"
-    "*hidden, blocked, allowed = sys.argv[1:]\n"
+    "import errno, json, os, sys\n"
+    "plan, *hidden, blocked, allowed = sys.argv[1:]\n"
+    "valid = True\n"
+    "for path, writable in json.loads(plan):\n"
+    "    try:\n"
+    "        with open(path, 'x') as handle: handle.write('ok')\n"
+    "    except OSError as error:\n"
+    "        valid = valid and not writable and error.errno == errno.EROFS\n"
+    "    else:\n"
+    "        valid = valid and writable\n"
     "try:\n"
     "    os.close(os.open(blocked, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))\n"
     "except OSError as error:\n"
@@ -104,7 +112,7 @@ PROBE_SCRIPT = (
     "empty = not any(os.path.isdir(root) and os.listdir(root) for root in hidden)\n"
     "with open(allowed, 'w') as handle:\n"
     "    handle.write('ok')\n"
-    "sys.exit(0 if denied and empty else 1)\n"
+    "sys.exit(0 if denied and empty and valid else 1)\n"
 )
 
 
@@ -553,6 +561,7 @@ def _probe(
     run_dir: Path,
     launcher: Launcher,
     run_id: str,
+    readonly_targets: Sequence[Path] = (),
 ) -> None:
     """Prove with the test's own mounts that the checkout is read-only, the host sockets are
     hidden and the cache is writable."""
@@ -560,12 +569,24 @@ def _probe(
     allowed = run_dir / "cache" / "isolation-probe"
     if os.path.lexists(blocked):
         raise Refused(ISOLATION_UNAVAILABLE, "probe_failed")
+    marker = f".harness-mount-probe-{run_id}"
+    plan = [(str(target / marker), False) for target in readonly_targets]
+    cleanup = [target / marker for target in readonly_targets]
+    for mount in binds:
+        target = mount.target if isinstance(mount, Mount) else mount
+        source = mount.source if isinstance(mount, Mount) else mount
+        writable = mount.writable if isinstance(mount, Mount) else True
+        plan.append((str(target / marker), writable))
+        cleanup.append(source / marker)
+    if any(os.path.lexists(path) for path in cleanup):
+        raise Refused(ISOLATION_UNAVAILABLE, "probe_failed")
     command = [
         sys.executable,
         "-I",
         "-B",
         "-c",
         PROBE_SCRIPT,
+        json.dumps(plan),
         *HIDDEN_ROOTS,
         str(blocked),
         str(allowed),
@@ -585,6 +606,8 @@ def _probe(
     finally:
         blocked.unlink(missing_ok=True)
         allowed.unlink(missing_ok=True)
+        for path in cleanup:
+            path.unlink(missing_ok=True)
     if not result.started:
         raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
     if not isolated:
@@ -674,12 +697,11 @@ def run_test(
                 run_dir=run_dir,
                 launcher=launcher,
                 run_id=run_id,
+                readonly_targets=zones,
             )
             build_command = settings.build.command
             built = launcher(
-                lambda fd: sandbox_argv(
-                    bwrap, repo, prepare_binds, build_command, fd
-                ),
+                lambda fd: sandbox_argv(bwrap, repo, prepare_binds, build_command, fd),
                 env=sandbox_environment(cache, reports, environ),
                 log=run_dir / "log.txt",
                 timeout=TIMEOUT_SECONDS,

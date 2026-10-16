@@ -148,6 +148,14 @@ def _config(repo: Path) -> tuple[list[str], list[str]]:
     ):
         raise GuardRefusal("config_invalid")
     _optional_settings(runner)
+    if "build" in runner:
+        artifacts = runner["build"]["artifact_paths"]
+        _write_zones(repo, [*paths, *artifacts])
+        try:
+            if any(any((repo / item[:-3]).iterdir()) for item in artifacts):
+                raise GuardRefusal("write_zone_rejected")
+        except OSError:
+            raise GuardRefusal("write_zone_rejected") from None
     command = runner["command"]
     if (
         not isinstance(command, list)

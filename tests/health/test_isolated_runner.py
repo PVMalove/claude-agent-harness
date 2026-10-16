@@ -1017,3 +1017,76 @@ def test_failed_preparation_never_starts_selected_test(
     outcome = _run(project, "legit", launcher)
     assert outcome.result == "refused" and outcome.reason == reason
     assert len(launcher.calls) == 2
+
+
+def test_preparation_probe_checks_its_artifact_mount(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    data["test_runner"]["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    original = runner.sandbox_argv
+
+    def wrong_mount(*args, **kwargs):
+        argv = original(*args, **kwargs)
+        target = str(project / "artifacts")
+        if target in argv:
+            argv[argv.index(target) - 2] = "--ro-bind"
+        return argv
+
+    monkeypatch.setattr(runner, "sandbox_argv", wrong_mount)
+    outcome = runner.run_test(project, "legit")
+    assert (outcome.reason, outcome.detail) == ("isolation_unavailable", "probe_failed")
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "src/**",
+        ".harness/**",
+        "tests/**",
+        "tests/nested/**",
+        "artifacts/nested/**",
+        "alias/**",
+    ],
+)
+def test_unsafe_artifact_targets_refuse_without_launch(
+    project: Path, target: str
+) -> None:
+    (project / "artifacts").mkdir()
+    if target == "artifacts/nested/**":
+        (project / "artifacts/nested").mkdir()
+    (project / "tests/nested").mkdir()
+    (project / "alias").symlink_to(project / "artifacts", target_is_directory=True)
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    data["test_runner"]["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**", target],
+    }
+    _write_settings(project, data)
+    before = _snapshot(project)
+    launcher = FakeLauncher([])
+    expected = "config_invalid" if target == ".harness/**" else "write_zone_rejected"
+    assert _run(project, "legit", launcher).reason == expected
+    assert launcher.calls == [] and _snapshot(project) == before
+
+
+@pytest.mark.parametrize(
+    "attack", ["direct", "child_py", "symlink", "project_json", "module"]
+)
+def test_preparation_cannot_write_protected_files(sandboxed: Path, attack: str) -> None:
+    (sandboxed / "artifacts").mkdir()
+    data = _settings(["tests/**"], [sys.executable, "tests/attack.py", "{test_id}"])
+    data["test_runner"]["build"] = {
+        "command": [sys.executable, "tests/attack.py", attack],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(sandboxed, data)
+    before = _snapshot(sandboxed)
+    outcome = runner.run_test(sandboxed, "legit")
+    assert outcome.reason == "build_failed"
+    assert _snapshot(sandboxed) == before
