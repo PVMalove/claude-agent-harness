@@ -137,15 +137,16 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
 
 
 def _load_batch(root: Path, batch_id: str) -> JsonObject:
+    """The batch ``batch_id`` once its generation passed the strict read boundary and its own
+    graph is whole: every brief and status it names, their hashes and its report pointers."""
     with _ledger_errors():
-        return BatchRecord.from_dict(
-            _read_object(
-                _canonical_records_root(root)
-                / BatchRecord.directory
-                / f"{_safe_id(batch_id, 'batch')}.json",
-                "batch record",
-            )
-        ).to_dict()
+        records = _canonical_records_root(root)
+        name = f"{_safe_id(batch_id, 'batch')}.json"
+        batch = _read_object(records / BatchRecord.directory / name, "batch record")
+        record = BatchRecord.from_dict(batch)
+        with _unreadable():
+            LifecycleLedger.check_batch_references(records, batch, name)
+        return record.to_dict()
 
 
 def _load_dispatch(root: Path, dispatch_id: str) -> JsonObject:

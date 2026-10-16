@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 
 from harness.orchestration import coordinator
 from harness.orchestration.core import workspace
+from harness.orchestration.core.utils import _canonical
 from harness.json_types import JsonObject
 from tests.orchestration import test_coordinator as fixtures
 
@@ -105,6 +107,15 @@ def test_corrupt_snapshot_captures_input_without_accepting_report(
     corrupted = json.loads(path.read_bytes())
     corrupted["orchestration_policy"]["configuration"]["canonical_sha256"] = "0" * 64
     path.write_text(json.dumps(corrupted))
+    # The batch pins the corrupted brief, so only the snapshot's own digest refuses it.
+    batch_path = root / "batches" / f"{brief['batch_id']}.json"
+    batch = json.loads(batch_path.read_bytes())
+    for entry in batch["dispatches"]:
+        if entry["dispatch_id"] == brief["dispatch_id"]:
+            entry["brief_sha256"] = hashlib.sha256(
+                _canonical(corrupted).encode("utf-8")
+            ).hexdigest()
+    batch_path.write_text(json.dumps(batch))
 
     with pytest.raises(coordinator.CoordinatorError):
         coordinator.submit_report(

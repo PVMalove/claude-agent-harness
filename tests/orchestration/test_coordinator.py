@@ -52,6 +52,7 @@ from harness.orchestration.runtime_state_store import (
 )
 from harness.orchestration.ledger import (
     BatchRecord,
+    DispatchRecord,
     DispatchStatusRecord,
     LifecycleLedger,
     PlanRecord,
@@ -1907,6 +1908,15 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8"))
         record["worker_attestation_required"] = True
         path.write_text(json.dumps(record), encoding="utf-8")
+        # The batch pins the changed brief, so the strict read of the batch accepts it.
+        batch_path = self._records_root() / "batches" / f"{record['batch_id']}.json"
+        batch = json.loads(batch_path.read_text(encoding="utf-8"))
+        for entry in batch["dispatches"]:
+            if entry["dispatch_id"] == record["dispatch_id"]:
+                entry["brief_sha256"] = hashlib.sha256(
+                    utils._canonical(record).encode("utf-8")
+                ).hexdigest()
+        batch_path.write_text(json.dumps(batch), encoding="utf-8")
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._self_report(
@@ -6931,15 +6941,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with ledger_ops._ledger_lock(ledger):
             qa_lane._enqueue(ledger, open_id)
             record = ledger_ops._load_batch(root, batch["batch_id"])
-            record["dispatches"].append(
-                {
-                    "dispatch_id": open_id,
-                    "role": "qa",
-                    "state": "approved",
-                    "brief_sha256": "0" * 64,
-                }
-            )
-            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+            brief: JsonObject = {
+                "dispatch_id": open_id,
+                "batch_id": batch["batch_id"],
+                "role": "qa",
+                "state": "approved",
+                "coordinator_approval": None,
+            }
+            ledger_ops._write_record(ledger, DispatchRecord.from_dict(brief))
             ledger_ops._write_record(
                 ledger,
                 DispatchStatusRecord.from_dict(
@@ -6950,6 +6959,17 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     },
                 ),
             )
+            record["dispatches"].append(
+                {
+                    "dispatch_id": open_id,
+                    "role": "qa",
+                    "state": "approved",
+                    "brief_sha256": hashlib.sha256(
+                        utils._canonical(brief).encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
 
         decided = self._decide(batch["batch_id"], "abandon", reason="operator restart")
 

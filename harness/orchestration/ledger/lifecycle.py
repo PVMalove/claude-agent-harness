@@ -163,6 +163,18 @@ def _audit_problem(action: str, details: JsonObject) -> tuple[str, str] | None:
     return None
 
 
+def _path_segment(value: object) -> bool:
+    """Whether ``value`` names one entry of a directory: a non-empty string without a path
+    separator that is neither ``.`` nor ``..``."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and "/" not in value
+        and "\\" not in value
+        and value not in {".", ".."}
+    )
+
+
 def _lock_busy() -> LedgerLockBusy:
     return LedgerLockBusy(
         "ledger is locked by another operation",
@@ -1231,13 +1243,7 @@ class LifecycleLedger:
 
     @staticmethod
     def _check_record_id(record_id: object) -> None:
-        if (
-            not isinstance(record_id, str)
-            or not record_id
-            or "/" in record_id
-            or "\\" in record_id
-            or record_id in {".", ".."}
-        ):
+        if not _path_segment(record_id):
             raise LedgerError(
                 "record id is not a valid path segment",
                 remedy="use a non-empty record id with no path separators and not '.' or '..'",
@@ -1922,88 +1928,99 @@ class LifecycleLedger:
     @staticmethod
     def _validate_record_graph(root: Path) -> None:
         """Reject syntactically-valid but incomplete or orphaned lifecycle evidence."""
-        dispatches = {path.stem: path for path in (root / "dispatches").glob("*.json")}
-        statuses = {
-            path.stem: path for path in (root / "dispatch-status").glob("*.json")
-        }
+        dispatches = {path.stem for path in (root / "dispatches").glob("*.json")}
+        statuses = {path.stem for path in (root / "dispatch-status").glob("*.json")}
         referenced: set[str] = set()
         for batch_path in (root / "batches").glob("*.json"):
-            batch = _read(batch_path, "batch record")
-            entries = batch.get("dispatches", [])
-            if not isinstance(entries, list):
-                raise LedgerError(
-                    f"batch dispatches are invalid: {batch_path.name}",
-                    remedy=f"fix {batch_path.name} so its dispatches field is a list",
-                )
-            for entry in entries:
-                if not isinstance(entry, dict) or not isinstance(
-                    dispatch_id := entry.get("dispatch_id"), str
-                ):
-                    raise LedgerError(
-                        f"batch has an invalid dispatch entry: {batch_path.name}",
-                        remedy=f"fix {batch_path.name} so each dispatches entry is an object with a string dispatch_id",
-                    )
-                referenced.add(dispatch_id)
-                dispatch_path = dispatches.get(dispatch_id)
-                status_path = statuses.get(dispatch_id)
-                if dispatch_path is None or status_path is None:
-                    raise LedgerError(
-                        f"batch dispatch evidence is incomplete: {dispatch_id}",
-                        remedy=f"restore the missing dispatches/{dispatch_id}.json and/or dispatch-status/{dispatch_id}.json records",
-                    )
-                dispatch = _read(dispatch_path, "dispatch record")
-                status = _read(status_path, "dispatch status")
-                if dispatch.get("dispatch_id") != dispatch_id or dispatch.get(
-                    "batch_id"
-                ) != batch.get("batch_id"):
-                    raise LedgerError(
-                        f"dispatch does not belong to its batch: {dispatch_id}",
-                        remedy=f"fix dispatches/{dispatch_id}.json's dispatch_id/batch_id fields, or remove it from {batch_path.name}",
-                    )
-                if status.get("dispatch_id") != dispatch_id or not isinstance(
-                    status.get("state"), str
-                ):
-                    raise LedgerError(
-                        f"dispatch status is invalid: {dispatch_id}",
-                        remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields",
-                    )
-                expected_brief = entry.get("brief_sha256")
-                if (
-                    expected_brief
-                    != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
-                ):
-                    raise LedgerError(
-                        f"dispatch failed immutable brief integrity check: {dispatch_id}",
-                        remedy=f"dispatches/{dispatch_id}.json was modified after its brief_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
-                    )
-                if entry.get("state") == "reported":
-                    report_name = entry.get("report")
-                    if (
-                        not isinstance(report_name, str)
-                        or Path(report_name).is_absolute()
-                        or ".." in Path(report_name).parts
-                    ):
-                        raise LedgerError(
-                            f"reported dispatch has an invalid report path: {dispatch_id}",
-                            remedy=f"fix {batch_path.name}'s report path for dispatch {dispatch_id} to a relative path inside the generation",
-                        )
-                    report_path = root / report_name
-                    report = _read(report_path, "completion report")
-                    if (
-                        entry.get("report_sha256")
-                        != hashlib.sha256(
-                            _canonical(report).encode("utf-8")
-                        ).hexdigest()
-                    ):
-                        raise LedgerError(
-                            f"completion report failed immutable integrity check: {dispatch_id}",
-                            remedy=f"{report_path} was modified after its report_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
-                        )
-        if set(dispatches) != referenced or set(statuses) != referenced:
+            referenced |= LifecycleLedger.check_batch_references(
+                root, _read(batch_path, "batch record"), batch_path.name
+            )
+        if dispatches != referenced or statuses != referenced:
             raise LedgerError(
                 "lifecycle state contains orphaned dispatch evidence (run 'ledger clean' to fix)",
                 remedy="run 'coordinator.py ledger clean' to remove dispatch/status records no batch references",
             )
+
+    @staticmethod
+    def check_batch_references(root: Path, batch: JsonObject, name: str) -> set[str]:
+        """Check what the batch record ``name`` names in the generation ``root``: the brief and
+        status of each dispatch entry, the brief's ``brief_sha256`` and, for a reported entry,
+        its completion report and ``report_sha256``; returns the dispatch IDs it references.
+        A violation is a ``LedgerError``, and nothing is written.  A dispatch and status no
+        batch names yet pass: a composite write creates them before it names them."""
+        entries = batch.get("dispatches", [])
+        if not isinstance(entries, list):
+            raise LedgerError(
+                f"batch dispatches are invalid: {name}",
+                remedy=f"fix {name} so its dispatches field is a list",
+            )
+        referenced: set[str] = set()
+        for entry in entries:
+            # The ID is joined under the generation: a separator would lead out of it.
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(dispatch_id := entry.get("dispatch_id"), str)
+                or not _path_segment(dispatch_id)
+            ):
+                raise LedgerError(
+                    f"batch has an invalid dispatch entry: {name}",
+                    remedy=f"fix {name} so each dispatches entry is an object with a string dispatch_id",
+                )
+            referenced.add(dispatch_id)
+            dispatch_path = root / "dispatches" / f"{dispatch_id}.json"
+            status_path = root / "dispatch-status" / f"{dispatch_id}.json"
+            if not dispatch_path.is_file() or not status_path.is_file():
+                raise LedgerError(
+                    f"batch dispatch evidence is incomplete: {dispatch_id}",
+                    remedy=f"restore the missing dispatches/{dispatch_id}.json and/or dispatch-status/{dispatch_id}.json records",
+                )
+            dispatch = _read(dispatch_path, "dispatch record")
+            status = _read(status_path, "dispatch status")
+            if dispatch.get("dispatch_id") != dispatch_id or dispatch.get(
+                "batch_id"
+            ) != batch.get("batch_id"):
+                raise LedgerError(
+                    f"dispatch does not belong to its batch: {dispatch_id}",
+                    remedy=f"fix dispatches/{dispatch_id}.json's dispatch_id/batch_id fields, or remove it from {name}",
+                )
+            if status.get("dispatch_id") != dispatch_id or not isinstance(
+                status.get("state"), str
+            ):
+                raise LedgerError(
+                    f"dispatch status is invalid: {dispatch_id}",
+                    remedy=f"fix dispatch-status/{dispatch_id}.json's dispatch_id/state fields",
+                )
+            expected_brief = entry.get("brief_sha256")
+            if (
+                expected_brief
+                != hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
+            ):
+                raise LedgerError(
+                    f"dispatch failed immutable brief integrity check: {dispatch_id}",
+                    remedy=f"dispatches/{dispatch_id}.json was modified after its brief_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                )
+            if entry.get("state") == "reported":
+                report_name = entry.get("report")
+                if (
+                    not isinstance(report_name, str)
+                    or Path(report_name).is_absolute()
+                    or ".." in Path(report_name).parts
+                ):
+                    raise LedgerError(
+                        f"reported dispatch has an invalid report path: {dispatch_id}",
+                        remedy=f"fix {name}'s report path for dispatch {dispatch_id} to a relative path inside the generation",
+                    )
+                report_path = root / report_name
+                report = _read(report_path, "completion report")
+                if (
+                    entry.get("report_sha256")
+                    != hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
+                ):
+                    raise LedgerError(
+                        f"completion report failed immutable integrity check: {dispatch_id}",
+                        remedy=f"{report_path} was modified after its report_sha256 was recorded -- {INTERNAL_INVARIANT_REMEDY}",
+                    )
+        return referenced
 
     @staticmethod
     def _validate_audit(root: Path) -> None:

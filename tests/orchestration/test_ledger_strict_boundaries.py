@@ -1,11 +1,13 @@
 """Strict canonical-value boundaries of the lifecycle ledger: a write accepts only exact machine
 values, so free text, another letter case and synonyms never reach a record, a report or an audit
 event, while explanations stay in their own text fields; and an automatic decision reads only a
-generation whose machine fields are canonical or vouched for by its current migration."""
+generation whose machine fields are canonical or vouched for by its current migration, and whose
+batch graph, hashes and immutable pointers are whole."""
 
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pytest
@@ -35,6 +37,7 @@ from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
     LedgerError,
     LedgerUnmigrated,
+    LifecycleLedger,
     verified_audit,
 )
 from harness.orchestration.ledger.strict_read import require_canonical, unvouched
@@ -51,6 +54,7 @@ from tests.orchestration.test_ledger_migration import (
     Scene,
     canonical,
     make_scene,
+    sha,
     tree,
 )
 
@@ -565,3 +569,122 @@ def test_a_change_after_the_migration_is_an_integrity_stop_not_a_migration(
 
     assert not isinstance(caught.value, LedgerUnmigratedError)
     assert _state(scene) == before
+
+
+# --- The batch graph, its hashes and immutable pointers (DoD 3) ---------------------------------
+
+
+def _json(path: Path) -> JsonObject:
+    value = json.loads(path.read_text("utf-8"))
+    assert isinstance(value, dict)
+    return value
+
+
+def _rewrite_entry(scene: Scene, **changes: object) -> None:
+    """Rewrite batch A on disk, as damaged history would hold it, with its entry changed."""
+    batch = _json(scene.generation / f"batches/{BATCH_A}.json")
+    batch["dispatches"][0].update(changes)
+    scene.put(f"batches/{BATCH_A}.json", batch)
+
+
+def _missing_brief(scene: Scene) -> None:
+    (scene.generation / f"dispatches/{DISPATCH_A}.json").unlink()
+
+
+def _missing_status(scene: Scene) -> None:
+    (scene.generation / f"dispatch-status/{DISPATCH_A}.json").unlink()
+
+
+def _changed_brief(scene: Scene) -> None:
+    brief = _json(scene.generation / f"dispatches/{DISPATCH_A}.json")
+    scene.put(f"dispatches/{DISPATCH_A}.json", {**brief, "note": "changed"})
+
+
+def _changed_report(scene: Scene) -> None:
+    report = _json(scene.generation / f"reports/{DISPATCH_A}.json")
+    scene.put(f"reports/{DISPATCH_A}.json", {**report, "output": "changed"})
+
+
+def _brief_of_another_batch(scene: Scene) -> None:
+    brief = _json(scene.generation / f"dispatches/{DISPATCH_A}.json")
+    data = scene.put(f"dispatches/{DISPATCH_A}.json", {**brief, "batch_id": BATCH_B})
+    _rewrite_entry(scene, brief_sha256=sha(data))
+
+
+def _report_outside_the_generation(scene: Scene) -> None:
+    _rewrite_entry(scene, report="../outside.json")
+
+
+def _dispatch_id_with_a_separator(scene: Scene) -> None:
+    _rewrite_entry(scene, dispatch_id=f"../dispatches/{DISPATCH_A}")
+
+
+GRAPH_DAMAGE = {
+    "a missing brief": (_missing_brief, "dispatch evidence is incomplete"),
+    "a missing status": (_missing_status, "dispatch evidence is incomplete"),
+    "a changed brief": (_changed_brief, "brief integrity"),
+    "a changed report": (_changed_report, "report failed immutable integrity"),
+    "a brief of another batch": (_brief_of_another_batch, "does not belong"),
+    "a report outside the generation": (
+        _report_outside_the_generation,
+        "invalid report path",
+    ),
+    "a dispatch ID with a separator": (
+        _dispatch_id_with_a_separator,
+        "invalid dispatch entry",
+    ),
+}
+
+
+@pytest.mark.parametrize("damage", sorted(GRAPH_DAMAGE))
+def test_a_damaged_batch_graph_is_a_controlled_stop_that_rewrites_nothing(
+    scene: Scene, damage: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    make, match = GRAPH_DAMAGE[damage]
+    make(scene)
+    before = _state(scene)
+
+    with pytest.raises(LedgerUnreadableError, match=match) as caught:
+        _load_batch(scene.root, BATCH_A)
+    runtime_emergency.report_failure(
+        argparse.Namespace(command="batch", batch_command="show"), caught.value
+    )
+
+    assert not isinstance(caught.value, LedgerUnmigratedError)
+    line = capsys.readouterr().err
+    assert '"code": "integrity-failure"' in line and '"step": "ledger-read"' in line
+    assert _state(scene) == before
+
+
+def test_the_check_of_one_batch_returns_what_it_references(scene: Scene) -> None:
+    batch = scene.seed(BATCH_A, DISPATCH_A)
+
+    referenced = LifecycleLedger.check_batch_references(
+        scene.generation, batch, f"{BATCH_A}.json"
+    )
+
+    assert referenced == {DISPATCH_A}
+
+
+def test_the_intermediate_states_of_a_composite_write_are_read(scene: Scene) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    # A dispatch and its status that a composite write creates before the batch names them.
+    scene.put(
+        "dispatches/dispatch-000000a2.json",
+        {"dispatch_id": "dispatch-000000a2", "batch_id": BATCH_A, "state": "approved"},
+    )
+    scene.put(
+        "dispatch-status/dispatch-000000a2.json",
+        {"dispatch_id": "dispatch-000000a2", "state": "approved"},
+    )
+    # A status already ahead of its batch entry.
+    scene.put(
+        f"dispatch-status/{DISPATCH_A}.json",
+        {"dispatch_id": DISPATCH_A, "state": "working"},
+    )
+
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+    assert _load_dispatch_status(scene.root, DISPATCH_A)["state"] == "working"
+    with pytest.raises(LedgerError, match="orphaned dispatch evidence"):
+        scene.ledger.validate()
