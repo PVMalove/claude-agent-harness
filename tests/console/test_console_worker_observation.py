@@ -361,3 +361,110 @@ def test_session_list_prefers_recent_active_work_and_preserves_explicit_selectio
             assert explicit.dispatch == "old-reported"
 
     asyncio.run(scenario())
+
+
+_LONG_ID = "dispatch-e98a4a72-50ac-4fd8-b421-1db55c17f287"
+_LONG_WORKTREE = "/home/user/Projects/Code/some-project/.harness/.sandboxes/worktrees/issue-721-console-design-system"
+
+
+def _blocked_snapshot(_repo: Path, dispatch: str, _offset: int) -> JsonObject:
+    return {
+        "dispatch_id": _LONG_ID,
+        "ticket": "#721",
+        "role": "developer",
+        "state": "blocked",
+        "worktree": _LONG_WORKTREE,
+        "failure": {"error": "tooling blocked the commit: hook refused the message"},
+        "startup": {"worker_state": "live"},
+        "events": [],
+        "next_offset": 0,
+    }
+
+
+@pytest.mark.parametrize("size", [(135, 44), (100, 40), (70, 30)])
+def test_context_panel_keeps_full_id_path_and_block_reason_at_every_width(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from textual.widgets import ListView
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            context = screen.query_one("#worker-context")
+            facts = screen.query_one("#worker-context-facts", Static)
+            # Never hidden below 140 columns: beside the stream when wide, under it when narrow.
+            assert context.display and context.region.width >= 25
+            text = str(facts.content)
+            for needed in (
+                _LONG_ID,
+                _LONG_WORKTREE,
+                "tooling blocked the commit: hook refused the message",
+            ):
+                assert needed in text
+            assert facts.styles.text_overflow != "ellipsis"
+            assert facts.region.width <= context.region.width
+            assert _LONG_ID in str(
+                screen.query_one("#worker-selection", Static).content
+            )
+            navigation = screen.query_one("#worker-navigation")
+            menu = screen.query_one("#worker-sections", ListView)
+            assert menu.index == 4  # Orchestration is the open section
+            if size[0] < 130:
+                assert not navigation.display
+                assert context.region.y > screen.query_one("#worker-output").region.y
+                await pilot.click("#worker-menu")
+                await pilot.pause()
+                assert navigation.display
+            else:
+                assert navigation.display
+                assert (
+                    context.region.x >= screen.query_one("#worker-output").region.right
+                )
+            assert screen.region.contains_region(
+                screen.query_one("#worker-actions").region
+            )
+
+    asyncio.run(scenario())
+
+
+def test_worker_menu_navigation_runs_no_command_and_back_keys_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.console.screens.dashboard import DashboardScreen
+
+    opened: list[int] = []
+
+    async def record(_self: DashboardScreen, index: int) -> None:
+        opened.append(index)
+
+    monkeypatch.setattr(DashboardScreen, "action_open_section", record)
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 48)) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.press("3")
+            await pilot.pause()
+            assert opened == [2]
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            crumbs = str(screen.query_one("#worker-breadcrumbs", Static).content)
+            assert crumbs.startswith("Home  ›  Orchestration")
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
+
+    asyncio.run(scenario())

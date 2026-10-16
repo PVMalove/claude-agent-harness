@@ -181,7 +181,7 @@ class CommandMenuScreen(Translated, Screen[None]):
     }
     CommandMenuScreen #command-body { height: 1fr; min-height: 8; margin: 0 1; }
     CommandMenuScreen #command-menu { height: 1fr; margin: 0; border-title-color: $primary; }
-    CommandMenuScreen.-wide #command-menu { width: 48; }
+    CommandMenuScreen.-wide #command-menu, CommandMenuScreen.-spacious #command-menu { width: 48; }
     CommandMenuScreen #command-detail-scroll {
         height: 1fr; padding: 0 1; border: round $panel-lighten-2; border-title-color: $primary;
     }
@@ -264,6 +264,12 @@ class CommandMenuScreen(Translated, Screen[None]):
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов экрана меню команд."""
         yield TopBar(f"Главная › {self.CRUMB}")
+        yield from self.compose_commands()
+        yield Footer()
+
+    def compose_commands(self) -> ComposeResult:
+        """Содержимое экрана без рамки: обзор, меню команд с деталями и область вывода. Его же
+        размещает общая оболочка консоли."""
         yield from self.overview()
         self._language = getattr(self.app, "language", "ru")
         children = self._menu_children()
@@ -280,7 +286,6 @@ class CommandMenuScreen(Translated, Screen[None]):
         )
         output.border_title = brand.frame_title("Вывод")
         yield output
-        yield Footer()
 
     def sync_language(self) -> None:
         """Re-label the group headings after the console language changed."""

@@ -17,7 +17,8 @@ from textual.pilot import Pilot
 from harness.console import brand
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
-from harness.console.screens.dashboard import SECTIONS, DashboardScreen
+from harness.console.screens.dashboard import DashboardScreen
+from harness.console.shell import SECTIONS
 from harness.console.screens.diagnostics import DiagnosticsScreen
 from harness.console.screens.harness import HarnessScreen
 from harness.health.model import CheckResult, Fix, Report
@@ -69,10 +70,10 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
                 "dashboard-online",
             ]
             if size[0] < 100:
-                assert not screen.query_one("#dashboard-side").display
+                assert not screen.query_one("#dashboard-sections").display
                 await pilot.click("#dashboard-menu")
                 await pilot.pause()
-                assert screen.query_one("#dashboard-side").display
+                assert screen.query_one("#dashboard-sections").display
             sections = screen.query_one("#dashboard-sections")
             assert sections.query_one("#open-project", ListItem)
             assert sections.query_one("#update-harness", ListItem)
@@ -240,7 +241,7 @@ def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
 
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
-            if not app.screen.query_one("#dashboard-side").display:
+            if not app.screen.query_one("#dashboard-sections").display:
                 await pilot.click("#dashboard-menu")
                 await pilot.pause()
             menu = app.screen.query_one("#section-menu", ListView)
@@ -266,7 +267,7 @@ def test_selecting_orchestration_pushes_the_orchestration_screen(
 
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
-            if not app.screen.query_one("#dashboard-side").display:
+            if not app.screen.query_one("#dashboard-sections").display:
                 await pilot.click("#dashboard-menu")
                 await pilot.pause()
             menu = app.screen.query_one("#section-menu", ListView)
@@ -455,7 +456,7 @@ def test_help_opens_from_the_menu_and_from_f1(tmp_path: Path) -> None:
 
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
-            if not app.screen.query_one("#dashboard-side").display:
+            if not app.screen.query_one("#dashboard-sections").display:
                 await pilot.click("#dashboard-menu")
                 await pilot.pause()
             menu = app.screen.query_one("#section-menu", ListView)
