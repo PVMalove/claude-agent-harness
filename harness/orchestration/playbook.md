@@ -800,8 +800,9 @@ write through the runtime's own sandbox settings (Claude Code: `sandbox.filesyst
 with the state and inbox directories) before launch. A refused lock returns
 `sandbox_denied: ...` with the exact path, not a traceback. Classify it as infrastructure, not as
 a task error; deliver the staged file with the relay below only after the cause is named. The
-adapter probe creates and removes a file in the state directory instead of taking the real lock,
-so it cannot contend with a running coordinator; it does not replace the worker-side probe above.
+adapter probe takes and releases the real lock (a lock held by another operation counts as
+writable) and reports `ledger_lock`; it proves only the adapter's own context and does not
+replace the worker-side probe above.
 
 For proven early exit under `auto`, observe `batch auto-report`, then record its
 `runtime-unavailable` stop with `batch auto-decide`. The coordinator does not invent a role report.

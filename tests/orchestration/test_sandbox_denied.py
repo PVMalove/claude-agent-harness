@@ -46,3 +46,28 @@ def test_other_os_errors_are_not_called_sandbox_denied(
         with _ledger_lock(LifecycleLedger(tmp_path)):
             pytest.fail("the lock must not be taken")
     assert not isinstance(caught.value, SandboxDeniedError)
+
+
+def test_ledger_lock_probe_takes_the_real_lock_and_reports_a_denial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.orchestration.operation_access import _probe_ledger_lock
+
+    assert _probe_ledger_lock(tmp_path) == ("verified", "lock taken and released")
+    assert not (tmp_path / ".coordinator.lock").exists()
+
+    (tmp_path / ".coordinator.lock").mkdir()
+    state, reason = _probe_ledger_lock(tmp_path)
+    assert state == "verified" and "held by another operation" in reason
+    (tmp_path / ".coordinator.lock").rmdir()
+
+    real_mkdir = Path.mkdir
+
+    def denied(self: Path, *args: object, **kwargs: object) -> None:
+        if self.name == ".coordinator.lock":
+            raise OSError(errno.EROFS, "Read-only file system", str(self))
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", denied)
+    state, reason = _probe_ledger_lock(tmp_path)
+    assert state == "denied" and reason.startswith("sandbox_denied:")

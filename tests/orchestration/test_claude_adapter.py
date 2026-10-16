@@ -222,10 +222,12 @@ def test_worker_context_probe_keeps_the_exact_filesystem_refusal(
         external_worker.state_dir.chmod(0o755)
 
 
+@pytest.mark.parametrize("panel_open", [False, True], ids=["panel-closed", "panel-open"])
 def test_native_permission_uses_control_frames_without_extra_model_messages(
     external_worker: recovery_tests.RecoveryTests,
     reachable_endpoint: str,
     monkeypatch: pytest.MonkeyPatch,
+    panel_open: bool,
 ) -> None:
     monkeypatch.setenv("EXAMPLE_API_KEY", "native-secret-716")
     from tests.orchestration.test_startup_lifecycle import cli
@@ -235,16 +237,24 @@ def test_native_permission_uses_control_frames_without_extra_model_messages(
     brief = external_worker._dispatch(batch["batch_id"], "architect")["brief"]
     trace = external_worker.tmp / "model-messages.json"
     runtime = external_worker.tmp / "permission-runtime"
+    received = external_worker.tmp / "runtime-stdin-kinds.json"
     runtime.write_text(
         "#!/usr/bin/env python3\nimport json,sys,signal\nfrom pathlib import Path\n"
         "if '--help' in sys.argv:\n print('--verbose --output-format --input-format --model --effort --permission-mode --permission-prompts --permission-prompt-tool --session-id --tools manual --input-format --permission-prompts');sys.exit(0)\n"
         "signal.alarm(30)\n"
-        "init=json.loads(sys.stdin.readline())\n"
+        "kinds=[]\n"
+        "def read():\n"
+        " message=json.loads(sys.stdin.readline())\n"
+        " body=message.get('request') or message.get('response') or {}\n"
+        " kinds.append(str(message.get('type'))+':'+str(body.get('subtype','')))\n"
+        f" Path({str(received)!r}).write_text(json.dumps(kinds))\n"
+        " return message\n"
+        "init=read()\n"
         "print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':init['request_id'],'response':{}}}),flush=True)\n"
-        "user=json.loads(sys.stdin.readline())\n"
+        "user=read()\n"
         f"Path({str(trace)!r}).write_text(json.dumps([user]))\n"
         "print(json.dumps({'type':'control_request','request_id':'permission-716','request':{'subtype':'can_use_tool','tool_name':'Bash','input':{'command':'git status --short','password':'native-secret-716'}}}),flush=True)\n"
-        "answer=json.loads(sys.stdin.readline())\n"
+        "answer=read()\n"
         "assert answer['response']['response']['updatedInput']['password']=='native-secret-716'\n"
         "print(json.dumps({'type':'result','is_error':False,'result':answer['response']['response']['behavior']}),flush=True)\n"
     )
@@ -276,38 +286,39 @@ def test_native_permission_uses_control_frames_without_extra_model_messages(
     before = trace.read_bytes()
     # The same pending fake runtime remains connected while the actual panel is opened,
     # refreshed, filtered, closed and re-opened. None of those operations may contact a model.
-    import asyncio
-    import socket
-    from harness.console.app import HarnessConsoleApp
-    from harness.console.screens.worker_observation import WorkerObservationScreen
-    from textual.widgets import Select
+    if panel_open:
+        import asyncio
+        import socket
+        from harness.console.app import HarnessConsoleApp
+        from harness.console.screens.worker_observation import WorkerObservationScreen
+        from textual.widgets import Select
 
-    def no_network(_socket: socket.socket, address: object) -> None:
-        raise AssertionError(f"observation attempted a network request: {address}")
+        def no_network(_socket: socket.socket, address: object) -> None:
+            raise AssertionError(f"observation attempted a network request: {address}")
 
-    async def watch() -> None:
-        app = HarnessConsoleApp(external_worker.repo)
-        async with app.run_test(size=(150, 48)) as pilot:
-            for _ in range(2):
-                screen = WorkerObservationScreen(
-                    external_worker.repo, brief["dispatch_id"]
-                )
-                await app.push_screen(screen)
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-                assert screen.snapshot["permission_requests"]
-                screen.query_one("#worker-filter", Select).value = "permission"
-                await pilot.pause()
-                await pilot.click("#worker-reconnect")
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-                await pilot.press("escape")
-                await pilot.pause()
+        async def watch() -> None:
+            app = HarnessConsoleApp(external_worker.repo)
+            async with app.run_test(size=(150, 48)) as pilot:
+                for _ in range(2):
+                    screen = WorkerObservationScreen(
+                        external_worker.repo, brief["dispatch_id"]
+                    )
+                    await app.push_screen(screen)
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    assert screen.snapshot["permission_requests"]
+                    screen.query_one("#worker-filter", Select).value = "permission"
+                    await pilot.pause()
+                    await pilot.click("#worker-reconnect")
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    await pilot.press("escape")
+                    await pilot.pause()
 
-    with monkeypatch.context() as observation_scope:
-        observation_scope.setattr(socket.socket, "connect", no_network)
-        asyncio.run(watch())
-    assert trace.read_bytes() == before
+        with monkeypatch.context() as observation_scope:
+            observation_scope.setattr(socket.socket, "connect", no_network)
+            asyncio.run(watch())
+        assert trace.read_bytes() == before
     for _ in range(3):
         cli(external_worker, "dispatch", "observe", "--dispatch", brief["dispatch_id"])
     pending = observed["permission_requests"][0]
@@ -339,3 +350,10 @@ def test_native_permission_uses_control_frames_without_extra_model_messages(
     assert result["report_recorded"] is False
     assert trace.read_bytes() == before
     assert len(json.loads(before)) == 1
+    # Whether or not a panel was ever opened, the runtime received exactly the protocol
+    # handshake, one user message and the operator's permission answer: nothing for display.
+    assert json.loads(received.read_text()) == [
+        "control_request:initialize",
+        "user:",
+        "control_response:success",
+    ]
