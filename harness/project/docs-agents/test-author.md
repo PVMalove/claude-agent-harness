@@ -117,3 +117,7 @@ brief architect, публичные сигнатуры, существующие
 Сборку и отдельную тестовую БД задают необязательные `test_runner.build` и
 `test_runner.database` (см. `docs/hooks/run-test.md`). Тест-автор не меняет артефакты: его
 `Write`/`Edit` по-прежнему ограничены `test_paths`; недоступная защита отключает автора.
+
+Runner запускает БД только для совпавших `test_runner.database.test_ids`; чистая доменная
+логика обходится без сервера. SQL, rollback и ограничения проверяйте на production-движке.
+Отказы `build_failed`, `build_timeout` и `database_unavailable` не являются поведенческим Red.

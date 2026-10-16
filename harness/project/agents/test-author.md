@@ -46,3 +46,7 @@ A status never hides the runner's answer. Do not repair production code, create 
 through another command, or invent a failure. Do not create an orchestration manifest, dispatch,
 brief, completion report, approval, or ledger record: the developer owns the ordinary route and
 the TDD cycle.
+
+Runner запускает БД только для совпавших `test_runner.database.test_ids`; чистая доменная
+логика обходится без сервера. SQL, rollback и ограничения проверяйте на production-движке.
+Отказы `build_failed`, `build_timeout` и `database_unavailable` не являются поведенческим Red.

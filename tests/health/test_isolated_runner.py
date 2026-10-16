@@ -107,6 +107,10 @@ def project() -> Iterator[Path]:
     shutil.copyfile(
         Path(runner.__file__), repo / ".harness" / "health" / "isolated_runner.py"
     )
+    shutil.copyfile(
+        Path(runner.__file__).with_name("isolated_runner_session.py"),
+        repo / ".harness/health/isolated_runner_session.py",
+    )
     _write_settings(
         repo,
         _settings(["tests/**"], [sys.executable, "-B", "tests/attack.py", "{test_id}"]),
@@ -145,6 +149,7 @@ class FakeLauncher:
         env: Mapping[str, str],
         log: Path,
         timeout: float,
+        session: bool = False,
     ) -> runner.Launch:
         argv = build(7)
         self.calls.append(argv)
@@ -1090,3 +1095,81 @@ def test_preparation_cannot_write_protected_files(sandboxed: Path, attack: str) 
     outcome = runner.run_test(sandboxed, "legit")
     assert outcome.reason == "build_failed"
     assert _snapshot(sandboxed) == before
+
+
+@pytest.mark.parametrize(
+    "test_id,uses_database", [("sql.constraints", True), ("domain.add", False)]
+)
+def test_only_matching_selected_tests_start_database(
+    project: Path, test_id: str, uses_database: bool
+) -> None:
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    data["test_runner"]["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["sql.*"],
+        "command": ["foreground-db"],
+        "ready_command": ["ready"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED, STARTED])
+    assert _run(project, test_id, launcher).result == "passed"
+    selected = launcher.calls[-1]
+    assert (
+        any(part.endswith("isolated_runner_session.py") for part in selected)
+        is uses_database
+    )
+    assert "RUNNER_SECRET" not in launcher.envs[-1]
+
+
+def _fake_database_settings(project: Path, server: str, selected: str) -> None:
+    data = _settings(["tests/**"], [sys.executable, "-c", selected, "{test_id}"])
+    data["test_runner"]["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["sql.*"],
+        "command": [sys.executable, "-c", server],
+        "ready_command": [
+            sys.executable,
+            "-c",
+            "import os,sys; sys.exit(not os.path.exists(os.environ['HARNESS_TEST_DATABASE_DIR']+'/ready'))",
+        ],
+    }
+    _write_settings(project, data)
+
+
+FAKE_DATABASE = "import os,time; open(os.environ['HARNESS_TEST_DATABASE_DIR']+'/ready','w').close(); time.sleep(120)"
+
+
+def test_private_database_lifecycle_and_result_channel(sandboxed: Path) -> None:
+    selected = """import os,sys
+from pathlib import Path
+assert os.environ['HARNESS_TEST_DATABASE_DIR'].startswith('/tmp/harness-db-')
+assert os.path.isdir(os.environ['HARNESS_TEST_DATABASE_SOCKET_DIR'])
+try:
+    open('/proc/%d/fd/1' % os.getppid(), 'w')
+except PermissionError:
+    pass
+else:
+    raise AssertionError('helper result channel exposed')
+print('{"database":"unavailable"}')
+Path(os.environ['HARNESS_TEST_REPORT_DIR']+'/dbdir').write_text(os.environ['HARNESS_TEST_DATABASE_DIR'])
+sys.exit(3)
+"""
+    _fake_database_settings(sandboxed, FAKE_DATABASE, selected)
+    first = runner.run_test(sandboxed, "sql.constraint")
+    assert (first.result, first.reason, first.exit_code) == ("failed", "test_failed", 3)
+    second = runner.run_test(sandboxed, "sql.constraint")
+    directories = [
+        storage_path(sandboxed, "runs", f"isolated-test-{item.run_id}")
+        / "reports/dbdir"
+        for item in (first, second)
+    ]
+    assert directories[0].read_text() != directories[1].read_text()
+
+
+def test_database_start_failure_refuses_before_selected_test(sandboxed: Path) -> None:
+    _fake_database_settings(
+        sandboxed, "raise SystemExit(4)", "open('tests/should-not-run','w').close()"
+    )
+    outcome = runner.run_test(sandboxed, "sql.constraint")
+    assert outcome.reason == "database_unavailable" and outcome.result == "refused"
+    assert not (sandboxed / "tests/should-not-run").exists()

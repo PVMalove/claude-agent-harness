@@ -2,7 +2,7 @@
 # Isolated runner of one selected test (docs/hooks/run-test.md): run-test.sh <test-id> | --probe.
 # Not an event hook: the runner lives in .harness/health/isolated_runner.py, and this entry point
 # only finds Python and the repository (two levels above .claude/hooks/). It never runs a test
-# itself; without Python or the runner module it prints a runner_unavailable refusal and exits 3.
+# itself; protected build and database lifecycle stay inside the runner sandbox. Without Python or the runner module it prints a runner_unavailable refusal and exits 3.
 REFUSED='{"test_id":null,"result":"refused","reason":"runner_unavailable","detail":null,"exit_code":null,"run_id":null}'
 if [ "$#" -eq 1 ] && [ "$1" = "--probe" ]; then
   REFUSED='{"status":"unavailable","reason":"runner_unavailable","detail":null}'

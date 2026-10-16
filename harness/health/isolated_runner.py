@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -26,7 +27,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import IO, BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence, cast
 
 from harness.storage import storage_path
 
@@ -82,6 +83,7 @@ REFUSAL_REASONS = frozenset(
         "write_zone_rejected",
         "build_failed",
         "build_timeout",
+        "database_unavailable",
         ISOLATION_UNAVAILABLE,
     }
 )
@@ -138,6 +140,7 @@ class Settings:
     test_paths: list[str]
     command: list[str]
     build: Build | None = None
+    database: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,7 @@ class Launch:
     started: bool
     exit_code: int | None
     timed_out: bool = False
+    database_unavailable: bool = False
 
 
 class Launcher(Protocol):
@@ -188,6 +192,7 @@ class Launcher(Protocol):
         env: Mapping[str, str],
         log: Path,
         timeout: float,
+        session: bool = False,
     ) -> Launch: ...
 
 
@@ -247,6 +252,7 @@ def load_settings(repo: Path) -> Settings:
         list(data["test_paths"]),
         list(data["test_runner"]["command"]),
         Build(build["command"], build["artifact_paths"]) if build else None,
+        data["test_runner"].get("database"),
     )
 
 
@@ -412,6 +418,7 @@ def launch(
     env: Mapping[str, str],
     log: Path,
     timeout: float,
+    session: bool = False,
 ) -> Launch:
     """Run the argv `build(status_fd)` in a new session, append its capped output to `log` and
     kill its process group on timeout. `started` needs a `child-pid` record on the status fd."""
@@ -421,6 +428,7 @@ def launch(
         return Launch(started=False, exit_code=None)
     read_fd, write_fd = os.pipe()
     status = bytearray()
+    session_status = bytearray()
     try:
         with sink:
             try:
@@ -428,7 +436,7 @@ def launch(
                     build(write_fd),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stderr=subprocess.PIPE if session else subprocess.STDOUT,
                     env=dict(env),
                     pass_fds=(write_fd,),
                     start_new_session=True,
@@ -438,14 +446,22 @@ def launch(
             finally:
                 os.close(write_fd)
             assert process.stdout is not None
+            output = process.stderr if session else process.stdout
+            assert output is not None
             readers = [
-                threading.Thread(
-                    target=_copy_capped, args=(process.stdout, sink), daemon=True
-                ),
+                threading.Thread(target=_copy_capped, args=(output, sink), daemon=True),
                 threading.Thread(
                     target=_read_status, args=(read_fd, status), daemon=True
                 ),
             ]
+            if session:
+                readers.append(
+                    threading.Thread(
+                        target=_read_status,
+                        args=(process.stdout.fileno(), session_status),
+                        daemon=True,
+                    )
+                )
             for reader in readers:
                 reader.start()
             timed_out = False
@@ -458,12 +474,16 @@ def launch(
             for reader in readers:
                 reader.join(DRAIN_SECONDS)
             process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
     finally:
         os.close(read_fd)
     return Launch(
         started=_child_started(bytes(status)),
         exit_code=None if timed_out else process.returncode,
         timed_out=timed_out,
+        database_unavailable=session
+        and bytes(session_status).strip() != b'{"database":"ready"}',
     )
 
 
@@ -724,14 +744,32 @@ def run_test(
             run_id=run_id,
         )
         argv = command_for(settings.command, test_id)
+        database = settings.database
+        use_database = database is not None and any(
+            fnmatch.fnmatchcase(test_id, selector)
+            for selector in cast(list[str], database["test_ids"])
+        )
+        if use_database:
+            argv = [
+                sys.executable,
+                "-I",
+                "-B",
+                str(repo / ".harness/health/isolated_runner_session.py"),
+                json.dumps(database),
+                json.dumps(argv),
+            ]
+        session_options = {"session": True} if use_database else {}
         result = launcher(
             lambda fd: sandbox_argv(bwrap, repo, binds, argv, fd),
             env=env,
             log=run_dir / "log.txt",
             timeout=TIMEOUT_SECONDS,
+            **session_options,
         )
         if not result.started:
             raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
+        if result.database_unavailable and not result.timed_out:
+            raise Refused("database_unavailable")
     except Refused as refusal:
         return Outcome(
             test_id, "refused", refusal.reason, refusal.detail, run_id=run_id
