@@ -276,41 +276,38 @@ def test_native_permission_uses_control_frames_without_extra_model_messages(
     before = trace.read_bytes()
     # The same pending fake runtime remains connected while the actual panel is opened,
     # refreshed, filtered, closed and re-opened. None of those operations may contact a model.
-    import importlib.util
+    import asyncio
+    import socket
+    from harness.console.app import HarnessConsoleApp
+    from harness.console.screens.worker_observation import WorkerObservationScreen
+    from textual.widgets import Select
 
-    if importlib.util.find_spec("textual") is not None:
-        import asyncio
-        import socket
-        from harness.console.app import HarnessConsoleApp
-        from harness.console.screens.worker_observation import WorkerObservationScreen
-        from textual.widgets import Select
+    def no_network(_socket: socket.socket, address: object) -> None:
+        raise AssertionError(f"observation attempted a network request: {address}")
 
-        def no_network(_socket: socket.socket, address: object) -> None:
-            raise AssertionError(f"observation attempted a network request: {address}")
+    async def watch() -> None:
+        app = HarnessConsoleApp(external_worker.repo)
+        async with app.run_test(size=(150, 48)) as pilot:
+            for _ in range(2):
+                screen = WorkerObservationScreen(
+                    external_worker.repo, brief["dispatch_id"]
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                assert screen.snapshot["permission_requests"]
+                screen.query_one("#worker-filter", Select).value = "permission"
+                await pilot.pause()
+                await pilot.click("#worker-reconnect")
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                await pilot.press("escape")
+                await pilot.pause()
 
-        async def watch() -> None:
-            app = HarnessConsoleApp(external_worker.repo)
-            async with app.run_test(size=(150, 48)) as pilot:
-                for _ in range(2):
-                    screen = WorkerObservationScreen(
-                        external_worker.repo, brief["dispatch_id"]
-                    )
-                    await app.push_screen(screen)
-                    await pilot.pause()
-                    await app.workers.wait_for_complete()
-                    assert screen.snapshot["permission_requests"]
-                    screen.query_one("#worker-filter", Select).value = "permission"
-                    await pilot.pause()
-                    await pilot.click("#worker-reconnect")
-                    await pilot.pause()
-                    await app.workers.wait_for_complete()
-                    await pilot.press("escape")
-                    await pilot.pause()
-
-        with monkeypatch.context() as observation_scope:
-            observation_scope.setattr(socket.socket, "connect", no_network)
-            asyncio.run(watch())
-        assert trace.read_bytes() == before
+    with monkeypatch.context() as observation_scope:
+        observation_scope.setattr(socket.socket, "connect", no_network)
+        asyncio.run(watch())
+    assert trace.read_bytes() == before
     for _ in range(3):
         cli(external_worker, "dispatch", "observe", "--dispatch", brief["dispatch_id"])
     pending = observed["permission_requests"][0]
