@@ -353,7 +353,10 @@ def test_pipeline_stats_and_history_filter_by_state_and_open_a_timeline(
         app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
         async with app.run_test(size=(120, 60)) as pilot:
             await pilot.pause()
-            stats_text = str(app.screen.query_one("#pipeline-stats", Static).content)
+            stats_text = "\n".join(
+                str(cell.content)
+                for cell in app.screen.query("#pipeline-stats .field").results(Static)
+            )
             history = app.screen.query_one("#batch-history", ListView)
             everything = [item.name for item in history.children]
             states = app.screen.query_one("#state-filter", ListView)
@@ -369,7 +372,7 @@ def test_pipeline_stats_and_history_filter_by_state_and_open_a_timeline(
         return stats_text, everything, blocked, timeline
 
     stats_text, everything, blocked, timeline = asyncio.run(scenario())
-    assert "Запусков (batch): 2" in stats_text
+    assert "Запусков (batch)\n2, тикетов: 2" in stats_text
     assert everything == ["batch-stuck", "batch-flow"]
     assert blocked == ["batch-stuck"]
     assert "[decision] решение coordinator: block" in timeline
@@ -447,11 +450,12 @@ def test_orchestration_on_a_narrow_terminal_keeps_the_commands_reachable(
             await pilot.click("#shell-menu")
             await pilot.pause()
             menu = screen.query_one("#command-menu", ListView)
-            assert screen.region.contains_region(menu.region)
-            assert menu.region.height >= 3
-            assert screen.region.contains_region(
-                screen.query_one("#command-output-scroll").region
-            )
+            assert menu.region.height >= 8
+            # The page scrolls: the menu, then the output, come into view one after the other.
+            for widget in (menu, screen.query_one("#command-output-scroll")):
+                widget.scroll_visible(animate=False, immediate=True)
+                await pilot.pause()
+                assert screen.region.contains_region(widget.region)
 
     asyncio.run(scenario())
 
@@ -476,3 +480,53 @@ def test_orchestration_switches_language_and_goes_back_with_escape(
     assert crumbs == "Home  ›  Orchestration"
     assert label == "5 Orchestration"
     assert went_back
+
+
+def test_worker_sessions_button_sits_in_the_header_and_shows_the_active_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from textual.widgets import Button
+
+    from harness.console import reports
+    from harness.console.screens.worker_observation import WorkerObservationScreen
+
+    stages = [
+        reports.StageEntry(
+            "d-1", "batch-a", "#1", "developer", "working", "2026-10-16"
+        ),
+        reports.StageEntry("d-2", "batch-a", "#2", "qa", "approved", "2026-10-15"),
+        reports.StageEntry(
+            "d-3", "batch-a", "#3", "architect", "reported", "2026-10-14"
+        ),
+    ]
+    view = reports.LedgerView(stages=stages)
+    monkeypatch.setattr(reports, "load_ledger_view", lambda _repo: view)
+
+    async def scenario() -> tuple[str, str, list[str], bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = OrchestrationScreen(
+                tmp_path, command_runner=_RecordingRunner(), load_view=lambda _: view
+            )
+            await app.push_screen(screen)
+            await _settle(pilot, app)
+            button = screen.query_one("#worker-sessions", Button)
+            ru = str(button.label)
+            header = screen.query_one("#orchestration-header")
+            page_buttons = [
+                str(item.id)
+                for item in screen.query_one("#orchestration-page").query(Button)
+                if item.parent is not header
+            ]
+            await pilot.press("f2")
+            await _settle(pilot, app)
+            en = str(button.label)
+            button.press()
+            await pilot.pause()
+            await pilot.pause()
+            return ru, en, page_buttons, isinstance(app.screen, WorkerObservationScreen)
+
+    ru, en, orphans, opened = asyncio.run(scenario())
+    assert ru == "Рабочие сессии · 2" and en == "Worker sessions · 2"
+    assert orphans == []  # no button stands outside the header
+    assert opened

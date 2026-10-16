@@ -28,7 +28,7 @@ def test_lines_fit_and_every_break_follows_a_separator(value: str, width: int) -
     for line in lines[:-1]:
         assert line[-1] in SEPARATORS
     for line in lines:
-        longest_piece = max(len(piece) for piece in re.split(r"(?<=[/\-_.:])", line))
+        longest_piece = max(len(piece) for piece in re.split(r"(?<=[/\-_.])", line))
         assert len(line) <= width or longest_piece == len(line)
 
 

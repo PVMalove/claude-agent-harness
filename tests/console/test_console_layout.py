@@ -206,3 +206,37 @@ def test_dashboard_layout(
             ) + await last_card_is_reachable(screen, pilot)
 
     assert asyncio.run(scenario()) == []
+
+
+ORCHESTRATION_TITLES = (".breadcrumbs", "#orchestration-title")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_orchestration_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from textual.widgets import Button, ListView
+
+    from harness.console.screens.orchestration import OrchestrationScreen
+    from tests.console._console_ledger_fixture import build_reports_fixture
+
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[list[str], int, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot, OrchestrationScreen(tmp_path), language)
+            header = screen.query_one("#orchestration-header")
+            button = screen.query_one("#worker-sessions", Button)
+            assert header.region.contains_region(button.region)
+            problems = layout_problems(screen, ORCHESTRATION_TITLES)
+            menu = screen.query_one("#command-menu", ListView)
+            menu.scroll_visible(animate=False, immediate=True)
+            await pilot.pause()
+            return problems, menu.region.height, str(button.label)
+
+    problems, menu_height, label = asyncio.run(scenario())
+    assert problems == []
+    assert menu_height >= 8  # the command list stays usable on the smallest terminal
+    assert label.endswith(" · 0")

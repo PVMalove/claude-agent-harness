@@ -2,12 +2,12 @@
 
 Stdlib-only, like the rest of the textual-free seam. A terminal widget wraps by words, so a long path
 is cut at an arbitrary column in the middle of a name; `wrap_value` breaks it after a `/`, `-`, `_`,
-`.`, `:` and the like, or at a space, and only when a single piece is wider than the line does it
+`.` and the like, or at a space, and only when a single piece is wider than the line does it
 stay on a line of its own."""
 
 from __future__ import annotations
 
-SEPARATORS = "/\\-_.:,;=@"
+SEPARATORS = "/\\-_.,;=@"
 
 
 def _pieces(line: str) -> list[str]:

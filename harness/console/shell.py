@@ -187,10 +187,16 @@ class FieldGrid(Widget):
     DEFAULT_CLASSES = "field-grid"
 
     def __init__(
-        self, fields: Sequence[tuple[str, str]] = (), **kwargs: object
+        self,
+        fields: Sequence[tuple[str, str]] = (),
+        *,
+        translate_values: bool = False,
+        **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._fields = tuple(fields)
+        # Values the screen writes in Russian (statistics) follow the language; data (IDs, paths) does not.
+        self._translate_values = translate_values
 
     def _columns(self) -> ComposeResult:
         half = (len(self._fields) + 1) // 2
@@ -213,6 +219,8 @@ class FieldGrid(Widget):
 
     def _cell(self, label: str, value: str, width: int = 0) -> Text:
         language = getattr(self.app, "language", "ru")
+        if self._translate_values:
+            value = i18n.tr_text(language, value)
         return Text.assemble(
             (i18n.tr(language, label) + "\n", brand.PALETTE["muted"]),
             wrap_value(value or "—", width),

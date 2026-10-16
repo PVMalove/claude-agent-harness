@@ -82,13 +82,15 @@ def test_a_shell_button_is_drawn_with_the_component_border(tmp_path: Path) -> No
     from textual.widgets import Button
 
     from harness.console.app import HarnessConsoleApp
-    from harness.console.screens.orchestration import OrchestrationScreen
+    from harness.console.screens.worker_observation import WorkerObservationScreen
 
     async def scenario() -> Color:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 40)) as pilot:
-            await app.push_screen(OrchestrationScreen(tmp_path))
+            await app.push_screen(
+                WorkerObservationScreen(tmp_path, observer=lambda *_: {})
+            )
             await pilot.pause()
-            return app.screen.query_one("#worker-sessions", Button).styles.border_top[1]
+            return app.screen.query_one("#worker-details", Button).styles.border_top[1]
 
     assert asyncio.run(scenario()) == Color.parse(TOKENS["component-border"])
