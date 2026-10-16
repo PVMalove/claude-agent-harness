@@ -133,7 +133,7 @@ def test_schema_matches_validator() -> None:
     assert paths["items"]["pattern"] == project_files.TEST_PATH_PATTERN
     runner = schema["properties"]["test_runner"]
     assert runner["additionalProperties"] is False
-    assert tuple(runner["required"]) == project_files.TEST_RUNNER_FIELDS
+    assert tuple(runner["required"]) == ("command",)
     assert tuple(runner["properties"]) == project_files.TEST_RUNNER_FIELDS
     command = runner["properties"]["command"]
     assert command["contains"] == {"const": project_files.TEST_ID_PLACEHOLDER}
@@ -157,3 +157,63 @@ def test_schema_pattern_agrees_with_validator(glob: str, valid: bool) -> None:
     pattern = schema["properties"]["test_paths"]["items"]["pattern"]
     assert (re.search(pattern, glob) is not None) is valid
     assert (project_files.test_paths_problems([glob]) == []) is valid
+
+
+def test_optional_build_and_database_settings(tmp_path: Path) -> None:
+    assert (
+        _problems(
+            tmp_path,
+            {
+                "test_runner": {
+                    "command": ["pytest", "{test_id}"],
+                    "build": {
+                        "command": ["cc", "src/main.c", "-o", "artifacts/main"],
+                        "artifact_paths": ["artifacts/**"],
+                    },
+                    "database": {
+                        "engine": "postgresql",
+                        "test_ids": ["tests/sql*"],
+                        "command": ["postgres", "-D", "data"],
+                        "ready_command": ["pg_isready"],
+                    },
+                }
+            },
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("build", {}),
+        ("build", {"command": ["cc"], "artifact_paths": ["../secret/**"]}),
+        ("build", {"command": ["cc", "{test_id}"], "artifact_paths": ["artifacts/**"]}),
+        (
+            "database",
+            {
+                "engine": "secret/value",
+                "test_ids": ["*"],
+                "command": ["db"],
+                "ready_command": ["ready"],
+            },
+        ),
+        (
+            "database",
+            {
+                "engine": "postgresql",
+                "test_ids": ["*", "*"],
+                "command": ["db"],
+                "ready_command": [],
+            },
+        ),
+    ],
+)
+def test_invalid_optional_groups_are_sanitized(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    problems = _problems(
+        tmp_path, {"test_runner": {"command": ["pytest", "{test_id}"], field: value}}
+    )
+    assert problems
+    assert "secret" not in " ".join(problems)

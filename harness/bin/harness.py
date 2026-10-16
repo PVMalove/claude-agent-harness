@@ -710,6 +710,20 @@ def _seed_test_fields(args: argparse.Namespace) -> str:
     command = getattr(args, "test_runner_command", None)
     if command:
         runner = {"command": command}
+        build = getattr(args, "test_build_command", None)
+        if build:
+            runner["build"] = {
+                "command": build,
+                "artifact_paths": args.test_artifact_path,
+            }
+        engine = getattr(args, "test_database_engine", None)
+        if engine:
+            runner["database"] = {
+                "engine": engine,
+                "test_ids": args.test_database_test_id,
+                "command": args.test_database_command,
+                "ready_command": args.test_database_ready_command,
+            }
         fields += '\n  "test_runner": ' + json.dumps(runner, ensure_ascii=False) + ","
     return fields
 
@@ -724,6 +738,44 @@ def _test_runner_command(value: str) -> list[str]:
     if not command or test_runner_problems({"command": command}):
         raise argparse.ArgumentTypeError(TEST_RUNNER_COMMAND_RULE)
     return command
+
+
+def _preparation_command(value: str) -> list[str]:
+    try:
+        command = shlex.split(value)
+    except ValueError:
+        command = []
+    if not command or any(
+        not part or "{test_id}" in part or "\x00" in part for part in command
+    ):
+        raise argparse.ArgumentTypeError("must be non-empty argv without {test_id}")
+    return command
+
+
+def _validate_test_options(
+    args: argparse.Namespace, root: argparse.ArgumentParser
+) -> None:
+    groups = (
+        ("test_build_command", "test_artifact_path"),
+        (
+            "test_database_engine",
+            "test_database_test_id",
+            "test_database_command",
+            "test_database_ready_command",
+        ),
+    )
+    for group in groups:
+        present = [bool(getattr(args, name, None)) for name in group]
+        if any(present) and (
+            not all(present) or not getattr(args, "test_runner_command", None)
+        ):
+            root.error(
+                "incomplete --test-build/--test-database option group or missing --test-runner-command"
+            )
+    if getattr(args, "test_runner_command", None):
+        fields = json.loads("{" + _seed_test_fields(args).rstrip(",") + "}")
+        if test_runner_problems(fields["test_runner"]):
+            root.error("invalid --test-build/--test-database settings")
 
 
 def _matching_arg(pattern: str, rule: str) -> Callable[[str], str]:
@@ -1281,6 +1333,16 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         "{test_id} (default: none)",
     )
 
+    for flag in (
+        "--test-build-command",
+        "--test-database-command",
+        "--test-database-ready-command",
+    ):
+        sub.add_argument(flag, type=_preparation_command, default=None)
+    for flag in ("--test-artifact-path", "--test-database-test-id"):
+        sub.add_argument(flag, action="append", default=None)
+    sub.add_argument("--test-database-engine", default=None)
+
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """Выполнить предварительный просмотр или удаление временных данных harness."""
@@ -1563,7 +1625,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Основная точка входа CLI harness."""
-    args = parser().parse_args()
+    root = parser()
+    args = root.parse_args()
+    _validate_test_options(args, root)
     try:
         exit_code: int = args.func(args)
         return exit_code

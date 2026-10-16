@@ -127,3 +127,55 @@ def test_install_rejects_an_invalid_test_flag_before_writing(
     assert flag in result.stderr
     assert "secret" not in result.stderr
     assert not (repo / ".harness").exists()
+
+
+def test_install_optional_build_database_and_health(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    result = _init(
+        repo,
+        "--test-path",
+        "tests/**",
+        "--test-runner-command",
+        "pytest {test_id}",
+        "--test-build-command",
+        "cc src/main.c -o artifacts/main",
+        "--test-artifact-path",
+        "artifacts/**",
+        "--test-database-engine",
+        "postgresql",
+        "--test-database-test-id",
+        "tests/sql*",
+        "--test-database-command",
+        "postgres",
+        "--test-database-ready-command",
+        "pg_isready",
+    )
+    assert result.returncode == 0, result.stderr
+    data = _installed_project_json(repo)
+    assert data["test_runner"]["build"]["artifact_paths"] == ["artifacts/**"]
+    assert data["test_runner"]["database"]["engine"] == "postgresql"
+    health = subprocess.run(
+        [sys.executable, str(CLI), "health", str(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert "test_runner" not in health.stdout + health.stderr
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--test-build-command", "cc"],
+        ["--test-artifact-path", "artifacts/**"],
+        ["--test-database-engine", "postgresql"],
+        ["--test-database-command", "postgres"],
+    ],
+)
+def test_install_incomplete_groups_write_nothing(
+    tmp_path: Path, flags: list[str]
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    result = _init(repo, *flags)
+    assert result.returncode == 2
+    assert not (repo / ".harness").exists()

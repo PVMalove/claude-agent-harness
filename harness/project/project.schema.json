@@ -53,12 +53,18 @@
     "tracker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "description": "Optional explicit project tracker (docs/adr/0011): when present and valid it is the single source of the tracker for 'harness health'; without it the tracker is derived from the 'origin' URL and health warns with a ready-to-paste snippet. Example: {\"type\": \"gitlab\", \"host\": \"gitlab.example.test:4443\", \"project\": \"group/sub/project\"}. Certificate, proxy and credential settings belong in the tracker CLI's own personal configuration, never in this file.",
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["github", "gitlab", "local"],
+          "enum": [
+            "github",
+            "gitlab",
+            "local"
+          ],
           "description": "Tracker kind: 'github', 'gitlab' (including self-hosted) or 'local' (markdown tracker, no online checks)."
         },
         "host": {
@@ -75,12 +81,18 @@
       "if": {
         "properties": {
           "type": {
-            "enum": ["github", "gitlab"]
+            "enum": [
+              "github",
+              "gitlab"
+            ]
           }
         }
       },
       "then": {
-        "required": ["host", "project"]
+        "required": [
+          "host",
+          "project"
+        ]
       }
     },
     "ci_required_checks": {
@@ -131,6 +143,80 @@
             "const": "{test_id}"
           },
           "description": "Argument vector run without a shell, e.g. [\"python3\", \"-m\", \"unittest\", \"{test_id}\"]. Exactly one element is '{test_id}' and it is not the first; the runner replaces it with the selected test id as one argument. 'harness health' also rejects a second '{test_id}' element, which this draft-07 schema cannot express."
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "artifact_paths"
+          ],
+          "properties": {
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!.*\\{test_id\\})(?!.*\\u0000).+$"
+              }
+            },
+            "artifact_paths": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^(?!\\.)(?!.*(?:^|/)\\.\\.?(?:/|$))[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)*/\\*\\*$"
+              }
+            }
+          },
+          "description": "Optional protected build; empty artifact targets use fresh run-owned backing directories."
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine",
+            "test_ids",
+            "command",
+            "ready_command"
+          ],
+          "properties": {
+            "engine": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+            },
+            "test_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!\\s*$)(?!.*\\u0000).+$"
+              }
+            },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!.*\\{test_id\\})(?!.*\\u0000).+$"
+              }
+            },
+            "ready_command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!.*\\{test_id\\})(?!.*\\u0000).+$"
+              }
+            }
+          },
+          "description": "Optional private instance of the production engine, only for matching fnmatchcase test IDs; foreground server and bounded readiness commands."
         }
       }
     },

@@ -152,3 +152,25 @@ canary-проверкой guard и opt-in проекта относятся к #
 [isolated_runner.py](../../harness/health/isolated_runner.py),
 [project_files.py](../../harness/health/project_files.py),
 [ADR 0014](../adr/0014-test-author-isolation.md)
+
+### Сборка и тестовая БД
+
+Необязательный `test_runner.build` содержит ровно `command` (непустой argv без `{test_id}`)
+и `artifact_paths` (уникальные `<каталог>/**`). Каталоги заранее существуют и пусты. Runner
+монтирует свежие каталоги запуска на эти пути: при сборке на запись, при тесте только на чтение.
+Исходники и `test_paths` во время сборки доступны только на чтение; команда выполняется без
+шелла внутри проверенной песочницы. Непустые каталоги runner отклоняет и не очищает.
+
+Необязательный `test_runner.database` содержит ровно `engine`, `test_ids`, `command` и
+`ready_command`. `engine` называет production-движок; `test_ids` — уникальные селекторы
+`fnmatchcase`. Только совпавшие тесты получают свежий экземпляр БД внутри песочницы, без TCP
+и доступа к сервисам хоста. `command` запускает сервер в foreground, `ready_command` проверяет
+готовность; обе команды — непустой argv без `{test_id}`. Они получают
+`HARNESS_TEST_DATABASE_DIR` и `HARNESS_TEST_DATABASE_SOCKET_DIR` в приватном `/tmp`.
+Проектный wrapper читает эти переменные напрямую; shell-подстановка в argv не выполняется.
+SQL, транзакции и ограничения проверяют на production-движке; чистой доменной логике БД не нужна.
+
+CLI добавляет эти группы только по полным наборам `--test-build-command`, `--test-artifact-path`
+и `--test-database-engine`, `--test-database-test-id`, `--test-database-command`,
+`--test-database-ready-command`, вместе с `--test-runner-command`. Отсутствие групп сохраняет
+прежнее поведение. `test_paths` остаётся единственной зоной `Write`/`Edit` тест-автора.
