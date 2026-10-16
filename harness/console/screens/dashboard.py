@@ -315,7 +315,7 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen #dashboard-cards { height: auto; }
     DashboardScreen .card { height: auto; margin-bottom: 1; padding-bottom: 1; border: none; border-bottom: solid $border-subtle; }
     DashboardScreen .card-title { height: 2; color: $text-muted; }
-    DashboardScreen.-narrow #dashboard-overview { padding: 0 1; }
+    DashboardScreen.-narrow #dashboard-overview { padding: 0 2; }
     DashboardScreen.-narrow #dashboard-subtitle { display: none; }
     DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; padding: 0; margin-bottom: 0; }
     DashboardScreen.-narrow #dashboard-attention { max-height: 3; }
