@@ -314,6 +314,7 @@ EN_PHRASES: dict[str, str] = {
     "Runtime-сессия": "Runtime session",
     "Модель / effort": "Model / effort",
     "Режим запуска": "Launch mode",
+    "Причина блокировки": "Block reason",
     "Начало:": "Started:",
     "начало:": "started:",
     "до PR:": "to PR:",

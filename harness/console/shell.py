@@ -163,7 +163,8 @@ Screen.shell { background: $background; }
 .shell.-narrow .menu-toggle { display: block; }
 .shell.-narrow ShellSidebar { display: none; }
 .shell.-narrow.-menu-open ShellSidebar { display: block; }
-.shell.-narrow .shell-body { layout: vertical; }
+.shell.-narrow .shell-body { layout: vertical; overflow-y: auto; }
+.shell.-narrow .shell-content { min-height: 12; }
 .shell.-narrow .context-panel { width: 100%; height: auto; max-height: 40%; border-left: none; border-top: solid $border-subtle; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
@@ -268,6 +269,12 @@ class ConsoleShell(Translated, Screen[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        # Textual sets the breakpoint class on the first resize event, which can come after the
+        # first content is laid out; set it now so a log written at once gets its real width.
+        for threshold, name in sorted(self.HORIZONTAL_BREAKPOINTS or [], reverse=True):
+            if self.size.width >= threshold:
+                self.add_class(name)
+                break
         if self.SECTION in SECTIONS:
             self.query_one(f"#{self.IDS.menu}", ListView).index = SECTIONS.index(
                 self.SECTION
