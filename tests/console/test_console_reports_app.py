@@ -20,7 +20,8 @@ from tests.console._pilot_wait import wait_until
 from tests.console._console_ledger_fixture import QA_LOG_SHA256, build_reports_fixture
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
-from harness.console.screens.dashboard import SECTIONS, DashboardScreen
+from harness.console.screens.dashboard import DashboardScreen
+from harness.console.shell import SECTIONS
 from harness.console.screens.reports import (
     BatchTimelineScreen,
     QaLogsScreen,

@@ -111,8 +111,13 @@ def tr(language: str, text: str) -> str:
         for prefix, english in EN_PREFIXES.items():
             if text.startswith(prefix):
                 return english + text[len(prefix) :]
-        if " › " in text:
-            return " › ".join(EN.get(part, part) for part in text.split(" › "))
+        if "›" in text:
+            # Breadcrumbs: translate the parts, keep whatever spacing surrounds each separator.
+            parts = re.split(r"(\s*›\s*)", text)
+            return "".join(
+                part if index % 2 else EN.get(part, part)
+                for index, part in enumerate(parts)
+            )
         return text
     return RU_FROM_EN.get(text, text)
 

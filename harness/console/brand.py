@@ -43,6 +43,7 @@ SHELL_TOKENS = {
     "row-highlight": "#35302b",
     "control-border": "#51483d",
     "scrollbar-thumb": "#605746",
+    "scrollbar-track": "#555555",
     "event-background": "#292621",
     "event-active-background": "#423029",
 }

@@ -20,7 +20,7 @@ class ThinScrollBarRender(ScrollBarRender):
         position: float = 0,
         thickness: int = 1,
         vertical: bool = True,
-        back_color: Color = Color.parse("#555555"),
+        back_color: Color = Color.parse(brand.SHELL_TOKENS["scrollbar-track"]),
         bar_color: Color = Color.parse("bright_magenta"),
     ) -> Segments:
         bar = super().render_bar(

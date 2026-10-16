@@ -26,7 +26,8 @@ from tests.console._console_repo_map_fixture import (
 )
 from harness.console import repo_map as console_repo_map
 from harness.console.data import DashboardData
-from harness.console.screens.dashboard import SECTIONS, DashboardScreen
+from harness.console.screens.dashboard import DashboardScreen
+from harness.console.shell import SECTIONS
 from harness.console.screens.repo_map import BuildConfirmScreen, RepoMapScreen
 
 
