@@ -196,6 +196,27 @@ def _ns(**values: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
 
 
+def pinned_sha256(record: JsonObject) -> str:
+    """The digest a batch entry pins a brief or a report by: that of its canonical JSON."""
+    return hashlib.sha256(utils._canonical(record).encode("utf-8")).hexdigest()
+
+
+def repin_entry(
+    state_root: Path, batch_id: str, dispatch_id: str, **digests: str
+) -> None:
+    """Pin the entry of ``dispatch_id`` in batch ``batch_id`` to ``digests``
+    (``brief_sha256``, ``report_sha256``) of a brief or report a test rewrote on disk, through a
+    recorded ledger transition, so the strict read of the batch reaches the check the test
+    exercises and a later transition starts from the pinned record."""
+    ledger = LifecycleLedger(state_root)
+    path = ledger.records_root() / "batches" / f"{batch_id}.json"
+    batch = json.loads(path.read_text(encoding="utf-8"))
+    for entry in batch["dispatches"]:
+        if entry["dispatch_id"] == dispatch_id:
+            entry.update(digests)
+    ledger.replace(path, batch)
+
+
 def _init_repo(tmp: Path) -> Path:
     """A minimal git repository with an 'origin' remote, a zero-config `.harness/project.json`, a
     real architect role manifest and the seed files the context builder needs -- everything
@@ -1909,14 +1930,12 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         record["worker_attestation_required"] = True
         path.write_text(json.dumps(record), encoding="utf-8")
         # The batch pins the changed brief, so the strict read of the batch accepts it.
-        batch_path = self._records_root() / "batches" / f"{record['batch_id']}.json"
-        batch = json.loads(batch_path.read_text(encoding="utf-8"))
-        for entry in batch["dispatches"]:
-            if entry["dispatch_id"] == record["dispatch_id"]:
-                entry["brief_sha256"] = hashlib.sha256(
-                    utils._canonical(record).encode("utf-8")
-                ).hexdigest()
-        batch_path.write_text(json.dumps(batch), encoding="utf-8")
+        repin_entry(
+            self.state_dir,
+            record["batch_id"],
+            record["dispatch_id"],
+            brief_sha256=pinned_sha256(record),
+        )
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._self_report(
@@ -2774,13 +2793,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
         path.write_bytes(data)
-        batch_path = records / "batches" / f"{batch_id}.json"
-        stored = json.loads(batch_path.read_text(encoding="utf-8"))
-        for entry in stored["dispatches"]:
-            if entry["dispatch_id"] == dispatch_id:
-                entry["report_sha256"] = hashlib.sha256(data).hexdigest()
-        LifecycleLedger(ledger_ops._state_root(self._args(), self.repo)).replace(
-            batch_path, stored
+        repin_entry(
+            self.state_dir,
+            batch_id,
+            dispatch_id,
+            report_sha256=hashlib.sha256(data).hexdigest(),
         )
 
     def test_a_developer_retry_runs_on_a_migrated_ledger_with_mapped_history(
@@ -2863,14 +2880,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             + "\n"
         ).encode("utf-8")
         (records / "reports" / f"{brief['dispatch_id']}.json").write_bytes(data)
-        batch_path = records / "batches" / f"{batch['batch_id']}.json"
-        stored = json.loads(batch_path.read_text(encoding="utf-8"))
-        for entry in stored["dispatches"]:
-            if entry["dispatch_id"] == brief["dispatch_id"]:
-                entry["report_sha256"] = hashlib.sha256(data).hexdigest()
-        batch_path.write_text(
-            json.dumps(stored, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        repin_entry(
+            self.state_dir,
+            batch["batch_id"],
+            brief["dispatch_id"],
+            report_sha256=hashlib.sha256(data).hexdigest(),
         )
         with self.assertRaises(ledger_ops.LedgerUnmigratedError):
             self._decide(batch["batch_id"], "accept")
@@ -7044,9 +7058,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     "dispatch_id": open_id,
                     "role": "qa",
                     "state": "approved",
-                    "brief_sha256": hashlib.sha256(
-                        utils._canonical(brief).encode("utf-8")
-                    ).hexdigest(),
+                    "brief_sha256": pinned_sha256(brief),
                 }
             )
             ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
