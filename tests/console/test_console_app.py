@@ -17,7 +17,8 @@ from textual.pilot import Pilot
 from harness.console import brand
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
-from harness.console.screens.dashboard import SECTIONS, DashboardScreen
+from harness.console.screens.dashboard import DashboardScreen
+from harness.console.shell import SECTIONS
 from harness.console.screens.diagnostics import DiagnosticsScreen
 from harness.console.screens.harness import HarnessScreen
 from harness.health.model import CheckResult, Fix, Report

@@ -2,11 +2,34 @@
 
 from __future__ import annotations
 
-from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.widgets import ListView, Static
+from collections.abc import Sequence
+from dataclasses import dataclass
 
-from . import brand
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.screen import Screen
+from textual.widget import Widget
+from textual.widgets import Button, Footer, ListItem, ListView, Static
+
+from . import brand, i18n
+from .chrome import WorkspaceHeader
+from .translate import Translated
+
+CONFIGURATION_SECTION = "Configuration"
+# The numbered main menu, in the order of the number keys.
+SECTIONS = (
+    "Open project",
+    "Update Harness",
+    "Diagnostics",
+    "Harness",
+    "Orchestration",
+    "Reports",
+    "Repo Map",
+    CONFIGURATION_SECTION,
+    "Help",
+)
 
 
 class ShellSidebar(Vertical):
@@ -24,14 +47,90 @@ class ShellSidebar(Vertical):
             yield Static(self.context, classes="menu-context", markup=False)
 
 
+class ContextStrip(Horizontal):
+    """One line (wrapping when it must) under the breadcrumbs: what the screen is about."""
+
+    DEFAULT_CLASSES = "context-strip"
+
+
+class ContextPanel(VerticalScroll):
+    """Facts beside the content; folded under it on a narrow terminal, never hidden."""
+
+    DEFAULT_CLASSES = "context-panel"
+
+
+class FieldGrid(Widget):
+    """Label/value fields in two columns on a wide terminal and one on a narrow one (the first half
+    of the fields in the first column, the rest in the second). A value wraps, so a long ID or path
+    stays whole on screen."""
+
+    DEFAULT_CLASSES = "field-grid"
+
+    def __init__(
+        self, fields: Sequence[tuple[str, str]] = (), **kwargs: object
+    ) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._fields = tuple(fields)
+
+    def _columns(self) -> ComposeResult:
+        half = (len(self._fields) + 1) // 2
+        for chunk in (self._fields[:half], self._fields[half:]):
+            if chunk:
+                yield Vertical(
+                    *(
+                        Static(
+                            self._cell(label, value),
+                            classes="field no-i18n",
+                            markup=False,
+                        )
+                        for label, value in chunk
+                    ),
+                    classes="field-column",
+                )
+
+    def compose(self) -> ComposeResult:
+        yield from self._columns()
+
+    def _cell(self, label: str, value: str) -> Text:
+        language = getattr(self.app, "language", "ru")
+        return Text.assemble(
+            (i18n.tr(language, label) + "\n", brand.PALETTE["muted"]), value or "—"
+        )
+
+    def set_fields(self, fields: Sequence[tuple[str, str]]) -> None:
+        """Show `fields` in place of the current ones."""
+        self._fields = tuple(fields)
+        self.remove_children()
+        self.mount_all(self._columns())
+
+    def relabel(self) -> None:
+        for cell, (label, value) in zip(
+            self.query(".field").results(Static), self._fields
+        ):
+            cell.update(self._cell(label, value))
+
+
+@dataclass(frozen=True)
+class ShellIds:
+    """DOM ids of a shell screen's parts; a screen overrides them to keep its established ids."""
+
+    navigation: str = "shell-navigation"
+    menu: str = "shell-sections"
+    content: str = "shell-main"
+    breadcrumbs: str = "shell-breadcrumbs"
+    toggle: str = "shell-menu"
+    body: str = "shell-body"
+    context: str = "shell-context"
+
+
 # Every rule of the shell, once. Screens load it through their `CSS` (a screen's own rules are
 # appended to it), so it outranks the app's generic widget rules in any host app. Rules for a
 # single screen's widgets belong to that screen, never here.
 SHELL_CSS = brand.shell_css("""
 Screen.shell { background: $background; }
-.shell .breadcrumbs { height: 2; padding: 0 2; content-align: left middle; border-bottom: solid $border-subtle; color: $text; }
-.shell .context-strip { height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
-.shell .context-strip Static { width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; content-align: left middle; border-bottom: solid $border-subtle; color: $text; }
+.shell .context-strip { height: auto; min-height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
+.shell .context-strip Static { width: 1fr; height: auto; }
 .shell Button { min-width: 8; width: auto; color: $text; border: round $control-border; text-style: none; }
 .shell Button:hover, .shell Button:focus { border: round $primary; color: $primary; }
 .shell .context-strip Button { border: none; height: 1; min-width: 3; color: $primary; }
@@ -51,11 +150,161 @@ Screen.shell { background: $background; }
 }
 .shell Footer, .shell WorkspaceHeader { background: $surface; }
 .shell ListView, .shell ListView:focus { background-tint: transparent; }
+.shell ShellSidebar ListView > ListItem.-active { color: $selection-foreground; }
+.shell .shell-frame { height: 1fr; }
+.shell .shell-main { width: 1fr; min-width: 0; height: 1fr; }
+.shell .shell-body { height: 1fr; }
+.shell .shell-content { width: 1fr; min-width: 0; height: 1fr; }
+.shell .menu-toggle { display: none; }
+.shell .field-grid { layout: horizontal; height: auto; }
+.shell .field-column { width: 1fr; height: auto; padding-right: 2; }
+.shell .field { height: auto; margin-bottom: 1; }
+.shell.-spacious .context-panel { width: 38; }
+.shell.-narrow .menu-toggle { display: block; }
+.shell.-narrow ShellSidebar { display: none; }
+.shell.-narrow.-menu-open ShellSidebar { display: block; }
+.shell.-narrow .shell-body { layout: vertical; }
+.shell.-narrow .context-panel { width: 100%; height: auto; max-height: 40%; border-left: none; border-top: solid $border-subtle; }
+.shell.-narrow .field-grid { layout: vertical; }
+.shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }
 .shell.-narrow ShellSidebar .menu-heading { height: 1; }
 .shell.-narrow ShellSidebar .menu-context { display: none; }
 .shell.-narrow WorkspaceHeader { height: 2; padding-top: 0; }
 .shell.-narrow WorkspaceHeader #topbar-right { display: none; }
-.shell.-narrow .breadcrumbs, .shell.-narrow .context-strip { height: 1; border: none; }
+.shell.-narrow .breadcrumbs, .shell.-narrow .context-strip { min-height: 1; border: none; }
 .shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-background: $surface; }
 """)
+
+
+class ConsoleShell(Translated, Screen[None]):
+    """The console's common frame: top bar, numbered main menu with the active section marked,
+    breadcrumbs, a context strip, the screen's content, an optional context panel and the footer.
+
+    A screen sets `SECTION` (its menu entry, if any), `CRUMBS` and `HAS_CONTEXT`, and fills
+    `compose_strip`, `compose_content` and `compose_context`. Terminals narrower than 100 columns
+    collapse the menu behind a toggle, fold the context panel under the content and put the fields
+    in one column; 140 columns and wider give the context panel more room. Moving through the menu
+    or selecting an entry never runs a command: a section only opens its own screen."""
+
+    DEFAULT_CLASSES = "shell"
+    SCOPED_CSS = False
+    CSS = SHELL_CSS
+    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide"), (140, "-spacious")]
+    BINDINGS = [
+        Binding("escape", "app.pop_screen", "Назад"),
+        *(
+            Binding(str(number), f"section({number - 1})", show=False)
+            for number in range(1, len(SECTIONS) + 1)
+        ),
+    ]
+    IDS = ShellIds()
+    SECTION: str | None = None
+    CRUMBS = "Главная"
+    HAS_CONTEXT = False
+
+    # Hooks a screen overrides.
+    def compose_strip(self) -> ComposeResult:
+        yield from ()
+
+    def compose_content(self) -> ComposeResult:
+        yield from ()
+
+    def compose_context(self) -> ComposeResult:
+        yield from ()
+
+    def sidebar_context(self) -> str:
+        return ""
+
+    def menu_label(self, number: int, name: str) -> Text:
+        language = getattr(self.app, "language", "ru")
+        return Text.assemble(
+            (f"{number} ", brand.PALETTE["muted"]), i18n.section_label(language, name)
+        )
+
+    def menu_item_id(self, name: str) -> str | None:
+        return None
+
+    # The frame.
+    def _crumb_text(self) -> str:
+        return "  ›  ".join(part.strip() for part in self.CRUMBS.split("›"))
+
+    def _menu(self) -> ListView:
+        return ListView(
+            *(
+                ListItem(
+                    Static(self.menu_label(number, name), classes="no-i18n"),
+                    name=name,
+                    id=self.menu_item_id(name),
+                    classes="-active" if name == self.SECTION else "",
+                )
+                for number, name in enumerate(SECTIONS, start=1)
+            ),
+            id=self.IDS.menu,
+        )
+
+    def compose(self) -> ComposeResult:
+        ids = self.IDS
+        yield WorkspaceHeader(self.CRUMBS)
+        with Horizontal(classes="shell-frame"):
+            yield ShellSidebar(
+                self._menu(), id=ids.navigation, context=self.sidebar_context()
+            )
+            with Vertical(id=ids.content, classes="shell-main"):
+                yield Static(
+                    self._crumb_text(), id=ids.breadcrumbs, classes="breadcrumbs"
+                )
+                with ContextStrip():
+                    yield Button(
+                        "☰", id=ids.toggle, classes="menu-toggle", compact=True
+                    )
+                    yield from self.compose_strip()
+                with Horizontal(id=ids.body, classes="shell-body"):
+                    with Vertical(classes="shell-content"):
+                        yield from self.compose_content()
+                    if self.HAS_CONTEXT:
+                        with ContextPanel(id=ids.context):
+                            yield from self.compose_context()
+        yield Footer()
+
+    def on_mount(self) -> None:
+        if self.SECTION in SECTIONS:
+            self.query_one(f"#{self.IDS.menu}", ListView).index = SECTIONS.index(
+                self.SECTION
+            )
+
+    def sync_language(self) -> None:
+        for number, item in enumerate(
+            self.query(f"#{self.IDS.menu} > ListItem"), start=1
+        ):
+            item.query_one(Static).update(self.menu_label(number, item.name or ""))
+        for grid in self.query(FieldGrid):
+            grid.relabel()
+
+    # Navigation: opening a section is the only effect.
+    async def open_section(self, index: int) -> None:
+        """Open section `index` through the home screen's opener."""
+        from .screens.dashboard import DashboardScreen
+
+        for screen in self.app.screen_stack:
+            if isinstance(screen, DashboardScreen):
+                await screen.action_open_section(index)
+                return
+
+    async def action_section(self, index: int) -> None:
+        if SECTIONS[index] != self.SECTION:
+            await self.open_section(index)
+
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == self.IDS.menu and event.item.name in SECTIONS:
+            event.stop()
+            await self.action_section(SECTIONS.index(event.item.name))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == self.IDS.toggle:
+            event.stop()
+            self.toggle_class("-menu-open")
+            if self.has_class("-menu-open"):
+                self.call_after_refresh(
+                    self.query_one(f"#{self.IDS.menu}", ListView).focus
+                )

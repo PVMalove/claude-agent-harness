@@ -31,9 +31,8 @@ from ..chrome import TopBar, WorkspaceHeader
 from ..runner import CommandRunner
 from ..translate import Translated
 from ..status import PERMISSION_PENDING, process_status, session_status
-from ..shell import SHELL_CSS, ShellSidebar
+from ..shell import SECTIONS, SHELL_CSS, ShellSidebar
 from .commands import call_from_worker
-from .dashboard import SECTIONS
 
 Observer = Callable[[Path, str, int], JsonObject]
 

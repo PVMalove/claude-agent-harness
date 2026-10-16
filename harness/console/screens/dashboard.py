@@ -20,26 +20,12 @@ from .. import brand, i18n
 from ..chrome import TopBar, WorkspaceHeader
 from ..translate import Translated
 from ..status import session_status
-from ..shell import SHELL_CSS, ShellSidebar
+from ..shell import CONFIGURATION_SECTION, SECTIONS, SHELL_CSS, ShellSidebar
 from .. import reports
 from .. import data as console_data
 from ..data import DashboardData
 from ..runner import CommandRunner, capturing_runner
 from .commands import call_from_worker
-
-CONFIGURATION_SECTION = "Configuration"
-SECTIONS = (
-    "Open project",
-    "Update Harness",
-    "Diagnostics",
-    "Harness",
-    "Orchestration",
-    "Reports",
-    "Repo Map",
-    CONFIGURATION_SECTION,
-    "Help",
-)
-
 
 DRIFT_LABELS = {"clean": "нет", "drift": "есть", "missing": "не установлен"}
 DRIFT_LABELS_EN = {"clean": "none", "drift": "yes", "missing": "not installed"}
