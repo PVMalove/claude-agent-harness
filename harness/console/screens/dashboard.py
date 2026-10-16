@@ -26,6 +26,7 @@ from ..shell import (
     SHELL_CSS,
     ConsoleShell,
     ShellIds,
+    WrappedValue,
 )
 from .. import reports
 from .. import data as console_data
@@ -472,16 +473,8 @@ class DashboardScreen(ConsoleShell):
             self._language,
         )
         yield Static("◉ КОНТЕКСТ ПРОЕКТА", classes="context-label")
-        yield Static(
-            self.repo.name,
-            classes="context-value no-i18n",
-            markup=False,
-        )
-        yield Static(
-            banner.branch or "—",
-            classes="context-value no-i18n",
-            markup=False,
-        )
+        yield WrappedValue(self.repo.name, classes="context-value")
+        yield WrappedValue(banner.branch or "—", classes="context-value")
         with Vertical(id="dashboard-cards"):
             for card_id, title, text in (
                 ("card-harness", "Harness", harness),

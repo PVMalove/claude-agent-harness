@@ -18,6 +18,7 @@ from textual.widgets import Button, Footer, ListItem, ListView, Static
 from . import brand, i18n
 from .chrome import WorkspaceHeader
 from .crumbs import ELLIPSIS, SEPARATOR, Crumb, collapse_crumbs, split_path
+from .wrap import wrap_value
 from .translate import Translated
 
 CONFIGURATION_SECTION = "Configuration"
@@ -150,6 +151,28 @@ class ContextStrip(Horizontal):
     DEFAULT_CLASSES = "context-strip"
 
 
+class WrappedValue(Static):
+    """A value without spaces - a path, an ID, a branch - that wraps at its separators."""
+
+    DEFAULT_CLASSES = "no-i18n"
+
+    def __init__(self, value: str = "", **kwargs: object) -> None:
+        super().__init__(value, markup=False, **kwargs)  # type: ignore[arg-type]
+        self._value = value
+
+    def set_value(self, value: str) -> None:
+        self._value = value
+        self._wrap()
+
+    def _wrap(self) -> None:
+        text = wrap_value(self._value, self.content_size.width)
+        if text != self.content:
+            self.update(text)
+
+    def on_resize(self) -> None:
+        self._wrap()
+
+
 class ContextPanel(VerticalScroll):
     """Facts beside the content; folded under it on a narrow terminal, never hidden."""
 
@@ -188,10 +211,11 @@ class FieldGrid(Widget):
     def compose(self) -> ComposeResult:
         yield from self._columns()
 
-    def _cell(self, label: str, value: str) -> Text:
+    def _cell(self, label: str, value: str, width: int = 0) -> Text:
         language = getattr(self.app, "language", "ru")
         return Text.assemble(
-            (i18n.tr(language, label) + "\n", brand.PALETTE["muted"]), value or "—"
+            (i18n.tr(language, label) + "\n", brand.PALETTE["muted"]),
+            wrap_value(value or "—", width),
         )
 
     def set_fields(self, fields: Sequence[tuple[str, str]]) -> None:
@@ -201,10 +225,16 @@ class FieldGrid(Widget):
         self.mount_all(self._columns())
 
     def relabel(self) -> None:
+        """Redraw the cells for the current language and width: a value breaks at its separators."""
         for cell, (label, value) in zip(
             self.query(".field").results(Static), self._fields
         ):
-            cell.update(self._cell(label, value))
+            text = self._cell(label, value, cell.content_size.width)
+            if text != cell.content:
+                cell.update(text)
+
+    def on_resize(self) -> None:
+        self.relabel()
 
 
 @dataclass(frozen=True)
@@ -238,7 +268,7 @@ Screen.shell { background: $background; }
 .shell Button:hover, .shell Button:focus { border: round $primary; color: $primary; }
 .shell .context-strip Button { border: none; height: 1; min-width: 3; color: $primary; }
 .shell Button.-textual-compact, .shell Button.-textual-compact:hover, .shell Button.-textual-compact:focus { border: none; padding: 0 1; height: 1; min-height: 1; min-width: 0; }
-.shell .context-panel { width: 30; height: 1fr; padding: 0 2; overflow-x: hidden; border-left: solid $border-subtle; background: $surface; }
+.shell .context-panel { width: 30; height: 1fr; padding: 0 2; overflow-x: hidden; scrollbar-gutter: stable; border-left: solid $border-subtle; background: $surface; }
 .shell .context-panel Static { height: auto; }
 .shell .context-label { height: 2; color: $text-muted; margin-top: 1; }
 .shell .context-value { height: auto; margin-bottom: 1; }
@@ -269,7 +299,7 @@ Screen.shell { background: $background; }
 .shell.-narrow .shell-body { layout: vertical; overflow-y: auto; }
 .shell.-narrow .shell-content { min-height: 100%; }
 .shell.-narrow ShellSidebar { width: 21; }
-.shell.-narrow .context-panel { width: 100%; height: auto; max-height: 40%; border-left: none; border-top: solid $border-subtle; }
+.shell.-narrow .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }

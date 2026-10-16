@@ -20,6 +20,7 @@ from textual.widgets import Button, ListItem, ListView, Static
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
 from harness.console.crumbs import Crumb
+from harness.console.wrap import SEPARATORS
 from harness.console.shell import (
     SECTIONS,
     Breadcrumbs,
@@ -461,3 +462,34 @@ def test_breadcrumbs_follow_the_language(tmp_path: Path) -> None:
     ru, en = asyncio.run(scenario())
     assert ru.startswith("Главная  ›  Оркестрация")
     assert en.startswith("Home  ›  Orchestration")
+
+
+def test_field_values_wrap_at_separators_and_the_panel_reserves_a_scrollbar_gutter(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[list[str], list[int], str, int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(100, 40)) as pilot:
+            screen = await _open(app, pilot)
+            cells = list(
+                screen.query_one("#stub-fields", FieldGrid)
+                .query(".field")
+                .results(Static)
+            )
+            texts = [str(cell.content) for cell in cells]
+            return (
+                texts,
+                [cell.content_size.width for cell in cells],
+                str(screen.query_one(ContextPanel).styles.scrollbar_gutter),
+                len(cells),
+            )
+
+    texts, widths, gutter, count = asyncio.run(scenario())
+    assert count == 3 and gutter == "stable"
+    for text, width in zip(texts[:2], widths):
+        value = text.split("\n", 1)[1]
+        assert "".join(value.split("\n")) in (LONG_ID, LONG_PATH)
+        lines = value.split("\n")
+        assert len(lines) > 1
+        assert all(len(line) <= width for line in lines)
+        assert all(line[-1] in SEPARATORS for line in lines[:-1])

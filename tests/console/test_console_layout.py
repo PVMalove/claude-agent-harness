@@ -157,6 +157,26 @@ DASHBOARD_TITLES = (
 )
 
 
+async def last_card_is_reachable(
+    screen: Screen[None], pilot: object, selector: str = ".context-panel"
+) -> list[str]:
+    """Scroll the context panel's last card into view: it must then lie whole inside the panel and
+    the screen, so a reader can always reach it."""
+    problems: list[str] = []
+    for panel in screen.query(selector):
+        if not _shown(panel) or not panel.children:
+            continue
+        last = panel.children[-1]
+        last.scroll_visible(animate=False, immediate=True)
+        await pilot.pause()  # type: ignore[attr-defined]
+        visible = panel.content_region.intersection(screen.region)
+        if not visible.contains_region(last.region):
+            problems.append(
+                f"{_name(last)} {last.region} is cut off by {_name(panel)} {visible}"
+            )
+    return problems
+
+
 async def _open(
     app: HarnessConsoleApp, pilot: object, screen: Screen[None] | None, language: str
 ) -> Screen[None]:
@@ -181,6 +201,8 @@ def test_dashboard_layout(
         async with app.run_test(size=size) as pilot:
             screen = await _open(app, pilot, None, language)
             assert isinstance(screen, DashboardScreen)
-            return layout_problems(screen, DASHBOARD_TITLES)
+            return layout_problems(
+                screen, DASHBOARD_TITLES
+            ) + await last_card_is_reachable(screen, pilot)
 
     assert asyncio.run(scenario()) == []
