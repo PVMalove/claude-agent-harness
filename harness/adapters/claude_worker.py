@@ -43,6 +43,8 @@ class Brief(TypedDict):
     report_staging_path: str
     context_package_id: str
     liveness: Liveness
+    resolved_transport: str
+    purpose: str
 
 
 PROMPT = """\
@@ -74,7 +76,8 @@ statuses, passed and not-run are invalid; no aliases or old report formats are a
 Then run:
 {cli} report submit --file "{staging}"
 Completion means the report is recorded in the ledger. Include the submit result in your final reply.
-If submission fails before recording, return the command and error as a blocker; keep the report file.
+If submission returns ledger_busy, retry after its interval. If submission otherwise fails before
+recording, return the command and error as a blocker; keep the report file.
 If the result includes completion, relay it to the coordinator for report complete; the report is
 already recorded, so submit it only once. Chat text alone does not complete the dispatch.
 """
@@ -105,9 +108,9 @@ def build_prompt(
     )
 
 
-def worker_command(brief: Brief, repo: Path) -> list[str]:
+def worker_command(brief: Brief, binary: str = "claude") -> list[str]:
     command = [
-        "claude",
+        binary,
         "-p",
         "--model",
         brief["resolved_model"],
@@ -116,7 +119,7 @@ def worker_command(brief: Brief, repo: Path) -> list[str]:
         "--allowedTools",
         ",".join(brief["allowed_tools"]),
         "--add-dir",
-        str(repo),
+        str(Path(brief["report_staging_path"]).parent),
         "--no-session-persistence",
         "--output-format",
         "text",
@@ -131,6 +134,30 @@ def start(args: argparse.Namespace) -> int:
     repo = Path(args.repo).resolve()
     brief_path = Path(args.brief).resolve()
     brief = cast(Brief, json.loads(brief_path.read_text(encoding="utf-8")))
+    if brief.get("role") == "qa":
+        raise ValueError("role qa requires the coordinator QA runner")
+    if brief.get("purpose") == "publish":
+        raise ValueError("purpose publish requires the coordinator publish boundary")
+    if brief.get("resolved_transport") != "external":
+        raise ValueError("resolved_transport must be external")
+    allowed = brief.get("allowed_tools")
+    if (
+        not isinstance(allowed, list)
+        or not allowed
+        or any(not isinstance(tool, str) or not tool.strip() for tool in allowed)
+    ):
+        raise ValueError("allowed_tools must be a non-empty list of tool names")
+    if (
+        not isinstance(brief.get("resolved_model"), str)
+        or not brief["resolved_model"].strip()
+    ):
+        raise ValueError("resolved_model must be a non-empty string")
+    staging = Path(brief["report_staging_path"])
+    incoming = repo / ".harness/.sandboxes/scratch/inbox"
+    if not staging.is_absolute() or staging.parent.resolve() != incoming.resolve():
+        raise ValueError(
+            "report_staging_path must be in the incoming reports directory"
+        )
     worktree = Path.cwd().resolve()
     sha = subprocess.run(
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
@@ -138,7 +165,7 @@ def start(args: argparse.Namespace) -> int:
     prompt = build_prompt(brief, brief_path, repo, worktree, sha)
     if args.extra_prompt_file:
         prompt += "\n" + Path(args.extra_prompt_file).read_text(encoding="utf-8")
-    command = worker_command(brief, repo)
+    command = worker_command(brief, args.claude_bin)
     if args.dry_run:
         print(json.dumps({"cwd": str(worktree), "command": command, "prompt": prompt}))
         return 0
@@ -155,11 +182,14 @@ def start(args: argparse.Namespace) -> int:
             start_new_session=True,
         )
     assert process.stdin is not None
-    process.stdin.write(prompt.encode("utf-8"))
-    process.stdin.close()
+    try:
+        process.stdin.write(prompt.encode("utf-8"))
+        process.stdin.close()
+    except BrokenPipeError:
+        process.wait(timeout=STARTUP_CHECK_SECONDS)
     time.sleep(STARTUP_CHECK_SECONDS)
     code = process.poll()
-    if code not in (None, 0):
+    if code is not None:
         tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
         print(f"claude worker exited with {code} at startup: {tail}", file=sys.stderr)
         return 1
@@ -175,6 +205,9 @@ def main(argv: list[str]) -> int:
     dispatch.add_argument("--repo", required=True, help="main project root")
     dispatch.add_argument("--brief", required=True, help="immutable dispatch brief")
     dispatch.add_argument(
+        "--claude-bin", default="claude", help="Claude Code executable"
+    )
+    dispatch.add_argument(
         "--extra-prompt-file",
         help="text appended to the prompt (retry handoff lines)",
     )
@@ -185,7 +218,17 @@ def main(argv: list[str]) -> int:
     )
     dispatch.set_defaults(handler=start)
     args = parser.parse_args(argv)
-    return int(args.handler(args))
+    try:
+        return int(args.handler(args))
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        print(f"claude worker could not start: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
