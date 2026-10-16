@@ -128,6 +128,81 @@ def test_worker_can_self_report_before_adapter_returns(
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="local /proc identity evidence"
 )
+def test_worker_that_exited_after_self_report_without_a_report_is_observed(
+    launch: recovery_tests.RecoveryTests,
+) -> None:
+    batch = launch._create_batch()
+    brief = launch._dispatch(batch["batch_id"], "architect")["brief"]
+    worker_command = [
+        sys.executable,
+        str(ORCHESTRATION_ROOT / "coordinator.py"),
+        "--repo",
+        str(launch.repo),
+        "--state-dir",
+        str(launch.state_dir),
+        "dispatch",
+        "self-report",
+        "--dispatch",
+        brief["dispatch_id"],
+        "--model",
+        "sonnet",
+        "--worktree",
+        str(launch.worktree),
+    ]
+    adapter = launch.tmp / "exited-worker.py"
+    adapter.write_text(
+        "import json,subprocess,sys,socket,os\nfrom pathlib import Path\n"
+        "brief=json.loads(Path(sys.argv[sys.argv.index('--brief')+1]).read_text())\n"
+        f"subprocess.run({worker_command!r},capture_output=True,text=True)\n"
+        "p=subprocess.Popen([sys.executable,'-c','pass'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "stat=Path('/proc/'+str(p.pid)+'/stat').read_text().rsplit(')',1)[1].split()\n"
+        "identity={'pid':p.pid,'host':socket.gethostname(),'pid_namespace':os.readlink('/proc/self/ns/pid'),'start_time':stat[19],"
+        "'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip()}\n"
+        "p.wait()\n"
+        "print(json.dumps({'protocol':'harness-worker-v1','dispatch_id':brief['dispatch_id'],"
+        "'worker_started':True,'launch_id':'launch-exited-716','process':identity}))\n"
+    )
+    cli(
+        launch,
+        "dispatch",
+        "send",
+        "--dispatch",
+        brief["dispatch_id"],
+        "--adapter",
+        str(adapter),
+        "--worktree",
+        str(launch.worktree),
+    )
+    status = cli(launch, "dispatch", "status", "--dispatch", brief["dispatch_id"])[
+        "dispatches"
+    ][0]
+    assert status["model_self_report"]["match"] is True
+    assert status["startup"]["worker_state"] == "stopped"
+    assert status["startup"]["classification"] == "worker-exited-without-report"
+    event = cli(
+        launch,
+        "dispatch",
+        "wait",
+        "--dispatch",
+        brief["dispatch_id"],
+        "--timeout",
+        "1",
+        "--poll-interval",
+        "1",
+    )
+    assert event["event"] == "worker_exited_without_report"
+    # The wait only reports: the dispatch stays as the ledger recorded it.
+    after = cli(launch, "dispatch", "status", "--dispatch", brief["dispatch_id"])[
+        "dispatches"
+    ][0]
+    assert after["state"] == status["state"]
+    assert cli(launch, "ledger", "validate")["valid"] is True
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="local /proc identity evidence"
+)
 @pytest.mark.parametrize("terminal_only", [False, True])
 def test_dead_worker_is_observed_before_the_heartbeat_stale_deadline(
     launch: recovery_tests.RecoveryTests,

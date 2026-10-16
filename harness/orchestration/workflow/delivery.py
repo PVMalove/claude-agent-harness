@@ -556,6 +556,14 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             if state == "reported":
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "reported"}
+            if startup["classification"] == "worker-exited-without-report":
+                # Read-only: the work may be done and its report not yet delivered, so the
+                # ledger keeps the dispatch as it is and the coordinator decides.
+                return {
+                    "dispatch_id": dispatch["dispatch_id"],
+                    "event": "worker_exited_without_report",
+                    "startup": startup,
+                }
             if state == "rate_limited":
                 return {
                     "dispatch_id": dispatch["dispatch_id"],

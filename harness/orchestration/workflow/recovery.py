@@ -271,9 +271,13 @@ def _confirmed_failure(
     }
     if assessment["runtime_failure"] is not None:
         evidence["classification"] = assessment["runtime_failure"]
-    # A missing self-report proves no environment failure; only a mismatch or a classified
-    # runtime failure does.
-    if assessment["classification"] not in {None, "model-self-report-missing"}:
+    # A missing self-report, or a worker that exited after one without a report, proves no
+    # environment failure; only a mismatch or a classified runtime failure does.
+    if assessment["classification"] not in {
+        None,
+        "model-self-report-missing",
+        "worker-exited-without-report",
+    }:
         return evidence
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (

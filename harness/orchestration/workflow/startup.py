@@ -143,6 +143,9 @@ def assess_startup(
         )
     elif model_match is None:
         classification = "model-self-report-missing"
+    elif worker == "stopped" and status.get("state") in LIVE_DISPATCH_STATES:
+        # The worker self-reported, then its process was proven gone with no report recorded.
+        classification = "worker-exited-without-report"
     else:
         classification = None
     unknowns: list[str] = []

@@ -511,7 +511,10 @@ human approval retires that dispatch and the ledger rejects its late writes. Whe
 status` shows `live` or `unknown`, `resume-stop` refuses and changes nothing: stop the worker
 through its runtime and repeat the command with `--runtime-stopped`. A missing self-report is not
 a failure `resume-stop` confirms; stop the worker and record `dispatch cancel --runtime-stopped`
-(below). `resume-stop` accepts a structured worktree/model mismatch or a classified startup
+(below). This is the first step when a worker did not start and no exit is proven: `resume-stop`
+has no recorded stop to resume and `dispatch send` refuses an already sent dispatch. When bound
+process evidence proves the exit, `batch resume-stop --restart` replaces both steps with one
+human decision. `resume-stop` accepts a structured worktree/model mismatch or a classified startup
 failure. Without structured evidence, a conservative text heuristic may name an infrastructure cause (capacity,
 rate limit, timeout, network, runtime crash, resources, service-unavailable or service outage) in
 the blocked report's `blockers` or the runtime error. Any sign of a test, lint, type, conflict,
@@ -784,7 +787,21 @@ an absent, malformed or differently bound terminal record supplies no proof.
 `liveness.startup_timeout_seconds` is pinned from
 `execution_policy.worker_startup_timeout_seconds` (120 by default), independently of heartbeat
 staleness. `dispatch wait` returns `startup_failed` for proven early exit and `startup_timeout`
-for a missed first self-report; timeout alone never proves termination.
+for a missed first self-report; timeout alone never proves termination. After a first self-report,
+proven process exit with no recorded report returns `worker_exited_without_report` without changing
+the ledger: the work and a staged report file may exist, so inspect the staged report and the branch
+before choosing a decision. `startup.classification` is `worker-exited-without-report`; it proves
+no environment failure, so `resume-stop` does not treat it as one.
+
+A worker must write the coordinator state: at least `.harness/orchestration/state` with its
+`.coordinator.lock` directory and ledger records, and the report inbox. `report submit` takes that
+lock, `dispatch heartbeat` does not, so heartbeats can succeed while a submit fails. Grant the
+write through the runtime's own sandbox settings (Claude Code: `sandbox.filesystem.allowWrite`
+with the state and inbox directories) before launch. A refused lock returns
+`sandbox_denied: ...` with the exact path, not a traceback. Classify it as infrastructure, not as
+a task error; deliver the staged file with the relay below only after the cause is named. The
+adapter probe creates and removes a file in the state directory instead of taking the real lock,
+so it cannot contend with a running coordinator; it does not replace the worker-side probe above.
 
 For proven early exit under `auto`, observe `batch auto-report`, then record its
 `runtime-unavailable` stop with `batch auto-decide`. The coordinator does not invent a role report.
