@@ -31,6 +31,8 @@ from harness.orchestration.ledger.generation_migration import (
     survey,
 )
 from harness.orchestration.ledger.lifecycle import (
+    LEDGER_CLEAN,
+    LEDGER_EXPORT,
     LEDGER_INSPECT,
     LEDGER_MIGRATE,
     LEDGER_MIGRATE_ROUTE,
@@ -86,7 +88,7 @@ def require_canonical(generation: Path) -> None:
         raise LedgerError(
             f"ledger generation {generation.name} holds a value its migration does not vouch "
             f"for: {shown}",
-            remedy=f"read the record with {LEDGER_INSPECT} and 'coordinator.py ledger export', then "
+            remedy=f"read the record with {LEDGER_INSPECT} and {LEDGER_EXPORT}, then "
             "restore it from the source generation the migration manifest names; the ledger "
             "rewrites nothing",
         )
@@ -98,7 +100,7 @@ def require_canonical(generation: Path) -> None:
     clean = (
         ""
         if path in found.owners
-        else ", 'coordinator.py ledger clean' to remove the dispatch evidence no batch owns"
+        else f", {LEDGER_CLEAN} to remove the dispatch evidence no batch owns"
     )
     raise LedgerUnmigrated(
         f"{LEDGER_MIGRATE_ROUTE}: {why}: {shown}",

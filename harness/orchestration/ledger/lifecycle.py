@@ -58,9 +58,12 @@ RECORD_DIRECTORIES = (
 # The system-fields migration's manifest and quarantine beside the record directories: no record
 # directory, so no ordinary loader reads it and an older generation never lacks it.
 MIGRATION_DIRECTORY = "migration"
-# The routes of persisted history no migration vouches for: inspection shows it, and the
-# system-fields migration maps a known historical value or quarantines the batch that holds it.
+# The routes of persisted history no migration vouches for: inspection shows it, export copies a
+# batch byte for byte, clean removes dispatch evidence no batch owns, and the system-fields
+# migration maps a known historical value or quarantines the batch that holds it.
 LEDGER_INSPECT = "'coordinator.py ledger inspect'"
+LEDGER_EXPORT = "'coordinator.py ledger export'"
+LEDGER_CLEAN = "'coordinator.py ledger clean'"
 LEDGER_MIGRATE = "'coordinator.py ledger migrate'"
 LEDGER_MIGRATE_ROUTE = f"run {LEDGER_MIGRATE}"
 # The record directories whose unreadable or unknown value the migration quarantines; the
