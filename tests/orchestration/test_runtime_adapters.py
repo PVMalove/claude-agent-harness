@@ -201,3 +201,114 @@ def test_claude_dispatch_help_lists_entrypoint_arguments(
     assert result.returncode == 0
     assert "--repo" in result.stdout and "--brief" in result.stdout
     assert "--extra-prompt-file" in result.stdout and "--claude-bin" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "access,sandbox", [("write", "workspace-write"), ("read-only", "read-only")]
+)
+def test_codex_dry_run_uses_brief_sandbox_and_retry_prompt(
+    dispatch: tuple[Path, Path, dict[str, object]], access: str, sandbox: str
+) -> None:
+    repo, worker, brief = dispatch
+    extra = repo / "retry.txt"
+    extra.write_text("Close codex retry finding", encoding="utf-8")
+    result = invoke(
+        dispatch,
+        "--dry-run",
+        "--codex-bin",
+        "/fake/codex",
+        "--extra-prompt-file",
+        str(extra),
+        runtime="codex",
+        changes={"access": access},
+    )
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    command = data["command"]
+    assert command[:2] == ["/fake/codex", "exec"]
+    assert command[command.index("--model") + 1] == "test-model"
+    assert command[command.index("--sandbox") + 1] == sandbox
+    assert command[command.index("--config") + 1] == 'model_reasoning_effort="high"'
+    assert "danger-full-access" not in command
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
+    assert command[command.index("--cd") + 1] == str(worker)
+    assert command[command.index("--add-dir") + 1] == str(
+        Path(str(brief["report_staging_path"])).parent
+    )
+    assert command[-1] == "-"
+    for text in (
+        "dispatch self-report",
+        "dispatch heartbeat",
+        "report submit",
+        "context-package-test",
+        "Close codex retry finding",
+        "Allowed tools: Read, Bash, Edit",
+    ):
+        assert text in data["prompt"]
+
+
+@pytest.mark.parametrize(
+    "changes,reason",
+    [
+        ({"role": "qa"}, "role qa"),
+        ({"purpose": "publish"}, "purpose publish"),
+        ({"resolved_transport": "in-process"}, "external"),
+        ({"allowed_tools": None}, "allowed_tools"),
+        ({"allowed_tools": []}, "allowed_tools"),
+        ({"access": "unknown"}, "access"),
+    ],
+)
+def test_codex_rejects_unsupported_briefs(
+    dispatch: tuple[Path, Path, dict[str, object]],
+    changes: dict[str, object],
+    reason: str,
+) -> None:
+    result = invoke(dispatch, "--dry-run", runtime="codex", changes=changes)
+    assert result.returncode == 1
+    assert reason in result.stderr
+
+
+@pytest.mark.parametrize("code", [0, 7])
+def test_codex_reports_early_exit_with_log_tail(
+    dispatch: tuple[Path, Path, dict[str, object]], code: int
+) -> None:
+    binary = fake_runtime(
+        dispatch[0],
+        f"import sys\nsys.stdin.read()\nprint('fake codex failure', flush=True)\nsys.exit({code})\n",
+    )
+    result = invoke(dispatch, "--codex-bin", str(binary), runtime="codex")
+    assert result.returncode == 1
+    assert (
+        f"exited with {code}" in result.stderr and "fake codex failure" in result.stderr
+    )
+
+
+def test_codex_starts_detached_in_worker_with_stdin(
+    dispatch: tuple[Path, Path, dict[str, object]],
+) -> None:
+    repo, worker, _ = dispatch
+    evidence = repo / "started.json"
+    binary = fake_runtime(
+        repo,
+        f"import json, os, sys, time\nfrom pathlib import Path\nprompt = sys.stdin.read()\nPath({str(evidence)!r}).write_text(json.dumps(dict(pid=os.getpid(), session=os.getsid(0), cwd=os.getcwd(), prompt=prompt, args=sys.argv[1:])))\ntime.sleep(30)\n",
+    )
+    try:
+        result = invoke(dispatch, "--codex-bin", str(binary), runtime="codex")
+        assert result.returncode == 0, result.stderr
+        data = json.loads(evidence.read_text())
+        assert data["pid"] == data["session"]
+        assert data["cwd"] == str(worker)
+        assert "report submit" in data["prompt"]
+        assert data["args"][0] == "exec"
+    finally:
+        if evidence.exists():
+            os.kill(json.loads(evidence.read_text())["pid"], 15)
+
+
+def test_codex_dispatch_help_exposes_adapter_arguments(
+    dispatch: tuple[Path, Path, dict[str, object]],
+) -> None:
+    result = invoke(dispatch, "--help", runtime="codex")
+    assert result.returncode == 0
+    for flag in ("--repo", "--brief", "--extra-prompt-file", "--codex-bin"):
+        assert flag in result.stdout
