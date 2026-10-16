@@ -28,6 +28,7 @@ from harness.orchestration.core.utils import JsonObject
 from .. import brand, i18n, reports
 from ..chrome import TopBar
 from ..runner import CommandRunner
+from ..session_card import session_card, status_caption
 from ..status import PERMISSION_PENDING, process_status, session_status
 from ..shell import SHELL_CSS, ConsoleShell, ShellIds
 from ..translate import Translated
@@ -202,16 +203,19 @@ class WorkerObservationScreen(ConsoleShell):
 
     def _session_card(self, label: str, dispatch_id: str) -> Text:
         stage = self._stages.get(dispatch_id)
-        card = Text(label + "\n", style=brand.PALETTE["foreground"])
-        card.append(
-            brand.shorten(dispatch_id, 22) + "\n\n", style=brand.PALETTE["muted"]
+        language = getattr(self.app, "language", "ru")
+        if stage is None:
+            card = Text(label + "\n\n", style=brand.PALETTE["foreground"])
+            return card.append_text(status_caption(session_status("unknown"), language))
+        return session_card(
+            ticket=stage.ticket,
+            role=stage.role,
+            dispatch_id=dispatch_id,
+            state=stage.state,
+            language=language,
+            id_limit=22,
+            stacked=True,
         )
-        state = stage.state if stage else "unknown"
-        status = session_status(state)
-        card.append(
-            status.render(getattr(self.app, "language", "ru")), style=status.color
-        )
-        return card
 
     def compose_strip(self) -> ComposeResult:
         yield Button("Сессии", id="worker-switch", compact=True)

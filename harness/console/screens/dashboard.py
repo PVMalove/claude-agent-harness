@@ -18,7 +18,7 @@ from textual.widgets import Button, ListItem, ListView, Static, Collapsible
 
 from .. import brand, i18n
 from ..chrome import TopBar
-from ..status import session_status
+from ..session_card import session_card
 from ..shell import (
     CONFIGURATION_SECTION,
     SECTIONS,
@@ -496,13 +496,14 @@ class DashboardScreen(ConsoleShell):
         )
 
     def _home_session_card(self, stage: reports.StageEntry) -> Text:
-        status = session_status(stage.state)
-        card = Text(f"{stage.ticket}  ·  {stage.role}\n")
-        card.append(
-            brand.shorten(stage.dispatch_id, 32) + "  ·  ", style=brand.PALETTE["muted"]
+        return session_card(
+            ticket=stage.ticket,
+            role=stage.role,
+            dispatch_id=stage.dispatch_id,
+            state=stage.state,
+            language=self._language,
+            id_limit=32,
         )
-        card.append(status.render(self._language), style=status.color)
-        return card
 
     def _home_sessions(self) -> list[reports.StageEntry]:
         view = reports.load_ledger_view(self.repo)

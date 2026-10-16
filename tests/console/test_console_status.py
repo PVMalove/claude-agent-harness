@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from rich.cells import cell_len
+from rich.text import Text
 
 from harness.console import brand, status
 
@@ -99,3 +100,63 @@ def test_status_module_does_not_import_textual() -> None:
     assert not re.search(
         r"^\s*(?:from|import)\s+(?:textual|rich)\b", source, re.MULTILINE
     )
+
+
+def test_every_role_has_its_own_colour_and_an_unknown_role_is_muted() -> None:
+    from harness.console import session_card
+
+    assert set(session_card.ROLES) == {
+        "architect",
+        "developer",
+        "code-review",
+        "qa",
+        "publish",
+        "verification",
+    }
+    colors = [brand.ROLE_COLORS[role] for role in session_card.ROLES]
+    assert len(set(colors)) == len(colors)
+    for role in session_card.ROLES:
+        label = session_card.role_label(role)
+        assert label.plain == role
+        assert brand.ROLE_COLORS[role] in str(label.style)
+    assert brand.PALETTE["muted"] in str(session_card.role_label("planner").style)
+
+
+def test_status_caption_is_symbol_plus_words_in_the_status_colour() -> None:
+    from harness.console import session_card
+
+    running = status.session_status("working")
+    caption = session_card.status_caption(running, "en")
+    assert caption.plain == "▶ Running"
+    assert running.color in str(caption.style)
+
+
+def test_session_card_carries_ticket_role_dispatch_and_caption() -> None:
+    from harness.console import session_card
+
+    def card(*, stacked: bool) -> Text:
+        return session_card.session_card(
+            ticket="#721",
+            role="developer",
+            dispatch_id="dispatch-e98a4a72-50ac-4fd8-b421-1db55c17f287",
+            state="working",
+            language="ru",
+            id_limit=22,
+            stacked=stacked,
+        )
+
+    inline = card(stacked=False)
+    assert inline.plain.splitlines() == [
+        "#721  ·  developer",
+        "dispatch-e98a4a72-50a…  ·  ▶ Выполняется",
+    ]
+    stacked = card(stacked=True)
+    assert stacked.plain.splitlines() == [
+        "#721  ·  developer",
+        "dispatch-e98a4a72-50a…",
+        "",
+        "▶ Выполняется",
+    ]
+    colors = {str(span.style) for span in inline.spans}
+    assert f"bold {brand.ROLE_COLORS['developer']}" in colors
+    assert status.session_status("working").color in colors

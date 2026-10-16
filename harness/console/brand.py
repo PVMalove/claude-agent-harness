@@ -47,6 +47,15 @@ SHELL_TOKENS = {
     "event-background": "#292621",
     "event-active-background": "#423029",
 }
+# One colour per worker role, so a role reads the same on the dashboard and in the worker view.
+ROLE_COLORS = {
+    "architect": "#B79CED",
+    "developer": "#D97757",
+    "code-review": "#E5A04B",
+    "qa": "#6FB7C9",
+    "publish": "#8FB573",
+    "verification": "#7FA3E0",
+}
 _SHELL_TOKEN = re.compile(
     r"\$(" + "|".join(sorted(SHELL_TOKENS, key=len, reverse=True)) + r")(?![\w-])"
 )

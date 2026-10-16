@@ -468,3 +468,49 @@ def test_worker_menu_navigation_runs_no_command_and_back_keys_work(
             assert app.screen is not screen
 
     asyncio.run(scenario())
+
+
+def test_worker_session_list_uses_the_shared_role_label_and_caption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.text import Text
+    from textual.widgets import ListView
+
+    from harness.console import brand, reports
+
+    stages = [
+        reports.StageEntry(
+            "dispatch-a", "batch-a", "#721", "developer", "working", "2026-10-16"
+        ),
+        reports.StageEntry(
+            "dispatch-b", "batch-a", "#722", "code-review", "blocked", "2026-10-15"
+        ),
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> list[Text]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 48)) as pilot:
+            screen = WorkerObservationScreen(tmp_path, observer=lambda *_: {})
+            await app.push_screen(screen)
+            await pilot.pause()
+            picker = screen.query_one("#worker-picker", ListView)
+            return [
+                card
+                for item in picker.children
+                for card in [item.query_one(Static).content]
+                if isinstance(card, Text)
+            ]
+
+    cards = asyncio.run(scenario())
+    assert [card.plain.splitlines()[0] for card in cards] == [
+        "#721  ·  developer",
+        "#722  ·  code-review",
+    ]
+    assert cards[0].plain.splitlines()[-1] == "▶ Выполняется"
+    assert cards[1].plain.splitlines()[-1] == "✖ Работа заблокирована"
+    assert f"bold {brand.ROLE_COLORS['code-review']}" in {
+        str(span.style) for span in cards[1].spans
+    }

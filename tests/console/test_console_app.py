@@ -1172,3 +1172,47 @@ def test_home_uses_workspace_shell_and_keeps_technical_report_collapsed(
             assert context.region.width >= 25
 
     asyncio.run(scenario())
+
+
+def test_dashboard_session_list_shows_role_labels_and_status_captions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The home session list uses the shared role label and a symbol-plus-words caption."""
+    from rich.text import Text
+    from textual.widgets import ListView, Static
+
+    from harness.console import reports
+
+    stages = [
+        reports.StageEntry(
+            "dispatch-a", "batch-a", "#721", "developer", "working", "2026-10-16"
+        ),
+        reports.StageEntry(
+            "dispatch-b", "batch-a", "#722", "qa", "approved", "2026-10-15"
+        ),
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> list[Text]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(140, 40)):
+            sessions = app.screen.query_one("#home-sessions", ListView)
+            return [
+                card
+                for item in sessions.children
+                for card in [item.query_one(Static).content]
+                if isinstance(card, Text)
+            ]
+
+    cards = asyncio.run(scenario())
+    assert [card.plain.splitlines()[0] for card in cards] == [
+        "#721  ·  developer",
+        "#722  ·  qa",
+    ]
+    assert "▶ Выполняется" in cards[0].plain
+    assert "○ Готов к запуску" in cards[1].plain
+    assert f"bold {brand.ROLE_COLORS['developer']}" in {
+        str(span.style) for span in cards[0].spans
+    }
