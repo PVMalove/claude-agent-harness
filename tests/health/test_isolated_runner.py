@@ -20,6 +20,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence, cast
 
 import pytest
 
@@ -591,6 +592,7 @@ def test_probe_file_left_in_checkout_fails_the_probe(project: Path) -> None:
         env: Mapping[str, str],
         log: Path,
         timeout: float,
+        session: bool = False,
     ) -> runner.Launch:
         argv = build(7)
         Path(argv[-2]).write_text("escaped", encoding="utf-8")
@@ -979,7 +981,7 @@ def test_probe_fails_when_host_sockets_are_visible(
 def test_build_precedes_test_with_private_artifacts(project: Path) -> None:
     (project / "artifacts").mkdir()
     data = _settings(["tests/**"], ["test", "{test_id}"])
-    data["test_runner"]["build"] = {
+    cast(dict[str, object], data["test_runner"])["build"] = {
         "command": ["compiler", "src/calc.py", "artifacts/out"],
         "artifact_paths": ["artifacts/**"],
     }
@@ -1013,7 +1015,7 @@ def test_failed_preparation_never_starts_selected_test(
 ) -> None:
     (project / "artifacts").mkdir()
     data = _settings(["tests/**"], ["test", "{test_id}"])
-    data["test_runner"]["build"] = {
+    cast(dict[str, object], data["test_runner"])["build"] = {
         "command": ["compiler"],
         "artifact_paths": ["artifacts/**"],
     }
@@ -1029,15 +1031,21 @@ def test_preparation_probe_checks_its_artifact_mount(
 ) -> None:
     (project / "artifacts").mkdir()
     data = _settings(["tests/**"], ["test", "{test_id}"])
-    data["test_runner"]["build"] = {
+    cast(dict[str, object], data["test_runner"])["build"] = {
         "command": ["compiler"],
         "artifact_paths": ["artifacts/**"],
     }
     _write_settings(project, data)
     original = runner.sandbox_argv
 
-    def wrong_mount(*args, **kwargs):
-        argv = original(*args, **kwargs)
+    def wrong_mount(
+        bwrap: str,
+        repo: Path,
+        binds: Sequence[Path | runner.Mount],
+        command: Sequence[str],
+        status_fd: int,
+    ) -> list[str]:
+        argv = original(bwrap, repo, binds, command, status_fd)
         target = str(project / "artifacts")
         if target in argv:
             argv[argv.index(target) - 2] = "--ro-bind"
@@ -1068,7 +1076,7 @@ def test_unsafe_artifact_targets_refuse_without_launch(
     (project / "tests/nested").mkdir()
     (project / "alias").symlink_to(project / "artifacts", target_is_directory=True)
     data = _settings(["tests/**"], ["test", "{test_id}"])
-    data["test_runner"]["build"] = {
+    cast(dict[str, object], data["test_runner"])["build"] = {
         "command": ["compiler"],
         "artifact_paths": ["artifacts/**", target],
     }
@@ -1086,7 +1094,7 @@ def test_unsafe_artifact_targets_refuse_without_launch(
 def test_preparation_cannot_write_protected_files(sandboxed: Path, attack: str) -> None:
     (sandboxed / "artifacts").mkdir()
     data = _settings(["tests/**"], [sys.executable, "tests/attack.py", "{test_id}"])
-    data["test_runner"]["build"] = {
+    cast(dict[str, object], data["test_runner"])["build"] = {
         "command": [sys.executable, "tests/attack.py", attack],
         "artifact_paths": ["artifacts/**"],
     }
@@ -1104,7 +1112,7 @@ def test_only_matching_selected_tests_start_database(
     project: Path, test_id: str, uses_database: bool
 ) -> None:
     data = _settings(["tests/**"], ["test", "{test_id}"])
-    data["test_runner"]["database"] = {
+    cast(dict[str, object], data["test_runner"])["database"] = {
         "engine": "postgresql",
         "test_ids": ["sql.*"],
         "command": ["foreground-db"],
@@ -1123,7 +1131,7 @@ def test_only_matching_selected_tests_start_database(
 
 def _fake_database_settings(project: Path, server: str, selected: str) -> None:
     data = _settings(["tests/**"], [sys.executable, "-c", selected, "{test_id}"])
-    data["test_runner"]["database"] = {
+    cast(dict[str, object], data["test_runner"])["database"] = {
         "engine": "postgresql",
         "test_ids": ["sql.*"],
         "command": [sys.executable, "-c", server],
@@ -1142,6 +1150,7 @@ FAKE_DATABASE = "import os,time; open(os.environ['HARNESS_TEST_DATABASE_DIR']+'/
 def test_private_database_lifecycle_and_result_channel(sandboxed: Path) -> None:
     selected = """import os,sys
 from pathlib import Path
+from typing import Sequence, cast
 assert os.environ['HARNESS_TEST_DATABASE_DIR'].startswith('/tmp/harness-db-')
 assert os.path.isdir(os.environ['HARNESS_TEST_DATABASE_SOCKET_DIR'])
 try:

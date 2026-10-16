@@ -178,12 +178,19 @@ def run(ctx: SimpleNamespace) -> None:
         detail = _verify_refusal(project, probe)
         _verify_test_author_disabled(project, detail)
         verify_cycle(project, _direct_execute(project))
-        print("isolated-test-runner: test-author cycle verified without isolation", flush=True)
+        print(
+            "isolated-test-runner: test-author cycle verified without isolation",
+            flush=True,
+        )
         print(
             f"isolated-test-runner: isolation unavailable ({detail}); "
             "verified fail-closed refusal only",
             flush=True,
         )
+
+    from scripts.clean_room.isolated_test_runner_build_db import run as run_build_db
+
+    run_build_db(_install(ctx.test_root / "runner_build_db_project"))
 
 
 def _runner_execute(project: Path) -> Execute:

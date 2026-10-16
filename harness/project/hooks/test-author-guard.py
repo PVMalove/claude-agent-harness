@@ -168,7 +168,7 @@ def _config(repo: Path) -> tuple[list[str], list[str]]:
     return list(paths), list(command)
 
 
-def _optional_settings(runner: dict) -> None:
+def _optional_settings(runner: dict[str, object]) -> None:
     """Keep optional groups closed; values never appear in a refusal."""
     for field, keys in (
         ("build", {"command", "artifact_paths"}),

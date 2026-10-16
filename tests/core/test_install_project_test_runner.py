@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -152,8 +153,11 @@ def test_install_optional_build_database_and_health(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     data = _installed_project_json(repo)
-    assert data["test_runner"]["build"]["artifact_paths"] == ["artifacts/**"]
-    assert data["test_runner"]["database"]["engine"] == "postgresql"
+    runner = cast(dict[str, object], data["test_runner"])
+    assert cast(dict[str, object], runner["build"])["artifact_paths"] == [
+        "artifacts/**"
+    ]
+    assert cast(dict[str, object], runner["database"])["engine"] == "postgresql"
     health = subprocess.run(
         [sys.executable, str(CLI), "health", str(repo)],
         capture_output=True,
@@ -179,3 +183,9 @@ def test_install_incomplete_groups_write_nothing(
     result = _init(repo, *flags)
     assert result.returncode == 2
     assert not (repo / ".harness").exists()
+
+
+def test_installed_runner_delivers_database_session_helper(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    assert _init(repo).returncode == 0
+    assert (repo / ".harness/health/isolated_runner_session.py").is_file()
