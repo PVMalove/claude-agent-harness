@@ -116,6 +116,18 @@ def require_restart_contract(
         "write_paths",
         "prohibited_changes",
         "verification_commands",
+        "resolved_runtime",
+        "resolved_model",
+        "resolved_effort",
+        "resolved_provider_profile",
+        "resolved_transport",
+        "runtime_access",
+        "orchestration_policy",
+        "liveness",
+        "commit_plan",
+        "allowed_tools",
+        "context_budget",
+        "retry_reason",
         "retry_handoff",
         "retry_package",
         "resolver",
@@ -151,13 +163,18 @@ def _recoverable(batch: JsonObject) -> None:
         )
 
 
-def _no_live_worker(root: Path, batch: JsonObject) -> None:
+def _no_live_worker(root: Path, batch: JsonObject, *, repo: Path | None = None) -> None:
     from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
 
     for entry in active_dispatches(batch):
         status = _load_dispatch_status(root, entry["dispatch_id"])
-        if status.get("state") in LIVE_DISPATCH_STATES:
+        from harness.orchestration.workflow.startup import worker_process_state
+
+        if (
+            status.get("state") in LIVE_DISPATCH_STATES
+            and worker_process_state(status, repo=repo) != "stopped"
+        ):
             raise CoordinatorError(
                 "a worker may still be running",
                 remedy=f"stop the runtime worker, then dispatch cancel --dispatch {entry['dispatch_id']} --runtime-stopped --approved-by <operator> --approved-at <now> --reason <why>, and repeat recovery; timeout alone is not proof of termination",
@@ -213,7 +230,12 @@ def _stop_to_resume(batch: JsonObject) -> JsonObject | None:
 
 
 def _confirmed_failure(
-    root: Path, batch: JsonObject, entry: JsonObject, *, runtime_stopped: bool = False
+    root: Path,
+    batch: JsonObject,
+    entry: JsonObject,
+    *,
+    runtime_stopped: bool = False,
+    repo: Path | None = None,
 ) -> JsonObject:
     """Structural startup evidence of an environment failure; failing that, a conservative text
     classification of the blocked report, recorded as a heuristic for the human to approve.
@@ -232,6 +254,7 @@ def _confirmed_failure(
         _load_dispatch(root, entry["dispatch_id"]),
         status,
         runtime_stopped=runtime_stopped,
+        repo=repo,
     )
     if not assessment["restart_allowed"]:
         raise CoordinatorError(
@@ -306,7 +329,9 @@ def _restart_failed_dispatch(
     from harness.orchestration.core.git_utils import _git
     from harness.orchestration.workflow.decisions import _abandon_open_dispatches
 
-    failure = _confirmed_failure(root, batch, entry, runtime_stopped=runtime_stopped)
+    failure = _confirmed_failure(
+        root, batch, entry, runtime_stopped=runtime_stopped, repo=repo
+    )
     if stop and stop.get("evidence", {}).get("dispatch_id") != entry["dispatch_id"]:
         raise CoordinatorError(
             "stop and active dispatch disagree",
@@ -348,7 +373,7 @@ def _restart_failed_dispatch(
     return {**evidence, "failure": failure}, retired
 
 
-def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
+def _record_resumed_batch(args: argparse.Namespace) -> JsonObject:
     """Retire a proven environment failure and prepare a new, human-approved same-stage dispatch."""
     from harness.orchestration.core.utils import _repo
     from harness.orchestration.ledger.ledger_ops import (
@@ -374,7 +399,7 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
                 "batch has no recorded stop to resume",
                 remedy="inspect batch auto-report or use batch rewind to choose an earlier gate",
             )
-        _no_live_worker(root, batch)
+        _no_live_worker(root, batch, repo=repo)
         if batch.get("needs_attention"):
             raise CoordinatorError(
                 "unresolved attention prevents recovery",
@@ -442,6 +467,81 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
             },
         )
         return _recovery_result(batch, event)
+
+
+def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
+    """Optionally approve the same-contract successor in the one recorded human recovery."""
+    if not getattr(args, "restart", False):
+        return _record_resumed_batch(args)
+    from harness.orchestration.core.utils import _repo
+    from harness.orchestration.ledger.ledger_ops import (
+        _ledger_lock,
+        _load_batch,
+        _state_root,
+    )
+    from harness.orchestration.workflow.history import _validate_batch_integrity
+    from harness.orchestration.workflow.dispatch import create_dispatch
+
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _ledger_lock(LifecycleLedger(root)):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        stop = _stop_to_resume(batch)
+        if stop and stop.get("reason") not in ENVIRONMENT_REASONS:
+            raise CoordinatorError(
+                "this recovery has no same-stage worker to restart",
+                remedy="resume without --restart and decide the preserved pending report",
+            )
+        events = batch.get("recovery_events", [])
+        if events and events[-1]["kind"] == "resume-stop":
+            event = events[-1]
+            following = batch["dispatches"][
+                event["evidence"].get("dispatch_count", len(batch["dispatches"])) :
+            ]
+            if following:
+                first = _load_dispatch(root, following[0]["dispatch_id"])
+                if (
+                    first.get("transition", {}).get("recovery_event_sha256")
+                    == event["record_sha256"]
+                ):
+                    return {
+                        **_recovery_result(batch, event),
+                        "restart_dispatch_id": first["dispatch_id"],
+                        "already_recorded": True,
+                    }
+    result = _record_resumed_batch(args)
+    event = result["event"]
+    if not event.get("dispatch_id"):
+        raise CoordinatorError(
+            "this recovery has no same-stage worker to restart",
+            remedy="decide the pending report; use --restart only for a confirmed startup failure",
+        )
+    source = _load_dispatch(root, event["dispatch_id"])
+    successor = create_dispatch(
+        argparse.Namespace(
+            repo=str(repo),
+            state_dir=getattr(args, "state_dir", None),
+            batch=args.batch,
+            role=source["role"],
+            runtime=source["resolved_runtime"],
+            purpose=source["purpose"],
+            candidate_commit=source.get("candidate_commit"),
+            delta_review_of=source.get("delta_review_of"),
+            model=source["resolved_model"],
+            effort=source["resolved_effort"],
+            propose=False,
+            transition_digest=None,
+            approved_by=None,
+            approved_at=None,
+            _restart_recovery_sha256=event["record_sha256"],
+        )
+    )
+    return {
+        **result,
+        "restart_dispatch": successor,
+        "restart_dispatch_id": successor["dispatch_id"],
+    }
 
 
 def _stage_rank(root: Path, entry: JsonObject) -> int:
@@ -529,7 +629,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
-        _no_live_worker(root, batch)
+        _no_live_worker(root, batch, repo=repo)
         entries = active_dispatches(batch)
         current_rank = max(
             [

@@ -11,9 +11,18 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from rich.text import Text
+from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Checkbox, Input, ListItem, ListView, Static, TextArea
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    ListItem,
+    ListView,
+    Static,
+    TextArea,
+)
 
 from .. import brand, i18n
 from .. import reports as console_reports
@@ -149,6 +158,7 @@ class OrchestrationScreen(CommandMenuScreen):
         panel.border_title = brand.frame_title("Состояние и статистика")
         panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
+        yield Button("Рабочие сессии", id="worker-sessions")
         if view.unavailable:
             return
         with Horizontal(id="pipeline-history"):
@@ -255,8 +265,28 @@ class OrchestrationScreen(CommandMenuScreen):
         if timeline is not None:
             self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
 
+    @on(Button.Pressed, "#worker-sessions")
+    def open_worker_sessions(self, event: Button.Pressed) -> None:
+        from .worker_observation import WorkerObservationScreen
+
+        event.stop()
+        self.app.push_screen(WorkerObservationScreen(self.repo))
+
     def _run(self, entry: CoordinatorCommand, values: Mapping[str, str]) -> None:
         """Формирует аргументы и запускает команду координатора через runner."""
+        if entry.key == "dispatch-send" and "--visibility=background" not in values.get(
+            "adapter_arg", ""
+        ):
+            from .worker_observation import WorkerObservationScreen
+
+            screen = WorkerObservationScreen(self.repo, values.get("dispatch"))
+            self.app.push_screen(screen)
+            self.app.call_after_refresh(
+                screen.launch,
+                process_argv(entry.cli_argv(self.repo, values)),
+                self._command_runner,
+            )
+            return
         self.run_process(
             entry.cli_line(self.repo, values),
             process_argv(entry.cli_argv(self.repo, values)),

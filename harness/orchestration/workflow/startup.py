@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from datetime import UTC, datetime
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
+
+from harness.orchestration.worker_observation import (
+    observe_worker,
+    STARTUP_TIMEOUT_SECONDS,
+)
 
 from harness.orchestration.core import utils
 from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
@@ -44,7 +50,10 @@ RESTARTABLE_WORKER_STATES: frozenset[WorkerProcessState] = frozenset(
 
 
 def worker_process_state(
-    status: Mapping[str, object], *, runtime_stopped: bool = False
+    status: Mapping[str, object],
+    *,
+    runtime_stopped: bool = False,
+    repo: Path | None = None,
 ) -> WorkerProcessState:
     """Return the strongest recorded fact about the worker process, never a guess from silence.
 
@@ -56,8 +65,20 @@ def worker_process_state(
     ``unknown`` never allow a restart.
     """
     state = status.get("state")
+    if state == "reported":
+        return "reported"
+    observation = observe_worker(
+        status.get("adapter_receipt"), status.get("dispatch_id"), repo=repo
+    )
+    if observation is not None and state in LIVE_DISPATCH_STATES | {"blocked"}:
+        return cast(WorkerProcessState, observation["state"])
     if state in LIVE_DISPATCH_STATES:
-        return "live"
+        # A legacy handoff with no process receipt or first self-report proves no liveness.
+        return (
+            "unknown"
+            if state == "dispatched" and not status.get("model_self_report")
+            else "live"
+        )
     failure = status.get("runtime_failure")
     if isinstance(failure, Mapping) and failure.get("worker_started") is False:
         return "absent"
@@ -79,6 +100,7 @@ def assess_startup(
     status: Mapping[str, object],
     *,
     runtime_stopped: bool = False,
+    repo: Path | None = None,
 ) -> JsonObject:
     """Explain a stopped startup from recorded facts without inventing a model or an exit.
 
@@ -103,13 +125,22 @@ def assess_startup(
     runtime_failure = failure_classifier.classify_runtime_failure(
         failure if isinstance(failure, Mapping) else None
     )
-    worker = worker_process_state(status, runtime_stopped=runtime_stopped)
+    worker = worker_process_state(status, runtime_stopped=runtime_stopped, repo=repo)
     if model_match is False:
         classification: str | None = "model-mismatch"
     elif model_match is True and not tree_match:
         classification = "worktree-mismatch"
     elif runtime_failure is not None:
         classification = cast(str, runtime_failure["category"])
+    elif model_match is None and worker == "stopped":
+        classification = "runtime-crash"
+        runtime_failure = failure_classifier.classify_runtime_failure(
+            {
+                "kind": "runtime-crash",
+                "worker_started": True,
+                "error": "bound worker exited before its first model self-report",
+            }
+        )
     elif model_match is None:
         classification = "model-self-report-missing"
     else:
@@ -119,7 +150,40 @@ def assess_startup(
         unknowns.append("the active model identity is not known")
     if worker in {"live", "unknown", "rejected-at-startup"}:
         unknowns.append(f"worker termination is not proven ({worker})")
+    observation = observe_worker(
+        status.get("adapter_receipt"), dispatch.get("dispatch_id"), repo=repo
+    )
+    liveness = dispatch.get("liveness")
+    timeout_value = (
+        liveness.get("startup_timeout_seconds")
+        if isinstance(liveness, Mapping)
+        else None
+    )
+    timeout = (
+        timeout_value
+        if isinstance(timeout_value, int)
+        and not isinstance(timeout_value, bool)
+        and timeout_value > 0
+        else STARTUP_TIMEOUT_SECONDS
+    )
+    sent_at = status.get("sent_at")
+    elapsed = (
+        max(
+            0,
+            int(
+                (
+                    datetime.now(UTC) - utils._moment(sent_at, "dispatch sent_at")
+                ).total_seconds()
+            ),
+        )
+        if sent_at
+        else 0
+    )
     return {
+        "observation": observation,
+        "startup_timeout_seconds": timeout,
+        "startup_elapsed_seconds": elapsed,
+        "deadline_exceeded": model_match is None and elapsed >= timeout,
         "classification": classification,
         "worker_state": worker,
         "restart_allowed": worker in RESTARTABLE_WORKER_STATES,

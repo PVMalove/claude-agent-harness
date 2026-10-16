@@ -8,6 +8,27 @@ is not listed: it comes from the CLI and stays as it is."""
 from __future__ import annotations
 
 EN: dict[str, str] = {
+    "Запрос native": "Native prompt",
+    "Запрос разрешения native runtime": "Native runtime permission request",
+    "Отклонить": "Deny",
+    "Разрешить один раз": "Allow once",
+    "⚠ Требуется разрешение native runtime; решение принимает человек.": "Warning: native permission required; the operator decides.",
+    "Рабочие сессии": "Worker sessions",
+    "Главное меню": "Main menu",
+    "Выберите worker": "Select worker",
+    "Переподключить": "Reconnect",
+    "Детали": "Details",
+    "История batch": "Batch history",
+    "Процесс": "Process",
+    "Поток": "Stream",
+    "не наблюдался": "not observed",
+    "Worker и QA — отдельные dispatch": "Worker and QA use separate dispatches",
+    "Наблюдение без дополнительных LLM-вызовов": "Observation without additional LLM calls",
+    "⚠ Наблюдение недоступно; исход процесса неизвестен. Повторный worker не запускается.": "Warning: observation unavailable; worker outcome unknown. No second worker is started.",
+    "⚠ Отчёт ожидает доставки; завершение процесса не означает приёмку работы.": "Warning: report pending delivery; process exit does not accept the work.",
+    "⚠ Истёк срок первого self-report; таймаут не доказывает остановку.": "Warning: first self-report deadline exceeded; timeout does not prove termination.",
+    "○ Нет новых событий; это не проверка здоровья worker.": "No new events; this does not prove worker health.",
+    "⚠ Поток был сокращён или перезаписан; показана доступная история.": "Warning: stream truncated or rotated; available history shown.",
     # frame titles
     "Цель": "Target",
     "Шаг": "Step",
@@ -497,5 +518,16 @@ EN_COMMANDS: dict[str, str] = {
     "Зарегистрировать Context Package": "Register a Context Package",
     "Состояние ledger": "Ledger status",
 }
+EN.update(
+    {
+        "Все события": "All events",
+        "Вывод": "Output",
+        "Инструменты": "Tools",
+        "Ошибки": "Errors",
+        "Разрешения": "Permissions",
+        "Событие": "Event",
+        "Операция": "Operation",
+    }
+)
 EN.update(EN_COMMANDS)
 EN["Отчёты"] = "Reports"
