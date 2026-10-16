@@ -17,6 +17,7 @@ from textual.pilot import Pilot
 from textual.widgets import RichLog, Static, Select, TabbedContent, Button
 
 from harness.orchestration.core.utils import JsonObject
+from harness.console.shell import Breadcrumbs
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.worker_observation import WorkerObservationScreen
 from harness.console.shell import SECTIONS
@@ -462,7 +463,7 @@ def test_worker_menu_navigation_runs_no_command_and_back_keys_work(
             await pilot.press("f2")
             await pilot.pause()
             await pilot.pause()
-            crumbs = str(screen.query_one("#worker-breadcrumbs", Static).content)
+            crumbs = screen.query_one("#worker-breadcrumbs", Breadcrumbs).text
             assert crumbs.startswith("Home  ›  Orchestration")
             await pilot.press("escape")
             await pilot.pause()
@@ -515,3 +516,52 @@ def test_worker_session_list_uses_the_shared_role_label_and_caption(
     assert f"bold {brand.ROLE_COLORS['code-review']}" in {
         str(span.style) for span in cards[1].spans
     }
+
+
+def test_worker_breadcrumbs_link_back_to_orchestration_and_home(tmp_path: Path) -> None:
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.screens.orchestration import OrchestrationScreen
+    from harness.console.shell import CrumbLink
+
+    async def scenario() -> tuple[list[str], bool, bool, int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.pause()
+            orchestration = OrchestrationScreen(tmp_path)
+            await app.push_screen(orchestration)
+            worker = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(worker)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            links = [str(link.content) for link in worker.query(CrumbLink)]
+            orchestration_link = list(worker.query(CrumbLink))[1]
+            orchestration_link.focus()
+            await pilot.press("enter")
+            for _ in range(4):
+                await pilot.pause()
+            back_on_orchestration = app.screen is orchestration
+            await app.push_screen(
+                WorkerObservationScreen(tmp_path, _LONG_ID, observer=_blocked_snapshot)
+            )
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            home_link = list(app.screen.query(CrumbLink))[0]
+            await pilot.click(CrumbLink, offset=(1, 0))
+            for _ in range(4):
+                await pilot.pause()
+            assert home_link
+            return (
+                links,
+                back_on_orchestration,
+                isinstance(app.screen, DashboardScreen),
+                len(app.screen_stack),
+            )
+
+    links, back_on_orchestration, on_dashboard, depth = asyncio.run(scenario())
+    assert links[:2] == ["Главная", "Оркестрация"]
+    assert len(links) == 3  # the observed batch links too
+    assert back_on_orchestration and on_dashboard and depth == 2

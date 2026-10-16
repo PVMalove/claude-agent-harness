@@ -21,6 +21,7 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import ListItem, ListView, Static, TextArea
 
+from harness.console.shell import Breadcrumbs
 from harness.console.app import HarnessConsoleApp
 from harness.console.coordinator_catalog import (
     COORDINATOR_COMMANDS,
@@ -408,7 +409,7 @@ def test_orchestration_sits_on_the_shell_and_keeps_its_content(tmp_path: Path) -
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 60)) as pilot:
             screen = await _shell_orchestration(app, pilot, tmp_path)
-            assert str(screen.query_one("#shell-breadcrumbs", Static).content) == (
+            assert screen.query_one("#shell-breadcrumbs", Breadcrumbs).text == (
                 "Главная  ›  Оркестрация"
             )
             menu = screen.query_one("#shell-sections", ListView)
@@ -464,7 +465,7 @@ def test_orchestration_switches_language_and_goes_back_with_escape(
             screen = await _shell_orchestration(app, pilot, tmp_path)
             await pilot.press("f2")
             await _settle(pilot, app)
-            crumbs = str(screen.query_one("#shell-breadcrumbs", Static).content)
+            crumbs = screen.query_one("#shell-breadcrumbs", Breadcrumbs).text
             item = screen.query("#shell-sections > ListItem").results(ListItem)
             label = str(list(item)[5].query_one(Static).content)
             await pilot.press("escape")

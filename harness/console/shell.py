@@ -10,12 +10,14 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Button, Footer, ListItem, ListView, Static
 
 from . import brand, i18n
 from .chrome import WorkspaceHeader
+from .crumbs import ELLIPSIS, SEPARATOR, Crumb, collapse_crumbs, split_path
 from .translate import Translated
 
 CONFIGURATION_SECTION = "Configuration"
@@ -48,6 +50,98 @@ class ShellSidebar(Vertical):
         yield self.menu
         if self.context:
             yield Static(self.context, classes="menu-context", markup=False)
+
+
+class CrumbLink(Static, can_focus=True):
+    """A breadcrumb segment that opens its screen on a click or on Enter."""
+
+    BINDINGS = [Binding("enter", "select", show=False)]
+
+    class Selected(Message):
+        def __init__(self, crumb: Crumb) -> None:
+            super().__init__()
+            self.crumb = crumb
+
+    def __init__(self, crumb: Crumb, text: str) -> None:
+        super().__init__(text, classes="crumb-link no-i18n", markup=False)
+        self.crumb = crumb
+
+    def on_click(self) -> None:
+        self.post_message(self.Selected(self.crumb))
+
+    def action_select(self) -> None:
+        self.post_message(self.Selected(self.crumb))
+
+
+class Breadcrumbs(Horizontal):
+    """The path to the current screen: every segment but the last is a link, and a narrow terminal
+    folds the middle segments into an ellipsis."""
+
+    DEFAULT_CLASSES = "breadcrumbs"
+
+    def __init__(self, crumbs: Sequence[Crumb], *, id: str) -> None:
+        super().__init__(id=id)
+        self._crumbs = list(crumbs)
+        self._key: tuple[tuple[str, ...], tuple[int | None, ...]] = ((), ())
+
+    def set_crumbs(self, crumbs: Sequence[Crumb]) -> None:
+        self._crumbs = list(crumbs)
+        self.relabel()
+
+    def _labels(self) -> list[str]:
+        language = getattr(self.app, "language", "ru")
+        return [i18n.tr_text(language, crumb.label) for crumb in self._crumbs]
+
+    def _shown(self, labels: Sequence[str]) -> list[int | None]:
+        width = self.content_size.width or self.app.size.width
+        return collapse_crumbs(labels, width)
+
+    @property
+    def text(self) -> str:
+        """The path as shown, segments joined by the separator."""
+        labels = self._labels()
+        return SEPARATOR.join(
+            ELLIPSIS if index is None else labels[index]
+            for index in self._shown(labels)
+        )
+
+    def relabel(self) -> None:
+        """Redraw the segments after a change of the path, the language or the width."""
+        if not self.is_attached:
+            return
+        labels = self._labels()
+        shown = self._shown(labels)
+        key = (tuple(labels), tuple(shown))
+        if key == self._key:
+            return
+        self._key = key
+        last = len(self._crumbs) - 1
+        parts: list[Widget] = []
+        for position, index in enumerate(shown):
+            if position:
+                parts.append(Static(" › ", classes="crumb-sep no-i18n", markup=False))
+            if index is None:
+                parts.append(Static(ELLIPSIS, classes="crumb-sep no-i18n"))
+                continue
+            crumb = self._crumbs[index]
+            if index == last:
+                parts.append(
+                    Static(labels[index], classes="crumb-current no-i18n", markup=False)
+                )
+            elif crumb.is_link:
+                parts.append(CrumbLink(crumb, labels[index]))
+            else:
+                parts.append(
+                    Static(labels[index], classes="crumb-text no-i18n", markup=False)
+                )
+        self.remove_children()
+        self.mount_all(parts)
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def on_resize(self) -> None:
+        self.relabel()
 
 
 class ContextStrip(Horizontal):
@@ -131,7 +225,13 @@ class ShellIds:
 # single screen's widgets belong to that screen, never here.
 SHELL_CSS = brand.shell_css("""
 Screen.shell { background: $background; }
-.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; content-align: left middle; border-bottom: solid $border-subtle; color: $text; }
+.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $text; }
+.shell .breadcrumbs Static { width: auto; height: 1; }
+.shell .crumb-link { color: $primary; text-style: underline; }
+.shell .crumb-link:hover { background: $row-highlight; color: $selection-foreground; }
+.shell .crumb-link:focus { background: $selection-background; color: $selection-foreground; text-style: bold underline; }
+.shell .crumb-sep { color: $text-muted; }
+.shell .crumb-current { width: 1fr; min-width: 1; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
 .shell .context-strip { height: auto; min-height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
 .shell .context-strip Static { width: 1fr; height: auto; }
 .shell Button { min-width: 8; width: auto; color: $text; border: round $component-border; text-style: none; }
@@ -184,11 +284,17 @@ Screen.shell { background: $background; }
 """)
 
 
-async def _return_home(app: App[None]) -> None:
-    """Close the screens above the dashboard."""
-    from .screens.dashboard import DashboardScreen
+def _section_named(label: str) -> str | None:
+    """The menu section whose name, in either language, is `label`."""
+    for name in SECTIONS:
+        if label in (i18n.section_label(language, name) for language in i18n.LANGUAGES):
+            return name
+    return None
 
-    while not isinstance(app.screen, DashboardScreen) and len(app.screen_stack) > 1:
+
+async def _pop_to(app: App[None], target: Screen[None]) -> None:
+    """Close the screens above `target`."""
+    while app.screen is not target and target in app.screen_stack:
         await app.pop_screen()
 
 
@@ -217,6 +323,8 @@ class ConsoleShell(Translated, Screen[None]):
     SECTION: str | None = None
     CRUMBS = "Главная"
     HAS_CONTEXT = False
+    # False for a view inside a section (it shares the section's menu entry but is not its screen).
+    IS_SECTION_ROOT = True
 
     # Hooks a screen overrides.
     def compose_strip(self) -> ComposeResult:
@@ -241,8 +349,16 @@ class ConsoleShell(Translated, Screen[None]):
         return None
 
     # The frame.
-    def _crumb_text(self) -> str:
-        return "  ›  ".join(part.strip() for part in self.CRUMBS.split("›"))
+    def crumbs(self) -> list[Crumb]:
+        """The path as segments; a label that names a menu section links to it."""
+        labels = split_path(self.CRUMBS)
+        return [
+            Crumb(
+                label,
+                section=_section_named(label) if index < len(labels) - 1 else None,
+            )
+            for index, label in enumerate(labels)
+        ]
 
     def _menu(self) -> ListView:
         return ListView(
@@ -266,9 +382,7 @@ class ConsoleShell(Translated, Screen[None]):
                 self._menu(), id=ids.navigation, context=self.sidebar_context()
             )
             with Vertical(id=ids.content, classes="shell-main"):
-                yield Static(
-                    self._crumb_text(), id=ids.breadcrumbs, classes="breadcrumbs"
-                )
+                yield Breadcrumbs(self.crumbs(), id=ids.breadcrumbs)
                 with ContextStrip():
                     yield Button(
                         "☰", id=ids.toggle, classes="menu-toggle", compact=True
@@ -299,6 +413,7 @@ class ConsoleShell(Translated, Screen[None]):
             item.query_one(Static).update(self.menu_label(number, item.name or ""))
         for grid in self.query(FieldGrid):
             grid.relabel()
+        self.query_one(Breadcrumbs).relabel()
 
     # Navigation: opening a section is the only effect.
     async def open_section(self, index: int) -> None:
@@ -308,7 +423,12 @@ class ConsoleShell(Translated, Screen[None]):
         if SECTIONS[index] == HOME_SECTION:
             if any(isinstance(item, DashboardScreen) for item in self.app.screen_stack):
                 # From the app's loop: popping this screen from inside its own handler would wait on itself.
-                self.app.call_later(_return_home, self.app)
+                home = next(
+                    item
+                    for item in self.app.screen_stack
+                    if isinstance(item, DashboardScreen)
+                )
+                self.app.call_later(_pop_to, self.app, home)
             return
         for screen in self.app.screen_stack:
             if isinstance(screen, DashboardScreen):
@@ -318,6 +438,28 @@ class ConsoleShell(Translated, Screen[None]):
     async def action_section(self, index: int) -> None:
         if SECTIONS[index] != self.SECTION:
             await self.open_section(index)
+
+    async def navigate_crumb(self, crumb: Crumb) -> None:
+        """Go to the screen a breadcrumb names; no command runs."""
+        if crumb.section is not None:
+            if crumb.section != HOME_SECTION:
+                for screen in reversed(self.app.screen_stack[:-1]):
+                    if (
+                        isinstance(screen, ConsoleShell)
+                        and screen.IS_SECTION_ROOT
+                        and screen.SECTION == crumb.section
+                    ):
+                        self.app.call_later(_pop_to, self.app, screen)
+                        return
+            await self.open_section(SECTIONS.index(crumb.section))
+        elif crumb.action is not None:
+            result = getattr(self, f"action_{crumb.action}")()
+            if result is not None:
+                await result
+
+    async def on_crumb_link_selected(self, event: CrumbLink.Selected) -> None:
+        event.stop()
+        await self.navigate_crumb(event.crumb)
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == self.IDS.menu and event.item.name in SECTIONS:

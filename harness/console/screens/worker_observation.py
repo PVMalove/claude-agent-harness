@@ -30,7 +30,8 @@ from ..chrome import TopBar
 from ..runner import CommandRunner
 from ..session_card import session_card, status_caption
 from ..status import PERMISSION_PENDING, process_status, session_status
-from ..shell import SHELL_CSS, ConsoleShell, ShellIds
+from ..crumbs import Crumb
+from ..shell import HOME_SECTION, SHELL_CSS, Breadcrumbs, ConsoleShell, ShellIds
 from ..translate import Translated
 from .commands import call_from_worker
 
@@ -108,6 +109,7 @@ class WorkerObservationScreen(ConsoleShell):
     """A passive view. Closing/reconnecting never starts or terminates a worker."""
 
     SECTION = "Orchestration"
+    IS_SECTION_ROOT = False
     CRUMBS = "Главная › Оркестрация › Worker / Наблюдение"
     HAS_CONTEXT = True
     IDS = ShellIds(
@@ -374,8 +376,6 @@ class WorkerObservationScreen(ConsoleShell):
         )
 
     def on_mount(self) -> None:
-        # The breadcrumbs carry the observed batch: the screen writes them, nothing translates them.
-        self.query_one("#worker-breadcrumbs", Static).add_class("no-i18n")
         if self._choices:
             self.query_one("#worker-picker", ListView).index = next(
                 (
@@ -540,6 +540,25 @@ class WorkerObservationScreen(ConsoleShell):
             row.append("  —   " + text + "\n\n", style=brand.PALETTE[color])
         return row
 
+    def _worker_crumbs(self, snapshot: JsonObject) -> list[Crumb]:
+        """The path with the observed batch, which links to that batch's timeline."""
+        batch = str(snapshot.get("batch_id") or "—")
+        return [
+            Crumb("Главная", section=HOME_SECTION),
+            Crumb("Оркестрация", section="Orchestration"),
+            Crumb(brand.shorten(batch, 23), action="open_batch"),
+            Crumb("Worker / Наблюдение"),
+        ]
+
+    def action_open_batch(self) -> None:
+        from .reports import BatchTimelineScreen
+
+        timeline = reports.load_ledger_view(self.repo).timeline(
+            self.snapshot.get("batch_id", "")
+        )
+        if timeline:
+            self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
+
     def _paint_context(
         self, snapshot: JsonObject, worker: str, lines: list[str]
     ) -> None:
@@ -581,15 +600,7 @@ class WorkerObservationScreen(ConsoleShell):
                 else brand.PALETTE["muted"],
             )
         self.query_one("#worker-pipeline", Static).update(pipeline)
-        self.query_one("#worker-breadcrumbs", Static).update(
-            t("Главная")
-            + "  ›  "
-            + t("Оркестрация")
-            + "  ›  "
-            + brand.shorten(str(snapshot.get("batch_id") or "—"), 23)
-            + "  ›  Worker / "
-            + t("Наблюдение")
-        )
+        self.query_one(Breadcrumbs).set_crumbs(self._worker_crumbs(snapshot))
         self.query_one("#worker-selection", Static).update(
             f"{ticket} · {role} · {snapshot.get('dispatch_id') or ''}"
         )
@@ -798,13 +809,7 @@ class WorkerObservationScreen(ConsoleShell):
             )
             self.app.push_screen(WorkerDetails("\n".join(lines)))
         elif event.button.id == "worker-recovery":
-            from .reports import BatchTimelineScreen
-
-            timeline = reports.load_ledger_view(self.repo).timeline(
-                self.snapshot.get("batch_id", "")
-            )
-            if timeline:
-                self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
+            self.action_open_batch()
         elif event.button.id == "worker-back":
             self.app.pop_screen()
 
