@@ -489,7 +489,7 @@ you recommend any recovery or abandon. These commands are read-only. For each di
 `restart_allowed` and `unknowns`. The worker states are `absent` (the adapter could not start the
 runtime), `reported` (the worker returned its final report), `rejected-at-startup` (the
 coordinator refused its self-report, so the process may still run), `stopped` (the operator
-confirmed the stop), `live` and `unknown`. Silence, a timeout or a stop acknowledgement never
+confirmed the stop, or bound local process evidence proves exit), `live` and `unknown`. Silence, a timeout or a stop acknowledgement never
 proves that a worker stopped. Capacity, rate-limit and service-unavailable are separate
 classifications.
 `ledger validate` is read-only: it validates the generation, checksums, audit, graph and current
@@ -511,7 +511,10 @@ human approval retires that dispatch and the ledger rejects its late writes. Whe
 status` shows `live` or `unknown`, `resume-stop` refuses and changes nothing: stop the worker
 through its runtime and repeat the command with `--runtime-stopped`. A missing self-report is not
 a failure `resume-stop` confirms; stop the worker and record `dispatch cancel --runtime-stopped`
-(below). `resume-stop` accepts a structured worktree/model mismatch or a classified startup
+(below). This is the first step when a worker did not start and no exit is proven: `resume-stop`
+has no recorded stop to resume and `dispatch send` refuses an already sent dispatch. When bound
+process evidence proves the exit, `batch resume-stop --restart` replaces both steps with one
+human decision. `resume-stop` accepts a structured worktree/model mismatch or a classified startup
 failure. Without structured evidence, a conservative text heuristic may name an infrastructure cause (capacity,
 rate limit, timeout, network, runtime crash, resources, service-unavailable or service outage) in
 the blocked report's `blockers` or the runtime error. Any sign of a test, lint, type, conflict,
@@ -520,7 +523,7 @@ match as `classification` with `method: heuristic`; it only proposes the cause a
 approval still decides. No report, or a blocked report with no changed files, failed checks or
 review findings, is eligible. Branch, known SHA and tracked/untracked cleanliness must match.
 The old dispatch is retired; the next dispatch has a new ID, context and transition digest under a
-fresh human approval. Role, purpose, scope, candidate and fix-forward handoff remain fixed. It
+fresh human approval, optionally covered by the explicit `--restart` recovery decision. Role, purpose, scope, candidate and fix-forward handoff remain fixed. It
 spends an infrastructure attempt, not another developer retry. Repeating the same recovery before
 its next dispatch is created changes nothing. A budget/no-route pause with a pending report can
 resume that report boundary for a human decision; this does not invent a retry or accept its work.
@@ -747,6 +750,89 @@ chosen action, and author/time. The original brief remains immutable. If the fac
 scope, DoD, assignment, or required proof, the current dispatch is ended and the changed
 work is planned and approved as a new dispatch.
 
+## Observable external workers
+
+Select the shipped example explicitly: `--adapter .harness/orchestration/adapters/claude_code.py`.
+It is a runtime adapter with `dispatch --help`; the `claude` or `codex` executable itself is not
+an adapter. This example targets Claude Code. `--adapter-arg=--runtime-executable=<path>` selects
+its Claude Code executable. Help validation must confirm the stream/session/manual-permission
+options before launch; another runtime needs its own compatible adapter.
+
+Send from the Harness console to mount the selected worker view before launch. Standalone use
+requires an explicitly selected `--adapter-arg=--visibility=background`; absence of a visible
+console never silently becomes a hidden launch. The adapter retains native `manual` permissions,
+local hooks and the brief's tool list. It adds no auto-approve or permission-bypass flag.
+`--adapter-arg=--worker-sandbox=disabled` applies only to this invocation and requires the brief's
+already approved `unsandboxed` access plan; it never edits global settings. Required isolation
+still needs a suitable native provider. Prepare a changed mode before propose/approval.
+
+The adapter probes its filesystem resources and an unauthenticated HEAD to the runtime endpoint.
+`--adapter-arg=--endpoint=<url>` selects a credential-free endpoint within the approved network
+hosts. An HTTP response proves reachability, not model authentication or readiness. Probe the
+same Git, ledger, inbox and configured caches again through the worker's actual native tool before
+task work: `python .harness/orchestration/adapters/claude_code.py probe --repo <main-repo>
+--brief <absolute-brief-path>` (retain any explicit state directory and endpoint).
+A successful parent probe does not prove access inside the worker's native sandbox. On EROFS or
+EPERM, stop before implementation and name the exact resource and context; prepare the environment
+instead of repeating the identical launch. Keep all checks honest when a layer is unverified.
+
+`dispatch send` reserves the handoff once, releases the ledger lock before external/native launch,
+and merges the returned receipt into the latest status without overwriting self-report or report.
+The versioned `harness-worker-v1` receipt binds dispatch/launch, process identity and local event
+paths. Linux observation checks host, boot ID, PID namespace and process start time; a missing
+bound process proves exit, while a reused PID, another host/namespace, unavailable probe or legacy
+receipt alone cannot authorize restart. A supervisor's durable `terminal.json`, bound to the same
+dispatch/launch and shared log directory, proves exit even when `/proc` identity is unavailable;
+an absent, malformed or differently bound terminal record supplies no proof.
+`liveness.startup_timeout_seconds` is pinned from
+`execution_policy.worker_startup_timeout_seconds` (120 by default), independently of heartbeat
+staleness. `dispatch wait` returns `startup_failed` for proven early exit and `startup_timeout`
+for a missed first self-report; timeout alone never proves termination. After a first self-report,
+proven process exit with no recorded report returns `worker_exited_without_report` without changing
+the ledger: the work and a staged report file may exist, so inspect the staged report and the branch
+before choosing a decision. `startup.classification` is `worker-exited-without-report`; it proves
+no environment failure, so `resume-stop` does not treat it as one.
+
+A worker must write the coordinator state: at least `.harness/orchestration/state` with its
+`.coordinator.lock` directory and ledger records, and the report inbox. `report submit` takes that
+lock, `dispatch heartbeat` does not, so heartbeats can succeed while a submit fails. Grant the
+write through the runtime's own sandbox settings (Claude Code: `sandbox.filesystem.allowWrite`
+with the state and inbox directories) before launch. A refused lock returns
+`sandbox_denied: ...` with the exact path, not a traceback. Classify it as infrastructure, not as
+a task error; deliver the staged file with the relay below only after the cause is named. The
+adapter probe takes and releases the real lock (a lock held by another operation counts as
+writable) and reports `ledger_lock`; it proves only the adapter's own context and does not
+replace the worker-side probe above.
+
+For proven early exit under `auto`, observe `batch auto-report`, then record its
+`runtime-unavailable` stop with `batch auto-decide`. The coordinator does not invent a role report.
+One explicit `batch resume-stop --restart` human decision may retire that failed dispatch and
+approve one successor under the unchanged role, SHA, model, access, tools, commit plan and work
+contract. It does not send the successor. Drift needs an ordinary new proposal/approval; every
+later transition remains `manual_all`. Repeating the combined operation returns the same successor
+and does not spend another infrastructure attempt. The original stop and retry budget remain.
+
+`dispatch observe --dispatch <id> --offset <previous-next_offset>` reads bounded existing events.
+The Textual worker screen uses the same local reader. Reconnect, filters, history and closing the
+screen neither start/stop a runtime nor call a model. Never add progress prompts, heartbeat summaries,
+extra agents or log copies to model context for display. Native permission requests use the runtime
+control protocol: a human can deny or allow the exact request once; the response preserves input
+and changes no persistent permissions or batch approval. Secret values and thinking blocks are
+excluded before event storage as well as from display; the example bounds its event file to 10 MiB
+and the UI retains 500 lines. Native input is kept only in supervisor memory; the local pending
+record contains a redacted preview and digest. A stream gap is visible; a missing stream is not a dead worker.
+Process/exit, ledger lifecycle, staged report and report acceptance remain separate facts.
+The shared theme, TopBar, Footer, section menu, RU/EN and F1/F2 belong to the existing console;
+container/recovery navigation reuses that shell rather than defining another lifecycle controller.
+
+Architect retries carry `retry_reason` in the immutable brief, including the previous dispatch,
+source and decision digest, bound to the transition approval. A human's non-empty `--note` is
+preserved exactly; explicit blank/whitespace/`none` is refused before recording a decision. For
+older decisions or structured retries without an operator note, the sealed routing rationale is
+carried with source `decision.routing.rationale`, never labelled a human explanation. Existing
+unknown-reason attention remains required unless that exact human decision supplied an explanation.
+No external prompt file or temporary-directory handoff participates.
+
 ## Role order, liveness, and transport
 
 The architect step is not optional and not implicit: no `developer` dispatch exists for a batch until
@@ -874,6 +960,23 @@ A minimal brief can be rendered as:
 - Dependencies and assumptions: <known inputs and owners>
 - Coordinator approval: <person>, <timestamp>
 ```
+
+## Delivering a worker report after a tool refusal
+
+A worker that cannot submit keeps its original `report_staging_path` bytes and returns the exact
+command/error. The coordinator may deliver that existing file through `report submit --file <path>
+--relayed-by <coordinator> --relay-reason <verified-refusal> --source-sha256 <original-file-sha256>`.
+The recorded relay binds author dispatch/role, sender, reason, source path/hash and time in audit;
+it does not alter worker JSON. Missing file, model/worktree attestation or invalid report remains
+a blocker. The coordinator never creates those facts on the worker's behalf. QA still uses its
+clean-room report boundary. No new developer run or developer retry is spent solely to deliver a file.
+
+Read the submit result before advancing: `completion` means the report is already recorded and
+needs `report complete`; a pending `auto` policy decision needs `batch auto-decide`. Submit can
+already continue its own policy chain, so do not call auto-decide unconditionally. Repeating an
+identical relayed file is idempotent; a different file/hash cannot overwrite an immutable report.
+`fail` and `not_run` stay unchanged. A later baseline comparison is separate evidence and does not
+turn missing `make verify` or native-isolation checks into passes.
 
 ## Completion report
 

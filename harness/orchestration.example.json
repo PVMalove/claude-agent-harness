@@ -266,6 +266,7 @@
     "max_developer_retries": 3
   },
   "execution_policy": {
+    "worker_startup_timeout_seconds": 120,
     "dispatch_wait_timeout_seconds": 60,
     "dispatch_poll_interval_seconds": 5,
     "qa_lease_seconds": 1800,

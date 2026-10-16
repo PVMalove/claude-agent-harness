@@ -458,6 +458,7 @@ def apply_plan(
     transport: str,
     *,
     handoff: bool = False,
+    defer_handoff: bool = False,
     command: tuple[str, ...] | None = None,
 ) -> JsonObject:
     """Gate handoff and apply the approved plan through the native implementation.
@@ -505,32 +506,49 @@ def apply_plan(
             or "native access application or matching inheritance was not confirmed",
             remedy=_REMEDY,
         )
-    # Set only for a handoff; the gate above refuses a provider without a callable handoff.
-    if callable(launch):
-        # A project-supplied launch may fail in any way; the handoff must fail closed.
-        try:
-            receipt = launch(brief, applied, command)
-        except Exception as exc:
-            raise AccessError("native worker handoff failed", remedy=_REMEDY) from exc
-        reason = _observation_problem(plan, transport, receipt)
-        if (
-            reason
-            or receipt is None
-            or not receipt.applied
-            or not receipt.handed_off
-            or receipt.dispatch_id != brief["dispatch_id"]
-            or receipt.launch_id != applied.launch_id
-            or receipt.environment_id != applied.environment_id
-        ):
-            raise AccessError(
-                reason
-                or "native worker handoff receipt does not bind the approved dispatch and launch",
-                remedy=_REMEDY,
-            )
-        applied = receipt
-    return {
+    prepared = {
         "status": "applied",
         "dispatch_id": brief.get("dispatch_id"),
         "plan_digest": plan["plan_digest"],
         "evidence": asdict(applied),
     }
+    if callable(launch) and not defer_handoff:
+        return handoff_plan(brief, transport, command, prepared)
+    return prepared
+
+
+def handoff_plan(
+    brief: JsonObject,
+    transport: str,
+    command: tuple[str, ...] | None,
+    prepared: JsonObject,
+) -> JsonObject:
+    """Finish the already verified native launch outside the coordinator ledger lock."""
+    plan = brief["runtime_access"]
+    applied = extensions.RuntimeAccessObservation(**prepared["evidence"])
+    provider = extensions.runtime_access(plan["runtime_extension"])
+    launch = getattr(provider, "handoff", None)
+    if not callable(launch):
+        raise AccessError(
+            "native access provider has no worker handoff", remedy=_REMEDY
+        )
+    try:
+        receipt = launch(brief, applied, command)
+    except Exception as exc:
+        raise AccessError("native worker handoff failed", remedy=_REMEDY) from exc
+    reason = _observation_problem(plan, transport, receipt)
+    if (
+        reason
+        or receipt is None
+        or not receipt.applied
+        or not receipt.handed_off
+        or receipt.dispatch_id != brief["dispatch_id"]
+        or receipt.launch_id != applied.launch_id
+        or receipt.environment_id != applied.environment_id
+    ):
+        raise AccessError(
+            reason
+            or "native worker handoff receipt does not bind the approved dispatch and launch",
+            remedy=_REMEDY,
+        )
+    return {**prepared, "evidence": asdict(receipt)}

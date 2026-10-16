@@ -1628,7 +1628,7 @@ class RecoveryTests(unittest.TestCase):
                 startup["classification"],
                 startup["restart_allowed"],
             ),
-            ("live", "model-self-report-missing", False),
+            ("unknown", "model-self-report-missing", False),
         )
         coordinator.cancel_dispatch(
             self._args(
@@ -1846,6 +1846,36 @@ class RecoveryTests(unittest.TestCase):
             ),
         )
         return brief, candidate, changed
+
+    def test_candidate_registration_after_a_rewind_keeps_the_ledger_readable(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        coordinator.rewind_batch(
+            self._args(
+                batch=batch_id,
+                to="architect",
+                note="review architecture",
+                **self._approval(),
+            )
+        )
+        self._accepted_architect(batch_id)
+        self._blocked_developer(batch_id)
+        self._decide(
+            batch_id, "retry", reason_category="verification-infrastructure"
+        )
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+        coordinator.rewind_batch(
+            self._args(
+                batch=batch_id,
+                to="architect",
+                note="supersede the registered candidate",
+                **self._approval(),
+            )
+        )
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
 
     def test_conditional_accept_moves_a_complete_but_blocked_developer_to_review(
         self,

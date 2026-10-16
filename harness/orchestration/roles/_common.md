@@ -52,8 +52,9 @@ work from the package rather than navigating to a guessed relative repository pa
 
 Before a final reply, submit the JSON completion report with `report submit --file
 <report_staging_path>` and verify that it was recorded. Chat text alone does not complete a dispatch.
-If submission fails before recording, preserve the staged report and relay the command and error as
-a blocker. A result with `completion` means the report is already recorded: relay that result to the
+If submission fails before recording, preserve the staged report bytes and relay the exact path,
+command and error as a blocker. The coordinator can deliver that unchanged file with audited relay
+provenance; it cannot invent your model/worktree evidence or change fail/not_run into pass. A result with `completion` means the report is already recorded: relay that result to the
 coordinator for `report complete`, rather than submitting again. A planned checkpoint is the separate
 continuation protocol, not a completion report.
 

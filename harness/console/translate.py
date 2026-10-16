@@ -13,6 +13,7 @@ from typing import Callable, cast
 from textual.dom import DOMNode
 from textual.widgets import (
     Button,
+    Collapsible,
     Input,
     Select,
     Static,
@@ -56,6 +57,8 @@ def _translate_widget(widget: DOMNode, language: str) -> None:
     if isinstance(widget, Button):
         widget.label = _translated(widget, "label", str(widget.label), language)
         widget.refresh(layout=True)
+    elif isinstance(widget, Collapsible):
+        widget.title = _translated(widget, "title", widget.title, language)
     elif isinstance(widget, Input) and widget.placeholder:
         widget.placeholder = _translated(
             widget, "placeholder", widget.placeholder, language

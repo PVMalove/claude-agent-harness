@@ -37,6 +37,7 @@ from harness.orchestration.core.config import (
     _approval_policy,
     _communication_policy,
     _configured,
+    _execution_policy,
     _is_test_path,
     _orchestration_policy,
     _reject_sensitive,
@@ -231,6 +232,28 @@ def _dispatch_approval_mode(
     both the project config and the batch plan choose it and no stop is recorded (issue #643);
     otherwise every transition of an ``auto`` batch needs a human.
     """
+    recovery_sha = getattr(args, "_restart_recovery_sha256", None)
+    if recovery_sha is not None:
+        events = batch.get("recovery_events", [])
+        event = events[-1] if events else {}
+        if (
+            event.get("kind") != "resume-stop"
+            or event.get("record_sha256") != recovery_sha
+            or not batch.get("environmental_restart")
+            or event.get("dispatch_id")
+            != batch["environmental_restart"].get("dispatch_id")
+            or str(event.get("approved_by", "")).startswith("policy:")
+        ):
+            raise CoordinatorError(
+                "same-contract restart lacks its recorded human recovery",
+                remedy="use batch resume-stop --restart for this confirmed startup failure",
+            )
+        approvals._require_current_approval(event["approved_at"], config)
+        args._recorded_recovery_approval = {
+            "approved_by": event["approved_by"],
+            "approved_at": event["approved_at"],
+        }
+        return "recorded-recovery"
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
     ):
@@ -319,6 +342,8 @@ def _bind_dispatch_approval(
     -- means it approved another transition, and nothing is created. A policy approval is derived
     from the very transition being created, so it binds to its own digest.
     """
+    if mode == "recorded-recovery":
+        return {**args._recorded_recovery_approval, "transition_digest": digest}
     if mode != "explicit":
         return {
             "approved_by": mode,
@@ -419,6 +444,34 @@ def _newest_decided_dispatch(batch: JsonObject) -> JsonObject | None:
     )
 
 
+def _architect_retry_reason(batch: JsonObject, role: str) -> JsonObject | None:
+    previous = _newest_decided_dispatch(batch)
+    if role != "architect" or not previous or previous.get("role") != "architect":
+        return None
+    decision = previous.get("decision", {})
+    if decision.get("decision") != "retry":
+        return None
+    note = decision.get("note")
+    source = "decision.note"
+    if not _non_empty(note) or note.strip().lower() == "none":
+        # Older decisions and structured tooling retries may have no operator note. Preserve
+        # their sealed routing evidence, without presenting it as a human explanation.
+        note = decision.get("routing", {}).get("rationale")
+        source = "decision.routing.rationale"
+    if not _non_empty(note) or note.strip().lower() == "none":
+        raise CoordinatorError(
+            "architect retry requires a non-empty recorded reason",
+            remedy="record an explained retry decision; never pass an empty extra prompt file",
+        )
+    return {
+        "previous_dispatch_id": previous["dispatch_id"],
+        "note": note,
+        "source": source,
+        "reason_category": decision.get("routing", {}).get("reason_category"),
+        "decision_sha256": hashlib.sha256(_canonical(decision).encode()).hexdigest(),
+    }
+
+
 def _proposed_transition(
     batch: JsonObject,
     next_action: object,
@@ -477,6 +530,7 @@ def _proposed_transition(
         transition,
         {
             "carried_items": carried,
+            "retry_reason": _architect_retry_reason(batch, role_name),
             "rebase_target_commit": rebase_target
             if isinstance(rebase_target, str)
             else None,
@@ -1271,9 +1325,13 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "transition": transition,
             "transition_digest": digest,
             "retry_idempotency_key": idempotency_key,
+            "retry_reason": _architect_retry_reason(batch, role_name),
             "orchestration_policy": orchestration_policy,
             "liveness": {
                 "heartbeat_every_seconds": heartbeat_every,
+                "startup_timeout_seconds": _execution_policy(config)[
+                    "worker_startup_timeout_seconds"
+                ],
                 "stale_after_seconds": stale_after,
             },
             "commit_plan": commit_plan,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -250,3 +251,26 @@ def test_an_unavailable_git_never_breaks_the_banner(
     monkeypatch.setattr(subprocess, "run", broken)
     assert brand.project_commit(tmp_path) is None
     assert brand.collect_banner(tmp_path, "1.4.0").project_commit is None
+
+
+def test_screens_take_colours_from_the_theme_not_from_hex_literals() -> None:
+    console = Path(brand.__file__).parent
+    allowed = {"brand.py", "style.py"}  # style.py: scrollbar fallback of the Rich renderer
+    offenders = [
+        f"{path.relative_to(console)}: {match}"
+        for path in console.rglob("*.py")
+        if path.name not in allowed
+        for match in re.findall(r"#[0-9a-fA-F]{6}\b", path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
+def test_shell_tokens_do_not_shadow_the_palette() -> None:
+    assert not set(brand.SHELL_TOKENS) & set(brand.PALETTE)
+
+
+def test_shell_css_resolves_only_the_shell_tokens() -> None:
+    css = "A { border: solid $border-subtle; color: $text; background: $selection-background; }"
+    assert brand.shell_css(css) == (
+        "A { border: solid #38352f; color: $text; background: #45332c; }"
+    )

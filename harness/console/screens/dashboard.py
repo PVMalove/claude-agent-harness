@@ -12,13 +12,15 @@ from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Footer, ListItem, ListView, Static
+from textual.widgets import Button, Footer, ListItem, ListView, Static, Collapsible
 
 from .. import brand, i18n
-from ..chrome import TopBar
+from ..chrome import TopBar, WorkspaceHeader
 from ..translate import Translated
+from ..workspace import WorkspaceSidebar, session_state_label
+from .. import reports
 from .. import data as console_data
 from ..data import DashboardData
 from ..runner import CommandRunner, capturing_runner
@@ -293,44 +295,44 @@ class DashboardScreen(Translated, Screen[None]):
             for number in range(1, len(SECTIONS) + 1)
         ),
     ]
-    DEFAULT_CSS = """
+    DEFAULT_CSS = brand.shell_css("""
     DashboardScreen { overflow: hidden hidden; }
-    DashboardScreen #dashboard-content { width: 100%; height: 1fr; overflow-x: hidden; }
-    DashboardScreen #brand { height: 5; margin: 0 1; padding: 0 1; overflow: hidden hidden; }
-    DashboardScreen.-short #brand { display: none; }
-    DashboardScreen #brand-mark { width: 15; height: 5; }
-    DashboardScreen #brand-info {
-        width: 1fr; height: 5; padding-left: 2;
-        text-wrap: nowrap; text-overflow: ellipsis;
-    }
-    DashboardScreen #dashboard-body { height: auto; overflow: hidden hidden; }
-    DashboardScreen.-wide #dashboard-body { min-height: 11; }
-    DashboardScreen #dashboard-main { height: auto; }
-    DashboardScreen #dashboard-side { height: auto; }
-    DashboardScreen.-wide #dashboard-side { dock: left; width: 30; height: 100%; }
-    DashboardScreen #dashboard-sections { height: auto; margin: 0 0 0 1; }
-    DashboardScreen.-wide #dashboard-sections { height: 100%; }
-    DashboardScreen #section-menu { height: auto; margin: 0; padding: 0; border: none; }
-    DashboardScreen #section-menu:focus { border: none; }
-    DashboardScreen.-wide #section-menu { height: auto; }
-    DashboardScreen #section-menu > ListItem { height: 1; padding: 0; }
-    DashboardScreen #dashboard-attention-actions Button { width: auto; margin-right: 1; }
-    DashboardScreen #dashboard-attention-scroll { height: auto; max-height: 12; }
-    DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; }
+    DashboardScreen #dashboard-content { width: 100%; height: 1fr; }
+    DashboardScreen #dashboard-side { width: 24; height: 1fr; }
+    DashboardScreen #dashboard-main { width: 1fr; height: 1fr; }
+    DashboardScreen #dashboard-body { height: 1fr; }
+    DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 1 3; }
+    DashboardScreen #dashboard-title { height: 2; text-style: bold; }
+    DashboardScreen #dashboard-subtitle { height: 2; color: $text-muted; }
+    DashboardScreen #dashboard-attention-scroll { height: auto; max-height: 11; padding: 1 0; margin-bottom: 1; border-top: solid $border-subtle; border-bottom: solid $border-subtle; }
     DashboardScreen #dashboard-attention { height: auto; }
-    DashboardScreen #dashboard-attention-actions { height: 1; }
-    DashboardScreen #dashboard-attention-mode { width: 1fr; padding-left: 1; color: $text-muted; }
-    DashboardScreen #dashboard-cards { height: auto; margin: 0 1; }
-    DashboardScreen.-narrow #dashboard-cards { display: none; }
-    DashboardScreen .card:last-of-type { margin-right: 0; }
-    DashboardScreen .card {
-        width: 1fr; height: 7; padding: 0 1; margin-right: 1;
-        border: round $panel-lighten-2; border-title-color: $primary;
-    }
-    DashboardScreen #dashboard-details { height: auto; max-height: 14; }
-    DashboardScreen.-narrow #dashboard-details { max-height: 6; }
-    DashboardScreen #dashboard-details Static { height: auto; }
-    """
+    DashboardScreen #dashboard-attention-actions { height: 1; margin-top: 1; }
+    DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 1; }
+    DashboardScreen #home-sessions-title { height: 2; color: $text-muted; }
+    DashboardScreen #home-sessions { height: 1fr; min-height: 3; border: none; }
+    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; }
+    DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $text; }
+    DashboardScreen #home-sessions Static { height: auto; }
+    DashboardScreen #dashboard-details { height: auto; max-height: 16; border-top: solid $border-subtle; padding: 0; }
+    DashboardScreen #dashboard-details > Contents { overflow-y: auto; max-height: 12; }
+    DashboardScreen #dashboard-summary, DashboardScreen #brand-info { height: auto; }
+    DashboardScreen #brand { height: auto; }
+    DashboardScreen #brand-mark { width: 15; }
+    DashboardScreen #dashboard-cards { height: auto; }
+    DashboardScreen .card { height: auto; margin-bottom: 1; padding-bottom: 1; border: none; border-bottom: solid $border-subtle; }
+    DashboardScreen .card-title { height: 2; color: $text-muted; }
+    DashboardScreen #dashboard-menu { display: none; }
+    DashboardScreen.-narrow #dashboard-context, DashboardScreen.-narrow #dashboard-side { display: none; }
+    DashboardScreen.-narrow #dashboard-menu, DashboardScreen.-narrow.-menu-open #dashboard-side { display: block; }
+    DashboardScreen.-narrow #dashboard-side, DashboardScreen.-narrow WorkspaceSidebar { width: 21; }
+    DashboardScreen.-narrow WorkspaceSidebar .menu-context { display: none; }
+    DashboardScreen.-narrow #section-menu > ListItem { height: 2; padding: 0 1; }
+    DashboardScreen.-narrow #dashboard-overview { padding: 0 1; }
+    DashboardScreen.-narrow #dashboard-subtitle { display: none; }
+    DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; padding: 0; margin-bottom: 0; }
+    DashboardScreen.-narrow #dashboard-attention { max-height: 3; }
+    DashboardScreen.-narrow #dashboard-attention-actions { margin-top: 0; }
+    """)
 
     def __init__(
         self,
@@ -341,6 +343,7 @@ class DashboardScreen(Translated, Screen[None]):
         command_runner: CommandRunner = capturing_runner,
     ) -> None:
         super().__init__()
+        self.add_class("workspace")
         self.repo = repo
         self._collect_dashboard = collect_dashboard
         self._collect_banner = collect_banner
@@ -380,94 +383,187 @@ class DashboardScreen(Translated, Screen[None]):
             self._capabilities,
             self._language,
         )
-        yield TopBar("Главная")
-        with VerticalScroll(id="dashboard-content"):
-            with Horizontal(id="brand"):
-                yield Static(_render_mark(), id="brand-mark")
-                yield Static(
-                    _render_banner(banner, self._language),
-                    id="brand-info",
-                    classes="no-i18n",
-                )
-            with Container(id="dashboard-body"):
-                with Vertical(id="dashboard-side"):
-                    with Vertical(id="dashboard-sections", classes="frame") as sections:
-                        sections.border_title = brand.frame_title(
-                            i18n.ui(self._language, "sections")
+        yield WorkspaceHeader("Главная")
+        with Horizontal(id="dashboard-content"):
+            with Vertical(id="dashboard-side"):
+                menu = ListView(
+                    *(
+                        ListItem(
+                            Static(
+                                _menu_label(
+                                    number, name, self._badges.get(name), self._language
+                                )
+                            ),
+                            name=name,
+                            id={
+                                "Open project": "open-project",
+                                "Update Harness": "update-harness",
+                            }.get(name),
                         )
+                        for number, name in enumerate(SECTIONS, start=1)
+                    ),
+                    id="section-menu",
+                )
+                yield WorkspaceSidebar(
+                    menu,
+                    id="dashboard-sections",
+                    context="Контекст проекта\n"
+                    + self.repo.name
+                    + "\nWorker: отдельная сессия\nQA: отдельный dispatch",
+                )
+            with Vertical(id="dashboard-main"):
+                yield Static(
+                    "Главная  ›  Рабочее пространство",
+                    id="dashboard-breadcrumbs",
+                    classes="breadcrumbs",
+                )
+                with Horizontal(classes="context-strip"):
+                    yield Button("☰", id="dashboard-menu", compact=True)
+                    yield Static(str(self.repo), markup=False, classes="no-i18n")
+                    yield Button(
+                        "Открыть проект →", id="dashboard-open-project", compact=True
+                    )
+                with Horizontal(id="dashboard-body"):
+                    with Vertical(id="dashboard-overview"):
+                        yield Static("Рабочее пространство", id="dashboard-title")
+                        yield Static(
+                            "Продолжите работу в выбранной сессии или откройте другой проект.",
+                            id="dashboard-subtitle",
+                        )
+                        with Vertical(id="dashboard-attention-scroll"):
+                            yield Static(
+                                self._workspace_attention(data),
+                                id="dashboard-attention",
+                                classes="no-i18n",
+                            )
+                            with Horizontal(id="dashboard-attention-actions"):
+                                yield Button(
+                                    i18n.ui(self._language, "offline"),
+                                    id="dashboard-offline",
+                                    compact=True,
+                                )
+                                yield Button(
+                                    i18n.ui(self._language, "online"),
+                                    id="dashboard-online",
+                                    compact=True,
+                                )
+                                yield Static(
+                                    self._attention_mode(
+                                        data, online=False, language=self._language
+                                    ),
+                                    id="dashboard-attention-mode",
+                                    classes="no-i18n",
+                                )
+                        yield Static("РАБОЧИЕ СЕССИИ", id="home-sessions-title")
+                        stages = self._home_sessions()
                         yield ListView(
                             *(
                                 ListItem(
                                     Static(
-                                        _menu_label(
-                                            number,
-                                            name,
-                                            self._badges.get(name),
-                                            self._language,
-                                        )
+                                        self._home_session_card(stage),
+                                        classes="no-i18n",
                                     ),
-                                    name=name,
-                                    id={
-                                        "Open project": "open-project",
-                                        "Update Harness": "update-harness",
-                                    }.get(name),
+                                    name=stage.dispatch_id,
                                 )
-                                for number, name in enumerate(SECTIONS, start=1)
+                                for stage in stages
                             ),
-                            id="section-menu",
+                            id="home-sessions",
                         )
-                with Vertical(id="dashboard-main"):
-                    with VerticalScroll(
-                        id="dashboard-attention-scroll", classes="frame"
-                    ) as scroll:
-                        scroll.border_title = self._attention_title(data)
-                        yield Static(
-                            _render_attention(
-                                data,
-                                online=False,
-                                include_mode=False,
-                                language=self._language,
-                            ),
-                            id="dashboard-attention",
-                            classes="no-i18n",
-                        )
-                        with Horizontal(id="dashboard-attention-actions"):
-                            yield Button(
-                                i18n.ui(self._language, "offline"),
-                                id="dashboard-offline",
-                                compact=True,
-                            )
-                            yield Button(
-                                i18n.ui(self._language, "online"),
-                                id="dashboard-online",
-                                compact=True,
-                            )
+                        if not stages:
                             yield Static(
-                                self._attention_mode(
-                                    data, online=False, language=self._language
-                                ),
-                                id="dashboard-attention-mode",
+                                "Активных сессий нет. Откройте «Оркестрация», чтобы выбрать задачу.",
+                                id="home-empty",
+                            )
+                        with Collapsible(
+                            title="Подробный технический отчёт",
+                            collapsed=True,
+                            id="dashboard-details",
+                        ):
+                            with Horizontal(id="brand"):
+                                yield Static(_render_mark(), id="brand-mark")
+                                yield Static(
+                                    _render_banner(banner, self._language),
+                                    id="brand-info",
+                                    classes="no-i18n",
+                                )
+                            yield Static(
+                                _render_summary(data, language=self._language),
+                                id="dashboard-summary",
                                 classes="no-i18n",
                             )
-                    with Horizontal(id="dashboard-cards"):
-                        for card_id, title, text in (
-                            ("card-harness", "Harness", harness),
-                            ("card-orchestration", "Оркестрация", orchestration),
-                            ("card-repo-map", "Repo Map", repo_map),
-                        ):
-                            card = Static(text, id=card_id, classes="card no-i18n")
-                            card.border_title = brand.frame_title(title)
-                            yield card
                     with VerticalScroll(
-                        id="dashboard-details", classes="frame"
-                    ) as details:
-                        details.border_title = brand.frame_title("Подробный отчёт")
+                        id="dashboard-context", classes="context-panel"
+                    ):
+                        yield Static("◉ КОНТЕКСТ ПРОЕКТА", classes="context-label")
                         yield Static(
-                            _render_summary(data, language=self._language),
-                            id="dashboard-summary",
-                            classes="no-i18n",
+                            self.repo.name,
+                            classes="context-value no-i18n",
+                            markup=False,
+                        )
+                        yield Static(
+                            banner.branch or "—",
+                            classes="context-value no-i18n",
+                            markup=False,
+                        )
+                        with Vertical(id="dashboard-cards"):
+                            for card_id, title, text in (
+                                ("card-harness", "Harness", harness),
+                                ("card-orchestration", "Оркестрация", orchestration),
+                                ("card-repo-map", "Repo Map", repo_map),
+                            ):
+                                yield Static(title, classes="card-title")
+                                yield Static(text, id=card_id, classes="card no-i18n")
+                        yield Static("Начать наблюдение", classes="context-label")
+                        yield Button(
+                            "Открыть сессии →", id="dashboard-sessions", compact=True
+                        )
+                        yield Static(
+                            "НАБЛЮДЕНИЕ · БЕЗ LLM\n\nОткрытие сессии подключает локальный монитор. Новый worker не запускается.",
+                            classes="context-note",
                         )
         yield Footer()
+
+    def _home_session_card(self, stage: reports.StageEntry) -> Text:
+        label, color = session_state_label(stage.state)
+        card = Text(f"{stage.ticket}  ·  {stage.role}\n")
+        card.append(
+            brand.shorten(stage.dispatch_id, 32) + "  ·  ", style=brand.PALETTE["muted"]
+        )
+        card.append(i18n.tr(self._language, label), style=color)
+        return card
+
+    def _home_sessions(self) -> list[reports.StageEntry]:
+        view = reports.load_ledger_view(self.repo)
+        return sorted(
+            (stage for stage in view.stages if not stage.finished),
+            key=lambda stage: stage.at,
+            reverse=True,
+        )[:6]
+
+    def _workspace_attention(self, data: DashboardData) -> str:
+        if not data.problems:
+            return _render_attention(
+                data, online=self._online, include_mode=False, language=self._language
+            )
+        labels = {
+            "files.skill_snapshot": "Скиллы отличаются от установленной версии Harness",
+            "files.integrations": "Нужно проверить настройки интеграций",
+        }
+        text = Text(
+            i18n.tr(self._language, "Требует внимания") + f" · {len(data.problems)}\n",
+            style=brand.PALETTE["warning"],
+        )
+        for index, (status, check_id, message) in enumerate(data.problems[:2]):
+            text.append(
+                f"{brand.STATUS_ICONS.get(status, '·')} "
+                + i18n.tr_text(
+                    self._language, labels.get(check_id, brand.shorten(message, 100))
+                ),
+                style=_color(status),
+            )
+            if index < len(data.problems[:2]) - 1:
+                text.append("\n")
+        return text.markup
 
     def sync_language(self) -> None:
         """Re-label the section menu after the console language changed."""
@@ -477,6 +573,12 @@ class DashboardScreen(Translated, Screen[None]):
         self._language = language
         self._render_menu()
         self._repaint()
+        stages = {stage.dispatch_id: stage for stage in self._home_sessions()}
+        for item in self.query("#home-sessions > ListItem").results(ListItem):
+            if item.name in stages:
+                item.query_one(Static).update(
+                    self._home_session_card(stages[item.name])
+                )
 
     def _repaint(self) -> None:
         """Re-render the data-driven texts in the current language from the stored data."""
@@ -492,9 +594,7 @@ class DashboardScreen(Translated, Screen[None]):
             language,
         )
         self.query_one("#dashboard-attention", Static).update(
-            _render_attention(
-                data, online=self._online, include_mode=False, language=language
-            )
+            self._workspace_attention(data)
         )
         self.query_one("#dashboard-attention-mode", Static).update(
             self._attention_mode(data, online=self._online, language=language)
@@ -519,9 +619,6 @@ class DashboardScreen(Translated, Screen[None]):
             item.query_one(Static).update(
                 _menu_label(number, name, self._badges.get(name), self._language)
             )
-        self.query_one("#dashboard-sections").border_title = brand.frame_title(
-            i18n.ui(self._language, "sections")
-        )
         for button_id, key in (
             ("dashboard-offline", "offline"),
             ("dashboard-online", "online"),
@@ -529,13 +626,6 @@ class DashboardScreen(Translated, Screen[None]):
             button = self.query_one(f"#{button_id}", Button)
             button.label = i18n.ui(self._language, key)
             button.refresh(layout=True)
-
-    @staticmethod
-    def _attention_title(data: DashboardData) -> str:
-        title = "Требует внимания"
-        if data.problems:
-            title += f" · {len(data.problems)}"
-        return brand.frame_title(title)
 
     @staticmethod
     def _attention_mode(
@@ -564,9 +654,6 @@ class DashboardScreen(Translated, Screen[None]):
         self._data, self._online = data, online
         self._publish_counts(data)
         self._repaint()
-        self.query_one(
-            "#dashboard-attention-scroll"
-        ).border_title = self._attention_title(data)
         self._badges = _section_badges(data)
         self._render_menu()
         self.query_one(TopBar).refresh_status()
@@ -583,10 +670,20 @@ class DashboardScreen(Translated, Screen[None]):
         self._refresh_dashboard(online=True)
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "dashboard-offline":
+        if event.button.id == "dashboard-menu":
+            self.toggle_class("-menu-open")
+            if self.has_class("-menu-open"):
+                self.call_after_refresh(self.query_one("#section-menu", ListView).focus)
+        elif event.button.id == "dashboard-offline":
             self.action_checks_offline()
         elif event.button.id == "dashboard-online":
             self.action_checks_online()
+        elif event.button.id == "dashboard-open-project":
+            self.action_open_project()
+        elif event.button.id == "dashboard-sessions":
+            from .worker_observation import WorkerObservationScreen
+
+            self.app.push_screen(WorkerObservationScreen(self.repo))
 
     async def action_update_harness(self) -> None:
         from .update_harness import UpdateHarnessScreen
@@ -669,7 +766,12 @@ class DashboardScreen(Translated, Screen[None]):
             self.app.push_screen(open_screen())
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
-        await self._open_section(event.item.name or "")
+        if event.list_view.id == "home-sessions" and event.item.name:
+            from .worker_observation import WorkerObservationScreen
+
+            self.app.push_screen(WorkerObservationScreen(self.repo, event.item.name))
+        elif event.list_view.id == "section-menu":
+            await self._open_section(event.item.name or "")
 
     def _diagnostics(self) -> Screen[None]:
         from .diagnostics import DiagnosticsScreen

@@ -250,6 +250,21 @@ fails; it is idempotent. When the failed step needs a human, follow its remedy i
 the ledger lock or any state file by hand; a lock that stays held goes to
 `coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
 
+## External launch and observation
+
+Use the shipped example explicitly with `--adapter .harness/orchestration/adapters/claude_code.py`;
+`claude` and `codex` are runtime executables, not adapters. Read the playbook's "Observable external
+workers" for its visible-console requirement, explicit background choice, native access probe and
+per-invocation sandbox mode. A parent-side probe does not prove the worker tool's sandbox access.
+Run the native worker probe before feature work; a permanent EROFS/EPERM needs environment repair.
+
+Use `dispatch wait` for lifecycle signals. The console/`dispatch observe` reads existing events
+locally: no extra model calls, agent progress prompts or logs in model context for observation.
+A proven early exit uses auto-report → auto-decide → human `resume-stop --restart`; the one
+confirmation covers only an unchanged successor and never resets the infrastructure budget.
+A ready but unsent report uses the playbook's "Delivering a worker report after a tool refusal",
+not another developer run. Retain the original file/check results and relay provenance.
+
 ## Worker prompt
 
 Every worker prompt is this template, filled from the `dispatch send` result and the CLI invocation
@@ -293,13 +308,12 @@ If the result includes completion, relay it to the coordinator for report comple
 already recorded, so submit it only once. Chat text alone does not complete the dispatch.
 ```
 
-An architect retry adds one line. `batch decide --note` does not reach the brief, and `retry_start` exists only for a developer retry. Pass the reason of the retry in `--note`, in English, and add this line after the template lines:
-
-```text
-Retry reason: <the exact --note text of the retry decision>; previous architect dispatch: <previous dispatch id>
-```
-
-The new architect uses the line as evidence of what the previous report lacked. The line does not widen the brief's scope.
+An architect retry reads `retry_reason` from its immutable brief. The coordinator must record a
+non-empty English `batch decide --note`; that note, source dispatch and decision digest are bound
+to the next transition. Historical or structured retries without a human note carry their sealed
+routing rationale with an explicit source instead; never label it a human explanation. Do not add an extra prompt file or read a sandbox-dependent TMPDIR.
+An explicit human retry with a non-empty note acknowledges only that decision's unknown reason;
+other attention findings remain independent.
 
 A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
 

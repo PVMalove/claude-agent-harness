@@ -609,7 +609,7 @@ def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> 
     for registration in reversed(registrations):
         if (
             isinstance(registration, dict)
-            and registration.get("dispatch_id") in excluded
+            and registration.get("source_dispatch_id") in excluded
         ):
             continue
         if not isinstance(registration, dict):
@@ -1162,7 +1162,15 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
     liveness = dispatch.get("liveness")
     if liveness is not None and (
         not isinstance(liveness, dict)
-        or set(liveness) != {"heartbeat_every_seconds", "stale_after_seconds"}
+        or set(liveness)
+        not in (
+            {"heartbeat_every_seconds", "stale_after_seconds"},
+            {
+                "heartbeat_every_seconds",
+                "stale_after_seconds",
+                "startup_timeout_seconds",
+            },
+        )
         or any(
             isinstance(value, bool) or not isinstance(value, int) or value < 1
             for value in liveness.values()
@@ -1300,6 +1308,7 @@ def _validate_dispatch(
         for fields in (DISPATCH_FIELDS, pre_summary_fields, legacy_fields)
     }
     accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
+    accepted |= {fields - {"retry_reason"} for fields in set(accepted)}
     # The role tool policy and context budget were added together, so a brief holds both or neither.
     accepted |= {
         fields - {"allowed_tools", "context_budget"} for fields in set(accepted)
@@ -1323,6 +1332,29 @@ def _validate_dispatch(
             "dispatch record schema mismatch",
             remedy="the dispatch record schema is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
+        )
+    reason = dispatch.get("retry_reason")
+    if reason is not None and (
+        dispatch.get("role") != "architect"
+        or not isinstance(reason, dict)
+        or set(reason)
+        != {
+            "previous_dispatch_id",
+            "note",
+            "source",
+            "reason_category",
+            "decision_sha256",
+        }
+        or not _non_empty(reason.get("note"))
+        or reason["note"].strip().lower() == "none"
+        or reason.get("source") not in {"decision.note", "decision.routing.rationale"}
+        or not isinstance(reason.get("previous_dispatch_id"), str)
+        or not isinstance(reason.get("decision_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", reason["decision_sha256"]) is None
+    ):
+        raise CoordinatorError(
+            "dispatch retry_reason must contain a non-empty architect retry reason and its source",
+            remedy="create a new proposal from the recorded retry decision",
         )
     divergence = dispatch.get("commit_plan_divergence")
     if divergence is not None and (

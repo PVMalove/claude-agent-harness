@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+### Added
+
+- **[Наблюдение за worker]:** `dispatch observe` читает локальные события, `terminal.json` и ledger без вызова модели; консоль показывает выбранный worker в разделе рабочих сессий с ответами на запросы native permissions. Закрытие, повторное открытие и reconnect панели не останавливают worker и не запускают второй процесс (#716).
+- **[Ранний сбой worker]:** `execution_policy.worker_startup_timeout_seconds` (120 секунд по умолчанию) закрепляется в brief. `dispatch wait` возвращает `startup_failed` при доказанном раннем выходе, `startup_timeout` при пропущенном первом self-report и `worker_exited_without_report`, если после self-report процесс исчез без отчёта; последнее событие ничего не меняет в ledger (#716).
+- **[Перезапуск одним решением]:** `batch resume-stop --restart` заменяет цепочку из двух подтверждений одним решением человека для доказанно остановленного worker. Причина повтора architect (`retry_reason`) попадает в brief из `--note`, пустая заметка отклоняется (#716).
+- **[Доставка отчёта после отказа инструмента]:** `report submit --relayed-by --relay-reason --source-sha256` доставляет уже существующий файл отчёта и записывает отправителя в audit (#716).
+- **[Диагностика sandbox_denied]:** Если ledger недоступен для записи (EROFS, EACCES, EPERM), команды возвращают `sandbox_denied` с путём и подсказкой про `sandbox.filesystem.allowWrite`, а не traceback `OSError` (#716).
+
+### Changed
+
+- **[Главная консоли]:** Главная и экран наблюдения построены на общем каркасе с меню разделов, хлебными крошками и контекстной панелью. Цвета оболочки берутся из токенов `brand.SHELL_TOKENS`, а не из hex-значений в экранах (#716).
+- **[Хуки]:** `block-direct-master.sh` не считает командой тело литерального heredoc при строго разобранной структуре shell. `block-scratch-outside-docs-tasks.sh` разрешает запись только в scratchpad текущей сессии внутри проекта (#716).
+
 ## [1.4.6] - 2026-10-14
 
 ### Fixed
