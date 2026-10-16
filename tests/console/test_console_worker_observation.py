@@ -43,7 +43,6 @@ def test_events_arrive_before_completion_without_model_requests(
         provider_requests.append("process:" + str(argv))
         raise AssertionError("observation attempted to launch a command")
 
-    monkeypatch.setattr(socket.socket, "connect", no_network)
     operation = {"text": "Read startup.py"}
 
     def source(_repo: Path, dispatch: str, offset: int) -> JsonObject:
@@ -73,6 +72,9 @@ def test_events_arrive_before_completion_without_model_requests(
         }
 
     async def scenario() -> None:
+        # Windows' event loop opens a loopback socket pair itself, so the guard
+        # goes in after the loop exists.
+        monkeypatch.setattr(socket.socket, "connect", no_network)
         app = HarnessConsoleApp(tmp_path, command_runner=no_command)
         async with app.run_test(size=size) as pilot:
             screen = WorkerObservationScreen(
