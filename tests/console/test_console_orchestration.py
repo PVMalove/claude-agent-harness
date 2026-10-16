@@ -21,6 +21,7 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import ListItem, ListView, Static, TextArea
 
+from harness.console.app import HarnessConsoleApp
 from harness.console.coordinator_catalog import (
     COORDINATOR_COMMANDS,
     CoordinatorCommand,
@@ -386,3 +387,91 @@ def test_without_a_ledger_the_section_says_so_and_keeps_its_commands(
     text, history = asyncio.run(scenario())
     assert "не найден или не инициализирован" in text
     assert history == 0
+
+
+# -- the shared shell -----------------------------------------------------------------------
+
+
+async def _shell_orchestration(
+    app: HarnessConsoleApp, pilot: Pilot[None], tmp_path: Path
+) -> OrchestrationScreen:
+    screen = OrchestrationScreen(tmp_path, command_runner=_RecordingRunner())
+    await app.push_screen(screen)
+    await _settle(pilot, app)
+    return screen
+
+
+def test_orchestration_sits_on_the_shell_and_keeps_its_content(tmp_path: Path) -> None:
+    from harness.console.shell import SECTIONS, ContextPanel
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _shell_orchestration(app, pilot, tmp_path)
+            assert str(screen.query_one("#shell-breadcrumbs", Static).content) == (
+                "Главная  ›  Оркестрация"
+            )
+            menu = screen.query_one("#shell-sections", ListView)
+            assert menu.index == SECTIONS.index("Orchestration")
+            assert not screen.query(ContextPanel)
+            assert screen.query_one("#command-menu", ListView).has_focus
+            for widget_id in ("#pipeline-stats", "#command-detail", "#command-output"):
+                assert screen.query_one(widget_id)
+            sidebar = screen.query_one("#shell-navigation")
+            assert sidebar.region.right <= screen.query_one("#command-menu").region.x
+            # Selecting the entry of the open section runs nothing and opens nothing.
+            before = len(app.screen_stack)
+            menu.focus()
+            await pilot.press("enter")
+            await _settle(pilot, app)
+            await pilot.press("5")
+            await _settle(pilot, app)
+            assert len(app.screen_stack) == before and app.screen is screen
+
+    asyncio.run(scenario())
+
+
+def test_orchestration_on_a_narrow_terminal_keeps_the_commands_reachable(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(70, 36)) as pilot:
+            screen = await _shell_orchestration(app, pilot, tmp_path)
+            assert not screen.query_one("#shell-navigation").display
+            assert screen.query_one("#shell-menu").display
+            await pilot.click("#shell-menu")
+            await pilot.pause()
+            assert screen.query_one("#shell-navigation").display
+            await pilot.click("#shell-menu")
+            await pilot.pause()
+            menu = screen.query_one("#command-menu", ListView)
+            assert screen.region.contains_region(menu.region)
+            assert menu.region.height >= 3
+            assert screen.region.contains_region(
+                screen.query_one("#command-output-scroll").region
+            )
+
+    asyncio.run(scenario())
+
+
+def test_orchestration_switches_language_and_goes_back_with_escape(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[str, str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _shell_orchestration(app, pilot, tmp_path)
+            await pilot.press("f2")
+            await _settle(pilot, app)
+            crumbs = str(screen.query_one("#shell-breadcrumbs", Static).content)
+            item = screen.query("#shell-sections > ListItem").results(ListItem)
+            label = str(list(item)[4].query_one(Static).content)
+            await pilot.press("escape")
+            await _settle(pilot, app)
+            return crumbs, label, app.screen is not screen
+
+    crumbs, label, went_back = asyncio.run(scenario())
+    assert crumbs == "Home  ›  Orchestration"
+    assert label == "5 Orchestration"
+    assert went_back

@@ -30,6 +30,7 @@ from .. import stats as console_stats
 from ..coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand, process_argv
 from ..logtext import colorize_overview
 from ..runner import CommandRunner, capturing_runner
+from ..shell import ConsoleShell
 from ..widgets import CheckBox
 from .commands import CommandForm, CommandMenuScreen, describe_command
 
@@ -114,11 +115,13 @@ class CoordinatorCommandFormScreen(CommandForm):
             self.dismiss(values)
 
 
-class OrchestrationScreen(CommandMenuScreen):
-    """Экран раздела Orchestration: статистика пайплайна, история batch с фильтром по состоянию
-    (выбор batch открывает его хронологию) и список команд координатора."""
+class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
+    """Экран раздела Orchestration на общей оболочке консоли: статистика пайплайна, история batch
+    с фильтром по состоянию (выбор batch открывает его хронологию) и список команд координатора."""
 
     CRUMB = "Оркестрация"
+    CRUMBS = "Главная › Оркестрация"
+    SECTION = "Orchestration"
 
     DEFAULT_CSS = """
     OrchestrationScreen #pipeline-history { height: 11; max-height: 40%; margin: 0 1; }
@@ -140,6 +143,16 @@ class OrchestrationScreen(CommandMenuScreen):
         super().__init__(repo, command_runner=command_runner)
         self._entries = {entry.key: entry for entry in catalog}
         self._view = load_view(repo)
+
+    def compose_strip(self) -> ComposeResult:
+        yield Static(str(self.repo), classes="no-i18n", markup=False)
+
+    def compose_content(self) -> ComposeResult:
+        yield from self.compose_commands()
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        CommandMenuScreen.sync_language(self)
 
     def overview(self) -> ComposeResult:
         """Статистика пайплайна и история batch: слева состояния с числом batch, справа batch
@@ -235,10 +248,10 @@ class OrchestrationScreen(CommandMenuScreen):
     def menu_cli_line(self, key: str) -> str:
         return self._entries[key].cli_line(self.repo)
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Выбор состояния показывает его batch, выбор batch открывает хронологию, выбор команды
         открывает форму её параметров."""
-        if event.item.name is None:
+        if event.item.name is None or event.list_view.id == self.IDS.menu:
             return
         if event.list_view.id == "state-filter":
             self._show_batches(event.item.name)
