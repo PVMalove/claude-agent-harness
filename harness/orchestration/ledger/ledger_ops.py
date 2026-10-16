@@ -27,6 +27,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LedgerError,
     LedgerLockBusy,
+    LedgerSandboxDenied,
     LedgerRecordVO,
     LifecycleLedger,
     RiskAssessmentRecord,
@@ -35,6 +36,10 @@ from harness.orchestration.ledger.lifecycle import (
 
 class LedgerBusyError(CoordinatorError):
     """Another coordinator operation holds the ledger lock."""
+
+
+class SandboxDeniedError(CoordinatorError):
+    """The environment forbids writing the ledger; classify as infrastructure, not the task."""
 
 
 @contextmanager
@@ -95,6 +100,8 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
             yield
     except LedgerLockBusy as exc:
         raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
+    except LedgerSandboxDenied as exc:
+        raise SandboxDeniedError(exc.message, remedy=exc.remedy) from exc
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 

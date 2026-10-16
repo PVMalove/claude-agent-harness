@@ -44,7 +44,6 @@ _GROUPS_EN = {
 }
 
 _UI = {
-    "sections": {"ru": "Разделы", "en": "Sections"},
     "commands": {"ru": "Команды", "en": "Commands"},
     "language": {"ru": "Язык: русский", "en": "Language: English"},
     "offline": {"ru": "Офлайн", "en": "Offline"},

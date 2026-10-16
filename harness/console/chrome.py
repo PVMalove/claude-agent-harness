@@ -78,3 +78,28 @@ class TopBar(Horizontal):
         right += counters
         self.query_one("#topbar-left", Static).update(left)
         self.query_one("#topbar-right", Static).update(right.rstrip())
+
+
+class WorkspaceHeader(TopBar):
+    """Product identity stays in the window bar; breadcrumbs belong to the content below it."""
+
+    DEFAULT_CSS = brand.shell_css("""
+    WorkspaceHeader { height: 3; margin: 0; padding: 1 2 0 2; background: $surface; color: $text; border-bottom: solid $border-subtle; }
+    WorkspaceHeader #topbar-left { width: 1fr; }
+    WorkspaceHeader #topbar-right { width: 1fr; color: $text-muted; }
+    """)
+
+    def refresh_status(self) -> None:
+        if not self.is_mounted or not self.query("#topbar-left"):
+            return
+        primary, muted = brand.PALETTE["primary"], brand.PALETTE["muted"]
+        self.query_one("#topbar-left", Static).update(
+            f"[{primary}]▏H▕[/]  Agent Harness console  [{muted}]{console_data.harness_version()}[/]"
+        )
+        repo = getattr(self.app, "repo", None)
+        project = repo.name if repo else ""
+        branch = self._branch or ""
+        limit = max(16, self.size.width // 2 - len(project) - 8)
+        self.query_one("#topbar-right", Static).update(
+            escape(f"{project} · {brand.shorten(branch, limit)}")
+        )

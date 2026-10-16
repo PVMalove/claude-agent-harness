@@ -293,6 +293,7 @@ DISPATCH_FIELDS = {
     "transition",
     "transition_digest",
     "retry_idempotency_key",
+    "retry_reason",
     "orchestration_policy",
     "liveness",
     "commit_plan",
@@ -514,6 +515,7 @@ DEFAULT_CONTEXT_PACKAGE_POLICY = {
     "section_index_min_tokens": 20_000,
 }
 DEFAULT_EXECUTION_POLICY = {
+    "worker_startup_timeout_seconds": 120,
     "dispatch_wait_timeout_seconds": 60,
     "dispatch_poll_interval_seconds": 5,
     "qa_lease_seconds": 1_800,
@@ -607,6 +609,7 @@ AUTO_STOP_REASONS = {
         "tooling-retry-repeated",
     ),
     "integrity-failure": (
+        "runtime-unavailable",
         "stale",
         "model-mismatch",
         "worktree-mismatch",

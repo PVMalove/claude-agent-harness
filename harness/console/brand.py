@@ -7,6 +7,7 @@ textual."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from string import hexdigits
 from dataclasses import dataclass
@@ -31,6 +32,29 @@ PALETTE = {
     "panel": "#2E2C29",
     "muted": "#9C958C",
 }
+
+# Tones of the workspace shell that Textual's theme has no slot for. CSS refers to them as
+# `$border-subtle`, `$selection-background` and so on; `shell_css` resolves them, so a screen's
+# CSS works in any host app, not only in one that registered the harness theme.
+SHELL_TOKENS = {
+    "border-subtle": "#38352f",
+    "selection-background": "#45332c",
+    "selection-foreground": "#f6baa3",
+    "row-highlight": "#35302b",
+    "control-border": "#51483d",
+    "scrollbar-thumb": "#605746",
+    "event-background": "#292621",
+    "event-active-background": "#423029",
+}
+_SHELL_TOKEN = re.compile(
+    r"\$(" + "|".join(sorted(SHELL_TOKENS, key=len, reverse=True)) + r")(?![\w-])"
+)
+
+
+def shell_css(css: str) -> str:
+    """`css` with every `$<shell token>` replaced by its colour."""
+    return _SHELL_TOKEN.sub(lambda match: SHELL_TOKENS[match.group(1)], css)
+
 
 # The harness mark: an "H" in a ring - the harness holding the parts together.
 LOGO = (
