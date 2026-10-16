@@ -2762,7 +2762,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     def _plant_passed_history(self, batch_id: str, dispatch_id: str) -> None:
         """Rewrite the report of ``dispatch_id`` on disk as a report submitted before #669 held
-        it, with one check recorded as 'passed' and the digest its batch recorded for it."""
+        it, with one check recorded as 'passed', and record the digest its batch pinned for it
+        through a ledger transition, as that history did: a later transition starts from it."""
         records = self._records()
         path = records / "reports" / f"{dispatch_id}.json"
         report = json.loads(path.read_text(encoding="utf-8"))
@@ -2778,9 +2779,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         for entry in stored["dispatches"]:
             if entry["dispatch_id"] == dispatch_id:
                 entry["report_sha256"] = hashlib.sha256(data).hexdigest()
-        batch_path.write_text(
-            json.dumps(stored, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        LifecycleLedger(ledger_ops._state_root(self._args(), self.repo)).replace(
+            batch_path, stored
         )
 
     def test_a_developer_retry_runs_on_a_migrated_ledger_with_mapped_history(

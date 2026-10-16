@@ -7,9 +7,11 @@ batch graph, hashes and immutable pointers are whole."""
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -17,7 +19,7 @@ from harness.json_types import JsonObject
 from harness.orchestration.core.constants import STATE_REL
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration import coordinator, runtime_emergency
-from harness.orchestration.ledger import field_migration, ledger_admin
+from harness.orchestration.ledger import field_migration, ledger_admin, lifecycle
 from harness.orchestration.ledger.field_migration import (
     FIELD_BINDINGS,
     MIGRATION_RULES,
@@ -809,9 +811,10 @@ def _event(
 
 def _legacy_history(scene: Scene) -> None:
     """Batch A and one audit event of every action and generation purpose, in the shapes earlier
-    harness versions wrote them; the one batch transition left the state the batch holds."""
+    harness versions wrote them; the one batch transition wrote the record the batch holds."""
     scene.seed(BATCH_A, DISPATCH_A)
     digest = "0" * 64
+    written = sha((scene.generation / f"batches/{BATCH_A}.json").read_bytes())
     events: list[tuple[str, JsonObject]] = [
         *(
             ("generation-created", {"purpose": purpose})
@@ -824,7 +827,7 @@ def _legacy_history(scene: Scene) -> None:
             {
                 "path": f"batches/{BATCH_A}.json",
                 "before_sha256": digest,
-                "sha256": digest,
+                "sha256": written,
                 "from": "planned",
                 "to": "awaiting-approval",
             },
@@ -899,14 +902,21 @@ def test_an_audit_event_outside_its_vocabulary_on_disk_stops_every_read(
     assert _state(scene) == before
 
 
-def _moved(scene: Scene) -> None:
-    """Batch A written through the ledger awaiting approval, then moved to blocked and failed."""
-    scene.ledger.write_immutable(
-        scene.generation / f"plans/{BATCH_A}.json", {"batch_id": BATCH_A}
-    )
-    scene.ledger.write_record(BatchRecord.from_dict(_batch()))
-    for state in ("blocked", "failed"):
-        scene.ledger.replace_record(BatchRecord.from_dict(_batch(state)))
+# Python 3.12 on Windows stamps `datetime.now()` with a 15.6 ms clock, so writes back to back
+# share one audit time there; every platform's test writes them at one instant.
+ONE_INSTANT = "2026-10-16T10:00:00.000000+00:00"
+
+
+def _moved(scene: Scene, times: Sequence[str] = (ONE_INSTANT,) * 4) -> None:
+    """Batch A written through the ledger awaiting approval, then moved to blocked and failed:
+    its four audit events at ``times``, by default all at one instant."""
+    with mock.patch.object(lifecycle, "_now", side_effect=list(times)):
+        scene.ledger.write_immutable(
+            scene.generation / f"plans/{BATCH_A}.json", {"batch_id": BATCH_A}
+        )
+        scene.ledger.write_record(BatchRecord.from_dict(_batch()))
+        for state in ("blocked", "failed"):
+            scene.ledger.replace_record(BatchRecord.from_dict(_batch(state)))
 
 
 def _set_state(scene: Scene, state: str) -> None:
@@ -992,6 +1002,144 @@ def test_an_interrupted_batch_transition_is_read_once_reconciled(
     assert settle(scene.repo, scene.root, scene.ledger, BATCH_A) is True
 
     assert _load_batch(scene.root, BATCH_A)["state"] == "completed"
+
+
+def test_a_write_no_operation_can_reconcile_is_routed_to_inspection(
+    scene: Scene,
+) -> None:
+    """History a harness without durable write intents left: the batch written, its audit
+    event never appended and nothing in the runtime state to reconcile."""
+    _moved(scene)
+    _set_state(scene, "completed")
+
+    assert settle(scene.repo, scene.root, scene.ledger, BATCH_A) is False
+    with pytest.raises(
+        LedgerUnreadableError, match="last recorded transition"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert "without one nothing can append it" in caught.value.remedy
+    assert "ledger inspect" in caught.value.remedy
+
+
+# --- The hash chain, never the audit time, orders batch transitions (DoD 3) ---------------------
+
+
+def _version(state: str) -> str:
+    """The digest of batch A in ``state``, as the ledger writes it."""
+    return sha(canonical(_batch(state)))
+
+
+def _link(before: str, after: str, **changes: object) -> JsonObject:
+    """A recorded transition of batch A from ``before`` to ``after``."""
+    return {
+        "path": f"batches/{BATCH_A}.json",
+        "before_sha256": _version(before),
+        "sha256": _version(after),
+        "from": before,
+        "to": after,
+        **changes,
+    }
+
+
+def _recorded(
+    scene: Scene, state: str, links: Sequence[JsonObject], numbers: Sequence[int]
+) -> None:
+    """Batch A in ``state``, its transitions ``links`` recorded at one instant as the audit
+    events ``numbers``: the event names, and with them the order the audit directory lists the
+    transitions in, are chosen."""
+    scene.put(f"plans/{BATCH_A}.json", {"batch_id": BATCH_A})
+    scene.put(f"batches/{BATCH_A}.json", _batch(state))
+    for details, number in zip(links, numbers, strict=True):
+        _event(scene, number, "transition", details, at=ONE_INSTANT)
+
+
+CHAINS: dict[str, tuple[str, list[JsonObject]]] = {
+    "three moves": (
+        "failed",
+        [
+            _link("awaiting-approval", "active"),
+            _link("active", "blocked"),
+            _link("blocked", "failed"),
+        ],
+    ),
+    "a write that changed nothing and a version the batch returned to": (
+        "blocked",
+        [
+            _link("active", "active"),
+            _link("active", "paused"),
+            _link("paused", "active"),
+            _link("active", "blocked"),
+        ],
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("chain", "numbers"),
+    [
+        pytest.param(chain, numbers, id=f"{chain}-{numbers}")
+        for chain, (_, links) in CHAINS.items()
+        for numbers in itertools.permutations(range(len(links)))
+    ],
+)
+def test_transitions_at_one_instant_are_read_in_every_listing_order(
+    scene: Scene, chain: str, numbers: tuple[int, ...]
+) -> None:
+    state, links = CHAINS[chain]
+    _recorded(scene, state, links, numbers)
+    before = _state(scene)
+
+    assert _load_batch(scene.root, BATCH_A)["state"] == state
+    assert _state(scene) == before
+
+
+def test_transitions_written_as_the_clock_stepped_back_are_read(scene: Scene) -> None:
+    # Each audit event is stamped earlier than the one written before it.
+    _moved(scene, [f"2026-10-16T10:00:0{second}+00:00" for second in (3, 2, 1, 0)])
+
+    assert _load_batch(scene.root, BATCH_A)["state"] == "failed"
+
+
+BROKEN_CHAINS: dict[str, list[JsonObject]] = {
+    "two transitions from one version": [
+        _link("awaiting-approval", "active"),
+        _link("active", "blocked"),
+        _link("active", "paused"),
+        _link("blocked", "failed"),
+    ],
+    "a version no transition wrote": [
+        _link("awaiting-approval", "active"),
+        _link("blocked", "failed"),
+    ],
+    "a write that changed nothing outside the chain": [
+        _link("awaiting-approval", "active"),
+        _link("active", "failed"),
+        _link("paused", "paused"),
+    ],
+    "linked transitions that name two states for one version": [
+        _link("awaiting-approval", "active"),
+        _link("active", "failed", **{"from": "paused"}),
+    ],
+}
+
+
+@pytest.mark.parametrize("broken", sorted(BROKEN_CHAINS))
+def test_transitions_that_are_not_one_chain_are_a_controlled_stop(
+    scene: Scene, broken: str
+) -> None:
+    links = BROKEN_CHAINS[broken]
+    _recorded(scene, "failed", links, range(len(links)))
+    before = _state(scene)
+
+    with pytest.raises(LedgerUnreadableError, match="not one recorded chain") as caught:
+        _load_batch(scene.root, BATCH_A)
+    with pytest.raises(CoordinatorError, match="not one recorded chain"):
+        ledger_admin.validate_ledger(_args(scene))
+
+    assert not isinstance(caught.value, LedgerUnmigratedError)
+    assert "ledger inspect" in caught.value.remedy
+    assert _state(scene) == before
 
 
 # --- An unmigrated ledger names the ledger migrate route (DoD 4) --------------------------------
