@@ -1195,6 +1195,28 @@ def test_transitions_that_are_not_one_chain_are_a_controlled_stop(
     assert _state(scene) == before
 
 
+def test_ledger_inspect_shows_the_refusal_of_broken_transitions_and_writes_nothing(
+    scene: Scene,
+) -> None:
+    links, _, _ = BROKEN_CHAINS["a version no transition wrote"]
+    _recorded(scene, "failed", links, range(len(links)))
+    scene.seed(BATCH_B, DISPATCH_B)
+    before = _state(scene)
+
+    report = ledger_admin.inspect_ledger(_args(scene, batch=None))
+    [only] = ledger_admin.inspect_ledger(_args(scene, batch=BATCH_A))["batches"]
+
+    shown = {batch["batch_id"]: batch for batch in report["batches"]}
+    problem = shown[BATCH_A]["transition_problem"]
+    assert problem == only["transition_problem"]
+    assert problem.startswith(
+        f"batch transitions are not one recorded chain: {BATCH_A}"
+    )
+    assert _version("blocked")[:12] in problem
+    assert shown[BATCH_B]["transition_problem"] is None
+    assert _state(scene) == before
+
+
 def test_a_transition_from_a_version_changed_outside_the_ledger_names_both_versions(
     scene: Scene,
 ) -> None:
