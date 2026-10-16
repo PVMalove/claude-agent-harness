@@ -117,7 +117,7 @@ def test_corrupt_snapshot_captures_input_without_accepting_report(
             ).hexdigest()
     batch_path.write_text(json.dumps(batch))
 
-    with pytest.raises(coordinator.CoordinatorError):
+    with pytest.raises(coordinator.CoordinatorError) as caught:
         coordinator.submit_report(
             fixtures._ns(
                 repo=str(case.repo),
@@ -126,11 +126,15 @@ def test_corrupt_snapshot_captures_input_without_accepting_report(
             )
         )
 
+    assert caught.value.message == (
+        "dispatch pinned configuration failed integrity or version validation"
+    )
     captures = list((root / "unaccepted-evidence").glob("*.json"))
     assert len(captures) == 1
     capture = json.loads(captures[0].read_bytes())
     assert capture["accepted"] is False
     assert capture["input"] == report
+    assert capture["diagnostic"] == caught.value.message
     assert not (root / "reports" / f"{brief['dispatch_id']}.json").exists()
 
 
