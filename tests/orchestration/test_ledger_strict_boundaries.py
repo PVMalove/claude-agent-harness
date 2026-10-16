@@ -15,7 +15,7 @@ import pytest
 from harness.json_types import JsonObject
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration import runtime_emergency
-from harness.orchestration.ledger import field_migration
+from harness.orchestration.ledger import field_migration, ledger_admin
 from harness.orchestration.ledger.field_migration import (
     FIELD_BINDINGS,
     MIGRATION_RULES,
@@ -47,6 +47,7 @@ from harness.orchestration.workflow import reports
 from tests.orchestration.test_ledger_migration import (
     BATCH_A,
     BATCH_B,
+    DEFECTS,
     DISPATCH_A,
     DISPATCH_B,
     PASSED_REPORT,
@@ -688,3 +689,87 @@ def test_the_intermediate_states_of_a_composite_write_are_read(scene: Scene) -> 
     assert _load_dispatch_status(scene.root, DISPATCH_A)["state"] == "working"
     with pytest.raises(LedgerError, match="orphaned dispatch evidence"):
         scene.ledger.validate()
+
+
+# --- An unmigrated ledger names the ledger migrate route (DoD 4) --------------------------------
+
+
+def _batch_not_an_object(scene: Scene) -> None:
+    scene.seed(BATCH_B, DISPATCH_B)
+    scene.put(f"batches/{BATCH_B}.json", b"[]")
+
+
+# Every value the container check of the ledger stops on, which `ledger migrate` takes over.
+UNMIGRATED = {
+    **{name: make for name, (make, *_) in DEFECTS.items()},
+    "batch not an object": _batch_not_an_object,
+}
+
+
+def _args(scene: Scene, **values: object) -> argparse.Namespace:
+    return argparse.Namespace(repo=str(scene.repo), state_dir=str(scene.root), **values)
+
+
+@pytest.mark.parametrize("defect", sorted(UNMIGRATED))
+def test_a_container_refusal_of_history_names_the_migrate_route(
+    scene: Scene, defect: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    UNMIGRATED[defect](scene)
+    before = _state(scene)
+
+    for load, record_id in ((_load_batch, BATCH_A), (_load_dispatch, DISPATCH_A)):
+        with pytest.raises(LedgerUnmigratedError) as caught:
+            load(scene.root, record_id)
+        assert caught.value.message.startswith(MIGRATE_ROUTE)
+        assert "ledger inspect" in caught.value.remedy
+        assert "ledger migrate" in caught.value.remedy
+    runtime_emergency.report_failure(
+        argparse.Namespace(command="ledger", ledger_command="validate"), caught.value
+    )
+    assert "ledger migrate" in capsys.readouterr().err
+    assert _state(scene) == before
+
+    scene.run()
+
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+
+
+def test_an_unreadable_record_outside_the_migrated_graph_keeps_its_own_remedy(
+    scene: Scene,
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    scene.put("checkpoints/checkpoint-0000000a.json", b"{ not JSON")
+
+    with pytest.raises(LedgerUnreadableError) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert not isinstance(caught.value, LedgerUnmigratedError)
+    assert "fix the JSON syntax" in caught.value.remedy
+
+
+@pytest.mark.parametrize(
+    "history",
+    ["container", "machine field"],
+)
+def test_ledger_validate_names_the_migrate_route_until_ledger_migrate(
+    scene: Scene, history: str
+) -> None:
+    if history == "container":
+        scene.seed(BATCH_A, DISPATCH_A)
+        UNMIGRATED["unknown batch.state"](scene)
+    else:
+        _history(scene)
+    before = _state(scene)
+
+    with pytest.raises(LedgerUnmigratedError) as caught:
+        ledger_admin.validate_ledger(_args(scene))
+
+    assert caught.value.message.startswith(MIGRATE_ROUTE)
+    assert "ledger migrate" in caught.value.remedy
+    assert _state(scene) == before
+
+    scene.run()
+
+    assert scene.ledger.validate()["valid"] is True
+    require_canonical(scene.generation)

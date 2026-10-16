@@ -62,10 +62,13 @@ def _unreadable() -> Iterator[None]:
 
 @contextmanager
 def _ledger_errors() -> Iterator[None]:
-    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``; an
-    unreadable generation already raised as ``LedgerUnreadableError`` passes unchanged."""
+    """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``, and
+    unmigrated history into its ``LedgerUnmigratedError``; an unreadable generation already
+    raised as ``LedgerUnreadableError`` passes unchanged."""
     try:
         yield
+    except LedgerUnmigrated as exc:
+        raise LedgerUnmigratedError(exc.message, remedy=exc.remedy) from exc
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 

@@ -58,6 +58,11 @@ RECORD_DIRECTORIES = (
 # The system-fields migration's manifest and quarantine beside the record directories: no record
 # directory, so no ordinary loader reads it and an older generation never lacks it.
 MIGRATION_DIRECTORY = "migration"
+# The route of persisted history no migration vouches for: inspection shows it, and the
+# system-fields migration maps a known historical value or quarantines the batch that holds it.
+LEDGER_MIGRATE_ROUTE = "run 'coordinator.py ledger migrate'"
+# The record directories whose unreadable or unknown value the migration quarantines.
+MIGRATED_DIRECTORIES = ("batches", "plans", "dispatches", "dispatch-status")
 # The action and the generation purpose of the system-fields migration.
 SYSTEM_FIELDS_MIGRATION = "system-fields-migration"
 # The `ledger.audit_action` values: what one audited write did.  Reconciliation and the
@@ -658,14 +663,22 @@ def _canonical(value: JsonObject) -> str:
 
 
 def _read(path: Path, label: str) -> JsonObject:
+    """A persisted record of ``path``.  A record the system-fields migration takes over -- an
+    unreadable file or an unknown state in a batch, plan, dispatch or status -- is
+    ``LedgerUnmigrated``, whose message and remedy name ``ledger migrate``."""
+    migrated = path.parent.name in MIGRATED_DIRECTORIES
     try:
         value: object = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
+        if migrated and isinstance(exc, ValueError):
+            raise _unmigrated(path, f"{label} is not valid JSON: {path.name}") from exc
         raise LedgerError(
             f"{label} is not valid JSON: {path.name}",
             remedy=f"fix the JSON syntax in {path}",
         ) from exc
     if not isinstance(value, dict):
+        if migrated:
+            raise _unmigrated(path, f"{label} must be a JSON object: {path.name}")
         raise LedgerError(
             f"{label} must be a JSON object: {path.name}",
             remedy=f"rewrite {path} as a JSON object",
@@ -673,8 +686,22 @@ def _read(path: Path, label: str) -> JsonObject:
     # json.loads is a dynamic boundary; after confirming the top-level object, JSON itself
     # guarantees string object keys and recursive JSON-compatible values.
     record = cast(JsonObject, value)
-    _validate_record_state(path.parent.name, record)
+    try:
+        _validate_record_state(path.parent.name, record)
+    except LedgerError as exc:
+        relative = f"{path.parent.name}/{path.name}"
+        raise _unmigrated(path, f"{label} {relative} holds {exc.message}") from exc
     return record
+
+
+def _unmigrated(path: Path, problem: str) -> LedgerUnmigrated:
+    """The refusal of persisted history at ``path`` that only the migration takes over."""
+    return LedgerUnmigrated(
+        f"{LEDGER_MIGRATE_ROUTE}: {problem}",
+        remedy=f"run 'coordinator.py ledger inspect' to see {path.parent.name}/{path.name}, "
+        "then 'coordinator.py ledger migrate', which maps a known historical value or "
+        "quarantines its batch; the ledger rewrites nothing",
+    )
 
 
 def _digest(path: Path) -> str:

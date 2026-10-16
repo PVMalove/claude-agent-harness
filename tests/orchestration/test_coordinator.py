@@ -2733,6 +2733,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             ),
             "batch decide": lambda: self._decide(batch["batch_id"], "accept"),
             "dispatch create": lambda: self._dispatch(batch["batch_id"], "developer"),
+            "ledger validate": lambda: ledger_admin.validate_ledger(self._args()),
         }
         before = self._state_bytes()
 
@@ -2753,6 +2754,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         migrated = ledger_admin.migrate_ledger(self._args())
 
         self.assertEqual(migrated["system_fields"]["quarantined"], [legacy])
+        self.assertTrue(ledger_admin.validate_ledger(self._args())["valid"])
         self.assertEqual(
             coordinator.heartbeat_dispatch(heartbeat)["dispatch_id"],
             architect["dispatch_id"],

@@ -32,6 +32,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import LifecycleLedger, LEDGER_VERSION
+from harness.orchestration.ledger.strict_read import require_canonical
 from harness.orchestration.runtime_migration import migrate_system_fields
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
@@ -50,7 +51,8 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
 
 
 def validate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Read-only generation, audit, record graph and batch-contract validation."""
+    """Read-only generation, audit, record graph, canonical machine field and batch-contract
+    validation; history no migration vouches for names the 'ledger migrate' route."""
     from harness.orchestration.workflow.history import _validate_batch_integrity
     from harness.orchestration.core.utils import _read_object
 
@@ -62,6 +64,7 @@ def validate_ledger(args: argparse.Namespace) -> JsonObject:
         result = ledger.validate()
         if result["version"] == LEDGER_VERSION:
             records = ledger.records_root()
+            require_canonical(records)
             for batch_id in cast(list[str], result["batches"]):
                 _validate_batch_integrity(
                     root,
