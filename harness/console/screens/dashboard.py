@@ -19,7 +19,8 @@ from textual.widgets import Button, Footer, ListItem, ListView, Static, Collapsi
 from .. import brand, i18n
 from ..chrome import TopBar, WorkspaceHeader
 from ..translate import Translated
-from ..workspace import WorkspaceSidebar, session_state_label
+from ..status import session_status
+from ..workspace import WorkspaceSidebar
 from .. import reports
 from .. import data as console_data
 from ..data import DashboardData
@@ -524,12 +525,12 @@ class DashboardScreen(Translated, Screen[None]):
         yield Footer()
 
     def _home_session_card(self, stage: reports.StageEntry) -> Text:
-        label, color = session_state_label(stage.state)
+        status = session_status(stage.state)
         card = Text(f"{stage.ticket}  ·  {stage.role}\n")
         card.append(
             brand.shorten(stage.dispatch_id, 32) + "  ·  ", style=brand.PALETTE["muted"]
         )
-        card.append(i18n.tr(self._language, label), style=color)
+        card.append(status.render(self._language), style=status.color)
         return card
 
     def _home_sessions(self) -> list[reports.StageEntry]:

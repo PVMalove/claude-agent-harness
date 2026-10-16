@@ -30,7 +30,8 @@ from .. import brand, i18n, reports
 from ..chrome import TopBar, WorkspaceHeader
 from ..runner import CommandRunner
 from ..translate import Translated
-from ..workspace import WorkspaceSidebar, session_state_label
+from ..status import PERMISSION_PENDING, process_status, session_status
+from ..workspace import WorkspaceSidebar
 from .commands import call_from_worker
 from .dashboard import SECTIONS
 
@@ -192,8 +193,10 @@ class WorkerObservationScreen(Translated, Screen[None]):
             brand.shorten(dispatch_id, 22) + "\n\n", style=brand.PALETTE["muted"]
         )
         state = stage.state if stage else "unknown"
-        label, color = session_state_label(state)
-        card.append(i18n.tr(getattr(self.app, "language", "ru"), label), style=color)
+        status = session_status(state)
+        card.append(
+            status.render(getattr(self.app, "language", "ru")), style=status.color
+        )
         return card
 
     def compose(self) -> ComposeResult:
@@ -560,19 +563,17 @@ class WorkerObservationScreen(Translated, Screen[None]):
             return i18n.tr_text(language, value)
 
         ticket, role = snapshot.get("ticket") or "—", snapshot.get("role") or "—"
-        label, color = session_state_label(snapshot.get("state", "unknown"))
+        status = session_status(snapshot.get("state", "unknown"))
         if snapshot.get("permission_requests"):
-            label, color = "● Ждёт разрешения", brand.PALETTE["warning"]
+            status = PERMISSION_PENDING
         elif snapshot.get("state") in {"working", "dispatched"} and worker != "live":
-            label = {
-                "absent": "○ Процесс не найден",
-                "stopped": "■ Процесс завершён",
-            }.get(worker, "? Исход неизвестен")
-            color = brand.PALETTE["warning"]
+            status = process_status(worker)
         self.query_one("#worker-title", Static).update(
             f"{ticket} · {t('Наблюдение за работой')}"
         )
-        self.query_one("#worker-badge", Static).update(Text(t(label), style=color))
+        self.query_one("#worker-badge", Static).update(
+            Text(status.render(language), style=status.color)
+        )
         runtime = {"claude": "Claude Code", "codex": "Codex"}.get(
             str(snapshot.get("runtime") or ""),
             str(snapshot.get("runtime") or "runtime —"),

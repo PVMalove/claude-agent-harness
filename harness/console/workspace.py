@@ -9,21 +9,6 @@ from textual.widgets import ListView, Static
 from . import brand
 
 
-def session_state_label(state: str) -> tuple[str, str]:
-    labels = {
-        "working": ("● Выполняется", "success"),
-        "dispatched": ("◌ Запуск", "warning"),
-        "approved": ("○ Готов к запуску", "muted"),
-        "reported": ("✓ Отчёт получен", "success"),
-        "blocked": ("✖ Работа заблокирована", "error"),
-        "failed": ("✖ Ошибка", "error"),
-        "cancelled": ("■ Отменён", "muted"),
-        "abandoned": ("■ Завершён", "muted"),
-    }
-    label, color = labels.get(state, ("? Нет подтверждения", "muted"))
-    return label, brand.PALETTE[color]
-
-
 class WorkspaceSidebar(Vertical):
     DEFAULT_CSS = brand.shell_css("""
     WorkspaceSidebar { width: 24; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
