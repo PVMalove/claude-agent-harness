@@ -39,7 +39,12 @@ from ..translate import Translated
 from ..logtext import colorize_diff
 from ..widgets import CheckBox, RoundRadioButton
 from ..advisor import PROVIDERS, Advice, AdvisorUnavailable, advise, availability
-from ..configuration import ConfigurationDraft
+from ..configuration import (
+    ConfigurationDraft,
+    RuntimeAdapterPreview,
+    preview_runtime_adapters,
+    apply_runtime_adapters,
+)
 from ..configuration_steps import (
     skeleton,
     CHOICE_PAGE_SIZE,
@@ -93,9 +98,10 @@ class ConfirmConfiguration(Translated, ModalScreen[bool]):
     ConfirmConfiguration .actions { height: auto; }
     """
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, enabled: bool = True) -> None:
         super().__init__()
         self.text = text
+        self.enabled = enabled
 
     def compose(self) -> ComposeResult:
         with Vertical() as dialog:
@@ -103,7 +109,7 @@ class ConfirmConfiguration(Translated, ModalScreen[bool]):
             with VerticalScroll(id="confirm-text"):
                 yield Static(self.text, markup=False)
             with Horizontal(classes="actions"):
-                yield Button("Подтвердить", id="confirm")
+                yield Button("Подтвердить", id="confirm", disabled=not self.enabled)
                 yield Button("Отмена", id="cancel")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -193,6 +199,7 @@ class ConfigurationScreen(Translated, Screen[None]):
             "menu-add": self._menu_add,
             "menu-remove": self._menu_remove,
             "menu-open": self._menu_open,
+            "preview-adapters": self._preview_adapters,
         }
 
     def compose(self) -> ComposeResult:
@@ -284,6 +291,53 @@ class ConfigurationScreen(Translated, Screen[None]):
             with Horizontal(classes="actions"):
                 yield Button("Save version", id="save-current-version")
                 yield Button("Versions / restore", id="open-versions")
+        with Vertical(classes="frame configuration-choice") as adapters:
+            adapters.border_title = brand.frame_title("Адаптеры runtime")
+            try:
+                preview = preview_runtime_adapters(self.repo)
+            except (ValueError, OSError) as exc:
+                yield Static(str(exc), markup=False)
+            else:
+                labels = {
+                    "missing": "не установлен",
+                    "current": "актуален",
+                    "outdated": "требует обновления",
+                }
+                yield Static(
+                    "\n".join(
+                        Path(item["path"]).stem + ": " + labels[item["status"]]
+                        for item in preview.adapters
+                    ),
+                    id="adapter-status",
+                    markup=False,
+                )
+                yield Static(
+                    "Установка и обновление требуют просмотра и подтверждения."
+                )
+                yield Button("Просмотр установки и обновления", id="preview-adapters")
+
+    def _preview_adapters(self) -> None:
+        try:
+            preview = preview_runtime_adapters(self.repo)
+        except (ValueError, OSError) as exc:
+            self._set_message(str(exc))
+            return
+        self.app.push_screen(
+            ConfirmConfiguration(
+                "Обновить адаптеры runtime?\n" + preview.text,
+                enabled=not preview.blocked,
+            ),
+            lambda confirmed: self._confirmed_adapters(confirmed, preview),
+        )
+
+    def _confirmed_adapters(
+        self, confirmed: bool | None, preview: RuntimeAdapterPreview
+    ) -> None:
+        if confirmed:
+            self._operation(
+                lambda: apply_runtime_adapters(self.repo, preview, confirmed=True),
+                reload=True,
+            )
 
     def _compose_field(self) -> ComposeResult:
         assert self.draft is not None
@@ -999,8 +1053,11 @@ class ConfigurationScreen(Translated, Screen[None]):
         self._set_message(message)
         if stale:
             await self.recompose()
-        elif reload and self.draft is not None:
-            self.draft = ConfigurationDraft.load(self.repo, tuple(self.draft.documents))
+        elif reload:
+            if self.draft is not None:
+                self.draft = ConfigurationDraft.load(
+                    self.repo, tuple(self.draft.documents)
+                )
             await self.recompose()
             self._set_message(message)
 
