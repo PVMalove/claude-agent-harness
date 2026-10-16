@@ -80,6 +80,8 @@ REFUSAL_REASONS = frozenset(
         "test_paths_missing",
         "test_runner_missing",
         "write_zone_rejected",
+        "build_failed",
+        "build_timeout",
         ISOLATION_UNAVAILABLE,
     }
 )
@@ -115,6 +117,26 @@ class Refused(Exception):
         assert (detail in ISOLATION_DETAILS) == (reason == ISOLATION_UNAVAILABLE)
         self.reason = reason
         self.detail = detail
+
+
+@dataclass(frozen=True)
+class Build:
+    command: list[str]
+    artifact_paths: list[str]
+
+
+@dataclass(frozen=True)
+class Settings:
+    test_paths: list[str]
+    command: list[str]
+    build: Build | None = None
+
+
+@dataclass(frozen=True)
+class Mount:
+    source: Path
+    target: Path
+    writable: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,7 +215,7 @@ def render_probe(detail: str | None) -> str:
     )
 
 
-def load_settings(repo: Path) -> tuple[list[str], list[str]]:
+def load_settings(repo: Path) -> Settings:
     """`test_paths` and `test_runner.command` from the project config, checked by the health
     validators; any other state is a refusal."""
     try:
@@ -212,7 +234,12 @@ def load_settings(repo: Path) -> tuple[list[str], list[str]]:
         raise Refused("test_runner_missing")
     if test_runner_problems(data["test_runner"]):
         raise Refused("config_invalid")
-    return list(data["test_paths"]), list(data["test_runner"]["command"])
+    build = data["test_runner"].get("build")
+    return Settings(
+        list(data["test_paths"]),
+        list(data["test_runner"]["command"]),
+        Build(build["command"], build["artifact_paths"]) if build else None,
+    )
 
 
 def write_zones(repo: Path, globs: Iterable[str]) -> list[Path]:
@@ -257,6 +284,27 @@ def _zone(repo: Path, glob: str) -> Path:
     return zone
 
 
+def artifact_zones(
+    repo: Path, build: Build | None, test_zones: Sequence[Path]
+) -> list[Path]:
+    """Only empty, disjoint target directories can hide fresh run-owned artifacts."""
+    if build is None:
+        return []
+    targets = write_zones(repo, build.artifact_paths)
+    try:
+        if any(any(target.iterdir()) for target in targets):
+            raise Refused("write_zone_rejected")
+    except OSError:
+        raise Refused("write_zone_rejected") from None
+    if any(
+        left == right or left in right.parents or right in left.parents
+        for left in targets
+        for right in test_zones
+    ):
+        raise Refused("write_zone_rejected")
+    return targets
+
+
 def _has_linked_file(zone: Path) -> bool:
     """True when a regular file below `zone` has more than one hard link (or cannot be read)."""
 
@@ -283,7 +331,7 @@ def _masked(path: Path) -> bool:
 def sandbox_argv(
     bwrap: str,
     repo: Path,
-    binds: Sequence[Path],
+    binds: Sequence[Path | Mount],
     command: Sequence[str],
     status_fd: int,
 ) -> list[str]:
@@ -305,7 +353,14 @@ def sandbox_argv(
         "/run",
     ]
     for path in binds:
-        argv += ["--bind", str(path), str(path)]
+        if isinstance(path, Mount):
+            argv += [
+                "--bind" if path.writable else "--ro-bind",
+                str(path.source),
+                str(path.target),
+            ]
+        else:
+            argv += ["--bind", str(path), str(path)]
     argv += [
         "--chdir",
         str(repo),
@@ -493,7 +548,7 @@ def _probe(
     *,
     bwrap: str,
     repo: Path,
-    binds: Sequence[Path],
+    binds: Sequence[Path | Mount],
     env: Mapping[str, str],
     run_dir: Path,
     launcher: Launcher,
@@ -596,13 +651,46 @@ def run_test(
     repo = repo.resolve()
     run_id: str | None = None
     try:
-        globs, command = load_settings(repo)
-        zones = write_zones(repo, globs)
+        settings = load_settings(repo)
+        zones = write_zones(repo, settings.test_paths)
+        targets = artifact_zones(repo, settings.build, zones)
         bwrap = _require_isolation(repo, platform, which)
         run_id = new_run_id()
         run_dir = _make_run_dir(repo, run_id)
         cache, reports = run_dir / "cache", run_dir / "reports"
-        binds = [*zones, cache, reports]
+        artifacts = []
+        for index, target in enumerate(targets):
+            backing = run_dir / "artifacts" / str(index)
+            backing.mkdir(parents=True)
+            artifacts.append(Mount(backing, target))
+        if settings.build is not None:
+            preparation = [Mount(item.source, item.target, True) for item in artifacts]
+            prepare_binds: list[Path | Mount] = [*preparation, cache, reports]
+            _probe(
+                bwrap=bwrap,
+                repo=repo,
+                binds=prepare_binds,
+                env=sandbox_environment(cache, reports, environ),
+                run_dir=run_dir,
+                launcher=launcher,
+                run_id=run_id,
+            )
+            build_command = settings.build.command
+            built = launcher(
+                lambda fd: sandbox_argv(
+                    bwrap, repo, prepare_binds, build_command, fd
+                ),
+                env=sandbox_environment(cache, reports, environ),
+                log=run_dir / "log.txt",
+                timeout=TIMEOUT_SECONDS,
+            )
+            if not built.started:
+                raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
+            if built.timed_out:
+                raise Refused("build_timeout")
+            if built.exit_code != 0:
+                raise Refused("build_failed")
+        binds: list[Path | Mount] = [*zones, *artifacts, cache, reports]
         env = sandbox_environment(cache, reports, environ)
         _probe(
             bwrap=bwrap,
@@ -613,7 +701,7 @@ def run_test(
             launcher=launcher,
             run_id=run_id,
         )
-        argv = command_for(command, test_id)
+        argv = command_for(settings.command, test_id)
         result = launcher(
             lambda fd: sandbox_argv(bwrap, repo, binds, argv, fd),
             env=env,

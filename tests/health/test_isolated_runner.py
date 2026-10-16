@@ -239,9 +239,9 @@ def _refusal(repo: Path) -> tuple[str, str | None]:
 
 
 def test_load_settings(project: Path) -> None:
-    globs, command = runner.load_settings(project)
-    assert globs == ["tests/**"]
-    assert command[-1] == "{test_id}"
+    settings = runner.load_settings(project)
+    assert settings.test_paths == ["tests/**"]
+    assert settings.command[-1] == "{test_id}"
 
 
 def test_missing_project_json_means_no_test_paths(project: Path) -> None:
@@ -969,3 +969,51 @@ def test_probe_fails_when_host_sockets_are_visible(
     monkeypatch.setattr(runner, "sandbox_argv", without_run)
     assert runner.probe(sandboxed) == "probe_failed"
     assert not list(sandboxed.glob(".harness-isolation-probe-*"))
+
+
+def test_build_precedes_test_with_private_artifacts(project: Path) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    data["test_runner"]["build"] = {
+        "command": ["compiler", "src/calc.py", "artifacts/out"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED] * 4)
+    outcome = _run(project, "legit", launcher)
+    assert outcome.result == "passed"
+    assert len(launcher.calls) == 4
+    preparation, selected = launcher.calls[1], launcher.calls[3]
+    assert preparation[-3:] == ["compiler", "src/calc.py", "artifacts/out"]
+    assert str(project / "tests") not in _binds(preparation)
+    target = str(project / "artifacts")
+    offset = preparation.index(target)
+    backing = preparation[offset - 1]
+    assert preparation[offset - 2] == "--bind" and backing != target
+    offset = selected.index(target)
+    assert selected[offset - 2 : offset] == ["--ro-bind", backing]
+    assert list((project / "artifacts").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "built,reason",
+    [
+        (runner.Launch(True, 7), "build_failed"),
+        (runner.Launch(True, None, True), "build_timeout"),
+        (runner.Launch(False, 1), "isolation_unavailable"),
+    ],
+)
+def test_failed_preparation_never_starts_selected_test(
+    project: Path, built: runner.Launch, reason: str
+) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    data["test_runner"]["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED, built])
+    outcome = _run(project, "legit", launcher)
+    assert outcome.result == "refused" and outcome.reason == reason
+    assert len(launcher.calls) == 2
