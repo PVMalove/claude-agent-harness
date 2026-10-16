@@ -178,3 +178,47 @@ def test_uninstall_preserves_linked_adapter_directory(repo: Path) -> None:
     assert result["failed"] == []
     assert folder.is_symlink()
     assert (target / "local.py").read_text() == "project\n"
+
+
+def test_settings_permissions_allow_only_six_bounded_observation_commands() -> None:
+    from harness.bin.harness import PROJECT_TEMPLATE_DIR
+
+    template = json.loads(
+        (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text()
+    )
+    prefix = "Bash(python .harness/orchestration/coordinator.py --repo * "
+    expected = {
+        prefix + command + "*)"
+        for command in (
+            "dispatch wait",
+            "dispatch status",
+            "batch auto-decide",
+            "batch auto-report",
+            "batch decision-packet",
+            "ledger validate",
+        )
+    }
+    assert set(template["permissions"]["allow"]) == expected
+
+
+def test_seed_settings_drift_is_visible_and_requires_explicit_replacement(
+    repo: Path,
+) -> None:
+    install(repo)
+    settings = repo / ".claude/settings.local.json"
+    local = '{"permissions": {"allow": ["Bash(project-command)"]}}\n'
+    settings.write_text(local)
+    diff = harness("diff", str(repo))
+    assert "seed_differing: .claude/settings.local.json" in diff.stdout
+    assert "--force-seed-file .claude/settings.local.json" in diff.stdout
+    data = json.loads(harness("diff", str(repo), "--json").stdout)
+    assert ".claude/settings.local.json" in data["seed_differing"]
+    result = harness("update", str(repo))
+    assert result.returncode == 0, result.stderr
+    assert "--force-seed-file .claude/settings.local.json" in result.stdout
+    assert settings.read_text() == local
+    result = harness(
+        "update", str(repo), "--force-seed-file", ".claude/settings.local.json"
+    )
+    assert result.returncode == 0, result.stderr
+    assert len(json.loads(settings.read_text())["permissions"]["allow"]) == 6

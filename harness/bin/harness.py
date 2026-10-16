@@ -932,6 +932,9 @@ def scaffold_pvmalove_extras(
         print("\n[WARNING] Следующие сидируемые файлы отличаются от шаблонов upstream:")
         for path in differing:
             print(f"  - {path.relative_to(repo)}")
+            print(
+                f"    После просмотра: --force-seed-file {path.relative_to(repo).as_posix()}"
+            )
         print(
             "Используйте --force-seed-files, чтобы перезаписать их (внимание: локальные изменения будут потеряны).\n"
         )
@@ -1021,6 +1024,9 @@ def cmd_diff(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
+        for relative in seed_differing(repo):
+            print(f"  seed_differing: {relative}")
+            print(f"    После просмотра: --force-seed-file {relative}")
         print_contract_proposals(proposals)
     return 0 if result["state"] == "clean" else 1
 
