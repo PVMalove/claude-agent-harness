@@ -27,7 +27,7 @@ import threading
 import time
 import unittest
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar, cast
@@ -2663,6 +2663,136 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
     def test_a_legacy_passed_check_result_is_never_written(self) -> None:
         self._assert_a_legacy_check_result_is_never_written("passed", "pass")
+
+    def _state_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for path in self.state_dir.rglob("*")
+            if path.is_file()
+        }
+
+    def _plant_unmigrated_batch(self) -> str:
+        """A batch only history could hold, written to disk and never through the ledger: its
+        approval policy is no registry value, which no check of the ledger's container finds."""
+        batch_id = "batch-0000beef"
+        records = self._records()
+        planted: dict[str, JsonObject] = {
+            "plans": {"batch_id": batch_id},
+            "batches": {
+                "batch_id": batch_id,
+                "state": "completed",
+                "approval_policy": "Manual",
+                "dispatches": [],
+            },
+        }
+        for directory, record in planted.items():
+            (records / directory / f"{batch_id}.json").write_text(
+                json.dumps(record), encoding="utf-8"
+            )
+        return batch_id
+
+    def test_an_unmigrated_ledger_refuses_automatic_commands_until_migrate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        inbox = workspace._prepare_agent_inbox(self.repo)
+        report = inbox / f"{architect['dispatch_id']}.json"
+        report.write_text(
+            json.dumps(self._base_report(architect, "architect")), encoding="utf-8"
+        )
+        legacy = self._plant_unmigrated_batch()
+        heartbeat = self._args(
+            dispatch=architect["dispatch_id"],
+            note=None,
+            context_tokens=None,
+            context_source=None,
+        )
+        commands: dict[str, Callable[[], JsonObject]] = {
+            "dispatch heartbeat": lambda: coordinator.heartbeat_dispatch(heartbeat),
+            "dispatch self-report": lambda: coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=architect["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.worktree),
+                )
+            ),
+            "report submit": lambda: coordinator.submit_report(
+                self._args(file=str(report))
+            ),
+            "batch decide": lambda: self._decide(batch["batch_id"], "accept"),
+            "dispatch create": lambda: self._dispatch(batch["batch_id"], "developer"),
+        }
+        before = self._state_bytes()
+
+        for name, command in commands.items():
+            with (
+                self.subTest(command=name),
+                self.assertRaises(ledger_ops.LedgerUnmigratedError) as caught,
+            ):
+                command()
+            self.assertTrue(
+                caught.exception.message.startswith(
+                    "run 'coordinator.py ledger migrate'"
+                )
+            )
+            self.assertIn(f"batches/{legacy}.json", caught.exception.message)
+        self.assertEqual(self._state_bytes(), before)
+
+        migrated = ledger_admin.migrate_ledger(self._args())
+
+        self.assertEqual(migrated["system_fields"]["quarantined"], [legacy])
+        self.assertEqual(
+            coordinator.heartbeat_dispatch(heartbeat)["dispatch_id"],
+            architect["dispatch_id"],
+        )
+
+    def test_manual_accept_refuses_a_mapped_legacy_passed_report_after_migrate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        candidate, changed = self._developer_commit("legacy-passed-result")
+        report = self._developer_report(
+            brief, candidate, changed, checks_run=self._checks(brief, "pass")
+        )
+        self._stage_report(
+            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+        )
+        # History before #669: the report held 'passed', and its batch recorded that digest.
+        records = self._records()
+        data = (
+            json.dumps(
+                {**report, "checks_run": self._checks(brief, "passed")},
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+        (records / "reports" / f"{brief['dispatch_id']}.json").write_bytes(data)
+        batch_path = records / "batches" / f"{batch['batch_id']}.json"
+        stored = json.loads(batch_path.read_text(encoding="utf-8"))
+        for entry in stored["dispatches"]:
+            if entry["dispatch_id"] == brief["dispatch_id"]:
+                entry["report_sha256"] = hashlib.sha256(data).hexdigest()
+        batch_path.write_text(
+            json.dumps(stored, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(ledger_ops.LedgerUnmigratedError):
+            self._decide(batch["batch_id"], "accept")
+
+        migrated = ledger_admin.migrate_ledger(self._args())
+        before = self._state_bytes()
+
+        # The mapped value is readable history, never an authorizing canonical 'pass'.
+        self.assertEqual(migrated["system_fields"]["mapped"], 1)
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "result is invalid"):
+            self._decide(batch["batch_id"], "accept")
+        self.assertEqual(self._state_bytes(), before)
 
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""

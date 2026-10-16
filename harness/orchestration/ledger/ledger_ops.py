@@ -28,9 +28,11 @@ from harness.orchestration.ledger.lifecycle import (
     LedgerError,
     LedgerLockBusy,
     LedgerRecordVO,
+    LedgerUnmigrated,
     LifecycleLedger,
     RiskAssessmentRecord,
 )
+from harness.orchestration.ledger.strict_read import require_canonical
 
 
 class LedgerBusyError(CoordinatorError):
@@ -39,6 +41,23 @@ class LedgerBusyError(CoordinatorError):
 
 class LedgerUnreadableError(CoordinatorError):
     """The selected ledger generation cannot be read: its pointer or records are invalid."""
+
+
+class LedgerUnmigratedError(LedgerUnreadableError):
+    """The selected generation holds history no current migration vouches for: its message and
+    remedy name ``ledger migrate``, and only inspection, export and migration read it."""
+
+
+@contextmanager
+def _unreadable() -> Iterator[None]:
+    """Translate a ``LedgerError`` raised inside the block into ``LedgerUnreadableError``, and
+    unmigrated history into its ``LedgerUnmigratedError``."""
+    try:
+        yield
+    except LedgerUnmigrated as exc:
+        raise LedgerUnmigratedError(exc.message, remedy=exc.remedy) from exc
+    except LedgerError as exc:
+        raise LedgerUnreadableError(exc.message, remedy=exc.remedy) from exc
 
 
 @contextmanager
@@ -85,10 +104,18 @@ def _records_root(root: Path) -> Path:
     """The selected generation.  ``records_root`` parses and state-checks every record in it,
     so a corrupt pointer or record anywhere in the generation stops every loader that starts
     here as ``LedgerUnreadableError``; a missing record is an unknown ID, not a corrupt ledger."""
-    try:
+    with _unreadable():
         return LifecycleLedger(root).records_root()
-    except LedgerError as exc:
-        raise LedgerUnreadableError(exc.message, remedy=exc.remedy) from exc
+
+
+def _canonical_records_root(root: Path) -> Path:
+    """The selected generation, once the strict read boundary found every machine field of it
+    canonical or vouched for by its current migration: the root of every read an automatic
+    decision makes.  It writes nothing, so a caller outside the ledger lock may use it."""
+    records = _records_root(root)
+    with _unreadable():
+        require_canonical(records)
+    return records
 
 
 @contextmanager
@@ -113,7 +140,7 @@ def _load_batch(root: Path, batch_id: str) -> JsonObject:
     with _ledger_errors():
         return BatchRecord.from_dict(
             _read_object(
-                _records_root(root)
+                _canonical_records_root(root)
                 / BatchRecord.directory
                 / f"{_safe_id(batch_id, 'batch')}.json",
                 "batch record",
@@ -137,7 +164,7 @@ def _load_dispatch_status(root: Path, dispatch_id: str) -> JsonObject:
     with _ledger_errors():
         return DispatchStatusRecord.from_dict(
             _read_object(
-                _records_root(root)
+                _canonical_records_root(root)
                 / DispatchStatusRecord.directory
                 / f"{_safe_id(dispatch_id, 'dispatch')}.json",
                 "dispatch status",

@@ -101,6 +101,11 @@ class LedgerWriteConflict(LedgerError):
     """A record changed or appeared between the check of a write and the write itself."""
 
 
+class LedgerUnmigrated(LedgerError):
+    """The selected generation holds history no current migration vouches for: only
+    ``ledger inspect``, ``ledger export`` and ``ledger migrate`` read it."""
+
+
 def _parse_state[T: StrEnum](value: object, vocabulary: type[T]) -> T:
     if isinstance(value, str):
         try:
