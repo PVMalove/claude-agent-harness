@@ -49,11 +49,7 @@ def _project(
     subprocess.run(["git", "init", "-q"], cwd=project, check=True)
     (tmp_path / ".claude.json").write_text(
         json.dumps(
-            {
-                "projects": {
-                    str(project.resolve()): {"hasTrustDialogAccepted": True}
-                }
-            }
+            {"projects": {str(project.resolve()): {"hasTrustDialogAccepted": True}}}
         ),
         encoding="utf-8",
     )
@@ -152,7 +148,9 @@ def test_preflight_requires_an_enabled_scoped_hook(tmp_path: Path) -> None:
     project = _project(tmp_path)
     agent = project / ".claude" / "agents" / "test-author.md"
     agent.write_text(
-        agent.read_text(encoding="utf-8").replace('  PreToolUse:\n', '  PreToolUse: {}\n'),
+        agent.read_text(encoding="utf-8").replace(
+            "  PreToolUse:\n", "  PreToolUse: {}\n"
+        ),
         encoding="utf-8",
     )
     _runner(project, '{"status":"ok"}')
@@ -238,7 +236,11 @@ def test_unverifiable_guard_or_probe_fails_closed(
 
     answer = _answer(_run(project))
 
-    expected = "guard_hook_unavailable" if bad_answer == "not-json" else "isolation_unavailable"
+    expected = (
+        "guard_hook_unavailable"
+        if bad_answer == "not-json"
+        else "isolation_unavailable"
+    )
     assert answer == {"status": "disabled", "reason": expected}
 
 
@@ -261,7 +263,9 @@ def _trust_state(project: Path, entry: object) -> dict[str, object]:
         "entry-without-trust",
     ],
 )
-def test_every_unverifiable_trust_state_fails_closed(tmp_path: Path, state: str) -> None:
+def test_every_unverifiable_trust_state_fails_closed(
+    tmp_path: Path, state: str
+) -> None:
     project = _project(tmp_path)
     _runner(project, '{"status":"ok"}')
     path = tmp_path / ".claude.json"
@@ -359,3 +363,12 @@ def test_trust_given_only_to_a_parent_directory_keeps_the_author_disabled(
         "status": "disabled",
         "reason": "project_untrusted",
     }
+
+
+@pytest.mark.parametrize("reason", ["config_invalid", "write_zone_rejected"])
+def test_preflight_preserves_runner_mount_refusal(tmp_path: Path, reason: str) -> None:
+    project = _project(tmp_path)
+    _runner(
+        project, json.dumps({"status": "unavailable", "reason": reason, "detail": None})
+    )
+    assert _answer(_run(project)) == {"status": "disabled", "reason": reason}

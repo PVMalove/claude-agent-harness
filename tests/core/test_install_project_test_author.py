@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -90,7 +91,9 @@ def test_install_seeds_test_author_but_leaves_it_disabled_without_opt_in(
     ):
         assert (repo / relative).is_file(), relative
     assert (repo / ".claude/hooks/test-author-guard.py").stat().st_mode & stat.S_IXUSR
-    assert (repo / ".claude/hooks/test-author-preflight.sh").stat().st_mode & stat.S_IXUSR
+    assert (
+        repo / ".claude/hooks/test-author-preflight.sh"
+    ).stat().st_mode & stat.S_IXUSR
     registry = (repo / ".harness/skills/REGISTRY.md").read_text(encoding="utf-8")
     assert "| `tdd` | `.harness/skills/tdd` |" in registry
     settings = (repo / ".claude/settings.local.json").read_text(encoding="utf-8")
@@ -116,3 +119,48 @@ def test_install_writes_both_activation_settings_without_assumed_project_paths(
     assert data["test_runner"] == {
         "command": ["python3", "-m", "unittest", "{test_id}"]
     }
+
+
+def test_installed_preflight_disables_author_for_nonempty_artifacts(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    result = _init(
+        repo,
+        "--test-path",
+        "tests/**",
+        "--test-runner-command",
+        "pytest {test_id}",
+        "--test-build-command",
+        "cc",
+        "--test-artifact-path",
+        "artifacts/**",
+    )
+    assert result.returncode == 0
+    (repo / "tests").mkdir()
+    (repo / "artifacts").mkdir()
+    protected = repo / "artifacts/source.py"
+    protected.write_text("protected")
+    trust = tmp_path / "trust"
+    trust.mkdir()
+    (trust / ".claude.json").write_text(
+        json.dumps(
+            {"projects": {str(repo.resolve()): {"hasTrustDialogAccepted": True}}}
+        )
+    )
+    preflight = subprocess.run(
+        ["bash", str(repo / ".claude/hooks/test-author-preflight.sh")],
+        cwd=repo,
+        env=dict(
+            os.environ, CLAUDE_PROJECT_DIR=str(repo), CLAUDE_CONFIG_DIR=str(trust)
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert preflight.returncode == 0 and preflight.stderr == ""
+    assert json.loads(preflight.stdout) == {
+        "status": "disabled",
+        "reason": "write_zone_rejected",
+    }
+    assert protected.read_text() == "protected"

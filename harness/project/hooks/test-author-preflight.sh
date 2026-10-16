@@ -101,7 +101,8 @@ esac
 
 PROBE="$("$RUNNER" --probe 2>/dev/null || true)"
 PROBE_REASON="$(printf '%s' "$PROBE" | answer_reason unavailable \
-  isolation_unavailable runner_unavailable)"
+  isolation_unavailable runner_unavailable config_invalid write_zone_rejected \
+  test_paths_missing test_runner_missing)"
 case "$PROBE_REASON" in
   ok) ;;
   invalid) disabled isolation_unavailable ;;

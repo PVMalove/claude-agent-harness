@@ -222,8 +222,13 @@ def render_probe(detail: str | None) -> str:
     """The `--probe` line: ok, or unavailable with the isolation detail."""
     if detail is None:
         return json.dumps({"status": "ok"}, separators=(",", ":"))
+    reason = ISOLATION_UNAVAILABLE if detail in ISOLATION_DETAILS else detail
     return json.dumps(
-        {"status": "unavailable", "reason": ISOLATION_UNAVAILABLE, "detail": detail},
+        {
+            "status": "unavailable",
+            "reason": reason,
+            "detail": detail if reason == ISOLATION_UNAVAILABLE else None,
+        },
         separators=(",", ":"),
     )
 
@@ -650,26 +655,55 @@ def probe(
     which: Callable[[str], str | None] = shutil.which,
     environ: Mapping[str, str] = os.environ,
 ) -> str | None:
-    """`--probe`: None when the sandbox works here, else the isolation detail. Needs no
-    `test_paths`; the probe run directory is removed afterwards."""
+    """Validate configured settings and phase mount plans without build, server or selected test.
+
+    With no project config, retain the host-only probe. Return a fixed refusal reason/detail.
+    """
     repo = repo.resolve()
     run_id = new_run_id()
     run_dir: Path | None = None
     try:
+        settings = load_settings(repo) if (repo / PROJECT_JSON_REL).exists() else None
+        zones = write_zones(repo, settings.test_paths) if settings else []
+        targets = artifact_zones(repo, settings.build, zones) if settings else []
         bwrap = _require_isolation(repo, platform, which)
         run_dir = _make_run_dir(repo, run_id)
         cache, reports = run_dir / "cache", run_dir / "reports"
-        _probe(
-            bwrap=bwrap,
-            repo=repo,
-            binds=[cache, reports],
-            env=sandbox_environment(cache, reports, environ),
-            run_dir=run_dir,
-            launcher=launcher,
-            run_id=run_id,
-        )
+        artifacts = []
+        for index, target in enumerate(targets):
+            backing = run_dir / "artifacts" / str(index)
+            backing.mkdir(parents=True)
+            artifacts.append(Mount(backing, target))
+        phases: list[tuple[list[Path | Mount], Sequence[Path]]] = []
+        if settings and settings.build:
+            phases.append(
+                (
+                    [
+                        *[Mount(item.source, item.target, True) for item in artifacts],
+                        cache,
+                        reports,
+                    ],
+                    zones,
+                )
+            )
+        phases.append(([*zones, *artifacts, cache, reports], []))
+        for binds, readonly in phases:
+            _probe(
+                bwrap=bwrap,
+                repo=repo,
+                binds=binds,
+                env=sandbox_environment(cache, reports, environ),
+                run_dir=run_dir,
+                launcher=launcher,
+                run_id=run_id,
+                readonly_targets=readonly,
+            )
     except Refused as refusal:
-        return refusal.detail
+        return (
+            refusal.detail
+            if refusal.reason == ISOLATION_UNAVAILABLE
+            else refusal.reason
+        )
     finally:
         if run_dir is not None:
             shutil.rmtree(run_dir, ignore_errors=True)

@@ -690,6 +690,7 @@ def test_probe_function(project: Path) -> None:
         is None
     )
     assert [Path(bind).name for bind in _binds(launcher.calls[0])] == [
+        "tests",
         "cache",
         "reports",
     ]
@@ -1182,3 +1183,56 @@ def test_database_start_failure_refuses_before_selected_test(sandboxed: Path) ->
     outcome = runner.run_test(sandboxed, "sql.constraint")
     assert outcome.reason == "database_unavailable" and outcome.result == "refused"
     assert not (sandboxed / "tests/should-not-run").exists()
+
+
+def test_probe_refuses_unsafe_artifact_settings_without_running_commands(
+    project: Path,
+) -> None:
+    (project / "artifacts").mkdir()
+    (project / "artifacts/source.py").write_text("protected")
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED])
+    assert runner.probe(project, launcher=launcher) == "write_zone_rejected"
+    assert launcher.calls == []
+
+
+def test_probe_checks_both_phases_without_build_or_database_start(
+    project: Path,
+) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["never-test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["never-build"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    cast(dict[str, object], data["test_runner"])["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["*"],
+        "command": ["never-db"],
+        "ready_command": ["never-ready"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED, STARTED])
+    assert runner.probe(project, launcher=launcher) is None
+    assert len(launcher.calls) == 2
+    assert all(runner.PROBE_SCRIPT in command for command in launcher.calls)
+    assert not any("never-" in part for command in launcher.calls for part in command)
+
+
+def test_probe_sanitizes_configuration_refusal(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["database"] = {"secret": "not-logged"}
+    _write_settings(project, data)
+    assert runner.main([str(project), "--probe"]) == 3
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "unavailable",
+        "reason": "config_invalid",
+        "detail": None,
+    }
