@@ -73,8 +73,7 @@ from harness.orchestration.core.git_utils import (
 )
 from harness.orchestration.core.system_fields import (
     EXACT_SPELLING,
-    enum_problem,
-    enum_remedy,
+    enum_refusal,
     near_miss,
 )
 from harness.orchestration.core.utils import (
@@ -748,12 +747,13 @@ def _authorize_planned_continuation(
     no approval is passed (issue #643); the answer to a resolver's options stays a human's."""
     trigger = args.trigger
     if (
-        problem := enum_problem("--trigger", trigger, PLANNED_TRIGGER_KINDS)
+        refusal := enum_refusal("--trigger", trigger, PLANNED_TRIGGER_KINDS)
     ) is not None:
+        problem, remedy = refusal
         raise CoordinatorError(
             "a continuation without a recognized rate-limit termination reason is a planned "
             f"trigger: {problem}",
-            remedy=enum_remedy("--trigger", PLANNED_TRIGGER_KINDS),
+            remedy=remedy,
         )
     threshold_key = PLANNED_TRIGGER_THRESHOLD_KEY.get(trigger)
     if threshold_key is not None:

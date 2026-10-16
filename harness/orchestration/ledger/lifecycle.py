@@ -29,7 +29,7 @@ from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..core.constants import BatchState, DispatchState
-from ..core.system_fields import enum_problem, enum_remedy
+from ..core.system_fields import enum_refusal
 from ..core.utils import sealed
 from .field_migration import write_problems
 from .recovery_chain import event_audit, terminal
@@ -172,8 +172,8 @@ def _audit_problem(action: object, details: object) -> tuple[str, str] | None:
             ("batch transition to", details.get("to"), states),
         ]
     for subject, value, allowed in checks:
-        if (problem := enum_problem(subject, value, allowed)) is not None:
-            return problem, enum_remedy(subject, allowed)
+        if (refusal := enum_refusal(subject, value, allowed)) is not None:
+            return refusal
     return None
 
 

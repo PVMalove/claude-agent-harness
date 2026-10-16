@@ -34,6 +34,7 @@ from harness.orchestration.core.system_fields import (
     REGISTRY_PATH,
     SystemFieldsError,
     enum_problem,
+    enum_refusal,
     enum_remedy,
     load_registry,
     near_miss,
@@ -1201,6 +1202,17 @@ def test_enum_remedy_lists_the_exact_values() -> None:
     assert enum_remedy("approval_policy", {"auto", "manual_all"}) == (
         "set approval_policy to exactly one of: auto, manual_all "
         "(case-sensitive, no surrounding spaces, no synonyms)"
+    )
+
+
+def test_enum_refusal_pairs_the_problem_with_its_remedy() -> None:
+    allowed = (value for value in ("auto", "manual_all"))
+    subject = "orchestration approval_policy"
+
+    assert enum_refusal(subject, "auto", ("auto", "manual_all")) is None
+    assert enum_refusal(subject, "Auto", allowed) == (
+        enum_problem(subject, "Auto", ("auto", "manual_all")),
+        enum_remedy(subject, ("auto", "manual_all")),
     )
 
 

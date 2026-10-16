@@ -24,8 +24,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core.system_fields import (
     SystemFieldsError,
     SystemFieldsRegistry,
-    enum_problem,
-    enum_remedy,
+    enum_refusal,
     load_registry,
     near_miss,
 )
@@ -210,9 +209,9 @@ def write_problems(directory: str, record: object) -> list[tuple[str, str]]:
             continue
         allowed = write_values(binding.field_id)
         for location, value in values_at(record, binding.location):
-            subject = f"{directory} {location}"
-            if (problem := enum_problem(subject, value, allowed)) is not None:
-                problems.append((problem, enum_remedy(subject, allowed)))
+            refusal = enum_refusal(f"{directory} {location}", value, allowed)
+            if refusal is not None:
+                problems.append(refusal)
     return problems
 
 

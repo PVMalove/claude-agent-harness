@@ -412,3 +412,13 @@ def enum_remedy(subject: str, allowed: Iterable[str]) -> str:
     """The remedy of an :func:`enum_problem` refusal."""
     choices = ", ".join(sorted(str(choice) for choice in allowed))
     return f"set {subject} to exactly one of: {choices} ({EXACT_SPELLING})"
+
+
+def enum_refusal(
+    subject: str, value: object, allowed: Iterable[str]
+) -> tuple[str, str] | None:
+    """``None`` when ``value`` is exactly one allowed string, else the :func:`enum_problem`
+    refusal and its :func:`enum_remedy`."""
+    choices = tuple(allowed)
+    problem = enum_problem(subject, value, choices)
+    return None if problem is None else (problem, enum_remedy(subject, choices))
