@@ -86,7 +86,7 @@ def test_a_shell_button_is_drawn_with_the_component_border(tmp_path: Path) -> No
 
     async def scenario() -> Color:
         app = HarnessConsoleApp(tmp_path)
-        async with app.run_test(size=(120, 40)) as pilot:
+        async with app.run_test(size=(160, 52)) as pilot:
             await app.push_screen(
                 WorkerObservationScreen(tmp_path, observer=lambda *_: {})
             )

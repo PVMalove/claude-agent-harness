@@ -20,7 +20,7 @@ from harness.orchestration.core.utils import JsonObject
 from harness.console.shell import Breadcrumbs
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.worker_observation import WorkerObservationScreen
-from harness.console.shell import SECTIONS
+from harness.console.shell import SECTIONS, WrappedValue
 
 
 async def settle(pilot: Pilot[None], done: Callable[[], bool]) -> None:
@@ -383,11 +383,11 @@ def _blocked_snapshot(_repo: Path, dispatch: str, _offset: int) -> JsonObject:
     }
 
 
-@pytest.mark.parametrize("size", [(135, 44), (100, 40), (70, 30)])
+@pytest.mark.parametrize("size", [(150, 44), (135, 44), (100, 40), (70, 30)])
 def test_context_panel_keeps_full_id_path_and_block_reason_at_every_width(
     tmp_path: Path, size: tuple[int, int]
 ) -> None:
-    from textual.widgets import ListView
+    from textual.widgets import Collapsible, ListView
 
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
@@ -400,35 +400,48 @@ def test_context_panel_keeps_full_id_path_and_block_reason_at_every_width(
             await app.workers.wait_for_complete()
             await pilot.pause()
             context = screen.query_one("#worker-context")
-            facts = screen.query_one("#worker-context-facts", Static)
-            # Never hidden below 140 columns: beside the stream when wide, under it when narrow.
+            facts = screen.query_one("#worker-context-facts", WrappedValue)
+            block = screen.query_one(".context-fold", Collapsible)
+            output = screen.query_one("#worker-output")
+            # Beside the stream from 140 columns; below that it folds into a collapsible block.
+            assert screen.has_class("-fold-context") == (size[0] < 140)
+            assert block.collapsed == (size[0] < 140)
+            if size[0] < 140:
+                assert context.region.y > output.region.y
+                screen.query_one(".context-fold CollapsibleTitle").scroll_visible(
+                    animate=False, immediate=True
+                )
+                await pilot.pause()
+                await pilot.click(".context-fold CollapsibleTitle")
+                await pilot.pause()
+                assert not block.collapsed
+            else:
+                assert context.region.x >= output.region.right
             assert context.display and context.region.width >= 25
-            text = str(facts.content)
+            text = "".join(str(facts.content).split())
             for needed in (
                 _LONG_ID,
                 _LONG_WORKTREE,
                 "tooling blocked the commit: hook refused the message",
             ):
-                assert needed in text
+                assert "".join(needed.split()) in text
             assert facts.styles.text_overflow != "ellipsis"
             assert facts.region.width <= context.region.width
-            assert _LONG_ID in str(
-                screen.query_one("#worker-selection", Static).content
+            assert _LONG_ID in "".join(
+                str(screen.query_one("#worker-selection", Static).content).split()
             )
             navigation = screen.query_one("#worker-navigation")
             menu = screen.query_one("#worker-sections", ListView)
             assert menu.index == SECTIONS.index("Orchestration")  # the open section
-            if size[0] < 130:
-                assert not navigation.display
-                assert context.region.y > screen.query_one("#worker-output").region.y
+            sessions = screen.query_one("#worker-sessions")
+            if size[0] < 100:
+                assert not navigation.display and not sessions.display
                 await pilot.click("#worker-menu")
                 await pilot.pause()
                 assert navigation.display
             else:
-                assert navigation.display
-                assert (
-                    context.region.x >= screen.query_one("#worker-output").region.right
-                )
+                # The session list stays visible from 100 columns.
+                assert navigation.display and sessions.display
             assert screen.region.contains_region(
                 screen.query_one("#worker-actions").region
             )
@@ -565,3 +578,73 @@ def test_worker_breadcrumbs_link_back_to_orchestration_and_home(tmp_path: Path) 
     assert links[:2] == ["Главная", "Оркестрация"]
     assert len(links) == 3  # the observed batch links too
     assert back_on_orchestration and on_dashboard and depth == 2
+
+
+def test_worker_uses_the_shell_breakpoints_and_wraps_long_values_at_separators(
+    tmp_path: Path,
+) -> None:
+    from harness.console.shell import ConsoleShell
+    from harness.console.wrap import SEPARATORS
+
+    assert (
+        WorkerObservationScreen.HORIZONTAL_BREAKPOINTS
+        == ConsoleShell.HORIZONTAL_BREAKPOINTS
+    )
+    assert WorkerObservationScreen.CONTEXT_SIDE_MIN == 140
+
+    async def scenario() -> tuple[list[str], int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(150, 44)) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            facts = screen.query_one("#worker-context-facts", WrappedValue)
+            return str(facts.content).split("\n\n"), facts.content_size.width
+
+    blocks, width = asyncio.run(scenario())
+    long_blocks = [
+        block.split("\n")
+        for block in blocks
+        if _LONG_ID in "".join(block.split())
+        or _LONG_WORKTREE in "".join(block.split())
+    ]
+    assert len(long_blocks) == 2
+    for lines in long_blocks:
+        values = lines[1:]  # the first line is the label
+        assert len(values) > 1  # the value did not fit on one line
+        assert all(len(line) <= width for line in values)
+        assert all(line[-1] in SEPARATORS for line in values[:-1])
+
+
+@pytest.mark.parametrize("size", [(160, 52), (120, 40), (100, 30), (80, 24)])
+def test_status_badge_is_shown_whole_and_not_under_a_scrollbar(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from rich.cells import cell_len
+    from textual.widget import Widget
+
+    async def scenario() -> tuple[int, int, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            badge = screen.query_one("#worker-badge", Static)
+            under = False
+            for ancestor in badge.ancestors:
+                if isinstance(ancestor, Widget) and ancestor.show_vertical_scrollbar:
+                    edge = ancestor.region.right - ancestor.scrollbar_size_vertical
+                    under = under or badge.region.right > edge
+            return badge.region.width, cell_len(badge.content.plain), under  # type: ignore[union-attr]
+
+    width, needed, under = asyncio.run(scenario())
+    assert width >= needed
+    assert not under

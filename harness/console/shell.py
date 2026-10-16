@@ -7,13 +7,14 @@ from dataclasses import dataclass
 
 from rich.table import Table
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Button, Footer, ListItem, ListView, Static
+from textual.widgets import Button, Collapsible, Footer, ListItem, ListView, Static
 
 from . import brand, i18n
 from .chrome import WorkspaceHeader
@@ -304,16 +305,20 @@ Screen.shell { background: $background; }
 .shell.-narrow .menu-toggle { display: block; }
 .shell.-narrow ShellSidebar { display: none; }
 .shell.-narrow.-menu-open ShellSidebar { display: block; }
-.shell.-narrow .shell-body { layout: vertical; overflow-y: auto; }
-.shell.-narrow .shell-content { min-height: 100%; }
+.shell.-narrow .shell-body, .shell.-fold-context .shell-body { layout: vertical; overflow-y: auto; }
+.shell.-narrow .shell-content, .shell.-fold-context .shell-content { min-height: 100%; }
 .shell.-narrow ShellSidebar { width: 21; }
-.shell.-narrow .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
+.shell.-narrow .context-panel, .shell.-fold-context .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
+.shell .context-fold { border: none; padding: 0; background: transparent; }
+.shell .context-fold > Contents { padding: 0; height: auto; }
+.shell .context-fold > CollapsibleTitle { display: none; padding: 0; color: $text; }
+.shell.-fold-context .context-fold > CollapsibleTitle { display: block; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }
 .shell.-narrow ShellSidebar .menu-heading { height: 1; }
 .shell.-narrow ShellSidebar .menu-context { display: none; }
-.shell.-narrow WorkspaceHeader { height: 2; padding-top: 0; }
+.shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
 .shell.-narrow WorkspaceHeader #topbar-right { display: none; }
 .shell.-narrow .breadcrumbs, .shell.-narrow .context-strip { min-height: 1; border: none; }
 .shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-color-active: $primary; scrollbar-background: $scrollbar-track; scrollbar-background-hover: $scrollbar-track; scrollbar-background-active: $scrollbar-track; }
@@ -361,6 +366,10 @@ class ConsoleShell(Translated, Screen[None]):
     SECTION: str | None = None
     CRUMBS = "Главная"
     HAS_CONTEXT = False
+    # Narrower than this, the context panel folds into a collapsible block under the content
+    # (`-fold-context`), titled `CONTEXT_TITLE`; 0 leaves the choice to the narrow layout alone.
+    CONTEXT_SIDE_MIN = 0
+    CONTEXT_TITLE = ""
     # False for a view inside a section (it shares the section's menu entry but is not its screen).
     IS_SECTION_ROOT = True
 
@@ -431,10 +440,32 @@ class ConsoleShell(Translated, Screen[None]):
                         yield from self.compose_content()
                     if self.HAS_CONTEXT:
                         with ContextPanel(id=ids.context):
-                            yield from self.compose_context()
+                            if self.CONTEXT_TITLE:
+                                with Collapsible(
+                                    title=self.CONTEXT_TITLE,
+                                    collapsed=self.app.size.width
+                                    < self.CONTEXT_SIDE_MIN,
+                                    classes="context-fold",
+                                ):
+                                    yield from self.compose_context()
+                            else:
+                                yield from self.compose_context()
         yield Footer()
 
+    def _fold_context(self, width: int) -> None:
+        """Fold the context panel under the content below `CONTEXT_SIDE_MIN` columns, unfolded beside it."""
+        fold = width < self.CONTEXT_SIDE_MIN
+        if fold == self.has_class("-fold-context"):
+            return
+        self.set_class(fold, "-fold-context")
+        for block in self.query(Collapsible).filter(".context-fold"):
+            block.collapsed = fold
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._fold_context(event.size.width)
+
     def on_mount(self) -> None:
+        self._fold_context(self.size.width)
         # Textual sets the breakpoint class on the first resize event, which can come after the
         # first content is laid out; set it now so a log written at once gets its real width.
         for threshold, name in sorted(self.HORIZONTAL_BREAKPOINTS or [], reverse=True):

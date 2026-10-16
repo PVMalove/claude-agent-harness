@@ -23,6 +23,7 @@ from textual.widget import Widget
 
 from harness.console import reports
 from harness.console.app import HarnessConsoleApp
+from harness.orchestration.core.utils import JsonObject
 from harness.console.screens.dashboard import DashboardScreen
 
 SIZES = [(160, 52), (120, 40), (80, 24)]
@@ -96,6 +97,25 @@ def layout_problems(screen: Screen[None], titles: Iterable[str] = ()) -> list[st
             and not parent.region.contains_region(region)
         ):
             problems.append(f"{_name(widget)} sticks out of {_name(parent)}")
+    for widget in widgets:
+        for ancestor in widget.ancestors:
+            if (
+                not isinstance(ancestor, Widget)
+                or isinstance(ancestor, Screen)
+                or not ancestor.show_vertical_scrollbar
+            ):
+                continue
+            size = ancestor.scrollbar_size_vertical
+            bar = Region(
+                ancestor.region.right - size,
+                ancestor.region.y,
+                size,
+                ancestor.region.height,
+            )
+            if widget.region.overlaps(bar):
+                problems.append(
+                    f"{_name(widget)} sits under the scrollbar of {_name(ancestor)}"
+                )
     for container in [screen, *widgets]:
         siblings = [
             child
@@ -240,3 +260,49 @@ def test_orchestration_layout(
     assert problems == []
     assert menu_height >= 8  # the command list stays usable on the smallest terminal
     assert label.endswith(" · 0")
+
+
+WORKER_TITLES = (
+    ".breadcrumbs",
+    "#worker-title",
+    "#worker-subtitle",
+    "#worker-session-count",
+    ".context-label",
+)
+WORKER_ID = "dispatch-e98a4a72-50ac-4fd8-b421-1db55c17f280"
+WORKER_TREE = "/home/user/Projects/Code/some-project/.harness/.sandboxes/worktrees/issue-721-console-design-system"
+
+
+def _worker_snapshot(_repo: Path, dispatch: str, _offset: int) -> JsonObject:
+    return {
+        "dispatch_id": dispatch,
+        "batch_id": "batch-31007025-83d2-4b27-9994-fda1b366f4c9",
+        "ticket": "#721",
+        "role": "developer",
+        "state": "blocked",
+        "worktree": WORKER_TREE,
+        "runtime_session_id": "session-31007025-83d2-4b27-9994-fda1b366f4c9",
+        "failure": {"error": "tooling blocked the commit: hook refused the message"},
+        "startup": {"worker_state": "live"},
+        "events": [{"kind": "output", "text": "Reading the brief"}],
+        "next_offset": 1,
+    }
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", [*SIZES, (100, 30)])
+def test_worker_layout(
+    tmp_path: Path, sessions: None, size: tuple[int, int], language: str
+) -> None:
+    from harness.console.screens.worker_observation import WorkerObservationScreen
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, WORKER_ID, observer=_worker_snapshot
+            )
+            await _open(app, pilot, screen, language)
+            return layout_problems(screen, WORKER_TITLES)
+
+    assert asyncio.run(scenario()) == []
