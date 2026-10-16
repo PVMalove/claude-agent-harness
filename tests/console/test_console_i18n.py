@@ -77,7 +77,8 @@ def test_f2_switches_the_dashboard_and_back_without_drift(tmp_path: Path) -> Non
 
     before, english, after = asyncio.run(scenario())
     assert after == before
-    assert "Sections" in english and "Needs attention" in english
+    assert "Main menu" in english and "Workspace" in english
+    assert "Detailed technical report" in english
     assert "Open project" in english and "Диагностика" not in english
 
 
@@ -96,7 +97,7 @@ def test_f2_translates_screens_that_are_already_open_below(tmp_path: Path) -> No
             return help_screen, _dump(app)
 
     help_screen, dashboard = asyncio.run(scenario())
-    assert "Console guide" in help_screen and "Sections" in dashboard
+    assert "Console guide" in help_screen and "Main menu" in dashboard
 
 
 def test_command_menus_translate_groups_titles_and_footer(tmp_path: Path) -> None:

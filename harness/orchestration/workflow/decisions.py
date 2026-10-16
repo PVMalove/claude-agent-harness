@@ -1244,6 +1244,17 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 remedy="drop --narrowed, or pass it with --decision retry to re-run the same "
                 "read-only role on its incomplete items only",
             )
+        note = getattr(args, "note", None)
+        if (
+            args.decision == "retry"
+            and report.get("role") == "architect"
+            and note is not None
+            and (not _non_empty(note) or note.strip().lower() == "none")
+        ):
+            raise CoordinatorError(
+                "architect retry requires a non-empty recorded reason",
+                remedy="provide an actionable --note; the report remains pending",
+            )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
         scope_warnings = _scope_warnings(batch, dispatch, report, pinned_plan)
         developer_scope = bool(scope_warnings) and report.get("role") == "developer"
@@ -1458,6 +1469,14 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             decision["decision"] = "accept-conditional"
         if routing is not None:
             decision["routing"] = routing
+            if (
+                routing.get("reason_category") == "unknown"
+                and approver["kind"] == "human"
+                and decision["note"].strip().lower() != "none"
+            ):
+                # The human has reviewed this exact unknown route and explained the retry.
+                # Other attention reasons and policy retries still require their own evidence.
+                decision["unknown_reason_acknowledged"] = True
         elif abandon_routing is not None:
             decision["routing"] = abandon_routing
         if args.decision in {"accept", "override-warning"}:

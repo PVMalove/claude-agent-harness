@@ -519,6 +519,30 @@ brief со stale package. Если и новый package не свежий по 
 commits). Полный diff остаётся в package один раз. Package не заменяет immutable brief и не
 отменяет обязательные self-report, heartbeat, review или QA.
 
+## Наблюдение запуска и готовый несданный отчёт
+
+Поставляемый пример — `.harness/orchestration/adapters/claude_code.py`; `claude` или `codex`
+сами по себе адаптерами не являются. Из консоли Harness сначала открывается выбранная сессия,
+затем выполняется подтверждённая отправка. Для намеренно скрытого запуска передают
+`--adapter-arg=--visibility=background`. Пример сохраняет native permissions и hooks.
+Проверка родителя не подтверждает доступ Bash-инструментов внутри worker: native probe должен
+пройти до реализации. Постоянный отказ доступа требует подготовки среды, а не одинаковых retry.
+Смена sandbox-профиля делается до propose/approval; глобальные настройки не отключаются.
+
+`dispatch observe --dispatch <id> --offset <next_offset>` читает существующие события локально.
+Открытие панели, обновление и reconnect не вызывают модель; окно можно закрыть без остановки
+worker. Запрос native-разрешения подтверждает человек; он не даёт dispatch approval.
+Первый self-report по умолчанию ждут 120 секунд независимо от heartbeat stale. Для доказанного
+раннего завершения: auto-report → auto-decide → человеческий resume-stop --restart. Повторный
+запуск сохраняет исходный контракт; при drift нужно новое предложение.
+
+Для готового отчёта, который worker не смог сдать, coordinator использует исходный staging-файл:
+`report submit --file <path> --relayed-by <sender> --relay-reason <exact-error>
+--source-sha256 <hash-original-bytes>`. JSON worker не редактируется, provenance пишется отдельно.
+Fail/not_run остаются такими; make lint не заменяет make verify. При уже записанном отчёте
+используют report complete, когда результат submit указывает этот маршрут. Сравнение падения
+с базовым SHA — отдельное evidence, не исправление исходного отчёта задним числом.
+
 ## 3. Выбрать роли и спланировать batch
 
 В базовом наборе есть четыре write-роли и три read-only роли.

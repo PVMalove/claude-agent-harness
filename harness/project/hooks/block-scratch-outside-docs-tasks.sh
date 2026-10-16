@@ -11,11 +11,13 @@ fi
 FILE_PATH="$(printf '%s' "$INPUT" | "$PY" -c '
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 try:
-    value = json.load(sys.stdin)["tool_input"]["file_path"]
+    payload = json.load(sys.stdin)
+    value = payload["tool_input"]["file_path"]
 except (json.JSONDecodeError, KeyError, TypeError):
     raise SystemExit(1)
 if not isinstance(value, str):
@@ -39,6 +41,14 @@ if project_dir:
                     raise SystemExit(3)
             raise SystemExit(2)
         value = resolved.relative_to(proj).as_posix()
+        parts = resolved.relative_to(proj).parts
+        if parts[:4] == (".harness", ".sandboxes", "scratch", "sessions"):
+            session = payload.get("session_id")
+            if (isinstance(session, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", session)
+                    and len(parts) >= 7 and parts[4] == session and parts[5] == "scratchpad"):
+                sys.stdout.write(value)
+                raise SystemExit(5)
+            raise SystemExit(6)
     except SystemExit:
         raise
     except Exception:
@@ -47,7 +57,8 @@ if project_dir:
 sys.stdout.write(value.replace("\\", "/"))
 ')"
 # Exit codes: 0 — project-relative path on stdout; 2 — path outside the project (on stdout);
-# 3 — runtime memory directory; 4 — path cannot be resolved; 1 — no file_path in the payload.
+# 3 — runtime memory; 5 — bound project session scratchpad; 6 — wrong session;
+# 4 — path cannot be resolved; 1 — no file_path in the payload.
 case $? in
   0) ;;
   2)
@@ -55,6 +66,11 @@ case $? in
     exit 2
     ;;
   3) exit 0 ;;
+  5) BOUND_SESSION_SCRATCHPAD=1 ;;
+  6)
+    echo "artifacts.md: проектный scratchpad должен принадлежать текущему session_id runtime; для обычных черновиков используй docs/tasks/." >&2
+    exit 2
+    ;;
   4)
     echo "Невозможно проверить путь Write/Edit: путь не удаётся разрешить относительно проекта." >&2
     exit 2
@@ -72,6 +88,10 @@ if printf '%s' "$BASE_NAME" | grep -qiE 'pr-body|pr-comment|issue-comment'; then
   fi
   echo "git-workflow.md §1: тело PR/комментария пишется только в .harness/.sandboxes/pr_body/ (например, .harness/.sandboxes/pr_body/pr-body-<issue>-<slug>.md), не в docs/tasks/; удали его после успешного gh/glab: $FILE_PATH" >&2
   exit 2
+fi
+
+if [ "${BOUND_SESSION_SCRATCHPAD:-}" = "1" ]; then
+  exit 0
 fi
 
 if ! printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/(scratch|pr_body)(/|$)' && printf '%s' "$FILE_PATH" | grep -qiE '(^|/)\.harness/\.sandboxes/(cache|logs|runs|reports|worktrees)(/|$)'; then

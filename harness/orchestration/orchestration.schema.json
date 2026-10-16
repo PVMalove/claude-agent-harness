@@ -406,6 +406,7 @@
       "additionalProperties": false,
       "description": "Локальные таймауты и интервалы работы координатора.",
       "properties": {
+        "worker_startup_timeout_seconds": {"type": "integer", "minimum": 1, "default": 120, "description": "Срок ожидания первого self-report; таймаут не доказывает остановку worker."},
         "dispatch_wait_timeout_seconds": {"type": "integer", "minimum": 1, "default": 60, "description": "Время одного ожидания dispatch в секундах."},
         "dispatch_poll_interval_seconds": {"type": "integer", "minimum": 1, "default": 5, "description": "Интервал опроса dispatch в секундах."},
         "qa_lease_seconds": {"type": "integer", "minimum": 1, "default": 1800, "description": "Срок аренды QA lane в секундах."},
