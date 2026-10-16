@@ -173,7 +173,6 @@ class WorkerObservationScreen(ConsoleShell):
     .shell #worker-actions Button { border: round $control-border; color: $text; }
     .shell #worker-actions Button:hover, .shell #worker-actions Button:focus { border: round $primary; color: $primary; }
     .shell #worker-actions #worker-stop { color: $error; }
-    .shell.-narrow .shell-content { min-height: 100%; }
     """)
 
     def __init__(

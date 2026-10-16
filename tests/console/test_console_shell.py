@@ -113,6 +113,11 @@ def test_narrow_shell_collapses_menu_folds_context_and_wraps_long_values(
             fields = screen.query_one("#stub-fields", FieldGrid)
             assert context.display and context.region.height > 0
             assert context.region.y >= fields.region.bottom
+            # The content keeps the whole screen; the panel is one scroll below it.
+            body = screen.query_one("#shell-body")
+            assert body.max_scroll_y > 0
+            body.scroll_to_widget(context, animate=False)
+            await pilot.pause()
             assert screen.region.contains_region(context.region)
             # One column; long IDs and paths wrap whole instead of being cut short.
             cells = list(fields.query(".field").results(Static))

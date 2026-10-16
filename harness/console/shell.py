@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -164,7 +165,8 @@ Screen.shell { background: $background; }
 .shell.-narrow ShellSidebar { display: none; }
 .shell.-narrow.-menu-open ShellSidebar { display: block; }
 .shell.-narrow .shell-body { layout: vertical; overflow-y: auto; }
-.shell.-narrow .shell-content { min-height: 12; }
+.shell.-narrow .shell-content { min-height: 100%; }
+.shell.-narrow ShellSidebar { width: 21; }
 .shell.-narrow .context-panel { width: 100%; height: auto; max-height: 40%; border-left: none; border-top: solid $border-subtle; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
@@ -217,7 +219,7 @@ class ConsoleShell(Translated, Screen[None]):
     def sidebar_context(self) -> str:
         return ""
 
-    def menu_label(self, number: int, name: str) -> Text:
+    def menu_label(self, number: int, name: str) -> Text | Table:
         language = getattr(self.app, "language", "ru")
         return Text.assemble(
             (f"{number} ", brand.PALETTE["muted"]), i18n.section_label(language, name)
