@@ -36,6 +36,10 @@ Version 3 explicitly re-evaluates the corpus after #662 changes `CONTEXT.md` and
 The aggregate retrieval metrics remain unchanged, but the ranked paths of several queries differ
 from version 2 because the indexed documents changed. `fixtures/initial-corpus.json` preserves the two original
 source documents for historical reproduction; `baseline_fts5_initial.json` is unchanged.
+#555 changes `CONTEXT.md` and ADR 0005 and re-evaluates the corpus explicitly. The aggregate
+metrics and hits are unchanged; only the order inside the top-5 window of queries 345, 402 and 422
+differs. `fixtures/initial-corpus.json` now also keeps the original ADR 0005 bytes, so
+`baseline_fts5_initial.json` stays unchanged.
 Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.
 
