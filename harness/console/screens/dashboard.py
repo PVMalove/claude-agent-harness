@@ -295,7 +295,7 @@ class DashboardScreen(Translated, Screen[None]):
             for number in range(1, len(SECTIONS) + 1)
         ),
     ]
-    DEFAULT_CSS = """
+    DEFAULT_CSS = brand.shell_css("""
     DashboardScreen { overflow: hidden hidden; }
     DashboardScreen #dashboard-content { width: 100%; height: 1fr; }
     DashboardScreen #dashboard-side { width: 24; height: 1fr; }
@@ -304,22 +304,22 @@ class DashboardScreen(Translated, Screen[None]):
     DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 1 3; }
     DashboardScreen #dashboard-title { height: 2; text-style: bold; }
     DashboardScreen #dashboard-subtitle { height: 2; color: $text-muted; }
-    DashboardScreen #dashboard-attention-scroll { height: auto; max-height: 11; padding: 1 0; margin-bottom: 1; border-top: solid #38352f; border-bottom: solid #38352f; }
+    DashboardScreen #dashboard-attention-scroll { height: auto; max-height: 11; padding: 1 0; margin-bottom: 1; border-top: solid $border-subtle; border-bottom: solid $border-subtle; }
     DashboardScreen #dashboard-attention { height: auto; }
     DashboardScreen #dashboard-attention-actions { height: 1; margin-top: 1; }
     DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 1; }
     DashboardScreen #home-sessions-title { height: 2; color: $text-muted; }
     DashboardScreen #home-sessions { height: 1fr; min-height: 3; border: none; }
-    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid #38352f; }
-    DashboardScreen #home-sessions > ListItem.-highlight { background: #35302b; text-style: none; color: $text; }
+    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; }
+    DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $text; }
     DashboardScreen #home-sessions Static { height: auto; }
-    DashboardScreen #dashboard-details { height: auto; max-height: 16; border-top: solid #38352f; padding: 0; }
+    DashboardScreen #dashboard-details { height: auto; max-height: 16; border-top: solid $border-subtle; padding: 0; }
     DashboardScreen #dashboard-details > Contents { overflow-y: auto; max-height: 12; }
     DashboardScreen #dashboard-summary, DashboardScreen #brand-info { height: auto; }
     DashboardScreen #brand { height: auto; }
     DashboardScreen #brand-mark { width: 15; }
     DashboardScreen #dashboard-cards { height: auto; }
-    DashboardScreen .card { height: auto; margin-bottom: 1; padding-bottom: 1; border: none; border-bottom: solid #38352f; }
+    DashboardScreen .card { height: auto; margin-bottom: 1; padding-bottom: 1; border: none; border-bottom: solid $border-subtle; }
     DashboardScreen .card-title { height: 2; color: $text-muted; }
     DashboardScreen #dashboard-menu { display: none; }
     DashboardScreen.-narrow #dashboard-context, DashboardScreen.-narrow #dashboard-side { display: none; }
@@ -332,7 +332,7 @@ class DashboardScreen(Translated, Screen[None]):
     DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; padding: 0; margin-bottom: 0; }
     DashboardScreen.-narrow #dashboard-attention { max-height: 3; }
     DashboardScreen.-narrow #dashboard-attention-actions { margin-top: 0; }
-    """
+    """)
 
     def __init__(
         self,
@@ -626,13 +626,6 @@ class DashboardScreen(Translated, Screen[None]):
             button = self.query_one(f"#{button_id}", Button)
             button.label = i18n.ui(self._language, key)
             button.refresh(layout=True)
-
-    @staticmethod
-    def _attention_title(data: DashboardData) -> str:
-        title = "Требует внимания"
-        if data.problems:
-            title += f" · {len(data.problems)}"
-        return brand.frame_title(title)
 
     @staticmethod
     def _attention_mode(

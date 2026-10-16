@@ -83,11 +83,11 @@ class TopBar(Horizontal):
 class WorkspaceHeader(TopBar):
     """Product identity stays in the window bar; breadcrumbs belong to the content below it."""
 
-    DEFAULT_CSS = """
-    WorkspaceHeader { height: 3; margin: 0; padding: 1 2 0 2; background: #262523; color: $text; border-bottom: solid #38352f; }
+    DEFAULT_CSS = brand.shell_css("""
+    WorkspaceHeader { height: 3; margin: 0; padding: 1 2 0 2; background: $surface; color: $text; border-bottom: solid $border-subtle; }
     WorkspaceHeader #topbar-left { width: 1fr; }
     WorkspaceHeader #topbar-right { width: 1fr; color: $text-muted; }
-    """
+    """)
 
     def refresh_status(self) -> None:
         if not self.is_mounted or not self.query("#topbar-left"):

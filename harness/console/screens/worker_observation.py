@@ -116,23 +116,23 @@ class WorkerObservationScreen(Translated, Screen[None]):
             for i, name in enumerate(SECTIONS)
         ),
     ]
-    DEFAULT_CSS = """
+    DEFAULT_CSS = brand.shell_css("""
     WorkerObservationScreen #worker-body, WorkerObservationScreen #worker-content, WorkerObservationScreen #worker-columns { height: 1fr; }
     WorkerObservationScreen #worker-content { width: 1fr; min-width: 0; }
-    WorkerObservationScreen #worker-sessions { width: 27; height: 1fr; background: #262523; border-right: solid #38352f; padding: 1; }
+    WorkerObservationScreen #worker-sessions { width: 27; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
     WorkerObservationScreen #worker-session-count { height: 2; padding: 0 1; color: $text-muted; }
     WorkerObservationScreen #worker-picker { height: 1fr; border: none; margin: 0; padding: 0; }
     WorkerObservationScreen #worker-picker > ListItem { height: auto; min-height: 7; padding: 1; border-left: solid transparent; }
-    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: #35302b; border-left: solid $primary; text-style: none; }
+    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: $row-highlight; border-left: solid $primary; text-style: none; }
     WorkerObservationScreen #worker-picker Static { height: auto; }
-    WorkerObservationScreen #worker-list-foot { height: auto; border-top: solid #38352f; padding: 1; color: $text-muted; }
+    WorkerObservationScreen #worker-list-foot { height: auto; border-top: solid $border-subtle; padding: 1; color: $text-muted; }
     WorkerObservationScreen #worker-main { width: 1fr; min-width: 0; height: 1fr; }
     WorkerObservationScreen #worker-heading { height: auto; min-height: 4; padding: 1 2 0 2; }
     WorkerObservationScreen #worker-title { width: 1fr; height: 2; text-style: bold; }
     WorkerObservationScreen #worker-badge { width: auto; color: $text-muted; }
     WorkerObservationScreen #worker-subtitle { height: 1; padding: 0 2; color: $text-muted; }
     WorkerObservationScreen #worker-pipeline { height: 2; padding: 0 2; }
-    WorkerObservationScreen #worker-status { height: auto; max-height: 5; padding: 0 2; border-top: solid #38352f; border-bottom: solid #38352f; color: $text-muted; }
+    WorkerObservationScreen #worker-status { height: auto; max-height: 5; padding: 0 2; border-top: solid $border-subtle; border-bottom: solid $border-subtle; color: $text-muted; }
     WorkerObservationScreen #worker-tabs { height: 1fr; }
     WorkerObservationScreen TabPane { padding: 0; }
     WorkerObservationScreen ContentSwitcher { height: 1fr; }
@@ -141,7 +141,7 @@ class WorkerObservationScreen(Translated, Screen[None]):
     WorkerObservationScreen #worker-filter { height: 3; margin: 0 1; }
     WorkerObservationScreen #worker-access-scroll { height: 1fr; padding: 1 2; }
     WorkerObservationScreen #worker-access-facts { height: auto; }
-    WorkerObservationScreen #worker-actions { height: 4; padding: 0 2; border-top: solid #38352f; overflow-x: auto; }
+    WorkerObservationScreen #worker-actions { height: 4; padding: 0 2; border-top: solid $border-subtle; overflow-x: auto; }
     WorkerObservationScreen #worker-actions Button { margin-right: 1; min-width: 5; }
     WorkerObservationScreen #worker-stop { color: $error; }
     WorkerObservationScreen #worker-cost { height: 1; padding: 0 2; color: $text-muted; }
@@ -157,7 +157,7 @@ class WorkerObservationScreen(Translated, Screen[None]):
     WorkerObservationScreen.-narrow #worker-badge { max-width: 20; }
 
     WorkerObservationScreen.-focus #worker-navigation, WorkerObservationScreen.-focus #worker-sessions, WorkerObservationScreen.-focus #worker-context { display: none; }
-    """
+    """)
 
     def __init__(
         self, repo: Path, dispatch: str | None = None, *, observer: Observer = observe
@@ -533,7 +533,7 @@ class WorkerObservationScreen(Translated, Screen[None]):
         if kind in {"tool", "tool-result"}:
             row.append(
                 "  —   │ " + text.replace("\n", "\n      │ ") + "\n",
-                style=f"{brand.PALETTE['foreground']} on #292621",
+                style=f"{brand.PALETTE['foreground']} on {brand.SHELL_TOKENS['event-background']}",
             )
         elif kind == "output":
             row.append("  —   WORKER\n", style=brand.PALETTE["primary"])
@@ -589,7 +589,7 @@ class WorkerObservationScreen(Translated, Screen[None]):
             active = stage == {"code-review": "review", "qa": "QA"}.get(role, role)
             pipeline.append(
                 f" {stage} ",
-                style=f"{brand.PALETTE['primary']} on #423029"
+                style=f"{brand.PALETTE['primary']} on {brand.SHELL_TOKENS['event-active-background']}"
                 if active
                 else brand.PALETTE["muted"],
             )
