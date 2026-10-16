@@ -745,28 +745,50 @@ def _transition_chain(
     nothing, or bytes it held before -- is walked again, so the chain is the one walk over every
     transition; a chain that ends where it started ends at the ``current`` digest of the record.
     Transitions that fork from one version, leave a gap between two versions or cannot be walked
-    as one chain are a ``LedgerError``.  The walk takes the transitions in the given order, so a
-    fixed order makes it deterministic."""
+    as one chain, and a chain that ends where it started without the ``current`` version, are a
+    ``LedgerError`` that names the versions.  The walk takes the transitions in the given order,
+    so a fixed order makes it deterministic."""
     following: dict[str, list[JsonObject]] = {}
-    surplus: dict[str, int] = {}
+    # Per version: the transitions that leave it minus the transitions that reach it.  One
+    # chain leaves its first version once more than it reaches it, reaches its last version
+    # once more than it leaves it and balances every other one; a chain that ends in the version
+    # it started from balances every version.
+    leaves_minus_reaches: dict[str, int] = {}
     for details in transitions:
         before, after = details.get("before_sha256"), details.get("sha256")
         if not isinstance(before, str) or not isinstance(after, str):
-            raise _not_one_chain(name)
+            raise _not_one_chain(
+                name, "a transition names no record version it starts from or writes"
+            )
         following.setdefault(before, []).append(details)
-        surplus[before] = surplus.get(before, 0) + 1
-        surplus[after] = surplus.get(after, 0) - 1
-    starts = [version for version, count in surplus.items() if count > 0]
-    if len(starts) > 1 or any(abs(count) > 1 for count in surplus.values()):
-        raise _not_one_chain(name)
+        leaves_minus_reaches[before] = leaves_minus_reaches.get(before, 0) + 1
+        leaves_minus_reaches[after] = leaves_minus_reaches.get(after, 0) - 1
+    starts = sorted(v for v, count in leaves_minus_reaches.items() if count > 0)
+    if len(starts) > 1 or any(
+        abs(count) > 1 for count in leaves_minus_reaches.values()
+    ):
+        ends = sorted(v for v, count in leaves_minus_reaches.items() if count < 0)
+        raise _not_one_chain(
+            name,
+            f"they leave the versions {_shown_versions(starts)} more often than they reach "
+            f"them and reach {_shown_versions(ends)} more often than they leave them, while "
+            "one chain has a single first and a single last version; the record holds "
+            f"{_shown_versions([current])}",
+        )
+    if not starts and current not in leaves_minus_reaches:
+        raise _changed_after_last_transition(
+            name,
+            f"batch record changed after its last recorded transition: {name} holds the "
+            f"version {_shown_versions([current])}, which none of its {len(transitions)} "
+            "recorded transitions wrote, and they end in the version they started from",
+        )
     for steps in following.values():
         steps.reverse()  # pop() takes them in the given order
     # Hierholzer's walk: follow unused transitions until a version has none left, then settle
     # the transition that led there, so every return to a version is walked in its place.
+    first = starts[0] if starts else current
     chain: list[JsonObject] = []
-    walk: list[tuple[str, JsonObject | None]] = [
-        (starts[0] if starts else current, None)
-    ]
+    walk: list[tuple[str, JsonObject | None]] = [(first, None)]
     while walk:
         version, step = walk[-1]
         if following.get(version):
@@ -777,21 +799,60 @@ def _transition_chain(
             if step is not None:
                 chain.append(step)
     if len(chain) != len(transitions):
-        raise _not_one_chain(name)
+        apart = sorted(version for version, steps in following.items() if steps)
+        raise _not_one_chain(
+            name,
+            f"the transitions that start from {_shown_versions(apart)} are not reached from "
+            f"{'its first version' if starts else 'the version the record holds'} "
+            f"{_shown_versions([first])}",
+        )
     chain.reverse()
     return chain
 
 
-def _not_one_chain(name: str) -> LedgerError:
+def _shown_versions(versions: list[str]) -> str:
+    """Record versions as a refusal names them: the first 12 characters of each digest."""
+    return ", ".join(version[:12] for version in versions)
+
+
+def _not_one_chain(name: str, detail: str) -> LedgerError:
+    """The refusal of the batch record ``name`` whose recorded transitions do not link into one
+    sequence of record versions, each starting from the version the one before it wrote:
+    ``detail`` names the versions where the sequence breaks."""
     return LedgerError(
-        f"batch transitions are not one recorded chain: the transitions of {name} do not link "
-        "into one sequence of record versions, each starting from the version the one before "
-        "it wrote",
+        f"batch transitions are not one recorded chain: {name}: {detail}",
         remedy="a version of the batch record has no recorded transition, or two transitions "
         "start from one version: the record was changed outside the ledger, or a harness "
-        "without durable write intents stopped between a write and its audit event; read it "
-        f"with {LEDGER_INSPECT} and restore it from its audit trail -- the ledger rewrites "
-        "nothing",
+        "without durable write intents stopped between a write and its audit event, and a "
+        f"later transition started from the changed version; {_no_repair(name)}",
+    )
+
+
+def _changed_after_last_transition(name: str, problem: str) -> LedgerError:
+    """The refusal ``problem`` of the batch record ``name`` that changed after its last
+    recorded transition: only reconciliation of an interrupted coordinator operation can append
+    the transition that wrote it."""
+    return LedgerError(
+        problem,
+        remedy="if the runtime state holds an unfinished coordinator operation on this batch, "
+        "repeat the interrupted command so reconciliation appends the transition it planned; "
+        "without one nothing can append it -- the batch record was changed outside the "
+        "ledger, or a harness without durable write intents stopped between its write and its "
+        f"audit event; {_no_repair(name)}",
+    )
+
+
+def _no_repair(name: str) -> str:
+    """What the operator of a batch record that no ledger command repairs can do: keep the
+    evidence the read-only routes show and escalate, since this release restores nothing."""
+    return (
+        f"run {LEDGER_INSPECT} and {LEDGER_EXPORT}, each with --batch "
+        f"{name.removesuffix('.json')}, keep their output as evidence and escalate the batch "
+        "to a human: no command of this release restores a batch record or re-links its "
+        "transitions, and the audit trail keeps the digests and states of its versions, not "
+        "their contents; recovering such a batch belongs to the harness recovery tooling "
+        "(issue #684). Do not edit the record by hand: the next transition would record the "
+        "edit. The ledger rewrites nothing"
     )
 
 
@@ -2051,7 +2112,7 @@ class LifecycleLedger:
         if not isinstance(entries, list):
             raise LedgerError(
                 f"batch dispatches are invalid: {name}",
-                remedy=f"fix {name} so its dispatches field is a list",
+                remedy=f"its dispatches field is not a list; {_no_repair(name)}",
             )
         referenced: set[str] = set()
         for entry in entries:
@@ -2063,7 +2124,8 @@ class LifecycleLedger:
             ):
                 raise LedgerError(
                     f"batch has an invalid dispatch entry: {name}",
-                    remedy=f"fix {name} so each dispatches entry is an object with a string dispatch_id",
+                    remedy="a dispatches entry is not an object with a dispatch_id that is "
+                    f"one path segment; {_no_repair(name)}",
                 )
             referenced.add(dispatch_id)
             dispatch_path = root / "dispatches" / f"{dispatch_id}.json"
@@ -2080,7 +2142,8 @@ class LifecycleLedger:
             ) != batch.get("batch_id"):
                 raise LedgerError(
                     f"dispatch does not belong to its batch: {dispatch_id}",
-                    remedy=f"fix dispatches/{dispatch_id}.json's dispatch_id/batch_id fields, or remove it from {name}",
+                    remedy=f"dispatches/{dispatch_id}.json names another dispatch_id or "
+                    f"batch_id than {name} gives it; {_no_repair(name)}",
                 )
             if status.get("dispatch_id") != dispatch_id or not isinstance(
                 status.get("state"), str
@@ -2107,7 +2170,8 @@ class LifecycleLedger:
                 ):
                     raise LedgerError(
                         f"reported dispatch has an invalid report path: {dispatch_id}",
-                        remedy=f"fix {name}'s report path for dispatch {dispatch_id} to a relative path inside the generation",
+                        remedy=f"the report path {name} gives dispatch {dispatch_id} is not a "
+                        f"relative path inside the generation; {_no_repair(name)}",
                     )
                 report_path = root / report_name
                 report = _read(report_path, "completion report")
@@ -2147,28 +2211,23 @@ class LifecycleLedger:
             return
         chain = _transition_chain(
             name,
-            [recorded[event] for event in sorted(recorded)],
+            [recorded[audit_name] for audit_name in sorted(recorded)],
             _digest(root / relative),
         )
         for earlier, later in zip(chain, chain[1:]):
             if later.get("from") != earlier.get("to"):
                 raise LedgerError(
-                    f"batch transitions are not one recorded chain: {name} moved from "
-                    f"{later.get('from')!r} after a transition that left it {earlier.get('to')!r}",
+                    f"batch transitions name two states for one record version: {name} moved "
+                    f"from {later.get('from')!r} after a transition that left it "
+                    f"{earlier.get('to')!r}",
                     remedy="two linked transitions name different states for one version of "
-                    "the batch record, which the ledger never writes; read them with "
-                    f"{LEDGER_INSPECT} -- the ledger rewrites nothing",
+                    f"the batch record, which the ledger never writes; {_no_repair(name)}",
                 )
         if batch.get("state") != (last := chain[-1].get("to")):
-            raise LedgerError(
+            raise _changed_after_last_transition(
+                name,
                 f"batch state is not the one its last recorded transition left: {name} holds "
                 f"{batch.get('state')!r}, its audit trail ends in {last!r}",
-                remedy="if the runtime state holds an unfinished coordinator operation on this "
-                "batch, repeat the interrupted command so reconciliation appends the transition "
-                "it planned; without one nothing can append it -- the batch record was changed "
-                "outside the ledger, or a harness without durable write intents stopped between "
-                f"its write and its audit event: read it with {LEDGER_INSPECT} and restore it "
-                "from its audit trail; the ledger rewrites nothing",
             )
 
     @staticmethod

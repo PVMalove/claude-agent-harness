@@ -753,6 +753,39 @@ def test_a_damaged_batch_graph_is_a_controlled_stop_that_rewrites_nothing(
     assert _state(scene) == before
 
 
+def _assert_no_repair_route(remedy: str) -> None:
+    """The remedy of batch A that no ledger command repairs: the read-only routes that keep the
+    evidence, said plainly that nothing restores it, and no hand edit or restore promised."""
+    assert (
+        "run 'coordinator.py ledger inspect' and 'coordinator.py ledger export', each with "
+        f"--batch {BATCH_A}, keep their output as evidence and escalate the batch"
+    ) in remedy
+    assert "no command of this release restores a batch record" in remedy
+    assert "recovery tooling" in remedy and "Do not edit the record by hand" in remedy
+    assert "audit trail and restore" not in remedy and not remedy.startswith("fix")
+
+
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "a brief of another batch",
+        "a report outside the generation",
+        "a dispatch ID with a separator",
+    ],
+)
+def test_a_damaged_batch_record_is_routed_to_evidence_not_to_a_hand_edit(
+    scene: Scene, damage: str
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    make, match = GRAPH_DAMAGE[damage]
+    make(scene)
+
+    with pytest.raises(LedgerUnreadableError, match=match) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    _assert_no_repair_route(caught.value.remedy)
+
+
 def test_the_check_of_one_batch_returns_what_it_references(scene: Scene) -> None:
     batch = scene.seed(BATCH_A, DISPATCH_A)
 
@@ -1019,7 +1052,7 @@ def test_a_write_no_operation_can_reconcile_is_routed_to_inspection(
         _load_batch(scene.root, BATCH_A)
 
     assert "without one nothing can append it" in caught.value.remedy
-    assert "ledger inspect" in caught.value.remedy
+    _assert_no_repair_route(caught.value.remedy)
 
 
 # --- The hash chain, never the audit time, orders batch transitions (DoD 3) ---------------------
@@ -1101,26 +1134,44 @@ def test_transitions_written_as_the_clock_stepped_back_are_read(scene: Scene) ->
     assert _load_batch(scene.root, BATCH_A)["state"] == "failed"
 
 
-BROKEN_CHAINS: dict[str, list[JsonObject]] = {
-    "two transitions from one version": [
-        _link("awaiting-approval", "active"),
-        _link("active", "blocked"),
-        _link("active", "paused"),
-        _link("blocked", "failed"),
-    ],
-    "a version no transition wrote": [
-        _link("awaiting-approval", "active"),
-        _link("blocked", "failed"),
-    ],
-    "a write that changed nothing outside the chain": [
-        _link("awaiting-approval", "active"),
-        _link("active", "failed"),
-        _link("paused", "paused"),
-    ],
-    "linked transitions that name two states for one version": [
-        _link("awaiting-approval", "active"),
-        _link("active", "failed", **{"from": "paused"}),
-    ],
+NOT_ONE_CHAIN = "not one recorded chain"
+# Each broken chain, the refusal it gets and the versions that refusal names.
+BROKEN_CHAINS: dict[str, tuple[list[JsonObject], str, list[str]]] = {
+    "two transitions from one version": (
+        [
+            _link("awaiting-approval", "active"),
+            _link("active", "blocked"),
+            _link("active", "paused"),
+            _link("blocked", "failed"),
+        ],
+        NOT_ONE_CHAIN,
+        ["active", "paused", "failed"],
+    ),
+    "a version no transition wrote": (
+        [
+            _link("awaiting-approval", "active"),
+            _link("blocked", "failed"),
+        ],
+        NOT_ONE_CHAIN,
+        ["active", "blocked", "failed"],
+    ),
+    "a write that changed nothing outside the chain": (
+        [
+            _link("awaiting-approval", "active"),
+            _link("active", "failed"),
+            _link("paused", "paused"),
+        ],
+        NOT_ONE_CHAIN,
+        ["paused", "awaiting-approval"],
+    ),
+    "linked transitions that name two states for one version": (
+        [
+            _link("awaiting-approval", "active"),
+            _link("active", "failed", **{"from": "paused"}),
+        ],
+        "two states for one record version",
+        [],
+    ),
 }
 
 
@@ -1128,18 +1179,64 @@ BROKEN_CHAINS: dict[str, list[JsonObject]] = {
 def test_transitions_that_are_not_one_chain_are_a_controlled_stop(
     scene: Scene, broken: str
 ) -> None:
-    links = BROKEN_CHAINS[broken]
+    links, match, named = BROKEN_CHAINS[broken]
     _recorded(scene, "failed", links, range(len(links)))
     before = _state(scene)
 
-    with pytest.raises(LedgerUnreadableError, match="not one recorded chain") as caught:
+    with pytest.raises(LedgerUnreadableError, match=match) as caught:
         _load_batch(scene.root, BATCH_A)
-    with pytest.raises(CoordinatorError, match="not one recorded chain"):
+    with pytest.raises(CoordinatorError, match=match):
         ledger_admin.validate_ledger(_args(scene))
 
     assert not isinstance(caught.value, LedgerUnmigratedError)
-    assert "ledger inspect" in caught.value.remedy
+    for state in named:
+        assert _version(state)[:12] in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
     assert _state(scene) == before
+
+
+def test_a_transition_from_a_version_changed_outside_the_ledger_names_both_versions(
+    scene: Scene,
+) -> None:
+    """Batch A edited outside the ledger without a state change: the next transition records
+    the edited version, so the chain breaks there, and the refusal names the version the ledger
+    wrote beside the edited one."""
+    batch = scene.generation / f"batches/{BATCH_A}.json"
+    scene.ledger.write_immutable(
+        scene.generation / f"plans/{BATCH_A}.json", {"batch_id": BATCH_A}
+    )
+    scene.ledger.write_record(BatchRecord.from_dict(_batch()))
+    scene.ledger.replace_record(BatchRecord.from_dict(_batch("blocked")))
+    written = sha(batch.read_bytes())
+    edited = sha(scene.put(f"batches/{BATCH_A}.json", _batch("blocked", note="edit")))
+    scene.ledger.replace_record(BatchRecord.from_dict(_batch("failed")))
+    before = _state(scene)
+
+    with pytest.raises(LedgerUnreadableError, match=NOT_ONE_CHAIN) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert written[:12] in caught.value.message and edited[:12] in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_closed_chain_without_the_version_the_record_holds_names_the_change(
+    scene: Scene,
+) -> None:
+    # One write that changed nothing: its chain ends in the version it started from.
+    _recorded(scene, "blocked", [_link("blocked", "blocked")], [0])
+    assert _load_batch(scene.root, BATCH_A)["state"] == "blocked"
+    edited = sha(scene.put(f"batches/{BATCH_A}.json", _batch("blocked", note="edit")))
+
+    with pytest.raises(
+        LedgerUnreadableError, match="changed after its last recorded transition"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert edited[:12] in caught.value.message
+    assert NOT_ONE_CHAIN not in caught.value.message
+    assert "interrupted" in caught.value.remedy
+    _assert_no_repair_route(caught.value.remedy)
 
 
 # --- An unmigrated ledger names the ledger migrate route (DoD 4) --------------------------------
