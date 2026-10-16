@@ -255,12 +255,14 @@ def test_an_unavailable_git_never_breaks_the_banner(
 
 def test_screens_take_colours_from_the_theme_not_from_hex_literals() -> None:
     console = Path(brand.__file__).parent
-    allowed = {"brand.py", "style.py"}  # style.py: scrollbar fallback of the Rich renderer
+    allowed = {"brand.py"}
     offenders = [
         f"{path.relative_to(console)}: {match}"
         for path in console.rglob("*.py")
         if path.name not in allowed
-        for match in re.findall(r"#[0-9a-fA-F]{6}\b", path.read_text(encoding="utf-8"))
+        for match in re.findall(
+            r"#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\b", path.read_text(encoding="utf-8")
+        )
     ]
     assert offenders == []
 
