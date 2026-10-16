@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("textual")
-from textual.widgets import RichLog, Static, Select
+from textual.widgets import RichLog, Static, Select, TabbedContent, Button
 
 from harness.orchestration.core.utils import JsonObject
 from harness.console.app import HarnessConsoleApp
@@ -88,6 +88,14 @@ def test_events_arrive_before_completion_without_model_requests(
             assert ("ledger: reported" if reported else "ledger: working") in status
             assert "Процесс: live" in status
             assert screen.query_one("#worker-actions").region.bottom <= size[1]
+            assert screen.region.contains_region(
+                screen.query_one("#worker-reconnect", Button).region
+            )
+            assert log.region.height >= (5 if size[0] < 100 else 20)
+            assert (
+                str(screen.query_one("#worker-recovery", Button).label)
+                == "История batch →"
+            )
             screen.query_one("#worker-filter", Select).value = "error"
             await pilot.pause()
             assert not log.lines
@@ -97,6 +105,24 @@ def test_events_arrive_before_completion_without_model_requests(
             await pilot.press("f2")
             await pilot.pause()
             assert app.language == "en"
+            assert (
+                str(
+                    screen.query_one("#worker-tabs", TabbedContent)
+                    .get_tab("session")
+                    .label
+                )
+                == "Session"
+            )
+            await pilot.press("f2")
+            await pilot.pause()
+            assert (
+                str(
+                    screen.query_one("#worker-tabs", TabbedContent)
+                    .get_tab("session")
+                    .label
+                )
+                == "Сессия"
+            )
             await pilot.click("#worker-reconnect")
             await pilot.pause()
             await app.workers.wait_for_complete()
@@ -230,5 +256,97 @@ def test_confirmed_handoff_mounts_monitor_first_and_shows_the_refusal(
             await pilot.pause()
             await app.workers.wait_for_complete()
             assert len(calls) == 1
+
+    asyncio.run(scenario())
+
+
+def test_worker_matches_the_approved_three_panel_workspace(tmp_path: Path) -> None:
+    from textual.widgets import TabbedContent, ListView
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(180, 52)) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path,
+                "dispatch-design",
+                observer=lambda *_: {
+                    "dispatch_id": "dispatch-design",
+                    "ticket": "#716",
+                    "role": "architect",
+                    "state": "working",
+                    "startup": {"worker_state": "live"},
+                    "events": [],
+                    "next_offset": 0,
+                },
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            sessions = screen.query_one("#worker-picker", ListView)
+            stream = screen.query_one("#worker-output", RichLog)
+            context = screen.query_one("#worker-context")
+            navigation = screen.query_one("#worker-navigation")
+            assert navigation.region.right <= sessions.region.x
+            assert sessions.region.right <= stream.region.x
+            assert stream.region.right <= context.region.x
+            assert context.region.width >= 25
+            assert screen.query_one("#worker-tabs", TabbedContent)
+            assert screen.query_one("#worker-pipeline").region.y < stream.region.y
+            assert (
+                screen.query_one("#worker-breadcrumbs").region.y
+                > screen.query_one("#topbar-left").region.y
+            )
+            await pilot.click("#worker-focus")
+            await pilot.pause()
+            assert stream.region.width > 140
+
+    asyncio.run(scenario())
+
+
+def test_session_list_prefers_recent_active_work_and_preserves_explicit_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.console import reports
+
+    stages = [
+        reports.StageEntry(
+            "old-reported", "batch-old", "#422", "architect", "reported", "2026-09-01"
+        ),
+        reports.StageEntry(
+            "older-active", "batch-active", "#704", "developer", "working", "2026-10-14"
+        ),
+        reports.StageEntry(
+            "new-reported", "batch-done", "#555", "architect", "reported", "2026-10-16"
+        ),
+        reports.StageEntry(
+            "newest-active", "batch-new", "#716", "architect", "working", "2026-10-15"
+        ),
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> None:
+        from textual.widgets import ListView
+
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            screen = WorkerObservationScreen(tmp_path, observer=lambda *_: {})
+            await app.push_screen(screen)
+            await pilot.pause()
+            assert screen.dispatch == "newest-active"
+            assert [
+                item.name
+                for item in screen.query_one("#worker-picker", ListView).children
+            ] == ["newest-active", "older-active", "new-reported", "old-reported"]
+            await pilot.press("alt+2")
+            await pilot.pause()
+            assert screen.dispatch == "older-active"
+            explicit = WorkerObservationScreen(
+                tmp_path, "old-reported", observer=lambda *_: {}
+            )
+            await app.push_screen(explicit)
+            await pilot.pause()
+            assert explicit.dispatch == "old-reported"
 
     asyncio.run(scenario())

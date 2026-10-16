@@ -302,6 +302,9 @@ def test_observe_reads_incremental_runtime_output_without_exposing_thinking(
     )
     first = cli(launch, "dispatch", "observe", "--dispatch", brief["dispatch_id"])
     assert [row["text"] for row in first["events"]] == ["Read", "Reading startup code"]
+    assert first["runtime"] == brief["resolved_runtime"]
+    assert first["effort"] == brief["resolved_effort"]
+    assert first["snapshot_commit"] == brief["snapshot_commit"]
     assert "private reasoning" not in json.dumps(first)
     assert "must not appear" not in json.dumps(first)
     with log.open("a") as output:

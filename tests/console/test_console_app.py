@@ -45,7 +45,7 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
 ) -> None:
     from textual.app import App
     from textual.binding import Binding
-    from textual.widgets import Button, ListItem
+    from textual.widgets import Button, ListItem, Collapsible
 
     from harness.console.chrome import TopBar
 
@@ -62,10 +62,17 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
             await app.push_screen(screen)
             await pilot.pause()
             checks = screen.query_one("#dashboard-attention-scroll")
+            for button in checks.query(Button):
+                assert checks.region.contains_region(button.region)
             assert [button.id for button in checks.query(Button)] == [
                 "dashboard-offline",
                 "dashboard-online",
             ]
+            if size[0] < 100:
+                assert not screen.query_one("#dashboard-side").display
+                await pilot.click("#dashboard-menu")
+                await pilot.pause()
+                assert screen.query_one("#dashboard-side").display
             sections = screen.query_one("#dashboard-sections")
             assert sections.query_one("#open-project", ListItem)
             assert sections.query_one("#update-harness", ListItem)
@@ -77,15 +84,15 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
             assert len(menu_items) == 9
             assert not sections.query(Button)
             assert screen.query_one("#dashboard-summary").display
-            if size[0] >= 100:
-                assert (
-                    sections.region.bottom
-                    == screen.query_one("#dashboard-details").region.bottom
-                )
+            assert (
+                sections.region.bottom
+                == screen.query_one("#dashboard-main").region.bottom
+            )
+            assert screen.query_one("#dashboard-details", Collapsible).collapsed
             assert not screen.query(
                 "#dashboard-cli, #dashboard-offline-cli, #dashboard-online-cli"
             )
-            assert screen.query_one(TopBar).region.height == 2
+            assert screen.query_one(TopBar).region.height == (2 if size[0] < 100 else 3)
             for key in ("r", "o", "p"):
                 assert any(
                     isinstance(binding, Binding) and binding.key == key
@@ -233,7 +240,11 @@ def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
 
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
+            if not app.screen.query_one("#dashboard-side").display:
+                await pilot.click("#dashboard-menu")
+                await pilot.pause()
             menu = app.screen.query_one("#section-menu", ListView)
+            assert app.focused is menu
             menu.index = SECTIONS.index("Harness")
             await pilot.press("enter")
             await pilot.pause()
@@ -255,7 +266,11 @@ def test_selecting_orchestration_pushes_the_orchestration_screen(
 
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
+            if not app.screen.query_one("#dashboard-side").display:
+                await pilot.click("#dashboard-menu")
+                await pilot.pause()
             menu = app.screen.query_one("#section-menu", ListView)
+            assert app.focused is menu
             menu.index = SECTIONS.index("Orchestration")
             await pilot.press("enter")
             await pilot.pause()
@@ -440,7 +455,11 @@ def test_help_opens_from_the_menu_and_from_f1(tmp_path: Path) -> None:
 
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test() as pilot:
+            if not app.screen.query_one("#dashboard-side").display:
+                await pilot.click("#dashboard-menu")
+                await pilot.pause()
             menu = app.screen.query_one("#section-menu", ListView)
+            assert app.focused is menu
             menu.index = SECTIONS.index("Help")
             await pilot.press("enter")
             await pilot.pause()
@@ -1121,3 +1140,34 @@ def test_dashboard_checks_live_in_the_attention_frame_and_have_no_diagnostics_bu
             ]
 
     assert asyncio.run(scenario()) == ["dashboard-offline", "dashboard-online"]
+
+
+def test_home_uses_workspace_shell_and_keeps_technical_report_collapsed(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Collapsible
+    from harness.console.chrome import WorkspaceHeader
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(180, 52)) as pilot:
+            screen = DashboardScreen(
+                tmp_path,
+                collect_dashboard=lambda _repo, *, online=False: _fake_dashboard_data(),
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            assert screen.query_one(WorkspaceHeader)
+            assert screen.query_one("#dashboard-details", Collapsible).collapsed
+            assert (
+                screen.query_one("#dashboard-breadcrumbs").region.y
+                > screen.query_one("#topbar-left").region.y
+            )
+            sidebar = screen.query_one("#dashboard-sections")
+            center = screen.query_one("#dashboard-overview")
+            context = screen.query_one("#dashboard-context")
+            assert sidebar.region.right <= center.region.x
+            assert center.region.right <= context.region.x
+            assert context.region.width >= 25
+
+    asyncio.run(scenario())

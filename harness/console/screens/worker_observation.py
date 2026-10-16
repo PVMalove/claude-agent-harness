@@ -13,13 +13,24 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
-from textual.widgets import Button, Footer, ListItem, ListView, RichLog, Select, Static
+from textual.widgets import (
+    Button,
+    Footer,
+    ListItem,
+    ListView,
+    RichLog,
+    Select,
+    Static,
+    TabbedContent,
+    TabPane,
+)
 
 from harness.orchestration.core.utils import JsonObject
 from .. import brand, i18n, reports
-from ..chrome import TopBar
+from ..chrome import TopBar, WorkspaceHeader
 from ..runner import CommandRunner
 from ..translate import Translated
+from ..workspace import WorkspaceSidebar, session_state_label
 from .commands import call_from_worker
 from .dashboard import SECTIONS
 
@@ -99,32 +110,60 @@ class WorkerObservationScreen(Translated, Screen[None]):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         Binding("r", "refresh", "Обновить"),
+        *(Binding(f"alt+{i+1}", f"select_session({i})", show=False) for i in range(3)),
         *(
             Binding(str(i + 1), f"section({i})", name, show=False)
             for i, name in enumerate(SECTIONS)
         ),
     ]
     DEFAULT_CSS = """
-    WorkerObservationScreen #worker-body { height: 1fr; }
-    WorkerObservationScreen #worker-navigation { width: 25; margin: 0 1; }
-    WorkerObservationScreen #worker-navigation ListView { height: 1fr; }
-    WorkerObservationScreen #worker-main { width: 1fr; min-width: 0; }
-    WorkerObservationScreen #worker-picker, WorkerObservationScreen #worker-filter { height: 3; }
-    WorkerObservationScreen #worker-status { height: auto; max-height: 8; padding: 0 1; }
-    WorkerObservationScreen #worker-output { height: 1fr; border: round $panel-lighten-2; margin: 0 1; }
-    WorkerObservationScreen #worker-actions { height: auto; min-height: 3; overflow-x: auto; }
-    WorkerObservationScreen #worker-actions Button { min-width: 10; margin-right: 1; }
-    WorkerObservationScreen #worker-menu { display: none; }
-    WorkerObservationScreen.-narrow #worker-navigation { display: none; }
-    WorkerObservationScreen.-narrow.-menu-open #worker-navigation { display: block; width: 20; }
-    WorkerObservationScreen.-narrow #worker-menu { display: block; }
-    WorkerObservationScreen #worker-cost { height: 1; color: $text-muted; padding: 0 1; }
+    WorkerObservationScreen #worker-body, WorkerObservationScreen #worker-content, WorkerObservationScreen #worker-columns { height: 1fr; }
+    WorkerObservationScreen #worker-content { width: 1fr; min-width: 0; }
+    WorkerObservationScreen #worker-sessions { width: 27; height: 1fr; background: #262523; border-right: solid #38352f; padding: 1; }
+    WorkerObservationScreen #worker-session-count { height: 2; padding: 0 1; color: $text-muted; }
+    WorkerObservationScreen #worker-picker { height: 1fr; border: none; margin: 0; padding: 0; }
+    WorkerObservationScreen #worker-picker > ListItem { height: auto; min-height: 7; padding: 1; border-left: solid transparent; }
+    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: #35302b; border-left: solid $primary; text-style: none; }
+    WorkerObservationScreen #worker-picker Static { height: auto; }
+    WorkerObservationScreen #worker-list-foot { height: auto; border-top: solid #38352f; padding: 1; color: $text-muted; }
+    WorkerObservationScreen #worker-main { width: 1fr; min-width: 0; height: 1fr; }
+    WorkerObservationScreen #worker-heading { height: auto; min-height: 4; padding: 1 2 0 2; }
+    WorkerObservationScreen #worker-title { width: 1fr; height: 2; text-style: bold; }
+    WorkerObservationScreen #worker-badge { width: auto; color: $text-muted; }
+    WorkerObservationScreen #worker-subtitle { height: 1; padding: 0 2; color: $text-muted; }
+    WorkerObservationScreen #worker-pipeline { height: 2; padding: 0 2; }
+    WorkerObservationScreen #worker-status { height: auto; max-height: 5; padding: 0 2; border-top: solid #38352f; border-bottom: solid #38352f; color: $text-muted; }
+    WorkerObservationScreen #worker-tabs { height: 1fr; }
+    WorkerObservationScreen TabPane { padding: 0; }
+    WorkerObservationScreen ContentSwitcher { height: 1fr; }
+    WorkerObservationScreen Tabs { padding: 0 2; }
+    WorkerObservationScreen #worker-output, WorkerObservationScreen #worker-events { height: 1fr; border: none; margin: 0; padding: 1 2; }
+    WorkerObservationScreen #worker-filter { height: 3; margin: 0 1; }
+    WorkerObservationScreen #worker-access-scroll { height: 1fr; padding: 1 2; }
+    WorkerObservationScreen #worker-access-facts { height: auto; }
+    WorkerObservationScreen #worker-actions { height: 4; padding: 0 2; border-top: solid #38352f; overflow-x: auto; }
+    WorkerObservationScreen #worker-actions Button { margin-right: 1; min-width: 5; }
+    WorkerObservationScreen #worker-stop { color: $error; }
+    WorkerObservationScreen #worker-cost { height: 1; padding: 0 2; color: $text-muted; }
+    WorkerObservationScreen #worker-menu, WorkerObservationScreen #worker-switch { display: none; }
+    WorkerObservationScreen.-narrow #worker-navigation, WorkerObservationScreen.-narrow #worker-sessions, WorkerObservationScreen.-compact #worker-context { display: none; }
+    WorkerObservationScreen.-narrow #worker-menu, WorkerObservationScreen.-narrow #worker-switch { display: block; }
+    WorkerObservationScreen.-narrow.-menu-open #worker-navigation, WorkerObservationScreen.-narrow.-sessions-open #worker-sessions { display: block; }
+    WorkerObservationScreen.-narrow #worker-heading { min-height: 2; padding-top: 0; }
+    WorkerObservationScreen.-narrow #worker-pipeline { height: 1; }
+    WorkerObservationScreen.-narrow #worker-heading { height: 1; min-height: 1; }
+    WorkerObservationScreen.-narrow #worker-cost { display: none; }
+    WorkerObservationScreen.-narrow #worker-output, WorkerObservationScreen.-narrow #worker-events { padding: 0 2; }
+    WorkerObservationScreen.-narrow #worker-badge { max-width: 20; }
+
+    WorkerObservationScreen.-focus #worker-navigation, WorkerObservationScreen.-focus #worker-sessions, WorkerObservationScreen.-focus #worker-context { display: none; }
     """
 
     def __init__(
         self, repo: Path, dispatch: str | None = None, *, observer: Observer = observe
     ) -> None:
         super().__init__()
+        self.add_class("workspace")
         self.repo = repo
         self.dispatch = dispatch
         self.observer = observer
@@ -134,9 +173,11 @@ class WorkerObservationScreen(Translated, Screen[None]):
         self._last_operation = "—"
         self._polling = False
         view = reports.load_ledger_view(repo)
+        ordered = sorted(view.stages, key=lambda stage: stage.at, reverse=True)
+        ordered.sort(key=lambda stage: stage.finished)
+        self._stages = {stage.dispatch_id: stage for stage in ordered}
         self._choices = [
-            (f"{s.ticket} · {s.role} · {s.dispatch_id}", s.dispatch_id)
-            for s in reversed(view.stages)
+            (f"{stage.ticket} · {stage.role}", stage.dispatch_id) for stage in ordered
         ]
         if dispatch and not any(value == dispatch for _, value in self._choices):
             self._choices.insert(0, (dispatch, dispatch))
@@ -144,78 +185,220 @@ class WorkerObservationScreen(Translated, Screen[None]):
             self.dispatch = self._choices[0][1]
         self._timer: Timer | None = None
 
+    def _session_card(self, label: str, dispatch_id: str) -> Text:
+        stage = self._stages.get(dispatch_id)
+        card = Text(label + "\n", style=brand.PALETTE["foreground"])
+        card.append(
+            brand.shorten(dispatch_id, 22) + "\n\n", style=brand.PALETTE["muted"]
+        )
+        state = stage.state if stage else "unknown"
+        label, color = session_state_label(state)
+        card.append(i18n.tr(getattr(self.app, "language", "ru"), label), style=color)
+        return card
+
     def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Оркестрация › Сессии")
+        yield WorkspaceHeader("Главная › Оркестрация › Сессии")
         with Horizontal(id="worker-body"):
-            with Vertical(id="worker-navigation"):
-                menu = ListView(
-                    *(
-                        ListItem(
-                            Static(
-                                f"{n + 1} {i18n.section_label(getattr(self.app, 'language', 'ru'), name)}",
-                                markup=False,
-                            ),
-                            name=name,
+            menu = ListView(
+                *(
+                    ListItem(
+                        Static(
+                            f"{n+1} {i18n.section_label(getattr(self.app, 'language', 'ru'), name)}",
+                            markup=False,
+                        ),
+                        name=name,
+                    )
+                    for n, name in enumerate(SECTIONS)
+                ),
+                id="worker-sections",
+            )
+            yield WorkspaceSidebar(menu, id="worker-navigation")
+            with Vertical(id="worker-content"):
+                yield Static(
+                    "Главная  ›  Оркестрация  ›  Worker / Наблюдение",
+                    id="worker-breadcrumbs",
+                    classes="breadcrumbs no-i18n",
+                    markup=False,
+                )
+                with Horizontal(classes="context-strip"):
+                    yield Button("☰", id="worker-menu", compact=True)
+                    yield Button("Сессии", id="worker-switch", compact=True)
+                    yield Static(
+                        "Выбранный batch / dispatch",
+                        id="worker-selection",
+                        classes="no-i18n",
+                        markup=False,
+                    )
+                    yield Button("История batch →", id="worker-recovery", compact=True)
+                with Horizontal(id="worker-columns"):
+                    with Vertical(id="worker-sessions"):
+                        yield Static(
+                            f"РАБОЧИЕ СЕССИИ   {len(self._choices)}",
+                            id="worker-session-count",
                         )
-                        for n, name in enumerate(SECTIONS)
-                    ),
-                    id="worker-sections",
-                )
-                menu.border_title = brand.frame_title("Главное меню")
-                yield menu
-                yield Static("Worker и QA — отдельные dispatch", markup=False)
-            with Vertical(id="worker-main"):
-                yield Select(
-                    self._choices,
-                    value=self.dispatch or Select.BLANK,
-                    prompt="Выберите worker",
-                    id="worker-picker",
-                )
-                yield Select(
-                    [
-                        ("Все события", "all"),
-                        ("Вывод", "output"),
-                        ("Инструменты", "tool"),
-                        ("Ошибки", "error"),
-                        ("Разрешения", "permission"),
-                    ],
-                    value="all",
-                    allow_blank=False,
-                    id="worker-filter",
-                )
-                yield Static(
-                    "○ Ожидание наблюдения",
-                    id="worker-status",
-                    markup=False,
-                    classes="no-i18n",
-                )
-                yield RichLog(
-                    id="worker-output",
-                    max_lines=500,
-                    wrap=True,
-                    markup=False,
-                    highlight=False,
-                )
-                yield Static(
-                    "Наблюдение без дополнительных LLM-вызовов", id="worker-cost"
-                )
-        with Horizontal(id="worker-actions"):
-            yield Button("Меню", id="worker-menu")
-            yield Button("Переподключить", id="worker-reconnect")
-            yield Button("Детали", id="worker-details")
-            yield Button("Запрос native", id="worker-permission", disabled=True)
-            yield Button("История batch", id="worker-recovery")
-            yield Button("Назад", id="worker-back")
+                        yield ListView(
+                            *(
+                                ListItem(
+                                    Static(
+                                        self._session_card(label, value),
+                                        classes="no-i18n",
+                                    ),
+                                    name=value,
+                                )
+                                for label, value in self._choices
+                            ),
+                            id="worker-picker",
+                        )
+                        yield Static(
+                            "Каждый worker — отдельная сессия\n\nВыбор сессии не запускает новый процесс.",
+                            id="worker-list-foot",
+                        )
+                    with Vertical(id="worker-main"):
+                        with Horizontal(id="worker-heading"):
+                            yield Static(
+                                "Наблюдение за работой",
+                                id="worker-title",
+                                classes="no-i18n",
+                                markup=False,
+                            )
+                            yield Static(
+                                "○ Ожидание",
+                                id="worker-badge",
+                                classes="no-i18n",
+                                markup=False,
+                            )
+                        yield Static(
+                            "Выберите рабочую сессию",
+                            id="worker-subtitle",
+                            markup=False,
+                            classes="no-i18n",
+                        )
+                        yield Static(
+                            "architect  →  developer  →  review  →  QA  →  publish",
+                            id="worker-pipeline",
+                            classes="no-i18n",
+                        )
+                        yield Static(
+                            "○ Ожидание наблюдения",
+                            id="worker-status",
+                            markup=False,
+                            classes="no-i18n",
+                        )
+                        with TabbedContent(id="worker-tabs"):
+                            with TabPane("Сессия", id="session"):
+                                yield RichLog(
+                                    id="worker-output",
+                                    max_lines=500,
+                                    min_width=1,
+                                    wrap=True,
+                                    markup=False,
+                                    highlight=False,
+                                )
+                            with TabPane("События", id="events"):
+                                yield Select(
+                                    [
+                                        ("Все события", "all"),
+                                        ("Вывод", "output"),
+                                        ("Инструменты", "tool"),
+                                        ("Ошибки", "error"),
+                                        ("Разрешения", "permission"),
+                                    ],
+                                    value="all",
+                                    allow_blank=False,
+                                    id="worker-filter",
+                                )
+                                yield RichLog(
+                                    id="worker-events",
+                                    max_lines=500,
+                                    min_width=1,
+                                    wrap=True,
+                                    markup=False,
+                                    highlight=False,
+                                )
+                            with TabPane("Доступы", id="access"):
+                                with VerticalScroll(id="worker-access-scroll"):
+                                    yield Static(
+                                        "Данные проверки ещё не получены",
+                                        id="worker-access-facts",
+                                        classes="no-i18n",
+                                        markup=False,
+                                    )
+                                    yield Button(
+                                        "Запрос native",
+                                        id="worker-permission-inline",
+                                        disabled=True,
+                                    )
+                        with Horizontal(id="worker-actions"):
+                            yield Button("Развернуть сессию", id="worker-focus")
+                            yield Button("Детали", id="worker-details")
+                            stop = Button(
+                                "□ Остановить", id="worker-stop", disabled=True
+                            )
+                            stop.tooltip = "Этот адаптер не предоставляет подтверждённый канал остановки. Закрытие панели не останавливает worker."
+                            yield stop
+                            yield Button("↻", id="worker-reconnect")
+                        yield Static(
+                            "Наблюдение · без дополнительных LLM-вызовов",
+                            id="worker-cost",
+                        )
+                    with VerticalScroll(id="worker-context", classes="context-panel"):
+                        yield Static("◉ КОНТЕКСТ ЗАПУСКА", classes="context-label")
+                        yield Button(
+                            "Запрос native",
+                            id="worker-permission",
+                            disabled=True,
+                            compact=True,
+                        )
+                        yield Static(
+                            "Ожидание данных сессии",
+                            id="worker-context-facts",
+                            classes="context-value no-i18n",
+                            markup=False,
+                        )
+                        yield Static("ГОТОВНОСТЬ СРЕДЫ", classes="context-label")
+                        yield Static(
+                            "? Не проверено",
+                            id="worker-readiness",
+                            classes="context-value no-i18n",
+                            markup=False,
+                        )
+                        yield Button(
+                            "Проверка доступов", id="worker-access", compact=True
+                        )
+                        yield Static(
+                            "Готовность проверяется в контексте инструментов worker, а не только процесса запуска.",
+                            classes="context-value",
+                        )
+                        yield Static(
+                            "NATIVE PERMISSIONS\nРазрешения и hooks действуют. Монитор не выдаёт права.",
+                            classes="context-note",
+                        )
+                        yield Static(
+                            "НАБЛЮДЕНИЕ · БЕЗ LLM\nСобытия runtime → консоль. Без дополнительных запросов к модели.",
+                            classes="context-note",
+                        )
         yield Footer()
 
     def on_mount(self) -> None:
         self.set_class(self.size.width < 110, "-narrow")
+        self.set_class(self.size.width < 140, "-compact")
+        self.query_one("#worker-sections", ListView).index = 4
+        if self._choices:
+            self.query_one("#worker-picker", ListView).index = next(
+                (
+                    i
+                    for i, (_, value) in enumerate(self._choices)
+                    if value == self.dispatch
+                ),
+                0,
+            )
         self._timer = self.set_interval(1, self.action_refresh)
         self.action_refresh()
         self.translate_now()
 
     def on_resize(self) -> None:
         self.set_class(self.size.width < 110, "-narrow")
+        self.set_class(self.size.width < 140, "-compact")
 
     def on_unmount(self) -> None:
         if self._timer:
@@ -255,7 +438,11 @@ class WorkerObservationScreen(Translated, Screen[None]):
             )
             return
         self.snapshot = snapshot
-        self.query_one("#worker-permission", Button).disabled = not bool(
+        for button_id in ("worker-permission", "worker-permission-inline"):
+            self.query_one(f"#{button_id}", Button).disabled = not bool(
+                snapshot.get("permission_requests")
+            )
+        self.query_one("#worker-permission", Button).display = bool(
             snapshot.get("permission_requests")
         )
         startup = snapshot.get("startup", {})
@@ -270,7 +457,9 @@ class WorkerObservationScreen(Translated, Screen[None]):
         staged = snapshot.get("report_staged") and not snapshot.get("report_recorded")
         for event in snapshot.get("events", []):
             if event.get("kind") in {"tool", "output", "permission", "error"}:
-                self._last_operation = event.get("text", "—").splitlines()[0][:100]
+                self._last_operation = str(event.get("text") or "—").splitlines()[0][
+                    :100
+                ]
         glyph = {"live": "●", "stopped": "■", "absent": "○"}.get(worker, "?")
         age = snapshot.get("last_event_age_seconds")
         lines = [
@@ -293,7 +482,7 @@ class WorkerObservationScreen(Translated, Screen[None]):
             lines.append(
                 "⚠ "
                 + str(
-                    failure.get("error", failure.get("kind", "refused"))
+                    failure.get("error") or failure.get("kind") or "refused"
                 ).splitlines()[0][:140]
             )
         if staged:
@@ -308,7 +497,10 @@ class WorkerObservationScreen(Translated, Screen[None]):
             )
         if snapshot.get("stream_state") in {"unavailable", "waiting"}:
             lines.append(t("○ Нет новых событий; это не проверка здоровья worker."))
-        self.query_one("#worker-status", Static).update("\n".join(lines))
+        self._paint_context(snapshot, worker, lines)
+        self.query_one("#worker-status", Static).update(
+            "\n".join(lines[1:3] + lines[4:])
+        )
         output = self.query_one("#worker-output", RichLog)
         if snapshot.get("reset"):
             output.write(
@@ -321,14 +513,138 @@ class WorkerObservationScreen(Translated, Screen[None]):
         for event in snapshot.get("events", []):
             self._events.append(event)
             if self._event_visible(event):
-                output.write(
-                    Text(f"[{event.get('kind', 'event')}] {event.get('text', '')}")
-                )
+                output.write(self._transcript(event))
         self._events = self._events[-500:]
+        events_log = self.query_one("#worker-events", RichLog)
+        events_log.clear()
+        for row in self._events:
+            if self._event_visible(row):
+                events_log.write(
+                    Text(f"[{row.get('kind', 'event')}] {row.get('text', '')}")
+                )
         self._stream_offset = snapshot.get("next_offset", self._stream_offset)
         bar = self.query_one(TopBar)
         bar.crumbs = f"Главная › Оркестрация › {snapshot.get('batch_id')} › Сессии"
         bar.refresh_status()
+
+    def _transcript(self, event: JsonObject) -> Text:
+        kind, text = event.get("kind", "event"), str(event.get("text", ""))
+        row = Text()
+        if kind in {"tool", "tool-result"}:
+            row.append(
+                "  —   │ " + text.replace("\n", "\n      │ ") + "\n",
+                style=f"{brand.PALETTE['foreground']} on #292621",
+            )
+        elif kind == "output":
+            row.append("  —   WORKER\n", style=brand.PALETTE["primary"])
+            row.append("      " + text.replace("\n", "\n      ") + "\n\n")
+        else:
+            color = (
+                "error"
+                if kind == "error"
+                else "warning"
+                if kind == "permission"
+                else "success"
+                if kind == "result"
+                else "muted"
+            )
+            row.append("  —   " + text + "\n\n", style=brand.PALETTE[color])
+        return row
+
+    def _paint_context(
+        self, snapshot: JsonObject, worker: str, lines: list[str]
+    ) -> None:
+        language = getattr(self.app, "language", "ru")
+
+        def t(value: str) -> str:
+            return i18n.tr_text(language, value)
+
+        ticket, role = snapshot.get("ticket") or "—", snapshot.get("role") or "—"
+        label, color = session_state_label(snapshot.get("state", "unknown"))
+        if snapshot.get("permission_requests"):
+            label, color = "● Ждёт разрешения", brand.PALETTE["warning"]
+        elif snapshot.get("state") in {"working", "dispatched"} and worker != "live":
+            label = {
+                "absent": "○ Процесс не найден",
+                "stopped": "■ Процесс завершён",
+            }.get(worker, "? Исход неизвестен")
+            color = brand.PALETTE["warning"]
+        self.query_one("#worker-title", Static).update(
+            f"{ticket} · {t('Наблюдение за работой')}"
+        )
+        self.query_one("#worker-badge", Static).update(Text(t(label), style=color))
+        runtime = {"claude": "Claude Code", "codex": "Codex"}.get(
+            str(snapshot.get("runtime") or ""),
+            str(snapshot.get("runtime") or "runtime —"),
+        )
+        self.query_one("#worker-subtitle", Static).update(
+            f"{role} / {runtime} / {brand.shorten(str(snapshot.get('dispatch_id') or ''), 18)}"
+        )
+        pipeline = Text()
+        for i, stage in enumerate(
+            ("architect", "developer", "review", "QA", "publish")
+        ):
+            if i:
+                pipeline.append("  →  ", style=brand.PALETTE["muted"])
+            active = stage == {"code-review": "review", "qa": "QA"}.get(role, role)
+            pipeline.append(
+                f" {stage} ",
+                style=f"{brand.PALETTE['primary']} on #423029"
+                if active
+                else brand.PALETTE["muted"],
+            )
+        self.query_one("#worker-pipeline", Static).update(pipeline)
+        self.query_one("#worker-breadcrumbs", Static).update(
+            t("Главная")
+            + "  ›  "
+            + t("Оркестрация")
+            + "  ›  "
+            + brand.shorten(str(snapshot.get("batch_id") or "—"), 23)
+            + "  ›  Worker / "
+            + t("Наблюдение")
+        )
+        self.query_one("#worker-selection", Static).update(
+            f"{ticket} · {role} · {brand.shorten(str(snapshot.get('dispatch_id') or ''), 22)}"
+        )
+        path = str(snapshot.get("worktree") or "—")
+        if path.startswith(str(self.repo) + "/"):
+            path = path[len(str(self.repo)) + 1 :]
+        facts = f"Runtime-сессия\n{snapshot.get('runtime_session_id') or t('не наблюдался')}\n\nWorktree\n{path}\n\nSnapshot\n{snapshot.get('snapshot_commit') or t('не наблюдался')}\n\nМодель / effort\n{snapshot.get('model') or '—'} / {snapshot.get('effort') or '—'}\n\nРежим запуска\n{snapshot.get('access_mode') or 'inherit'}"
+        self.query_one("#worker-context-facts", Static).update(t(facts))
+        model_report = snapshot.get("model_self_report") or {}
+        tree = snapshot.get("worktree_attestation") or {}
+        checks = Text()
+        for index, (name, verified) in enumerate(
+            (
+                ("Checkout", tree.get("match")),
+                ("Git metadata", None),
+                ("Ledger / inbox", None),
+                ("Self-report", model_report.get("match")),
+            )
+        ):
+            if index:
+                checks.append("\n")
+            checks.append(name + "  ", style=brand.PALETTE["muted"])
+            checks.append(
+                "✓" if verified is True else "✖" if verified is False else "?",
+                style=brand.PALETTE[
+                    "success"
+                    if verified is True
+                    else "error"
+                    if verified is False
+                    else "muted"
+                ],
+            )
+        self.query_one("#worker-readiness", Static).update(checks)
+        self.query_one("#worker-access-facts", Static).update(
+            t(facts)
+            + "\n\n"
+            + checks.plain
+            + "\n\n"
+            + "\n".join(lines)
+            + "\n\n"
+            + str((snapshot.get("failure") or {}).get("error", ""))
+        )
 
     def sync_language(self) -> None:
         language = getattr(self.app, "language", "ru")
@@ -345,6 +661,13 @@ class WorkerObservationScreen(Translated, Screen[None]):
             ]
         )
         select.value = selected
+        for item in self.query("#worker-picker > ListItem").results(ListItem):
+            if item.name:
+                label = next(
+                    (label for label, value in self._choices if value == item.name),
+                    item.name,
+                )
+                item.query_one(Static).update(self._session_card(label, item.name))
         if self.snapshot:
             self._render_snapshot({**self.snapshot, "events": []}, self.dispatch or "")
         language = getattr(self.app, "language", "ru")
@@ -363,25 +686,36 @@ class WorkerObservationScreen(Translated, Screen[None]):
         if event.select.id == "worker-filter":
             output = self.query_one("#worker-output", RichLog)
             output.clear()
+            events = self.query_one("#worker-events", RichLog)
+            events.clear()
             for row in self._events:
                 if self._event_visible(row):
-                    output.write(
+                    output.write(self._transcript(row))
+                    events.write(
                         Text(f"[{row.get('kind', 'event')}] {row.get('text', '')}")
                     )
             return
-        if event.select.id != "worker-picker" or event.value is Select.BLANK:
-            return
-        if str(event.value) != self.dispatch:
-            self.dispatch = str(event.value)
+
+    def _select_dispatch(self, dispatch: str) -> None:
+        if dispatch != self.dispatch:
+            self.dispatch = dispatch
             self._stream_offset = 0
             self.snapshot = {}
             self._events = []
             self._last_operation = "—"
             self.query_one("#worker-output", RichLog).clear()
+            self.query_one("#worker-events", RichLog).clear()
             self.action_refresh()
 
+    def action_select_session(self, index: int) -> None:
+        if index < len(self._choices):
+            self.query_one("#worker-picker", ListView).index = index
+            self._select_dispatch(self._choices[index][1])
+
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
-        if event.list_view.id == "worker-sections" and event.item.name:
+        if event.list_view.id == "worker-picker" and event.item.name:
+            self._select_dispatch(event.item.name)
+        elif event.list_view.id == "worker-sections" and event.item.name:
             await self.action_section(SECTIONS.index(event.item.name))
 
     async def action_section(self, index: int) -> None:
@@ -393,11 +727,31 @@ class WorkerObservationScreen(Translated, Screen[None]):
                 return
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "worker-reconnect":
+        if event.button.id == "worker-focus":
+            self.toggle_class("-focus")
+            event.button.label = i18n.tr(
+                getattr(self.app, "language", "ru"),
+                "Свернуть сессию" if self.has_class("-focus") else "Развернуть сессию",
+            )
+        elif event.button.id == "worker-switch":
+            self.remove_class("-menu-open")
+            self.toggle_class("-sessions-open")
+            if self.has_class("-sessions-open"):
+                self.call_after_refresh(
+                    self.query_one("#worker-picker", ListView).focus
+                )
+        elif event.button.id == "worker-access":
+            self.query_one("#worker-tabs", TabbedContent).active = "access"
+        elif event.button.id == "worker-reconnect":
             self.action_refresh()
         elif event.button.id == "worker-menu":
+            self.remove_class("-sessions-open")
             self.toggle_class("-menu-open")
-        elif event.button.id == "worker-permission":
+            if self.has_class("-menu-open"):
+                self.call_after_refresh(
+                    self.query_one("#worker-sections", ListView).focus
+                )
+        elif event.button.id in {"worker-permission", "worker-permission-inline"}:
             requests = self.snapshot.get("permission_requests", [])
             if not requests or not self.dispatch:
                 return
@@ -447,6 +801,10 @@ class WorkerObservationScreen(Translated, Screen[None]):
                     "role",
                     "worktree",
                     "model",
+                    "runtime",
+                    "effort",
+                    "snapshot_commit",
+                    "worktree_attestation",
                     "access_mode",
                     "runtime_exit",
                     "failure",
