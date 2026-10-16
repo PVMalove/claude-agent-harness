@@ -96,3 +96,13 @@ Delta-review проверяет новые коммиты и закрытие п
 evidence. Новая code-попытка расходует developer retry budget. Оба пути требуют человеческого
 approval и остаются manual_all. Sealed events и startup evidence связываются с audit; наблюдение
 `auto-report` ничего не пишет, `ledger validate` ничего не исправляет.
+
+## Соответствие локальным повторам тест-автора (#555)
+
+Локальный повтор тест-автора внутри developer-dispatch не является маршрутом восстановления из
+этого ADR: он не создаёт dispatch, не расходует developer retry budget и не добавляет состояние
+ledger. Когда лимит неудачных вызовов автора исчерпан (его задаёт `harness/orchestration/roles/developer.md`),
+developer возвращает обычный blocker, и дальше действуют маршруты таблицы playbook без изменений. Отказ
+guard тест-автора — такой же локальный исход (он считается неудачным вызовом), а не `tooling_blocker` и
+не повод обходить hook. Независимая QA, её роль и
+ledger остаются прежними.

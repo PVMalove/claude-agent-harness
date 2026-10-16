@@ -45,17 +45,27 @@ current implementation.
 
 ## Optional test-author subagent
 
-The developer may delegate the next Red test to the installed Claude Code `test-author` subagent
+The developer delegates the next Red test to the installed Claude Code `test-author` subagent
 only after running `.claude/hooks/test-author-preflight.sh`. The preflight must return exactly
 `{"status":"ok"}`. Any `disabled` result keeps the ordinary developer route; pass its sanitized
 `reason` to the developer and do not spawn an unprotected test-author.
 
-When preflight is `ok`, give the subagent one behavior requirement, one scenario, and the agreed
-public seam. The subagent may write only one test in `test_paths` and may run only that test through
-`.claude/hooks/run-test.sh <test-id>`. It must return the requirement, inputs, independent
-expectation source, test id, and sanitized evidence of behavioral Red. It must not write production
-code or a skeleton and it does not receive an orchestration manifest, dispatch, brief/report,
-approval, or ledger lifecycle.
+When preflight is `ok`, call the subagent before each implementation step. Give it one behavior
+requirement, one scenario, the agreed public seam, the public signatures and the existing fixtures;
+never give a proposed algorithm or implementation snippet as the basis of an expectation. The
+subagent may write only one test in `test_paths` and may run only that test through
+`.claude/hooks/run-test.sh <test-id>`. It replies in compact English with `status` (`red`,
+`needs_skeleton` or `contract_gap`), the requirement, inputs, independent expectation source, test
+id and, for `red`, sanitized Red evidence: the runner JSON plus the failed assertion, expectation
+and actual result from the run's `log.txt`. It must not write production code or a skeleton and it
+does not receive an orchestration manifest, dispatch, brief/report, approval, or ledger lifecycle.
+
+Check the expectation against the requirement before you implement, and never weaken an accepted
+expectation to reach Green; a justified contract change needs a new call and a new check. For
+`needs_skeleton`, write only types and signatures without logic, then rerun the subagent. A compile,
+import, fixture or environment error is not Red, and a test that is green at once does not count as
+a cycle. After three consecutive failed calls on one test, stop and report a blocker. The full
+protocol is in `developer.md` of the orchestration roles.
 
 For a bug fix, begin with a minimal reproducer at the seam where the bug is observable. Keep the
 expectation that describes the bug. Weakening it for Green only hides the regression and leaves no
