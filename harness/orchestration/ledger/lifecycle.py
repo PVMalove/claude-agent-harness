@@ -58,10 +58,13 @@ RECORD_DIRECTORIES = (
 # The system-fields migration's manifest and quarantine beside the record directories: no record
 # directory, so no ordinary loader reads it and an older generation never lacks it.
 MIGRATION_DIRECTORY = "migration"
-# The route of persisted history no migration vouches for: inspection shows it, and the
+# The routes of persisted history no migration vouches for: inspection shows it, and the
 # system-fields migration maps a known historical value or quarantines the batch that holds it.
-LEDGER_MIGRATE_ROUTE = "run 'coordinator.py ledger migrate'"
-# The record directories whose unreadable or unknown value the migration quarantines.
+LEDGER_INSPECT = "'coordinator.py ledger inspect'"
+LEDGER_MIGRATE = "'coordinator.py ledger migrate'"
+LEDGER_MIGRATE_ROUTE = f"run {LEDGER_MIGRATE}"
+# The record directories whose unreadable or unknown value the migration quarantines; the
+# generation migration moves exactly these records of a quarantined batch.
 MIGRATED_DIRECTORIES = ("batches", "plans", "dispatches", "dispatch-status")
 # The action and the generation purpose of the system-fields migration.
 SYSTEM_FIELDS_MIGRATION = "system-fields-migration"
@@ -698,8 +701,8 @@ def _unmigrated(path: Path, problem: str) -> LedgerUnmigrated:
     """The refusal of persisted history at ``path`` that only the migration takes over."""
     return LedgerUnmigrated(
         f"{LEDGER_MIGRATE_ROUTE}: {problem}",
-        remedy=f"run 'coordinator.py ledger inspect' to see {path.parent.name}/{path.name}, "
-        "then 'coordinator.py ledger migrate', which maps a known historical value or "
+        remedy=f"run {LEDGER_INSPECT} to see {path.parent.name}/{path.name}, "
+        f"then {LEDGER_MIGRATE}, which maps a known historical value or "
         "quarantines its batch; the ledger rewrites nothing",
     )
 

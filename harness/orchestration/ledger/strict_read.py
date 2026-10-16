@@ -32,13 +32,14 @@ from harness.orchestration.ledger.generation_migration import (
     survey,
 )
 from harness.orchestration.ledger.lifecycle import (
+    LEDGER_INSPECT,
+    LEDGER_MIGRATE,
+    LEDGER_MIGRATE_ROUTE,
     MIGRATION_DIRECTORY,
     LedgerError,
     LedgerUnmigrated,
 )
 
-INSPECT = "'coordinator.py ledger inspect'"
-MIGRATE = "'coordinator.py ledger migrate'"
 # A shown value keeps a refusal short enough that its route survives a sanitized diagnostic.
 _SHOWN_VALUE = 60
 
@@ -85,7 +86,7 @@ def require_canonical(generation: Path) -> None:
         raise LedgerError(
             f"ledger generation {generation.name} holds a value its migration does not vouch "
             f"for: {shown}",
-            remedy=f"read the record with {INSPECT} and 'coordinator.py ledger export', then "
+            remedy=f"read the record with {LEDGER_INSPECT} and 'coordinator.py ledger export', then "
             "restore it from the source generation the migration manifest names; the ledger "
             "rewrites nothing",
         )
@@ -100,8 +101,8 @@ def require_canonical(generation: Path) -> None:
         else ", 'coordinator.py ledger clean' to remove the dispatch evidence no batch owns"
     )
     raise LedgerUnmigrated(
-        f"run {MIGRATE}: {why}: {shown}",
-        remedy=f"run {INSPECT} to see the value{clean}, then {MIGRATE}",
+        f"{LEDGER_MIGRATE_ROUTE}: {why}: {shown}",
+        remedy=f"run {LEDGER_INSPECT} to see the value{clean}, then {LEDGER_MIGRATE}",
     )
 
 
@@ -125,7 +126,7 @@ def _migration(generation: Path) -> tuple[JsonObject, bool] | None:
             f"ledger generation {generation.name} has a migration event that does not record "
             "its manifest",
             remedy=f"restore {generation / MIGRATION_DIRECTORY} from the source generation the "
-            f"manifest names, or select that source generation again; read it with {INSPECT}",
+            f"manifest names, or select that source generation again; read it with {LEDGER_INSPECT}",
         )
     return manifest, manifest["rules_sha256"] == rules_sha256(checked_registry())
 

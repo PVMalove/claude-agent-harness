@@ -49,15 +49,23 @@ class LedgerUnmigratedError(LedgerUnreadableError):
 
 
 @contextmanager
-def _unreadable() -> Iterator[None]:
-    """Translate a ``LedgerError`` raised inside the block into ``LedgerUnreadableError``, and
-    unmigrated history into its ``LedgerUnmigratedError``."""
+def _translated(error: type[CoordinatorError]) -> Iterator[None]:
+    """Translate a ``LedgerError`` raised inside the block into ``error``, and unmigrated
+    history into its ``LedgerUnmigratedError``, keeping the message and remedy."""
     try:
         yield
     except LedgerUnmigrated as exc:
         raise LedgerUnmigratedError(exc.message, remedy=exc.remedy) from exc
     except LedgerError as exc:
-        raise LedgerUnreadableError(exc.message, remedy=exc.remedy) from exc
+        raise error(exc.message, remedy=exc.remedy) from exc
+
+
+@contextmanager
+def _unreadable() -> Iterator[None]:
+    """Translate a ``LedgerError`` raised inside the block into ``LedgerUnreadableError``, and
+    unmigrated history into its ``LedgerUnmigratedError``."""
+    with _translated(LedgerUnreadableError):
+        yield
 
 
 @contextmanager
@@ -65,12 +73,8 @@ def _ledger_errors() -> Iterator[None]:
     """Translate a ``LedgerError`` raised inside the block into ``CoordinatorError``, and
     unmigrated history into its ``LedgerUnmigratedError``; an unreadable generation already
     raised as ``LedgerUnreadableError`` passes unchanged."""
-    try:
+    with _translated(CoordinatorError):
         yield
-    except LedgerUnmigrated as exc:
-        raise LedgerUnmigratedError(exc.message, remedy=exc.remedy) from exc
-    except LedgerError as exc:
-        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
 
 def _write_exclusive(ledger: LifecycleLedger, path: Path, value: JsonObject) -> None:

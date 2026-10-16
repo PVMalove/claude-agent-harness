@@ -44,6 +44,7 @@ from harness.orchestration.ledger.field_migration import (
 )
 from harness.orchestration.ledger.lifecycle import (
     GENERATIONS,
+    MIGRATED_DIRECTORIES,
     MIGRATION_DIRECTORY,
     RECORD_DIRECTORIES,
     SYSTEM_FIELDS_MIGRATION,
@@ -59,8 +60,9 @@ EVIDENCE = "legacy-unknown.json"
 # A generation under construction: never a `generation-` name, so no pointer can select it.
 STAGING_PREFIX = ".migrating-"
 MIGRATION_ACTION = SYSTEM_FIELDS_MIGRATION
-# The records a quarantine moves: a batch, its plan, its dispatches and their status records.
-GRAPH_DIRECTORIES = ("batches", "plans", "dispatches", "dispatch-status")
+# The records a quarantine moves: a batch, its plan, its dispatches and their status records --
+# the directories whose refused read names this migration.
+GRAPH_DIRECTORIES = MIGRATED_DIRECTORIES
 BATCH_ID = re.compile(r"batch-[0-9a-f-]+")
 _MANIFEST_KEYS = frozenset(
     {
