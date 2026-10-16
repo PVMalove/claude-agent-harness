@@ -20,7 +20,7 @@ from .. import brand, i18n
 from ..chrome import TopBar, WorkspaceHeader
 from ..translate import Translated
 from ..status import session_status
-from ..workspace import WorkspaceSidebar
+from ..shell import SHELL_CSS, ShellSidebar
 from .. import reports
 from .. import data as console_data
 from ..data import DashboardData
@@ -325,14 +325,20 @@ class DashboardScreen(Translated, Screen[None]):
     DashboardScreen #dashboard-menu { display: none; }
     DashboardScreen.-narrow #dashboard-context, DashboardScreen.-narrow #dashboard-side { display: none; }
     DashboardScreen.-narrow #dashboard-menu, DashboardScreen.-narrow.-menu-open #dashboard-side { display: block; }
-    DashboardScreen.-narrow #dashboard-side, DashboardScreen.-narrow WorkspaceSidebar { width: 21; }
-    DashboardScreen.-narrow WorkspaceSidebar .menu-context { display: none; }
+    DashboardScreen.-narrow #dashboard-side { width: 21; }
     DashboardScreen.-narrow #section-menu > ListItem { height: 2; padding: 0 1; }
     DashboardScreen.-narrow #dashboard-overview { padding: 0 1; }
     DashboardScreen.-narrow #dashboard-subtitle { display: none; }
     DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; padding: 0; margin-bottom: 0; }
     DashboardScreen.-narrow #dashboard-attention { max-height: 3; }
     DashboardScreen.-narrow #dashboard-attention-actions { margin-top: 0; }
+    """)
+    # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
+    SCOPED_CSS = False
+    CSS = SHELL_CSS + brand.shell_css("""
+    DashboardScreen.-narrow ShellSidebar { width: 21; }
+    .shell #home-sessions, .shell #home-sessions:focus { border: none; }
+    .shell #home-sessions > ListItem.-highlight { background: $row-highlight; color: $text; text-style: none; }
     """)
 
     def __init__(
@@ -344,7 +350,7 @@ class DashboardScreen(Translated, Screen[None]):
         command_runner: CommandRunner = capturing_runner,
     ) -> None:
         super().__init__()
-        self.add_class("workspace")
+        self.add_class("shell")
         self.repo = repo
         self._collect_dashboard = collect_dashboard
         self._collect_banner = collect_banner
@@ -405,7 +411,7 @@ class DashboardScreen(Translated, Screen[None]):
                     ),
                     id="section-menu",
                 )
-                yield WorkspaceSidebar(
+                yield ShellSidebar(
                     menu,
                     id="dashboard-sections",
                     context="Контекст проекта\n"

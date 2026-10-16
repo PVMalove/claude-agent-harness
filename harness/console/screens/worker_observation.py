@@ -31,7 +31,7 @@ from ..chrome import TopBar, WorkspaceHeader
 from ..runner import CommandRunner
 from ..translate import Translated
 from ..status import PERMISSION_PENDING, process_status, session_status
-from ..workspace import WorkspaceSidebar
+from ..shell import SHELL_CSS, ShellSidebar
 from .commands import call_from_worker
 from .dashboard import SECTIONS
 
@@ -159,12 +159,24 @@ class WorkerObservationScreen(Translated, Screen[None]):
 
     WorkerObservationScreen.-focus #worker-navigation, WorkerObservationScreen.-focus #worker-sessions, WorkerObservationScreen.-focus #worker-context { display: none; }
     """)
+    # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
+    SCOPED_CSS = False
+    CSS = SHELL_CSS + brand.shell_css("""
+    .shell #worker-sessions { background: $surface; }
+    .shell #worker-picker, .shell #worker-picker:focus { border: none; background: $surface; }
+    .shell #worker-picker > ListItem.-highlight, .shell #worker-picker:focus > ListItem.-highlight {
+        background: $row-highlight; color: $text; text-style: none;
+    }
+    .shell #worker-actions Button { border: round $control-border; color: $text; }
+    .shell #worker-actions Button:hover, .shell #worker-actions Button:focus { border: round $primary; color: $primary; }
+    .shell #worker-actions #worker-stop { color: $error; }
+    """)
 
     def __init__(
         self, repo: Path, dispatch: str | None = None, *, observer: Observer = observe
     ) -> None:
         super().__init__()
-        self.add_class("workspace")
+        self.add_class("shell")
         self.repo = repo
         self.dispatch = dispatch
         self.observer = observer
@@ -215,7 +227,11 @@ class WorkerObservationScreen(Translated, Screen[None]):
                 ),
                 id="worker-sections",
             )
-            yield WorkspaceSidebar(menu, id="worker-navigation")
+            yield ShellSidebar(
+                menu,
+                id="worker-navigation",
+                context="Контекст исполнителя\nWorker: выбранная сессия\nQA: отдельный dispatch\nEnv: имена, без значений",
+            )
             with Vertical(id="worker-content"):
                 yield Static(
                     "Главная  ›  Оркестрация  ›  Worker / Наблюдение",
