@@ -202,14 +202,27 @@ def pinned_sha256(record: JsonObject) -> str:
 
 
 def repin_entry(
-    state_root: Path, batch_id: str, dispatch_id: str, **digests: str
+    state_root: Path,
+    batch_id: str,
+    dispatch_id: str,
+    *,
+    brief_sha256: str | None = None,
+    report_sha256: str | None = None,
 ) -> None:
-    """Pin the entry of ``dispatch_id`` in batch ``batch_id`` to ``digests``
-    (``brief_sha256``, ``report_sha256``) of a brief or report a test rewrote on disk, through a
-    recorded ledger transition, so the strict read of the batch reaches the check the test
-    exercises and a later transition starts from the pinned record."""
+    """Pin the entry of ``dispatch_id`` in batch ``batch_id`` to the given ``brief_sha256`` and
+    ``report_sha256`` of a brief or report a test rewrote on disk, through a recorded ledger
+    transition, so the strict read of the batch reaches the check the test exercises and a
+    later transition starts from the pinned record."""
+    digests = {
+        key: digest
+        for key, digest in (
+            ("brief_sha256", brief_sha256),
+            ("report_sha256", report_sha256),
+        )
+        if digest is not None
+    }
     ledger = LifecycleLedger(state_root)
-    path = ledger.records_root() / "batches" / f"{batch_id}.json"
+    path = ledger.records_root() / BatchRecord.directory / f"{batch_id}.json"
     batch = json.loads(path.read_text(encoding="utf-8"))
     for entry in batch["dispatches"]:
         if entry["dispatch_id"] == dispatch_id:
@@ -2789,15 +2802,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         report["checks_run"] = [
             {"command": "make test", "result": "passed", "evidence": "n/a"}
         ]
-        data = (
-            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
-        ).encode("utf-8")
-        path.write_bytes(data)
+        path.write_bytes(utils._canonical(report).encode("utf-8"))
         repin_entry(
             self.state_dir,
             batch_id,
             dispatch_id,
-            report_sha256=hashlib.sha256(data).hexdigest(),
+            report_sha256=pinned_sha256(report),
         )
 
     def test_a_developer_retry_runs_on_a_migrated_ledger_with_mapped_history(
@@ -2870,21 +2880,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         # History before #669: the report held 'passed', and its batch recorded that digest.
         records = self._records()
-        data = (
-            json.dumps(
-                {**report, "checks_run": self._checks(brief, "passed")},
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n"
-        ).encode("utf-8")
-        (records / "reports" / f"{brief['dispatch_id']}.json").write_bytes(data)
+        planted = {**report, "checks_run": self._checks(brief, "passed")}
+        (records / "reports" / f"{brief['dispatch_id']}.json").write_bytes(
+            utils._canonical(planted).encode("utf-8")
+        )
         repin_entry(
             self.state_dir,
             batch["batch_id"],
             brief["dispatch_id"],
-            report_sha256=hashlib.sha256(data).hexdigest(),
+            report_sha256=pinned_sha256(planted),
         )
         with self.assertRaises(ledger_ops.LedgerUnmigratedError):
             self._decide(batch["batch_id"], "accept")
