@@ -27,7 +27,7 @@ import threading
 import time
 import unittest
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar, cast
@@ -52,6 +52,7 @@ from harness.orchestration.runtime_state_store import (
 )
 from harness.orchestration.ledger import (
     BatchRecord,
+    DispatchRecord,
     DispatchStatusRecord,
     LifecycleLedger,
     PlanRecord,
@@ -193,6 +194,40 @@ def _git(repo: Path, *arguments: str) -> str:
 
 def _ns(**values: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
+
+
+def pinned_sha256(record: JsonObject) -> str:
+    """The digest a batch entry pins a brief or a report by: that of its canonical JSON."""
+    return hashlib.sha256(utils._canonical(record).encode("utf-8")).hexdigest()
+
+
+def repin_entry(
+    state_root: Path,
+    batch_id: str,
+    dispatch_id: str,
+    *,
+    brief_sha256: str | None = None,
+    report_sha256: str | None = None,
+) -> None:
+    """Pin the entry of ``dispatch_id`` in batch ``batch_id`` to the given ``brief_sha256`` and
+    ``report_sha256`` of a brief or report a test rewrote on disk, through a recorded ledger
+    transition, so the strict read of the batch reaches the check the test exercises and a
+    later transition starts from the pinned record."""
+    digests = {
+        key: digest
+        for key, digest in (
+            ("brief_sha256", brief_sha256),
+            ("report_sha256", report_sha256),
+        )
+        if digest is not None
+    }
+    ledger = LifecycleLedger(state_root)
+    path = ledger.records_root() / BatchRecord.directory / f"{batch_id}.json"
+    batch = json.loads(path.read_text(encoding="utf-8"))
+    for entry in batch["dispatches"]:
+        if entry["dispatch_id"] == dispatch_id:
+            entry.update(digests)
+    ledger.replace(path, batch)
 
 
 def _init_repo(tmp: Path) -> Path:
@@ -1907,6 +1942,13 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8"))
         record["worker_attestation_required"] = True
         path.write_text(json.dumps(record), encoding="utf-8")
+        # The batch pins the changed brief, so the strict read of the batch accepts it.
+        repin_entry(
+            self.state_dir,
+            record["batch_id"],
+            record["dispatch_id"],
+            brief_sha256=pinned_sha256(record),
+        )
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._self_report(
@@ -2614,38 +2656,35 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["dispatches"][1]["decision"]["decision"], "accept")
         self.assertIn(stored["next_action"], {"code-review", "qa"})
 
-    def test_manual_accept_rejects_a_legacy_invalid_check_result(self) -> None:
+    def _assert_a_legacy_check_result_is_never_written(
+        self, result: str, exact: str
+    ) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
-        candidate, changed = self._developer_commit("legacy-check-result")
+        candidate, changed = self._developer_commit(f"legacy-{result}-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
+            brief, candidate, changed, checks_run=self._checks(brief, result)
         )
-        # Stage historical evidence with its normal digest, as if submitted before #669.
-        self._stage_report(
-            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
-        )
-        before = {
-            path: path.read_bytes()
-            for path in self._records().rglob("*")
-            if path.is_file()
-        }
 
+        # The value a report held before #669 is refused by the ledger's own write boundary.
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            self._decide(batch["batch_id"], "accept")
+            self._stage_report(
+                batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+            )
 
         self.assertIn("checks_run[0].result", caught.exception.message)
-        self.assertIn("unknown", caught.exception.message)
-        self.assertIn("not_run", caught.exception.remedy)
-        self.assertEqual(
-            before,
-            {
-                path: path.read_bytes()
-                for path in self._records().rglob("*")
-                if path.is_file()
-            },
-        )
+        self.assertIn(repr(result), caught.exception.message)
+        self.assertIn(exact, caught.exception.remedy)
+        for suffix in ("json", "md"):
+            self.assertFalse(
+                (
+                    self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
+                ).exists()
+            )
+
+    def test_a_legacy_invalid_check_result_is_never_written(self) -> None:
+        self._assert_a_legacy_check_result_is_never_written("unknown", "not_run")
 
     def _assert_skipped_check_is_recorded(self, result: str) -> None:
         batch = self._create_batch()
@@ -2664,26 +2703,204 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_not_run_is_recorded_as_a_skipped_check(self) -> None:
         self._assert_skipped_check_is_recorded("not_run")
 
-    def test_manual_accept_rejects_a_legacy_passed_report(self) -> None:
+    def test_a_legacy_passed_check_result_is_never_written(self) -> None:
+        self._assert_a_legacy_check_result_is_never_written("passed", "pass")
+
+    def _state_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for path in self.state_dir.rglob("*")
+            if path.is_file()
+        }
+
+    def _plant_unmigrated_batch(self) -> str:
+        """A batch only history could hold, written to disk and never through the ledger: its
+        approval policy is no registry value, which no check of the ledger's container finds."""
+        batch_id = "batch-0000beef"
+        records = self._records()
+        planted: dict[str, JsonObject] = {
+            "plans": {"batch_id": batch_id},
+            "batches": {
+                "batch_id": batch_id,
+                "state": "completed",
+                "approval_policy": "Manual",
+                "dispatches": [],
+            },
+        }
+        for directory, record in planted.items():
+            (records / directory / f"{batch_id}.json").write_text(
+                json.dumps(record), encoding="utf-8"
+            )
+        return batch_id
+
+    def test_an_unmigrated_ledger_refuses_automatic_commands_until_migrate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        inbox = workspace._prepare_agent_inbox(self.repo)
+        report = inbox / f"{architect['dispatch_id']}.json"
+        report.write_text(
+            json.dumps(self._base_report(architect, "architect")), encoding="utf-8"
+        )
+        legacy = self._plant_unmigrated_batch()
+        heartbeat = self._args(
+            dispatch=architect["dispatch_id"],
+            note=None,
+            context_tokens=None,
+            context_source=None,
+        )
+        commands: dict[str, Callable[[], JsonObject]] = {
+            "dispatch heartbeat": lambda: coordinator.heartbeat_dispatch(heartbeat),
+            "dispatch self-report": lambda: coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=architect["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.worktree),
+                )
+            ),
+            "report submit": lambda: coordinator.submit_report(
+                self._args(file=str(report))
+            ),
+            "batch decide": lambda: self._decide(batch["batch_id"], "accept"),
+            "dispatch create": lambda: self._dispatch(batch["batch_id"], "developer"),
+            "ledger validate": lambda: ledger_admin.validate_ledger(self._args()),
+        }
+        before = self._state_bytes()
+
+        for name, command in commands.items():
+            with (
+                self.subTest(command=name),
+                self.assertRaises(ledger_ops.LedgerUnmigratedError) as caught,
+            ):
+                command()
+            self.assertTrue(
+                caught.exception.message.startswith(
+                    "run 'coordinator.py ledger migrate'"
+                )
+            )
+            self.assertIn(f"batches/{legacy}.json", caught.exception.message)
+        self.assertEqual(self._state_bytes(), before)
+
+        migrated = ledger_admin.migrate_ledger(self._args())
+
+        self.assertEqual(migrated["system_fields"]["quarantined"], [legacy])
+        self.assertTrue(ledger_admin.validate_ledger(self._args())["valid"])
+        self.assertEqual(
+            coordinator.heartbeat_dispatch(heartbeat)["dispatch_id"],
+            architect["dispatch_id"],
+        )
+
+    def _plant_passed_history(self, batch_id: str, dispatch_id: str) -> None:
+        """Rewrite the report of ``dispatch_id`` on disk as a report submitted before #669 held
+        it, with one check recorded as 'passed', and record the digest its batch pinned for it
+        through a ledger transition, as that history did: a later transition starts from it."""
+        records = self._records()
+        path = records / "reports" / f"{dispatch_id}.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["checks_run"] = [
+            {"command": "make test", "result": "passed", "evidence": "n/a"}
+        ]
+        path.write_bytes(utils._canonical(report).encode("utf-8"))
+        repin_entry(
+            self.state_dir,
+            batch_id,
+            dispatch_id,
+            report_sha256=pinned_sha256(report),
+        )
+
+    def test_a_developer_retry_runs_on_a_migrated_ledger_with_mapped_history(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        architect_id = self._batch_record(batch_id)["dispatches"][0]["dispatch_id"]
+        self._plant_passed_history(batch_id, architect_id)
+        migrated = ledger_admin.migrate_ledger(self._args())
+        self.assertEqual(
+            (
+                migrated["system_fields"]["mapped"],
+                migrated["system_fields"]["quarantined"],
+            ),
+            (1, []),
+        )
+        developer = self._dispatch(batch_id, "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("failed-before-retry")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers={"status": "present", "details": "tests failed"},
+                checks_run=self._checks(developer, "fail"),
+            ),
+        )
+
+        decided = self._decide(batch_id, "retry", reason_category="code")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fixed, changed = self._developer_commit("fixed-after-retry")
+        self._submit(
+            retry["dispatch_id"], self._developer_report(retry, fixed, changed)
+        )
+        accepted = self._decide(batch_id, "accept")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=None,
+            route="developer-retry",
+        )
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+        # The mapped history keeps its bytes: nothing rewrote it into a canonical 'pass'.
+        report = json.loads(
+            (self._records() / "reports" / f"{architect_id}.json").read_text("utf-8")
+        )
+        self.assertEqual({c["result"] for c in report["checks_run"]}, {"passed"})
+
+    def test_manual_accept_refuses_a_mapped_legacy_passed_report_after_migrate(
+        self,
+    ) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
         candidate, changed = self._developer_commit("legacy-passed-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+            brief, candidate, changed, checks_run=self._checks(brief, "pass")
         )
         self._stage_report(
             batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
         )
-        paths = [
-            self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
-            for suffix in ("json", "md")
-        ]
-        before = {path: path.read_bytes() for path in paths}
+        # History before #669: the report held 'passed', and its batch recorded that digest.
+        records = self._records()
+        planted = {**report, "checks_run": self._checks(brief, "passed")}
+        (records / "reports" / f"{brief['dispatch_id']}.json").write_bytes(
+            utils._canonical(planted).encode("utf-8")
+        )
+        repin_entry(
+            self.state_dir,
+            batch["batch_id"],
+            brief["dispatch_id"],
+            report_sha256=pinned_sha256(planted),
+        )
+        with self.assertRaises(ledger_ops.LedgerUnmigratedError):
+            self._decide(batch["batch_id"], "accept")
 
+        migrated = ledger_admin.migrate_ledger(self._args())
+        before = self._state_bytes()
+
+        # The mapped value is readable history, never an authorizing canonical 'pass'.
+        self.assertEqual(migrated["system_fields"]["mapped"], 1)
         with self.assertRaisesRegex(coordinator.CoordinatorError, "result is invalid"):
             self._decide(batch["batch_id"], "accept")
-        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        self.assertEqual(self._state_bytes(), before)
 
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""
@@ -6964,15 +7181,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with ledger_ops._ledger_lock(ledger):
             qa_lane._enqueue(ledger, open_id)
             record = ledger_ops._load_batch(root, batch["batch_id"])
-            record["dispatches"].append(
-                {
-                    "dispatch_id": open_id,
-                    "role": "qa",
-                    "state": "approved",
-                    "brief_sha256": "0" * 64,
-                }
-            )
-            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+            brief: JsonObject = {
+                "dispatch_id": open_id,
+                "batch_id": batch["batch_id"],
+                "role": "qa",
+                "state": "approved",
+                "coordinator_approval": None,
+            }
+            ledger_ops._write_record(ledger, DispatchRecord.from_dict(brief))
             ledger_ops._write_record(
                 ledger,
                 DispatchStatusRecord.from_dict(
@@ -6983,6 +7199,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     },
                 ),
             )
+            record["dispatches"].append(
+                {
+                    "dispatch_id": open_id,
+                    "role": "qa",
+                    "state": "approved",
+                    "brief_sha256": pinned_sha256(brief),
+                }
+            )
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
 
         decided = self._decide(batch["batch_id"], "abandon", reason="operator restart")
 

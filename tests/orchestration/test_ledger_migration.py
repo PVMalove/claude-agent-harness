@@ -29,7 +29,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.ledger_admin import export_ledger, inspect_ledger
-from harness.orchestration.ledger.ledger_ops import LedgerUnreadableError, _load_batch
+from harness.orchestration.ledger.ledger_ops import LedgerUnmigratedError, _load_batch
 from harness.orchestration.runtime_intent import CompositeWrite
 from harness.orchestration.runtime_migration import migrate_system_fields
 from harness.orchestration.runtime_reconcile import settle
@@ -640,12 +640,15 @@ def test_before_migrate_a_loader_failure_denies_every_action_without_a_store_rec
     write.write_immutable(scene.generation / "checkpoints/checkpoint-0b.json", {})
     before = tree(scene.root)
 
-    # The validating loader stops on the record, so every batch's actions stay denied.
+    # The validating loader stops on the record, so every batch's actions stay denied, and
+    # each refusal names the route that takes the record over.
     for batch_id in (BATCH_A, BATCH_B):
-        with pytest.raises(LedgerUnreadableError):
+        with pytest.raises(LedgerUnmigratedError) as caught:
             _load_batch(scene.root, batch_id)
-    with pytest.raises(CoordinatorError):
+        assert "ledger migrate" in caught.value.remedy
+    with pytest.raises(LedgerUnmigratedError) as refused:
         write.commit()
+    assert refused.value.message.startswith("run 'coordinator.py ledger migrate'")
 
     # Only `ledger migrate` writes a denial to the store; until then it holds nothing.
     assert settle(scene.repo, scene.root, scene.ledger, BATCH_B) is False

@@ -34,13 +34,14 @@ from harness.orchestration.core.system_fields import (
     REGISTRY_PATH,
     SystemFieldsError,
     enum_problem,
+    enum_refusal,
     enum_remedy,
     load_registry,
     near_miss,
     vocabulary_drift,
 )
 from harness.orchestration.core.utils import JsonObject
-from harness.orchestration.ledger import field_migration
+from harness.orchestration.ledger import field_migration, lifecycle
 from harness.orchestration.workflow import (
     auto_policy,
     carried_items,
@@ -134,6 +135,8 @@ V1_FIELDS = frozenset(
         "context_package.freshness",
         "batch.required_gate",
         "ledger.migration_disposition",
+        "ledger.audit_action",
+        "ledger.generation_purpose",
     }
 )
 
@@ -288,6 +291,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "context_package.role",
         "batch.required_gate",
         "telemetry.session_kind",
+        "ledger.generation_purpose",
     }
 
 
@@ -788,6 +792,10 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "ledger.migration_disposition": {
         "field_migration.MIGRATION_DISPOSITIONS": field_migration.MIGRATION_DISPOSITIONS
     },
+    "ledger.audit_action": {"lifecycle.AUDIT_ACTIONS": lifecycle.AUDIT_ACTIONS},
+    "ledger.generation_purpose": {
+        "lifecycle.GENERATION_PURPOSES": lifecycle.GENERATION_PURPOSES
+    },
     "context_package.freshness": {
         "ContextPackageFreshness": constants.ContextPackageFreshness
     },
@@ -1194,6 +1202,17 @@ def test_enum_remedy_lists_the_exact_values() -> None:
     assert enum_remedy("approval_policy", {"auto", "manual_all"}) == (
         "set approval_policy to exactly one of: auto, manual_all "
         "(case-sensitive, no surrounding spaces, no synonyms)"
+    )
+
+
+def test_enum_refusal_pairs_the_problem_with_its_remedy() -> None:
+    allowed = (value for value in ("auto", "manual_all"))
+    subject = "orchestration approval_policy"
+
+    assert enum_refusal(subject, "auto", ("auto", "manual_all")) is None
+    assert enum_refusal(subject, "Auto", allowed) == (
+        enum_problem(subject, "Auto", ("auto", "manual_all")),
+        enum_remedy(subject, ("auto", "manual_all")),
     )
 
 

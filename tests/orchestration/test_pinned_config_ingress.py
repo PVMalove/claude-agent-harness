@@ -105,8 +105,15 @@ def test_corrupt_snapshot_captures_input_without_accepting_report(
     corrupted = json.loads(path.read_bytes())
     corrupted["orchestration_policy"]["configuration"]["canonical_sha256"] = "0" * 64
     path.write_text(json.dumps(corrupted))
+    # The batch pins the corrupted brief, so only the snapshot's own digest refuses it.
+    fixtures.repin_entry(
+        case.state_dir,
+        brief["batch_id"],
+        brief["dispatch_id"],
+        brief_sha256=fixtures.pinned_sha256(corrupted),
+    )
 
-    with pytest.raises(coordinator.CoordinatorError):
+    with pytest.raises(coordinator.CoordinatorError) as caught:
         coordinator.submit_report(
             fixtures._ns(
                 repo=str(case.repo),
@@ -115,11 +122,15 @@ def test_corrupt_snapshot_captures_input_without_accepting_report(
             )
         )
 
+    assert caught.value.message == (
+        "dispatch pinned configuration failed integrity or version validation"
+    )
     captures = list((root / "unaccepted-evidence").glob("*.json"))
     assert len(captures) == 1
     capture = json.loads(captures[0].read_bytes())
     assert capture["accepted"] is False
     assert capture["input"] == report
+    assert capture["diagnostic"] == caught.value.message
     assert not (root / "reports" / f"{brief['dispatch_id']}.json").exists()
 
 

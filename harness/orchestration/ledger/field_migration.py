@@ -14,6 +14,7 @@ accepts it as input.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 from collections.abc import Iterator
@@ -23,6 +24,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core.system_fields import (
     SystemFieldsError,
     SystemFieldsRegistry,
+    enum_refusal,
     load_registry,
     near_miss,
 )
@@ -187,6 +189,30 @@ def rules_sha256(registry: SystemFieldsRegistry) -> str:
         document, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@functools.cache
+def write_values(field_id: str) -> frozenset[str]:
+    """The values a new record may hold at a location bound to ``field_id``: the registry values
+    without the legacy spellings a migration rule retires, which only history may hold."""
+    retired = {rule.legacy for rule in MIGRATION_RULES if rule.field_id == field_id}
+    return frozenset(checked_registry().fields[field_id].values) - retired
+
+
+def write_problems(directory: str, record: object) -> list[tuple[str, str]]:
+    """Every refusal, with its remedy, of ``record`` about to be written to ``directory``: a
+    value at a bound location that is not exactly one canonical value.  Nothing is normalized,
+    and a missing key is neither refused nor defaulted, as in the migration."""
+    problems: list[tuple[str, str]] = []
+    for binding in FIELD_BINDINGS:
+        if binding.directory != directory:
+            continue
+        allowed = write_values(binding.field_id)
+        for location, value in values_at(record, binding.location):
+            refusal = enum_refusal(f"{directory} {location}", value, allowed)
+            if refusal is not None:
+                problems.append(refusal)
+    return problems
 
 
 def classify(
