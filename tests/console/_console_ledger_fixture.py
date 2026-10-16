@@ -204,7 +204,7 @@ def build_reports_fixture(repo: Path) -> None:
         }
     )
     flow.save()
-    flow.dispatch("dispatch-review", "code-review", purpose="review")
+    flow.dispatch("dispatch-review", "code-review", purpose="work")
     flow.report(
         "dispatch-review",
         "code-review",
