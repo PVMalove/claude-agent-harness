@@ -43,6 +43,7 @@ from harness.orchestration.ledger.lifecycle import (
 from harness.orchestration.ledger.strict_read import require_canonical, unvouched
 from harness.orchestration.runtime_intent import CompositeWrite
 from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import RuntimeStateError
 from harness.orchestration.workflow import reports
 from tests.orchestration.test_ledger_migration import (
     BATCH_A,
@@ -58,6 +59,7 @@ from tests.orchestration.test_ledger_migration import (
     sha,
     tree,
 )
+from tests.orchestration.test_runtime_reconcile_faults import Crash, crash_on
 
 
 @pytest.fixture
@@ -773,3 +775,59 @@ def test_ledger_validate_names_the_migrate_route_until_ledger_migrate(
 
     assert scene.ledger.validate()["valid"] is True
     require_canonical(scene.generation)
+
+
+# --- Retry and migration idempotency under the strict boundaries (DoD 5) ------------------------
+
+
+def test_a_repeated_migrate_changes_nothing_and_the_strict_read_writes_nothing(
+    scene: Scene,
+) -> None:
+    _history(scene)
+    first = scene.run()
+    _load_batch(scene.root, BATCH_A)
+    snapshot = _state(scene)
+
+    again = scene.run()
+    loaded = _load_batch(scene.root, BATCH_A)
+    status = _load_dispatch_status(scene.root, DISPATCH_A)
+
+    assert again == {**first, "migrated": False}
+    assert (loaded["batch_id"], status["state"]) == (BATCH_A, "reported")
+    assert _state(scene) == snapshot
+
+
+def test_an_unfinished_operation_is_settled_before_the_read_routes_to_migrate(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _history(scene)
+    write = CompositeWrite(
+        scene.ledger,
+        scene.store(),
+        batch_id=BATCH_A,
+        dispatch_id=DISPATCH_A,
+        kind="checkpoint",
+        idempotency_key="key",
+    )
+    write.write_immutable(
+        scene.generation / "checkpoints/checkpoint-0000000a.json",
+        {"dispatch_id": DISPATCH_A},
+    )
+    crash_on(monkeypatch, LifecycleLedger, "_append_audit", 1)
+    with pytest.raises(Crash):
+        write.commit()
+    monkeypatch.undo()
+    # The migration waits for the batch's unfinished operation.
+    with pytest.raises(RuntimeStateError, match="concurrency-conflict"):
+        scene.run()
+
+    # A command reconciles first, from the lookup outside the strict read, then is refused.
+    batch_id = _load_dispatch(scene.root, DISPATCH_A)["batch_id"]
+    assert settle(scene.repo, scene.root, scene.ledger, batch_id) is True
+    with pytest.raises(LedgerUnmigratedError):
+        _load_batch(scene.root, batch_id)
+    result = scene.run()
+
+    assert result["migrated"] is True and result["quarantined"] == [BATCH_B]
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+    assert (scene.generation / "checkpoints/checkpoint-0000000a.json").is_file()

@@ -2760,6 +2760,84 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             architect["dispatch_id"],
         )
 
+    def _plant_passed_history(self, batch_id: str, dispatch_id: str) -> None:
+        """Rewrite the report of ``dispatch_id`` on disk as a report submitted before #669 held
+        it, with one check recorded as 'passed' and the digest its batch recorded for it."""
+        records = self._records()
+        path = records / "reports" / f"{dispatch_id}.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["checks_run"] = [
+            {"command": "make test", "result": "passed", "evidence": "n/a"}
+        ]
+        data = (
+            json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        path.write_bytes(data)
+        batch_path = records / "batches" / f"{batch_id}.json"
+        stored = json.loads(batch_path.read_text(encoding="utf-8"))
+        for entry in stored["dispatches"]:
+            if entry["dispatch_id"] == dispatch_id:
+                entry["report_sha256"] = hashlib.sha256(data).hexdigest()
+        batch_path.write_text(
+            json.dumps(stored, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def test_a_developer_retry_runs_on_a_migrated_ledger_with_mapped_history(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        architect_id = self._batch_record(batch_id)["dispatches"][0]["dispatch_id"]
+        self._plant_passed_history(batch_id, architect_id)
+        migrated = ledger_admin.migrate_ledger(self._args())
+        self.assertEqual(
+            (
+                migrated["system_fields"]["mapped"],
+                migrated["system_fields"]["quarantined"],
+            ),
+            (1, []),
+        )
+        developer = self._dispatch(batch_id, "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("failed-before-retry")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers={"status": "present", "details": "tests failed"},
+                checks_run=self._checks(developer, "fail"),
+            ),
+        )
+
+        decided = self._decide(batch_id, "retry", reason_category="code")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fixed, changed = self._developer_commit("fixed-after-retry")
+        self._submit(
+            retry["dispatch_id"], self._developer_report(retry, fixed, changed)
+        )
+        accepted = self._decide(batch_id, "accept")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=None,
+            route="developer-retry",
+        )
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+        # The mapped history keeps its bytes: nothing rewrote it into a canonical 'pass'.
+        report = json.loads(
+            (self._records() / "reports" / f"{architect_id}.json").read_text("utf-8")
+        )
+        self.assertEqual({c["result"] for c in report["checks_run"]}, {"passed"})
+
     def test_manual_accept_refuses_a_mapped_legacy_passed_report_after_migrate(
         self,
     ) -> None:
