@@ -1,6 +1,6 @@
 """One status vocabulary for the whole console: every status is a symbol plus text, never colour alone.
 
-Five kinds carry the symbol and the palette colour; a `Status` adds its own RU/EN text, so a screen
+Six kinds carry the symbol and the palette colour; a `Status` adds its own RU/EN text, so a screen
 renders a session state, a pending permission or a process state the same way. Stdlib-only, like
 the rest of the textual-free seam."""
 
@@ -12,8 +12,9 @@ from . import brand
 
 # kind -> (single-cell symbol, palette key)
 KINDS = {
-    "accepted": ("✓", "success"),
-    "paused": ("◌", "muted"),
+    "accepted": ("✔", "success"),
+    "running": ("▶", "success"),
+    "paused": ("Ⅱ", "muted"),
     "not_started": ("○", "muted"),
     "error": ("✖", "error"),
     "warning": ("⚠", "warning"),
@@ -43,7 +44,7 @@ class Status:
 
 
 _SESSION = {
-    "working": Status("accepted", "Выполняется", "Running"),
+    "working": Status("running", "Выполняется", "Running"),
     "dispatched": Status("paused", "Запуск", "Starting"),
     "approved": Status("not_started", "Готов к запуску", "Ready to start"),
     "reported": Status("accepted", "Отчёт получен", "Report received"),

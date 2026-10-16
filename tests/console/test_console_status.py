@@ -1,4 +1,4 @@
-"""The console-wide status vocabulary: five kinds, each a symbol plus text, in Russian and English."""
+"""The console-wide status vocabulary: six kinds, each a symbol plus text, in Russian and English."""
 
 from __future__ import annotations
 
@@ -30,11 +30,12 @@ def _every_status() -> list[status.Status]:
     ]
 
 
-def test_there_are_exactly_five_kinds_with_a_single_cell_symbol_and_a_palette_colour() -> (
+def test_there_are_exactly_six_kinds_with_a_single_cell_symbol_and_a_palette_colour() -> (
     None
 ):
     assert set(status.KINDS) == {
         "accepted",
+        "running",
         "paused",
         "not_started",
         "error",
@@ -48,8 +49,8 @@ def test_there_are_exactly_five_kinds_with_a_single_cell_symbol_and_a_palette_co
 
 def test_render_is_the_symbol_plus_the_text_in_the_language() -> None:
     working = status.session_status("working")
-    assert working.render("ru") == "✓ Выполняется"
-    assert working.render("en") == "✓ Running"
+    assert working.render("ru") == "▶ Выполняется"
+    assert working.render("en") == "▶ Running"
     assert working.color == brand.PALETTE["success"]
 
 
@@ -66,7 +67,8 @@ def test_every_status_has_a_symbol_and_text_in_both_languages(
 
 def test_session_states_map_onto_the_kinds() -> None:
     kinds = {state: status.session_status(state).kind for state in LEDGER_STATES}
-    assert kinds["working"] == kinds["reported"] == "accepted"
+    assert kinds["working"] == "running"
+    assert kinds["reported"] == "accepted"
     assert kinds["approved"] == "not_started"
     assert kinds["blocked"] == kinds["failed"] == "error"
     assert kinds["dispatched"] == kinds["cancelled"] == kinds["abandoned"] == "paused"
@@ -81,7 +83,7 @@ def test_an_unknown_state_is_unconfirmed_not_silently_fine() -> None:
 def test_permission_and_process_states_have_their_own_text() -> None:
     assert status.PERMISSION_PENDING.render("en") == "⚠ Permission pending"
     assert status.process_status("absent").render("en") == "⚠ Process not found"
-    assert status.process_status("stopped").render("ru") == "◌ Процесс завершён"
+    assert status.process_status("stopped").render("ru") == "Ⅱ Процесс завершён"
     assert status.process_status("anything else").render("en") == "⚠ Outcome unknown"
 
 
