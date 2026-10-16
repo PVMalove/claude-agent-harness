@@ -7,17 +7,26 @@ from __future__ import annotations
 import asyncio
 import socket
 import subprocess
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import pytest
 
 pytest.importorskip("textual")
+from textual.pilot import Pilot
 from textual.widgets import RichLog, Static, Select, TabbedContent, Button
 
 from harness.orchestration.core.utils import JsonObject
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.worker_observation import WorkerObservationScreen
+
+
+async def settle(pilot: Pilot[None], done: Callable[[], bool]) -> None:
+    """Pause until `done()`: a message bubbling between widgets can outlive one pause."""
+    for _ in range(20):
+        await pilot.pause()
+        if done():
+            return
 
 
 @pytest.mark.parametrize("size", [(150, 48), (80, 24)])
@@ -99,10 +108,10 @@ def test_events_arrive_before_completion_without_model_requests(
                 == "История batch →"
             )
             screen.query_one("#worker-filter", Select).value = "error"
-            await pilot.pause()
+            await settle(pilot, lambda: not log.lines)
             assert not log.lines
             screen.query_one("#worker-filter", Select).value = "all"
-            await pilot.pause()
+            await settle(pilot, lambda: bool(log.lines))
             assert "Read startup.py" in "\n".join(line.text for line in log.lines)
             await pilot.press("f2")
             await pilot.pause()
