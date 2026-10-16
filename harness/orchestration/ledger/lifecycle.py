@@ -29,7 +29,9 @@ from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..core.constants import BatchState, DispatchState
+from ..core.system_fields import enum_problem, enum_remedy
 from ..core.utils import sealed
+from .field_migration import write_problems
 from .recovery_chain import event_audit, terminal
 
 LEDGER_VERSION = 3
@@ -56,6 +58,29 @@ RECORD_DIRECTORIES = (
 # The system-fields migration's manifest and quarantine beside the record directories: no record
 # directory, so no ordinary loader reads it and an older generation never lacks it.
 MIGRATION_DIRECTORY = "migration"
+# The action and the generation purpose of the system-fields migration.
+SYSTEM_FIELDS_MIGRATION = "system-fields-migration"
+# The `ledger.audit_action` values: what one audited write did.  Reconciliation and the
+# idempotency of a deterministic audit event compare it exactly.
+AUDIT_ACTIONS = (
+    "immutable-record",
+    "immutable-artifact",
+    "transition",
+    "deletion",
+    "generation-created",
+    "migration",
+    "schema-upgrade",
+    "reset",
+    SYSTEM_FIELDS_MIGRATION,
+)
+# The `ledger.generation_purpose` values: why a `generation-created` event made a generation.
+GENERATION_PURPOSES = (
+    "initialize",
+    "migration",
+    "schema-upgrade",
+    "reset",
+    SYSTEM_FIELDS_MIGRATION,
+)
 
 # Ledger records are persisted JSON.  Keep the dynamic boundary at ``_read`` explicit while
 # preserving arbitrary, forward-compatible JSON in each record's ``extra`` fields.
@@ -97,6 +122,40 @@ def _validate_record_state(directory: str, value: JsonObject) -> None:
                 _parse_state(entry["state"], DispatchState)
     elif directory in {"dispatches", "dispatch-status"}:
         _parse_state(value.get("state"), DispatchState)
+
+
+def _validate_record_write(directory: str, value: JsonObject) -> None:
+    """Refuse a record about to be written to ``directory`` whose machine fields are not exactly
+    canonical, before anything is written; its explanations stay in its own text fields."""
+    _validate_record_state(directory, value)
+    if problems := write_problems(directory, value):
+        problem, remedy = problems[0]
+        raise LedgerError(
+            f"refusing a non-canonical machine value: {problem}", remedy=remedy
+        )
+
+
+def _audit_problem(action: str, details: JsonObject) -> tuple[str, str] | None:
+    """The refusal and remedy of an audit event outside its closed vocabularies, else ``None``:
+    its action, a new generation's purpose and the batch states of a batch transition."""
+    checks: list[tuple[str, object, tuple[str, ...]]] = [
+        ("ledger audit action", action, AUDIT_ACTIONS)
+    ]
+    if action == "generation-created":
+        checks.append(
+            ("generation-created purpose", details.get("purpose"), GENERATION_PURPOSES)
+        )
+    path = details.get("path")
+    if action == "transition" and isinstance(path, str) and path.startswith("batches/"):
+        states = tuple(state.value for state in BatchState)
+        checks += [
+            ("batch transition from", details.get("from"), states),
+            ("batch transition to", details.get("to"), states),
+        ]
+    for subject, value, allowed in checks:
+        if (problem := enum_problem(subject, value, allowed)) is not None:
+            return problem, enum_remedy(subject, allowed)
+    return None
 
 
 def _lock_busy() -> LedgerLockBusy:
@@ -1214,7 +1273,7 @@ class LifecycleLedger:
     ) -> None:
         """Create an immutable record; ``audit_id`` makes its audit event deterministic."""
         if not artifact:
-            _validate_record_state(path.parent.name, value)
+            _validate_record_write(path.parent.name, value)
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1292,7 +1351,7 @@ class LifecycleLedger:
     ) -> tuple[Path, str, JsonObject, str]:
         """Every check of ``replace`` that needs no write: the generation, relative path, current
         record and its digest of an allowed transition, or a ``LedgerError``."""
-        _validate_record_state(path.parent.name, value)
+        _validate_record_write(path.parent.name, value)
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
@@ -1322,7 +1381,7 @@ class LifecycleLedger:
             self._check_replace(path, cast(JsonObject, value), None)
             return
         if mode == "create":
-            _validate_record_state(path.parent.name, cast(JsonObject, value))
+            _validate_record_write(path.parent.name, cast(JsonObject, value))
         elif mode != "create-artifact":
             raise LedgerError(
                 f"unknown ledger write mode {mode!r}", remedy=INTERNAL_INVARIANT_REMEDY
@@ -1744,7 +1803,13 @@ class LifecycleLedger:
         audit_id: str | None = None,
     ) -> None:
         """Append one audit event.  A given ``audit_id`` is created exclusively, so repeating the
-        same event is a no-op and a different event under that id is refused."""
+        same event is a no-op and a different event under that id is refused.  An event outside
+        its closed vocabularies is refused before anything is written."""
+        if (refusal := _audit_problem(action, details)) is not None:
+            problem, remedy = refusal
+            raise LedgerError(
+                f"refusing a non-canonical audit event: {problem}", remedy=remedy
+            )
         audit: JsonObject = {
             "audit_id": audit_id or f"audit-{uuid.uuid4()}",
             "at": _now(),

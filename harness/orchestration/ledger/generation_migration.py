@@ -46,6 +46,7 @@ from harness.orchestration.ledger.lifecycle import (
     GENERATIONS,
     MIGRATION_DIRECTORY,
     RECORD_DIRECTORIES,
+    SYSTEM_FIELDS_MIGRATION,
     LedgerError,
     LifecycleLedger,
     verified_audit,
@@ -57,7 +58,7 @@ QUARANTINE = "quarantine"
 EVIDENCE = "legacy-unknown.json"
 # A generation under construction: never a `generation-` name, so no pointer can select it.
 STAGING_PREFIX = ".migrating-"
-MIGRATION_ACTION = "system-fields-migration"
+MIGRATION_ACTION = SYSTEM_FIELDS_MIGRATION
 # The records a quarantine moves: a batch, its plan, its dispatches and their status records.
 GRAPH_DIRECTORIES = ("batches", "plans", "dispatches", "dispatch-status")
 BATCH_ID = re.compile(r"batch-[0-9a-f-]+")

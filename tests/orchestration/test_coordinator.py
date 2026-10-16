@@ -2614,38 +2614,35 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["dispatches"][1]["decision"]["decision"], "accept")
         self.assertIn(stored["next_action"], {"code-review", "qa"})
 
-    def test_manual_accept_rejects_a_legacy_invalid_check_result(self) -> None:
+    def _assert_a_legacy_check_result_is_never_written(
+        self, result: str, exact: str
+    ) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
-        candidate, changed = self._developer_commit("legacy-check-result")
+        candidate, changed = self._developer_commit(f"legacy-{result}-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
+            brief, candidate, changed, checks_run=self._checks(brief, result)
         )
-        # Stage historical evidence with its normal digest, as if submitted before #669.
-        self._stage_report(
-            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
-        )
-        before = {
-            path: path.read_bytes()
-            for path in self._records().rglob("*")
-            if path.is_file()
-        }
 
+        # The value a report held before #669 is refused by the ledger's own write boundary.
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            self._decide(batch["batch_id"], "accept")
+            self._stage_report(
+                batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+            )
 
         self.assertIn("checks_run[0].result", caught.exception.message)
-        self.assertIn("unknown", caught.exception.message)
-        self.assertIn("not_run", caught.exception.remedy)
-        self.assertEqual(
-            before,
-            {
-                path: path.read_bytes()
-                for path in self._records().rglob("*")
-                if path.is_file()
-            },
-        )
+        self.assertIn(repr(result), caught.exception.message)
+        self.assertIn(exact, caught.exception.remedy)
+        for suffix in ("json", "md"):
+            self.assertFalse(
+                (
+                    self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
+                ).exists()
+            )
+
+    def test_a_legacy_invalid_check_result_is_never_written(self) -> None:
+        self._assert_a_legacy_check_result_is_never_written("unknown", "not_run")
 
     def _assert_skipped_check_is_recorded(self, result: str) -> None:
         batch = self._create_batch()
@@ -2664,26 +2661,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_not_run_is_recorded_as_a_skipped_check(self) -> None:
         self._assert_skipped_check_is_recorded("not_run")
 
-    def test_manual_accept_rejects_a_legacy_passed_report(self) -> None:
-        batch = self._create_batch()
-        self._accepted_architect(batch["batch_id"])
-        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
-        candidate, changed = self._developer_commit("legacy-passed-result")
-        report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "passed")
-        )
-        self._stage_report(
-            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
-        )
-        paths = [
-            self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
-            for suffix in ("json", "md")
-        ]
-        before = {path: path.read_bytes() for path in paths}
-
-        with self.assertRaisesRegex(coordinator.CoordinatorError, "result is invalid"):
-            self._decide(batch["batch_id"], "accept")
-        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+    def test_a_legacy_passed_check_result_is_never_written(self) -> None:
+        self._assert_a_legacy_check_result_is_never_written("passed", "pass")
 
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""

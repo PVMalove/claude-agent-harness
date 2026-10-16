@@ -71,7 +71,12 @@ from harness.orchestration.core.git_utils import (
     _commit_changed_files,
     _git_is_ancestor,
 )
-from harness.orchestration.core.system_fields import EXACT_SPELLING, near_miss
+from harness.orchestration.core.system_fields import (
+    EXACT_SPELLING,
+    enum_problem,
+    enum_remedy,
+    near_miss,
+)
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -741,12 +746,14 @@ def _authorize_planned_continuation(
     coordinator decision an accept/retry/block/fail already does, reusing that record type rather
     than inventing a new one. Under ``approval_policy: auto`` the policy gives that decision when
     no approval is passed (issue #643); the answer to a resolver's options stays a human's."""
-    trigger = args.trigger.strip() if _non_empty(args.trigger) else ""
-    if trigger not in PLANNED_TRIGGER_KINDS:
+    trigger = args.trigger
+    if (
+        problem := enum_problem("--trigger", trigger, PLANNED_TRIGGER_KINDS)
+    ) is not None:
         raise CoordinatorError(
-            "a continuation without a recognized rate-limit termination reason is a planned trigger and "
-            f"requires --trigger to be one of {sorted(PLANNED_TRIGGER_KINDS)}",
-            remedy="pass --trigger naming one of the configured planned-trigger kinds",
+            "a continuation without a recognized rate-limit termination reason is a planned "
+            f"trigger: {problem}",
+            remedy=enum_remedy("--trigger", PLANNED_TRIGGER_KINDS),
         )
     threshold_key = PLANNED_TRIGGER_THRESHOLD_KEY.get(trigger)
     if threshold_key is not None:
@@ -953,7 +960,7 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 startup.recorded(root, batch, dispatch["dispatch_id"])
                 startup.point(repo, root, batch, dispatch)
         else:
-            if _non_empty(args.trigger) and args.trigger.strip() == "human-decision":
+            if args.trigger == "human-decision":
                 # The answer to the options a resolver listed is its own audit event; the same
                 # dispatch continues only once it is recorded, and nothing else is spent.
                 if not resolver_state.is_resolver_brief(
@@ -976,10 +983,10 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                     batch,
                     kind="continuation",
                     dispatch_id=dispatch["dispatch_id"],
-                    rationale=f"planned trigger {args.trigger.strip()} with unchanged "
+                    rationale=f"planned trigger {args.trigger} with unchanged "
                     "continuation facts inside the continuation budget",
                     evidence={
-                        "trigger": args.trigger.strip(),
+                        "trigger": args.trigger,
                         "checkpoint_id": checkpoint["checkpoint_id"],
                         "continuations_spent": continuation_count,
                         "max_continuations": continuation_policy["max_continuations"],

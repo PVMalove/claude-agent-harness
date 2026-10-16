@@ -40,7 +40,7 @@ from harness.orchestration.core.system_fields import (
     vocabulary_drift,
 )
 from harness.orchestration.core.utils import JsonObject
-from harness.orchestration.ledger import field_migration
+from harness.orchestration.ledger import field_migration, lifecycle
 from harness.orchestration.workflow import (
     auto_policy,
     carried_items,
@@ -134,6 +134,8 @@ V1_FIELDS = frozenset(
         "context_package.freshness",
         "batch.required_gate",
         "ledger.migration_disposition",
+        "ledger.audit_action",
+        "ledger.generation_purpose",
     }
 )
 
@@ -288,6 +290,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "context_package.role",
         "batch.required_gate",
         "telemetry.session_kind",
+        "ledger.generation_purpose",
     }
 
 
@@ -787,6 +790,10 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
     "ledger.migration_disposition": {
         "field_migration.MIGRATION_DISPOSITIONS": field_migration.MIGRATION_DISPOSITIONS
+    },
+    "ledger.audit_action": {"lifecycle.AUDIT_ACTIONS": lifecycle.AUDIT_ACTIONS},
+    "ledger.generation_purpose": {
+        "lifecycle.GENERATION_PURPOSES": lifecycle.GENERATION_PURPOSES
     },
     "context_package.freshness": {
         "ContextPackageFreshness": constants.ContextPackageFreshness
