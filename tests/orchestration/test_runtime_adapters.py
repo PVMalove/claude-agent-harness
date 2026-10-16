@@ -159,6 +159,7 @@ def fake_runtime(repo: Path, body: str) -> Path:
 
 
 @pytest.mark.parametrize("code", [0, 7])
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable and process session")
 def test_claude_reports_any_early_exit_with_log_tail(
     dispatch: tuple[Path, Path, dict[str, object]], code: int
 ) -> None:
@@ -172,6 +173,7 @@ def test_claude_reports_any_early_exit_with_log_tail(
     assert "fake startup failure" in result.stderr
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable and process session")
 def test_claude_starts_detached_with_stdin_prompt_in_worker_checkout(
     dispatch: tuple[Path, Path, dict[str, object]],
 ) -> None:
@@ -269,6 +271,7 @@ def test_codex_rejects_unsupported_briefs(
 
 
 @pytest.mark.parametrize("code", [0, 7])
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable and process session")
 def test_codex_reports_early_exit_with_log_tail(
     dispatch: tuple[Path, Path, dict[str, object]], code: int
 ) -> None:
@@ -283,6 +286,7 @@ def test_codex_reports_early_exit_with_log_tail(
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable and process session")
 def test_codex_starts_detached_in_worker_with_stdin(
     dispatch: tuple[Path, Path, dict[str, object]],
 ) -> None:
