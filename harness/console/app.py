@@ -21,7 +21,6 @@ from textual.theme import Theme
 
 from . import brand, clipboard, i18n, translate
 from .chrome import HealthCounts
-from .workspace import WORKSPACE_CSS
 from .launcher import restart_console
 from .runner import CommandRunner, capturing_runner
 from .screens.dashboard import DashboardScreen
@@ -61,8 +60,7 @@ class HarnessConsoleApp(App[None]):
     # Thin rounded frames and warm accents shared by every screen. Only the screen itself is
     # filled by default. The home/worker workspaces opt into the shared pane and selection fills
     # below. Modal dialogs keep the screen colour so the screen behind them does not show through.
-    CSS = (
-        """
+    CSS = """
     Screen { background: $background; }
     Screen * { background: transparent; }
     ModalScreen { background: $background 70%; }
@@ -156,8 +154,6 @@ class HarnessConsoleApp(App[None]):
     }
     Button.-textual-compact:focus { text-style: bold reverse; }
     """
-        + WORKSPACE_CSS
-    )
 
     def __init__(
         self, repo: Path, *, command_runner: CommandRunner = capturing_runner

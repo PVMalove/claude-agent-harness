@@ -234,7 +234,8 @@ def test_dashboard_refreshes_after_applied_configuration_is_closed(
 ) -> None:
     from textual.widgets import ListView
     from harness.console.data import DashboardData
-    from harness.console.screens.dashboard import DashboardScreen, SECTIONS
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.shell import SECTIONS
 
     installed_project(tmp_path)
     collections: list[bool] = []
