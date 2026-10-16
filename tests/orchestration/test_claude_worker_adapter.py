@@ -63,6 +63,8 @@ class ClaudeWorkerAdapterTest(unittest.TestCase):
                 {
                     "dispatch_id": "dispatch-1",
                     "role": "developer",
+                    "purpose": "work",
+                    "resolved_transport": "external",
                     "resolved_model": "claude-sonnet-5-5",
                     "resolved_effort": "medium",
                     "allowed_tools": ["Read", "Bash", "Edit"],
@@ -150,7 +152,8 @@ class ClaudeWorkerAdapterTest(unittest.TestCase):
         self.fake_claude(0)
         extra = self.repo / "retry.txt"
         extra.write_text("Retry handoff: {}")
-        self.assertEqual(self.run_adapter("--extra-prompt-file", str(extra)), 0)
+        # This fake exits immediately; even a zero exit is now a startup failure.
+        self.assertEqual(self.run_adapter("--extra-prompt-file", str(extra)), 1)
         self.assertEqual(self.cwd_dump.read_text().strip(), str(self.worktree))
         prompt = self.prompt_dump.read_text()
         self.assertIn("worker for dispatch dispatch-1", prompt)

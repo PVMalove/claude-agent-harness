@@ -609,7 +609,7 @@ def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> 
     for registration in reversed(registrations):
         if (
             isinstance(registration, dict)
-            and registration.get("dispatch_id") in excluded
+            and registration.get("source_dispatch_id") in excluded
         ):
             continue
         if not isinstance(registration, dict):

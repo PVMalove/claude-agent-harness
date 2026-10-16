@@ -162,7 +162,7 @@ def validate_events(root: Path, batch: JsonObject) -> None:
             ),
             (
                 "superseded_candidate_registrations",
-                {e["dispatch_id"] for e in batch.get("candidate_registrations", [])},
+                {e["source_dispatch_id"] for e in batch.get("candidate_registrations", [])},
             ),
         ):
             values = event["evidence"].get(field, [])
