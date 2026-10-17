@@ -17,8 +17,11 @@ from textual.pilot import Pilot
 from textual.widgets import RichLog, Static, Select, TabbedContent, Button
 
 from harness.orchestration.core.utils import JsonObject
+from tests.console._pilot_wait import crumb_text
+from harness.console.shell import Breadcrumbs
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.worker_observation import WorkerObservationScreen
+from harness.console.shell import SECTIONS, WrappedValue
 
 
 async def settle(pilot: Pilot[None], done: Callable[[], bool]) -> None:
@@ -381,11 +384,11 @@ def _blocked_snapshot(_repo: Path, dispatch: str, _offset: int) -> JsonObject:
     }
 
 
-@pytest.mark.parametrize("size", [(135, 44), (100, 40), (70, 30)])
+@pytest.mark.parametrize("size", [(150, 44), (135, 44), (100, 40), (70, 30)])
 def test_context_panel_keeps_full_id_path_and_block_reason_at_every_width(
     tmp_path: Path, size: tuple[int, int]
 ) -> None:
-    from textual.widgets import ListView
+    from textual.widgets import Collapsible, ListView
 
     async def scenario() -> None:
         app = HarnessConsoleApp(tmp_path)
@@ -398,35 +401,48 @@ def test_context_panel_keeps_full_id_path_and_block_reason_at_every_width(
             await app.workers.wait_for_complete()
             await pilot.pause()
             context = screen.query_one("#worker-context")
-            facts = screen.query_one("#worker-context-facts", Static)
-            # Never hidden below 140 columns: beside the stream when wide, under it when narrow.
+            facts = screen.query_one("#worker-context-facts", WrappedValue)
+            block = screen.query_one(".context-fold", Collapsible)
+            output = screen.query_one("#worker-output")
+            # Beside the stream from 140 columns; below that it folds into a collapsible block.
+            assert screen.has_class("-fold-context") == (size[0] < 140)
+            assert block.collapsed == (size[0] < 140)
+            if size[0] < 140:
+                assert context.region.y > output.region.y
+                screen.query_one(".context-fold CollapsibleTitle").scroll_visible(
+                    animate=False, immediate=True
+                )
+                await pilot.pause()
+                await pilot.click(".context-fold CollapsibleTitle")
+                await pilot.pause()
+                assert not block.collapsed
+            else:
+                assert context.region.x >= output.region.right
             assert context.display and context.region.width >= 25
-            text = str(facts.content)
+            text = "".join(str(facts.content).split())
             for needed in (
                 _LONG_ID,
                 _LONG_WORKTREE,
                 "tooling blocked the commit: hook refused the message",
             ):
-                assert needed in text
+                assert "".join(needed.split()) in text
             assert facts.styles.text_overflow != "ellipsis"
             assert facts.region.width <= context.region.width
-            assert _LONG_ID in str(
-                screen.query_one("#worker-selection", Static).content
+            assert _LONG_ID in "".join(
+                str(screen.query_one("#worker-selection", Static).content).split()
             )
             navigation = screen.query_one("#worker-navigation")
             menu = screen.query_one("#worker-sections", ListView)
-            assert menu.index == 4  # Orchestration is the open section
-            if size[0] < 130:
-                assert not navigation.display
-                assert context.region.y > screen.query_one("#worker-output").region.y
+            assert menu.index == SECTIONS.index("Orchestration")  # the open section
+            sessions = screen.query_one("#worker-sessions")
+            if size[0] < 100:
+                assert not navigation.display and not sessions.display
                 await pilot.click("#worker-menu")
                 await pilot.pause()
                 assert navigation.display
             else:
-                assert navigation.display
-                assert (
-                    context.region.x >= screen.query_one("#worker-output").region.right
-                )
+                # The session list stays visible from 100 columns.
+                assert navigation.display and sessions.display
             assert screen.region.contains_region(
                 screen.query_one("#worker-actions").region
             )
@@ -457,14 +473,261 @@ def test_worker_menu_navigation_runs_no_command_and_back_keys_work(
             await app.workers.wait_for_complete()
             await pilot.press("3")
             await pilot.pause()
-            assert opened == [2]
+            assert opened == [SECTIONS.index("Diagnostics")]
             await pilot.press("f2")
             await pilot.pause()
             await pilot.pause()
-            crumbs = str(screen.query_one("#worker-breadcrumbs", Static).content)
+            crumbs = crumb_text(screen.query_one("#worker-breadcrumbs", Breadcrumbs))
             assert crumbs.startswith("Home  ›  Orchestration")
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen is not screen
 
     asyncio.run(scenario())
+
+
+def test_worker_session_list_uses_the_shared_role_label_and_caption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from rich.text import Text
+    from textual.widgets import ListView
+
+    from harness.console import brand, reports
+
+    stages = [
+        reports.StageEntry(
+            "dispatch-a", "batch-a", "#721", "developer", "working", "2026-10-16"
+        ),
+        reports.StageEntry(
+            "dispatch-b", "batch-a", "#722", "code-review", "blocked", "2026-10-15"
+        ),
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> list[Text]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 48)) as pilot:
+            screen = WorkerObservationScreen(tmp_path, observer=lambda *_: {})
+            await app.push_screen(screen)
+            await pilot.pause()
+            picker = screen.query_one("#worker-picker", ListView)
+            return [
+                card
+                for item in picker.children
+                for card in [item.query_one(Static).content]
+                if isinstance(card, Text)
+            ]
+
+    cards = asyncio.run(scenario())
+    assert [card.plain.splitlines()[0] for card in cards] == [
+        "#721  ·  developer",
+        "#722  ·  code-review",
+    ]
+    assert cards[0].plain.splitlines()[-1] == "▶ Выполняется"
+    assert cards[1].plain.splitlines()[-1] == "✖ Работа заблокирована"
+    assert f"bold {brand.ROLE_COLORS['code-review']}" in {
+        str(span.style) for span in cards[1].spans
+    }
+
+
+def test_worker_breadcrumbs_link_back_to_orchestration_and_home(tmp_path: Path) -> None:
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.screens.orchestration import OrchestrationScreen
+    from harness.console.shell import CrumbLink
+
+    async def scenario() -> tuple[list[str], bool, bool, int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 48)) as pilot:
+            await pilot.pause()
+            orchestration = OrchestrationScreen(tmp_path)
+            await app.push_screen(orchestration)
+            worker = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(worker)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            links = [str(link.content) for link in worker.query(CrumbLink)]
+            orchestration_link = list(worker.query(CrumbLink))[1]
+            orchestration_link.focus()
+            await pilot.press("enter")
+            for _ in range(4):
+                await pilot.pause()
+            back_on_orchestration = app.screen is orchestration
+            await app.push_screen(
+                WorkerObservationScreen(tmp_path, _LONG_ID, observer=_blocked_snapshot)
+            )
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            home_link = list(app.screen.query(CrumbLink))[0]
+            await pilot.click(CrumbLink, offset=(1, 0))
+            for _ in range(4):
+                await pilot.pause()
+            assert home_link
+            return (
+                links,
+                back_on_orchestration,
+                isinstance(app.screen, DashboardScreen),
+                len(app.screen_stack),
+            )
+
+    links, back_on_orchestration, on_dashboard, depth = asyncio.run(scenario())
+    assert links[:2] == ["Главная", "Оркестрация"]
+    assert (
+        len(links) == 2
+    )  # no batch timeline in this project: the batch crumb is plain text
+    assert back_on_orchestration and on_dashboard and depth == 2
+
+
+def test_worker_uses_the_shell_breakpoints_and_wraps_long_values_at_separators(
+    tmp_path: Path,
+) -> None:
+    from harness.console.shell import ConsoleShell
+    from harness.console.wrap import SEPARATORS
+
+    assert (
+        WorkerObservationScreen.HORIZONTAL_BREAKPOINTS
+        == ConsoleShell.HORIZONTAL_BREAKPOINTS
+    )
+    assert WorkerObservationScreen.CONTEXT_SIDE_MIN == 140
+
+    async def scenario() -> tuple[list[str], int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(150, 44)) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            facts = screen.query_one("#worker-context-facts", WrappedValue)
+            return str(facts.content).split("\n\n"), facts.content_size.width
+
+    blocks, width = asyncio.run(scenario())
+    long_blocks = [
+        block.split("\n")
+        for block in blocks
+        if _LONG_ID in "".join(block.split())
+        or _LONG_WORKTREE in "".join(block.split())
+    ]
+    assert len(long_blocks) == 2
+    for lines in long_blocks:
+        values = lines[1:]  # the first line is the label
+        assert len(values) > 1  # the value did not fit on one line
+        assert all(len(line) <= width for line in values)
+        assert all(line[-1] in SEPARATORS for line in values[:-1])
+
+
+@pytest.mark.parametrize("size", [(160, 52), (120, 40), (100, 30), (80, 24)])
+def test_status_badge_is_shown_whole_and_not_under_a_scrollbar(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from rich.cells import cell_len
+    from textual.widget import Widget
+
+    async def scenario() -> tuple[int, int, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            badge = screen.query_one("#worker-badge", Static)
+            under = False
+            for ancestor in badge.ancestors:
+                if isinstance(ancestor, Widget) and ancestor.show_vertical_scrollbar:
+                    edge = ancestor.region.right - ancestor.scrollbar_size_vertical
+                    under = under or badge.region.right > edge
+            return badge.region.width, cell_len(badge.content.plain), under  # type: ignore[union-attr]
+
+    width, needed, under = asyncio.run(scenario())
+    assert width >= needed
+    assert not under
+
+
+def test_worker_crumb_and_context_title_are_english_at_120x40(tmp_path: Path) -> None:
+    from textual.widgets import Collapsible
+
+    async def scenario() -> tuple[str, str, str, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.language == "en"
+            crumb = str(screen.query_one(".crumb-current", Static).content)
+            title = screen.query_one(Collapsible).title
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            return (
+                crumb,
+                title,
+                str(screen.query_one(".crumb-current", Static).content),
+                screen.query_one(Collapsible).title,
+            )
+
+    crumb, title, crumb_ru, title_ru = asyncio.run(scenario())
+    assert crumb == "Worker / Observation"
+    assert title == "Launch context"
+    assert crumb_ru == "Worker / Наблюдение"
+    assert title_ru == "Контекст запуска"
+
+
+def test_the_batch_crumb_is_a_link_only_when_the_batch_timeline_exists(
+    tmp_path: Path,
+) -> None:
+    from tests.console._console_ledger_fixture import build_reports_fixture
+    from harness.console.screens.reports import BatchTimelineScreen
+    from harness.console.shell import CrumbLink
+
+    build_reports_fixture(tmp_path)
+
+    def snapshot(batch: str) -> Callable[[Path, str, int], JsonObject]:
+        def observe(_repo: Path, _dispatch: str, _offset: int) -> JsonObject:
+            return {**_blocked_snapshot(_repo, _dispatch, _offset), "batch_id": batch}
+
+        return observe
+
+    async def scenario(batch: str) -> tuple[list[str], str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=snapshot(batch)
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            crumbs = screen.query_one(Breadcrumbs)
+            links = [str(link.content) for link in crumbs.query(CrumbLink)]
+            shown = crumb_text(crumbs)
+            if len(links) == 3:
+                list(crumbs.query(CrumbLink))[-1].focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+            return links, shown, isinstance(app.screen, BatchTimelineScreen)
+
+    links, shown, opened = asyncio.run(scenario("batch-flow"))
+    assert links == ["Главная", "Оркестрация", "batch-flow"] and opened
+    links, shown, opened = asyncio.run(scenario("batch-unknown"))
+    assert links == ["Главная", "Оркестрация"]
+    assert shown.endswith("batch-unknown  ›  Worker / Наблюдение")

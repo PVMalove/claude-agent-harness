@@ -18,13 +18,15 @@ from textual.widgets import Button, ListItem, ListView, Static, Collapsible
 
 from .. import brand, i18n
 from ..chrome import TopBar
-from ..status import session_status
+from ..session_card import session_card
 from ..shell import (
     CONFIGURATION_SECTION,
+    HOME_SECTION,
     SECTIONS,
     SHELL_CSS,
     ConsoleShell,
     ShellIds,
+    WrappedValue,
 )
 from .. import reports
 from .. import data as console_data
@@ -276,6 +278,7 @@ class DashboardScreen(ConsoleShell):
 
     # The section menu owns the keyboard on arrival.
     AUTO_FOCUS = "#section-menu"
+    SECTION = HOME_SECTION
     CRUMBS = "Главная › Рабочее пространство"
     HAS_CONTEXT = True
     IDS = ShellIds(
@@ -304,8 +307,8 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 1; }
     DashboardScreen #home-sessions-title { height: 2; color: $text-muted; }
     DashboardScreen #home-sessions { height: 1fr; min-height: 3; border: none; }
-    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; }
-    DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $text; }
+    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; border-left: solid transparent; }
+    DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $text; border-left: solid $selection-edge; }
     DashboardScreen #home-sessions Static { height: auto; }
     DashboardScreen #dashboard-details { height: auto; max-height: 16; border-top: solid $border-subtle; padding: 0; }
     DashboardScreen #dashboard-details > Contents { overflow-y: auto; max-height: 12; }
@@ -315,7 +318,7 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen #dashboard-cards { height: auto; }
     DashboardScreen .card { height: auto; margin-bottom: 1; padding-bottom: 1; border: none; border-bottom: solid $border-subtle; }
     DashboardScreen .card-title { height: 2; color: $text-muted; }
-    DashboardScreen.-narrow #dashboard-overview { padding: 0 1; }
+    DashboardScreen.-narrow #dashboard-overview { padding: 0 2; }
     DashboardScreen.-narrow #dashboard-subtitle { display: none; }
     DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; padding: 0; margin-bottom: 0; }
     DashboardScreen.-narrow #dashboard-attention { max-height: 3; }
@@ -324,7 +327,7 @@ class DashboardScreen(ConsoleShell):
     # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
     CSS = SHELL_CSS + brand.shell_css("""
     .shell #home-sessions, .shell #home-sessions:focus { border: none; }
-    .shell #home-sessions > ListItem.-highlight { background: $row-highlight; color: $text; text-style: none; }
+    .shell #home-sessions > ListItem.-highlight { background: $row-highlight; color: $text; text-style: none; border-left: solid $selection-edge; }
     """)
 
     def __init__(
@@ -470,16 +473,8 @@ class DashboardScreen(ConsoleShell):
             self._language,
         )
         yield Static("◉ КОНТЕКСТ ПРОЕКТА", classes="context-label")
-        yield Static(
-            self.repo.name,
-            classes="context-value no-i18n",
-            markup=False,
-        )
-        yield Static(
-            banner.branch or "—",
-            classes="context-value no-i18n",
-            markup=False,
-        )
+        yield WrappedValue(self.repo.name, classes="context-value")
+        yield WrappedValue(banner.branch or "—", classes="context-value")
         with Vertical(id="dashboard-cards"):
             for card_id, title, text in (
                 ("card-harness", "Harness", harness),
@@ -496,13 +491,14 @@ class DashboardScreen(ConsoleShell):
         )
 
     def _home_session_card(self, stage: reports.StageEntry) -> Text:
-        status = session_status(stage.state)
-        card = Text(f"{stage.ticket}  ·  {stage.role}\n")
-        card.append(
-            brand.shorten(stage.dispatch_id, 32) + "  ·  ", style=brand.PALETTE["muted"]
+        return session_card(
+            ticket=stage.ticket,
+            role=stage.role,
+            dispatch_id=stage.dispatch_id,
+            state=stage.state,
+            language=self._language,
+            id_limit=32,
         )
-        card.append(status.render(self._language), style=status.color)
-        return card
 
     def _home_sessions(self) -> list[reports.StageEntry]:
         view = reports.load_ledger_view(self.repo)
