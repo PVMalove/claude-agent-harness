@@ -212,7 +212,8 @@ def repin_entry(
     """Pin the entry of ``dispatch_id`` in batch ``batch_id`` to the given ``brief_sha256`` and
     ``report_sha256`` of a brief or report a test rewrote on disk, through a recorded ledger
     transition, so the strict read of the batch reaches the check the test exercises and a
-    later transition starts from the pinned record."""
+    later transition starts from the pinned record.  A rewritten brief also gets the audit event
+    of its creation resealed with the digest it holds, as a ledger that recorded it so would."""
     digests = {
         key: digest
         for key, digest in (
@@ -222,11 +223,25 @@ def repin_entry(
         if digest is not None
     }
     ledger = LifecycleLedger(state_root)
-    path = ledger.records_root() / BatchRecord.directory / f"{batch_id}.json"
+    records = ledger.records_root()
+    path = records / BatchRecord.directory / f"{batch_id}.json"
     batch = json.loads(path.read_text(encoding="utf-8"))
     for entry in batch["dispatches"]:
         if entry["dispatch_id"] == dispatch_id:
             entry.update(digests)
+    if brief_sha256 is not None:
+        relative = f"dispatches/{dispatch_id}.json"
+        brief = hashlib.sha256((records / relative).read_bytes()).hexdigest()
+        for event_path in (records / "audit").glob("*.json"):
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            if (
+                event["action"] == "immutable-record"
+                and event["details"]["path"] == relative
+            ):
+                event["details"]["sha256"] = brief
+                event.pop("record_sha256")
+                event["record_sha256"] = pinned_sha256(event)
+                event_path.write_text(utils._canonical(event), encoding="utf-8")
     ledger.replace(path, batch)
 
 

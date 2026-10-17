@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from harness.gate_runner.gate_runner import sanitise
+from harness.orchestration.ledger.lifecycle import LifecycleLedger, audit_details
 from harness.storage import storage_path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -294,3 +295,27 @@ def check_technical_english(project: Path) -> None:
     assert_contract_link(project / "AGENTS.md", contract, "AGENTS.md")
     if "@AGENTS.md" not in (project / "CLAUDE.md").read_text(encoding="utf-8"):
         assert_contract_link(project / "CLAUDE.md", contract, "CLAUDE.md")
+
+
+def rewrite_recorded(path: Path, value: dict[str, object]) -> None:
+    """Заменяет запись batch или dispatch-status ``path`` на ``value`` так, как её оставляет
+    прерванная запись: файл изменён, а audit-событие перехода дописано. Строгое чтение ledger
+    тогда не останавливается на самой правке, и выполняется проверка, которую проверяет
+    сценарий. Обычный ``write_text`` — правка в обход ledger, и строгое чтение отказывает на
+    ней первым."""
+    before_bytes = path.read_bytes()
+    data = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    path.write_bytes(data)
+    sha256 = hashlib.sha256(data).hexdigest()
+    action, details = audit_details(
+        "replace",
+        f"{path.parent.name}/{path.name}",
+        sha256,
+        before_sha256=hashlib.sha256(before_bytes).hexdigest(),
+        before=json.loads(before_bytes),
+        after=value,
+    )
+    # <state root>/generations/<generation>/<directory>/<record>
+    LifecycleLedger(path.parents[3]).append_audit(
+        path, action, details, audit_id=f"audit-edit-{sha256[:16]}"
+    )

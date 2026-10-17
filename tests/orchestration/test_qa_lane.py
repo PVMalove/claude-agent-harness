@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import subprocess
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -36,8 +37,11 @@ from harness.orchestration.ledger import (
     PlanRecord,
 )
 from harness.orchestration.qa_lane import QaWorkflowOps
+from harness.orchestration.runtime_intent import CompositeWrite
+from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.pinned_configuration import snapshot
 from harness.orchestration.workflow import reports, qa_integration
+from tests.orchestration.test_runtime_reconcile_faults import Crash
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
 OTHER_DISPATCH_ID = "dispatch-fedcba9876543210"
@@ -509,6 +513,8 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
 class QaLaneRunTests(QaLaneTestCase):
     def setUp(self) -> None:
         super().setUp()
+        # `run` settles an unfinished write of the batch, which needs the checkout's runtime state.
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         self.dispatch: JsonObject = {
             "dispatch_id": DISPATCH_ID,
             "state": "approved",
@@ -641,6 +647,41 @@ class QaLaneRunTests(QaLaneTestCase):
         self.assertEqual(
             result, {"dispatch_id": DISPATCH_ID, "state": "queued", "position": 1}
         )
+
+    def test_repeated_run_settles_an_interrupted_batch_write_before_it_reads_the_batch(
+        self,
+    ) -> None:
+        self._seed()
+        live = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+        self.ledger.write_immutable(
+            self.lane / "lease.json", self._lease(expires_at=live)
+        )
+        path = self.ledger.records_root() / BatchRecord.directory / f"{BATCH_ID}.json"
+        batch = coordinator._read_object(path, "batch record")
+        # One recorded transition, then a composite write that stops between the batch and its
+        # audit event.
+        self.ledger.replace_record(BatchRecord.from_dict(batch))
+        write = CompositeWrite(
+            self.ledger,
+            RuntimeStateStore(self.repo, self.root),
+            batch_id=BATCH_ID,
+            dispatch_id=DISPATCH_ID,
+            kind="checkpoint",
+            idempotency_key="key",
+        )
+        write.replace_record(BatchRecord.from_dict({**batch, "ticket": "225"}))
+        with mock.patch.object(LifecycleLedger, "_append_audit", side_effect=Crash):
+            with self.assertRaises(Crash):
+                write.commit()
+        with self.assertRaisesRegex(CoordinatorError, "last recorded transition"):
+            coordinator._load_batch(self.root, BATCH_ID)
+
+        result = qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(
+            result, {"dispatch_id": DISPATCH_ID, "state": "queued", "position": 1}
+        )
+        self.assertEqual(coordinator._load_batch(self.root, BATCH_ID)["ticket"], "225")
 
     def test_earlier_queue_entry_keeps_the_dispatch_queued(self) -> None:
         self._seed()

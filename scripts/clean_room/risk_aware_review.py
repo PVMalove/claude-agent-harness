@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from scripts.clean_room.support import (
     capture,
     commit_map_for,
+    rewrite_recorded,
     run_step,
 )
 
@@ -486,12 +487,8 @@ def run(ctx: SimpleNamespace) -> None:
         lifecycle_records(state_root) / "dispatch-status" / f"{architect_id}.json"
     )
     live_status = json.loads(stale_status_path.read_text(encoding="utf-8"))
-    stale_status_path.write_text(
-        json.dumps(
-            dict(live_status, heartbeat_at="2000-01-01T00:00:00+00:00"), indent=2
-        )
-        + "\n",
-        encoding="utf-8",
+    rewrite_recorded(
+        stale_status_path, dict(live_status, heartbeat_at="2000-01-01T00:00:00+00:00")
     )
     watchdog = coordinator_run(
         "dispatch", "status", "--batch", batch_id, "--stale-after", "60"
