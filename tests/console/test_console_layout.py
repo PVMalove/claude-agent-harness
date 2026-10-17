@@ -374,3 +374,28 @@ def test_diagnostics_layout(
             return layout_problems(screen, DIAGNOSTICS_TITLES)
 
     assert asyncio.run(scenario()) == []
+
+
+PROJECT_SETUP_TITLES = (".breadcrumbs",)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_open_project_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.console.runner import capturing_runner
+    from harness.console.screens.project_setup import ProjectSetupScreen
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            # Open project is dismissed with a path: only its result type differs from the others.
+            screen = cast(
+                Screen[None],
+                ProjectSetupScreen(tmp_path, command_runner=capturing_runner),
+            )
+            await _open(app, pilot, screen, language)
+            return layout_problems(screen, PROJECT_SETUP_TITLES)
+
+    assert asyncio.run(scenario()) == []

@@ -15,6 +15,7 @@ from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Button, Collapsible, Footer, ListItem, ListView, Static
+from typing_extensions import TypeVar
 
 from . import brand, i18n
 from .chrome import WorkspaceHeader
@@ -332,7 +333,11 @@ async def _pop_to(app: App[None], target: Screen[None]) -> None:
         await app.pop_screen()
 
 
-class ConsoleShell(Translated, Screen[None]):
+# What a shell screen hands back when it is dismissed; most return nothing.
+ShellResult = TypeVar("ShellResult", default=None)
+
+
+class ConsoleShell(Translated, Screen[ShellResult]):
     """The console's common frame: top bar, numbered main menu with the active section marked,
     breadcrumbs, a context strip, the screen's content, an optional context panel and the footer.
 
