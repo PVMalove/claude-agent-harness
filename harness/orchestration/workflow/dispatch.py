@@ -361,6 +361,11 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
         if candidate is None:
             candidate = _current_developer_candidate(repo, root, batch)
         snapshot = candidate or batch.get("branch_start_commit") or batch["base_commit"]
+        from harness.orchestration.workflow import preserved_progress
+
+        progress = preserved_progress.pending(batch)
+        if progress is not None:
+            preserved_progress.require_current(repo, root, batch, progress)
         package = _latest_context_package(root, batch)
         package_pointer: JsonObject = {}
         if package is not None:
@@ -777,6 +782,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             and purpose == "work"
             and not batch.get("environmental_restart")
         )
+        from harness.orchestration.workflow import preserved_progress
+
+        progress = preserved_progress.pending(batch) if rewind_writer else None
+        if progress is not None:
+            preserved_progress.require_current(repo, root, batch, progress)
         if rewind_writer:
             from harness.orchestration.workflow.decisions import (
                 _developer_retry_budget_exhausted,
@@ -1289,6 +1299,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]
             )
+        if progress is not None:
+            brief["preserved_progress"] = progress
         if policy_source is not None:
             infrastructure_retry.require_same_contract(policy_source, brief)
         if batch.get("environmental_restart"):
