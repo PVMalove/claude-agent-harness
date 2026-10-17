@@ -90,10 +90,11 @@ def test_install_seeds_test_author_but_leaves_it_disabled_without_opt_in(
         ".harness/skills/tdd/SKILL.md",
     ):
         assert (repo / relative).is_file(), relative
-    assert (repo / ".claude/hooks/test-author-guard.py").stat().st_mode & stat.S_IXUSR
-    assert (
-        repo / ".claude/hooks/test-author-preflight.sh"
-    ).stat().st_mode & stat.S_IXUSR
+    if sys.platform != "win32":
+        assert (repo / ".claude/hooks/test-author-guard.py").stat().st_mode & stat.S_IXUSR
+        assert (
+            repo / ".claude/hooks/test-author-preflight.sh"
+        ).stat().st_mode & stat.S_IXUSR
     registry = (repo / ".harness/skills/REGISTRY.md").read_text(encoding="utf-8")
     assert "| `tdd` | `.harness/skills/tdd` |" in registry
     settings = (repo / ".claude/settings.local.json").read_text(encoding="utf-8")
