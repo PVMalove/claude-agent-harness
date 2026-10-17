@@ -26,6 +26,8 @@ EN: dict[str, str] = {
     "НАБЛЮДЕНИЕ · БЕЗ LLM\n\nОткрытие сессии подключает локальный монитор. Новый worker не запускается.": "OBSERVATION · NO LLM\n\nOpening a session attaches a local monitor. No new worker is started.",
     "Наблюдение за работой": "Worker observation",
     "Наблюдение": "Observation",
+    "Worker / Наблюдение": "Worker / Observation",
+    "Контекст запуска": "Launch context",
     "Сессия": "Session",
     "Сессии": "Sessions",
     "События": "Events",

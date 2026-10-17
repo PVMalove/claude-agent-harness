@@ -648,3 +648,40 @@ def test_status_badge_is_shown_whole_and_not_under_a_scrollbar(
     width, needed, under = asyncio.run(scenario())
     assert width >= needed
     assert not under
+
+
+def test_worker_crumb_and_context_title_are_english_at_120x40(tmp_path: Path) -> None:
+    from textual.widgets import Collapsible
+
+    async def scenario() -> tuple[str, str, str, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=_blocked_snapshot
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.language == "en"
+            crumb = str(screen.query_one(".crumb-current", Static).content)
+            title = screen.query_one(Collapsible).title
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            return (
+                crumb,
+                title,
+                str(screen.query_one(".crumb-current", Static).content),
+                screen.query_one(Collapsible).title,
+            )
+
+    crumb, title, crumb_ru, title_ru = asyncio.run(scenario())
+    assert crumb == "Worker / Observation"
+    assert title == "Launch context"
+    assert crumb_ru == "Worker / Наблюдение"
+    assert title_ru == "Контекст запуска"
