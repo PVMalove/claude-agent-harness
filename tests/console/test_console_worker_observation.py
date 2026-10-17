@@ -576,7 +576,9 @@ def test_worker_breadcrumbs_link_back_to_orchestration_and_home(tmp_path: Path) 
 
     links, back_on_orchestration, on_dashboard, depth = asyncio.run(scenario())
     assert links[:2] == ["Главная", "Оркестрация"]
-    assert len(links) == 3  # the observed batch links too
+    assert (
+        len(links) == 2
+    )  # no batch timeline in this project: the batch crumb is plain text
     assert back_on_orchestration and on_dashboard and depth == 2
 
 
@@ -685,3 +687,46 @@ def test_worker_crumb_and_context_title_are_english_at_120x40(tmp_path: Path) ->
     assert title == "Launch context"
     assert crumb_ru == "Worker / Наблюдение"
     assert title_ru == "Контекст запуска"
+
+
+def test_the_batch_crumb_is_a_link_only_when_the_batch_timeline_exists(
+    tmp_path: Path,
+) -> None:
+    from tests.console._console_ledger_fixture import build_reports_fixture
+    from harness.console.screens.reports import BatchTimelineScreen
+    from harness.console.shell import CrumbLink
+
+    build_reports_fixture(tmp_path)
+
+    def snapshot(batch: str) -> Callable[[Path, str, int], JsonObject]:
+        def observe(_repo: Path, _dispatch: str, _offset: int) -> JsonObject:
+            return {**_blocked_snapshot(_repo, _dispatch, _offset), "batch_id": batch}
+
+        return observe
+
+    async def scenario(batch: str) -> tuple[list[str], str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 40)) as pilot:
+            await pilot.pause()
+            screen = WorkerObservationScreen(
+                tmp_path, _LONG_ID, observer=snapshot(batch)
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            crumbs = screen.query_one(Breadcrumbs)
+            links = [str(link.content) for link in crumbs.query(CrumbLink)]
+            shown = crumbs.text
+            if len(links) == 3:
+                list(crumbs.query(CrumbLink))[-1].focus()
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.pause()
+            return links, shown, isinstance(app.screen, BatchTimelineScreen)
+
+    links, shown, opened = asyncio.run(scenario("batch-flow"))
+    assert links == ["Главная", "Оркестрация", "batch-flow"] and opened
+    links, shown, opened = asyncio.run(scenario("batch-unknown"))
+    assert links == ["Главная", "Оркестрация"]
+    assert shown.endswith("batch-unknown  ›  Worker / Наблюдение")

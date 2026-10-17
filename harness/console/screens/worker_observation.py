@@ -208,6 +208,7 @@ class WorkerObservationScreen(ConsoleShell):
         ordered = sorted(view.stages, key=lambda stage: stage.at, reverse=True)
         ordered.sort(key=lambda stage: stage.finished)
         self._stages = {stage.dispatch_id: stage for stage in ordered}
+        self._batches = {batch.batch_id for batch in view.batches}
         self._choices = [
             (f"{stage.ticket} · {stage.role}", stage.dispatch_id) for stage in ordered
         ]
@@ -547,12 +548,15 @@ class WorkerObservationScreen(ConsoleShell):
         return row
 
     def _worker_crumbs(self, snapshot: JsonObject) -> list[Crumb]:
-        """The path with the observed batch, which links to that batch's timeline."""
+        """The path with the observed batch, which links to that batch's timeline when there is one."""
         batch = str(snapshot.get("batch_id") or "—")
         return [
             Crumb("Главная", section=HOME_SECTION),
             Crumb("Оркестрация", section="Orchestration"),
-            Crumb(brand.shorten(batch, 23), action="open_batch"),
+            Crumb(
+                brand.shorten(batch, 23),
+                action="open_batch" if batch in self._batches else None,
+            ),
             Crumb("Worker / Наблюдение"),
         ]
 
