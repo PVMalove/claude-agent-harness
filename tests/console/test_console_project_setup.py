@@ -370,3 +370,139 @@ def test_capability_change_keeps_install_disabled_during_diagnostics(
                 release.set()
 
     asyncio.run(scenario())
+
+
+# -- Open project on the shared shell --------------------------------------------------------
+
+
+def test_open_project_sits_on_the_shell_and_digits_typed_in_the_path_stay_there(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import ListItem, ListView
+
+    from harness.console.shell import SECTIONS, Breadcrumbs
+    from tests.console._pilot_wait import crumb_text
+
+    async def scenario() -> tuple[str, list[str | None], int | None, bool, str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.press("p")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
+            screen = app.screen
+            menu = screen.query_one("#shell-sections", ListView)
+            active = [
+                item.name for item in menu.query(ListItem) if item.has_class("-active")
+            ]
+            crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
+            field = screen.query_one("#project-path", Input)
+            focused = field.has_focus
+            await pilot.press("2", "6")
+            await pilot.pause()
+            typed = field.value
+            # Typing into the path opens no section; the section's own number is a no-op too.
+            stayed = app.screen is screen
+            field.blur()
+            await pilot.press("1")
+            await pilot.pause()
+            return (
+                crumbs,
+                active,
+                menu.index,
+                focused,
+                typed,
+                stayed and (app.screen is screen),
+            )
+
+    crumbs, active, index, focused, typed, stayed = asyncio.run(scenario())
+    assert crumbs == "Главная  ›  Открыть проект"
+    assert active == ["Open project"]
+    assert index == SECTIONS.index("Open project")
+    assert focused and typed.endswith("26") and stayed
+
+
+def test_escape_cancels_with_none_and_the_menu_opens_another_section(
+    tmp_path: Path,
+) -> None:
+    results: list[object] = []
+
+    async def scenario() -> tuple[bool, bool, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = ProjectSetupScreen(tmp_path, command_runner=lambda *a, **k: None)  # type: ignore[arg-type]
+            await app.push_screen(screen, results.append)
+            await wait_until(pilot, lambda: app.screen is screen)
+            screen.query_one("#project-path", Input).blur()
+            await pilot.press("6")  # Reports opens on top of the screen
+            await wait_until(pilot, lambda: app.screen is not screen)
+            above = app.screen is not screen
+            await pilot.press("escape")
+            await wait_until(pilot, lambda: app.screen is screen)
+            back = app.screen is screen and results == []
+            await pilot.press("escape")
+            await wait_until(pilot, lambda: app.screen is not screen)
+            return above, back, isinstance(app.screen, DashboardScreen)
+
+    above, back, home = asyncio.run(scenario())
+    assert above and back and home
+    assert results == [None]
+
+
+def test_the_section_menu_waits_for_a_running_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> tuple[bool, bool, list[str]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.press("p")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
+            screen = app.screen
+            assert isinstance(screen, ProjectSetupScreen)
+            notes: list[str] = []
+            monkeypatch.setattr(
+                screen, "notify", lambda message, **_: notes.append(message)
+            )
+            screen.query_one("#project-path", Input).blur()
+            screen._set_busy(True)
+            await pilot.press("6")
+            await pilot.pause()
+            number_ignored = app.screen is screen
+            await pilot.press("escape")
+            await pilot.pause()
+            escape_ignored = app.screen is screen
+            screen._set_busy(False)
+            await pilot.press("6")
+            # Times out unless the section opens once the operation is over.
+            await wait_until(pilot, lambda: app.screen is not screen)
+            return number_ignored, escape_ignored, notes
+
+    number_ignored, escape_ignored, notes = asyncio.run(scenario())
+    assert number_ignored and escape_ignored
+    assert notes == ["Дождитесь окончания операции"] * 2
+
+
+def test_the_busy_note_has_an_english_text() -> None:
+    from harness.console import i18n
+
+    assert (
+        i18n.tr("en", "Дождитесь окончания операции")
+        == "Wait for the operation to finish"
+    )
+
+
+def test_setup_output_marks_report_statuses_but_not_plain_list_items() -> None:
+    from harness.console.screens.diagnostics import styled_log
+
+    text = "- установка\nИтого: ok=1 warn=0 fail=1 skipped=1\n[FAIL] env.uv: нет\n- net: офлайн"
+    assert styled_log(text).plain.split("\n") == [
+        "- установка",
+        "Итого: ✔ ok=1 ⚠ warn=0 ✖ fail=1 ○ skipped=1",
+        "✖ [FAIL] env.uv: нет",
+        "○ - net: офлайн",
+    ]
+
+
+def test_styled_log_ignores_foreign_lines_that_only_look_like_a_report_total() -> None:
+    from harness.console.screens.diagnostics import styled_log
+
+    text = "Итого: 3 файла\n- элемент списка"
+    assert styled_log(text).plain == text

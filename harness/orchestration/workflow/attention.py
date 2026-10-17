@@ -89,7 +89,10 @@ def _attention_findings(
         category = routing.get("reason_category")
         candidate = routing.get("candidate_commit")
         kept = f"the {routing.get('previous_role')} brief and report of {subject} stay as immutable evidence, candidate {_short(candidate)} is unchanged and no dispatch was created"
-        if category == "unknown":
+        if category == "unknown" and (
+            not isinstance(decision, dict)
+            or not decision.get("unknown_reason_acknowledged")
+        ):
             findings.append(
                 operational_guards.attention_finding(
                     "unknown-reason",

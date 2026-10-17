@@ -85,6 +85,11 @@ def test_memory_is_enabled_with_default_sources_then_indexed(tmp_path: Path) -> 
     }
     enabled = memory_status(tmp_path)
     assert (enabled.enabled, enabled.active, enabled.indexed) == (True, True, None)
+    # The search limits come from the same policy.
+    assert (enabled.top_k, enabled.max_tokens) == (
+        DEFAULT_MEMORY_POLICY["top_k"],
+        DEFAULT_MEMORY_POLICY["max_tokens"],
+    )
     assert memory_build(tmp_path)["indexed"] == 2
     assert memory_status(tmp_path).indexed == 2
 

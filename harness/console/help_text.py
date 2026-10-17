@@ -32,6 +32,7 @@ init/adopt/update. Установка требует подтверждения 
 | Клавиша | Действие |
 | --- | --- |
 | `↑` `↓` `Enter` | Выбор пункта меню |
+| `0` | Вернуться на главный экран |
 | `1` | Открыть или подключить проект |
 | `2` | Открыть экран обновления Harness: версии, дрейф, diff, режим и подтверждённый запуск |
 | `3`–`9` | Открыть раздел на главном экране: Diagnostics, Harness, Orchestration, Reports, Repo Map, Configuration, Help |
@@ -48,6 +49,8 @@ init/adopt/update. Установка требует подтверждения 
 | `F2` | Язык меню: русский / English (по умолчанию из `HARNESS_CONSOLE_LANG`) |
 | `Ctrl+P` | Палитра команд |
 | `Ctrl+Q` | Выход |
+
+Статусы проверок показаны символом и словом, а не только цветом: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
 
 ## Безопасность
 
@@ -98,6 +101,7 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | Key | Action |
 | --- | --- |
 | `↑` `↓` `Enter` | Choose a menu item |
+| `0` | Back to the home screen |
 | `1` | Open or connect a project |
 | `2` | Open the Harness update screen: versions, drift, diff, mode and a confirmed run |
 | `3`–`9` | Open a section from the home screen: Diagnostics, Harness, Orchestration, Reports, Repo Map, Configuration, Help |
@@ -114,6 +118,8 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | `F2` | Menu language: Russian / English (default from `HARNESS_CONSOLE_LANG`) |
 | `Ctrl+P` | Command palette |
 | `Ctrl+Q` | Quit |
+
+Check statuses are shown as a symbol and a word, not by colour alone: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
 
 ## Safety
 

@@ -185,6 +185,31 @@ def _probe(need: _Need) -> tuple[str, str]:
     return "verified", "writable"
 
 
+def _probe_ledger_lock(root: Path) -> tuple[str, str]:
+    """Take and release the real coordinator lock; another holder proves the state is writable.
+
+    `report submit` takes this lock while `dispatch heartbeat` does not, so a file written in the
+    state directory does not prove a worker can submit."""
+    from .ledger.lifecycle import (
+        LedgerError,
+        LedgerLockBusy,
+        LedgerSandboxDenied,
+        LifecycleLedger,
+    )
+
+    try:
+        with LifecycleLedger(root).lock():
+            return "verified", "lock taken and released"
+    except LedgerLockBusy:
+        return "verified", "lock held by another operation; the state is writable"
+    except LedgerSandboxDenied as exc:
+        return "denied", exc.message
+    except LedgerError as exc:
+        return "unverified", exc.message
+    except OSError as exc:
+        return _refusal(exc)
+
+
 def _refusal(exc: OSError) -> tuple[str, str]:
     refused = exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS)
     # os.strerror(0) is "Success": an error without an errno names itself instead.
@@ -442,3 +467,63 @@ def require(
         remote=remote,
         dispatch_bound=brief is not None,
     )
+
+
+def probe_worker_resources(
+    repo: Path, brief: JsonObject, *, state_dir: Path | None = None
+) -> JsonObject:
+    """Exercise role resources in the caller's context, using the operation probe contract.
+
+    The adapter calls this in its own context; the worker repeats it through its native tool
+    before task work. An adapter-side success alone is never proof of native worker access.
+    """
+    from .core.constants import STATE_REL
+    from .core.workspace import _agent_inbox
+
+    checkout = Path(brief["worktree"]).resolve()
+    plan = brief.get("runtime_access")
+    if not isinstance(plan, dict) or not plan.get("requirements"):
+        # Enumerate the same mandatory roots for a historical inherit plan. This is only an
+        # access probe; it neither changes the pinned plan nor grants additional permissions.
+        plan = resolve_plan(
+            repo, checkout, {"access_policy": {}}, brief["role"], brief["access"]
+        )
+    needs = [
+        _Need(
+            item["resource"],
+            item["access"],
+            item["resource"],
+            Path(item["path"]),
+            Path(item["path"]),
+            item["resource"] in {"cache", "artifacts"},
+        )
+        for item in plan["requirements"]
+    ]
+    ledger_path = state_dir or repo / STATE_REL
+    inbox = _agent_inbox(repo)
+    needs.extend(
+        [
+            _Need("ledger", "write", "ledger", ledger_path, ledger_path, True),
+            _Need("inbox", "write", "report inbox", inbox, inbox, True),
+        ]
+    )
+    probes = [(need.resource, need.path, need.access, _probe(need)) for need in needs]
+    probes.append(
+        ("ledger_lock", ledger_path, "write", _probe_ledger_lock(ledger_path))
+    )
+    checks = [
+        {
+            "requirement": resource,
+            "path": str(path),
+            "access": access,
+            "state": state,
+            "reason": reason,
+        }
+        for resource, path, access, (state, reason) in probes
+    ]
+    return {
+        "checks": checks,
+        "ready": all(check["state"] == "verified" for check in checks),
+        "scope": "current process only",
+        "native_worker_access": "unverified",
+    }
