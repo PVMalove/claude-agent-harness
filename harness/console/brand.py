@@ -30,22 +30,34 @@ PALETTE = {
     "background": "#1F1E1C",
     "surface": "#262523",
     "panel": "#2E2C29",
-    "muted": "#9C958C",
+    "muted": "#AAA398",
 }
 
 # Tones of the workspace shell that Textual's theme has no slot for. CSS refers to them as
 # `$border-subtle`, `$selection-background` and so on; `shell_css` resolves them, so a screen's
 # CSS works in any host app, not only in one that registered the harness theme.
 SHELL_TOKENS = {
-    "border-subtle": "#38352f",
+    # A decorative divider stays faint; a component's own edge (button, field, list, note) must
+    # reach 3:1 against the surface, like the selection edge and the scrollbar.
+    "border-subtle": "#3a3731",
+    "component-border": "#847d70",
     "selection-background": "#45332c",
     "selection-foreground": "#f6baa3",
+    "selection-edge": "#d97757",
     "row-highlight": "#35302b",
-    "control-border": "#51483d",
-    "scrollbar-thumb": "#605746",
-    "scrollbar-track": "#555555",
+    "scrollbar-thumb": "#f2ece1",
+    "scrollbar-track": "#8a8378",
     "event-background": "#292621",
     "event-active-background": "#423029",
+}
+# One colour per worker role, so a role reads the same on the dashboard and in the worker view.
+ROLE_COLORS = {
+    "architect": "#B79CED",
+    "developer": "#E58A6A",
+    "code-review": "#E5A04B",
+    "qa": "#6FB7C9",
+    "publish": "#8FB573",
+    "verification": "#7FA3E0",
 }
 _SHELL_TOKEN = re.compile(
     r"\$(" + "|".join(sorted(SHELL_TOKENS, key=len, reverse=True)) + r")(?![\w-])"

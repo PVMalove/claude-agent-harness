@@ -14,6 +14,7 @@ from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
@@ -29,9 +30,8 @@ from .. import ledger_lock
 from .. import reports as console_reports
 from .. import stats as console_stats
 from ..coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand, process_argv
-from ..logtext import colorize_overview
 from ..runner import CommandRunner, capturing_runner
-from ..shell import ConsoleShell
+from ..shell import SHELL_CSS, ConsoleShell, FieldGrid
 from ..widgets import CheckBox
 from .commands import (
     CommandForm,
@@ -130,12 +130,34 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
     CRUMBS = "Главная › Оркестрация"
     SECTION = "Orchestration"
 
-    DEFAULT_CSS = """
+    # The shell's rules plus this screen's own. Textual matches a type selector along the first base
+    # class only, so `CommandMenuScreen` rules never reach this screen: everything it needs is here.
+    CSS = SHELL_CSS + brand.shell_css("""
+    OrchestrationScreen #orchestration-page { height: 1fr; padding: 0 2; }
+    OrchestrationScreen #orchestration-header { height: auto; margin-bottom: 1; }
+    OrchestrationScreen #orchestration-title { width: auto; height: 1; text-style: bold; padding-right: 2; }
+    OrchestrationScreen #orchestration-subtitle { width: 1fr; height: 1; color: $text-muted; }
+    OrchestrationScreen .overview { height: auto; margin: 0 0 1 0; padding: 0 1; border: round $component-border; border-title-color: $primary; }
+    OrchestrationScreen #pipeline-stats { layout: horizontal; }
+    OrchestrationScreen #pipeline-stats .field-column { width: 1fr; padding-right: 2; }
     OrchestrationScreen #ledger-lock { height: auto; }
-    OrchestrationScreen #pipeline-history { height: 11; max-height: 40%; margin: 0 1; }
+    OrchestrationScreen #pipeline-history { height: 11; margin: 0 0 1 0; }
     OrchestrationScreen #state-filter { width: 32; height: 100%; border-title-color: $primary; }
     OrchestrationScreen #batch-history { width: 1fr; height: 100%; border-title-color: $primary; }
-    """
+    OrchestrationScreen #command-body { height: 16; margin: 0 0 1 0; }
+    OrchestrationScreen #command-menu { height: 1fr; margin: 0; border: round $component-border; border-title-color: $primary; }
+    OrchestrationScreen #command-menu:focus { border: round $primary; }
+    OrchestrationScreen.-wide #command-menu, OrchestrationScreen.-spacious #command-menu { width: 48; }
+    OrchestrationScreen #command-detail-scroll { height: 1fr; padding: 0 1; border: round $component-border; border-title-color: $primary; }
+    OrchestrationScreen #command-output-scroll { height: 8; margin: 0; padding: 0 1; border: round $component-border; border-title-color: $primary; }
+    OrchestrationScreen #command-menu > ListItem { height: 1; padding: 0 1; }
+    OrchestrationScreen #command-menu Static { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    OrchestrationScreen .group-title { color: $text-muted; text-style: bold; }
+    OrchestrationScreen.-narrow #orchestration-subtitle { display: none; }
+    OrchestrationScreen.-narrow #orchestration-title { width: 1fr; }
+    OrchestrationScreen.-narrow #command-body { layout: vertical; height: 22; }
+    OrchestrationScreen.-narrow #command-detail-scroll { height: 6; }
+    """)
 
     def __init__(
         self,
@@ -162,8 +184,20 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
     def compose_strip(self) -> ComposeResult:
         yield Static(str(self.repo), classes="no-i18n", markup=False)
 
+    def _sessions_label(self) -> str:
+        active = sum(1 for stage in self._view.stages if not stage.finished)
+        return f"Рабочие сессии · {active}"
+
     def compose_content(self) -> ComposeResult:
-        yield from self.compose_commands()
+        with VerticalScroll(id="orchestration-page"):
+            with Horizontal(id="orchestration-header"):
+                yield Static("Оркестрация", id="orchestration-title")
+                yield Static(
+                    "Пайплайн batch, рабочие сессии и команды координатора.",
+                    id="orchestration-subtitle",
+                )
+                yield Button(self._sessions_label(), id="worker-sessions", compact=True)
+            yield from self.compose_commands()
 
     def sync_language(self) -> None:
         ConsoleShell.sync_language(self)
@@ -173,18 +207,34 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
         """Статистика пайплайна и история batch: слева состояния с числом batch, справа batch
         выбранного состояния."""
         view = self._view
+        panel: Widget
         if view.unavailable:
-            text = f"Оркестрация: {view.unavailable}"
+            panel = Static(
+                view.unavailable, id="pipeline-stats", classes="overview", markup=False
+            )
+            panel.i18n_source = view.unavailable  # type: ignore[attr-defined]
         else:
-            text = console_stats.pipeline_stats_text(console_stats.pipeline_stats(view))
-        panel = Static(
-            colorize_overview(text),
-            id="pipeline-stats",
-            classes="overview",
-            markup=False,
-        )
+            fields = console_stats.pipeline_stats_fields(
+                console_stats.pipeline_stats(view)
+            )
+            panel = (
+                FieldGrid(
+                    fields,
+                    translate_values=True,
+                    id="pipeline-stats",
+                    classes="field-grid overview",
+                )
+                if fields
+                else Static(
+                    console_stats.pipeline_stats_text(
+                        console_stats.pipeline_stats(view)
+                    ),
+                    id="pipeline-stats",
+                    classes="overview",
+                    markup=False,
+                )
+            )
         panel.border_title = brand.frame_title("Состояние и статистика")
-        panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
         lock = Static(
             ledger_lock.current_lock_text(self.repo, self._load_lock, self._language),
@@ -192,9 +242,8 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
             classes="overview",
             markup=False,
         )
-        lock.border_title = brand.frame_title("Lock ledger")
+        lock.border_title = brand.section_title("Lock ledger")
         yield lock
-        yield Button("Рабочие сессии", id="worker-sessions")
         if view.unavailable:
             return
         with Horizontal(id="pipeline-history"):
@@ -215,6 +264,9 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
         if not self._view.unavailable:
             self._show_batches(console_stats.ALL_STATES)
         self.set_interval(self._lock_refresh_seconds, self._refresh_lock)
+        # The command menu takes focus on arrival; the page still opens at its top.
+        page = self.query_one("#orchestration-page", VerticalScroll)
+        self.call_after_refresh(page.scroll_home, animate=False)
 
     def _refresh_lock(self) -> None:
         """Перечитать состояние lock ledger без его захвата и обновить панель.

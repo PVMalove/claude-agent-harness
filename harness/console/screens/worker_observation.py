@@ -28,9 +28,19 @@ from harness.orchestration.core.utils import JsonObject
 from .. import brand, i18n, reports
 from ..chrome import TopBar
 from ..runner import CommandRunner
+from ..session_card import session_card, status_caption
 from ..status import PERMISSION_PENDING, process_status, session_status
-from ..shell import SHELL_CSS, ConsoleShell, ShellIds
+from ..crumbs import Crumb
+from ..shell import (
+    HOME_SECTION,
+    SHELL_CSS,
+    Breadcrumbs,
+    ConsoleShell,
+    ShellIds,
+    WrappedValue,
+)
 from ..translate import Translated
+from ..wrap import wrap_value
 from .commands import call_from_worker
 
 Observer = Callable[[Path, str, int], JsonObject]
@@ -107,6 +117,7 @@ class WorkerObservationScreen(ConsoleShell):
     """A passive view. Closing/reconnecting never starts or terminates a worker."""
 
     SECTION = "Orchestration"
+    IS_SECTION_ROOT = False
     CRUMBS = "Главная › Оркестрация › Worker / Наблюдение"
     HAS_CONTEXT = True
     IDS = ShellIds(
@@ -118,8 +129,10 @@ class WorkerObservationScreen(ConsoleShell):
         body="worker-columns",
         context="worker-context",
     )
-    # Four panes (menu, sessions, stream, context) need more room than the shell's default.
-    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (130, "-wide"), (150, "-spacious")]
+    # Four panes (menu, sessions, stream, context) need more room than the shell's default: below
+    # 140 columns the context folds into a collapsible block under the stream.
+    CONTEXT_SIDE_MIN = 140
+    CONTEXT_TITLE = "Контекст запуска"
     BINDINGS = [
         Binding("r", "refresh", "Обновить"),
         *(Binding(f"alt+{i+1}", f"select_session({i})", show=False) for i in range(3)),
@@ -130,7 +143,7 @@ class WorkerObservationScreen(ConsoleShell):
     WorkerObservationScreen #worker-session-count { height: 2; padding: 0 1; color: $text-muted; }
     WorkerObservationScreen #worker-picker { height: 1fr; border: none; margin: 0; padding: 0; }
     WorkerObservationScreen #worker-picker > ListItem { height: auto; min-height: 7; padding: 1; border-left: solid transparent; }
-    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: $row-highlight; border-left: solid $primary; text-style: none; }
+    WorkerObservationScreen #worker-picker > ListItem.-highlight, WorkerObservationScreen #worker-picker:focus > ListItem.-highlight { background: $row-highlight; border-left: solid $selection-edge; text-style: none; }
     WorkerObservationScreen #worker-picker Static { height: auto; }
     WorkerObservationScreen #worker-list-foot { height: auto; border-top: solid $border-subtle; padding: 1; color: $text-muted; }
     WorkerObservationScreen #worker-main { width: 1fr; min-width: 0; height: 1fr; }
@@ -157,10 +170,11 @@ class WorkerObservationScreen(ConsoleShell):
     WorkerObservationScreen.-narrow #worker-sessions { display: none; }
     WorkerObservationScreen.-narrow.-sessions-open #worker-sessions { display: block; }
     WorkerObservationScreen.-narrow #worker-pipeline { height: 1; }
-    WorkerObservationScreen.-narrow #worker-heading { height: 1; min-height: 1; padding-top: 0; }
+    WorkerObservationScreen.-narrow #worker-heading { height: 1; min-height: 1; padding: 0 2; }
+    WorkerObservationScreen.-narrow #worker-title { height: 1; }
     WorkerObservationScreen.-narrow #worker-cost { display: none; }
     WorkerObservationScreen.-narrow #worker-output, WorkerObservationScreen.-narrow #worker-events { padding: 0 2; }
-    WorkerObservationScreen.-narrow #worker-badge { max-width: 20; }
+    WorkerObservationScreen.-narrow #worker-badge { max-width: 30; }
     WorkerObservationScreen.-focus #worker-navigation, WorkerObservationScreen.-focus #worker-sessions, WorkerObservationScreen.-focus #worker-context { display: none; }
     """)
     # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
@@ -170,9 +184,12 @@ class WorkerObservationScreen(ConsoleShell):
     .shell #worker-picker > ListItem.-highlight, .shell #worker-picker:focus > ListItem.-highlight {
         background: $row-highlight; color: $text; text-style: none;
     }
-    .shell #worker-actions Button { border: round $control-border; color: $text; }
+    .shell #worker-actions Button { border: round $component-border; color: $text; }
     .shell #worker-actions Button:hover, .shell #worker-actions Button:focus { border: round $primary; color: $primary; }
     .shell #worker-actions #worker-stop { color: $error; }
+    .shell.-wide #worker-actions { height: 2; padding: 0 1; }
+    .shell.-wide #worker-actions Button, .shell.-wide #worker-actions Button:hover, .shell.-wide #worker-actions Button:focus { border: none; height: 1; min-width: 0; padding: 0; margin-right: 0; }
+    .shell.-wide #worker-actions Button:focus { background: $selection-background; color: $selection-foreground; }
     """)
 
     def __init__(
@@ -191,6 +208,7 @@ class WorkerObservationScreen(ConsoleShell):
         ordered = sorted(view.stages, key=lambda stage: stage.at, reverse=True)
         ordered.sort(key=lambda stage: stage.finished)
         self._stages = {stage.dispatch_id: stage for stage in ordered}
+        self._batches = {batch.batch_id for batch in view.batches}
         self._choices = [
             (f"{stage.ticket} · {stage.role}", stage.dispatch_id) for stage in ordered
         ]
@@ -202,25 +220,25 @@ class WorkerObservationScreen(ConsoleShell):
 
     def _session_card(self, label: str, dispatch_id: str) -> Text:
         stage = self._stages.get(dispatch_id)
-        card = Text(label + "\n", style=brand.PALETTE["foreground"])
-        card.append(
-            brand.shorten(dispatch_id, 22) + "\n\n", style=brand.PALETTE["muted"]
+        language = getattr(self.app, "language", "ru")
+        if stage is None:
+            card = Text(
+                wrap_value(label, 18) + "\n\n", style=brand.PALETTE["foreground"]
+            )
+            return card.append_text(status_caption(session_status("unknown"), language))
+        return session_card(
+            ticket=stage.ticket,
+            role=stage.role,
+            dispatch_id=dispatch_id,
+            state=stage.state,
+            language=language,
+            id_limit=22,
+            stacked=True,
         )
-        state = stage.state if stage else "unknown"
-        status = session_status(state)
-        card.append(
-            status.render(getattr(self.app, "language", "ru")), style=status.color
-        )
-        return card
 
     def compose_strip(self) -> ComposeResult:
         yield Button("Сессии", id="worker-switch", compact=True)
-        yield Static(
-            "Выбранный batch / dispatch",
-            id="worker-selection",
-            classes="no-i18n",
-            markup=False,
-        )
+        yield WrappedValue("Выбранный batch / dispatch", id="worker-selection")
         yield Button("История batch →", id="worker-recovery", compact=True)
 
     def compose_content(self) -> ComposeResult:
@@ -311,11 +329,9 @@ class WorkerObservationScreen(ConsoleShell):
                         )
                     with TabPane("Доступы", id="access"):
                         with VerticalScroll(id="worker-access-scroll"):
-                            yield Static(
+                            yield WrappedValue(
                                 "Данные проверки ещё не получены",
                                 id="worker-access-facts",
-                                classes="no-i18n",
-                                markup=False,
                             )
                             yield Button(
                                 "Запрос native",
@@ -342,11 +358,8 @@ class WorkerObservationScreen(ConsoleShell):
             disabled=True,
             compact=True,
         )
-        yield Static(
-            "Ожидание данных сессии",
-            id="worker-context-facts",
-            classes="context-value no-i18n",
-            markup=False,
+        yield WrappedValue(
+            "Ожидание данных сессии", id="worker-context-facts", classes="context-value"
         )
         yield Static("ГОТОВНОСТЬ СРЕДЫ", classes="context-label")
         yield Static(
@@ -370,8 +383,6 @@ class WorkerObservationScreen(ConsoleShell):
         )
 
     def on_mount(self) -> None:
-        # The breadcrumbs carry the observed batch: the screen writes them, nothing translates them.
-        self.query_one("#worker-breadcrumbs", Static).add_class("no-i18n")
         if self._choices:
             self.query_one("#worker-picker", ListView).index = next(
                 (
@@ -536,6 +547,28 @@ class WorkerObservationScreen(ConsoleShell):
             row.append("  —   " + text + "\n\n", style=brand.PALETTE[color])
         return row
 
+    def _worker_crumbs(self, snapshot: JsonObject) -> list[Crumb]:
+        """The path with the observed batch, which links to that batch's timeline when there is one."""
+        batch = str(snapshot.get("batch_id") or "—")
+        return [
+            Crumb("Главная", section=HOME_SECTION),
+            Crumb("Оркестрация", section="Orchestration"),
+            Crumb(
+                brand.shorten(batch, 23),
+                action="open_batch" if batch in self._batches else None,
+            ),
+            Crumb("Worker / Наблюдение"),
+        ]
+
+    def action_open_batch(self) -> None:
+        from .reports import BatchTimelineScreen
+
+        timeline = reports.load_ledger_view(self.repo).timeline(
+            self.snapshot.get("batch_id", "")
+        )
+        if timeline:
+            self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
+
     def _paint_context(
         self, snapshot: JsonObject, worker: str, lines: list[str]
     ) -> None:
@@ -577,16 +610,8 @@ class WorkerObservationScreen(ConsoleShell):
                 else brand.PALETTE["muted"],
             )
         self.query_one("#worker-pipeline", Static).update(pipeline)
-        self.query_one("#worker-breadcrumbs", Static).update(
-            t("Главная")
-            + "  ›  "
-            + t("Оркестрация")
-            + "  ›  "
-            + brand.shorten(str(snapshot.get("batch_id") or "—"), 23)
-            + "  ›  Worker / "
-            + t("Наблюдение")
-        )
-        self.query_one("#worker-selection", Static).update(
+        self.query_one(Breadcrumbs).set_crumbs(self._worker_crumbs(snapshot))
+        self.query_one("#worker-selection", WrappedValue).set_value(
             f"{ticket} · {role} · {snapshot.get('dispatch_id') or ''}"
         )
         path = str(snapshot.get("worktree") or "—")
@@ -600,7 +625,7 @@ class WorkerObservationScreen(ConsoleShell):
         if reason:
             facts += f"Причина блокировки\n{reason}\n\n"
         facts += f"Runtime-сессия\n{snapshot.get('runtime_session_id') or t('не наблюдался')}\n\nWorktree\n{path}\n\nSnapshot\n{snapshot.get('snapshot_commit') or t('не наблюдался')}\n\nМодель / effort\n{snapshot.get('model') or '—'} / {snapshot.get('effort') or '—'}\n\nРежим запуска\n{snapshot.get('access_mode') or 'inherit'}"
-        self.query_one("#worker-context-facts", Static).update(t(facts))
+        self.query_one("#worker-context-facts", WrappedValue).set_value(t(facts))
         model_report = snapshot.get("model_self_report") or {}
         tree = snapshot.get("worktree_attestation") or {}
         checks = Text()
@@ -626,7 +651,7 @@ class WorkerObservationScreen(ConsoleShell):
                 ],
             )
         self.query_one("#worker-readiness", Static).update(checks)
-        self.query_one("#worker-access-facts", Static).update(
+        self.query_one("#worker-access-facts", WrappedValue).set_value(
             t(facts)
             + "\n\n"
             + checks.plain
@@ -794,13 +819,7 @@ class WorkerObservationScreen(ConsoleShell):
             )
             self.app.push_screen(WorkerDetails("\n".join(lines)))
         elif event.button.id == "worker-recovery":
-            from .reports import BatchTimelineScreen
-
-            timeline = reports.load_ledger_view(self.repo).timeline(
-                self.snapshot.get("batch_id", "")
-            )
-            if timeline:
-                self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
+            self.action_open_batch()
         elif event.button.id == "worker-back":
             self.app.pop_screen()
 

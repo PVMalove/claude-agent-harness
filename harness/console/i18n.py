@@ -15,6 +15,7 @@ LANGUAGES = ("ru", "en")
 LANGUAGE_ENV = "HARNESS_CONSOLE_LANG"
 
 _SECTIONS = {
+    "Home": {"ru": "Главная", "en": "Home"},
     "Open project": {"ru": "Открыть проект", "en": "Open project"},
     "Update Harness": {"ru": "Обновить Harness", "en": "Update Harness"},
     "Diagnostics": {"ru": "Диагностика", "en": "Diagnostics"},

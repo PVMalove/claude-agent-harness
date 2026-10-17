@@ -7,20 +7,26 @@ from dataclasses import dataclass
 
 from rich.table import Table
 from rich.text import Text
-from textual.app import ComposeResult
+from textual import events
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Button, Footer, ListItem, ListView, Static
+from textual.widgets import Button, Collapsible, Footer, ListItem, ListView, Static
 
 from . import brand, i18n
 from .chrome import WorkspaceHeader
+from .crumbs import ELLIPSIS, Crumb, collapse_crumbs, split_path
+from .wrap import wrap_value
 from .translate import Translated
 
 CONFIGURATION_SECTION = "Configuration"
-# The numbered main menu, in the order of the number keys.
+HOME_SECTION = "Home"
+# The numbered main menu, in the order of the number keys 0-9.
 SECTIONS = (
+    HOME_SECTION,
     "Open project",
     "Update Harness",
     "Diagnostics",
@@ -48,10 +54,115 @@ class ShellSidebar(Vertical):
             yield Static(self.context, classes="menu-context", markup=False)
 
 
+class CrumbLink(Static, can_focus=True):
+    """A breadcrumb segment that opens its screen on a click or on Enter."""
+
+    BINDINGS = [Binding("enter", "select", show=False)]
+
+    class Selected(Message):
+        def __init__(self, crumb: Crumb) -> None:
+            super().__init__()
+            self.crumb = crumb
+
+    def __init__(self, crumb: Crumb, text: str) -> None:
+        super().__init__(text, classes="crumb-link no-i18n", markup=False)
+        self.crumb = crumb
+
+    def on_click(self) -> None:
+        self.post_message(self.Selected(self.crumb))
+
+    def action_select(self) -> None:
+        self.post_message(self.Selected(self.crumb))
+
+
+class Breadcrumbs(Horizontal):
+    """The path to the current screen: every segment but the last is a link, and a narrow terminal
+    folds the middle segments into an ellipsis."""
+
+    DEFAULT_CLASSES = "breadcrumbs"
+
+    def __init__(self, crumbs: Sequence[Crumb], *, id: str) -> None:
+        super().__init__(id=id)
+        self._crumbs = list(crumbs)
+        self._key: tuple[tuple[str, ...], tuple[int | None, ...]] = ((), ())
+
+    def set_crumbs(self, crumbs: Sequence[Crumb]) -> None:
+        self._crumbs = list(crumbs)
+        self.relabel()
+
+    def _labels(self) -> list[str]:
+        language = getattr(self.app, "language", "ru")
+        return [i18n.tr_text(language, crumb.label) for crumb in self._crumbs]
+
+    def _shown(self, labels: Sequence[str]) -> list[int | None]:
+        width = self.content_size.width or self.app.size.width
+        return collapse_crumbs(labels, width)
+
+    def relabel(self) -> None:
+        """Redraw the segments after a change of the path, the language or the width."""
+        if not self.is_attached:
+            return
+        labels = self._labels()
+        shown = self._shown(labels)
+        key = (tuple(labels), tuple(shown))
+        if key == self._key:
+            return
+        self._key = key
+        last = len(self._crumbs) - 1
+        parts: list[Widget] = []
+        for position, index in enumerate(shown):
+            if position:
+                parts.append(Static(" › ", classes="crumb-sep no-i18n", markup=False))
+            if index is None:
+                parts.append(Static(ELLIPSIS, classes="crumb-sep no-i18n"))
+                continue
+            crumb = self._crumbs[index]
+            if index == last:
+                parts.append(
+                    Static(labels[index], classes="crumb-current no-i18n", markup=False)
+                )
+            elif crumb.is_link:
+                parts.append(CrumbLink(crumb, labels[index]))
+            else:
+                parts.append(
+                    Static(labels[index], classes="crumb-text no-i18n", markup=False)
+                )
+        self.remove_children()
+        self.mount_all(parts)
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def on_resize(self) -> None:
+        self.relabel()
+
+
 class ContextStrip(Horizontal):
     """One line (wrapping when it must) under the breadcrumbs: what the screen is about."""
 
     DEFAULT_CLASSES = "context-strip"
+
+
+class WrappedValue(Static):
+    """A value without spaces - a path, an ID, a branch - that wraps at its separators."""
+
+    DEFAULT_CLASSES = "no-i18n"
+
+    def __init__(self, value: str = "", **kwargs: object) -> None:
+        super().__init__(value, markup=False, **kwargs)  # type: ignore[arg-type]
+        self._value = value
+
+    def set_value(self, value: str) -> None:
+        self._value = value
+        self._wrap()
+
+    def _wrap(self) -> None:
+        text = wrap_value(self._value, self.content_size.width)
+        if text != self.content:
+            self.update(text)
+
+    def on_resize(self) -> None:
+        self._wrap()
 
 
 class ContextPanel(VerticalScroll):
@@ -68,10 +179,16 @@ class FieldGrid(Widget):
     DEFAULT_CLASSES = "field-grid"
 
     def __init__(
-        self, fields: Sequence[tuple[str, str]] = (), **kwargs: object
+        self,
+        fields: Sequence[tuple[str, str]] = (),
+        *,
+        translate_values: bool = False,
+        **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
         self._fields = tuple(fields)
+        # Values the screen writes in Russian (statistics) follow the language; data (IDs, paths) does not.
+        self._translate_values = translate_values
 
     def _columns(self) -> ComposeResult:
         half = (len(self._fields) + 1) // 2
@@ -92,10 +209,13 @@ class FieldGrid(Widget):
     def compose(self) -> ComposeResult:
         yield from self._columns()
 
-    def _cell(self, label: str, value: str) -> Text:
+    def _cell(self, label: str, value: str, width: int = 0) -> Text:
         language = getattr(self.app, "language", "ru")
+        if self._translate_values:
+            value = i18n.tr_text(language, value)
         return Text.assemble(
-            (i18n.tr(language, label) + "\n", brand.PALETTE["muted"]), value or "—"
+            (i18n.tr(language, label) + "\n", brand.PALETTE["muted"]),
+            wrap_value(value or "—", width),
         )
 
     def set_fields(self, fields: Sequence[tuple[str, str]]) -> None:
@@ -105,10 +225,16 @@ class FieldGrid(Widget):
         self.mount_all(self._columns())
 
     def relabel(self) -> None:
+        """Redraw the cells for the current language and width: a value breaks at its separators."""
         for cell, (label, value) in zip(
             self.query(".field").results(Static), self._fields
         ):
-            cell.update(self._cell(label, value))
+            text = self._cell(label, value, cell.content_size.width)
+            if text != cell.content:
+                cell.update(text)
+
+    def on_resize(self) -> None:
+        self.relabel()
 
 
 @dataclass(frozen=True)
@@ -129,25 +255,31 @@ class ShellIds:
 # single screen's widgets belong to that screen, never here.
 SHELL_CSS = brand.shell_css("""
 Screen.shell { background: $background; }
-.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; content-align: left middle; border-bottom: solid $border-subtle; color: $text; }
+.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $text; }
+.shell .breadcrumbs Static { width: auto; height: 1; }
+.shell .crumb-link { color: $primary; text-style: underline; }
+.shell .crumb-link:hover { background: $row-highlight; color: $selection-foreground; }
+.shell .crumb-link:focus { background: $selection-background; color: $selection-foreground; text-style: bold underline; }
+.shell .crumb-sep { color: $text-muted; }
+.shell .crumb-current { width: 1fr; min-width: 1; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
 .shell .context-strip { height: auto; min-height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
 .shell .context-strip Static { width: 1fr; height: auto; }
-.shell Button { min-width: 8; width: auto; color: $text; border: round $control-border; text-style: none; }
+.shell Button { min-width: 8; width: auto; color: $text; border: round $component-border; text-style: none; }
 .shell Button:hover, .shell Button:focus { border: round $primary; color: $primary; }
 .shell .context-strip Button { border: none; height: 1; min-width: 3; color: $primary; }
 .shell Button.-textual-compact, .shell Button.-textual-compact:hover, .shell Button.-textual-compact:focus { border: none; padding: 0 1; height: 1; min-height: 1; min-width: 0; }
-.shell .context-panel { width: 30; height: 1fr; padding: 0 2; overflow-x: hidden; border-left: solid $border-subtle; background: $surface; }
+.shell .context-panel { width: 30; height: 1fr; padding: 0 2; overflow-x: hidden; scrollbar-gutter: stable; border-left: solid $border-subtle; background: $surface; }
 .shell .context-panel Static { height: auto; }
 .shell .context-label { height: 2; color: $text-muted; margin-top: 1; }
 .shell .context-value { height: auto; margin-bottom: 1; }
-.shell .context-note { height: auto; border: round $control-border; padding: 0 1; margin-top: 1; color: $text-muted; }
+.shell .context-note { height: auto; border: round $component-border; padding: 0 1; margin-top: 1; color: $text-muted; }
 .shell ShellSidebar { width: 24; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
 .shell ShellSidebar .menu-heading { height: 2; padding-left: 1; color: $text-muted; }
 .shell ShellSidebar .menu-context { height: auto; padding: 1; color: $text-muted; }
 .shell ShellSidebar ListView, .shell ShellSidebar ListView:focus { height: 1fr; border: none; padding: 0; margin: 0; background: $surface; }
-.shell ShellSidebar ListView > ListItem { height: 2; padding: 0 1; color: $text-muted; background: $surface; text-style: none; }
+.shell ShellSidebar ListView > ListItem { height: 2; padding: 0 1; color: $text-muted; background: $surface; text-style: none; border-left: solid transparent; }
 .shell ShellSidebar ListView > ListItem.-highlight, .shell ShellSidebar ListView:focus > ListItem.-highlight {
-    background: $selection-background; color: $selection-foreground; text-style: none;
+    background: $selection-background; color: $selection-foreground; text-style: none; border-left: solid $selection-edge;
 }
 .shell Footer, .shell WorkspaceHeader { background: $surface; }
 .shell ListView, .shell ListView:focus { background-tint: transparent; }
@@ -164,20 +296,40 @@ Screen.shell { background: $background; }
 .shell.-narrow .menu-toggle { display: block; }
 .shell.-narrow ShellSidebar { display: none; }
 .shell.-narrow.-menu-open ShellSidebar { display: block; }
-.shell.-narrow .shell-body { layout: vertical; overflow-y: auto; }
-.shell.-narrow .shell-content { min-height: 100%; }
+.shell.-narrow .shell-body, .shell.-fold-context .shell-body { layout: vertical; overflow-y: auto; }
+.shell.-narrow .shell-content, .shell.-fold-context .shell-content { min-height: 100%; }
 .shell.-narrow ShellSidebar { width: 21; }
-.shell.-narrow .context-panel { width: 100%; height: auto; max-height: 40%; border-left: none; border-top: solid $border-subtle; }
+.shell.-narrow .context-panel, .shell.-fold-context .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
+.shell .context-fold { border: none; padding: 0; background: transparent; }
+.shell .context-fold > Contents { padding: 0; height: auto; }
+.shell .context-fold > CollapsibleTitle { display: none; padding: 0; color: $text; }
+.shell.-fold-context .context-fold > CollapsibleTitle { display: block; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }
 .shell.-narrow ShellSidebar .menu-heading { height: 1; }
 .shell.-narrow ShellSidebar .menu-context { display: none; }
-.shell.-narrow WorkspaceHeader { height: 2; padding-top: 0; }
+.shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
 .shell.-narrow WorkspaceHeader #topbar-right { display: none; }
 .shell.-narrow .breadcrumbs, .shell.-narrow .context-strip { min-height: 1; border: none; }
-.shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-background: $surface; }
+.shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-color-active: $primary; scrollbar-background: $scrollbar-track; scrollbar-background-hover: $scrollbar-track; scrollbar-background-active: $scrollbar-track; }
+.shell ListView, .shell .frame, .shell Input, .shell TextArea, .shell Select > SelectCurrent { border: round $component-border; }
+.shell ListView:focus, .shell .frame:focus, .shell .frame:focus-within, .shell Input:focus, .shell TextArea:focus, .shell Select:focus > SelectCurrent { border: round $primary; }
 """)
+
+
+def _section_named(label: str) -> str | None:
+    """The menu section whose name, in either language, is `label`."""
+    for name in SECTIONS:
+        if label in (i18n.section_label(language, name) for language in i18n.LANGUAGES):
+            return name
+    return None
+
+
+async def _pop_to(app: App[None], target: Screen[None]) -> None:
+    """Close the screens above `target`."""
+    while app.screen is not target and target in app.screen_stack:
+        await app.pop_screen()
 
 
 class ConsoleShell(Translated, Screen[None]):
@@ -197,14 +349,20 @@ class ConsoleShell(Translated, Screen[None]):
     BINDINGS = [
         Binding("escape", "app.pop_screen", "Назад"),
         *(
-            Binding(str(number), f"section({number - 1})", show=False)
-            for number in range(1, len(SECTIONS) + 1)
+            Binding(str(number), f"section({number})", show=False)
+            for number in range(len(SECTIONS))
         ),
     ]
     IDS = ShellIds()
     SECTION: str | None = None
     CRUMBS = "Главная"
     HAS_CONTEXT = False
+    # Narrower than this, the context panel folds into a collapsible block under the content
+    # (`-fold-context`), titled `CONTEXT_TITLE`; 0 leaves the choice to the narrow layout alone.
+    CONTEXT_SIDE_MIN = 0
+    CONTEXT_TITLE = ""
+    # False for a view inside a section (it shares the section's menu entry but is not its screen).
+    IS_SECTION_ROOT = True
 
     # Hooks a screen overrides.
     def compose_strip(self) -> ComposeResult:
@@ -229,8 +387,16 @@ class ConsoleShell(Translated, Screen[None]):
         return None
 
     # The frame.
-    def _crumb_text(self) -> str:
-        return "  ›  ".join(part.strip() for part in self.CRUMBS.split("›"))
+    def crumbs(self) -> list[Crumb]:
+        """The path as segments; a label that names a menu section links to it."""
+        labels = split_path(self.CRUMBS)
+        return [
+            Crumb(
+                label,
+                section=_section_named(label) if index < len(labels) - 1 else None,
+            )
+            for index, label in enumerate(labels)
+        ]
 
     def _menu(self) -> ListView:
         return ListView(
@@ -241,7 +407,7 @@ class ConsoleShell(Translated, Screen[None]):
                     id=self.menu_item_id(name),
                     classes="-active" if name == self.SECTION else "",
                 )
-                for number, name in enumerate(SECTIONS, start=1)
+                for number, name in enumerate(SECTIONS)
             ),
             id=self.IDS.menu,
         )
@@ -254,9 +420,7 @@ class ConsoleShell(Translated, Screen[None]):
                 self._menu(), id=ids.navigation, context=self.sidebar_context()
             )
             with Vertical(id=ids.content, classes="shell-main"):
-                yield Static(
-                    self._crumb_text(), id=ids.breadcrumbs, classes="breadcrumbs"
-                )
+                yield Breadcrumbs(self.crumbs(), id=ids.breadcrumbs)
                 with ContextStrip():
                     yield Button(
                         "☰", id=ids.toggle, classes="menu-toggle", compact=True
@@ -267,10 +431,32 @@ class ConsoleShell(Translated, Screen[None]):
                         yield from self.compose_content()
                     if self.HAS_CONTEXT:
                         with ContextPanel(id=ids.context):
-                            yield from self.compose_context()
+                            if self.CONTEXT_TITLE:
+                                with Collapsible(
+                                    title=self.CONTEXT_TITLE,
+                                    collapsed=self.app.size.width
+                                    < self.CONTEXT_SIDE_MIN,
+                                    classes="context-fold",
+                                ):
+                                    yield from self.compose_context()
+                            else:
+                                yield from self.compose_context()
         yield Footer()
 
+    def _fold_context(self, width: int) -> None:
+        """Fold the context panel under the content below `CONTEXT_SIDE_MIN` columns, unfolded beside it."""
+        fold = width < self.CONTEXT_SIDE_MIN
+        if fold == self.has_class("-fold-context"):
+            return
+        self.set_class(fold, "-fold-context")
+        for block in self.query(Collapsible).filter(".context-fold"):
+            block.collapsed = fold
+
+    def on_resize(self, event: events.Resize) -> None:
+        self._fold_context(event.size.width)
+
     def on_mount(self) -> None:
+        self._fold_context(self.size.width)
         # Textual sets the breakpoint class on the first resize event, which can come after the
         # first content is laid out; set it now so a log written at once gets its real width.
         for threshold, name in sorted(self.HORIZONTAL_BREAKPOINTS or [], reverse=True):
@@ -283,18 +469,27 @@ class ConsoleShell(Translated, Screen[None]):
             )
 
     def sync_language(self) -> None:
-        for number, item in enumerate(
-            self.query(f"#{self.IDS.menu} > ListItem"), start=1
-        ):
+        for number, item in enumerate(self.query(f"#{self.IDS.menu} > ListItem")):
             item.query_one(Static).update(self.menu_label(number, item.name or ""))
         for grid in self.query(FieldGrid):
             grid.relabel()
+        self.query_one(Breadcrumbs).relabel()
 
     # Navigation: opening a section is the only effect.
     async def open_section(self, index: int) -> None:
-        """Open section `index` through the home screen's opener."""
+        """Open section `index` through the home screen's opener; Home returns to it."""
         from .screens.dashboard import DashboardScreen
 
+        if SECTIONS[index] == HOME_SECTION:
+            if any(isinstance(item, DashboardScreen) for item in self.app.screen_stack):
+                # From the app's loop: popping this screen from inside its own handler would wait on itself.
+                home = next(
+                    item
+                    for item in self.app.screen_stack
+                    if isinstance(item, DashboardScreen)
+                )
+                self.app.call_later(_pop_to, self.app, home)
+            return
         for screen in self.app.screen_stack:
             if isinstance(screen, DashboardScreen):
                 await screen.action_open_section(index)
@@ -303,6 +498,28 @@ class ConsoleShell(Translated, Screen[None]):
     async def action_section(self, index: int) -> None:
         if SECTIONS[index] != self.SECTION:
             await self.open_section(index)
+
+    async def navigate_crumb(self, crumb: Crumb) -> None:
+        """Go to the screen a breadcrumb names; no command runs."""
+        if crumb.section is not None:
+            if crumb.section != HOME_SECTION:
+                for screen in reversed(self.app.screen_stack[:-1]):
+                    if (
+                        isinstance(screen, ConsoleShell)
+                        and screen.IS_SECTION_ROOT
+                        and screen.SECTION == crumb.section
+                    ):
+                        self.app.call_later(_pop_to, self.app, screen)
+                        return
+            await self.open_section(SECTIONS.index(crumb.section))
+        elif crumb.action is not None:
+            result = getattr(self, f"action_{crumb.action}")()
+            if result is not None:
+                await result
+
+    async def on_crumb_link_selected(self, event: CrumbLink.Selected) -> None:
+        event.stop()
+        await self.navigate_crumb(event.crumb)
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == self.IDS.menu and event.item.name in SECTIONS:
