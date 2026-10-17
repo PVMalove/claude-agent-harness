@@ -31,6 +31,7 @@ from harness.console.shell import (
     ContextPanel,
     FieldGrid,
     Fold,
+    JumpLink,
     SectionCard,
     ShellIds,
     ShellSidebar,
@@ -671,6 +672,96 @@ def test_the_footer_follows_a_resize_across_the_narrow_threshold(
     wide, narrow = asyncio.run(scenario())
     assert {"r", "o"} <= wide
     assert not {"r", "o"} & narrow and "p" in narrow
+
+
+def test_every_health_check_has_a_readable_title_and_a_menu_section() -> None:
+    from harness.console import i18n
+    from harness.console.shell import CHECK_ROUTES, check_route
+    from harness.health.registry import REGISTRY
+
+    ids = [check_id for check_id, _check in REGISTRY]
+    assert set(ids) == set(CHECK_ROUTES)
+    for check_id in ids:
+        route = check_route(check_id)
+        assert route.section in SECTIONS and route.section != "Home", check_id
+        assert route.title != check_id
+        assert i18n.tr("en", route.title) != route.title, route.title
+    assert check_route("files.skill_snapshot").section == "Update Harness"
+    assert check_route("files.integrations").section == "Configuration"
+    unknown = check_route("net.something")
+    assert (unknown.title, unknown.section) == ("net.something", "Diagnostics")
+
+
+def test_a_jump_is_labelled_by_its_section_or_its_action() -> None:
+    from harness.console import i18n
+
+    assert i18n.jump_label("ru", "Update Harness") == "Обновить Harness"
+    assert i18n.jump_label("en", "Update Harness") == "Update Harness"
+    assert i18n.jump_label("ru", "Configuration") == "Открыть настройку"
+    assert i18n.jump_label("en", "Configuration") == "Open setup"
+
+
+class JumpShell(StubShell):
+    def compose_content(self) -> ComposeResult:
+        yield JumpLink("Update Harness", id="jump-update")
+        yield JumpLink("Configuration", id="jump-configuration")
+
+
+@pytest.mark.parametrize("how", ["click", "enter"])
+def test_a_jump_link_opens_its_section_and_runs_no_command(
+    tmp_path: Path, how: str
+) -> None:
+    from harness.console.screens.update_harness import UpdateHarnessScreen
+
+    recorder = _Recorder()
+
+    async def scenario() -> tuple[list[str], list[str], bool]:
+        app = HarnessConsoleApp(tmp_path, command_runner=recorder)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _home_data(),
+                    command_runner=recorder,
+                )
+            )
+            await pilot.pause()
+            screen = JumpShell()
+            await app.push_screen(screen)
+            await pilot.pause()
+            links = [str(link.render()) for link in screen.query(JumpLink)]
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            english = [str(link.render()) for link in screen.query(JumpLink)]
+            if how == "click":
+                await pilot.click("#jump-update")
+            else:
+                screen.query_one("#jump-update", JumpLink).focus()
+                await pilot.press("enter")
+            for _ in range(3):
+                await pilot.pause()
+            return links, english, isinstance(app.screen, UpdateHarnessScreen)
+
+    links, english, opened = asyncio.run(scenario())
+    assert links == ["Обновить Harness  2 →", "Открыть настройку  8 →"]
+    assert english == ["Update Harness  2 →", "Open setup  8 →"]
+    assert opened
+    assert recorder.calls == []
+
+
+def test_a_jump_link_shows_only_the_number_on_a_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = JumpShell()
+            await app.push_screen(screen)
+            await pilot.pause()
+            return [str(link.render()) for link in screen.query(JumpLink)]
+
+    assert asyncio.run(scenario()) == ["2 →", "8 →"]
 
 
 def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:

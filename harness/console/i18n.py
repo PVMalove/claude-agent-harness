@@ -85,6 +85,17 @@ def section_label(language: str, key: str) -> str:
     return _SECTIONS.get(key, {}).get(language, key)
 
 
+# A jump names the section it opens; a few sections are named by the action instead.
+_JUMPS = {
+    "Configuration": {"ru": "Открыть настройку", "en": "Open setup"},
+}
+
+
+def jump_label(language: str, section: str) -> str:
+    """The label of a jump to `section`, e.g. `Обновить Harness` or `Открыть настройку`."""
+    return _JUMPS.get(section, {}).get(language) or section_label(language, section)
+
+
 def group_title(language: str, group: str) -> str:
     return group if language == "ru" else _GROUPS_EN.get(group, group)
 

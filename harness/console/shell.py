@@ -43,6 +43,140 @@ SECTIONS = (
 )
 
 
+@dataclass(frozen=True)
+class CheckRoute:
+    """Where a failed health check is dealt with: its readable title and the menu section."""
+
+    title: str
+    section: str
+
+
+# Every health check -> its readable title and the menu section that deals with it. Home's
+# "Requires attention", Diagnostics and Open project use it for jumps like `Update Harness 2 →`.
+CHECK_ROUTES: dict[str, CheckRoute] = {
+    "files.skill_snapshot": CheckRoute(
+        "Скиллы отличаются от установленной версии Harness", "Update Harness"
+    ),
+    "files.skill_registry": CheckRoute(
+        "Реестр скиллов не совпадает со скиллами", "Update Harness"
+    ),
+    "files.agents_md": CheckRoute(
+        "AGENTS.md отсутствует или устарел", "Update Harness"
+    ),
+    "files.discovery_links": CheckRoute(
+        "Ссылки обнаружения скиллов нарушены", "Update Harness"
+    ),
+    "files.overlay_locks": CheckRoute(
+        "Блокировки оверлеев не совпадают", "Update Harness"
+    ),
+    "files.lock": CheckRoute("Harness не установлен в проект", "Open project"),
+    "files.project_json": CheckRoute("Ошибка в .harness/project.json", "Configuration"),
+    "files.integrations": CheckRoute(
+        "Нужно проверить настройки интеграций", "Configuration"
+    ),
+    "files.verification_routing": CheckRoute(
+        "Маршрутизация проверок настроена неверно", "Configuration"
+    ),
+    "tracker.project": CheckRoute("Трекер задач не определён", "Configuration"),
+    "tracker.auth": CheckRoute("Нет доступа к трекеру задач", "Configuration"),
+    "tracker.reachability": CheckRoute("Трекер задач недоступен", "Configuration"),
+    "tracker.permissions": CheckRoute(
+        "Недостаточно прав в трекере задач", "Configuration"
+    ),
+    "tracker.labels": CheckRoute("В трекере не хватает меток", "Configuration"),
+    "tracker.git_base": CheckRoute(
+        "В тикете не указана ветка интеграции", "Configuration"
+    ),
+    "files.orchestration_config": CheckRoute(
+        "Ошибка в настройках оркестрации", "Orchestration"
+    ),
+    "directories.orchestration_state": CheckRoute(
+        "Каталог состояния оркестрации недоступен", "Orchestration"
+    ),
+    "orchestration.ledger_summary": CheckRoute(
+        "Ledger оркестрации требует внимания", "Orchestration"
+    ),
+    "orchestration.unfinished_batches": CheckRoute(
+        "Есть незавершённые batch", "Orchestration"
+    ),
+    "orchestration.blocked_batches": CheckRoute(
+        "Есть заблокированные batch", "Orchestration"
+    ),
+    "orchestration.stale_dispatches": CheckRoute(
+        "Есть зависшие dispatch", "Orchestration"
+    ),
+    "orchestration.orphaned_worktrees": CheckRoute(
+        "Есть worktree без batch", "Orchestration"
+    ),
+    "orchestration.disposable_data": CheckRoute(
+        "Накопились временные данные оркестрации", "Orchestration"
+    ),
+    "repo_map.tier": CheckRoute("Repo Map работает в ограниченном режиме", "Repo Map"),
+    "memory.index": CheckRoute("Индекс памяти проекта требует внимания", "Repo Map"),
+    "memory.model": CheckRoute("Модель памяти недоступна", "Repo Map"),
+    "environment.os": CheckRoute(
+        "Операционная система не поддерживается", "Diagnostics"
+    ),
+    "environment.git": CheckRoute("Git недоступен", "Diagnostics"),
+    "environment.git_identity": CheckRoute(
+        "Не настроен автор коммитов Git", "Diagnostics"
+    ),
+    "environment.gitattributes": CheckRoute("Нет файла .gitattributes", "Diagnostics"),
+    "environment.line_endings": CheckRoute(
+        "Переводы строк не совпадают с .gitattributes", "Diagnostics"
+    ),
+    "environment.python": CheckRoute("Неподходящая версия Python", "Diagnostics"),
+    "environment.uv": CheckRoute("uv недоступен", "Diagnostics"),
+    "environment.glab": CheckRoute("Версия glab устарела", "Diagnostics"),
+    "environment.dev_env": CheckRoute(
+        "Окружение .harness/.venv не совпадает с uv.lock", "Diagnostics"
+    ),
+    "environment.output_encoding": CheckRoute(
+        "Кодировка вывода не UTF-8", "Diagnostics"
+    ),
+    "environment.codex_sandbox": CheckRoute(
+        "Песочница Codex настроена неверно", "Diagnostics"
+    ),
+    "environment.claude_sandbox": CheckRoute(
+        "Песочница Claude настроена неверно", "Diagnostics"
+    ),
+    "environment.codex_uv_cache": CheckRoute(
+        "Кэш uv недоступен в песочнице Codex", "Diagnostics"
+    ),
+    "environment.claude_uv_cache": CheckRoute(
+        "Кэш uv недоступен в песочнице Claude", "Diagnostics"
+    ),
+    "environment.long_paths": CheckRoute(
+        "Длинные пути Windows выключены", "Diagnostics"
+    ),
+    "environment.path_length": CheckRoute(
+        "Путь к проекту слишком длинный", "Diagnostics"
+    ),
+    "environment.pytest_temp": CheckRoute(
+        "Временный каталог pytest недоступен", "Diagnostics"
+    ),
+    "environment.symlinks": CheckRoute(
+        "Символические ссылки недоступны", "Diagnostics"
+    ),
+    "environment.hook_bash": CheckRoute("Bash для hooks не найден", "Diagnostics"),
+    "files.sandboxes": CheckRoute("Каталог .sandboxes настроен неверно", "Diagnostics"),
+    "directories.harness": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.sandboxes": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.cache": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.logs": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.scratch": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.pr_body": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.runs": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.reports": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+    "directories.worktrees": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
+}
+
+
+def check_route(check_id: str) -> CheckRoute:
+    """The route of `check_id`; a check outside the table keeps its id and opens Diagnostics."""
+    return CHECK_ROUTES.get(check_id) or CheckRoute(check_id, "Diagnostics")
+
+
 class ShellSidebar(Vertical):
     """The main menu column. Its look lives in `SHELL_CSS`, with the rest of the shell."""
 
@@ -77,6 +211,41 @@ class CrumbLink(Static, can_focus=True):
 
     def action_select(self) -> None:
         self.post_message(self.Selected(self.crumb))
+
+
+class JumpLink(Static, can_focus=True):
+    """A jump to a menu section, `Обновить Harness  2 →` (only `2 →` on a narrow terminal): a
+    click or Enter opens the section as its number key does. It runs no command."""
+
+    BINDINGS = [Binding("enter", "select", show=False)]
+
+    class Selected(Message):
+        def __init__(self, section: str) -> None:
+            super().__init__()
+            self.section = section
+
+    def __init__(self, section: str, *, id: str | None = None) -> None:
+        super().__init__("", id=id, classes="jump-link no-i18n", markup=False)
+        self.section = section
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def relabel(self) -> None:
+        number = SECTIONS.index(self.section)
+        if self.app.size.width < brand.NARROW_WIDTH:
+            text = f"{number} →"
+        else:
+            language = getattr(self.app, "language", "ru")
+            text = f"{i18n.jump_label(language, self.section)}  {number} →"
+        if text != str(self.content):
+            self.update(text)
+
+    def on_click(self) -> None:
+        self.post_message(self.Selected(self.section))
+
+    def action_select(self) -> None:
+        self.post_message(self.Selected(self.section))
 
 
 class Breadcrumbs(Horizontal):
@@ -342,6 +511,9 @@ Screen.shell { background: $background; }
 .shell .crumb-link:hover { background: $row-highlight; color: $selection-foreground; }
 .shell .crumb-link:focus { background: $selection-background; color: $selection-foreground; text-style: bold underline; }
 .shell .crumb-sep { color: $text-muted; }
+.shell .jump-link { width: auto; height: 1; color: $primary; }
+.shell .jump-link:hover { background: $row-highlight; color: $selection-foreground; }
+.shell .jump-link:focus { background: $selection-background; color: $selection-foreground; text-style: bold; }
 .shell .crumb-current { width: 1fr; min-width: 1; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
 .shell .context-strip { height: auto; min-height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
 .shell .context-strip Static { width: 1fr; height: auto; }
@@ -618,6 +790,8 @@ class ConsoleShell(Translated, Screen[ShellResult]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._fold_context(event.size.width)
+        for link in self.query(JumpLink):
+            link.relabel()
         narrow = event.size.width < brand.NARROW_WIDTH
         if self.NARROW_FOOTER_KEYS is not None and narrow != self._narrow_footer:
             self._narrow_footer = narrow
@@ -662,6 +836,8 @@ class ConsoleShell(Translated, Screen[ShellResult]):
             card.relabel()
         for fold in self.query(Fold):
             fold.relabel()
+        for link in self.query(JumpLink):
+            link.relabel()
         self.query_one(Breadcrumbs).relabel()
 
     # Navigation: opening a section is the only effect.
@@ -718,6 +894,11 @@ class ConsoleShell(Translated, Screen[ShellResult]):
     async def on_crumb_link_selected(self, event: CrumbLink.Selected) -> None:
         event.stop()
         await self.navigate_crumb(event.crumb)
+
+    async def on_jump_link_selected(self, event: JumpLink.Selected) -> None:
+        """A jump opens its section, as the section's number key does; no command runs."""
+        event.stop()
+        await self.action_section(SECTIONS.index(event.section))
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == self.IDS.menu and event.item.name in SECTIONS:
