@@ -3,7 +3,7 @@
 Stdlib-only, like the rest of the textual-free seam. A terminal widget wraps by words, so a long path
 is cut at an arbitrary column in the middle of a name; `wrap_value` breaks it after a `/`, `-`, `_`,
 `.` and the like, or at a space, and only when a single piece is wider than the line does it
-stay on a line of its own."""
+stay on a line of its own. Spaces are kept, so the lines joined return the value."""
 
 from __future__ import annotations
 
@@ -11,40 +11,35 @@ SEPARATORS = "/\\-_.,;=@"
 
 
 def _pieces(line: str) -> list[str]:
-    """`line` cut after every separator and at every space; a space is its own piece."""
+    """`line` cut after every separator and before every word; the spaces after a piece stay on it,
+    leading spaces on the first, so the pieces joined return `line` unchanged."""
     pieces: list[str] = []
     current = ""
     for char in line:
-        if char.isspace():
-            if current:
-                pieces.append(current)
-                current = ""
-            pieces.append(" ")
-            continue
-        current += char
-        if char in SEPARATORS:
+        if (
+            not char.isspace()
+            and current.strip()
+            and (current[-1].isspace() or current[-1] in SEPARATORS)
+        ):
             pieces.append(current)
             current = ""
+        current += char
     if current:
         pieces.append(current)
     return pieces
 
 
 def _wrap_line(line: str, width: int) -> list[str]:
+    """The pieces of `line` packed into lines; a line may end in spaces, which do not count
+    toward its width."""
     lines: list[str] = []
     current = ""
-    space = False
     for piece in _pieces(line):
-        if piece == " ":
-            space = True
-            continue
-        joined = current + (" " if space and current else "") + piece
-        if current and len(joined) > width:
+        if current and len((current + piece).rstrip()) > width:
             lines.append(current)
             current = piece
         else:
-            current = joined
-        space = False
+            current += piece
     lines.append(current)
     return lines
 
