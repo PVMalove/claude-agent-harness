@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from harness.orchestration import coordinator, operational_hold, recovery_api
+from harness.orchestration.core import workspace
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
+from harness.orchestration.ledger import ledger_ops
+from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.recovery_api import (
     RecoveryInternalError,
     RecoveryInterrupted,
@@ -170,6 +173,89 @@ def test_a_missing_snapshot_is_refused_with_its_pointer(recovery: Fixture) -> No
     [diagnostic] = check["diagnostics"]
     assert diagnostic["pointer"].endswith("/orchestration_policy/configuration")
     assert document["resumable"] is False
+
+
+def _edit_batch(fixture: Fixture, batch_id: str, **fields: object) -> None:
+    ledger = LifecycleLedger(fixture.state_dir)
+    with ledger_ops._ledger_lock(ledger):
+        batch = ledger_ops._load_batch(fixture.state_dir, batch_id)
+        batch.update(fields)
+        ledger_ops._replace_record(ledger, BatchRecord.from_dict(batch))
+
+
+def test_a_changed_harness_runtime_without_its_snapshot_is_refused(
+    recovery: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brief = _approved_architect(recovery)
+    monkeypatch.setattr(workspace, "_runtime_matches", lambda *_: False)
+
+    document = _status(recovery, brief["batch_id"])
+
+    check = _check(document, "runtime")
+    assert check["status"] == "refused"
+    [diagnostic] = check["diagnostics"]
+    assert diagnostic["code"] == "integrity-failure"
+    assert "batch restore-runtime" in diagnostic["remedy"]
+    assert document["resumable"] is False
+    assert document["next"]["command"] is None
+
+
+def test_a_batch_on_its_pinned_runtime_snapshot_passes_the_runtime_check(
+    recovery: Fixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brief = _approved_architect(recovery)
+    monkeypatch.setattr(workspace, "_runtime_matches", lambda *_: False)
+    monkeypatch.setattr(
+        workspace, "_pinned_runtime_entry", lambda *_: recovery.tmp / "coordinator.py"
+    )
+
+    document = _status(recovery, brief["batch_id"])
+
+    check = _check(document, "runtime")
+    assert check["status"] == "passed"
+    assert check["evidence"]["runs_on"] == "pinned-snapshot"
+    assert document["resumable"] is True
+
+
+def test_a_stale_context_package_of_an_open_brief_is_refused(
+    recovery: Fixture,
+) -> None:
+    brief = _approved_architect(recovery)
+    _edit_batch(recovery, brief["batch_id"], integration_base_commit="f" * 40)
+
+    document = _status(recovery, brief["batch_id"])
+
+    check = _check(document, "context")
+    assert check["status"] == "refused"
+    [diagnostic] = check["diagnostics"]
+    assert diagnostic["code"] == "stale-evidence"
+    assert (
+        diagnostic["pointer"]
+        == f"/dispatches/{brief['dispatch_id']}/context_package_id"
+    )
+    assert "dispatch cancel" in diagnostic["remedy"]
+    assert diagnostic["expected"]["base_commit"] == "f" * 40
+    [evidence] = check["evidence"]["briefs"]
+    assert (evidence["dispatch_id"], evidence["stale"]) == (brief["dispatch_id"], True)
+    assert check["evidence"]["current_base"] == "f" * 40
+    assert document["resumable"] is False
+    resumed = recovery_api.resume(recovery.repo, recovery.state_dir, brief["batch_id"])
+    assert resumed["outcome"] == "refused"
+    assert {item["code"] for item in resumed["refusals"]} == {"stale-evidence"}
+
+
+def test_the_context_check_shows_the_pinned_base_and_candidate(
+    recovery: Fixture,
+) -> None:
+    brief = _approved_architect(recovery)
+
+    check = _check(_status(recovery, brief["batch_id"]), "context")
+
+    assert check["status"] == "passed"
+    [evidence] = check["evidence"]["briefs"]
+    assert evidence["context_package_id"] == brief["context_package_id"]
+    assert evidence["base_commit"] == check["evidence"]["current_base"]
+    assert evidence["stale"] is False
 
 
 def test_an_expired_approval_of_an_unsent_brief_is_refused(recovery: Fixture) -> None:

@@ -204,7 +204,12 @@ def test_a_terminal_gate_without_a_terminal_refuses_instead_of_waiting(
     )
 
     assert result.returncode == 2, result.stdout + result.stderr
-    assert json.loads(result.stdout)["outcome"] == "refused"
+    document = json.loads(result.stdout)
+    assert document["outcome"] == "refused"
+    # The terminal gate refuses first: the human block itself is never reached.
+    [refusal] = document["refusals"]
+    assert "human_approval_gate is 'tty'" in refusal["message"]
+    assert "not confirmed" not in refusal["message"]
 
 
 def test_a_partial_approval_is_refused(recovery: Fixture) -> None:

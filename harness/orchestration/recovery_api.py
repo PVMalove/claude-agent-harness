@@ -46,6 +46,7 @@ from harness.orchestration.core.constants import (
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
+    _canonical,
     _moment,
     _now,
     _silent_seconds,
@@ -68,7 +69,9 @@ CHECKS = (
     "ledger",
     "batch",
     "lifecycle",
+    "runtime",
     "snapshot",
+    "context",
     "compatibility",
     "operation",
     "liveness",
@@ -81,6 +84,7 @@ DIAGNOSTIC_CODES = (
     "config-advisory",
     "runtime-compatibility",
     "integrity-failure",
+    "stale-evidence",
     "ambiguous-effect",
     "concurrency-conflict",
     "storage-unavailable",
@@ -400,7 +404,9 @@ class Survey:
             self._operation()
             return self
         self._lifecycle()
+        self._runtime()
         self._snapshot()
+        self._context()
         self._compatibility()
         self._operation()
         self._liveness()
@@ -562,6 +568,124 @@ class Survey:
                 ),
                 status="pending",
             )
+
+    def _runtime(self) -> None:
+        """The harness runtime the batch's commands run on: the installed one, or the verified
+        pinned snapshot they hand themselves to; recovery itself runs on the installed one."""
+        from harness.orchestration.core import workspace
+        from harness.orchestration.workflow.runtime_pin import _pinned_hash
+
+        batch = cast(JsonObject, self.batch)
+        check = self.checks["runtime"]
+        pinned = _pinned_hash(batch)
+        runs_on: str | None = "installed"
+        try:
+            workspace._validate_harness_runtime_snapshot(self.repo, batch)
+        except HarnessError as exc:
+            refusal, runs_on = exc, None
+            try:
+                if (
+                    pinned is not None
+                    and workspace._pinned_runtime_entry(self.root, pinned) is not None
+                ):
+                    runs_on = "pinned-snapshot"
+            except HarnessError as snapshot:
+                refusal = snapshot
+            if runs_on is None:
+                check.add(
+                    RecoveryDiagnostic.from_error("runtime", refusal), status="refused"
+                )
+        check.evidence = {"pinned": pinned, "runs_on": runs_on}
+
+    def _context(self) -> None:
+        """Every open brief's Context Package verifies and still matches the batch's base and
+        current developer candidate, by the rule the stale-evidence attention applies."""
+        from harness.orchestration.ledger.ledger_ops import _load_context_package
+        from harness.orchestration.workflow.history import (
+            _current_developer_candidate,
+            _effective_base,
+            _pinned_package_stale,
+            _validate_context_package,
+        )
+
+        batch = cast(JsonObject, self.batch)
+        check = self.checks["context"]
+        briefs = [
+            (entry, dispatch)
+            for entry, dispatch in self._briefs()
+            if isinstance(dispatch.get("context_package_id"), str)
+        ]
+        evidence: list[JsonObject] = []
+        try:
+            current_base = _effective_base(batch)
+            current_candidate = (
+                _current_developer_candidate(self.repo, self.root, batch)
+                if briefs
+                else None
+            )
+            for entry, dispatch in briefs:
+                dispatch_id = dispatch["dispatch_id"]
+                location = f"/dispatches/{dispatch_id}/context_package_id"
+                package = _load_context_package(
+                    self.root, dispatch["context_package_id"]
+                )
+                _validate_context_package(self.root, batch, package)
+                digest = hashlib.sha256(_canonical(package).encode("utf-8")).hexdigest()
+                if digest != dispatch.get("context_package_sha256"):
+                    check.add(
+                        RecoveryDiagnostic(
+                            "integrity-failure",
+                            "context",
+                            f"dispatch {dispatch_id}: its Context Package does not match the "
+                            "hash its brief pinned",
+                            remedy=INTERNAL_INVARIANT_REMEDY,
+                            location=location,
+                        ),
+                        status="refused",
+                    )
+                    continue
+                stale = entry.get("state") != "reported" and _pinned_package_stale(
+                    self.repo, self.root, batch, dispatch
+                )
+                pinned = {
+                    "base_commit": package["base_commit"],
+                    "candidate_commit": package["candidate_commit"],
+                }
+                evidence.append(
+                    {
+                        "dispatch_id": dispatch_id,
+                        "context_package_id": package["context_package_id"],
+                        **pinned,
+                        "stale": stale,
+                    }
+                )
+                if stale:
+                    check.add(
+                        RecoveryDiagnostic(
+                            "stale-evidence",
+                            "context",
+                            f"dispatch {dispatch_id} pins a Context Package older than the "
+                            "batch's base or current developer candidate",
+                            remedy="cancel the brief with dispatch cancel and propose a new "
+                            "dispatch so a fresh Context Package is pinned; the brief is "
+                            "never rewritten",
+                            location=location,
+                            expected={
+                                "base_commit": current_base,
+                                "candidate_commit": current_candidate,
+                            },
+                            received=pinned,
+                        ),
+                        status="refused",
+                    )
+        except HarnessError as exc:
+            check.add(RecoveryDiagnostic.from_error("context", exc), status="refused")
+            return
+        check.evidence = {
+            "current_base": current_base,
+            "current_candidate": current_candidate,
+            "briefs": evidence,
+        }
 
     def _briefs(self) -> list[tuple[JsonObject, JsonObject]]:
         from harness.orchestration.ledger.ledger_ops import _load_dispatch
