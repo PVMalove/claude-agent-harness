@@ -529,7 +529,7 @@ def test_worker_sessions_button_sits_in_the_header_and_shows_the_active_count(
             return ru, en, page_buttons, isinstance(app.screen, WorkerObservationScreen)
 
     ru, en, orphans, opened = asyncio.run(scenario())
-    assert ru == "Рабочие сессии · 2" and en == "Worker sessions · 2"
+    assert ru == "Рабочие сессии · 2" and en == "Working sessions · 2"
     assert orphans == []  # no button stands outside the header
     assert opened
 

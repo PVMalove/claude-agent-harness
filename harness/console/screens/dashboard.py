@@ -4,21 +4,23 @@ and a numbered section menu - Diagnostics, Harness, Orchestration, Reports, Repo
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
 from rich.markup import escape
+from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widget import Widget
-from textual.widgets import Button, ListItem, ListView, Static, Collapsible
+from textual.widgets import Button, ListItem, ListView, Static
 
 from .. import brand, i18n
 from ..chrome import TopBar
-from ..session_card import session_card
+from ..session_card import elapsed_text, session_row
 from ..shell import (
     CONFIGURATION_SECTION,
     HOME_SECTION,
@@ -27,6 +29,7 @@ from ..shell import (
     ConsoleShell,
     ShellIds,
     ElidedPath,
+    Fold,
     JumpLink,
     SectionCard,
     WrappedValue,
@@ -234,7 +237,7 @@ class DashboardScreen(ConsoleShell):
     ]
     DEFAULT_CSS = brand.shell_css("""
     DashboardScreen { overflow: hidden hidden; }
-    DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 1 3; }
+    DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 1 3; overflow-y: auto; }
     DashboardScreen #dashboard-title { height: 2; text-style: bold; }
     DashboardScreen #dashboard-subtitle { height: 2; color: $text-muted; }
     DashboardScreen #dashboard-attention-card { margin-bottom: 1; }
@@ -246,13 +249,14 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen .problem-caption { height: 1; color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
     DashboardScreen .problem-row JumpLink { margin-left: 2; }
     DashboardScreen #dashboard-check { height: 1; margin-bottom: 1; }
-    DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 1; }
-    DashboardScreen #home-sessions-title { height: 2; color: $text-muted; }
-    DashboardScreen #home-sessions { height: 1fr; min-height: 3; border: none; }
-    DashboardScreen #home-sessions > ListItem { height: auto; min-height: 4; padding: 1; border-bottom: solid $border-subtle; border-left: solid transparent; }
+    DashboardScreen #dashboard-check-label { width: auto; padding-right: 2; color: $text-muted; }
+    DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 2; }
+    DashboardScreen #home-sessions-card { margin-bottom: 1; }
+    DashboardScreen #home-sessions { height: auto; border: none; }
+    DashboardScreen #home-sessions > ListItem { height: 1; padding: 0 1 0 0; border-left: solid transparent; }
     DashboardScreen #home-sessions > ListItem.-highlight { background: $row-highlight; text-style: none; color: $foreground; border-left: solid $selection-edge; }
-    DashboardScreen #home-sessions Static { height: auto; }
-    DashboardScreen #dashboard-details { height: auto; max-height: 16; border-top: solid $border-subtle; padding: 0; }
+    DashboardScreen #home-sessions Static { height: 1; }
+    DashboardScreen #home-sessions-hint, DashboardScreen #home-empty { height: auto; color: $text-muted; }
     DashboardScreen #dashboard-details > Contents { overflow-y: auto; max-height: 12; }
     DashboardScreen #dashboard-summary, DashboardScreen #brand-info { height: auto; }
     DashboardScreen #brand { height: auto; }
@@ -262,8 +266,8 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen .card-title { height: 2; color: $text-muted; }
     DashboardScreen.-narrow #dashboard-overview { padding: 0 2; }
     DashboardScreen.-narrow #dashboard-subtitle { display: none; }
-    DashboardScreen.-narrow .problem-caption { display: none; }
-    DashboardScreen.-narrow #dashboard-attention-card, DashboardScreen.-narrow #dashboard-check { margin-bottom: 0; }
+    DashboardScreen.-narrow .problem-caption, DashboardScreen.-narrow #dashboard-check-label, DashboardScreen.-narrow #home-sessions-hint { display: none; }
+    DashboardScreen.-narrow #dashboard-attention-card, DashboardScreen.-narrow #dashboard-check, DashboardScreen.-narrow #home-sessions-card { margin-bottom: 0; }
     """)
     # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
     CSS = SHELL_CSS + brand.shell_css("""
@@ -278,9 +282,11 @@ class DashboardScreen(ConsoleShell):
         collect_dashboard: _CollectDashboard = console_data.collect_dashboard,
         collect_banner: Callable[[Path], brand.BannerInfo] = _default_banner,
         command_runner: CommandRunner = capturing_runner,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         super().__init__()
         self.repo = repo
+        self._now = now
         self._collect_dashboard = collect_dashboard
         self._collect_banner = collect_banner
         self._command_runner = command_runner
@@ -362,43 +368,52 @@ class DashboardScreen(ConsoleShell):
                 yield status
                 yield Vertical(*self._problem_rows(data), id="dashboard-problems")
             with Horizontal(id="dashboard-check"):
-                yield Button(
-                    i18n.ui(self._language, "offline"),
-                    id="dashboard-offline",
-                    compact=True,
-                )
-                yield Button(
-                    i18n.ui(self._language, "online"),
-                    id="dashboard-online",
-                    compact=True,
-                )
+                yield Static("ПРОВЕРКА", id="dashboard-check-label")
+                with Horizontal(classes="segment"):
+                    yield Button(
+                        i18n.ui(self._language, "offline"),
+                        id="dashboard-offline",
+                        compact=True,
+                        classes="-on",
+                    )
+                    yield Static("│", classes="segment-sep no-i18n")
+                    yield Button(
+                        i18n.ui(self._language, "online"),
+                        id="dashboard-online",
+                        compact=True,
+                    )
                 yield Static(
                     self._attention_mode(data, online=False, language=self._language),
                     id="dashboard-attention-mode",
                     classes="no-i18n",
                 )
-            yield Static("РАБОЧИЕ СЕССИИ", id="home-sessions-title")
             stages = self._home_sessions()
-            yield ListView(
-                *(
-                    ListItem(
-                        Static(
-                            self._home_session_card(stage),
-                            classes="no-i18n",
-                        ),
-                        name=stage.dispatch_id,
-                    )
-                    for stage in stages
-                ),
-                id="home-sessions",
-            )
-            if not stages:
-                yield Static(
-                    "Активных сессий нет. Откройте «Оркестрация», чтобы выбрать задачу.",
-                    id="home-empty",
+            with SectionCard(
+                title="Рабочие сессии", note=str(len(stages)), id="home-sessions-card"
+            ):
+                yield ListView(
+                    *(
+                        ListItem(
+                            Static(self._session_row(stage), classes="no-i18n"),
+                            name=stage.dispatch_id,
+                        )
+                        for stage in stages
+                    ),
+                    id="home-sessions",
                 )
-            with Collapsible(
+                if stages:
+                    yield Static(
+                        "↑↓ выбор · Enter — открыть наблюдение. Выбор сессии не запускает новый процесс.",
+                        id="home-sessions-hint",
+                    )
+                else:
+                    yield Static(
+                        "Активных сессий нет. Откройте «Оркестрация», чтобы выбрать задачу.",
+                        id="home-empty",
+                    )
+            with Fold(
                 title="Подробный технический отчёт",
+                summary=self._checks_summary(data),
                 collapsed=True,
                 id="dashboard-details",
             ):
@@ -443,23 +458,30 @@ class DashboardScreen(ConsoleShell):
             classes="context-note",
         )
 
-    def _home_session_card(self, stage: reports.StageEntry) -> Text:
-        return session_card(
+    def _session_row(self, stage: reports.StageEntry) -> Table:
+        return session_row(
             ticket=stage.ticket,
             role=stage.role,
             dispatch_id=stage.dispatch_id,
             state=stage.state,
             language=self._language,
-            id_limit=32,
+            elapsed=elapsed_text(
+                reports.timestamp(stage.at), self._now(), self._language
+            ),
         )
 
     def _home_sessions(self) -> list[reports.StageEntry]:
+        """Every unfinished session, the most recently recorded first."""
         view = reports.load_ledger_view(self.repo)
         return sorted(
             (stage for stage in view.stages if not stage.finished),
             key=lambda stage: stage.at,
             reverse=True,
-        )[:6]
+        )
+
+    def _checks_summary(self, data: DashboardData) -> str:
+        total = data.ok + data.warn + data.fail + data.skipped
+        return i18n.checks_count(self._language, total, data.skipped)
 
     def _attention_status(self, data: DashboardData) -> str:
         """The line above the problems: empty while there are problems, else that there are none."""
@@ -523,9 +545,7 @@ class DashboardScreen(ConsoleShell):
         stages = {stage.dispatch_id: stage for stage in self._home_sessions()}
         for item in self.query("#home-sessions > ListItem").results(ListItem):
             if item.name in stages:
-                item.query_one(Static).update(
-                    self._home_session_card(stages[item.name])
-                )
+                item.query_one(Static).update(self._session_row(stages[item.name]))
 
     def _repaint(self) -> None:
         """Re-render the data-driven texts in the current language from the stored data."""
@@ -543,6 +563,11 @@ class DashboardScreen(ConsoleShell):
         self._render_attention(data)
         self.query_one("#dashboard-attention-mode", Static).update(
             self._attention_mode(data, online=self._online, language=language)
+        )
+        self.query_one("#dashboard-offline", Button).set_class(not self._online, "-on")
+        self.query_one("#dashboard-online", Button).set_class(self._online, "-on")
+        self.query_one("#dashboard-details", Fold).set_summary(
+            self._checks_summary(data)
         )
         self.query_one("#card-harness", Static).update(harness)
         self.query_one("#card-orchestration", Static).update(orchestration)

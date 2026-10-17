@@ -336,7 +336,10 @@ def test_shell_text_uses_the_foreground_token(tmp_path: Path) -> None:
             colors.append(_color(screen.query_one(".crumb-current")))
             return colors
 
-    assert set(asyncio.run(scenario())) == {brand.PALETTE["foreground"].lower()}
+    top, offline, online, crumb = asyncio.run(scenario())
+    assert top == online == crumb == brand.PALETTE["foreground"].lower()
+    # The current mode of the Offline | Online toggle is drawn in the selection colours.
+    assert offline == brand.SHELL_TOKENS["selection-foreground"]
 
 
 def test_the_shell_css_has_no_default_text_token() -> None:
@@ -593,7 +596,11 @@ def test_section_cards_and_folds_follow_the_language_with_muted_titles(
             return ru, en, card.styles.border_title_color.hex, not fold.collapsed
 
     ru, en, color, opened = asyncio.run(scenario())
-    assert ru == [" ПРОВЕРКИ  3 ", "▸ Подробный отчёт  27 проверок · 11 пропущено"]
+    assert ru[0] == " ПРОВЕРКИ  3 "
+    # The summary sits at the right end of the fold's title row.
+    assert ru[1].startswith("▸ Подробный отчёт  ")
+    assert ru[1].endswith("  27 проверок · 11 пропущено")
+    assert len(ru[1]) > len("▸ Подробный отчёт  27 проверок · 11 пропущено") + 20
     assert en[0] == " CHECKS  3 " and en[1].startswith("▸ Detailed report  ")
     assert color.lower() == brand.PALETTE["muted"].lower()
     assert opened

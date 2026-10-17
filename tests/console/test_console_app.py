@@ -1177,7 +1177,11 @@ def test_home_uses_workspace_shell_and_keeps_technical_report_collapsed(
 def test_dashboard_session_list_shows_role_labels_and_status_captions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The home session list uses the shared role label and a symbol-plus-words caption."""
+    """One line per session: ticket and role (the shared role label), the dispatch, a
+    symbol-plus-words status and how long ago the dispatch was recorded."""
+    from datetime import UTC, datetime
+
+    from rich.table import Table
     from rich.text import Text
     from textual.widgets import ListView, Static
 
@@ -1185,37 +1189,173 @@ def test_dashboard_session_list_shows_role_labels_and_status_captions(
 
     stages = [
         reports.StageEntry(
-            "dispatch-a", "batch-a", "#721", "developer", "working", "2026-10-16"
+            "dispatch-a",
+            "batch-a",
+            "#721",
+            "developer",
+            "working",
+            "2026-10-17T14:38:00+00:00",
         ),
         reports.StageEntry(
-            "dispatch-b", "batch-a", "#722", "qa", "approved", "2026-10-15"
+            "dispatch-b",
+            "batch-a",
+            "#722",
+            "qa",
+            "approved",
+            "2026-10-17T12:10:00+00:00",
+        ),
+        reports.StageEntry(
+            "dispatch-c", "batch-a", "#723", "qa", "approved", "2026-10-15"
         ),
     ]
     monkeypatch.setattr(
         reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
     )
+    now = datetime(2026, 10, 17, 14, 40, tzinfo=UTC)
 
-    async def scenario() -> list[Text]:
+    async def scenario() -> tuple[list[list[Text]], list[int], str]:
         app = HarnessConsoleApp(tmp_path)
-        async with app.run_test(size=(140, 40)):
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo,
+                    *,
+                    online=False: _fake_dashboard_data(),
+                    now=lambda: now,
+                )
+            )
+            await pilot.pause()
             sessions = app.screen.query_one("#home-sessions", ListView)
-            return [
-                card
-                for item in sessions.children
-                for card in [item.query_one(Static).content]
-                if isinstance(card, Text)
-            ]
+            rows = []
+            for item in sessions.children:
+                table = item.query_one(Static).content
+                assert isinstance(table, Table)
+                cells = [column._cells[0] for column in table.columns]
+                rows.append([cell for cell in cells if isinstance(cell, Text)])
+            card = app.screen.query_one("#home-sessions-card")
+            return (
+                rows,
+                [item.region.height for item in sessions.children],
+                str(card.border_title),
+            )
 
-    cards = asyncio.run(scenario())
-    assert [card.plain.splitlines()[0] for card in cards] == [
-        "#721  ·  developer",
-        "#722  ·  qa",
+    rows, heights, title = asyncio.run(scenario())
+    assert title == " РАБОЧИЕ СЕССИИ  3 "
+    assert heights == [1, 1, 1]
+    assert [[cell.plain for cell in row] for row in rows] == [
+        ["#721 developer", "dispatch-a", "▶ Выполняется", "2 мин"],
+        ["#722 qa", "dispatch-b", "○ Готов к запуску", "2 ч"],
+        # A time without a time zone is unknown, not guessed.
+        ["#723 qa", "dispatch-c", "○ Готов к запуску", ""],
     ]
-    assert "▶ Выполняется" in cards[0].plain
-    assert "○ Готов к запуску" in cards[1].plain
     assert f"bold {brand.ROLE_COLORS['developer']}" in {
-        str(span.style) for span in cards[0].spans
+        str(span.style) for span in rows[0][0].spans
     }
+
+
+def test_elapsed_time_and_check_counts_read_naturally() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from harness.console import i18n
+    from harness.console.session_card import elapsed_text
+
+    now = datetime(2026, 10, 17, 14, 40, tzinfo=UTC)
+    assert elapsed_text(now - timedelta(seconds=30), now, "ru") == "0 мин"
+    assert elapsed_text(now - timedelta(minutes=14), now, "en") == "14 min"
+    assert elapsed_text(now - timedelta(hours=3, minutes=5), now, "ru") == "3 ч"
+    assert elapsed_text(now - timedelta(days=2, hours=1), now, "en") == "2 d"
+    assert elapsed_text(None, now, "ru") == ""
+    assert elapsed_text(now + timedelta(minutes=1), now, "ru") == ""
+    assert i18n.checks_count("ru", 27, 11) == "27 проверок · 11 пропущено"
+    assert i18n.checks_count("ru", 21, 0) == "21 проверка · 0 пропущено"
+    assert i18n.checks_count("ru", 34, 2) == "34 проверки · 2 пропущено"
+    assert i18n.checks_count("ru", 12, 2) == "12 проверок · 2 пропущено"
+    assert i18n.checks_count("en", 1, 0) == "1 check · 0 skipped"
+    assert i18n.checks_count("en", 27, 11) == "27 checks · 11 skipped"
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_check_block_sessions_and_report_follow_each_other(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    size: tuple[int, int],
+    language: str,
+) -> None:
+    from textual.widgets import Button, Static
+    from textual.widgets._collapsible import CollapsibleTitle
+
+    from harness.console import reports
+
+    stages = [
+        reports.StageEntry(
+            f"dispatch-{index}", "batch-a", f"#72{index}", "developer", "working", ""
+        )
+        for index in range(3)
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> dict[str, object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                )
+            )
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+            screen = app.screen
+            label = screen.query_one("#dashboard-check-label", Static)
+            hint = screen.query_one("#home-sessions-hint", Static)
+            sessions = screen.query_one("#home-sessions-card")
+            report = screen.query_one("#dashboard-details")
+            return {
+                "label": str(label.render()) if label.display else None,
+                "on": [
+                    str(button.label)
+                    for button in screen.query("#dashboard-check Button").results(
+                        Button
+                    )
+                    if button.has_class("-on")
+                ],
+                "mode": str(
+                    screen.query_one("#dashboard-attention-mode", Static).render()
+                ),
+                "hint": str(hint.render()) if hint.display else None,
+                "gap": report.region.y - sessions.region.bottom,
+                "report": str(report.query_one(CollapsibleTitle).render()),
+            }
+
+    seen = asyncio.run(scenario())
+    ru = language == "ru"
+    if size[0] >= 100:
+        assert seen["label"] == ("ПРОВЕРКА" if ru else "CHECK")
+        assert seen["hint"] == (
+            "↑↓ выбор · Enter — открыть наблюдение. Выбор сессии не запускает новый процесс."
+            if ru
+            else "↑↓ select · Enter opens observation. Selecting a session starts no new process."
+        )
+    else:
+        assert seen["label"] is None and seen["hint"] is None
+    assert seen["on"] == (["Офлайн"] if ru else ["Offline"])
+    assert seen["mode"] == ("offline · пропущено 2" if ru else "offline · skipped 2")
+    # The report sits directly under the sessions, with the number of checks at its right end.
+    assert seen["gap"] in (0, 1)
+    report = str(seen["report"])
+    assert report.startswith(
+        "▸ " + ("Подробный технический отчёт" if ru else "Detailed technical report")
+    )
+    assert report.endswith(
+        "10 проверок · 2 пропущено" if ru else "10 checks · 2 skipped"
+    )
 
 
 # -- Diagnostics on the shared shell ---------------------------------------------------------

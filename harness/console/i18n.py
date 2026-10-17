@@ -96,6 +96,19 @@ def jump_label(language: str, section: str) -> str:
     return _JUMPS.get(section, {}).get(language) or section_label(language, section)
 
 
+def checks_count(language: str, total: int, skipped: int) -> str:
+    """`27 проверок · 11 пропущено` / `27 checks · 11 skipped`."""
+    if language == "en":
+        return f"{total} {'check' if total == 1 else 'checks'} · {skipped} skipped"
+    if total % 10 == 1 and total % 100 != 11:
+        noun = "проверка"
+    elif total % 10 in (2, 3, 4) and total % 100 not in (12, 13, 14):
+        noun = "проверки"
+    else:
+        noun = "проверок"
+    return f"{total} {noun} · {skipped} пропущено"
+
+
 def group_title(language: str, group: str) -> str:
     return group if language == "ru" else _GROUPS_EN.get(group, group)
 

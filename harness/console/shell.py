@@ -6,6 +6,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 from textual import events
@@ -426,14 +427,21 @@ class Fold(Collapsible):
         self._summary = summary
         self.relabel()
 
+    def on_resize(self) -> None:
+        self.relabel()
+
     def relabel(self) -> None:
         language = getattr(self.app, "language", "ru")
-        title = escape(i18n.tr(language, self._source))
+        title = i18n.tr(language, self._source)
         summary = i18n.tr_text(language, self._summary)
+        if not summary:
+            self.title = escape(title)
+            return
+        # The summary sits at the right end of the title row; the symbol and a space come first.
+        room = self.content_size.width - 2
+        gap = max(2, room - cell_len(title) - cell_len(summary))
         self.title = (
-            f"{title}  [{brand.PALETTE['muted']}]{escape(summary)}[/]"
-            if summary
-            else title
+            f"{escape(title)}{' ' * gap}[{brand.PALETTE['muted']}]{escape(summary)}[/]"
         )
 
 
@@ -522,7 +530,7 @@ class ShellIds:
 SHELL_CSS = brand.shell_css("""
 Screen.shell { background: $background; }
 .shell .crumb-row { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $foreground; }
-.shell .crumb-row .menu-toggle { margin-right: 1; color: $primary; text-style: bold; }
+.shell .crumb-row .menu-toggle { padding: 0; margin-right: 1; color: $primary; text-style: bold; }
 .shell .breadcrumbs { width: 1fr; height: auto; }
 .shell .breadcrumbs Static { width: auto; height: 1; }
 .shell .crumb-link { color: $primary; text-style: underline; }
@@ -530,6 +538,10 @@ Screen.shell { background: $background; }
 .shell .crumb-link:focus { background: $selection-background; color: $selection-foreground; text-style: bold underline; }
 .shell .crumb-sep { color: $text-muted; }
 .shell .jump-link { width: auto; height: 1; color: $primary; }
+.shell .segment { width: auto; height: 1; }
+.shell .segment Button { color: $foreground; }
+.shell .segment Button.-on { background: $selection-background; color: $selection-foreground; }
+.shell .segment .segment-sep { width: 1; color: $component-border; }
 .shell .jump-link:hover { background: $row-highlight; color: $selection-foreground; }
 .shell .jump-link:focus { background: $selection-background; color: $selection-foreground; text-style: bold; }
 .shell .crumb-current { width: 1fr; min-width: 1; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }

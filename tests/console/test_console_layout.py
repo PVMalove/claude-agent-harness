@@ -170,7 +170,6 @@ def sessions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 DASHBOARD_TITLES = (
     "#dashboard-title",
-    "#home-sessions-title",
     ".card-title",
     ".context-label",
     ".breadcrumbs",
