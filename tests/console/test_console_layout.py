@@ -170,9 +170,6 @@ def sessions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 DASHBOARD_TITLES = (
     "#dashboard-title",
-    "#home-sessions-title",
-    ".card-title",
-    ".context-label",
     ".breadcrumbs",
 )
 
@@ -187,6 +184,10 @@ async def last_card_is_reachable(
         if not _shown(panel) or not panel.children:
             continue
         last = panel.children[-1]
+        if last.has_class("context-fold") and not getattr(last, "collapsed", True):
+            # The panel's cards sit inside its fold (shown open beside the content).
+            cards = list(last.query(".section-card"))
+            last = cards[-1] if cards else last
         last.scroll_visible(animate=False, immediate=True)
         await pilot.pause()  # type: ignore[attr-defined]
         visible = panel.content_region.intersection(screen.region)
@@ -221,6 +222,33 @@ def test_dashboard_layout(
         async with app.run_test(size=size) as pilot:
             screen = await _open(app, pilot, None, language)
             assert isinstance(screen, DashboardScreen)
+            return layout_problems(
+                screen, DASHBOARD_TITLES
+            ) + await last_card_is_reachable(screen, pilot)
+
+    assert asyncio.run(scenario()) == []
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_home_with_problems_sessions_and_context_layout(
+    tmp_path: Path, sessions: None, size: tuple[int, int], language: str
+) -> None:
+    """The full home screen of the mockup: problems with jumps, working sessions, the context cards
+    and both folds stay inside the screen and their columns at every size."""
+    from tests.console.test_console_home import BANNER, CONTEXT, DATA
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            home = DashboardScreen(
+                tmp_path,
+                collect_dashboard=lambda _repo, *, online=False: DATA,
+                collect_banner=lambda _repo: BANNER,
+                collect_context=lambda _repo: CONTEXT,
+            )
+            await app.switch_screen(home)
+            screen = await _open(app, pilot, None, language)
             return layout_problems(
                 screen, DASHBOARD_TITLES
             ) + await last_card_is_reachable(screen, pilot)

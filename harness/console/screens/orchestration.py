@@ -129,6 +129,7 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
     CRUMB = "Оркестрация"
     CRUMBS = "Главная › Оркестрация"
     SECTION = "Orchestration"
+    NARROW_FOOTER_KEYS = ("escape", "enter", "f2")
 
     # The shell's rules plus this screen's own. Textual matches a type selector along the first base
     # class only, so `CommandMenuScreen` rules never reach this screen: everything it needs is here.
@@ -234,7 +235,7 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
                     markup=False,
                 )
             )
-        panel.border_title = brand.frame_title("Состояние и статистика")
+        panel.border_title = brand.section_title("Состояние и статистика")
         yield panel
         lock = Static(
             ledger_lock.current_lock_text(self.repo, self._load_lock, self._language),
@@ -254,10 +255,10 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
                 ),
                 id="state-filter",
             )
-            states.border_title = brand.frame_title("Состояния")
+            states.border_title = brand.section_title("Состояния")
             yield states
             history = ListView(id="batch-history")
-            history.border_title = brand.frame_title("История пайплайна")
+            history.border_title = brand.section_title("История пайплайна")
             yield history
 
     def on_mount(self) -> None:

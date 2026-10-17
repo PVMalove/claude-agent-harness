@@ -23,7 +23,7 @@ def test_tr_translates_known_strings_and_leaves_the_rest() -> None:
         == "Home › Configuration › Versions"
     )
     assert i18n.tr("en", "Главная  ›  Оркестрация") == "Home  ›  Orchestration"
-    assert i18n.tr("en", "Требует внимания · 2") == "Needs attention · 2"
+    assert i18n.tr("en", "Требует внимания · 2") == "Requires attention · 2"
     assert i18n.tr("en", "Цель: /srv/app") == "Target: /srv/app"
     assert (
         i18n.tr("en", "любой пользовательский текст") == "любой пользовательский текст"
@@ -78,7 +78,7 @@ def test_f2_switches_the_dashboard_and_back_without_drift(tmp_path: Path) -> Non
 
     before, english, after = asyncio.run(scenario())
     assert after == before
-    assert "Main menu" in english and "Workspace" in english
+    assert "MAIN MENU" in english and "Workspace" in english
     assert "Detailed technical report" in english
     assert "Open project" in english and "Диагностика" not in english
 
@@ -98,7 +98,7 @@ def test_f2_translates_screens_that_are_already_open_below(tmp_path: Path) -> No
             return help_screen, _dump(app)
 
     help_screen, dashboard = asyncio.run(scenario())
-    assert "Console guide" in help_screen and "Main menu" in dashboard
+    assert "Console guide" in help_screen and "MAIN MENU" in dashboard
 
 
 def test_command_menus_translate_groups_titles_and_footer(tmp_path: Path) -> None:

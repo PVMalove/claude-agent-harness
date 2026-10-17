@@ -6,6 +6,9 @@ plus words, and the role label is the role's name."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from rich.table import Table
 from rich.text import Text
 
 from . import brand
@@ -44,3 +47,46 @@ def session_card(
     )
     card.append_text(status_caption(session_status(state), language))
     return card
+
+
+def elapsed_text(start: datetime | None, now: datetime, language: str) -> str:
+    """How long ago `start` was, in the largest whole unit: `2 мин`, `3 ч`, `2 д`; empty when the
+    start is unknown or later than `now`."""
+    if start is None or start > now:
+        return ""
+    minutes = int((now - start).total_seconds()) // 60
+    units = ("min", "h", "d") if language == "en" else ("мин", "ч", "д")
+    if minutes < 60:
+        return f"{minutes} {units[0]}"
+    if minutes < 24 * 60:
+        return f"{minutes // 60} {units[1]}"
+    return f"{minutes // (24 * 60)} {units[2]}"
+
+
+def session_row(
+    *,
+    ticket: str,
+    role: str,
+    dispatch_id: str,
+    state: str,
+    language: str,
+    elapsed: str,
+) -> Table:
+    """One line per session: ticket and role, the dispatch (cut to the room left), the status
+    caption and how long ago the dispatch was recorded."""
+    # Fixed widths for all but the dispatch, so the rows of a list line up in columns.
+    row = Table.grid(expand=True, padding=(0, 1))
+    row.add_column(min_width=16, no_wrap=True)
+    row.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+    row.add_column(width=22, no_wrap=True, overflow="ellipsis")
+    row.add_column(width=6, justify="right", no_wrap=True)
+    identity = Text(ticket, style=f"bold {brand.PALETTE['foreground']}")
+    identity.append(" ")
+    identity.append_text(role_label(role))
+    row.add_row(
+        identity,
+        Text(dispatch_id, style=brand.PALETTE["muted"]),
+        status_caption(session_status(state), language),
+        Text(elapsed, style=brand.PALETTE["muted"]),
+    )
+    return row
