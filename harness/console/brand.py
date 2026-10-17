@@ -100,6 +100,19 @@ def shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(limit - 1, 0)] + "…"
 
 
+def elide_path(path: str, width: int) -> str:
+    """`path` cut from the left to `width` cells at a separator, `…/Code/project`, so its end
+    (the project) stays readable; a path that fits is kept whole."""
+    if len(path) <= width:
+        return path
+    parts = path.split("/")
+    for start in range(1, len(parts)):
+        tail = "…/" + "/".join(parts[start:])
+        if len(tail) <= width:
+            return tail
+    return "…" + path[len(path) - max(width - 1, 0) :] if width > 1 else "…"
+
+
 def frame_title(title: str) -> str:
     """Add symmetric spacing to Textual's built-in border label padding."""
     return f" {title.strip()} "

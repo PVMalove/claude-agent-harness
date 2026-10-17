@@ -13,6 +13,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import Button, ListItem, ListView, Static, Collapsible
 
 from .. import brand, i18n
@@ -25,7 +26,11 @@ from ..shell import (
     SHELL_CSS,
     ConsoleShell,
     ShellIds,
+    ElidedPath,
+    JumpLink,
+    SectionCard,
     WrappedValue,
+    check_route,
     repo_map_tier_name,
     section_badges,
 )
@@ -134,35 +139,6 @@ def _mode(online: bool) -> str:
     return "online" if online else "offline"
 
 
-def _render_attention(
-    data: DashboardData,
-    *,
-    online: bool,
-    include_mode: bool = True,
-    language: str = "ru",
-) -> str:
-    """Failed and warning checks first - the only thing on the home screen that asks for action."""
-    muted = brand.PALETTE["muted"]
-    if not data.problems:
-        result = (
-            f"[{_color('ok')}]{brand.STATUS_ICONS['ok']} "
-            f"{i18n.tr_text(language, 'Проблем не найдено')}[/]"
-        )
-        if include_mode:
-            mode = i18n.tr_text(language, f"{_mode(online)} · пропущено {data.skipped}")
-            result += f" [{muted}]· {mode}[/]"
-        return result
-    lines = [
-        f"[{_color(status)}]{brand.STATUS_ICONS.get(status, '·')}[/] "
-        f"[bold]{escape(check_id)}[/]  {escape(message)}"
-        for status, check_id, message in data.problems
-    ]
-    if include_mode:
-        mode = i18n.tr_text(language, f"{_mode(online)} · пропущено {data.skipped}")
-        lines.append(f"[{muted}]{mode}[/]")
-    return "\n".join(lines)
-
-
 def _render_cards(
     data: DashboardData,
     installed_version: str | None,
@@ -261,9 +237,15 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 1 3; }
     DashboardScreen #dashboard-title { height: 2; text-style: bold; }
     DashboardScreen #dashboard-subtitle { height: 2; color: $text-muted; }
-    DashboardScreen #dashboard-attention-scroll { height: auto; max-height: 11; padding: 1 0; margin-bottom: 1; border-top: solid $border-subtle; border-bottom: solid $border-subtle; }
-    DashboardScreen #dashboard-attention { height: auto; }
-    DashboardScreen #dashboard-attention-actions { height: 1; margin-top: 1; }
+    DashboardScreen #dashboard-attention-card { margin-bottom: 1; }
+    DashboardScreen #dashboard-attention, DashboardScreen #dashboard-problems { height: auto; }
+    DashboardScreen .problem-row { height: auto; }
+    DashboardScreen .problem-symbol { width: 2; height: 1; }
+    DashboardScreen .problem-text { width: 1fr; height: auto; }
+    DashboardScreen .problem-title { height: 1; color: $foreground; text-wrap: nowrap; text-overflow: ellipsis; }
+    DashboardScreen .problem-caption { height: 1; color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
+    DashboardScreen .problem-row JumpLink { margin-left: 2; }
+    DashboardScreen #dashboard-check { height: 1; margin-bottom: 1; }
     DashboardScreen #dashboard-attention-mode { width: 1fr; color: $text-muted; padding-left: 1; }
     DashboardScreen #home-sessions-title { height: 2; color: $text-muted; }
     DashboardScreen #home-sessions { height: 1fr; min-height: 3; border: none; }
@@ -280,9 +262,8 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen .card-title { height: 2; color: $text-muted; }
     DashboardScreen.-narrow #dashboard-overview { padding: 0 2; }
     DashboardScreen.-narrow #dashboard-subtitle { display: none; }
-    DashboardScreen.-narrow #dashboard-attention-scroll { max-height: 6; padding: 0; margin-bottom: 0; }
-    DashboardScreen.-narrow #dashboard-attention { max-height: 3; }
-    DashboardScreen.-narrow #dashboard-attention-actions { margin-top: 0; }
+    DashboardScreen.-narrow .problem-caption { display: none; }
+    DashboardScreen.-narrow #dashboard-attention-card, DashboardScreen.-narrow #dashboard-check { margin-bottom: 0; }
     """)
     # The shell's rules plus this screen's own, which must outrank the app's generic widget rules.
     CSS = SHELL_CSS + brand.shell_css("""
@@ -343,8 +324,19 @@ class DashboardScreen(ConsoleShell):
         return f"Контекст проекта\n{self.repo.name}\nWorker: отдельная сессия\nQA: отдельный dispatch"
 
     def compose_strip(self) -> ComposeResult:
-        yield Static(str(self.repo), markup=False, classes="no-i18n")
-        yield Button("Открыть проект →", id="dashboard-open-project", compact=True)
+        yield ElidedPath(str(self.repo), id="dashboard-path")
+        yield Button(
+            "Открыть другой проект →",
+            id="dashboard-open-project",
+            compact=True,
+            classes="wide-only",
+        )
+        yield Button(
+            "Проект →",
+            id="dashboard-open-project-short",
+            compact=True,
+            classes="narrow-only",
+        )
 
     def compose_content(self) -> ComposeResult:
         data, banner = self._data, self._banner
@@ -355,30 +347,36 @@ class DashboardScreen(ConsoleShell):
                 "Продолжите работу в выбранной сессии или откройте другой проект.",
                 id="dashboard-subtitle",
             )
-            with Vertical(id="dashboard-attention-scroll"):
-                yield Static(
-                    self._workspace_attention(data),
+            with SectionCard(
+                title="Требует внимания",
+                note=str(len(data.problems)),
+                id="dashboard-attention-card",
+                classes="-alert" if data.problems else "",
+            ):
+                status = Static(
+                    self._attention_status(data),
                     id="dashboard-attention",
                     classes="no-i18n",
                 )
-                with Horizontal(id="dashboard-attention-actions"):
-                    yield Button(
-                        i18n.ui(self._language, "offline"),
-                        id="dashboard-offline",
-                        compact=True,
-                    )
-                    yield Button(
-                        i18n.ui(self._language, "online"),
-                        id="dashboard-online",
-                        compact=True,
-                    )
-                    yield Static(
-                        self._attention_mode(
-                            data, online=False, language=self._language
-                        ),
-                        id="dashboard-attention-mode",
-                        classes="no-i18n",
-                    )
+                status.display = not data.problems
+                yield status
+                yield Vertical(*self._problem_rows(data), id="dashboard-problems")
+            with Horizontal(id="dashboard-check"):
+                yield Button(
+                    i18n.ui(self._language, "offline"),
+                    id="dashboard-offline",
+                    compact=True,
+                )
+                yield Button(
+                    i18n.ui(self._language, "online"),
+                    id="dashboard-online",
+                    compact=True,
+                )
+                yield Static(
+                    self._attention_mode(data, online=False, language=self._language),
+                    id="dashboard-attention-mode",
+                    classes="no-i18n",
+                )
             yield Static("РАБОЧИЕ СЕССИИ", id="home-sessions-title")
             stages = self._home_sessions()
             yield ListView(
@@ -463,30 +461,56 @@ class DashboardScreen(ConsoleShell):
             reverse=True,
         )[:6]
 
-    def _workspace_attention(self, data: DashboardData) -> str:
-        if not data.problems:
-            return _render_attention(
-                data, online=self._online, include_mode=False, language=self._language
-            )
-        labels = {
-            "files.skill_snapshot": "Скиллы отличаются от установленной версии Harness",
-            "files.integrations": "Нужно проверить настройки интеграций",
-        }
-        text = Text(
-            i18n.tr(self._language, "Требует внимания") + f" · {len(data.problems)}\n",
-            style=brand.PALETTE["warning"],
+    def _attention_status(self, data: DashboardData) -> str:
+        """The line above the problems: empty while there are problems, else that there are none."""
+        if data.problems:
+            return ""
+        return (
+            f"[{_color('ok')}]{brand.STATUS_ICONS['ok']} "
+            f"{i18n.tr_text(self._language, 'Проблем не найдено')}[/]"
         )
-        for index, (status, check_id, message) in enumerate(data.problems[:2]):
-            text.append(
-                f"{brand.STATUS_ICONS.get(status, '·')} "
-                + i18n.tr_text(
-                    self._language, labels.get(check_id, brand.shorten(message, 100))
-                ),
-                style=_color(status),
+
+    def _problem_rows(self, data: DashboardData) -> list[Widget]:
+        """Every failed and warning check: its symbol, readable title, what and where, and a jump
+        to the section that deals with it. Only the symbol carries the status colour."""
+        rows: list[Widget] = []
+        for status, check_id, message in data.problems:
+            route = check_route(check_id)
+            rows.append(
+                Horizontal(
+                    Static(
+                        Text(brand.STATUS_ICONS.get(status, "·"), style=_color(status)),
+                        classes="problem-symbol no-i18n",
+                    ),
+                    Vertical(
+                        Static(
+                            i18n.tr(self._language, route.title),
+                            classes="problem-title no-i18n",
+                            markup=False,
+                        ),
+                        Static(
+                            f"{check_id} · {message}",
+                            classes="problem-caption no-i18n",
+                            markup=False,
+                        ),
+                        classes="problem-text",
+                    ),
+                    JumpLink(route.section),
+                    classes="problem-row",
+                )
             )
-            if index < len(data.problems[:2]) - 1:
-                text.append("\n")
-        return text.markup
+        return rows
+
+    def _render_attention(self, data: DashboardData) -> None:
+        card = self.query_one("#dashboard-attention-card", SectionCard)
+        card.set_class(bool(data.problems), "-alert")
+        card.set_note(str(len(data.problems)))
+        status = self.query_one("#dashboard-attention", Static)
+        status.update(self._attention_status(data))
+        status.display = not data.problems
+        problems = self.query_one("#dashboard-problems", Vertical)
+        problems.remove_children()
+        problems.mount_all(self._problem_rows(data))
 
     def sync_language(self) -> None:
         """Re-label the section menu after the console language changed."""
@@ -516,9 +540,7 @@ class DashboardScreen(ConsoleShell):
             self._capabilities,
             language,
         )
-        self.query_one("#dashboard-attention", Static).update(
-            self._workspace_attention(data)
-        )
+        self._render_attention(data)
         self.query_one("#dashboard-attention-mode", Static).update(
             self._attention_mode(data, online=self._online, language=language)
         )
@@ -593,7 +615,10 @@ class DashboardScreen(ConsoleShell):
             self.action_checks_offline()
         elif event.button.id == "dashboard-online":
             self.action_checks_online()
-        elif event.button.id == "dashboard-open-project":
+        elif event.button.id in (
+            "dashboard-open-project",
+            "dashboard-open-project-short",
+        ):
             self.action_open_project()
         elif event.button.id == "dashboard-sessions":
             from .worker_observation import WorkerObservationScreen
@@ -644,6 +669,7 @@ class DashboardScreen(ConsoleShell):
             "онлайн-проверки выполняются…" if online else "офлайн-проверки выполняются…"
         )
         attention.update(f"⏳ {running}")
+        attention.display = True
         summary.update(running)
 
         def work() -> None:
@@ -656,6 +682,7 @@ class DashboardScreen(ConsoleShell):
 
                 def show_error() -> None:
                     attention.update(f"[{_color('fail')}]{text}[/]")
+                    attention.display = True
                     summary.update(text)
 
                 call_from_worker(self, show_error)

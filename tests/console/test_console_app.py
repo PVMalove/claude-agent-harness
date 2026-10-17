@@ -62,7 +62,7 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
         async with app.run_test(size=size) as pilot:
             await app.push_screen(screen)
             await pilot.pause()
-            checks = screen.query_one("#dashboard-attention-scroll")
+            checks = screen.query_one("#dashboard-check")
             for button in checks.query(Button):
                 assert checks.region.contains_region(button.region)
             assert [button.id for button in checks.query(Button)] == [
@@ -1138,10 +1138,7 @@ def test_dashboard_checks_live_in_the_attention_frame_and_have_no_diagnostics_bu
         async with app.run_test(size=(120, 48)) as pilot:
             await app.push_screen(screen)
             await pilot.pause()
-            return [
-                b.id
-                for b in screen.query_one("#dashboard-attention-scroll").query(Button)
-            ]
+            return [b.id for b in screen.query_one("#dashboard-check").query(Button)]
 
     assert asyncio.run(scenario()) == ["dashboard-offline", "dashboard-online"]
 
@@ -1373,3 +1370,212 @@ def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> 
     harness_card, _orchestration, _repo_map = _render_cards(data, "1.0.0")
     assert "память: [" in harness_card and "✔ ok" in harness_card
     assert "дрейф: [" in harness_card and "✔ нет" in harness_card
+
+
+def test_a_long_path_is_cut_from_the_left_at_a_separator() -> None:
+    path = "/home/malove/Projects/Code/claude-agent-harness"
+    assert brand.elide_path(path, 80) == path
+    assert brand.elide_path(path, 28) == "…/Code/claude-agent-harness"
+    assert brand.elide_path(path, 23) == "…/claude-agent-harness"
+    assert brand.elide_path(path, 10) == "…t-harness"
+
+
+class _Runner:
+    """Records every command; opening a section from home must run none."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+
+def _attention_data() -> DashboardData:
+    from dataclasses import replace
+
+    return replace(
+        _fake_dashboard_data(),
+        fail=2,
+        warn=1,
+        drift_state="drift",
+        problems=(
+            ("fail", "files.skill_snapshot", "snapshot differs from 1.4.6"),
+            ("fail", "files.integrations", "integrations: tracker token missing"),
+            ("warn", "environment.uv", "uv 0.4 is older than 0.5"),
+        ),
+    )
+
+
+def _long_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "home" / "malove" / "Projects" / "Code" / "claude-agent-harness"
+    repo.mkdir(parents=True)
+    return repo
+
+
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_path_line_ends_with_the_open_another_project_action(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from textual.widgets import Button, Static
+
+    repo = _long_repo(tmp_path)
+
+    async def scenario() -> tuple[str, int, int, str | None, list[str]]:
+        app = HarnessConsoleApp(repo)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    repo,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                )
+            )
+            await pilot.pause()
+            await pilot.pause()
+            path = app.screen.query_one("#dashboard-path", Static)
+            shown = [
+                str(button.label)
+                for button in app.screen.query(".context-strip Button").results(Button)
+                if button.display and button.region.width
+            ]
+            return (
+                str(path.render()),
+                path.region.height,
+                path.content_size.width,
+                str(path.tooltip),
+                shown,
+            )
+
+    text, height, width, tooltip, actions = asyncio.run(scenario())
+    # One line, cut from the left only when it must be; the whole path is the tooltip.
+    assert height == 1 and tooltip == str(repo)
+    assert text == brand.elide_path(str(repo), width)
+    assert text.endswith("/Code/claude-agent-harness")
+    if size[0] >= 100:
+        assert actions == ["Открыть другой проект →"]
+    else:
+        assert text.startswith("…/") and len(text) <= width
+        assert actions == ["Проект →"]
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_requires_attention_lists_every_problem_with_a_jump_to_its_section(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from textual.color import Color
+    from textual.widgets import Static
+
+    from harness.console.shell import JumpLink, SectionCard
+
+    async def scenario() -> dict[str, object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                )
+            )
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+            card = app.screen.query_one("#dashboard-attention-card", SectionCard)
+            rows = list(card.query(".problem-row"))
+            symbol = rows[0].query_one(".problem-symbol", Static)
+            title = rows[0].query_one(".problem-title", Static)
+            caption = rows[0].query_one(".problem-caption", Static)
+            return {
+                "card": str(card.border_title),
+                "alert": card.has_class("-alert"),
+                "left": card.styles.border_left[1],
+                "title_color": card.styles.border_title_color,
+                "titles": [
+                    str(row.query_one(".problem-title", Static).render())
+                    for row in rows
+                ],
+                "links": [str(link.render()) for link in card.query(JumpLink)],
+                "symbol": Color.parse(str(symbol.content.style)),  # type: ignore[union-attr]
+                "title_fg": Color.from_rich_color(title.rich_style.color),
+                "caption": str(caption.render()) if caption.display else None,
+                "visible": all(
+                    app.screen.region.contains_region(row.region) for row in rows
+                ),
+            }
+
+    seen = asyncio.run(scenario())
+    ru = language == "ru"
+    assert seen["card"] == (
+        " ТРЕБУЕТ ВНИМАНИЯ  3 " if ru else " REQUIRES ATTENTION  3 "
+    )
+    assert seen["alert"]
+    left = seen["left"]
+    assert isinstance(left, Color)
+    error = Color.parse(brand.PALETTE["error"])
+    assert max(abs(a - b) for a, b in zip(left.rgb, error.rgb)) <= 2
+    assert seen["title_color"] == Color.parse(brand.PALETTE["muted"])
+    assert seen["titles"] == (
+        [
+            "Скиллы отличаются от установленной версии Harness",
+            "Нужно проверить настройки интеграций",
+            "uv недоступен",
+        ]
+        if ru
+        else [
+            "Skills differ from the installed Harness version",
+            "Integration settings need attention",
+            "uv is unavailable",
+        ]
+    )
+    if size[0] >= 100:
+        assert seen["links"] == (
+            ["Обновить Harness  2 →", "Открыть настройку  8 →", "Диагностика  3 →"]
+            if ru
+            else ["Update Harness  2 →", "Open setup  8 →", "Diagnostics  3 →"]
+        )
+        assert seen["caption"] == "files.skill_snapshot · snapshot differs from 1.4.6"
+    else:
+        assert seen["links"] == ["2 →", "8 →", "3 →"]
+        assert seen["caption"] is None
+    # Only the symbol carries the status colour; the title stays in the text colour.
+    assert seen["symbol"] == Color.parse(brand.PALETTE["error"])
+    assert seen["title_fg"] == Color.parse(brand.PALETTE["foreground"])
+    assert seen["visible"]
+
+
+def test_a_jump_from_requires_attention_opens_the_section_and_runs_no_command(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.update_harness import UpdateHarnessScreen
+    from harness.console.shell import JumpLink
+
+    runner = _Runner()
+
+    async def scenario() -> bool:
+        app = HarnessConsoleApp(tmp_path, command_runner=runner)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                    command_runner=runner,
+                )
+            )
+            await pilot.pause()
+            link = app.screen.query(JumpLink).first()
+            link.focus()
+            await pilot.press("enter")
+            for _ in range(3):
+                await pilot.pause()
+            return isinstance(app.screen, UpdateHarnessScreen)
+
+    assert asyncio.run(scenario())
+    assert runner.calls == []

@@ -23,7 +23,7 @@ def test_tr_translates_known_strings_and_leaves_the_rest() -> None:
         == "Home › Configuration › Versions"
     )
     assert i18n.tr("en", "Главная  ›  Оркестрация") == "Home  ›  Orchestration"
-    assert i18n.tr("en", "Требует внимания · 2") == "Needs attention · 2"
+    assert i18n.tr("en", "Требует внимания · 2") == "Requires attention · 2"
     assert i18n.tr("en", "Цель: /srv/app") == "Target: /srv/app"
     assert (
         i18n.tr("en", "любой пользовательский текст") == "любой пользовательский текст"

@@ -338,6 +338,24 @@ class WrappedValue(Static):
         self._wrap()
 
 
+class ElidedPath(Static):
+    """A path on one line, cut from the left to the room it has (`…/Code/project`); the whole
+    path is its tooltip."""
+
+    DEFAULT_CLASSES = "elided-path no-i18n"
+
+    def __init__(self, path: str, *, id: str | None = None) -> None:
+        super().__init__(path, id=id, markup=False)
+        self.path = path
+        self.tooltip = path
+
+    def on_resize(self) -> None:
+        width = self.content_size.width
+        text = brand.elide_path(self.path, width) if width else self.path
+        if text != str(self.content):
+            self.update(text)
+
+
 class ContextPanel(VerticalScroll):
     """Facts beside the content; folded under it on a narrow terminal, never hidden."""
 
@@ -517,6 +535,10 @@ Screen.shell { background: $background; }
 .shell .crumb-current { width: 1fr; min-width: 1; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
 .shell .context-strip { height: auto; min-height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
 .shell .context-strip Static { width: 1fr; height: auto; }
+.shell .context-strip .elided-path { height: 1; text-wrap: nowrap; }
+.shell .narrow-only { display: none; }
+.shell.-narrow .narrow-only { display: block; }
+.shell.-narrow .wide-only { display: none; }
 .shell Button { min-width: 8; width: auto; color: $foreground; border: round $component-border; text-style: none; }
 .shell Button:hover, .shell Button:focus { border: round $primary; color: $primary; }
 .shell .context-strip Button { border: none; height: 1; min-width: 3; color: $primary; }
