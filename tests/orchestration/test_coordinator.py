@@ -3890,12 +3890,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(submitted["state"], "reported")
         self.assertIn("decision_packet", submitted)
         packet = submitted["decision_packet"]
-        self.assertEqual(packet["options"], ["retry", "block", "abandon"])
+        # The blocked report's cause is unknown: no abandon is offered on it (issue #684).
+        self.assertEqual(packet["options"], ["retry", "block"])
+        self.assertEqual(packet["operational_hold"]["reason"], "unknown-value")
         self.assertNotIn("accept", packet["options"])
         self.assertIn("recovery_route", packet)
-        self.assertEqual(
-            packet["recovery_route"]["options"], ["retry", "block", "abandon"]
-        )
+        self.assertEqual(packet["recovery_route"]["options"], ["retry", "block"])
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._decide(batch["batch_id"], "accept")
@@ -6852,7 +6852,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             unflagged["route_preview"]["retry"]["route"], "developer-retry"
         )
-        self.assertEqual(unflagged["route_preview"]["abandon"], {"route": "abandon"})
+        # An unknown cause offers no abandon (issue #684); a named category routes as before.
+        self.assertNotIn("abandon", unflagged["route_preview"])
+        self.assertEqual(unflagged["operational_hold"]["reason"], "unknown-value")
         self.assertEqual(forced["route_preview"]["retry"]["route"], "developer-retry")
         retry = preview["route_preview"]["retry"]
         self.assertEqual(retry["route"], "same-candidate-rerun")
@@ -6918,9 +6920,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     "refused": "classifier failed",
                     "remedy": "fix the classifier",
                 },
-                "abandon": {"route": "abandon"},
             },
         )
+        # A refused route offers no abandon either (issue #684).
+        self.assertEqual(packet["operational_hold"]["reason"], "missing-value")
         self.assertEqual(refused.exception.message, "classifier failed")
 
     def test_a_routed_decision_audits_its_route_evidence_and_human_approver(

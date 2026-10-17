@@ -82,6 +82,7 @@ from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
+    _hold_with_attention,
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
@@ -227,8 +228,11 @@ def _hand_off(
 
 
 def _runtime_compatibility(
+    ledger: LifecycleLedger,
     repo: Path,
+    root: Path,
     config: JsonObject,
+    batch: JsonObject,
     dispatch: JsonObject,
     adapter: list[str] | None,
     adapter_args: list[str],
@@ -237,17 +241,14 @@ def _runtime_compatibility(
 ) -> JsonObject:
     """The systemFields declarations the brief runs on -- its pinned contract, its runtime
     assignment in the configuration it was approved under, its frozen extensions and an external
-    adapter's ``contract`` answer -- or the structured ``runtime-compatibility`` refusal.  An
-    adapter that cannot be started at all is left to the hand-off, which records it as an
-    unavailable runtime."""
-    policy = dispatch.get("orchestration_policy")
-    if isinstance(policy, dict) and "configuration" in policy:
-        from harness.orchestration.pinned_configuration import read_snapshot
-
-        config = read_snapshot(dispatch)["config"]
-    declarations = runtime_compatibility.dispatch_declarations(config, dispatch)
-    if adapter is not None:
-        answer = runtime_compatibility.adapter_declaration(
+    adapter's ``contract`` answer -- or the structured ``runtime-compatibility`` refusal, after
+    the batch is held in the runtime state store with its attention raised.  An adapter that
+    cannot be started at all is left to the hand-off, which records it as an unavailable
+    runtime."""
+    answer = (
+        None
+        if adapter is None
+        else runtime_compatibility.adapter_declaration(
             adapter,
             adapter_args,
             repo=repo,
@@ -255,9 +256,21 @@ def _runtime_compatibility(
             cwd=worktree,
             expected=runtime_compatibility.dispatch_contract(dispatch),
         )
-        if answer is not None:
-            declarations.append(answer)
-    return runtime_compatibility.require_compatible("send", declarations)
+    )
+    try:
+        return runtime_compatibility.require_brief(
+            config, dispatch, step="send", adapter=answer
+        )
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        _hold_with_attention(
+            ledger, repo, root, config, batch, "runtime-compatibility", exc.message
+        )
+        raise runtime_compatibility.RuntimeCompatibilityError(
+            exc.step,
+            exc.declarations,
+            remedy=f"{exc.remedy}; the batch is held: run 'coordinator.py recovery resume "
+            f"--batch {batch['batch_id']}' once every party is compatible",
+        ) from exc
 
 
 def send_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -392,8 +405,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
         # Before the hand-off intent: an incompatible party starts nothing and writes nothing.
         compatibility = _runtime_compatibility(
+            ledger,
             repo,
+            root,
             config,
+            batch,
             dispatch,
             None if adapter is None else adapter_command(adapter),
             adapter_args,

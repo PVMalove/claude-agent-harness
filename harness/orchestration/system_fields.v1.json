@@ -247,6 +247,7 @@
       "automatic_decisions": true,
       "unrecognized": "reject",
       "values": {
+        "operational-hold": "The runtime state store holds the batch for unknown, missing, quarantined, unreadable or incompatible system data; stop integrity-failure until recovery resume releases it.",
         "unknown-reason": "A retry reason is unknown; stop no-automatic-route.",
         "infrastructure-retry-repeated": "Infrastructure retries exceeded attention_policy.max_infrastructure_retries.",
         "tooling-retry-repeated": "A tool blocked the same candidate repeatedly; the tool needs a fix.",
@@ -302,8 +303,10 @@
         "harness-snapshot-changed": "The installed harness runtime differs from the pinned snapshot.",
         "deterministic-gate-failed": "A deterministic gate of the policy failed.",
         "ledger-validation-failed": "Ledger validation failed.",
+        "operational-hold": "The runtime state store holds the batch for unknown, missing, quarantined, unreadable or incompatible system data; recovery resume releases it, nothing is abandoned.",
         "unknown-reason": "The retry reason is unknown.",
-        "abandon-dead-end": "The only remaining route is an abandon, which needs a human.",
+        "missing-evidence": "The coordinator refuses the retry route because structured evidence it needs is missing; a human supplies it, nothing is abandoned.",
+        "abandon-dead-end": "The batch is blocked or failed by a human decision, so the only remaining route is an abandon, which needs a human.",
         "supersede-dead-end": "The only remaining route is a supersede, which needs a human."
       },
       "groups": {
@@ -320,10 +323,12 @@
           "worktree-mismatch",
           "harness-snapshot-changed",
           "deterministic-gate-failed",
-          "ledger-validation-failed"
+          "ledger-validation-failed",
+          "operational-hold"
         ],
         "no-automatic-route": [
           "unknown-reason",
+          "missing-evidence",
           "abandon-dead-end",
           "supersede-dead-end"
         ]
@@ -923,6 +928,18 @@
       "sentinels": [
         "unsupported"
       ]
+    },
+    "operational_hold.reason": {
+      "description": "Why the runtime state store holds a batch suspended: the failure step hold:<reason>, or the ledger migration's quarantine step. A held batch takes no action through the store until recovery resume re-checks the cause; nothing is abandoned, retried or decided on it.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "unknown-value": "A system field holds a value the registry does not list; a human classifies it.",
+        "missing-value": "A system field or structured evidence a decision needs is absent; a human supplies it.",
+        "legacy-quarantine": "The ledger migration quarantined the batch; no recovery command releases it and its evidence stays for a human.",
+        "unreadable-record": "The batch's ledger or runtime state record cannot be read; recovery resume releases the hold once it reads again.",
+        "runtime-compatibility": "A runtime, adapter, extension or worker declared an incompatible systemFields contract; recovery resume releases the hold once every declaration is compatible."
+      }
     },
     "runtime_compatibility.status": {
       "description": "How one party's declared systemFields contract version compares with the version a dispatch runs under. dispatch preflight, dispatch create and dispatch send start nothing and report submit accepts nothing unless every declaration is compatible.",

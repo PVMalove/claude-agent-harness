@@ -47,7 +47,9 @@ ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
+# In priority order: a batch the runtime state store holds comes first (issue #684).
 ATTENTION_REASONS = (
+    "operational-hold",
     "unknown-reason",
     "infrastructure-retry-repeated",
     "tooling-retry-repeated",

@@ -368,12 +368,16 @@ def test_send_refuses_an_incompatible_adapter_before_any_effect(
 ) -> None:
     brief, _ = external_brief(recovery)
     adapter = _adapter(recovery.tmp, {"system_fields_contract": "systemFields.v2"})
-    before = _ledger(recovery)
+    status_before = coordinator._load_dispatch_status(
+        recovery.state_dir, brief["dispatch_id"]
+    )
+    batch_before = recovery._batch_record(brief["batch_id"])
 
     with pytest.raises(RuntimeCompatibilityError) as raised:
         send_external(recovery, brief, adapter)
 
     assert raised.value.step == "send"
+    assert f"recovery resume --batch {brief['batch_id']}" in raised.value.remedy
     statuses = {
         item["subject"]: item["status"]
         for item in raised.value.evidence["declarations"]
@@ -381,11 +385,37 @@ def test_send_refuses_an_incompatible_adapter_before_any_effect(
     assert statuses["external-adapter"] == "unsupported"
     assert statuses["dispatch-brief"] == "compatible"
     assert launches(recovery) == []
-    assert _ledger(recovery) == before
+    # Nothing started and no lifecycle moved: the store holds the batch, attention is raised.
+    assert (
+        coordinator._load_dispatch_status(recovery.state_dir, brief["dispatch_id"])
+        == status_before
+    )
+    batch = recovery._batch_record(brief["batch_id"])
+    assert (batch["state"], batch.get("next_action"), batch["dispatches"]) == (
+        batch_before["state"],
+        batch_before.get("next_action"),
+        batch_before["dispatches"],
+    )
+    assert (batch["needs_attention"], batch["attention_reason"]) == (
+        True,
+        "operational-hold",
+    )
     record = RuntimeStateStore(recovery.repo, recovery.state_dir).read(
         brief["batch_id"]
     )
-    assert record is None or record["operation"] is None
+    assert record is not None and record["operation"] is None
+    assert (record["state"], record["failure"]["step"]) == (
+        "suspended",
+        "hold:runtime-compatibility",
+    )
+    # Every command that acts through the store stops on the hold, a second send included.
+    with pytest.raises(coordinator.CoordinatorError, match="is held"):
+        send_external(
+            recovery,
+            brief,
+            _adapter(recovery.tmp, {"system_fields_contract": CONTRACT_VERSION}),
+        )
+    assert launches(recovery) == []
 
 
 def test_send_hands_off_once_to_a_compatible_adapter(
@@ -531,13 +561,15 @@ def test_an_incompatible_confirmation_is_evidence_and_never_a_working_dispatch(
     assert "model_self_report" not in status
     assert status["contract_self_report"]["status"] == "unsupported"
     assert recovery._batch_record(batch["batch_id"])["state"] != "blocked"
-    # The recorded confirmation alone refuses the report: it stays unaccepted evidence.
-    with pytest.raises(RuntimeCompatibilityError) as refused:
+    # The batch is held: no report is taken until recovery resume releases it.
+    record = RuntimeStateStore(recovery.repo, recovery.state_dir).read(
+        batch["batch_id"]
+    )
+    assert record is not None and record["state"] == "suspended"
+    with pytest.raises(coordinator.CoordinatorError, match="is held"):
         recovery._submit(
             brief["dispatch_id"], recovery._base_report(brief, "architect")
         )
-    assert refused.value.step == "report-submit"
-    assert list((recovery._records() / "unaccepted-evidence").glob("*.json"))
     assert not (
         recovery._records() / "reports" / f"{brief['dispatch_id']}.json"
     ).exists()

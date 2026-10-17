@@ -19,6 +19,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import (
     infrastructure_retry,
     operational_guards,
+    operational_hold,
     runtime_access,
     runtime_compatibility,
 )
@@ -765,6 +766,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        # A batch the runtime state store holds takes no new brief until recovery releases it.
+        operational_hold.require_no_hold(
+            RuntimeStateStore(repo, root), batch["batch_id"]
+        )
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(
                 "a dispatch requires a batch awaiting explicit approval",

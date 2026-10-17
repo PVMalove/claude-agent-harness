@@ -180,7 +180,7 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         # A hand-off its sender left unfinished may still have to write this dispatch's status.
         settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
-        confirmation = _confirm_contract(ledger, dispatch, status, args)
+        confirmation = _confirm_contract(ledger, repo, root, dispatch, status, args)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
         attestation: JsonObject | None = None
@@ -289,14 +289,16 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
 
 def _confirm_contract(
     ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
     dispatch: JsonObject,
     status: JsonObject,
     args: argparse.Namespace,
 ) -> runtime_compatibility.Declaration | None:
     """Keep the worker's optional systemFields confirmation on the dispatch status; one that is
-    not the brief's contract is recorded as evidence and refused before the worker counts as
-    working.  Without the flag nothing is recorded: a worker started before it existed confirms
-    nothing."""
+    not the brief's contract is recorded as evidence, holds the batch with its attention raised
+    and is refused before the worker counts as working.  Without the flag nothing is recorded: a
+    worker started before it existed confirms nothing."""
     declared = getattr(args, "system_fields_contract", None)
     if declared is None:
         return None
@@ -310,11 +312,39 @@ def _confirm_contract(
     status["updated_at"] = moment
     _safe_id(dispatch["dispatch_id"], "dispatch")
     _replace_record(ledger, DispatchStatusRecord.from_dict(status))
-    raise runtime_compatibility.RuntimeCompatibilityError(
+    refusal = runtime_compatibility.RuntimeCompatibilityError(
         "self-report",
         [confirmation],
-        remedy=f"start the worker on a runtime that speaks {confirmation.expected!r} and "
-        "repeat dispatch self-report; the dispatch is not working and nothing else changed",
+        remedy=f"stop this worker, run 'coordinator.py recovery resume --batch "
+        f"{dispatch['batch_id']}', start the worker on a runtime that speaks "
+        f"{confirmation.expected!r} and repeat dispatch self-report; the dispatch is not working",
+    )
+    _hold_incompatible(ledger, repo, root, dispatch, refusal)
+    raise refusal
+
+
+def _hold_incompatible(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    refusal: runtime_compatibility.RuntimeCompatibilityError,
+) -> None:
+    """Hold the dispatch's batch for an incompatible party, with its attention raised."""
+    from harness.orchestration.workflow.attention import _hold_with_attention
+
+    try:
+        config = core_config._config(repo)
+    except CoordinatorError:
+        config = {}
+    _hold_with_attention(
+        ledger,
+        repo,
+        root,
+        config,
+        _load_batch(root, dispatch["batch_id"]),
+        "runtime-compatibility",
+        refusal.message,
     )
 
 
@@ -1875,10 +1905,14 @@ def _report_compatibility(
     dispatch: JsonObject,
     status: JsonObject,
     report: JsonObject,
+    *,
+    ledger: LifecycleLedger | None = None,
+    repo: Path | None = None,
 ) -> JsonObject:
     """The evidence that the report was produced under the brief's systemFields contract.  An
     incompatible report is kept only as unaccepted evidence -- no report record, no status
-    change, no lifecycle decision -- and the refusal names where it is."""
+    change, no lifecycle decision -- the batch is held with its attention raised (given the
+    ledger and repository), and the refusal names where the evidence is."""
     from harness.orchestration.pinned_configuration import capture_unaccepted
 
     try:
@@ -1888,11 +1922,16 @@ def _report_compatibility(
         )
     except runtime_compatibility.RuntimeCompatibilityError as exc:
         path = capture_unaccepted(root, dispatch, report, exc)
-        raise runtime_compatibility.RuntimeCompatibilityError(
+        refusal = runtime_compatibility.RuntimeCompatibilityError(
             exc.step,
             exc.declarations,
-            remedy=f"{exc.remedy}; unaccepted evidence: {path}",
-        ) from exc
+            remedy=f"{exc.remedy}; unaccepted evidence: {path}; the batch is held: run "
+            f"'coordinator.py recovery resume --batch {dispatch.get('batch_id')}' before the "
+            "report is submitted again",
+        )
+        if ledger is not None and repo is not None:
+            _hold_incompatible(ledger, repo, root, dispatch, refusal)
+        raise refusal from exc
 
 
 def submit_report(args: argparse.Namespace) -> JsonObject:
@@ -1928,7 +1967,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="run QA through the clean-room QA runner (qa run), not by hand",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        compatibility = _report_compatibility(root, config, dispatch, status, report)
+        compatibility = _report_compatibility(
+            root, config, dispatch, status, report, ledger=ledger, repo=repo
+        )
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry

@@ -351,6 +351,36 @@ def dispatch_declarations(
     return declarations
 
 
+def approved_config(
+    config: Mapping[str, object], dispatch: Mapping[str, object]
+) -> Mapping[str, object]:
+    """The configuration a brief was approved under: its pinned snapshot, or ``config`` for a
+    brief written before snapshots were pinned."""
+    policy = dispatch.get("orchestration_policy")
+    if isinstance(policy, dict) and "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        snapshot: Mapping[str, object] = read_snapshot(dict(dispatch))["config"]
+        return snapshot
+    return config
+
+
+def require_brief(
+    config: Mapping[str, object],
+    dispatch: Mapping[str, object],
+    *,
+    step: str,
+    adapter: Declaration | None = None,
+) -> JsonObject:
+    """The evidence that an approved brief runs on compatible parties -- its pinned contract, its
+    runtime assignment in the configuration it was approved under, its frozen extensions and an
+    external adapter's answer -- or the structured refusal."""
+    declarations = dispatch_declarations(approved_config(config, dispatch), dispatch)
+    if adapter is not None:
+        declarations.append(adapter)
+    return require_compatible(step, declarations)
+
+
 # The dispatch-status field that keeps the worker's optional confirmation as evidence.
 SELF_REPORT_FIELD = "contract_self_report"
 

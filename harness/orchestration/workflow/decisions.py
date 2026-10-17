@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
-from harness.orchestration import extensions, qa_lane
+from harness.orchestration import extensions, operational_hold, qa_lane
 from harness.orchestration.contract import low_risk_eligible
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -74,6 +74,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches
+from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -232,6 +233,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 if item.get("state") == "reported" and "decision" not in item
             ]
             entry = pending[0] if len(pending) == 1 else None
+        held = _packet_hold(repo, root, batch)
         if entry is None:
             return {
                 "batch_id": batch["batch_id"],
@@ -257,8 +259,9 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 }
                 if getattr(args, "findings_file", None) is not None
                 else None,
+                "operational_hold": held,
                 "approval_reason": "the next immutable dispatch has not been created",
-                "options": ["accept", "block", "full review"],
+                "options": [] if held else ["accept", "block", "full review"],
             }
         dispatch = _load_dispatch(root, entry["dispatch_id"])
         report = (
@@ -282,7 +285,10 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             plan_rules.coverage(report, dispatch, resolve) if report else (None, None)
         )
         route_preview: JsonObject | None = None
-        if report is not None and "decision" not in entry:
+        if report is not None and "decision" not in entry and held is not None:
+            # Nothing is decided on a held batch: recovery comes first, never an abandon.
+            route_preview = {"hold": held}
+        elif report is not None and "decision" not in entry:
             # The same computation ``batch decide`` runs, with the same flags; nothing is written.
             try:
                 retry_preview = _decide_retry_route(
@@ -295,7 +301,10 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     "refused": exc.message,
                     "remedy": exc.remedy,
                 }
-            route_preview = {"retry": retry_preview, "abandon": {"route": "abandon"}}
+            held = _route_hold(report, retry_preview)
+            route_preview = {"retry": retry_preview}
+            if held is None:
+                route_preview["abandon"] = {"route": "abandon"}
         if getattr(args, "findings_file", None) is not None:
             route_preview = {
                 **(route_preview or {}),
@@ -340,6 +349,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
             ),
             "needs_attention": bool(batch.get("needs_attention", False)),
             "route_preview": route_preview,
+            "operational_hold": held,
             "transition_digest": dispatch.get("transition_digest"),
             "summary": report.get("output") if report else "immutable brief prepared",
             "checks": report.get("checks_run", [])
@@ -400,7 +410,66 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                 "approval_required": True,
                 "next_role": dispatch.get("role"),
             }
+        if held is not None:
+            _hold_options(packet, held)
         return packet
+
+
+def _packet_hold(repo: Path, root: Path, batch: JsonObject) -> JsonObject | None:
+    """The runtime state store's hold of the batch as the packet shows it, or ``None``."""
+    from harness.orchestration.workflow.attention import _held
+
+    held = _held(repo, root, batch["batch_id"])
+    return None if held is None else {"source": "runtime-state", **held.to_dict()}
+
+
+def _route_hold(report: JsonObject, retry_preview: JsonObject) -> JsonObject | None:
+    """A stopped report whose retry route rests on an unknown cause, or that the coordinator
+    refuses for missing structured evidence: attention, never an abandon or a default."""
+    if report.get("outcome") == "completed":
+        return None
+    if retry_preview.get("route") is None:
+        reason, detail = "missing-value", str(retry_preview.get("refused"))
+    elif retry_preview.get("reason_category") == RetryReason.UNKNOWN:
+        reason, detail = "unknown-value", "no structured evidence classifies the cause"
+    else:
+        return None
+    return {
+        "source": "retry-route",
+        "reason": reason,
+        "message": detail,
+        "remedy": "establish the cause from the report's structured evidence and retry with "
+        "--reason-category, or block the batch; an abandon is not offered on an unknown or "
+        "missing cause",
+    }
+
+
+def _hold_options(packet: JsonObject, held: JsonObject) -> None:
+    """Only what a held packet may offer: no abandon, and nothing at all while the store holds
+    the batch."""
+    if held["source"] == "runtime-state":
+        packet["options"] = []
+        packet["approval_reason"] = (
+            "the runtime state store holds this batch; recovery comes before any decision"
+        )
+        packet["recovery_route"] = {
+            "decision": None,
+            "options": [],
+            "approval_required": True,
+            "commands": [
+                f"recovery status --batch {packet['batch_id']}",
+                f"recovery resume --batch {packet['batch_id']}",
+            ],
+        }
+        return
+    packet["options"] = [
+        option for option in packet["options"] if option not in {"abandon", "accept"}
+    ]
+    route = packet.get("recovery_route")
+    if isinstance(route, dict):
+        route["options"] = [
+            option for option in route["options"] if option != "abandon"
+        ]
 
 
 def _carry_over_preview(
@@ -1178,6 +1247,10 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                     found,
                     detected_by="batch auto-decide",
                 )
+        # A held batch is decided on nothing: recovery resume releases the hold first.
+        operational_hold.require_no_hold(
+            RuntimeStateStore(repo, root), batch["batch_id"]
+        )
         pending = [
             item
             for item in active_dispatches(batch)

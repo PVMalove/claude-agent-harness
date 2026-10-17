@@ -688,8 +688,16 @@ AUTO_STOP_REASONS = {
         "harness-snapshot-changed",
         "deterministic-gate-failed",
         "ledger-validation-failed",
+        # The runtime state store holds the batch (issue #684): recovery resume, never abandon.
+        "operational-hold",
     ),
-    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+    "no-automatic-route": (
+        "unknown-reason",
+        # A refused retry route whose structured evidence is missing (issue #684).
+        "missing-evidence",
+        "abandon-dead-end",
+        "supersede-dead-end",
+    ),
 }
 AUTO_STOP_FIELDS = frozenset(
     {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}

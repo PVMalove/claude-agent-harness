@@ -702,3 +702,44 @@ def test_a_stop_at_any_write_boundary_is_reconciled_or_leaves_nothing_behind(
     store, ledger = store_bytes(scene), scene.tree()
     assert settle_scene(scene) is False
     assert (store_bytes(scene), scene.tree()) == (store, ledger)
+
+
+@pytest.mark.parametrize("kind", sorted(WRITES))
+def test_a_hold_over_an_interrupted_write_waits_for_its_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """A hold keeps an unfinished composite write as it is (issue #684): no settle rolls it
+    forward or adds a revision until the hold is released; then the reconcile finishes it."""
+    from harness.orchestration import operational_hold
+
+    scene = make_scene(tmp_path)
+    interrupted(
+        scene,
+        kind,
+        lambda: crash_on(monkeypatch, LifecycleLedger, "_append_audit", 1),
+        monkeypatch,
+    )
+    held = operational_hold.hold(
+        scene.store(),
+        BATCH,
+        "runtime-compatibility",
+        "the worker speaks systemFields.v2",
+    )
+    assert held is not None and held.releasable
+    before = store_bytes(scene), scene.tree()
+
+    for _ in range(2):
+        with pytest.raises(RuntimeStateError) as caught:
+            settle_scene(scene)
+        assert (caught.value.code, caught.value.step) == (
+            "runtime-compatibility",
+            "hold:runtime-compatibility",
+        )
+    with pytest.raises(RuntimeStateError, match="concurrency-conflict"):
+        WRITES[kind](scene).commit()
+    assert (store_bytes(scene), scene.tree()) == before
+
+    released = operational_hold.release(scene.store(), BATCH)
+    assert released is not None and released["state"] == "suspended"
+    assert settle_scene(scene) is True
+    assert_reconciled(scene, reference(tmp_path, kind))

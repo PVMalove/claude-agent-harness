@@ -23,6 +23,7 @@ from harness.orchestration import (
     extensions,
     operation_access,
     operational_guards,
+    operational_hold,
     runtime_access,
     runtime_attestation,
     runtime_compatibility,
@@ -792,6 +793,9 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "runtime_compatibility.status": {
         "runtime_compatibility.STATUSES": runtime_compatibility.STATUSES
+    },
+    "operational_hold.reason": {
+        "operational_hold.HOLD_REASONS": operational_hold.HOLD_REASONS
     },
     "runtime_compatibility.subject": {
         "runtime_compatibility.SUBJECTS": runtime_compatibility.SUBJECTS

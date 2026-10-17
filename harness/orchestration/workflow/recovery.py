@@ -151,6 +151,15 @@ def _recoverable(batch: JsonObject) -> None:
         )
 
 
+def _not_held(repo: Path, root: Path, batch: JsonObject) -> None:
+    """A batch the runtime state store holds is released by ``recovery resume`` first: neither
+    resume-stop nor rewind acts on data the store cannot act on (issue #684)."""
+    from harness.orchestration import operational_hold
+    from harness.orchestration.runtime_state_store import RuntimeStateStore
+
+    operational_hold.require_no_hold(RuntimeStateStore(repo, root), batch["batch_id"])
+
+
 def _no_live_worker(root: Path, batch: JsonObject) -> None:
     from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
@@ -343,6 +352,7 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
+        _not_held(repo, root, batch)
         if (repeated := _repeated_resume(batch)) is not None:
             return _recovery_result(batch, repeated)
         if batch["state"] not in {"paused", "blocked", "failed"}:
@@ -499,6 +509,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
+        _not_held(repo, root, batch)
         _no_live_worker(root, batch)
         entries = active_dispatches(batch)
         current_rank = max(
