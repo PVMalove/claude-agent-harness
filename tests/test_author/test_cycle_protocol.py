@@ -48,7 +48,18 @@ FAST_MARKERS = (
 )
 SHORT_ROUTE_MARKERS = ("/fast-implement", "short route")
 AGENT_MARKERS = ("`status`", "needs_skeleton", "contract_gap", "failed assertion", "already Green")
-GUIDE_MARKERS = ("needs_skeleton", "contract_gap", "три", "не ослабляется", "ledger")
+GUIDE_MARKERS = (
+    "needs_skeleton",
+    "contract_gap",
+    "три",
+    "не ослабляется",
+    "ledger",
+    "Короткий маршрут `/fast-implement`",
+    "Включение (opt-in)",
+    "Защищённое окружение",
+    "bubblewrap 0.9.0+",
+    "Откат на обычный маршрут",
+)
 
 
 def _text(path: Path) -> str:
@@ -79,6 +90,10 @@ def test_common_contract_points_to_the_cycle() -> None:
 
 def test_guide_copies_are_identical() -> None:
     assert _text(GUIDE) == _text(ROOT_GUIDE)
+
+
+def test_target_guide_does_not_point_at_repository_root_docs() -> None:
+    assert not [ref for ref in ("docs/hooks/", "docs/adr/", "docs/skills/") if ref in _text(GUIDE)]
 
 
 def test_cycle_scenario_passes_on_a_minimal_project(tmp_path: Path) -> None:

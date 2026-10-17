@@ -73,3 +73,15 @@ brief architect, получает один тест и санитизирова�
 нового dispatch, состояния или записи ledger нет, независимая QA и её граница прежние. Не
 согласованный в brief seam идёт по обычному пути blocker. Контракт цикла описывает раздел
 «Red-Green-Refactor with the optional test author» в `harness/orchestration/roles/developer.md`.
+
+## Уточнение: тест-автор в коротком маршруте (#557)
+
+Короткий маршрут не получает ни одного нового шага: coordinator, architect и независимая QA в нём
+по-прежнему не участвуют, ledger и approvals не меняются. Если `test-author-preflight.sh` вернул
+`{"status":"ok"}`, `/fast-implement` ведёт тот же цикл Red → Green → Refactor, что и developer
+полного маршрута (раздел «Red-Green-Refactor with the optional test author» в
+`harness/orchestration/roles/developer.md`): передача требования и сценария без алгоритма,
+проверка ожидания, скелет, запрет ослаблять принятое ожидание и лимит из трёх неудачных вызовов
+совпадают. Отличие одно: seam не берётся из brief architect, а согласуется с разработчиком до
+первого теста. Любой другой ответ preflight, упавший hook или недоступная изоляция сохраняют
+обычный `/tdd` в той же сессии с названной причиной.
