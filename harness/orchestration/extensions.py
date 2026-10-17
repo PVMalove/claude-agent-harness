@@ -23,6 +23,7 @@ from typing import Protocol, cast
 
 from ..errors import HarnessError
 from .core.constants import RetryReason
+from .core.system_fields import CONTRACT_VERSION
 
 EXTENSION_KINDS = (
     "transport_health",
@@ -33,6 +34,9 @@ EXTENSION_KINDS = (
     "runtime_access",
 )
 DEFAULT_EXTENSION = "none"
+# The attribute through which an implementation declares the systemFields contract it speaks;
+# dispatch preflight and send refuse a selected extension without a supported one (issue #684).
+CONTRACT_ATTRIBUTE = "system_fields_contract"
 EXTENSION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?$")
 _METHOD = {
     "transport_health": "probe",
@@ -213,6 +217,8 @@ class HumanNotifier(Protocol):
 class _Inert:
     """Встроенная заглушка «none» для всех интерфейсов: ничего не наблюдает и не отправляет."""
 
+    system_fields_contract = CONTRACT_VERSION
+
     def probe(self, dispatch_id: str) -> HealthObservation | None:
         """Вернуть отсутствие наблюдений о здоровье."""
         return None
@@ -296,6 +302,11 @@ def _resolve(kind: str, name: str) -> object:
     _require_method(kind, name, implementation)
     _REGISTRY[kind][name] = implementation
     return implementation
+
+
+def implementation(kind: str, name: str) -> object:
+    """The implementation selected as ``name`` for ``kind``, loaded as every interface loads it."""
+    return _resolve(kind, name)
 
 
 def selected(config: Mapping[str, object]) -> dict[str, str]:

@@ -15,7 +15,11 @@ import time
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration import operation_access, runtime_access
+from harness.orchestration import (
+    operation_access,
+    runtime_access,
+    runtime_compatibility,
+)
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -78,6 +82,7 @@ from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
+    _hold_with_attention,
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
@@ -222,6 +227,54 @@ def _hand_off(
     return EffectResult("dispatched", reason, evidence)
 
 
+def _runtime_compatibility(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    adapter: list[str] | None,
+    adapter_args: list[str],
+    brief: Path,
+    worktree: Path,
+) -> JsonObject:
+    """The systemFields declarations the brief runs on -- its pinned contract, its runtime
+    assignment in the configuration it was approved under, its frozen extensions and an external
+    adapter's ``contract`` answer -- or the structured ``runtime-compatibility`` refusal, after
+    the batch is held in the runtime state store with its attention raised.  An adapter that
+    cannot be started at all is left to the hand-off, which records it as an unavailable
+    runtime."""
+    answer = (
+        None
+        if adapter is None
+        else runtime_compatibility.adapter_declaration(
+            adapter,
+            adapter_args,
+            repo=repo,
+            brief=brief,
+            cwd=worktree,
+            expected=runtime_compatibility.dispatch_contract(dispatch),
+        )
+    )
+    try:
+        return runtime_compatibility.require_brief(
+            config, dispatch, step="send", adapter=answer
+        )
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        _hold_with_attention(
+            ledger, repo, root, config, batch, "runtime-compatibility", exc.message
+        )
+        raise runtime_compatibility.RuntimeCompatibilityError(
+            exc.step,
+            exc.declarations,
+            remedy=f"{exc.remedy}; the batch is held: once every party is compatible, resolve "
+            f"its attention with 'coordinator.py batch attention resolve --batch "
+            f"{batch['batch_id']}', then run 'coordinator.py recovery resume --batch "
+            f"{batch['batch_id']}'",
+        ) from exc
+
+
 def send_dispatch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -352,6 +405,19 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
+        # Before the hand-off intent: an incompatible party starts nothing and writes nothing.
+        compatibility = _runtime_compatibility(
+            ledger,
+            repo,
+            root,
+            config,
+            batch,
+            dispatch,
+            None if adapter is None else adapter_command(adapter),
+            adapter_args,
+            brief_path,
+            Path(launch["worktree"]),
+        )
         plan = dispatch.get("runtime_access")
         if not runtime_access.is_legacy_plan(plan):
             channel: EffectChannel = "native"
@@ -382,6 +448,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
         "runtime_access": access_evidence,
+        "runtime_compatibility": compatibility,
         "transport": transport,
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],

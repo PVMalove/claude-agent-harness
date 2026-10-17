@@ -19,7 +19,9 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import (
     infrastructure_retry,
     operational_guards,
+    operational_hold,
     runtime_access,
+    runtime_compatibility,
 )
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -764,6 +766,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        # A batch the runtime state store holds takes no new brief until recovery releases it.
+        operational_hold.require_no_hold(
+            RuntimeStateStore(repo, root), batch["batch_id"]
+        )
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(
                 "a dispatch requires a batch awaiting explicit approval",
@@ -854,6 +860,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 session_model=getattr(args, "model", None),
                 session_effort=getattr(args, "effort", None),
             )
+        )
+        # No brief is approved for a runtime or extension that speaks another contract.
+        runtime_compatibility.require_assignment(
+            config, role_name, resolved_runtime, transport, step="create"
         )
         # A writer's scope is the batch's explicit scope; a batch planned before scopes existed
         # was bounded by the role's write ceiling alone.

@@ -107,6 +107,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration import runtime_compatibility
 from harness.orchestration.runtime_intent import CompositeWrite, idempotency_key
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
@@ -179,6 +180,7 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         # A hand-off its sender left unfinished may still have to write this dispatch's status.
         settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
+        confirmation = _confirm_contract(ledger, repo, root, dispatch, status, args)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
         attestation: JsonObject | None = None
@@ -279,7 +281,72 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         "state": "working",
         "model": reported,
         "worktree": attestation.get("worktree") if attestation else None,
+        "system_fields_contract": None
+        if confirmation is None
+        else confirmation.to_dict(),
     }
+
+
+def _confirm_contract(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    status: JsonObject,
+    args: argparse.Namespace,
+) -> runtime_compatibility.Declaration | None:
+    """Keep the worker's optional systemFields confirmation on the dispatch status; one that is
+    not the brief's contract is recorded as evidence, holds the batch with its attention raised
+    and is refused before the worker counts as working.  Without the flag nothing is recorded: a
+    worker started before it existed confirms nothing."""
+    declared = getattr(args, "system_fields_contract", None)
+    if declared is None:
+        return None
+    confirmation = runtime_compatibility.self_report_declaration(dispatch, declared)
+    moment = utils._now()
+    status[runtime_compatibility.SELF_REPORT_FIELD] = (
+        runtime_compatibility.self_report_evidence(confirmation, moment)
+    )
+    if confirmation.status == "compatible":
+        return confirmation
+    status["updated_at"] = moment
+    _safe_id(dispatch["dispatch_id"], "dispatch")
+    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+    refusal = runtime_compatibility.RuntimeCompatibilityError(
+        "self-report",
+        [confirmation],
+        remedy=f"stop this worker, resolve the batch's attention with 'coordinator.py batch "
+        f"attention resolve --batch {dispatch['batch_id']}', run 'coordinator.py recovery "
+        f"resume --batch {dispatch['batch_id']}', start the worker on a runtime that speaks "
+        f"{confirmation.expected!r} and repeat dispatch self-report; the dispatch is not working",
+    )
+    _hold_incompatible(ledger, repo, root, dispatch, refusal)
+    raise refusal
+
+
+def _hold_incompatible(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    refusal: runtime_compatibility.RuntimeCompatibilityError,
+) -> None:
+    """Hold the dispatch's batch for an incompatible party, with its attention raised."""
+    from harness.orchestration.workflow.attention import _hold_with_attention
+
+    try:
+        config = core_config._config(repo)
+    except CoordinatorError:
+        config = {}
+    _hold_with_attention(
+        ledger,
+        repo,
+        root,
+        config,
+        _load_batch(root, dispatch["batch_id"]),
+        "runtime-compatibility",
+        refusal.message,
+    )
 
 
 def heartbeat_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -1833,6 +1900,66 @@ def _report_markdown(report: JsonObject) -> str:
     return "\n".join(lines)
 
 
+def _report_compatibility(
+    root: Path,
+    config: JsonObject,
+    dispatch: JsonObject,
+    status: JsonObject,
+    report: JsonObject,
+    *,
+    ledger: LifecycleLedger | None = None,
+    repo: Path | None = None,
+) -> JsonObject:
+    """The evidence that the report was produced under the brief's systemFields contract.  An
+    incompatible report is kept only as unaccepted evidence -- no report record, no status
+    change, no lifecycle decision -- the batch is held with its attention raised (given the
+    ledger and repository), and the refusal names where the evidence is."""
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        return runtime_compatibility.require_compatible(
+            "report-submit",
+            runtime_compatibility.report_declarations(config, dispatch, status, report),
+        )
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        path = capture_unaccepted(root, dispatch, report, exc)
+        refusal = runtime_compatibility.RuntimeCompatibilityError(
+            exc.step,
+            exc.declarations,
+            remedy=f"{exc.remedy}; unaccepted evidence: {path}; the batch is held: resolve "
+            f"its attention with 'coordinator.py batch attention resolve --batch "
+            f"{dispatch.get('batch_id')}' and run 'coordinator.py recovery resume --batch "
+            f"{dispatch.get('batch_id')}' before the report is submitted again",
+        )
+        if ledger is not None and repo is not None:
+            _hold_incompatible(ledger, repo, root, dispatch, refusal)
+        raise refusal from exc
+
+
+def _settle_for_report(
+    repo: Path,
+    root: Path,
+    ledger: LifecycleLedger,
+    dispatch: JsonObject,
+    report: JsonObject,
+) -> None:
+    """Finish the batch's unfinished operation before the report is read.  A report that a
+    releasable operational hold refuses is kept as unaccepted evidence at once, so the worker's
+    output is not lost while the hold lasts; a quarantine keeps its batch untouched."""
+    from harness.orchestration import operational_hold
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        settle(repo, root, ledger, dispatch["batch_id"])
+    except RuntimeStateError as exc:
+        reason = operational_hold.reason_of(exc.step)
+        if reason is None or reason in operational_hold.PERMANENT_REASONS:
+            raise
+        path = capture_unaccepted(root, dispatch, report, exc)
+        exc.remedy = f"{exc.remedy}; unaccepted evidence: {path}"
+        raise
+
+
 def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     report = _read_object(
@@ -1843,7 +1970,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
-        settle(repo, root, ledger, dispatch["batch_id"])
+        _settle_for_report(repo, root, ledger, dispatch, report)
         batch = _load_batch(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
@@ -1866,6 +1993,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="run QA through the clean-room QA runner (qa run), not by hand",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        compatibility = _report_compatibility(
+            root, config, dispatch, status, report, ledger=ledger, repo=repo
+        )
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
@@ -1982,6 +2112,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
         "report": str(report_json),
+        "runtime_compatibility": compatibility,
     }
     # Acceptance belongs to the approved snapshot; progression belongs to a newly validated
     # transition. Never invite resubmission of evidence already durably accepted.

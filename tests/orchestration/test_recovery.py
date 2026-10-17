@@ -8,6 +8,9 @@ import unittest
 from datetime import datetime, timedelta, tzinfo
 from unittest import mock
 from pathlib import Path
+
+import pytest
+
 from harness.orchestration import coordinator
 from harness.orchestration.core import git_utils, workspace
 from harness.orchestration.core.utils import JsonObject
@@ -1457,7 +1460,10 @@ class RecoveryTests(unittest.TestCase):
         marker = self.tmp / "adapter-cwd.txt"
         adapter = self.tmp / "cwd-adapter.py"
         adapter.write_text(
-            "import os\nfrom pathlib import Path\n"
+            "import os, sys\nfrom pathlib import Path\n"
+            "if sys.argv[1] == 'contract':\n"
+            '    print(\'{"system_fields_contract": "systemFields.v1"}\')\n'
+            "    sys.exit(0)\n"
             f"Path({str(marker)!r}).write_text(os.getcwd(), encoding='utf-8')\n",
             encoding="utf-8",
         )
@@ -1751,3 +1757,110 @@ class RecoveryTests(unittest.TestCase):
 
         self.assertEqual(conditions.open_conditions(self._batch_record(batch_id)), [])
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+
+# -- operational holds (issue #684): by the ``recovery`` fixture, so this suite runs once --------
+
+
+def _blocked_architect_report(recovery: RecoveryTests) -> JsonObject:
+    batch = recovery._create_batch()
+    brief: JsonObject = recovery._dispatch(batch["batch_id"], "architect")["brief"]
+    recovery._start(brief["dispatch_id"])
+    recovery._submit(
+        brief["dispatch_id"],
+        recovery._base_report(
+            brief,
+            "architect",
+            outcome="blocked",
+            blockers={"status": "present", "details": "the role stopped"},
+        ),
+    )
+    return brief
+
+
+def _packet(recovery: RecoveryTests, batch_id: str) -> JsonObject:
+    return coordinator.decision_packet(recovery._args(batch=batch_id, dispatch=None))
+
+
+def _hold(recovery: RecoveryTests, batch_id: str) -> None:
+    from harness.orchestration import operational_hold
+    from harness.orchestration.runtime_state_store import RuntimeStateStore
+
+    operational_hold.hold(
+        RuntimeStateStore(recovery.repo, recovery.state_dir),
+        batch_id,
+        "runtime-compatibility",
+        "the adapter speaks systemFields.v2",
+    )
+
+
+def test_an_unknown_cause_offers_no_abandon_and_no_default(
+    recovery: RecoveryTests,
+) -> None:
+    brief = _blocked_architect_report(recovery)
+
+    packet = _packet(recovery, brief["batch_id"])
+
+    assert packet["operational_hold"]["reason"] == "unknown-value"
+    assert "abandon" not in packet["options"]
+    assert "accept" not in packet["options"]
+    assert "abandon" not in packet["route_preview"]
+    assert "abandon" not in packet["recovery_route"]["options"]
+
+
+def test_a_held_batch_is_neither_decided_nor_rewound(recovery: RecoveryTests) -> None:
+    from harness.orchestration.core import config
+    from harness.orchestration.workflow import auto_policy
+
+    brief = _blocked_architect_report(recovery)
+    batch_id = brief["batch_id"]
+    _hold(recovery, batch_id)
+
+    packet = _packet(recovery, batch_id)
+    assert packet["options"] == []
+    assert packet["route_preview"] == {"hold": packet["operational_hold"]}
+    assert packet["operational_hold"]["source"] == "runtime-state"
+    before = recovery._ledger_bytes()
+    with pytest.raises(coordinator.CoordinatorError, match="is held"):
+        recovery._decide(batch_id, "retry")
+    with pytest.raises(coordinator.CoordinatorError, match="is held"):
+        coordinator.rewind_batch(
+            recovery._args(
+                batch=batch_id,
+                to="architect",
+                note="start over",
+                **recovery._approval(),
+            )
+        )
+    stops = auto_policy.fact_stops(
+        recovery.repo,
+        recovery.state_dir,
+        config._config(recovery.repo),
+        recovery._batch_record(batch_id),
+        coordinator._now(),
+    )
+    assert (stops[0].category, stops[0].reason) == (
+        "integrity-failure",
+        "operational-hold",
+    )
+    assert recovery._ledger_bytes() == before
+
+
+def test_attention_check_raises_the_hold_without_moving_the_lifecycle(
+    recovery: RecoveryTests,
+) -> None:
+    brief = _blocked_architect_report(recovery)
+    batch_id = brief["batch_id"]
+    before = recovery._batch_record(batch_id)
+    _hold(recovery, batch_id)
+
+    view = coordinator.attention_check(recovery._args(batch=batch_id))
+
+    assert view["needs_attention"] is True
+    assert view["attention_reason"] == "operational-hold"
+    after = recovery._batch_record(batch_id)
+    assert (after["state"], after.get("next_action"), after["dispatches"]) == (
+        before["state"],
+        before.get("next_action"),
+        before["dispatches"],
+    )

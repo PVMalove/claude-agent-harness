@@ -36,6 +36,10 @@ EFFORT_LEVELS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 )
 ROLE_FIELDS = frozenset({"name", "mode", "required_capabilities", "risk_triggers"})
+# A runtime assignment may declare the systemFields contract its runtime speaks (issue #684).
+RUNTIME_ASSIGNMENT_FIELDS = frozenset(
+    {"profiles", "model", "effort", "system_fields_contract"}
+)
 CONFIG_REQUIRED_FIELDS = (
     "provider_profiles",
     "assignment_plans",
@@ -1380,10 +1384,19 @@ def configuration_problems(
                         f"assignment runtime for role {role_name!r} must be a named object"
                     )
                     continue
-                extra_runtime = sorted(set(runtime) - {"profiles", "model", "effort"})
+                extra_runtime = sorted(set(runtime) - RUNTIME_ASSIGNMENT_FIELDS)
                 if extra_runtime:
                     problems.append(
                         f"assignment runtime {runtime_name!r} for role {role_name!r} has unknown field(s): {', '.join(extra_runtime)}"
+                    )
+                # Only the shape: an unsupported version is a runtime-compatibility refusal of
+                # dispatch preflight and send, with its evidence, not a config error.
+                if "system_fields_contract" in runtime and not non_empty(
+                    runtime["system_fields_contract"]
+                ):
+                    problems.append(
+                        f"assignment runtime {runtime_name!r} for role {role_name!r} "
+                        "system_fields_contract must be a non-empty string"
                     )
                 profile_ids = runtime.get("profiles")
                 if not string_list(profile_ids) or not profile_ids:

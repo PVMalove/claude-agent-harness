@@ -60,6 +60,8 @@ _OPERATION_ID = re.compile(
 EMERGENCY = "emergency"
 # The record, lock and intent directory name of the ledger-scope record (no batch).
 LEDGER_SCOPE = "ledger-scope"
+# The operator's last recovery intent per batch (issue #684): evidence, never an authorization.
+RECOVERY_DIR = "recovery"
 _EMERGENCY_PARTS = {
     "identity": ("repo_root", "git_common_dir", "state_root", "namespace"),
     "subject": ("batch_id", "dispatch_id"),
@@ -763,6 +765,46 @@ class RuntimeStateStore:
                 )
             self._replace(self.emergency_path, record, sequence, sequence + 1)
         return record
+
+    def recovery_intent_path(self, batch_id: str) -> Path:
+        """Where the operator's last recovery intent of ``batch_id`` lives."""
+        self.path(batch_id)
+        return self.location.directory / RECOVERY_DIR / f"{batch_id}.json"
+
+    def read_recovery_intent(self, batch_id: str) -> JsonObject | None:
+        """The last recovery intent an operator recorded for ``batch_id``, ``None`` without one.
+        It is evidence of what the operator asked for, never an authorization; one that cannot be
+        read stops instead of being guessed."""
+        path = self.recovery_intent_path(batch_id)
+        with self._storage_step("read", "storage-unavailable", path):
+            self._refuse_links(path.parent, path)
+            try:
+                raw = path.read_bytes()
+            except FileNotFoundError:
+                return None
+        try:
+            intent = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            intent = None
+        if not isinstance(intent, dict):
+            raise self._error(
+                "integrity-failure",
+                "read",
+                f"{self.location.relative(path)} is not a JSON object",
+                "review the recovery intent and remove it; it authorizes nothing",
+            )
+        return cast(JsonObject, intent)
+
+    def write_recovery_intent(self, batch_id: str, intent: JsonObject) -> None:
+        """Replace the recovery intent of ``batch_id`` durably, under its own bounded lock."""
+        path = self.recovery_intent_path(batch_id)
+        self._prepare()
+        with self._storage_step("prepare", "storage-unavailable", path.parent):
+            self._refuse_links(path.parent)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._refuse_links(path.parent, path)
+        with self._locked(f"{RECOVERY_DIR}-{batch_id}"):
+            self._replace(path, intent, 0, 0)
 
     def _emergency_identity(self) -> JsonObject:
         identity = self.location.identity("")

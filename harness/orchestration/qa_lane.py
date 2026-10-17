@@ -799,6 +799,28 @@ def _verify_access(
         raise
 
 
+def _require_compatible(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    config: JsonObject,
+) -> None:
+    """The clean-room lane launches the QA role like ``dispatch send`` does: an incompatible
+    systemFields party starts no run, holds the batch and raises its attention (issue #684)."""
+    from harness.orchestration import runtime_compatibility
+    from harness.orchestration.workflow.attention import _hold_with_attention
+
+    try:
+        runtime_compatibility.require_brief(config, dispatch, step="qa-run")
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        _hold_with_attention(
+            ledger, repo, root, config, batch, "runtime-compatibility", exc.message
+        )
+        raise
+
+
 def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     repo = ops._repo(args)
     root = _state_root(args, repo)
@@ -828,6 +850,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
                 "clean-room QA runner requires configured verification_commands",
                 remedy="configure verification_commands for the QA role in the project's orchestration config and create a new dispatch",
             )
+        _require_compatible(ledger, repo, root, batch, dispatch, ops._config(repo))
         status = ops._load_dispatch_status(root, dispatch["dispatch_id"])
         entry = _batch_entry(batch, dispatch["dispatch_id"])
         if (

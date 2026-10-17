@@ -247,6 +247,7 @@
       "automatic_decisions": true,
       "unrecognized": "reject",
       "values": {
+        "operational-hold": "The runtime state store holds the batch for unknown, missing, quarantined, unreadable or incompatible system data; stop integrity-failure until recovery resume releases it.",
         "unknown-reason": "A retry reason is unknown; stop no-automatic-route.",
         "infrastructure-retry-repeated": "Infrastructure retries exceeded attention_policy.max_infrastructure_retries.",
         "tooling-retry-repeated": "A tool blocked the same candidate repeatedly; the tool needs a fix.",
@@ -302,8 +303,10 @@
         "harness-snapshot-changed": "The installed harness runtime differs from the pinned snapshot.",
         "deterministic-gate-failed": "A deterministic gate of the policy failed.",
         "ledger-validation-failed": "Ledger validation failed.",
+        "operational-hold": "The runtime state store holds the batch for unknown, missing, quarantined, unreadable or incompatible system data; recovery resume releases it, nothing is abandoned.",
         "unknown-reason": "The retry reason is unknown.",
-        "abandon-dead-end": "The only remaining route is an abandon, which needs a human.",
+        "missing-evidence": "The coordinator refuses the retry route because structured evidence it needs is missing; a human supplies it, nothing is abandoned.",
+        "abandon-dead-end": "The batch is blocked or failed by a human decision, so the only remaining route is an abandon, which needs a human.",
         "supersede-dead-end": "The only remaining route is a supersede, which needs a human."
       },
       "groups": {
@@ -320,10 +323,12 @@
           "worktree-mismatch",
           "harness-snapshot-changed",
           "deterministic-gate-failed",
-          "ledger-validation-failed"
+          "ledger-validation-failed",
+          "operational-hold"
         ],
         "no-automatic-route": [
           "unknown-reason",
+          "missing-evidence",
           "abandon-dead-end",
           "supersede-dead-end"
         ]
@@ -923,6 +928,140 @@
       "sentinels": [
         "unsupported"
       ]
+    },
+    "recovery.action": {
+      "description": "An action of the shared recovery API of the core, the CLI and the Harness console; each records its durable intent first, except skip.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "fix": "Preview, or apply through the configuration transaction, the safe normalization of the current configuration; never resumes.",
+        "reload": "Re-read and validate the current configuration; never starts a worker.",
+        "resume": "Reconcile the batch and release its hold through the existing approval gates.",
+        "skip": "Hide one allowlisted advisory for one session; never changes an execution policy.",
+        "abort": "Record that the operator left recovery; abandons no batch, stops no worker and cleans no worktree."
+      }
+    },
+    "recovery.check": {
+      "description": "A reconciliation check of the recovery status, in the order it runs.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config": "The current configuration is readable, valid and canonical after normalization.",
+        "store": "The batch's runtime state record is readable, and whether the store holds the batch.",
+        "ledger": "The selected ledger generation validates.",
+        "batch": "The batch record reads through the strict canonical boundary with its brief, checkpoint and report hashes.",
+        "lifecycle": "The batch is neither terminal nor stopped without a human approval.",
+        "runtime": "The batch's pinned harness runtime is the installed one or a verified snapshot its commands run on.",
+        "snapshot": "Every open brief's pinned configuration snapshot and contract verify.",
+        "context": "Every open brief's Context Package verifies and matches the batch's base and current developer candidate.",
+        "compatibility": "Every open brief and the current configuration run on compatible systemFields parties.",
+        "operation": "No unfinished operation, or one resume reconciles from its durable intent.",
+        "liveness": "Which workers may still run; resume never starts another one.",
+        "attention": "No unresolved attention; recovery never resolves it.",
+        "approval": "No unsent brief rests on an expired approval, and a changed policy needs a fresh digest."
+      }
+    },
+    "recovery.check_status": {
+      "description": "The result of one reconciliation check.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "passed": "Nothing blocks recovery here.",
+        "pending": "Resume reconciles or releases it, or needs the approval it names.",
+        "reconciled": "Resume reconciled it in this run.",
+        "refused": "It blocks recovery until its diagnostics are resolved.",
+        "skipped": "Its input could not be read, so it did not run."
+      }
+    },
+    "recovery.diagnostic_code": {
+      "description": "The cause a recovery diagnostic names; an exception that is not a refusal is internal-error, never a configuration problem.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-invalid": "The current configuration is unreadable or invalid at the pointer.",
+        "config-advisory": "A configuration warning, such as a normalized spelling; skippable only when allowlisted.",
+        "runtime-compatibility": "A party declares a missing, unsupported or mismatched systemFields contract.",
+        "integrity-failure": "A ledger, runtime state or snapshot record does not verify.",
+        "stale-evidence": "An open brief pins a Context Package older than the batch's base or current developer candidate.",
+        "ambiguous-effect": "An unfinished hand-off may have started a worker and nothing proves it.",
+        "concurrency-conflict": "Another writer or a live worker contradicts the recorded state.",
+        "storage-unavailable": "The runtime state store cannot be read or written.",
+        "live-worker": "A worker may still run; no second one is started.",
+        "attention-open": "The batch needs human attention that recovery never resolves.",
+        "approval-required": "A transition needs a human approval with the current digest.",
+        "approval-stale": "An unsent brief rests on an expired approval.",
+        "terminal-refusal": "The batch is terminal and is never resumed.",
+        "internal-error": "An internal invariant was violated; the diagnostic carries a correlation ID."
+      }
+    },
+    "recovery.outcome": {
+      "description": "How a recovery action ended; the CLI exits 0 on done and 2 on refused.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "done": "The action completed.",
+        "refused": "The action stopped on its diagnostics; nothing it could not prove was changed."
+      }
+    },
+    "recovery.intent_status": {
+      "description": "The durable status of the operator's last recovery intent of a batch; evidence, never an authorization.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "pending": "The action started and has not ended; a restart shows it and repeats it safely.",
+        "done": "The action completed.",
+        "refused": "The action stopped on a refusal or an internal error.",
+        "interrupted": "The action was cancelled, reached end of input or was interrupted.",
+        "aborted": "The operator left recovery without changing the batch."
+      }
+    },
+    "recovery.advisory": {
+      "description": "The closed allowlist of advisories that recovery skip hides for one session.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-normalized": "A configuration spelling the normalizer already maps to its canonical value.",
+        "unconfirmed-contract": "A live worker started before it confirmed its systemFields contract."
+      }
+    },
+    "operational_hold.reason": {
+      "description": "Why the runtime state store holds a batch suspended: the failure step hold:<reason>, or the ledger migration's quarantine step. A held batch takes no action through the store until recovery resume re-checks the cause; nothing is abandoned, retried or decided on it.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "unknown-value": "A system field holds a value the registry does not list; a human classifies it.",
+        "missing-value": "A system field or structured evidence a decision needs is absent; a human supplies it.",
+        "legacy-quarantine": "The ledger migration quarantined the batch; no recovery command releases it and its evidence stays for a human.",
+        "unreadable-record": "The batch's ledger or runtime state record cannot be read; recovery resume releases the hold once it reads again.",
+        "runtime-compatibility": "A runtime, adapter, extension or worker declared an incompatible systemFields contract; recovery resume releases the hold once every declaration is compatible."
+      }
+    },
+    "runtime_compatibility.status": {
+      "description": "How one party's declared systemFields contract version compares with the version a dispatch runs under. dispatch preflight, dispatch create and dispatch send start nothing and report submit accepts nothing unless every declaration is compatible.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "compatible": "The party declares the supported version the dispatch runs under; the step proceeds.",
+        "missing": "The party declares no version; the step stops with a runtime-compatibility refusal and its evidence.",
+        "unsupported": "Sentinel: the party declares a version this harness does not support. The step stops with a runtime-compatibility refusal and its evidence; nothing is read with defaults filled in.",
+        "mismatch": "The party declares a supported version other than the one the dispatch runs under; the step stops with a runtime-compatibility refusal and its evidence."
+      },
+      "sentinels": [
+        "unsupported"
+      ]
+    },
+    "runtime_compatibility.subject": {
+      "description": "Who declared a systemFields contract version in a runtime-compatibility check.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "runtime-assignment": "A runtime assignment of the project config; an in-process runtime without the field runs the harness's own version.",
+        "external-adapter": "An external runtime adapter, through its contract verb.",
+        "extension": "A selected project extension, through its system_fields_contract attribute.",
+        "dispatch-brief": "The contract version pinned in the approved brief's configuration snapshot.",
+        "worker-self-report": "The worker's optional confirmation in dispatch self-report.",
+        "completion-report": "The optional system_fields_contract field of a completion report."
+      }
     },
     "extension.kind": {
       "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",

@@ -223,3 +223,64 @@ def test_invalid_policy_container_is_rejected_with_a_domain_error(
                 checkout=None,
             )
         )
+
+
+def _submit(
+    case: fixtures.CoordinatorLedgerMigrationTests, report: JsonObject
+) -> JsonObject:
+    inbox = workspace._prepare_agent_inbox(case.repo) / "report.json"
+    inbox.write_text(json.dumps(report))
+    return coordinator.submit_report(
+        fixtures._ns(
+            repo=str(case.repo), state_dir=str(case.state_dir), file=str(inbox)
+        )
+    )
+
+
+def test_an_incompatible_report_is_only_unaccepted_evidence(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+) -> None:
+    """A report that names another systemFields contract is never the canonical report: the
+    input is captured as unaccepted evidence and the dispatch stays as it was (issue #684)."""
+    from harness.orchestration.runtime_compatibility import RuntimeCompatibilityError
+
+    case, brief = dispatched_architect
+    report = {**architect_report(brief), "system_fields_contract": "systemFields.v2"}
+    root = case._records_root()
+    status_path = root / "dispatch-status" / f"{brief['dispatch_id']}.json"
+    status_before = status_path.read_bytes()
+
+    with pytest.raises(RuntimeCompatibilityError) as caught:
+        _submit(case, report)
+
+    assert caught.value.step == "report-submit"
+    assert "unaccepted evidence" in caught.value.remedy
+    [declaration] = [
+        item
+        for item in caught.value.evidence["declarations"]
+        if item["subject"] == "completion-report"
+    ]
+    assert declaration["status"] == "unsupported"
+    [capture_path] = list((root / "unaccepted-evidence").glob("*.json"))
+    capture = json.loads(capture_path.read_bytes())
+    assert capture["accepted"] is False
+    assert capture["input"] == report
+    assert not (root / "reports" / f"{brief['dispatch_id']}.json").exists()
+    assert status_path.read_bytes() == status_before
+
+
+def test_a_report_that_names_the_brief_contract_is_accepted(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+) -> None:
+    case, brief = dispatched_architect
+
+    result = _submit(
+        case, {**architect_report(brief), "system_fields_contract": "systemFields.v1"}
+    )
+
+    assert result["state"] == "reported"
+    assert result["runtime_compatibility"]["compatible"] is True
+    subjects = [
+        item["subject"] for item in result["runtime_compatibility"]["declarations"]
+    ]
+    assert subjects == ["dispatch-brief", "runtime-assignment", "completion-report"]

@@ -70,6 +70,9 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if args[:1] == ["contract"]:
+    print(json.dumps({"system_fields_contract": "systemFields.v1"}))
+    raise SystemExit(0)
 Path(os.environ["FAKE_ADAPTER_LOG"]).write_text(json.dumps(args), encoding="utf-8")
 if "--brief" not in args:
     raise SystemExit("missing approved brief")

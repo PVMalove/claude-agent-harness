@@ -151,6 +151,15 @@ def _recoverable(batch: JsonObject) -> None:
         )
 
 
+def _not_held(repo: Path, root: Path, batch: JsonObject) -> None:
+    """A batch the runtime state store holds is released by ``recovery resume`` first: neither
+    resume-stop nor rewind acts on data the store cannot act on (issue #684)."""
+    from harness.orchestration import operational_hold
+    from harness.orchestration.runtime_state_store import RuntimeStateStore
+
+    operational_hold.require_no_hold(RuntimeStateStore(repo, root), batch["batch_id"])
+
+
 def _no_live_worker(root: Path, batch: JsonObject) -> None:
     from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
@@ -210,6 +219,25 @@ def _stop_to_resume(batch: JsonObject) -> JsonObject | None:
     if events and events[-1]["kind"] == "pause":
         return cast(JsonObject, events[-1]["evidence"].get("stop"))
     return None if batch.get("manual_recovery") else batch.get("auto_stop")
+
+
+STOPPED_STATES = frozenset({"paused", "blocked", "failed"})
+
+
+def stopped_route(batch: JsonObject) -> str | None:
+    """The existing audited event that recovers a stopped batch, as ``batch resume-stop`` itself
+    chooses it: ``resume-stop`` for an environment stop of an active dispatch or for a pending
+    report, ``rewind`` for any other stop (a human then names the gate); ``None`` when the batch
+    is not stopped.  Recovery never invents another lifecycle event (issue #684)."""
+    if batch.get("state") not in STOPPED_STATES or terminal(batch):
+        return None
+    entries = active_dispatches(batch)
+    stop = _stop_to_resume(batch)
+    if entries and (not stop or stop.get("reason") in ENVIRONMENT_REASONS):
+        return "resume-stop"
+    if any(e.get("state") == "reported" and not e.get("decision") for e in entries):
+        return "resume-stop"
+    return "rewind"
 
 
 def _confirmed_failure(root: Path, batch: JsonObject, entry: JsonObject) -> JsonObject:
@@ -343,6 +371,7 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
+        _not_held(repo, root, batch)
         if (repeated := _repeated_resume(batch)) is not None:
             return _recovery_result(batch, repeated)
         if batch["state"] not in {"paused", "blocked", "failed"}:
@@ -499,6 +528,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
+        _not_held(repo, root, batch)
         _no_live_worker(root, batch)
         entries = active_dispatches(batch)
         current_rank = max(
