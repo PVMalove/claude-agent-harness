@@ -41,12 +41,22 @@ def contrast(foreground: str, background: str) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+SURFACES = ("surface", "panel", "background")
+
+
+@pytest.mark.parametrize("surface", SURFACES)
 @pytest.mark.parametrize(
     "token",
     ["component-border", "selection-edge", "scrollbar-thumb", "scrollbar-track"],
 )
-def test_component_tokens_reach_three_to_one_against_the_surface(token: str) -> None:
-    assert contrast(TOKENS[token], SURFACE) >= 3.0
+def test_component_tokens_reach_three_to_one_against_every_surface(
+    token: str, surface: str
+) -> None:
+    assert contrast(TOKENS[token], brand.PALETTE[surface]) >= 3.0
+
+
+def test_the_scrollbar_thumb_differs_from_its_track_by_three_to_one() -> None:
+    assert contrast(TOKENS["scrollbar-thumb"], TOKENS["scrollbar-track"]) >= 3.0
 
 
 def test_decorative_dividers_stay_subtle() -> None:

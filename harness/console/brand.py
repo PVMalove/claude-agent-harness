@@ -40,13 +40,13 @@ SHELL_TOKENS = {
     # A decorative divider stays faint; a component's own edge (button, field, list, note) must
     # reach 3:1 against the surface, like the selection edge and the scrollbar.
     "border-subtle": "#3a3731",
-    "component-border": "#7a7367",
+    "component-border": "#847d70",
     "selection-background": "#45332c",
     "selection-foreground": "#f6baa3",
     "selection-edge": "#d97757",
     "row-highlight": "#35302b",
-    "scrollbar-thumb": "#a59e93",
-    "scrollbar-track": "#77726a",
+    "scrollbar-thumb": "#f2ece1",
+    "scrollbar-track": "#8a8378",
     "event-background": "#292621",
     "event-active-background": "#423029",
 }
