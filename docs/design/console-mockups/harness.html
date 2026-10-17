@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness — макет</title>
+<link rel="stylesheet" href="console.css">
+<style>
+.mdl{display:grid;grid-template-columns:minmax(0,560px) 1fr;gap:0;border:1px solid var(--rule);border-radius:8px;background:var(--bg);min-height:0}
+.clist{border-right:1px solid var(--rule);padding:6px 8px}
+.gt{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 10px 4px;color:var(--muted);font-size:12.5px;letter-spacing:.07em;text-transform:uppercase}
+.gt .r{letter-spacing:0;text-transform:none;display:flex;gap:10px}
+.cr{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:baseline;padding:5px 10px;border-radius:6px;border-left:3px solid transparent}
+.cr .tg{white-space:nowrap;font-size:13px}
+.cr.sel{background:var(--row);border-left-color:var(--primary);outline:1px solid var(--edge)}
+.cr .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.gc{display:flex;justify-content:space-between;align-items:center;margin:6px 0 0;padding:8px 10px;border:1px solid var(--rule);border-radius:8px;color:var(--fg)}
+.gc .n{display:flex;gap:12px;color:var(--muted)}
+.det{padding:16px 20px;display:flex;flex-direction:column;gap:10px}
+.det h3{margin:0;font-size:17px}
+.risk{border:1px solid #6b5326;background:#2b2418;border-radius:8px;padding:10px 14px;color:var(--warn)}
+.risk.ok{border-color:#3d5230;background:#1f2a1b;color:var(--ok)}
+.risk.bad{border-color:#6a2f35;background:#2c1a1c;color:var(--err)}
+.risk small{display:block;color:var(--muted);font-size:13px;margin-top:2px}
+.kpis{display:flex;gap:10px;flex-wrap:wrap}
+.kpis .pill b{font-size:15px}
+.modalwrap{background:#0f0e0d;border:1px solid var(--rule);border-radius:10px;padding:28px;display:flex;justify-content:center;align-items:center}
+.modal{width:100%;max-width:520px;border:1px solid var(--primary);border-radius:10px;background:var(--surface);padding:16px 18px 16px;position:relative;display:flex;flex-direction:column;gap:10px}
+.modal .bt{position:absolute;top:-11px;left:16px;background:var(--surface);padding:0 8px;color:var(--primary);font-size:13px}
+.modal .ti{font-weight:700}
+.modal .cli{color:var(--warn);overflow-wrap:anywhere;font-size:13px}
+.modal .why{color:var(--warn);font-size:13px}
+.modal .err{color:var(--err);font-size:13px;min-height:20px}
+.modal .mi{background:var(--bg);border:1px solid var(--edge);border-radius:8px;padding:9px 12px;color:var(--muted)}
+.modal .mi.f{border-color:var(--primary)}
+.modal .mi b{color:var(--fg);font-weight:400}
+.modal .row2{display:flex;gap:10px}
+.btn.danger{background:#7b2f37;border-color:#b3454f;color:#fff;font-weight:700}
+.btn.danger.off{opacity:.55}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+</style>
+</head>
+<body>
+
+<div class="caption"><span><b>4 · Harness — широкий терминал (≈160×52), компактно</b></span><span>Демонстрационные данные. Список команд и их обратимость — из каталога консоли (20 команд, 5 групп; установка и обновление — в пунктах меню 1 и 2).</span></div>
+
+<div class="app wide dense" style="height:1140px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div>
+  </div>
+  <div class="body" style="grid-template-columns:250px 1fr">
+    <nav>
+      <h6>Главное меню</h6>
+      <a href="#"><i>0</i>Главная</a>
+      <a href="#"><i>1</i>Открыть проект</a>
+      <a href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a>
+      <a class="on" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>5</i>Оркестрация<em>3</em></a>
+      <a href="#"><i>6</i>Отчёты</a>
+      <a href="#"><i>7</i>Repo Map<em>full</em></a>
+      <a href="#"><i>8</i>Настройка</a>
+      <a href="#"><i>9</i>Справка</a>
+    </nav>
+
+    <main>
+      <div class="crumbs"><a href="#" title="Вернуться на главное меню">Главная</a><span class="sep">›</span><span class="cur">Harness</span></div>
+      <div class="strip"><span>Проект: claude-agent-harness</span><span>Недоступные в этом проекте команды не показываются</span></div>
+      <div class="page fill">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px">
+          <h1>Harness</h1>
+          <div class="sub">Команды харнесса и обслуживание: временные файлы, worktree, ledger. У каждой команды виден CLI.</div>
+        </div>
+
+        <div class="panel">
+          <div class="strip2">
+            <div class="f"><span>Версия <b>1.4.6</b> <span class="e-ok">✔</span></span><span>Состав <b>pvmalove-suite</b></span><span>Скилов <b>41</b> · файлов <b>188</b></span><span>Lock <b>2026-10-14 09:12</b></span><span>Оркестрация <span class="e-ok">✔ подключена</span></span><span class="e-warn">⚠ дрейф есть</span></div>
+            <div class="pills"><span class="pill"><b>38</b><small>запусков</small></span><span class="pill"><b>31</b><small>тикет</small></span><span class="pill"><b>164</b><small>диспатча</small></span><span class="pill"><b>152</b><small>отчёта</small></span></div>
+          </div>
+        </div>
+
+        <div class="cols g2 tight" style="gap:12px">
+          <div class="panel al" style="grid-row:1;grid-column:1">
+            <div class="ph"><span class="t">Временные файлы<span>1 992 объекта</span></span><span class="r"><a class="btn xs" href="#">План</a><a class="btn xs dng" href="#">Очистить…</a></span></div>
+            <div class="bigs"><b>524 МБ</b><span style="color:var(--muted);font-size:13px">можно удалить сейчас (мягкий режим)</span></div>
+            <div class="bars">
+              <div class="brow"><span class="bn">Прогоны тестов <small>runs/tests</small></span><span class="tr"><i style="width:100%"></i></span><span class="sz">375 МБ</span><span class="ct">6 каталогов</span></div>
+              <div class="brow"><span class="bn">Каталоги запусков <small>runs</small></span><span class="tr"><i style="width:28%"></i></span><span class="sz">107 МБ</span><span class="ct">6 каталогов</span></div>
+              <div class="brow"><span class="bn">Логи <small>logs</small></span><span class="tr"><i style="width:9%"></i></span><span class="sz">35 МБ</span><span class="ct">1 125 файлов</span></div>
+              <div class="brow"><span class="bn">Черновики worker <small>scratch</small></span><span class="tr"><i style="width:3%"></i></span><span class="sz">8,5 МБ</span><span class="ct">853 файла</span></div>
+              <div class="brow"><span class="bn">Тела PR <small>pr_body</small></span><span class="tr"><i style="width:1%"></i></span><span class="sz">&lt; 1 МБ</span><span class="ct">2 файла</span></div>
+            </div>
+            <div class="lab" style="margin:8px 0 0;font-size:12.5px">○ Пропущено 3 (активные или моложе 24 ч) · жёсткий режим: +27 МБ и завершённые worktree</div>
+          </div>
+
+          <div class="panel al" style="grid-row:1;grid-column:2">
+            <div class="ph"><span class="t">Worktree<span>5 · можно удалить 2</span></span><span class="r"><a class="btn xs" href="#">Выбрать завершённые</a></span></div>
+            <div class="wt1"><span class="n">716 · worker-startup-recovery</span><span class="e-ok">✔ завершён</span><span class="sz">412 МБ</span><a class="btn xs dng" href="#">Удалить…</a></div>
+            <div class="wt1"><span class="n">718 · claude-worker-adapter</span><span class="e-warn">⚠ правки 3</span><span class="sz">380 МБ</span><a class="btn xs dng" href="#">Удалить…</a></div>
+            <div class="wt1 lock"><span class="n">715 · runtime-adapters</span><span class="e-warn">⚠ активный</span><span class="sz">401 МБ</span><a class="btn xs lockd" href="#">🔒 batch</a></div>
+            <div class="wt1 lock"><span class="n">704 · offline-docker</span><span class="e-warn">⚠ активный</span><span class="sz">388 МБ</span><a class="btn xs lockd" href="#">🔒 batch</a></div>
+            <div class="wt1 lock"><span class="n">721 · console-design-system</span><span style="color:var(--muted)">○ &lt; 24 ч</span><span class="sz">396 МБ</span><a class="btn xs lockd" href="#">🔒 24 ч</a></div>
+            <div class="lab" style="margin:auto 0 0;font-size:12.5px;padding-top:8px">Удаляется только каталог (git worktree remove); ветка и PR остаются.</div>
+          </div>
+        </div>
+
+        <div class="panel" style="padding:8px">
+          <div class="mdl">
+            <div class="clist">
+              <div class="gt"><span>Команды · 20</span><span class="r"><span class="chip on" style="font-size:12px;padding:0 8px">Все</span><span class="chip" style="font-size:12px;padding:0 8px">✔ обратимые</span><span class="chip" style="font-size:12px;padding:0 8px">⚠ с подтверждением</span></span></div>
+              <div class="gt"><span>▾ Проверки</span><span class="r">5</span></div>
+              <div class="cr"><span class="t">Дрейф управляемых файлов</span><span class="tg e-ok">✔ обратимо</span></div>
+              <div class="cr"><span class="t">Health-отчёт</span><span class="tg e-ok">✔ обратимо</span></div>
+              <div class="cr"><span class="t">Health-отчёт с локальными фиксами</span><span class="tg e-ok">✔ обратимо</span></div>
+              <div class="cr sel"><span class="t">Health-отчёт с онлайн-проверками и созданием лейблов</span><span class="tg e-warn">⚠ внешнее</span></div>
+              <div class="cr"><span class="t">Полная проверка (verify)</span><span class="tg e-ok">✔ обратимо</span></div>
+              <div class="gc"><span>▸ Скиллы</span><span class="n"><span>3</span><span class="e-ok">✔ 3</span></span></div>
+              <div class="gc"><span>▸ Repo Map</span><span class="n"><span>2</span><span class="e-ok">✔ 2</span></span></div>
+              <div class="gc"><span>▸ Очистка и удаление</span><span class="n"><span>7</span><span class="e-ok">✔ 3</span><span class="e-err">✖ 4</span></span></div>
+              <div class="gc"><span>▸ Ledger</span><span class="n"><span>3</span><span class="e-ok">✔ 1</span><span class="e-err">✖ 2</span></span></div>
+            </div>
+            <div class="det" style="gap:8px;padding:14px 18px">
+              <h3 style="font-size:16px">Health-отчёт с онлайн-проверками и созданием лейблов</h3>
+              <div class="risk">⚠ Команда меняет внешнюю систему: это видят другие люди или это расходует токены.
+                <small>Перед запуском откроется форма подтверждения.</small></div>
+              <div class="code">$ harness health /home/malove/Projects/Code/claude-agent-harness --online --fix<span class="hint2">y — копировать CLI</span></div>
+              <div class="btns" style="margin-top:2px"><a class="btn solid" href="#">Запустить <span style="opacity:.7">Enter</span></a><a class="btn" href="#">Копировать CLI <span style="color:var(--primary)">y</span></a></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card fold" style="padding:9px 16px"><span>▸ Вывод</span><span>пока пусто · закреплён внизу, пока вы выбираете команды</span></div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">↑↓</b>Выбор</span><span><b class="k">Enter</b>Запустить</span><span><b class="k">y</b>Копировать CLI</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Форма подтверждения</b></span><span>Тексты — из кода (причина, «Введите …», «Заполните: …», «Для запуска введите …»).</span></div>
+<div class="sheet">
+  <h3>Запуск команды: три случая</h3>
+  <p>Отмена ничего не выполняет. Для обратимой команды без параметров формы нет — она запускается сразу. Кнопка «Запустить» красная у необратимых.</p>
+  <div class="two" style="grid-template-columns:1fr 1fr">
+    <div>
+      <div class="lab">Требуется слово: «Сбросить ledger на пустое поколение»</div>
+      <div class="modalwrap"><div class="modal">
+        <span class="bt">Запуск команды</span>
+        <div class="ti">Сбросить ledger на пустое поколение</div>
+        <div class="cli">$ python .harness/orchestration/coordinator.py --repo … ledger reset --confirm RESET</div>
+        <div class="why">Команда удаляет локальные данные — восстановить их нельзя.</div>
+        <div class="mi f">Введите RESET<span style="color:var(--primary)">▏</span></div>
+        <div class="err">Для запуска введите RESET</div>
+        <div class="row2"><a class="btn danger off" href="#">Запустить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+    <div>
+      <div class="lab">Нужен параметр: «Удалить worktree»</div>
+      <div class="modalwrap"><div class="modal">
+        <span class="bt">Запуск команды</span>
+        <div class="ti">Удалить worktree</div>
+        <div class="cli">$ git -C … worktree remove '&lt;worktree&gt;'</div>
+        <div class="why">Команда удаляет локальные данные — восстановить их нельзя.</div>
+        <div class="mi">worktree</div>
+        <div class="err">Заполните: worktree</div>
+        <div class="row2"><a class="btn danger off" href="#">Запустить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+  </div>
+  <div class="lab" style="margin:14px 0 0">Подсказка в форме «Введите RESET» — плейсхолдер, а не подпись. В макете предлагаю подпись над полем и показ слова в команде, чтобы не искать его глазами (предлагаю).</div>
+</div>
+
+<div class="caption"><span><b>Удаление worktree и очистка — подтверждения</b></span><span>Команда <b>worktree-remove</b> и причина — из кода; факты о состоянии и кнопка «Удалить…» в строке — предлагаю.</span></div>
+<div class="sheet">
+  <h3>Три окна подтверждения</h3>
+  <p>Сейчас «Удалить worktree» просит ввести путь вручную. В макете путь подставляется из строки, а в окне видно, что именно исчезнет и что останется.</p>
+  <div class="two" style="grid-template-columns:1fr 1fr 1fr;gap:16px">
+    <div>
+      <div class="lab">Можно удалить</div>
+      <div class="modalwrap" style="padding:20px 14px"><div class="modal">
+        <span class="bt">Запуск команды</span>
+        <div class="ti">Удалить worktree</div>
+        <div class="cli">$ git -C … worktree remove '…/issue-716-worker-startup-recovery'</div>
+        <div class="why">Команда удаляет локальные данные — восстановить их нельзя.</div>
+        <div class="pl" style="background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.7">
+          <div><span class="e-ok">✔</span> batch завершён, активных ссылок нет</div>
+          <div><span class="e-ok">✔</span> рабочее дерево чистое</div>
+          <div>412 МБ будет освобождено</div>
+          <div style="color:var(--muted)">Ветка feature/issue-716-… и PR останутся.</div>
+        </div>
+        <div class="row2"><a class="btn danger" href="#">Удалить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+    <div>
+      <div class="lab">Есть незакоммиченные изменения</div>
+      <div class="modalwrap" style="padding:20px 14px"><div class="modal">
+        <span class="bt">Запуск команды</span>
+        <div class="ti">Удалить worktree</div>
+        <div class="cli">$ git -C … worktree remove '…/issue-718-claude-worker-adapter'</div>
+        <div class="why">Команда удаляет локальные данные — восстановить их нельзя.</div>
+        <div class="pl" style="background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.7">
+          <div class="e-warn">⚠ 3 файла не закоммичены</div>
+          <div style="color:var(--muted)">git не удалит такой worktree без --force; консоль force не включает.</div>
+          <div style="color:var(--muted)">Закоммитьте или откатите изменения и повторите.</div>
+        </div>
+        <div class="row2"><a class="btn danger off" href="#">Удалить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+    <div>
+      <div class="lab">Очистка временных файлов</div>
+      <div class="modalwrap" style="padding:20px 14px"><div class="modal">
+        <span class="bt">Запуск команды</span>
+        <div class="ti">Очистка .harness (soft): применить</div>
+        <div class="cli">$ harness cleanup … --mode soft --apply</div>
+        <div class="why">Команда удаляет локальные данные — восстановить их нельзя.</div>
+        <div class="pl" style="background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:8px 12px;font-size:13px;line-height:1.7">
+          <div>Будет удалено: <b>1 992 объекта · 524 МБ</b></div>
+          <div style="color:var(--muted)">runs/tests 375 МБ · runs 107 МБ · logs 35 МБ · scratch 8,5 МБ</div>
+          <div style="color:var(--muted)">○ Пропущено 3 (активные или моложе 24 ч)</div>
+        </div>
+        <div class="row2"><a class="btn danger" href="#">Удалить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+  </div>
+  <div class="lab" style="margin:14px 0 0">Жёсткая очистка и удаление харнесса требуют ввода слова (HARD, UNINSTALL) — как сейчас. Сводка в окне очистки — предложение: в коде окно показывает только команду и причину.</div>
+</div>
+
+<div class="caption"><span><b>Состояния «Вывода» и списка</b></span><span>Тексты — из кода, кроме «предлагаю».</span></div>
+<div class="sheet">
+  <h3>Что видно во время и после запуска</h3>
+  <div class="states" style="grid-template-columns:210px 1fr 280px">
+    <span class="lab2">Команда выполняется</span>
+    <div class="status" style="color:var(--warn)"><span>▶</span><div>$ harness diff …<small>Выполняется… Вывод по мере поступления.</small></div></div>
+    <span class="res2">Меню остаётся доступным: можно смотреть описание других команд</span>
+
+    <span class="lab2">Команда завершилась</span>
+    <div class="status ok"><span>✔</span><div>exit 0<small>Полный вывод в блоке «Вывод»; код возврата виден всегда (предлагаю).</small></div></div>
+    <span class="res2">Прокрутка вывода не сдвигает меню</span>
+
+    <span class="lab2">Команда упала</span>
+    <div class="status err"><span>✖</span><div>exit 1<small>Вывод ошибки сохранён; повторить: Enter на той же команде.</small></div></div>
+    <span class="res2">Красная подсветка кода возврата</span>
+
+    <span class="lab2">Команда недоступна</span>
+    <div class="status warn"><span>⚠</span><div>Команда недоступна для выбранного проекта<small>В списке такие команды не показываются; сообщение появляется при попытке вызова по ссылке.</small></div></div>
+    <span class="res2">Например, «Полная проверка (verify)» вне репозитория харнесса</span>
+
+    <span class="lab2">Статистика считается</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>считается…<small>Размеры берутся обходом файлов; блок обновляется, когда готово (предлагаю).</small></div></div>
+    <span class="res2">Остальной экран доступен сразу</span>
+
+    <span class="lab2">Нечего очищать</span>
+    <div class="status ok"><span>✔</span><div>Временных файлов нет<small>Кнопка «Очистить…» выключена.</small></div></div>
+    <span class="res2">Пропущенные (активные) всё равно перечисляются</span>
+
+    <span class="lab2">Git недоступен</span>
+    <div class="status err"><span>✖</span><div>Список worktree недоступен<small>Статистика временных файлов остаётся; удаление worktree выключено.</small></div></div>
+    <span class="res2">Причина показывается вместо списка</span>
+
+        <span class="lab2">Ledger недоступен</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>Использование пайплайна: &lt;причина&gt;<small>Вместо чисел показывается причина из ядра.</small></div></div>
+    <span class="res2">Блок «Состояние» остаётся</span>
+  </div>
+</div>
+
+<div class="caption"><span><b>4 · Harness — узкий терминал (≈80×24)</b></span><span>Список и описание — друг за другом: Enter открывает описание, затем запуск.</span></div>
+
+<div class="app narrow dense" style="height:1180px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">⎇ feature/issue-721…</div>
+  </div>
+  <div class="body">
+    <main>
+      <div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Harness</span></div>
+      <div class="page fill">
+        <div><h1>Harness</h1></div>
+        <div class="panel">
+          <h4>Состояние <span class="e-warn">⚠ дрейф</span></h4>
+          <dl class="kv i" style="grid-template-columns:130px 1fr"><dt>Версия</dt><dd>1.4.6 <span class="e-ok">✔</span></dd><dt>Состав</dt><dd>pvmalove-suite</dd><dt>Оркестрация</dt><dd class="e-ok">✔ подключена</dd></dl>
+        </div>
+        <div class="panel" style="padding:8px">
+          <div class="gt"><span>Команды · 20</span></div>
+          <div class="gt"><span>▾ Проверки</span><span class="r">5</span></div>
+          <div class="cr"><span class="t">Дрейф управляемых файлов</span><span class="tg e-ok">✔</span></div>
+          <div class="cr"><span class="t">Health-отчёт</span><span class="tg e-ok">✔</span></div>
+          <div class="cr sel"><span class="t">…с онлайн-проверками и лейблами</span><span class="tg e-warn">⚠</span></div>
+          <div class="gc"><span>▸ Скиллы</span><span class="n"><span>3</span></span></div>
+          <div class="gc"><span>▸ Очистка и удаление</span><span class="n"><span>7</span><span class="e-err">✖ 4</span></span></div>
+        </div>
+        <div class="panel"><h4>Временные файлы <span>524 МБ · 1 992</span></h4><div class="btns" style="margin-top:0"><a class="btn sm" href="#">План очистки</a><a class="btn sm dng" href="#">Очистить…</a></div></div>
+        <div class="panel"><h4>Worktree <span>5 · можно удалить 2</span></h4>
+          <div class="wt"><span class="n">issue-716-worker-…</span><div class="a"><a class="btn sm dng" href="#">Удалить…</a></div><span class="m"><span class="e-ok">✔ завершён</span> · 412 МБ</span></div>
+          <div class="wt lock"><span class="n">issue-715-runtime-…</span><div class="a"><a class="btn sm lockd" href="#">🔒</a></div><span class="m"><span class="e-warn">⚠ активный batch</span></span></div>
+        </div>
+        <div class="card fold"><span>▸ Описание выбранной команды</span><span>⚠ внешнее</span></div>
+        <div class="card fold"><span>▸ Вывод</span><span>пока пусто</span></div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Enter</b>Запуск</span><span><b class="k">y</b>CLI</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="legend">
+  Группа «Установка и обновление» (5 команд) убрана из экрана: те же действия есть в пунктах меню «Открыть проект» (1) и «Обновить Harness» (2).
+  Новое по запросу: блоки «Временные файлы» (статистика из плана очистки) и «Worktree» (список из git с защитой активных и свежих, удаление по строке).
+  Из кода экрана: блок «Состояние» (версия, состав, скилы и файлы, lock, оркестрация) и строка использования пайплайна; список команд по пяти группам;
+  панель описания (название, обратимость, CLI, параметры); закреплённый «Вывод»; форма подтверждения с причиной, параметрами и контрольным словом.
+  Новое: группы сворачиваются (раскрыта одна), у групп сводка риска, метка риска у каждой команды с текстом, фильтры «обратимые / с подтверждением».
+  Экран «Оркестрация» построен на том же шаблоне «команды → описание → вывод», поэтому макет подходит и ему (содержимое «Оркестрации» остаётся за #711).
+</div>
+</body>
+</html>

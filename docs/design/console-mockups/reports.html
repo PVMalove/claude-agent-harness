@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Отчёты — макет</title><link rel="stylesheet" href="console.css"><style>
+.fbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.inp{background:var(--bg);border:1px solid var(--edge);border-radius:8px;padding:5px 12px;color:var(--muted);min-width:96px;white-space:nowrap}
+.inp.v{color:var(--fg);border-color:var(--primary)}
+.dd{background:var(--bg);border:1px solid var(--edge);border-radius:8px;padding:5px 12px;white-space:nowrap}
+.dd::after{content:" ▾";color:var(--muted)}
+.lr{padding:7px 10px;border-radius:6px;border-left:3px solid transparent;display:grid;grid-template-columns:1fr auto;gap:0 10px}
+.lr+.lr{margin-top:2px}.lr .a{font-size:13.5px}.lr .b{color:var(--muted);font-size:12.5px;grid-column:1/-1;overflow-wrap:anywhere}
+.lr.sel{background:var(--row);border-left-color:var(--primary);outline:1px solid var(--edge)}
+.lr .r{color:var(--muted);font-size:12.5px;text-align:right}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.kbadge{display:inline-block;border:1px solid var(--rule);border-radius:6px;padding:0 7px;font-size:12px;color:var(--muted);min-width:68px;text-align:center}
+.kbadge.state{color:#9ec3e6;border-color:#35506b}.kbadge.dispatch{color:var(--primary);border-color:#6b4a3c}.kbadge.report{color:var(--ok);border-color:#3d5230}.kbadge.decision{color:var(--warn);border-color:#6b5326}.kbadge.risk{color:var(--err);border-color:#6a2f35}
+.tl{display:grid;grid-template-columns:62px 82px 1fr;gap:10px;padding:5px 0;font-size:13px;align-items:baseline}
+.tl+.tl{border-top:1px solid var(--rule)}.tl .t{color:var(--muted)}
+.flow{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.flow .n{border:1px solid var(--rule);border-radius:8px;padding:3px 12px;background:var(--bg)}.flow .ar{color:var(--muted)}
+.sec{border-top:1px solid var(--rule);padding:10px 0}
+.sec h5{margin:0 0 4px;font-size:13px;color:var(--primary);letter-spacing:.06em;text-transform:uppercase}
+.toc{font-size:13px}.toc div{display:flex;justify-content:space-between;padding:5px 10px;border-radius:6px;border-left:3px solid transparent}.toc .on{background:var(--row);border-left-color:var(--primary)}
+.log2{background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:10px 14px;font-size:12.5px;line-height:1.7;color:#c9c2b7}
+.role{display:inline-block;border:1px solid;border-radius:6px;padding:0 9px;font-size:12px;min-width:92px;text-align:center;line-height:1.55}
+.role.architect{color:#9ec3e6;border-color:#35506b;background:#1c2630}
+.role.developer{color:var(--primary);border-color:#6b4a3c;background:#2a1f1a}
+.role.code-review{color:var(--warn);border-color:#6b5326;background:#2b2418}
+.role.qa{color:var(--ok);border-color:#3d5230;background:#1f2a1b}
+.role.publish{color:#d7d0c4;border-color:#5a554b;background:#2a2926}
+.role.verification{color:var(--muted);border-color:var(--rule);background:var(--bg)}
+.cap{font-size:13px}.cap .sep{color:var(--muted);margin:0 6px}
+.lr .a .tk{margin:0 4px 0 10px}
+</style></head><body>
+<div class="caption"><span><b>6 · Отчёты — список (≈160×52), компактно</b></span><span>Демонстрационные данные. Поля, фильтры и подписи — из экрана; «Сбросить» — предложение.</span></div>
+<div class="app wide dense" style="height:960px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><span class="cur">Отчёты</span></div><div class="strip"><span>Проект: claude-agent-harness · ledger: поколение generation-1e1684b3</span><span>Отчёт — текст роли, он показывается как есть, без разметки</span></div>
+      <div class="page fill">
+<div class="hd"><div style="display:flex;align-items:baseline;gap:16px"><h1>Отчёты</h1><div class="sub">Стадии, completion reports и хронология batch из ledger.</div></div>
+  <div class="tbtns" style="align-items:center"><span style="color:var(--muted);font-size:13px">стадий: 24 из 31 · отчётов: 19</span><a class="btn xs" href="#"><b style="color:var(--primary)">r</b> Обновить</a><a class="btn xs" href="#"><b style="color:var(--primary)">F3</b> QA-логи</a></div></div>
+
+<div class="panel" style="padding:10px 12px">
+  <div class="fbar"><span class="inp">тикет</span><span class="inp">роль</span><span class="inp">outcome</span><span class="inp">дата (2026-09-27)</span><span class="inp">статус стадии</span>
+    <span class="dd">Все стадии</span><span class="dd">По времени</span><span class="dd">По убыванию</span><a class="btn xs" href="#" style="margin-left:auto">Сбросить</a></div>
+</div>
+
+<div class="cols" style="grid-template-columns:1.15fr 1fr;gap:12px">
+  <div class="panel">
+    <div class="ph"><span class="t">Стадии и отчёты<span>24</span></span><span style="color:var(--muted);font-size:13px">Enter — открыть отчёт</span></div>
+    <div class="lab" style="margin:-2px 0 6px;font-size:12.5px">Метка — роль worker; подпись — состояние стадии и итог отчёта. Клик по метке роли подставляет фильтр «роль» (предлагаю).</div>
+    <div class="lr sel"><span class="a">10-16 12:59<b class="tk">#721</b><span class="role code-review">code-review</span></span><span class="r">555837f4</span><span class="b cap"><span class="e-ok">✔ отчёт получен<span class='sep'>·</span>завершено</span></span></div><div class="lr"><span class="a">10-16 11:44<b class="tk">#721</b><span class="role developer">developer</span></span><span class="r">e98a4a72</span><span class="b cap"><span class="e-ok">✔ отчёт получен<span class='sep'>·</span>завершено</span></span></div><div class="lr"><span class="a">10-16 11:30<b class="tk">#721</b><span class="role architect">architect</span></span><span class="r">ae7067fe</span><span class="b cap"><span class="e-ok">✔ отчёт получен<span class='sep'>·</span>завершено</span></span></div><div class="lr"><span class="a">10-16 09:10<b class="tk">#715</b><span class="role qa">qa</span></span><span class="r">d1c2b3a4</span><span class="b cap"><span class="e-warn">⚠ в работе<span class='sep'>·</span>отчёта ещё нет</span></span></div><div class="lr"><span class="a">10-15 18:20<b class="tk">#556</b><span class="role developer">developer</span></span><span class="r">5a2c7e11</span><span class="b cap"><span class="e-warn">⚠ отчёт получен<span class='sep'>·</span>заблокировано</span></span></div><div class="lr"><span class="a">10-15 16:02<b class="tk">#704</b><span class="role architect">architect</span></span><span class="r">9f0e1d2c</span><span class="b cap"><span class="e-ok">✔ отчёт получен<span class='sep'>·</span>завершено</span></span></div><div class="lr"><span class="a">10-14 19:12<b class="tk">#716</b><span class="role publish">publish</span></span><span class="r">c0a4be72</span><span class="b cap"><span class="e-err">✖ отчёт получен<span class='sep'>·</span>ошибка</span></span></div>
+  </div>
+  <div class="panel">
+    <div class="ph"><span class="t">Батчи<span>хронология · 38</span></span><span style="color:var(--muted);font-size:13px">Enter — хронология</span></div>
+    <div class="lr"><span class="a">16.10.2026 11:22 UTC · <b>#721</b></span><span class="r">698fa45a</span><span class="b">завершён · до PR: 2 ч 11 мин</span></div>
+    <div class="lr"><span class="a">16.10.2026 08:40 UTC · <b>#715</b></span><span class="r">1d3e9c40</span><span class="b">в работе · PR ещё не создан</span></div>
+    <div class="lr"><span class="a">15.10.2026 17:03 UTC · <b>#556</b></span><span class="r">5a2c7e11</span><span class="b"><span class="e-warn">⚠ заблокирован</span> · до PR: неизвестно</span></div>
+    <div class="lr"><span class="a">15.10.2026 15:49 UTC · <b>#704</b></span><span class="r">504d9b14</span><span class="b">в работе · PR ещё не создан</span></div>
+    <div class="lr"><span class="a">14.10.2026 19:12 UTC · <b>#716</b></span><span class="r">c0a4be72</span><span class="b">завершён · до PR: 1 ч 47 мин</span></div>
+    <div class="lr"><span class="a">14.10.2026 10:05 UTC · <b>#702</b></span><span class="r">77b1a9c0</span><span class="b">завершён · до PR: 3 ч 02 мин</span></div>
+  </div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">↑↓</b>Выбор</span><span><b class="k">Enter</b>Открыть</span><span><b class="k">r</b>Обновить</span><span><b class="k">F3</b>QA-логи</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="caption"><span><b>6а · Отчёты → Отчёт (≈160×52)</b></span><span>Секции — из кода: Output, Checks, Review (если есть), Risks, Blockers, Next action, QA log (если есть).</span></div>
+<div class="app wide dense" style="height:940px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><a href="#">Отчёты</a><span class="sep">›</span><span class="cur">Отчёт</span></div><div class="strip"><span>dispatch-555837f4-5664-47fc-874c-3e01f5def6af</span><span>Текст отчёта — данные роли</span></div>
+      <div class="page fill">
+<div class="hd"><div style="display:flex;align-items:baseline;gap:14px"><h1>Отчёт</h1><div class="sub"><b style="color:var(--fg)">#721</b> · code-review · <span class="e-ok">✔ completed</span> · 2026-10-16 12:59 UTC</div></div>
+  <div class="tbtns"><a class="btn xs" href="#"><b style="color:var(--primary)">b</b> Хронология batch</a><a class="btn xs" href="#"><b style="color:var(--primary)">e</b> Экспорт в Markdown</a></div></div>
+<div class="cols" style="grid-template-columns:1fr 230px;gap:12px">
+  <div class="panel">
+    <dl class="kv i" style="grid-template-columns:90px 1fr;margin-bottom:6px">
+      <dt>dispatch</dt><dd>dispatch-555837f4-5664-47fc-874c-3e01f5def6af</dd>
+      <dt>batch</dt><dd>batch-698fa45a-70a2-497c-9086-7ae0cb7c986e</dd>
+      <dt>commit</dt><dd>— <span style="color:var(--muted)">(read-only роль)</span></dd>
+      <dt>файлы</dt><dd>—</dd>
+    </dl>
+    <div class="sec"><h5 id="o">Output</h5><div class="ev">Ревью диффа 799f11d..34cbdc6 (8 коммитов, 23 файла), файлы не менялись. Проверено: hex-литералов вне brand.py нет; один SHELL_CSS; пять видов статуса, символ плюс текст; выбор пункта меню команд не запускает; workspace.py удалён, импортёров нет. Находки только уровня info.</div></div>
+    <div class="sec"><h5>Checks</h5>
+      <div class="chk"><span class="e-ok">✔</span><span>make lint</span><span class="d">pass</span></div>
+      <div class="chk"><span class="e-ok">✔</span><span>pytest -q tests/orchestration tests/memory<small>1577 passed, 2 skipped</small></span><span class="d">pass</span></div></div>
+    <div class="sec"><h5>Review</h5>
+      <div class="ev">Standards: <span class="e-ok">✔ clean</span> · Spec: <span class="e-ok">✔ clean</span> · рекомендация: <b>accept</b><br>Замечания: 5 уровня info (FieldGrid без потребителя; повтор правил SHELL_CSS; ручные символы статусов; «✓ Выполняется»; нет pilot-теста перехода из «Оркестрации»).</div></div>
+    <div class="sec"><h5>Risks</h5><span class="e-ok">✔ нет</span> &nbsp; <h5 style="display:inline;margin-left:18px">Blockers</h5> <span class="e-ok">✔ нет</span></div>
+    <div class="sec"><h5>Next action</h5><div class="ev">accept; затем QA.</div></div>
+  </div>
+  <div class="panel">
+    <div class="ph"><span class="t">Разделы</span></div>
+    <div class="toc"><div class="on"><span>Output</span><span></span></div><div><span>Checks</span><span class="e-ok">✔ 2</span></div><div><span>Review</span><span class="e-ok">✔</span></div><div><span>Risks</span><span class="e-ok">✔</span></div><div><span>Blockers</span><span class="e-ok">✔</span></div><div><span>Next action</span><span></span></div><div style="color:var(--muted)"><span>QA log</span><span>нет</span></div></div>
+    <div class="lab" style="margin:10px 0 0;font-size:12.5px">Список разделов — предложение: быстрый переход по длинному отчёту. Показан только существующий состав разделов.</div>
+  </div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">b</b>Хронология</span><span><b class="k">e</b>Экспорт</span><span><b class="k">↑↓</b>Прокрутка</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="caption"><span><b>6б · Отчёты → Хронология batch (≈160×52)</b></span><span>Типы событий — из кода: state, dispatch, report, decision, risk. Фильтр по типу — предложение; время и тексты демонстрационные.</span></div>
+<div class="app wide dense" style="height:970px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><a href="#">Отчёты</a><span class="sep">›</span><span class="cur">Хронология</span></div><div class="strip"><span>batch-698fa45a-70a2-497c-9086-7ae0cb7c986e</span><span>Время событий — UTC</span></div>
+      <div class="page fill">
+<div class="hd"><div style="display:flex;align-items:baseline;gap:14px"><h1>Хронология batch</h1><div class="sub"><b style="color:var(--fg)">#721</b> · batch-698fa45a-70a2-497c-9086-7ae0cb7c986e</div></div>
+  <div class="tbtns"><a class="btn xs" href="#"><b style="color:var(--primary)">e</b> Экспорт в Markdown</a></div></div>
+<div class="panel" style="padding:10px 14px">
+  <dl class="kv i" style="grid-template-columns:90px 1fr 90px 1fr;gap:3px 10px">
+    <dt>Состояние</dt><dd class="e-ok">✔ завершён</dd><dt>До PR</dt><dd>2 ч 11 мин</dd>
+    <dt>Начало</dt><dd>16.10.2026 11:22 UTC</dd><dt>PR</dt><dd>github.com/PVMalove/claude-agent-harness/pull/729</dd></dl>
+  <div class="flow" style="margin-top:8px"><span style="color:var(--muted);font-size:13px">маршрут</span><span class="n">architect</span><span class="ar">→</span><span class="n">developer</span><span class="ar">→</span><span class="n">code-review</span><span class="ar">→</span><span class="n">qa</span><span class="ar">→</span><span class="n">publish</span></div>
+</div>
+<div class="panel">
+  <div class="ph"><span class="t">События<span>15 · от старых к новым</span></span><span class="fbar"><span class="chip on" style="color:var(--selfg);border-color:var(--primary);background:var(--sel);font-size:12px;padding:0 9px">все</span><span class="chip" style="font-size:12px;padding:0 9px">state</span><span class="chip" style="font-size:12px;padding:0 9px">dispatch</span><span class="chip" style="font-size:12px;padding:0 9px">report</span><span class="chip" style="font-size:12px;padding:0 9px">decision</span><span class="chip" style="font-size:12px;padding:0 9px">risk</span></span></div>
+<div class="tl"><span class="t">11:22</span><span class="kbadge state">state</span><span>батч создан</span></div><div class="tl"><span class="t">11:23</span><span class="kbadge state">state</span><span>planned → awaiting-approval → active</span></div><div class="tl"><span class="t">11:24</span><span class="kbadge dispatch">dispatch</span><span>architect · dispatch-ae7067fe… отправлен</span></div><div class="tl"><span class="t">11:30</span><span class="kbadge report">report</span><span>architect · completed</span></div><div class="tl"><span class="t">11:31</span><span class="kbadge decision">decision</span><span>accept (policy:auto) · план закреплён</span></div><div class="tl"><span class="t">11:32</span><span class="kbadge dispatch">dispatch</span><span>developer · dispatch-e98a4a72… отправлен</span></div><div class="tl"><span class="t">12:26</span><span class="kbadge report">report</span><span>developer · completed · 8 коммитов</span></div><div class="tl"><span class="t">12:27</span><span class="kbadge risk">risk</span><span>оценка риска: 4 триггера · review обязательно</span></div><div class="tl"><span class="t">12:30</span><span class="kbadge dispatch">dispatch</span><span>code-review · dispatch-555837f4… отправлен</span></div><div class="tl"><span class="t">13:07</span><span class="kbadge report">report</span><span>code-review · completed · accept</span></div><div class="tl"><span class="t">13:09</span><span class="kbadge decision">decision</span><span>accept (policy:auto)</span></div><div class="tl"><span class="t">13:23</span><span class="kbadge report">report</span><span>qa · completed · make verify exit 0</span></div><div class="tl"><span class="t">13:24</span><span class="kbadge decision">decision</span><span>accept (policy:auto) → publish</span></div><div class="tl"><span class="t">13:26</span><span class="kbadge report">report</span><span>publish · completed</span></div><div class="tl"><span class="t">13:27</span><span class="kbadge state">state</span><span>active → completed</span></div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">e</b>Экспорт</span><span><b class="k">↑↓</b>Прокрутка</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>6в · Отчёты → QA-логи (F3)</b></span><span>Попытки qa-lane и каждый прогон QA-gate, новые сверху.</span></div>
+<div class="sheet">
+  <div class="cols" style="grid-template-columns:1fr 1.4fr;gap:14px">
+    <div class="panel" style="background:var(--bg)">
+      <div class="ph"><span class="t">Попытки qa-lane<span>2 неудачных</span></span></div>
+      <div class="chk"><span class="e-warn">⚠</span><span>10-16 13:20 · dispatch-d8222613…<small>preparation: ledger is locked by another operation</small></span><span class="d"></span></div>
+      <div class="chk"><span class="e-warn">⚠</span><span>10-15 17:41 · dispatch-4be2c9a1…<small>preparation: timeout</small></span><span class="d"></span></div>
+    </div>
+    <div class="panel" style="background:var(--bg)">
+      <div class="ph"><span class="t">Прогон 104ce6b5…<span>10-16 13:23 · #721 · отчёт: completed</span></span><span class="e-ok" style="font-size:13px">✔ passed</span></div>
+      <div class="lab" style="margin:0 0 6px">dispatch-d8222613… · команд 2, с ошибкой 0</div>
+      <div class="log2">хвост лога (последние 6 из 412 строк):<br>&nbsp;&nbsp;$ make bootstrap &nbsp;·&nbsp; exit 0<br>&nbsp;&nbsp;$ make verify<br>&nbsp;&nbsp;mypy: no issues found in 391 source files<br>&nbsp;&nbsp;3102 passed, 2 skipped<br>&nbsp;&nbsp;clean-room: passed<br>&nbsp;&nbsp;agent-harness verification passed</div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><span><b>Состояния экрана «Отчёты»</b></span><span>Тексты — из кода, кроме отмеченных «предлагаю».</span></div>
+<div class="sheet">
+  <div class="states" style="grid-template-columns:230px 1fr 290px">
+    <span class="lab2">Ledger недоступен</span>
+    <div class="status err"><span>✖</span><div>&lt;причина из ядра&gt;<small>Показывается вместо списков и в строке статуса.</small></div></div>
+    <span class="res2">Фильтры и списки пустые, «Обновить» доступна</span>
+    <span class="lab2">Ничего не найдено</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>Ничего не найдено<small>Фильтры сочетаются; «Сбросить» — предлагаю.</small></div></div>
+    <span class="res2">Строка статуса: «отчётов: 0 из 19»</span>
+    <span class="lab2">Идёт обновление</span>
+    <div class="status" style="color:var(--warn)"><span>▶</span><div>Обновление…<small>Кнопка ↻ выключена; выбранная запись сохраняется, если остаётся в списке.</small></div></div>
+    <span class="res2">PR-тайминги подгружаются отдельно</span>
+    <span class="lab2">Ошибка обновления</span>
+    <div class="status err"><span>✖</span><div>Ошибка обновления: &lt;причина&gt;<small>Остаётся прежний список; повторить: «Обновить».</small></div></div>
+    <span class="res2">Данные не выдаются за свежие</span>
+    <span class="lab2">Стадия без отчёта</span>
+    <div class="status warn"><span>⚠</span><div>Enter открывает хронологию, а не отчёт<small>Сверху: «dispatch · состояние: отчёт ещё не получен».</small></div></div>
+    <span class="res2">В макете значок ⚠, как в коде; ○ подошёл бы лучше (предлагаю)</span>
+    <span class="lab2">Хронология недоступна</span>
+    <div class="status warn"><span>⚠</span><div>Хронология батча недоступна<small>Всплывающее предупреждение; экран не меняется.</small></div></div>
+    <span class="res2">Или: «батч этого отчёта не найден в ledger»</span>
+    <span class="lab2">Экспорт</span>
+    <div class="status ok"><span>✔</span><div>Markdown в docs/tasks/console-exports/<small>Существующие файлы не перезаписываются; уведомление с путём.</small></div></div>
+    <span class="res2">Клавиша <b>e</b> в отчёте и хронологии</span>
+  </div>
+</div>
+<div class="caption"><span><b>6 · Отчёты — узкий терминал (≈80×24)</b></span><span>Фильтры сворачиваются в один блок; метка роли и подпись состояния сохраняются.</span></div>
+<div class="app narrow dense" style="height:760px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">⎇ feature/issue-721…</div></div>
+  <div class="body"><main><div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Отчёты</span></div><div class="page fill">
+<div class="hd"><h1 style="font-size:18px">Отчёты</h1><span style="color:var(--muted);font-size:13px">19 отчётов</span></div>
+<div class="fbar"><span class="inp v">тикет: 721</span><span class="chip on" style="color:var(--selfg);border-color:var(--primary);background:var(--sel)">Фильтры 1 ▾</span><a class="btn xs" href="#">↻</a><a class="btn xs" href="#">QA</a></div>
+<div class="panel"><div class="ph"><span class="t">Стадии и отчёты<span>3</span></span></div>
+  <div class="lr sel"><span class="a">10-16 12:59<b class="tk">#721</b><span class="role code-review">code-review</span></span><span class="r">555837f4</span><span class="b cap"><span class="e-ok">✔ отчёт · завершено</span></span></div><div class="lr"><span class="a">10-16 11:44<b class="tk">#721</b><span class="role developer">developer</span></span><span class="r">e98a4a72</span><span class="b cap"><span class="e-ok">✔ отчёт · завершено</span></span></div><div class="lr"><span class="a">10-16 11:30<b class="tk">#721</b><span class="role architect">architect</span></span><span class="r">ae7067fe</span><span class="b cap"><span class="e-ok">✔ отчёт · завершено</span></span></div></div>
+<div class="card fold"><span>▸ Батчи (хронология)</span><span>38</span></div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Enter</b>Открыть</span><span><b class="k">F3</b>QA</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="legend">Из кода: ReportsScreen (список «Стадии и отчёты» и «Батчи (хронология)», пять текстовых фильтров, выбор завершённости, сортировка, обновление r, QA-логи F3); ReportScreen (заголовок, секции Output/Checks/Review/Risks/Blockers/Next action/QA log, b — хронология, e — экспорт); BatchTimelineScreen (заголовок, маршрут ролей, события state/dispatch/report/decision/risk); QaLogsScreen (попытки qa-lane и прогоны). Из #723: каркас, статусы «символ + подпись», фильтры/сортировка/экспорт/детали как раньше, длинные значения целиком. Моё: оглавление разделов, фильтр по типу событий, «Сбросить». Все идентификаторы, даты и тексты демонстрационные.</div>
+</body></html>
