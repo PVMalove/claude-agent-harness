@@ -30,6 +30,26 @@ from .. import brand, i18n
 _OUTPUT_TAIL_LINES = 200
 
 
+def command_menu_css(screen: str) -> str:
+    """The rules of a command-menu section for the screen type `screen`. A type selector reaches
+    only the first base class of a screen, so a shell screen that mixes in `CommandMenuScreen` loads
+    these rules under its own type name, after the shell's."""
+    return brand.shell_css(f"""
+    {screen} .overview {{ height: auto; margin: 0 0 1 0; padding: 0 1; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-body {{ height: 16; margin: 0 0 1 0; }}
+    {screen} #command-menu {{ height: 1fr; margin: 0; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-menu:focus {{ border: round $primary; }}
+    {screen}.-wide #command-menu, {screen}.-spacious #command-menu {{ width: 48; }}
+    {screen} #command-detail-scroll {{ height: 1fr; padding: 0 1; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-output-scroll {{ height: 8; margin: 0; padding: 0 1; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-menu > ListItem {{ height: 1; padding: 0 1; }}
+    {screen} #command-menu Static {{ height: 1; text-wrap: nowrap; text-overflow: ellipsis; }}
+    {screen} .group-title {{ color: $text-muted; text-style: bold; }}
+    {screen}.-narrow #command-body {{ layout: vertical; height: 22; }}
+    {screen}.-narrow #command-detail-scroll {{ height: 6; }}
+    """)
+
+
 _Result = TypeVar("_Result")
 
 

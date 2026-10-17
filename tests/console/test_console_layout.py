@@ -306,3 +306,96 @@ def test_worker_layout(
             return layout_problems(screen, WORKER_TITLES)
 
     assert asyncio.run(scenario()) == []
+
+
+HARNESS_TITLES = (".breadcrumbs", "#harness-state")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_harness_layout(tmp_path: Path, size: tuple[int, int], language: str) -> None:
+    from textual.widgets import ListView
+
+    from harness.console.screens.harness import HarnessScreen
+
+    async def scenario() -> tuple[list[str], int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot, HarnessScreen(tmp_path), language)
+            problems = layout_problems(screen, HARNESS_TITLES)
+            menu = screen.query_one("#command-menu", ListView)
+            menu.scroll_visible(animate=False, immediate=True)
+            await pilot.pause()
+            return problems, menu.region.height
+
+    problems, menu_height = asyncio.run(scenario())
+    assert problems == []
+    assert menu_height >= 8  # the command list stays usable on the smallest terminal
+
+
+DIAGNOSTICS_TITLES = (".breadcrumbs",)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_diagnostics_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.console.screens.diagnostics import DiagnosticsScreen
+    from harness.health.model import CheckResult, Fix, Report
+
+    long_repo = tmp_path / ("nested-directory-name-" * 3) / "project"
+    report = Report(
+        schema_version=1,
+        repo=str(long_repo),
+        online=False,
+        checks=[
+            CheckResult(id="files.lock", group="files", status="ok", message="lock ok"),
+            CheckResult(
+                id="environment.uv",
+                group="environment",
+                status="fail",
+                message="uv недоступен " * 6,
+                fix=Fix(text="поставить uv", command="echo installing-uv"),
+            ),
+            CheckResult(
+                id="net.pypi", group="net", status="skipped", message="offline"
+            ),
+        ],
+    )
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(long_repo)
+        async with app.run_test(size=size) as pilot:
+            screen = DiagnosticsScreen(
+                long_repo, collect_diagnostics=lambda repo, *, online=False: report
+            )
+            await _open(app, pilot, screen, language)
+            return layout_problems(screen, DIAGNOSTICS_TITLES)
+
+    assert asyncio.run(scenario()) == []
+
+
+PROJECT_SETUP_TITLES = (".breadcrumbs",)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_open_project_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.console.runner import capturing_runner
+    from harness.console.screens.project_setup import ProjectSetupScreen
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            # Open project is dismissed with a path: only its result type differs from the others.
+            screen = cast(
+                Screen[None],
+                ProjectSetupScreen(tmp_path, command_runner=capturing_runner),
+            )
+            await _open(app, pilot, screen, language)
+            return layout_problems(screen, PROJECT_SETUP_TITLES)
+
+    assert asyncio.run(scenario()) == []

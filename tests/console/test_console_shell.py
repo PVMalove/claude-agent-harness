@@ -494,3 +494,44 @@ def test_field_values_wrap_at_separators_and_the_panel_reserves_a_scrollbar_gutt
         assert len(lines) > 1
         assert all(len(line) <= width for line in lines)
         assert all(line[-1] in SEPARATORS for line in lines[:-1])
+
+
+class ResultShell(ConsoleShell[str]):
+    """A shell screen that hands a string back, like Open project hands back a path."""
+
+    SECTION = "Reports"
+    CRUMBS = "Главная › Отчёты"
+
+
+def test_a_shell_screen_is_dismissed_with_its_own_result_type(tmp_path: Path) -> None:
+    results: list[str | None] = []
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = ResultShell()
+            await app.push_screen(screen, results.append)
+            await pilot.pause()
+            screen.dismiss("chosen")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is not screen
+
+    asyncio.run(scenario())
+    assert results == ["chosen"]
+
+
+def test_the_four_screens_carry_no_local_colours_top_bar_or_number_keys() -> None:
+    """The Home, Open project, Diagnostics and Harness screens take colours, the top bar and the
+    navigation from the shell: their sources hold none of their own."""
+    import re
+
+    screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
+    names = ("dashboard", "harness", "diagnostics", "project_setup", "commands")
+    for name in names:
+        source = (screens / f"{name}.py").read_text(encoding="utf-8")
+        assert not re.search(r"#[0-9A-Fa-f]{6}\b", source), f"{name}: a hex colour"
+        assert not re.search(r"Binding\(\s*[\"']\d", source), f"{name}: a number key"
+        if name != "commands":
+            # `CommandMenuScreen.compose` is the one left-over of the old frame (no screen uses it).
+            assert "TopBar(" not in source, f"{name}: a top bar of its own"

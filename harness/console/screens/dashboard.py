@@ -42,9 +42,15 @@ class _CollectDashboard(Protocol):
     def __call__(self, repo: Path, /, *, online: bool = False) -> DashboardData: ...
 
 
+def _status_label(status: str) -> str:
+    """A status as its symbol plus its word, so it never rests on colour alone: `✖ fail`."""
+    return f"{brand.STATUS_ICONS.get(status, '·')} {status}"
+
+
 def _counter(name: str, value: int, color: str) -> str:
-    """A health counter, coloured only when it is non-zero so a clean report stays calm."""
-    text = f"{name}={value}"
+    """A health counter with its status symbol, coloured only when it is non-zero so a clean
+    report stays calm."""
+    text = f"{brand.STATUS_ICONS.get(name, '·')} {name}={value}"
     return f"[{color}]{text}[/]" if value else f"[{brand.PALETTE['muted']}]{text}[/]"
 
 
@@ -95,7 +101,7 @@ def _render_summary_full(
                 check.status
             ]
         ]
-        memory = f"[{color}]{check.status}[/] — {escape(check.message)}"
+        memory = f"[{color}]{_status_label(check.status)}[/] — {escape(check.message)}"
     lines = [
         f"{_summary_label(f'health ({mode})')} "
         f"{_counter('ok', data.ok, brand.PALETTE['success'])} "
@@ -112,7 +118,7 @@ def _render_summary_full(
         lines.append(_summary_label(t("ошибки и предупреждения")))
         colors = {"fail": brand.PALETTE["error"], "warn": brand.PALETTE["warning"]}
         lines.extend(
-            f"  [{colors.get(status, brand.PALETTE['muted'])}]{status:<4}[/] "
+            f"  [{colors.get(status, brand.PALETTE['muted'])}]{_status_label(status):<6}[/] "
             f"{escape(check_id)} — {escape(message)}"
             for status, check_id, message in data.problems
         )
@@ -233,11 +239,12 @@ def _render_cards(
     drift_labels = DRIFT_LABELS if language == "ru" else DRIFT_LABELS_EN
     harness.append(
         f"дрейф: [{_color(drift_status)}]"
+        f"{brand.STATUS_ICONS[drift_status]} "
         f"{escape(drift_labels.get(data.drift_state, data.drift_state))}[/]"
     )
     if data.memory_index is not None:
         status = data.memory_index.status
-        harness.append(f"память: [{_color(status)}]{status}[/]")
+        harness.append(f"память: [{_color(status)}]{_status_label(status)}[/]")
     orchestration = (
         f"активных batch: {data.active_batches}"
         if data.active_batches is not None
