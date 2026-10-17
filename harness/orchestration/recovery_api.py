@@ -852,7 +852,8 @@ class Survey:
                     f"the batch needs human attention ({batch.get('attention_reason')}): "
                     "recovery never resolves it",
                     remedy=f"{batch.get('recommended_human_action')}; resolve it with "
-                    "'batch attention resolve'",
+                    f"'batch attention resolve --batch {self.batch_id}' before 'recovery "
+                    "resume'",
                 ),
                 status="refused",
             )

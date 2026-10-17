@@ -75,3 +75,23 @@ def test_a_store_hold_offers_no_decision_at_all() -> None:
         "recovery status --batch batch-1",
         "recovery resume --batch batch-1",
     ]
+
+
+def test_a_store_hold_with_attention_names_its_resolution_before_resume() -> None:
+    packet: dict[str, object] = {
+        "batch_id": "batch-1",
+        "needs_attention": True,
+        "options": ["accept", "retry", "block", "abandon"],
+    }
+
+    decisions._hold_options(
+        packet, {"source": "runtime-state", "reason": "runtime-compatibility"}
+    )
+
+    route = packet["recovery_route"]
+    assert isinstance(route, dict)
+    assert route["commands"] == [
+        "recovery status --batch batch-1",
+        "batch attention resolve --batch batch-1",
+        "recovery resume --batch batch-1",
+    ]

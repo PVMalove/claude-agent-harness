@@ -268,8 +268,10 @@ def _runtime_compatibility(
         raise runtime_compatibility.RuntimeCompatibilityError(
             exc.step,
             exc.declarations,
-            remedy=f"{exc.remedy}; the batch is held: run 'coordinator.py recovery resume "
-            f"--batch {batch['batch_id']}' once every party is compatible",
+            remedy=f"{exc.remedy}; the batch is held: once every party is compatible, resolve "
+            f"its attention with 'coordinator.py batch attention resolve --batch "
+            f"{batch['batch_id']}', then run 'coordinator.py recovery resume --batch "
+            f"{batch['batch_id']}'",
         ) from exc
 
 

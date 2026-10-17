@@ -42,8 +42,9 @@ HOLD_REASONS = (
 PERMANENT_REASONS = frozenset({"legacy-quarantine"})
 HOLD_REMEDY = (
     "run 'coordinator.py recovery status --batch {batch}' for the diagnostics, fix the cause, "
-    "then run 'coordinator.py recovery resume --batch {batch}'; nothing was abandoned, retried "
-    "or decided"
+    "resolve its operational-hold attention with 'coordinator.py batch attention resolve "
+    "--batch {batch}' when the batch needs attention, then run 'coordinator.py recovery resume "
+    "--batch {batch}'; nothing was abandoned, retried or decided"
 )
 QUARANTINE_REMEDY = (
     "run 'coordinator.py ledger inspect --batch {batch}' and 'ledger export --batch {batch}' to "

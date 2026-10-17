@@ -452,13 +452,21 @@ def _hold_options(packet: JsonObject, held: JsonObject) -> None:
         packet["approval_reason"] = (
             "the runtime state store holds this batch; recovery comes before any decision"
         )
+        batch_id = packet["batch_id"]
+        # Recovery never resolves attention, so a raised one is resolved before resume.
+        resolve = (
+            [f"batch attention resolve --batch {batch_id}"]
+            if packet.get("needs_attention") is True
+            else []
+        )
         packet["recovery_route"] = {
             "decision": None,
             "options": [],
             "approval_required": True,
             "commands": [
-                f"recovery status --batch {packet['batch_id']}",
-                f"recovery resume --batch {packet['batch_id']}",
+                f"recovery status --batch {batch_id}",
+                *resolve,
+                f"recovery resume --batch {batch_id}",
             ],
         }
         return

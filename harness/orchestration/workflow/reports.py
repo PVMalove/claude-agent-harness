@@ -315,8 +315,9 @@ def _confirm_contract(
     refusal = runtime_compatibility.RuntimeCompatibilityError(
         "self-report",
         [confirmation],
-        remedy=f"stop this worker, run 'coordinator.py recovery resume --batch "
-        f"{dispatch['batch_id']}', start the worker on a runtime that speaks "
+        remedy=f"stop this worker, resolve the batch's attention with 'coordinator.py batch "
+        f"attention resolve --batch {dispatch['batch_id']}', run 'coordinator.py recovery "
+        f"resume --batch {dispatch['batch_id']}', start the worker on a runtime that speaks "
         f"{confirmation.expected!r} and repeat dispatch self-report; the dispatch is not working",
     )
     _hold_incompatible(ledger, repo, root, dispatch, refusal)
@@ -1925,9 +1926,10 @@ def _report_compatibility(
         refusal = runtime_compatibility.RuntimeCompatibilityError(
             exc.step,
             exc.declarations,
-            remedy=f"{exc.remedy}; unaccepted evidence: {path}; the batch is held: run "
-            f"'coordinator.py recovery resume --batch {dispatch.get('batch_id')}' before the "
-            "report is submitted again",
+            remedy=f"{exc.remedy}; unaccepted evidence: {path}; the batch is held: resolve "
+            f"its attention with 'coordinator.py batch attention resolve --batch "
+            f"{dispatch.get('batch_id')}' and run 'coordinator.py recovery resume --batch "
+            f"{dispatch.get('batch_id')}' before the report is submitted again",
         )
         if ledger is not None and repo is not None:
             _hold_incompatible(ledger, repo, root, dispatch, refusal)

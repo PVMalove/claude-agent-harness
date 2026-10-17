@@ -93,7 +93,7 @@ def _hold_finding(held: operational_hold.Hold) -> dict[str, str]:
         last_safe_action=f"the runtime state store holds batch {held.batch_id} "
         f"({held.reason}): {held.message}; no dispatch, decision or abandon was recorded and "
         "every brief, report and candidate is unchanged",
-        recommended_human_action=f"{held.remedy}; then resolve this attention",
+        recommended_human_action=held.remedy,
     )
 
 

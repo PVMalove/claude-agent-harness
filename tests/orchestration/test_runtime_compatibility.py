@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from harness.orchestration import coordinator, extensions, runtime_compatibility
+from harness.orchestration import (
+    coordinator,
+    extensions,
+    recovery_api,
+    runtime_compatibility,
+)
 from harness.orchestration.core.system_fields import CONTRACT_VERSION
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.runtime_compatibility import (
@@ -416,6 +421,49 @@ def test_send_refuses_an_incompatible_adapter_before_any_effect(
             _adapter(recovery.tmp, {"system_fields_contract": CONTRACT_VERSION}),
         )
     assert launches(recovery) == []
+
+
+def _before(text: str, first: str, second: str) -> bool:
+    return first in text and second in text and text.index(first) < text.index(second)
+
+
+def test_the_route_the_send_hold_names_releases_it(
+    recovery: test_recovery.RecoveryTests,
+) -> None:
+    """The remedy and the attention name attention resolve before recovery resume, and
+    following them in that order releases the hold without a refusal."""
+    brief, _ = external_brief(recovery)
+    batch_id = brief["batch_id"]
+    with pytest.raises(RuntimeCompatibilityError) as raised:
+        send_external(
+            recovery,
+            brief,
+            _adapter(recovery.tmp, {"system_fields_contract": "systemFields.v2"}),
+        )
+    resolve, resume = "batch attention resolve", f"recovery resume --batch {batch_id}"
+    assert _before(raised.value.remedy, resolve, resume)
+    held = recovery._batch_record(batch_id)
+    assert _before(held["recommended_human_action"], resolve, resume)
+
+    coordinator.attention_resolve(
+        recovery._args(
+            batch=batch_id, note="the adapter now speaks v1", **recovery._approval()
+        )
+    )
+    resumed = recovery_api.resume(recovery.repo, recovery.state_dir, batch_id)
+
+    assert resumed["outcome"] == "done", resumed["refusals"]
+    assert [step["step"] for step in resumed["steps"]] == ["release"]
+    assert (
+        resumed["next"]["command"] == f"dispatch send --dispatch {brief['dispatch_id']}"
+    )
+    sent = send_external(
+        recovery,
+        brief,
+        _adapter(recovery.tmp, {"system_fields_contract": CONTRACT_VERSION}),
+    )
+    assert sent["state"] == "dispatched"
+    assert len(launches(recovery)) == 1
 
 
 def test_send_hands_off_once_to_a_compatible_adapter(
