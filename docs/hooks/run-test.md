@@ -138,13 +138,17 @@ canary-проверкой guard и opt-in проекта относятся к #
   - `config_invalid` — `project.json` нечитаем или поля не проходят проверку;
   - `test_paths_missing`, `test_runner_missing` — поле не задано;
   - `write_zone_rejected` — зона записи не прошла проверки;
+  - `build_failed`, `build_timeout` — защищённая подготовка завершилась ошибкой или таймаутом;
+  - `database_unavailable` — выбранному тесту не удалось подготовить отдельную БД;
   - `isolation_unavailable` с `detail`: `platform`, `bwrap_missing`, `checkout_masked`,
     `sandbox_failed` или `probe_failed`.
 - **Коды выхода:** `0` — тест прошёл; `1` — тест упал или превысил таймаут; `3` — отказ, тест
   не запускался.
-- **`--probe`:** не требует `test_paths`, выводит `{"status":"ok"}` с кодом `0` либо
-  `{"status":"unavailable","reason":"isolation_unavailable","detail":"<код>"}` с кодом `3`; при
-  недоступном runner — `reason: runner_unavailable`. Каталог запуска probe удаляется.
+- **`--probe`:** валидирует существующий `project.json` и планы монтирований обеих фаз без
+  выполнения сборки, сервера или теста. Без `project.json` сохраняется проверка только хоста.
+  Выводит `{"status":"ok"}` с кодом `0` либо `status: unavailable` с кодом `3` и фиксированной
+  причиной конфигурации/зоны, `isolation_unavailable` с `detail` или `runner_unavailable`.
+  Каталог запуска probe удаляется.
 
 ## Источник
 
@@ -182,3 +186,12 @@ CLI добавляет эти группы только по полным наб
 таймаут runner ограничивает всю сессию БД вместе с тестом 300 секундами. Вывод всех команд
 попадает в ограниченный локальный лог. Приватный канал результата helper недоступен дочерним
 командам, поэтому вывод теста и его код 3 не могут подделать отказ БД.
+
+Clean-room сценарий `scripts/clean_room/isolated_test_runner_build_db.py` вызывается существующим
+сценарием runner и отдельно через `python -m scripts.clean_room.isolated_test_runner_build_db`.
+Он проверяет настоящий C-компилятор и PostgreSQL (`postgres`, `initdb`, `psql`, `pg_isready` в
+`PATH`): два свежих кластера, идентичность сервера, SQL, rollback, CHECK/PK и отсутствие TCP.
+Отсутствующие бинарники явно отмечаются как отсутствие доказательства.
+`HARNESS_REQUIRE_TEST_DATABASE=1` делает отсутствие настоящей БД ошибкой;
+`HARNESS_REQUIRE_TEST_SANDBOX=1` требует песочницу и компилятор. Подменные процессы в unit-тестах
+проверяют только жизненный цикл и не заменяют это доказательство.

@@ -721,7 +721,7 @@ def run_test(
 ) -> Outcome:
     """Run one test in the sandbox; every check before the test fails closed with a refusal.
 
-    Order: id, settings, zones, host, run directory, probe, test.
+    Order: id, settings, zones, host, run directory, protected build, selected-phase probe, test.
     """
     if not valid_test_id(test_id):
         return Outcome(None, "refused", "test_id_invalid")

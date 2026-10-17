@@ -47,6 +47,6 @@ through another command, or invent a failure. Do not create an orchestration man
 brief, completion report, approval, or ledger record: the developer owns the ordinary route and
 the TDD cycle.
 
-Runner запускает БД только для совпавших `test_runner.database.test_ids`; чистая доменная
-логика обходится без сервера. SQL, rollback и ограничения проверяйте на production-движке.
-Отказы `build_failed`, `build_timeout` и `database_unavailable` не являются поведенческим Red.
+The runner starts a database only for matching `test_runner.database.test_ids`; pure domain
+logic needs no server. Test SQL, rollback and constraints against the production engine.
+`build_failed`, `build_timeout` and `database_unavailable` refusals are not behavioral Red.

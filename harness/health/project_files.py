@@ -84,9 +84,7 @@ TRACKER_PROJECT_RULE = (
 # `project.schema.json` repeats the pattern verbatim; tests keep the two in step.
 TEST_PATH_PATTERN = r"^(?![/\\])(?![A-Za-z]:)(?!(?:.*[/\\])?\.\.(?:[/\\]|$)).+$"
 TEST_RUNNER_FIELDS = ("command", "build", "database")
-ARTIFACT_PATH_PATTERN = (
-    r"^(?!\.)(?!.*(?:^|/)\.\.?(?:/|$))[A-Za-z0-9_-]+(?:/[A-Za-z0-9_.-]+)*/\*\*$"
-)
+ARTIFACT_PATH_PATTERN = "^(?![/\\\\])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/*?\\[\\]{}\\\\\\x00-\\x1f]+(?:/[^/*?\\[\\]{}\\\\\\x00-\\x1f]+)*/\\*\\*$(?![\\s\\S])"
 # The one `test_runner.command` element the runner replaces with the selected test id.
 TEST_ID_PLACEHOLDER = "{test_id}"
 # Bound of the `git ls-files` skill inventory.

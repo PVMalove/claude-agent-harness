@@ -1084,8 +1084,7 @@ def test_unsafe_artifact_targets_refuse_without_launch(
     _write_settings(project, data)
     before = _snapshot(project)
     launcher = FakeLauncher([])
-    expected = "config_invalid" if target == ".harness/**" else "write_zone_rejected"
-    assert _run(project, "legit", launcher).reason == expected
+    assert _run(project, "legit", launcher).reason == "write_zone_rejected"
     assert launcher.calls == [] and _snapshot(project) == before
 
 

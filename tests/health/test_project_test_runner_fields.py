@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from harness.health import project_files
+from harness.configuration_schema import value_problems
 
 _SCHEMA = (
     Path(project_files.__file__).resolve().parents[1]
@@ -217,3 +218,67 @@ def test_invalid_optional_groups_are_sanitized(
     )
     assert problems
     assert "secret" not in " ".join(problems)
+
+
+@pytest.mark.parametrize("path", [".build/**", "build.out/**", "generated files/**"])
+def test_literal_artifact_directory_names_are_compatible(
+    tmp_path: Path, path: str
+) -> None:
+    assert (
+        _problems(
+            tmp_path,
+            {
+                "test_runner": {
+                    "command": ["test", "{test_id}"],
+                    "build": {"command": ["compiler"], "artifact_paths": [path]},
+                }
+            },
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    "argv,valid",
+    [
+        (["compiler", "line1\nline2"], True),
+        (["compiler", "bad\x00arg"], False),
+        (["compiler", "prefix{test_id}"], False),
+    ],
+)
+def test_build_argv_schema_and_health_agree(argv: list[str], valid: bool) -> None:
+    schema = json.loads(_SCHEMA.read_text())
+    value = {
+        "command": ["test", "{test_id}"],
+        "build": {"command": argv, "artifact_paths": [".build/**"]},
+    }
+    assert (project_files.test_runner_problems(value) == []) is valid
+    assert (
+        value_problems(
+            value["build"],
+            schema["properties"]["test_runner"]["properties"]["build"],
+            schema,
+        )
+        == []
+    ) is valid
+
+
+@pytest.mark.parametrize(
+    "path,valid",
+    [
+        (".build/**", True),
+        ("generated files/**", True),
+        ("build/**\n", False),
+        ("../build/**", False),
+        ("x/./y/**", False),
+        ("x//y/**", False),
+        ("x/*/**", False),
+    ],
+)
+def test_artifact_schema_and_health_agree(path: str, valid: bool) -> None:
+    schema = json.loads(_SCHEMA.read_text())
+    build = {"command": ["compiler"], "artifact_paths": [path]}
+    value = {"command": ["test", "{test_id}"], "build": build}
+    assert (project_files.test_runner_problems(value) == []) is valid
+    node = schema["properties"]["test_runner"]["properties"]["build"]
+    assert (value_problems(build, node, schema) == []) is valid
