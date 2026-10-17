@@ -255,8 +255,14 @@ def test_report_screen_shows_sections_wrapped_to_the_screen_width(
             report_list.focus()
             report_list.index = 3  # dispatch-dev, the one with the long Output
             await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ReportScreen)
+            await _until(
+                pilot,
+                lambda: (
+                    isinstance(app.screen, ReportScreen)
+                    and bool(app.screen.query("#section-output"))
+                    and app.screen.query_one("#section-output", Static).size.height > 1
+                ),
+            )
             titles = [
                 str(widget.content)
                 for widget in app.screen.query(".section-title").results(Static)
