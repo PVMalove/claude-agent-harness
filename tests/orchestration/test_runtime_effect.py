@@ -466,6 +466,9 @@ FAKE_ADAPTER = """import sys
 from pathlib import Path
 
 here = Path({here!r})
+if sys.argv[1] == "contract":
+    print('{{"system_fields_contract": "systemFields.v1"}}')
+    sys.exit(0)
 if sys.argv[1] == "dispatch":
     with (here / "launches.log").open("a", encoding="utf-8") as log:
         log.write(sys.argv[-1] + "\\n")

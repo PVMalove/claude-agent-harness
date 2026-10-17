@@ -53,7 +53,13 @@ worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-
 --worktree <top-level>` before task work in every new or resumed session. Model self-report is always
 required. Worktree attestation is mandatory for architect, developer, conflict-resolver,
 database-migrations, messaging-integration and code-review; `worker_attestation_required` also
-enables it for other roles. Use the coordinator
+enables it for other roles. Confirm the systemFields contract you work under by adding
+`--system-fields-contract <version>`, where the version is the brief's
+`orchestration_policy.configuration.contract` (for example `systemFields.v1`). The flag is
+optional; a version other than the brief's is refused, recorded as evidence and must be escalated,
+never replaced by the expected value. A completion report may repeat it in
+`"system_fields_contract"`; a report that names another version is kept only as unaccepted
+evidence. Use the coordinator
 CLI and its absolute repo/state paths from the prompt even when your current directory is another
 worktree. After a successful self-report, send `dispatch heartbeat --dispatch <dispatch_id>`
 immediately and at least every `liveness.heartbeat_every_seconds` from the brief while working.

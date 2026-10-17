@@ -2182,6 +2182,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         from harness.orchestration.runtime_access import AccessError
 
         class ApplyOnly:
+            system_fields_contract = "systemFields.v1"
+
             def observe(
                 self, plan: JsonObject, transport: str
             ) -> extensions.RuntimeAccessObservation:
@@ -2240,6 +2242,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         launches: list[str] = []
 
         class ControlledNative:
+            system_fields_contract = "systemFields.v1"
+
             def observe(
                 self, plan: JsonObject, transport: str
             ) -> extensions.RuntimeAccessObservation:
@@ -4028,12 +4032,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(submitted["state"], "reported")
         self.assertIn("decision_packet", submitted)
         packet = submitted["decision_packet"]
-        self.assertEqual(packet["options"], ["retry", "block", "abandon"])
+        # The blocked report's cause is unknown: no abandon is offered on it (issue #684).
+        self.assertEqual(packet["options"], ["retry", "block"])
+        self.assertEqual(packet["operational_hold"]["reason"], "unknown-value")
         self.assertNotIn("accept", packet["options"])
         self.assertIn("recovery_route", packet)
-        self.assertEqual(
-            packet["recovery_route"]["options"], ["retry", "block", "abandon"]
-        )
+        self.assertEqual(packet["recovery_route"]["options"], ["retry", "block"])
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._decide(batch["batch_id"], "accept")
@@ -6990,7 +6994,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             unflagged["route_preview"]["retry"]["route"], "developer-retry"
         )
-        self.assertEqual(unflagged["route_preview"]["abandon"], {"route": "abandon"})
+        # An unknown cause offers no abandon (issue #684); a named category routes as before.
+        self.assertNotIn("abandon", unflagged["route_preview"])
+        self.assertEqual(unflagged["operational_hold"]["reason"], "unknown-value")
         self.assertEqual(forced["route_preview"]["retry"]["route"], "developer-retry")
         retry = preview["route_preview"]["retry"]
         self.assertEqual(retry["route"], "same-candidate-rerun")
@@ -7056,9 +7062,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     "refused": "classifier failed",
                     "remedy": "fix the classifier",
                 },
-                "abandon": {"route": "abandon"},
             },
         )
+        # A refused route offers no abandon either (issue #684).
+        self.assertEqual(packet["operational_hold"]["reason"], "missing-value")
         self.assertEqual(refused.exception.message, "classifier failed")
 
     def test_a_routed_decision_audits_its_route_evidence_and_human_approver(
@@ -8271,6 +8278,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         class Recorder:
+            system_fields_contract = "systemFields.v1"
+
             def __init__(self) -> None:
                 self.events: list[extensions.AttentionEvent] = []
 
@@ -8313,6 +8322,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         class Broken:
+            system_fields_contract = "systemFields.v1"
+
             def notify(self, event: extensions.AttentionEvent) -> None:
                 raise RuntimeError("chat is down")
 
@@ -8707,11 +8718,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "dispatch_id",
                 "state",
                 "report",
+                "runtime_compatibility",
                 "auto_accepted",
                 "next_action",
                 "next_dispatch_id",
             },
         )
+        self.assertTrue(submitted["runtime_compatibility"]["compatible"])
         self.assertTrue(submitted["auto_accepted"])
         self.assertEqual(
             submitted["next_dispatch_id"],

@@ -92,11 +92,11 @@ from harness.orchestration.infrastructure_retry import (
 )
 from harness.orchestration.ledger.lifecycle import set_lock_operation
 from harness.orchestration.ledger.ledger_admin import clean_ledger as clean_ledger
+from harness.orchestration.ledger.ledger_admin import export_ledger as export_ledger
+from harness.orchestration.ledger.ledger_admin import inspect_ledger as inspect_ledger
 from harness.orchestration.ledger.ledger_admin import (
     ledger_lock_status as ledger_lock_status,
 )
-from harness.orchestration.ledger.ledger_admin import export_ledger as export_ledger
-from harness.orchestration.ledger.ledger_admin import inspect_ledger as inspect_ledger
 from harness.orchestration.ledger.ledger_admin import ledger_status as ledger_status
 from harness.orchestration.ledger.ledger_admin import validate_ledger as validate_ledger
 from harness.orchestration.ledger.ledger_admin import migrate_ledger as migrate_ledger
@@ -124,6 +124,15 @@ from harness.orchestration.workflow.batch import preflight_batch as preflight_ba
 from harness.orchestration.workflow.batch import resume_batch as resume_batch
 from harness.orchestration.workflow.recovery import (
     resume_stopped_batch as resume_stopped_batch,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_reload as recovery_reload,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_resume as recovery_resume,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_status as recovery_status,
 )
 from harness.orchestration.workflow.recovery import rewind_batch as rewind_batch
 from harness.orchestration.workflow.carried_items import (
@@ -240,6 +249,9 @@ def main() -> int:
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
     if args.command == "config" and output.get("valid") is False:
+        return 2
+    # A recovery refusal prints its structured diagnostics and exits 2, never waiting for input.
+    if args.command == "recovery" and output.get("outcome") == "refused":
         return 2
     return 0
 

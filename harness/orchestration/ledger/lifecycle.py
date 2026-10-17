@@ -223,6 +223,8 @@ def _path_segment(value: object) -> bool:
         and "\\" not in value
         and value not in {".", ".."}
     )
+
+
 # The operator's audited release of a lock whatever its owner verdict; every remedy names it.
 FORCE_RELEASE_COMMAND = (
     "coordinator.py ledger release-lock --force --approved-by <operator> "

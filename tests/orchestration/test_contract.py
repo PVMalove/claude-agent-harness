@@ -352,6 +352,16 @@ class ResolveAssignmentTests(unittest.TestCase):
             )
         )
 
+    def test_a_contract_declaration_rides_in_the_runtime_plan(self) -> None:
+        config = _config()
+        runtime = config["assignment_plans"]["developer"]["runtimes"]["claude"]
+        runtime["system_fields_contract"] = "systemFields.v1"
+        self.assertIn("system_fields_contract", contract.RUNTIME_ASSIGNMENT_FIELDS)
+        resolved = contract.resolve_assignment(config, _role(), "developer", None)
+        self.assertEqual(
+            resolved["runtime_plan"]["system_fields_contract"], "systemFields.v1"
+        )
+
 
 class PolicyProblemTests(unittest.TestCase):
     FIELDS: ClassVar[set[str]] = {"a", "b"}

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from ..errors import HarnessError
 from ..token_estimator import estimate_tokens, estimate_tokens_for_bytes
-from . import runtime_access
+from . import extensions, runtime_access, runtime_compatibility
 from .contract import ContractError, paths_inside, resolve_runtime_name, string_list
 from .core.config import _adaptive_continuation_policy
 from .core.constants import RUNTIME_PATH_PREFIXES, TOOLING_BLOCKER_UNCOMMITTED_FIELD
@@ -354,6 +354,19 @@ def _retry_start(
     }
 
 
+def _runtime_compatibility(
+    config: Mapping[str, object], role: str, runtime: str, transport: str
+) -> JsonObject:
+    """The systemFields declarations the dispatch would run on, checked before anything is
+    written; an incompatible one raises the structured ``runtime-compatibility`` refusal."""
+    try:
+        return runtime_compatibility.require_assignment(
+            config, role, runtime, transport, step="preflight"
+        )
+    except extensions.ExtensionError as exc:
+        raise PreflightError(exc.message, remedy=exc.remedy) from exc
+
+
 def prepare(
     ticket: str, role: str, project_state: Mapping[str, JsonValue]
 ) -> PreparedDispatch:
@@ -396,6 +409,12 @@ def prepare(
             str(exc),
             remedy="fix the runtime/provider selection reported above in the assignment plan or project_state['runtime']",
         ) from exc
+    transport = (
+        str(plan.get("transport", "in-process"))
+        if isinstance(plan, dict)
+        else "in-process"
+    )
+    compatibility = _runtime_compatibility(config, role, runtime, transport)
 
     branch = _text(project_state.get("branch"), "branch")
     worktree = Path(_text(project_state.get("worktree"), "worktree")).resolve()
@@ -466,6 +485,7 @@ def prepare(
         "context_package": package,
         "approval_reason": "the immutable brief will bind this exact runtime, worktree and snapshot",
         "options": ["accept", "retry", "block"],
+        "runtime_compatibility": compatibility,
     }
     # Authored requirements follow the runtime's role manifest, including specialist writers.
     from .core.config import _role

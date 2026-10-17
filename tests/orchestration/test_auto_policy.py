@@ -730,7 +730,8 @@ class AutoDecisionTableTests(unittest.TestCase):
     ) -> None:
         retry = {"route": "developer-retry", "next_action": "developer-retry"}
         cases = (
-            (None, CoordinatorError("refused", remedy="x"), False, "abandon-dead-end"),
+            # A refused route lacks structured evidence: a human supplies it, never an abandon.
+            (None, CoordinatorError("refused", remedy="x"), False, "missing-evidence"),
             ({**retry, "reason_category": "unknown"}, None, False, "unknown-reason"),
             (
                 {**retry, "reason_category": "code"},

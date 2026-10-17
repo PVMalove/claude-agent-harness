@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.cleanup import _pid_active
+from harness.errors import HarnessError
 from harness.orchestration.core.constants import (
     LEDGER_LOCK_STALE_SECONDS,
     TERMINAL_BATCH_STATES,
@@ -111,7 +112,28 @@ def inspect_ledger(args: argparse.Namespace) -> JsonObject:
     transitions gives an operational batch is shown as its ``transition_problem`` instead of
     stopping it too."""
     repo = _repo(args)
-    root = _state_root(args, repo)
+    return inspection_report(
+        repo, _state_root(args, repo), getattr(args, "batch", None)
+    )
+
+
+def batch_inspection(repo: Path, root: Path, batch_id: str) -> JsonObject | None:
+    """The read-only inspection of one batch as ``ledger inspect --batch`` shows it -- its area
+    (operational or quarantine), its findings and its runtime state -- or ``None`` when the
+    ledger holds no such batch.  Recovery shows it for a batch the strict read refuses."""
+    try:
+        report = inspection_report(repo, root, batch_id)
+    except (HarnessError, OSError, ValueError):
+        # Evidence only: a ledger inspection cannot read either shows nothing more.
+        return None
+    batches = cast(list[JsonObject], report["batches"])
+    return batches[0] if batches else None
+
+
+def inspection_report(
+    repo: Path, root: Path, batch_id: str | None = None
+) -> JsonObject:
+    """The report of ``ledger inspect``, of every batch or only of ``batch_id``."""
     records, generation = _lenient_records(LifecycleLedger(root))
     report: JsonObject = (
         {"generation": None, "migration": None, "unowned": [], "batches": []}
@@ -119,7 +141,7 @@ def inspect_ledger(args: argparse.Namespace) -> JsonObject:
         else {**inspection(records), "generation": generation}
     )
     batches = cast(list[JsonObject], report["batches"])
-    if (batch_id := getattr(args, "batch", None)) is not None:
+    if batch_id is not None:
         batches = [batch for batch in batches if batch["batch_id"] == batch_id]
         if not batches:
             raise _no_batch(batch_id, generation)

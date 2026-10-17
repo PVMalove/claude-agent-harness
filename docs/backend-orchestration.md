@@ -348,6 +348,24 @@ dispatch не меняет условия, под которыми dispatch бы
   `human_notifier`, `runtime_access`. Значение — `none` (инертный дефолт), имя, зарегистрированное
   хост-процессом, или `module:factory` (вызываемая без аргументов фабрика в импортируемом модуле).
   Неизвестное имя — fail-closed. Ни один extension не добавляет model tool и не меняет system prompt.
+  Проектный extension, кроме `none`, объявляет версию контракта атрибутом
+  `system_fields_contract = "systemFields.v1"`. Без атрибута dispatch preflight и dispatch send
+  отклоняют его как `runtime-compatibility`.
+
+Назначение рантайма может объявить версию контракта системных полей:
+
+```json
+"runtimes": {"claude": {"profiles": ["claude-profile"], "model": "claude-opus-5-5", "effort": "xhigh",
+                        "system_fields_contract": "systemFields.v1"}}
+```
+
+Без поля in-process рантайм работает на версии самого harness, а external-рантайм объявляет её
+глаголом адаптера `contract` (раздел 5). Конфиг проверяет только форму поля. Неподдерживаемую или
+отсутствующую версию отклоняют `dispatch preflight`, `dispatch create`, `dispatch send`, `qa run`,
+`dispatch self-report` и `report submit`: отказ `runtime-compatibility` перечисляет каждое
+объявление с источником, статусом и pointer, и ничего не запускается и не принимается. Worker может
+подтвердить версию задания флагом `dispatch self-report --system-fields-contract <версия>`, а отчёт —
+полем `system_fields_contract`. Отчёт с другой версией сохраняется только как непринятое evidence.
 
 `harness health` проверяет форму всех трёх разделов. Пока у проекта нет
 `assignment_plans`, coordinator работает на встроенных дефолтах и эти значения не читает.
@@ -1422,6 +1440,7 @@ candidate и evidence, но запрещает создание следующе
 
 | `attention_reason` | Когда |
 | --- | --- |
+| `operational-hold` | runtime state store удерживает batch; после устранения причины человек разрешает attention, затем `recovery resume` снимает удержание |
 | `unknown-reason` | retry с причиной `unknown` |
 | `infrastructure-retry-repeated` | operational retry одного candidate больше `max_infrastructure_retries` |
 | `tooling-retry-repeated` | третий подряд `tooling-retry` на одном candidate; снимается после исправления инструмента |
@@ -2411,6 +2430,14 @@ Adapter отвечает за запуск worker в выбранной сред
 не планирует следующий dispatch и не мержит PR. После запуска worker возвращает completion report
 по общим правилам раздела 4. Проверки доступа и среды запуска принадлежат проектному adapter.
 
+До запуска worker coordinator вызывает `<adapter> contract [args] --repo <repo> --brief <brief>`.
+Adapter за 30 секунд с кодом 0 печатает ровно `{"system_fields_contract": "systemFields.v1"}`.
+Другой ответ, неподдерживаемая версия или таймаут дают отказ `runtime-compatibility`: worker не
+запускается, а batch удерживается до `recovery resume`. Без глагола `contract` adapter тоже
+получает этот отказ. Если adapter вообще нельзя запустить,
+`dispatch send` записывает недоступный runtime, как раньше. Глагол `observe` описан в
+`.harness/orchestration/README.md`.
+
 ## 6. Первый pilot и источник правил
 
 Не задавайте лимиты токенов или «правильный» уровень параллелизма на глаз. В первом периоде pilot
@@ -2501,6 +2528,59 @@ branch уже указывает на candidate. Report должен быть `b
 Для старого pinned batch новые recovery-команды используют установленный runtime. Событие с
 человеческим approval связывает исходный pin с новым control runtime и сохраняет его snapshot.
 Исходный immutable plan и старые brief/report не меняются. `ledger validate` ничего не исправляет.
+
+### Удержание batch и команды `recovery`
+
+Неизвестные, отсутствующие, quarantine-, нечитаемые или несовместимые системные данные не становятся
+решением. Coordinator удерживает batch в runtime state store: состояние `suspended` и шаг
+`hold:<причина>`, где причина — `unknown-value`, `missing-value`, `unreadable-record` или
+`runtime-compatibility`. Quarantine миграции ledger остаётся на своём шаге `quarantine`.
+Coordinator также поднимает attention `operational-hold`. Удержание не пишет lifecycle-запись,
+решение или approval. Пока оно действует, команды, которые сверяют или решают batch, отказывают с
+маршрутом восстановления. Отклонённый удержанием `report submit` всё равно сохраняет отчёт как
+непринятое evidence и называет путь к нему. Decision packet при этом не предлагает вариантов, а
+blocked-отчёт с неизвестной или отказанной причиной retry не получает `abandon` и `accept`. Auto
+policy останавливается с `operational-hold` или `missing-evidence`, а не с abandon.
+
+Recovery никогда не разрешает attention, а `resume` отказывает с `attention-open`, пока attention
+открыт. Поэтому порядок такой: прочитать диагностику, устранить причину, разрешить attention
+`operational-hold`, затем снять удержание.
+
+```bash
+python .harness/orchestration/coordinator.py --repo . recovery status --batch <id> --json
+python .harness/orchestration/coordinator.py --repo . recovery reload --batch <id>
+python .harness/orchestration/coordinator.py --repo . batch attention resolve --batch <id> --note '…' --approved-by … --approved-at …
+python .harness/orchestration/coordinator.py --repo . recovery resume --batch <id>
+```
+
+Команды работают на установленном runtime, не читают stdin, не требуют TTY и Textual, печатают
+JSON-документ `recoveryStatus.v1` и завершаются кодом 0 при успехе и 2 при отказе. Каждая проверка
+(`config`, `store`, `ledger`, `batch`, `lifecycle`, `runtime`, `snapshot`, `context`,
+`compatibility`, `operation`, `liveness`, `attention`, `approval`) показывает статус и
+диагностику: pointer, отредактированные expected и received, подсказку и remedy. `runtime`
+проверяет, что закреплённый harness runtime batch совпадает с установленным или есть его
+проверенный snapshot. `context` проверяет Context Package каждого открытого brief и его base и
+candidate относительно batch. Устаревший пакет даёт отказ `stale-evidence`: такой brief отменяют и
+предлагают заново.
+
+- `status` только читает и не берёт блокировку.
+- `reload` заново читает и проверяет текущий конфиг и объявления рантаймов, не запуская worker.
+- `resume` под блокировкой ledger повторяет проверки. При отказе любой проверки ничего не меняется,
+  только нечитаемый batch удерживается через store без lifecycle-записи. Иначе `resume` снимает
+  удержание и завершает незаконченную операцию из durable intent. Подтверждённые шаги не
+  повторяются, а неоднозначный эффект или живой worker останавливают resume без второго worker.
+  Записанная остановка продолжается только через аудируемый `batch resume-stop` с `--approved-by`,
+  `--approved-at` и `--note`, иначе нужен `batch rewind`. `resume` не создаёт dispatch и не
+  переписывает brief, а следующий переход требует approval с актуальным digest. Attention,
+  бюджеты, `auto_stop`, `manual_recovery` и терминальные отказы не меняются.
+
+Quarantine не снимает ни одна команда recovery. Консоль Harness использует тот же API
+`recovery_api`. `fix` показывает или через транзакцию конфигурации применяет безопасную
+нормализацию и ничего не возобновляет. `skip` на одну сессию скрывает advisory из закрытого
+списка (`config-normalized`, `unconfirmed-contract`). `abort` записывает выход из recovery и ничего
+не abandon, не останавливает и не очищает. Каждое действие, кроме `skip`, сначала записывает
+durable intent, поэтому после cancel, EOF или SIGINT перезапуск показывает сохранённый статус.
+Внутреннее исключение даёт диагностику `internal-error` с correlation ID, а не ошибку конфига.
 
 Перед handoff передайте один абсолютный `--worktree` в preflight и send. Для writer путь должен
 совпадать с issue-worktree, branch и startup SHA. Self-report проверяет фактический каталог даже

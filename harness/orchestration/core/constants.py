@@ -459,6 +459,9 @@ REPORT_OPTIONAL_FIELDS = {
     "incomplete_items",
     "carried_item_closure",
     "qa_stages",
+    # The systemFields contract the role worked under (issue #684); report submit refuses a report
+    # that names another one and keeps it only as unaccepted evidence.
+    "system_fields_contract",
 }
 # Per-stage evidence of a clean-room QA run (issue #618): the preparation commands, then the gate, in
 # one checkout. ``qa_stages`` is present only when the project declares ``qa_preparation``; a report
@@ -689,8 +692,16 @@ AUTO_STOP_REASONS = {
         "harness-snapshot-changed",
         "deterministic-gate-failed",
         "ledger-validation-failed",
+        # The runtime state store holds the batch (issue #684): recovery resume, never abandon.
+        "operational-hold",
     ),
-    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+    "no-automatic-route": (
+        "unknown-reason",
+        # A refused retry route whose structured evidence is missing (issue #684).
+        "missing-evidence",
+        "abandon-dead-end",
+        "supersede-dead-end",
+    ),
 }
 AUTO_STOP_FIELDS = frozenset(
     {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}
