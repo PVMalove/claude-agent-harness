@@ -50,6 +50,8 @@ init/adopt/update. Установка требует подтверждения 
 | `Ctrl+P` | Палитра команд |
 | `Ctrl+Q` | Выход |
 
+Статусы проверок показаны символом и словом, а не только цветом: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
+
 ## Безопасность
 
 - Команды из «Как исправить» пульт только показывает — запускайте их вручную.
@@ -116,6 +118,8 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | `F2` | Menu language: Russian / English (default from `HARNESS_CONSOLE_LANG`) |
 | `Ctrl+P` | Command palette |
 | `Ctrl+Q` | Quit |
+
+Check statuses are shown as a symbol and a word, not by colour alone: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
 
 ## Safety
 

@@ -934,7 +934,7 @@ def test_dashboard_summary_shows_memory_health_without_interpreting_markup(
         ),
     )
     assert (
-        f"memory: {status} — индекс [test]"
+        f"memory: {brand.STATUS_ICONS[status]} {status} — индекс [test]"
         in Text.from_markup(_render_summary(data)).plain
     )
 
@@ -1345,3 +1345,31 @@ def test_diagnostics_switches_language_and_goes_back_with_escape(
     assert crumbs == "Home  ›  Diagnostics"
     assert report.startswith("Total: ✔ ok=1")
     assert went_back
+
+
+def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> None:
+    from dataclasses import replace
+
+    from rich.text import Text
+
+    from harness.console.screens.dashboard import _render_cards, _render_summary
+
+    data = replace(
+        _fake_dashboard_data(),
+        fail=1,
+        problems=(
+            ("fail", "env.git", "git missing"),
+            ("warn", "repo_map.tier", "minimal"),
+        ),
+        memory_index=CheckResult(
+            id="memory.index", group="memory", status="ok", message="индекс готов"
+        ),
+    )
+    plain = Text.from_markup(_render_summary(data)).plain.split("\n")
+    assert plain[0] == "health (offline): ✔ ok=5 ⚠ warn=1 ✖ fail=1 ○ skipped=2"
+    assert "  ✖ fail env.git — git missing" in plain
+    assert "  ⚠ warn repo_map.tier — minimal" in plain
+    # A status is also never a colour alone on the cards.
+    harness_card, _orchestration, _repo_map = _render_cards(data, "1.0.0")
+    assert "память: [" in harness_card and "✔ ok" in harness_card
+    assert "дрейф: [" in harness_card and "✔ нет" in harness_card
