@@ -74,7 +74,7 @@ def _validate_agent(repo: Path) -> None:
         '    - matcher: "Write|Edit|Bash"',
         "      hooks:",
         "        - type: command",
-        '          command: "python3 \\\"${CLAUDE_PROJECT_DIR}/.claude/hooks/test-author-guard.py\\\""',
+        '          command: "python3 \\"${CLAUDE_PROJECT_DIR}/.claude/hooks/test-author-guard.py\\""',
     )
     if not all(line in frontmatter for line in required_lines):
         raise GuardRefusal("scoped_hook_unsupported")
@@ -130,7 +130,10 @@ def _config(repo: Path) -> tuple[list[str], list[str]]:
     if (
         not isinstance(paths, list)
         or not paths
-        or not all(isinstance(item, str) and TEST_PATH_PATTERN.fullmatch(item) for item in paths)
+        or not all(
+            isinstance(item, str) and TEST_PATH_PATTERN.fullmatch(item)
+            for item in paths
+        )
         or len(set(paths)) != len(paths)
     ):
         raise GuardRefusal("config_invalid")
@@ -138,8 +141,21 @@ def _config(repo: Path) -> tuple[list[str], list[str]]:
     if "test_runner" not in data:
         raise GuardRefusal("test_runner_missing")
     runner = data["test_runner"]
-    if not isinstance(runner, dict) or set(runner) != {"command"}:
+    if (
+        not isinstance(runner, dict)
+        or not {"command"} <= set(runner)
+        or set(runner) - {"command", "build", "database"}
+    ):
         raise GuardRefusal("config_invalid")
+    _optional_settings(runner)
+    if "build" in runner:
+        artifacts = runner["build"]["artifact_paths"]
+        _write_zones(repo, [*paths, *artifacts])
+        try:
+            if any(any((repo / item[:-3]).iterdir()) for item in artifacts):
+                raise GuardRefusal("write_zone_rejected")
+        except OSError:
+            raise GuardRefusal("write_zone_rejected") from None
     command = runner["command"]
     if (
         not isinstance(command, list)
@@ -150,6 +166,52 @@ def _config(repo: Path) -> tuple[list[str], list[str]]:
     ):
         raise GuardRefusal("config_invalid")
     return list(paths), list(command)
+
+
+def _optional_settings(runner: dict[str, object]) -> None:
+    """Keep optional groups closed; values never appear in a refusal."""
+    for field, keys in (
+        ("build", {"command", "artifact_paths"}),
+        ("database", {"engine", "test_ids", "command", "ready_command"}),
+    ):
+        if field not in runner:
+            continue
+        settings = runner[field]
+        if not isinstance(settings, dict) or set(settings) != keys:
+            raise GuardRefusal("config_invalid")
+        for name in (
+            ("command", "ready_command") if field == "database" else ("command",)
+        ):
+            argv = settings[name]
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or not all(
+                    isinstance(item, str)
+                    and item
+                    and "\x00" not in item
+                    and "{test_id}" not in item
+                    for item in argv
+                )
+            ):
+                raise GuardRefusal("config_invalid")
+        name = "artifact_paths" if field == "build" else "test_ids"
+        items = settings[name]
+        if (
+            not isinstance(items, list)
+            or not items
+            or not all(
+                isinstance(item, str) and item.strip() and "\x00" not in item
+                for item in items
+            )
+            or len(set(items)) != len(items)
+        ):
+            raise GuardRefusal("config_invalid")
+        if field == "database" and not (
+            isinstance(settings["engine"], str)
+            and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", settings["engine"])
+        ):
+            raise GuardRefusal("config_invalid")
 
 
 def _write_zones(repo: Path, paths: list[str]) -> None:
@@ -291,7 +353,11 @@ def _validate_config(repo: Path) -> int:
     try:
         _activation_config(repo)
     except GuardRefusal as refusal:
-        print(json.dumps({"status": "disabled", "reason": refusal.reason}, separators=(",", ":")))
+        print(
+            json.dumps(
+                {"status": "disabled", "reason": refusal.reason}, separators=(",", ":")
+            )
+        )
     else:
         print('{"status":"ok"}')
     return 0

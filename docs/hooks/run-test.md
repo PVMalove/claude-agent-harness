@@ -115,7 +115,7 @@ user-namespaces. На Windows и macOS runner отвечает `isolation_unavai
 **Граница с другими задачами.** Runner защищает checkout от процесса теста и его потомков, но не
 от вызывающего агента вне песочницы. Субагент тест-автора, его scoped guard, preflight с
 canary-проверкой guard и opt-in проекта относятся к #554; `--probe` даёт для preflight только
-статус изоляции. Подготовка сборочных артефактов и тестовой БД относится к #556.
+статус изоляции. Подготовку сборочных артефактов и отдельную тестовую БД описывает раздел ниже.
 
 ## 3. Контракты
 
@@ -138,13 +138,17 @@ canary-проверкой guard и opt-in проекта относятся к #
   - `config_invalid` — `project.json` нечитаем или поля не проходят проверку;
   - `test_paths_missing`, `test_runner_missing` — поле не задано;
   - `write_zone_rejected` — зона записи не прошла проверки;
+  - `build_failed`, `build_timeout` — защищённая подготовка завершилась ошибкой или таймаутом;
+  - `database_unavailable` — выбранному тесту не удалось подготовить отдельную БД;
   - `isolation_unavailable` с `detail`: `platform`, `bwrap_missing`, `checkout_masked`,
     `sandbox_failed` или `probe_failed`.
 - **Коды выхода:** `0` — тест прошёл; `1` — тест упал или превысил таймаут; `3` — отказ, тест
   не запускался.
-- **`--probe`:** не требует `test_paths`, выводит `{"status":"ok"}` с кодом `0` либо
-  `{"status":"unavailable","reason":"isolation_unavailable","detail":"<код>"}` с кодом `3`; при
-  недоступном runner — `reason: runner_unavailable`. Каталог запуска probe удаляется.
+- **`--probe`:** валидирует существующий `project.json` и планы монтирований обеих фаз без
+  выполнения сборки, сервера или теста. Без `project.json` сохраняется проверка только хоста.
+  Выводит `{"status":"ok"}` с кодом `0` либо `status: unavailable` с кодом `3` и фиксированной
+  причиной конфигурации/зоны, `isolation_unavailable` с `detail` или `runner_unavailable`.
+  Каталог запуска probe удаляется.
 
 ## Источник
 
@@ -152,3 +156,42 @@ canary-проверкой guard и opt-in проекта относятся к #
 [isolated_runner.py](../../harness/health/isolated_runner.py),
 [project_files.py](../../harness/health/project_files.py),
 [ADR 0014](../adr/0014-test-author-isolation.md)
+
+### Сборка и тестовая БД
+
+Необязательный `test_runner.build` содержит ровно `command` (непустой argv без `{test_id}`)
+и `artifact_paths` (уникальные `<каталог>/**`). Каталоги заранее существуют и пусты. Runner
+монтирует свежие каталоги запуска на эти пути: при сборке на запись, при тесте только на чтение.
+Исходники и `test_paths` во время сборки доступны только на чтение; команда выполняется без
+шелла внутри проверенной песочницы. Непустые каталоги runner отклоняет и не очищает.
+
+Необязательный `test_runner.database` содержит ровно `engine`, `test_ids`, `command` и
+`ready_command`. `engine` называет production-движок; `test_ids` — уникальные селекторы
+`fnmatchcase`. Только совпавшие тесты получают свежий экземпляр БД внутри песочницы, без TCP
+и доступа к сервисам хоста. `command` запускает сервер в foreground, `ready_command` проверяет
+готовность; обе команды — непустой argv без `{test_id}`. Они получают
+`HARNESS_TEST_DATABASE_DIR` и `HARNESS_TEST_DATABASE_SOCKET_DIR` в приватном `/tmp`.
+Проектный wrapper читает эти переменные напрямую; shell-подстановка в argv не выполняется.
+SQL, транзакции и ограничения проверяют на production-движке; чистой доменной логике БД не нужна.
+
+CLI добавляет эти группы только по полным наборам `--test-build-command`, `--test-artifact-path`
+и `--test-database-engine`, `--test-database-test-id`, `--test-database-command`,
+`--test-database-ready-command`, вместе с `--test-runner-command`. Отсутствие групп сохраняет
+прежнее поведение. `test_paths` остаётся единственной зоной `Write`/`Edit` тест-автора.
+
+Подготовка с ненулевым кодом даёт отказ `build_failed`, её таймаут — `build_timeout`.
+Неудачный запуск сервера или отсутствие готовности за 15 секунд даёт `database_unavailable`;
+выбранный тест при этом не запускается. Сервер, проверка готовности и тест работают в одном
+изолированном окружении. Сервер и его потомки завершаются после теста или ошибки; внешний
+таймаут runner ограничивает всю сессию БД вместе с тестом 300 секундами. Вывод всех команд
+попадает в ограниченный локальный лог. Приватный канал результата helper недоступен дочерним
+командам, поэтому вывод теста и его код 3 не могут подделать отказ БД.
+
+Clean-room сценарий `scripts/clean_room/isolated_test_runner_build_db.py` вызывается существующим
+сценарием runner и отдельно через `python -m scripts.clean_room.isolated_test_runner_build_db`.
+Он проверяет настоящий C-компилятор и PostgreSQL (`postgres`, `initdb`, `psql`, `pg_isready` в
+`PATH`): два свежих кластера, идентичность сервера, SQL, rollback, CHECK/PK и отсутствие TCP.
+Отсутствующие бинарники явно отмечаются как отсутствие доказательства.
+`HARNESS_REQUIRE_TEST_DATABASE=1` делает отсутствие настоящей БД ошибкой;
+`HARNESS_REQUIRE_TEST_SANDBOX=1` требует песочницу и компилятор. Подменные процессы в unit-тестах
+проверяют только жизненный цикл и не заменяют это доказательство.

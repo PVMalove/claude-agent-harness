@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -26,7 +27,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence
+from typing import IO, BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence, cast
 
 from harness.storage import storage_path
 
@@ -80,6 +81,9 @@ REFUSAL_REASONS = frozenset(
         "test_paths_missing",
         "test_runner_missing",
         "write_zone_rejected",
+        "build_failed",
+        "build_timeout",
+        "database_unavailable",
         ISOLATION_UNAVAILABLE,
     }
 )
@@ -91,8 +95,16 @@ ISOLATION_DETAILS = frozenset(
 # root must fail with EROFS, every hidden root must be empty or absent, and a write to the second
 # path in the run cache must pass. The runner checks the files from outside and removes them.
 PROBE_SCRIPT = (
-    "import errno, os, sys\n"
-    "*hidden, blocked, allowed = sys.argv[1:]\n"
+    "import errno, json, os, sys\n"
+    "plan, *hidden, blocked, allowed = sys.argv[1:]\n"
+    "valid = True\n"
+    "for path, writable in json.loads(plan):\n"
+    "    try:\n"
+    "        with open(path, 'x') as handle: handle.write('ok')\n"
+    "    except OSError as error:\n"
+    "        valid = valid and not writable and error.errno == errno.EROFS\n"
+    "    else:\n"
+    "        valid = valid and writable\n"
     "try:\n"
     "    os.close(os.open(blocked, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))\n"
     "except OSError as error:\n"
@@ -102,7 +114,7 @@ PROBE_SCRIPT = (
     "empty = not any(os.path.isdir(root) and os.listdir(root) for root in hidden)\n"
     "with open(allowed, 'w') as handle:\n"
     "    handle.write('ok')\n"
-    "sys.exit(0 if denied and empty else 1)\n"
+    "sys.exit(0 if denied and empty and valid else 1)\n"
 )
 
 
@@ -115,6 +127,27 @@ class Refused(Exception):
         assert (detail in ISOLATION_DETAILS) == (reason == ISOLATION_UNAVAILABLE)
         self.reason = reason
         self.detail = detail
+
+
+@dataclass(frozen=True)
+class Build:
+    command: list[str]
+    artifact_paths: list[str]
+
+
+@dataclass(frozen=True)
+class Settings:
+    test_paths: list[str]
+    command: list[str]
+    build: Build | None = None
+    database: dict[str, object] | None = None
+
+
+@dataclass(frozen=True)
+class Mount:
+    source: Path
+    target: Path
+    writable: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,6 +179,7 @@ class Launch:
     started: bool
     exit_code: int | None
     timed_out: bool = False
+    database_unavailable: bool = False
 
 
 class Launcher(Protocol):
@@ -158,6 +192,7 @@ class Launcher(Protocol):
         env: Mapping[str, str],
         log: Path,
         timeout: float,
+        session: bool = False,
     ) -> Launch: ...
 
 
@@ -187,13 +222,18 @@ def render_probe(detail: str | None) -> str:
     """The `--probe` line: ok, or unavailable with the isolation detail."""
     if detail is None:
         return json.dumps({"status": "ok"}, separators=(",", ":"))
+    reason = ISOLATION_UNAVAILABLE if detail in ISOLATION_DETAILS else detail
     return json.dumps(
-        {"status": "unavailable", "reason": ISOLATION_UNAVAILABLE, "detail": detail},
+        {
+            "status": "unavailable",
+            "reason": reason,
+            "detail": detail if reason == ISOLATION_UNAVAILABLE else None,
+        },
         separators=(",", ":"),
     )
 
 
-def load_settings(repo: Path) -> tuple[list[str], list[str]]:
+def load_settings(repo: Path) -> Settings:
     """`test_paths` and `test_runner.command` from the project config, checked by the health
     validators; any other state is a refusal."""
     try:
@@ -212,7 +252,13 @@ def load_settings(repo: Path) -> tuple[list[str], list[str]]:
         raise Refused("test_runner_missing")
     if test_runner_problems(data["test_runner"]):
         raise Refused("config_invalid")
-    return list(data["test_paths"]), list(data["test_runner"]["command"])
+    build = data["test_runner"].get("build")
+    return Settings(
+        list(data["test_paths"]),
+        list(data["test_runner"]["command"]),
+        Build(build["command"], build["artifact_paths"]) if build else None,
+        data["test_runner"].get("database"),
+    )
 
 
 def write_zones(repo: Path, globs: Iterable[str]) -> list[Path]:
@@ -257,6 +303,27 @@ def _zone(repo: Path, glob: str) -> Path:
     return zone
 
 
+def artifact_zones(
+    repo: Path, build: Build | None, test_zones: Sequence[Path]
+) -> list[Path]:
+    """Only empty, disjoint target directories can hide fresh run-owned artifacts."""
+    if build is None:
+        return []
+    targets = write_zones(repo, build.artifact_paths)
+    try:
+        if any(any(target.iterdir()) for target in targets):
+            raise Refused("write_zone_rejected")
+    except OSError:
+        raise Refused("write_zone_rejected") from None
+    if any(
+        left == right or left in right.parents or right in left.parents
+        for left in targets
+        for right in test_zones
+    ):
+        raise Refused("write_zone_rejected")
+    return targets
+
+
 def _has_linked_file(zone: Path) -> bool:
     """True when a regular file below `zone` has more than one hard link (or cannot be read)."""
 
@@ -283,7 +350,7 @@ def _masked(path: Path) -> bool:
 def sandbox_argv(
     bwrap: str,
     repo: Path,
-    binds: Sequence[Path],
+    binds: Sequence[Path | Mount],
     command: Sequence[str],
     status_fd: int,
 ) -> list[str]:
@@ -305,7 +372,14 @@ def sandbox_argv(
         "/run",
     ]
     for path in binds:
-        argv += ["--bind", str(path), str(path)]
+        if isinstance(path, Mount):
+            argv += [
+                "--bind" if path.writable else "--ro-bind",
+                str(path.source),
+                str(path.target),
+            ]
+        else:
+            argv += ["--bind", str(path), str(path)]
     argv += [
         "--chdir",
         str(repo),
@@ -349,6 +423,7 @@ def launch(
     env: Mapping[str, str],
     log: Path,
     timeout: float,
+    session: bool = False,
 ) -> Launch:
     """Run the argv `build(status_fd)` in a new session, append its capped output to `log` and
     kill its process group on timeout. `started` needs a `child-pid` record on the status fd."""
@@ -358,6 +433,7 @@ def launch(
         return Launch(started=False, exit_code=None)
     read_fd, write_fd = os.pipe()
     status = bytearray()
+    session_status = bytearray()
     try:
         with sink:
             try:
@@ -365,7 +441,7 @@ def launch(
                     build(write_fd),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
+                    stderr=subprocess.PIPE if session else subprocess.STDOUT,
                     env=dict(env),
                     pass_fds=(write_fd,),
                     start_new_session=True,
@@ -375,14 +451,22 @@ def launch(
             finally:
                 os.close(write_fd)
             assert process.stdout is not None
+            output = process.stderr if session else process.stdout
+            assert output is not None
             readers = [
-                threading.Thread(
-                    target=_copy_capped, args=(process.stdout, sink), daemon=True
-                ),
+                threading.Thread(target=_copy_capped, args=(output, sink), daemon=True),
                 threading.Thread(
                     target=_read_status, args=(read_fd, status), daemon=True
                 ),
             ]
+            if session:
+                readers.append(
+                    threading.Thread(
+                        target=_read_status,
+                        args=(process.stdout.fileno(), session_status),
+                        daemon=True,
+                    )
+                )
             for reader in readers:
                 reader.start()
             timed_out = False
@@ -395,12 +479,16 @@ def launch(
             for reader in readers:
                 reader.join(DRAIN_SECONDS)
             process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
     finally:
         os.close(read_fd)
     return Launch(
         started=_child_started(bytes(status)),
         exit_code=None if timed_out else process.returncode,
         timed_out=timed_out,
+        database_unavailable=session
+        and bytes(session_status).strip() != b'{"database":"ready"}',
     )
 
 
@@ -493,11 +581,12 @@ def _probe(
     *,
     bwrap: str,
     repo: Path,
-    binds: Sequence[Path],
+    binds: Sequence[Path | Mount],
     env: Mapping[str, str],
     run_dir: Path,
     launcher: Launcher,
     run_id: str,
+    readonly_targets: Sequence[Path] = (),
 ) -> None:
     """Prove with the test's own mounts that the checkout is read-only, the host sockets are
     hidden and the cache is writable."""
@@ -505,12 +594,24 @@ def _probe(
     allowed = run_dir / "cache" / "isolation-probe"
     if os.path.lexists(blocked):
         raise Refused(ISOLATION_UNAVAILABLE, "probe_failed")
+    marker = f".harness-mount-probe-{run_id}"
+    plan = [(str(target / marker), False) for target in readonly_targets]
+    cleanup = [target / marker for target in readonly_targets]
+    for mount in binds:
+        target = mount.target if isinstance(mount, Mount) else mount
+        source = mount.source if isinstance(mount, Mount) else mount
+        writable = mount.writable if isinstance(mount, Mount) else True
+        plan.append((str(target / marker), writable))
+        cleanup.append(source / marker)
+    if any(os.path.lexists(path) for path in cleanup):
+        raise Refused(ISOLATION_UNAVAILABLE, "probe_failed")
     command = [
         sys.executable,
         "-I",
         "-B",
         "-c",
         PROBE_SCRIPT,
+        json.dumps(plan),
         *HIDDEN_ROOTS,
         str(blocked),
         str(allowed),
@@ -530,6 +631,8 @@ def _probe(
     finally:
         blocked.unlink(missing_ok=True)
         allowed.unlink(missing_ok=True)
+        for path in cleanup:
+            path.unlink(missing_ok=True)
     if not result.started:
         raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
     if not isolated:
@@ -552,26 +655,55 @@ def probe(
     which: Callable[[str], str | None] = shutil.which,
     environ: Mapping[str, str] = os.environ,
 ) -> str | None:
-    """`--probe`: None when the sandbox works here, else the isolation detail. Needs no
-    `test_paths`; the probe run directory is removed afterwards."""
+    """Validate configured settings and phase mount plans without build, server or selected test.
+
+    With no project config, retain the host-only probe. Return a fixed refusal reason/detail.
+    """
     repo = repo.resolve()
     run_id = new_run_id()
     run_dir: Path | None = None
     try:
+        settings = load_settings(repo) if (repo / PROJECT_JSON_REL).exists() else None
+        zones = write_zones(repo, settings.test_paths) if settings else []
+        targets = artifact_zones(repo, settings.build, zones) if settings else []
         bwrap = _require_isolation(repo, platform, which)
         run_dir = _make_run_dir(repo, run_id)
         cache, reports = run_dir / "cache", run_dir / "reports"
-        _probe(
-            bwrap=bwrap,
-            repo=repo,
-            binds=[cache, reports],
-            env=sandbox_environment(cache, reports, environ),
-            run_dir=run_dir,
-            launcher=launcher,
-            run_id=run_id,
-        )
+        artifacts = []
+        for index, target in enumerate(targets):
+            backing = run_dir / "artifacts" / str(index)
+            backing.mkdir(parents=True)
+            artifacts.append(Mount(backing, target))
+        phases: list[tuple[list[Path | Mount], Sequence[Path]]] = []
+        if settings and settings.build:
+            phases.append(
+                (
+                    [
+                        *[Mount(item.source, item.target, True) for item in artifacts],
+                        cache,
+                        reports,
+                    ],
+                    zones,
+                )
+            )
+        phases.append(([*zones, *artifacts, cache, reports], []))
+        for binds, readonly in phases:
+            _probe(
+                bwrap=bwrap,
+                repo=repo,
+                binds=binds,
+                env=sandbox_environment(cache, reports, environ),
+                run_dir=run_dir,
+                launcher=launcher,
+                run_id=run_id,
+                readonly_targets=readonly,
+            )
     except Refused as refusal:
-        return refusal.detail
+        return (
+            refusal.detail
+            if refusal.reason == ISOLATION_UNAVAILABLE
+            else refusal.reason
+        )
     finally:
         if run_dir is not None:
             shutil.rmtree(run_dir, ignore_errors=True)
@@ -589,20 +721,52 @@ def run_test(
 ) -> Outcome:
     """Run one test in the sandbox; every check before the test fails closed with a refusal.
 
-    Order: id, settings, zones, host, run directory, probe, test.
+    Order: id, settings, zones, host, run directory, protected build, selected-phase probe, test.
     """
     if not valid_test_id(test_id):
         return Outcome(None, "refused", "test_id_invalid")
     repo = repo.resolve()
     run_id: str | None = None
     try:
-        globs, command = load_settings(repo)
-        zones = write_zones(repo, globs)
+        settings = load_settings(repo)
+        zones = write_zones(repo, settings.test_paths)
+        targets = artifact_zones(repo, settings.build, zones)
         bwrap = _require_isolation(repo, platform, which)
         run_id = new_run_id()
         run_dir = _make_run_dir(repo, run_id)
         cache, reports = run_dir / "cache", run_dir / "reports"
-        binds = [*zones, cache, reports]
+        artifacts = []
+        for index, target in enumerate(targets):
+            backing = run_dir / "artifacts" / str(index)
+            backing.mkdir(parents=True)
+            artifacts.append(Mount(backing, target))
+        if settings.build is not None:
+            preparation = [Mount(item.source, item.target, True) for item in artifacts]
+            prepare_binds: list[Path | Mount] = [*preparation, cache, reports]
+            _probe(
+                bwrap=bwrap,
+                repo=repo,
+                binds=prepare_binds,
+                env=sandbox_environment(cache, reports, environ),
+                run_dir=run_dir,
+                launcher=launcher,
+                run_id=run_id,
+                readonly_targets=zones,
+            )
+            build_command = settings.build.command
+            built = launcher(
+                lambda fd: sandbox_argv(bwrap, repo, prepare_binds, build_command, fd),
+                env=sandbox_environment(cache, reports, environ),
+                log=run_dir / "log.txt",
+                timeout=TIMEOUT_SECONDS,
+            )
+            if not built.started:
+                raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
+            if built.timed_out:
+                raise Refused("build_timeout")
+            if built.exit_code != 0:
+                raise Refused("build_failed")
+        binds: list[Path | Mount] = [*zones, *artifacts, cache, reports]
         env = sandbox_environment(cache, reports, environ)
         _probe(
             bwrap=bwrap,
@@ -613,15 +777,33 @@ def run_test(
             launcher=launcher,
             run_id=run_id,
         )
-        argv = command_for(command, test_id)
+        argv = command_for(settings.command, test_id)
+        database = settings.database
+        use_database = database is not None and any(
+            fnmatch.fnmatchcase(test_id, selector)
+            for selector in cast(list[str], database["test_ids"])
+        )
+        if use_database:
+            argv = [
+                sys.executable,
+                "-I",
+                "-B",
+                str(repo / ".harness/health/isolated_runner_session.py"),
+                json.dumps(database),
+                json.dumps(argv),
+            ]
+        session_options = {"session": True} if use_database else {}
         result = launcher(
             lambda fd: sandbox_argv(bwrap, repo, binds, argv, fd),
             env=env,
             log=run_dir / "log.txt",
             timeout=TIMEOUT_SECONDS,
+            **session_options,
         )
         if not result.started:
             raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
+        if result.database_unavailable and not result.timed_out:
+            raise Refused("database_unavailable")
     except Refused as refusal:
         return Outcome(
             test_id, "refused", refusal.reason, refusal.detail, run_id=run_id

@@ -46,3 +46,7 @@ A status never hides the runner's answer. Do not repair production code, create 
 through another command, or invent a failure. Do not create an orchestration manifest, dispatch,
 brief, completion report, approval, or ledger record: the developer owns the ordinary route and
 the TDD cycle.
+
+The runner starts a database only for matching `test_runner.database.test_ids`; pure domain
+logic needs no server. Test SQL, rollback and constraints against the production engine.
+`build_failed`, `build_timeout` and `database_unavailable` refusals are not behavioral Red.
