@@ -54,7 +54,7 @@ EN: dict[str, str] = {
     "Разрешить один раз": "Allow once",
     "⚠ Требуется разрешение native runtime; решение принимает человек.": "Warning: native permission required; the operator decides.",
     "Рабочие сессии": "Worker sessions",
-    "Главное меню": "Main menu",
+    "ГЛАВНОЕ МЕНЮ": "MAIN MENU",
     "Выберите worker": "Select worker",
     "Переподключить": "Reconnect",
     "Детали": "Details",

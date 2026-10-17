@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ from typing_extensions import TypeVar
 from . import brand, i18n
 from .chrome import WorkspaceHeader
 from .crumbs import ELLIPSIS, Crumb, collapse_crumbs, split_path
+from .data import DashboardData
 from .wrap import wrap_value
 from .translate import Translated
 
@@ -49,7 +51,7 @@ class ShellSidebar(Vertical):
         self.context = context
 
     def compose(self) -> ComposeResult:
-        yield Static("Главное меню", classes="menu-heading")
+        yield Static("ГЛАВНОЕ МЕНЮ", classes="menu-heading")
         yield self.menu
         if self.context:
             yield Static(self.context, classes="menu-context", markup=False)
@@ -276,13 +278,13 @@ Screen.shell { background: $background; }
 .shell .context-label { height: 2; color: $text-muted; margin-top: 1; }
 .shell .context-value { height: auto; margin-bottom: 1; }
 .shell .context-note { height: auto; border: round $component-border; padding: 0 1; margin-top: 1; color: $text-muted; }
-.shell ShellSidebar { width: 24; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
-.shell ShellSidebar .menu-heading { height: 2; padding-left: 1; color: $text-muted; }
+.shell ShellSidebar { width: 30; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
+.shell ShellSidebar .menu-heading { height: 2; padding-left: 2; color: $text-muted; }
 .shell ShellSidebar .menu-context { height: auto; padding: 1; color: $text-muted; }
 .shell ShellSidebar ListView, .shell ShellSidebar ListView:focus { height: 1fr; border: none; padding: 0; margin: 0; background: $surface; }
-.shell ShellSidebar ListView > ListItem { height: 2; padding: 0 1; color: $text-muted; background: $surface; text-style: none; border-left: solid transparent; }
+.shell ShellSidebar ListView > ListItem { height: 3; padding: 1 2; color: $text-muted; background: $surface; text-style: none; }
 .shell ShellSidebar ListView > ListItem.-highlight, .shell ShellSidebar ListView:focus > ListItem.-highlight {
-    background: $selection-background; color: $selection-foreground; text-style: none; border-left: solid $selection-edge;
+    background: $selection-background; color: $selection-foreground; text-style: none; outline: round $selection-outline;
 }
 .shell Footer, .shell WorkspaceHeader { background: $surface; }
 .shell ListView, .shell ListView:focus { background-tint: transparent; }
@@ -296,12 +298,12 @@ Screen.shell { background: $background; }
 .shell .field-column { width: 1fr; height: auto; padding-right: 2; }
 .shell .field { height: auto; margin-bottom: 1; }
 .shell.-spacious .context-panel { width: 38; }
+.shell.-wide ShellSidebar { width: 27; }
 .shell.-narrow .menu-toggle { display: block; }
 .shell.-narrow ShellSidebar { display: none; }
 .shell.-narrow.-menu-open ShellSidebar { display: block; }
 .shell.-narrow .shell-body, .shell.-fold-context .shell-body { layout: vertical; overflow-y: auto; }
 .shell.-narrow .shell-content, .shell.-fold-context .shell-content { min-height: 100%; }
-.shell.-narrow ShellSidebar { width: 21; }
 .shell.-narrow .context-panel, .shell.-fold-context .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
 .shell .context-fold { border: none; padding: 0; background: transparent; }
 .shell .context-fold > Contents { padding: 0; height: auto; }
@@ -310,7 +312,11 @@ Screen.shell { background: $background; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }
-.shell.-narrow ShellSidebar .menu-heading { height: 1; }
+.shell.-narrow ShellSidebar .menu-heading { height: 1; padding-left: 1; }
+.shell.-short ShellSidebar ListView > ListItem { height: 1; padding: 0 2; }
+.shell.-narrow ShellSidebar ListView > ListItem { height: 1; padding: 0 1; }
+.shell.-narrow ShellSidebar ListView > ListItem.-highlight, .shell.-narrow ShellSidebar ListView:focus > ListItem.-highlight,
+.shell.-short ShellSidebar ListView > ListItem.-highlight, .shell.-short ShellSidebar ListView:focus > ListItem.-highlight { outline: none; }
 .shell.-narrow ShellSidebar .menu-context { display: none; }
 .shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
 .shell.-narrow .crumb-row, .shell.-narrow .context-strip { min-height: 1; border: none; }
@@ -318,6 +324,57 @@ Screen.shell { background: $background; }
 .shell ListView, .shell .frame, .shell Input, .shell TextArea, .shell Select > SelectCurrent { border: round $component-border; }
 .shell ListView:focus, .shell .frame:focus, .shell .frame:focus-within, .shell Input:focus, .shell TextArea:focus, .shell Select:focus > SelectCurrent { border: round $primary; }
 """)
+
+
+# A menu entry's short status: (text, colour).
+Badge = tuple[str, str]
+
+
+def section_badges(data: DashboardData) -> dict[str, Badge]:
+    """A short status per menu section from the home screen's health facts; a section without a
+    status has no badge. Every shell screen shows them, so they are computed here once."""
+    colors = brand.STATUS_COLORS
+    icons = brand.STATUS_ICONS
+    badges: dict[str, Badge] = {}
+    if data.fail:
+        badges["Diagnostics"] = (f"{icons['fail']} {data.fail}", colors["fail"])
+    elif data.warn:
+        badges["Diagnostics"] = (f"{icons['warn']} {data.warn}", colors["warn"])
+    else:
+        badges["Diagnostics"] = (icons["ok"], colors["ok"])
+    if data.drift_state == "clean":
+        badges["Harness"] = (icons["ok"], colors["ok"])
+    elif data.drift_state == "drift":
+        # The installed files drifted from the package: the update brings them back.
+        badges["Harness"] = (icons["warn"], colors["warn"])
+        badges["Update Harness"] = (icons["warn"], colors["warn"])
+    if data.active_batches is not None:
+        badges["Orchestration"] = (str(data.active_batches), brand.PALETTE["muted"])
+    tier = repo_map_tier_name(data.repo_map_tier)
+    if tier is not None:
+        badges["Repo Map"] = (tier, colors["ok"] if tier == "full" else colors["warn"])
+    return badges
+
+
+def repo_map_tier_name(message: str) -> str | None:
+    """`full` or `minimal` from the `repo_map.tier` check message; None when it names no tier."""
+    found = re.search(r"tier=(\w+)", message)
+    return found.group(1) if found else None
+
+
+def menu_label(
+    number: int, name: str, badge: Badge | None, language: str = "ru"
+) -> Table:
+    """A menu entry: its number and name on the left, its badge on the right. The number takes
+    the entry's own colour, so it turns into the selection colour with the entry."""
+    row = Table.grid(expand=True)
+    row.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+    row.add_column(justify="right", no_wrap=True)
+    row.add_row(
+        Text(f"{number} {i18n.section_label(language, name)}"),
+        Text(f" {badge[0]}", style=badge[1]) if badge else Text(""),
+    )
+    return row
 
 
 def _section_named(label: str) -> str | None:
@@ -356,6 +413,8 @@ class ConsoleShell(Translated, Screen[ShellResult]):
         (brand.NARROW_WIDTH, "-wide"),
         (140, "-spacious"),
     ]
+    # Shorter than this, the main menu's entries take one line each so all ten fit unscrolled.
+    VERTICAL_BREAKPOINTS = [(0, "-short"), (38, "-tall")]
     BINDINGS = [
         Binding("escape", "back", "Назад"),
         *(
@@ -391,9 +450,9 @@ class ConsoleShell(Translated, Screen[ShellResult]):
         return ""
 
     def menu_label(self, number: int, name: str) -> Text | Table:
-        language = getattr(self.app, "language", "ru")
-        return Text.assemble(
-            (f"{number} ", brand.PALETTE["muted"]), i18n.section_label(language, name)
+        badges: dict[str, Badge] = getattr(self.app, "section_badges", {})
+        return menu_label(
+            number, name, badges.get(name), getattr(self.app, "language", "ru")
         )
 
     def menu_item_id(self, name: str) -> str | None:

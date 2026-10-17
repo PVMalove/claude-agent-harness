@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from rich.markup import escape
-from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -27,6 +26,8 @@ from ..shell import (
     ConsoleShell,
     ShellIds,
     WrappedValue,
+    repo_map_tier_name,
+    section_badges,
 )
 from .. import reports
 from .. import data as console_data
@@ -133,56 +134,6 @@ def _mode(online: bool) -> str:
     return "online" if online else "offline"
 
 
-def _repo_map_tier_name(data: DashboardData) -> str | None:
-    found = re.search(r"tier=(\w+)", data.repo_map_tier)
-    return found.group(1) if found else None
-
-
-def _section_badges(data: DashboardData) -> dict[str, tuple[str, str]]:
-    """A short status per menu entry: (text, colour). Sections without a status have no badge."""
-    badges: dict[str, tuple[str, str]] = {}
-    if data.fail:
-        badges["Diagnostics"] = (
-            f"{brand.STATUS_ICONS['fail']}{data.fail}",
-            _color("fail"),
-        )
-    elif data.warn:
-        badges["Diagnostics"] = (
-            f"{brand.STATUS_ICONS['warn']}{data.warn}",
-            _color("warn"),
-        )
-    else:
-        badges["Diagnostics"] = (brand.STATUS_ICONS["ok"], _color("ok"))
-    if data.drift_state == "clean":
-        badges["Harness"] = (brand.STATUS_ICONS["ok"], _color("ok"))
-    elif data.drift_state == "drift":
-        badges["Harness"] = (brand.STATUS_ICONS["warn"], _color("warn"))
-    if data.active_batches is not None:
-        badges["Orchestration"] = (str(data.active_batches), brand.PALETTE["muted"])
-    tier = _repo_map_tier_name(data)
-    if tier is not None:
-        badges["Repo Map"] = (
-            tier,
-            _color("ok") if tier == "full" else _color("warn"),
-        )
-    return badges
-
-
-def _menu_label(
-    number: int, key: str, badge: tuple[str, str] | None, language: str = "ru"
-) -> Table:
-    row = Table.grid(expand=True)
-    row.add_column(ratio=1)
-    row.add_column(justify="right")
-    row.add_row(
-        Text.assemble(
-            (f"{number} ", brand.PALETTE["muted"]), i18n.section_label(language, key)
-        ),
-        Text(badge[0], style=badge[1]) if badge else Text(""),
-    )
-    return row
-
-
 def _render_attention(
     data: DashboardData,
     *,
@@ -250,7 +201,7 @@ def _render_cards(
         if data.active_batches is not None
         else f"[{muted}]не подключено[/]"
     )
-    tier = _repo_map_tier_name(data)
+    tier = repo_map_tier_name(data.repo_map_tier)
     repo_map = [f"tier: {escape(tier)}" if tier else f"[{muted}]не установлен[/]"]
     detail = re.search(r"\(([^)]*)\)", data.repo_map_tier.split("; ")[0])
     if detail:
@@ -299,7 +250,6 @@ class DashboardScreen(ConsoleShell):
         body="dashboard-body",
         context="dashboard-context",
     )
-    VERTICAL_BREAKPOINTS = [(0, "-short"), (34, "-tall")]
     BINDINGS = [
         Binding("r", "checks_offline", "Офлайн"),
         Binding("o", "checks_online", "Онлайн"),
@@ -359,7 +309,6 @@ class DashboardScreen(ConsoleShell):
         self._data: DashboardData | None = None
         self._online = False
         self._banner: brand.BannerInfo | None = None
-        self._badges: dict[str, tuple[str, str]] = {}
         self._sections: dict[str, Callable[[], Screen[None]]] = {
             "Diagnostics": self._diagnostics,
             "Harness": self._harness,
@@ -383,10 +332,6 @@ class DashboardScreen(ConsoleShell):
         self._publish_counts(data)
         self._language = getattr(self.app, "language", "ru")
         self._data, self._online, self._banner = data, False, banner
-        self._badges = _section_badges(data)
-
-    def menu_label(self, number: int, name: str) -> Table:
-        return _menu_label(number, name, self._badges.get(name), self._language)
 
     def menu_item_id(self, name: str) -> str | None:
         return {"Open project": "open-project", "Update Harness": "update-harness"}.get(
@@ -607,10 +552,11 @@ class DashboardScreen(ConsoleShell):
         return i18n.tr_text(language, f"{_mode(online)} · пропущено {data.skipped}")
 
     def _publish_counts(self, data: DashboardData) -> None:
-        """Share the counters with the top bar of every screen."""
+        """Share the counters with the top bar and the menu badges with every shell screen."""
         setattr(
             self.app, "health_counts", (data.ok, data.warn, data.fail, data.skipped)
         )
+        setattr(self.app, "section_badges", section_badges(data))
 
     def _apply(
         self,
@@ -627,7 +573,6 @@ class DashboardScreen(ConsoleShell):
         self._data, self._online = data, online
         self._publish_counts(data)
         self._repaint()
-        self._badges = _section_badges(data)
         self._render_menu()
         self.query_one(TopBar).refresh_status()
         self.translate_now()

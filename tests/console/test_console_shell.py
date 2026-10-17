@@ -381,6 +381,150 @@ def test_the_crumb_row_starts_with_the_menu_toggle_and_home_has_one_crumb(
     assert (ru, en) == ("Главная", "Home")
 
 
+def _region_text(app: HarnessConsoleApp, widget: object) -> list[str]:
+    """The cells `widget` occupies on screen, row by row, as plain text."""
+    region = widget.region  # type: ignore[attr-defined]
+    strips = app.screen._compositor.render_strips()
+    lines = ["".join(segment.text for segment in strip) for strip in strips]
+    return [line[region.x : region.right] for line in lines[region.y : region.bottom]]
+
+
+def _menu_text(item: ListItem) -> str:
+    """The number and name of a menu entry, without its badge."""
+    label = item.query_one(Static).content
+    return str(label.columns[0]._cells[0])  # type: ignore[union-attr]
+
+
+def _menu_item(screen: ConsoleShell, name: str) -> ListItem:
+    return next(
+        item
+        for item in screen.query("ShellSidebar ListItem").results(ListItem)
+        if item.name == name
+    )
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (100, 30), (80, 24)])
+def test_the_main_menu_fits_update_harness_and_its_badge_on_one_line(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.console import brand
+
+    async def scenario() -> tuple[int, str, list[str], list[str], object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            home = _home(tmp_path)
+            await app.switch_screen(home)
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+            if size[0] < 100:
+                await pilot.click("#dashboard-menu")
+                await pilot.pause()
+            sidebar = home.query_one(ShellSidebar)
+            update = _menu_item(home, "Update Harness").query_one(Static)
+            selected = _menu_item(home, "Home")
+            return (
+                sidebar.region.width,
+                str(sidebar.query_one(".menu-heading", Static).render()),
+                _region_text(app, update),
+                _region_text(app, selected.query_one(Static)),
+                selected.styles,
+            )
+
+    width, heading, update, selected, styles = asyncio.run(scenario())
+    # 27 columns between 100 and 140 columns, where the content needs the room.
+    assert width == (27 if 100 <= size[0] < 140 else 30)
+    assert heading == ("ГЛАВНОЕ МЕНЮ" if language == "ru" else "MAIN MENU")
+    label = "2 Обновить Harness" if language == "ru" else "2 Update Harness"
+    assert len(update) == 1
+    assert update[0].startswith(label) and update[0].rstrip().endswith("⚠")
+    assert selected[0].startswith("0 ")
+    # The selected entry: the selection fill, an outline on a wide terminal, no left bar.
+    tokens = brand.SHELL_TOKENS
+    assert styles.background.hex.lower() == tokens["selection-background"]  # type: ignore[attr-defined]
+    assert styles.border_left[0] in ("", "none")  # type: ignore[attr-defined]
+    outline = styles.outline_top  # type: ignore[attr-defined]
+    if size[1] >= 38:
+        assert outline[0] == "round"
+        assert outline[1].hex.lower() == tokens["selection-outline"]
+    else:
+        assert outline[0] in ("", "none")
+
+
+def test_a_menu_number_takes_the_colour_of_its_entry() -> None:
+    from rich.text import Text
+
+    from harness.console.shell import menu_label
+
+    label = menu_label(2, "Update Harness", ("⚠", "#E5A04B"))
+    name, badge = (column._cells[0] for column in label.columns)
+    assert isinstance(name, Text) and name.plain == "2 Обновить Harness"
+    assert not name.style and not name.spans
+    assert isinstance(badge, Text) and badge.plain.strip() == "⚠"
+
+
+def test_section_badges_come_from_the_health_facts() -> None:
+    from harness.console import brand
+    from harness.console.shell import section_badges
+
+    badges = section_badges(_home_data())
+    assert badges == {
+        "Diagnostics": ("✖ 2", brand.STATUS_COLORS["fail"]),
+        "Harness": ("⚠", brand.STATUS_COLORS["warn"]),
+        "Update Harness": ("⚠", brand.STATUS_COLORS["warn"]),
+        "Orchestration": ("3", brand.PALETTE["muted"]),
+        "Repo Map": ("full", brand.STATUS_COLORS["ok"]),
+    }
+    clean = DashboardData(
+        ok=1,
+        warn=1,
+        fail=0,
+        skipped=0,
+        repo_map_tier="Repo Map не установлен в проект",
+        harness_version="9.9.9",
+        drift_state="clean",
+        active_batches=None,
+    )
+    assert section_badges(clean) == {
+        "Diagnostics": ("⚠ 1", brand.STATUS_COLORS["warn"]),
+        "Harness": ("✔", brand.STATUS_COLORS["ok"]),
+    }
+
+
+def test_the_menu_badges_are_shown_on_another_shell_screen(tmp_path: Path) -> None:
+    from harness.console.screens.diagnostics import DiagnosticsScreen
+    from harness.health.model import Report
+
+    report = Report(schema_version=1, repo=str(tmp_path), online=False, checks=[])
+
+    async def scenario() -> tuple[list[str], list[str]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.switch_screen(_home(tmp_path))
+            await pilot.pause()
+            diagnostics = DiagnosticsScreen(
+                tmp_path, collect_diagnostics=lambda _repo, *, online=False: report
+            )
+            await app.push_screen(diagnostics)
+            await pilot.pause()
+            await pilot.pause()
+            return (
+                _region_text(
+                    app, _menu_item(diagnostics, "Diagnostics").query_one(Static)
+                ),
+                _region_text(
+                    app, _menu_item(diagnostics, "Orchestration").query_one(Static)
+                ),
+            )
+
+    diagnostics, orchestration = asyncio.run(scenario())
+    assert diagnostics[0].startswith("3 Диагностика")
+    assert diagnostics[0].rstrip().endswith("✖ 2")
+    assert orchestration[0].rstrip().endswith("3")
+
+
 def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:
     async def scenario() -> tuple[list[str], str, list[str], str]:
         app = HarnessConsoleApp(tmp_path)
@@ -389,7 +533,7 @@ def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:
 
             def labels() -> list[str]:
                 return [
-                    str(item.query_one(Static).content)
+                    _menu_text(item)
                     for item in screen.query("#stub-sections > ListItem").results(
                         ListItem
                     )

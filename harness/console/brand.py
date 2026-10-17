@@ -46,6 +46,9 @@ SHELL_TOKENS = {
     "selection-background": "#45332c",
     "selection-foreground": "#f6baa3",
     "selection-edge": "#d97757",
+    # The outline of the selected main-menu entry, drawn around its fill (decorative: the fill
+    # and the selection colour of its text already mark it).
+    "selection-outline": "#6b4a3c",
     "row-highlight": "#35302b",
     "scrollbar-thumb": "#f2ece1",
     "scrollbar-track": "#8a8378",
