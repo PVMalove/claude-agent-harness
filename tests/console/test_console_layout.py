@@ -306,3 +306,28 @@ def test_worker_layout(
             return layout_problems(screen, WORKER_TITLES)
 
     assert asyncio.run(scenario()) == []
+
+
+HARNESS_TITLES = (".breadcrumbs", "#harness-state")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_harness_layout(tmp_path: Path, size: tuple[int, int], language: str) -> None:
+    from textual.widgets import ListView
+
+    from harness.console.screens.harness import HarnessScreen
+
+    async def scenario() -> tuple[list[str], int]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot, HarnessScreen(tmp_path), language)
+            problems = layout_problems(screen, HARNESS_TITLES)
+            menu = screen.query_one("#command-menu", ListView)
+            menu.scroll_visible(animate=False, immediate=True)
+            await pilot.pause()
+            return problems, menu.region.height
+
+    problems, menu_height = asyncio.run(scenario())
+    assert problems == []
+    assert menu_height >= 8  # the command list stays usable on the smallest terminal
