@@ -609,15 +609,21 @@ def test_an_incompatible_confirmation_is_evidence_and_never_a_working_dispatch(
     assert "model_self_report" not in status
     assert status["contract_self_report"]["status"] == "unsupported"
     assert recovery._batch_record(batch["batch_id"])["state"] != "blocked"
-    # The batch is held: no report is taken until recovery resume releases it.
+    # The batch is held: no report is taken until recovery resume releases it, but the
+    # refused report is kept as unaccepted evidence at once.
     record = RuntimeStateStore(recovery.repo, recovery.state_dir).read(
         batch["batch_id"]
     )
     assert record is not None and record["state"] == "suspended"
-    with pytest.raises(coordinator.CoordinatorError, match="is held"):
-        recovery._submit(
-            brief["dispatch_id"], recovery._base_report(brief, "architect")
-        )
+    report = recovery._base_report(brief, "architect")
+    with pytest.raises(coordinator.CoordinatorError, match="is held") as refused:
+        recovery._submit(brief["dispatch_id"], report)
     assert not (
         recovery._records() / "reports" / f"{brief['dispatch_id']}.json"
     ).exists()
+    [evidence] = (recovery._records() / "unaccepted-evidence").glob(
+        f"{brief['dispatch_id']}-*.json"
+    )
+    assert str(evidence) in refused.value.remedy
+    captured = json.loads(evidence.read_text(encoding="utf-8"))
+    assert (captured["accepted"], captured["input"]) == (False, report)

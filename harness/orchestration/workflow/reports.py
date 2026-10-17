@@ -1936,6 +1936,30 @@ def _report_compatibility(
         raise refusal from exc
 
 
+def _settle_for_report(
+    repo: Path,
+    root: Path,
+    ledger: LifecycleLedger,
+    dispatch: JsonObject,
+    report: JsonObject,
+) -> None:
+    """Finish the batch's unfinished operation before the report is read.  A report that a
+    releasable operational hold refuses is kept as unaccepted evidence at once, so the worker's
+    output is not lost while the hold lasts; a quarantine keeps its batch untouched."""
+    from harness.orchestration import operational_hold
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        settle(repo, root, ledger, dispatch["batch_id"])
+    except RuntimeStateError as exc:
+        reason = operational_hold.reason_of(exc.step)
+        if reason is None or reason in operational_hold.PERMANENT_REASONS:
+            raise
+        path = capture_unaccepted(root, dispatch, report, exc)
+        exc.remedy = f"{exc.remedy}; unaccepted evidence: {path}"
+        raise
+
+
 def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     report = _read_object(
@@ -1946,7 +1970,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
-        settle(repo, root, ledger, dispatch["batch_id"])
+        _settle_for_report(repo, root, ledger, dispatch, report)
         batch = _load_batch(root, dispatch["batch_id"])
         from harness.orchestration.pinned_configuration import (
             read_snapshot,
