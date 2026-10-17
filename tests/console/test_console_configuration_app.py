@@ -751,6 +751,10 @@ async def _open_step(
     from textual.widgets import Select
 
     index = next(i for i, s in enumerate(screen.steps) if s.path == path)
+    await wait_until(
+        pilot,
+        lambda: bool(screen.query("#step-jump SelectCurrent #label")),
+    )
     screen.query_one("#step-jump", Select).value = index
     await wait_until(
         pilot,

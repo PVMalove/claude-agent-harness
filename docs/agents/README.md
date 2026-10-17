@@ -29,3 +29,4 @@
 | [code-review-standards](./code-review-standards.md) | Ось Standards скилла `code-review`: соответствие стандартам репозитория и «запахи» Фаулера. |
 | [code-review-spec](./code-review-spec.md) | Ось Spec скилла `code-review`: полнота реализации и выход за рамки задачи. |
 | [pr-composer](./pr-composer.md) | Заполняет тело PR по шаблону проекта и возвращает путь к файлу. |
+| [test-author](./test-author.md) | Пишет один поведенческий Red-тест в защищённой тестовой зоне и запускает его через изолированный runner. |
