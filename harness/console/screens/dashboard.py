@@ -241,6 +241,7 @@ class DashboardScreen(ConsoleShell):
     HAS_CONTEXT = True
     # Home is the bottom of the screen stack: Esc has nowhere to go.
     CAN_GO_BACK = False
+    NARROW_FOOTER_KEYS = ("p", "f1", "f2")
     IDS = ShellIds(
         navigation="dashboard-sections",
         menu="section-menu",

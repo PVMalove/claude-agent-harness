@@ -100,15 +100,27 @@ def palette_command(language: str, title: str, help_text: str) -> tuple[str, str
     return title, help_text
 
 
+# Section titles are drawn in capitals: a capitalised source finds its English in capitals too.
+_EN_UPPER = {russian.upper(): english.upper() for russian, english in EN.items()}
+
+
+def _english(text: str) -> str | None:
+    if text in EN:
+        return EN[text]
+    return _EN_UPPER.get(text)
+
+
 def tr(language: str, text: str) -> str:
     """A fixed interface string in `language`. Unknown text (data, paths, CLI output) is returned
     as it is, so only the strings listed in `i18n_strings` ever change."""
     if language == "en":
-        if text in EN:
-            return EN[text]
+        english = _english(text)
+        if english is not None:
+            return english
         head, separator, rest = text.partition(" · ")
-        if separator and head in EN:
-            return EN[head] + separator + rest
+        english = _english(head) if separator else None
+        if english is not None:
+            return english + separator + rest
         for prefix, english in EN_PREFIXES.items():
             if text.startswith(prefix):
                 return english + text[len(prefix) :]

@@ -10,8 +10,9 @@ from rich.table import Table
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
-from textual.binding import Binding
+from textual.binding import ActiveBinding, Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.markup import escape
 from textual.message import Message
 from textual.screen import Screen
 from textual.widget import Widget
@@ -174,6 +175,81 @@ class ContextPanel(VerticalScroll):
     DEFAULT_CLASSES = "context-panel"
 
 
+class SectionCard(Vertical):
+    """A block of a page: a bordered card whose top border carries the section title in capitals
+    and, after it, a counter or a note. The title follows the console language by itself."""
+
+    def __init__(
+        self,
+        *children: Widget,
+        title: str,
+        note: str = "",
+        id: str | None = None,
+        classes: str = "",
+    ) -> None:
+        super().__init__(
+            *children, id=id, classes=f"section-card no-i18n {classes}".strip()
+        )
+        self._title = title
+        self._note = note
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def set_note(self, note: str) -> None:
+        self._note = note
+        self.relabel()
+
+    def relabel(self) -> None:
+        language = getattr(self.app, "language", "ru")
+        self.border_title = brand.section_title(
+            i18n.tr(language, self._title), i18n.tr_text(language, self._note)
+        )
+
+
+class Fold(Collapsible):
+    """A folded section card, `▸ Title  summary`: Enter or a click opens it. The summary says what
+    is inside without opening it."""
+
+    def __init__(
+        self,
+        *children: Widget,
+        title: str,
+        summary: str = "",
+        collapsed: bool = True,
+        id: str | None = None,
+        classes: str = "",
+    ) -> None:
+        super().__init__(
+            *children,
+            title=title,
+            collapsed=collapsed,
+            collapsed_symbol="▸",
+            expanded_symbol="▾",
+            id=id,
+            classes=f"section-card fold no-i18n {classes}".strip(),
+        )
+        self._source = title
+        self._summary = summary
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def set_summary(self, summary: str) -> None:
+        self._summary = summary
+        self.relabel()
+
+    def relabel(self) -> None:
+        language = getattr(self.app, "language", "ru")
+        title = escape(i18n.tr(language, self._source))
+        summary = i18n.tr_text(language, self._summary)
+        self.title = (
+            f"{title}  [{brand.PALETTE['muted']}]{escape(summary)}[/]"
+            if summary
+            else title
+        )
+
+
 class FieldGrid(Widget):
     """Label/value fields in two columns on a wide terminal and one on a narrow one (the first half
     of the fields in the first column, the rest in the second). A value wraps, so a long ID or path
@@ -305,10 +381,17 @@ Screen.shell { background: $background; }
 .shell.-narrow .shell-body, .shell.-fold-context .shell-body { layout: vertical; overflow-y: auto; }
 .shell.-narrow .shell-content, .shell.-fold-context .shell-content { min-height: 100%; }
 .shell.-narrow .context-panel, .shell.-fold-context .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
+.shell .section-card { height: auto; padding: 0 1; background: $surface; border: round $border-subtle; }
+.shell .section-card.-alert { border-left: outer $error; }
+.shell .fold { padding: 0 1; }
+.shell .fold > CollapsibleTitle { width: 1fr; padding: 0; color: $foreground; background: transparent; }
+.shell .fold > Contents { padding: 1 0 0 0; height: auto; }
 .shell .context-fold { border: none; padding: 0; background: transparent; }
-.shell .context-fold > Contents { padding: 0; height: auto; }
-.shell .context-fold > CollapsibleTitle { display: none; padding: 0; color: $foreground; }
+.shell .context-fold > Contents { padding: 0; }
+.shell .context-fold > CollapsibleTitle { display: none; }
+.shell.-fold-context .context-fold { border: round $border-subtle; padding: 0 1; background: $surface; }
 .shell.-fold-context .context-fold > CollapsibleTitle { display: block; }
+.shell * { border-title-color: $text-muted !important; border-title-style: none !important; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }
@@ -433,6 +516,11 @@ class ConsoleShell(Translated, Screen[ShellResult]):
     # (`-fold-context`), titled `CONTEXT_TITLE`; 0 leaves the choice to the narrow layout alone.
     CONTEXT_SIDE_MIN = 0
     CONTEXT_TITLE = ""
+    # What the folded context panel holds, shown beside its title.
+    CONTEXT_SUMMARY = ""
+    # The keys a narrow terminal's footer shows (the screen mockup's narrow footer); None shows them
+    # all. Hidden keys still work.
+    NARROW_FOOTER_KEYS: tuple[str, ...] | None = None
     # False for a view inside a section (it shares the section's menu entry but is not its screen).
     IS_SECTION_ROOT = True
 
@@ -507,8 +595,9 @@ class ConsoleShell(Translated, Screen[ShellResult]):
                     if self.HAS_CONTEXT:
                         with ContextPanel(id=ids.context):
                             if self.CONTEXT_TITLE:
-                                with Collapsible(
+                                with Fold(
                                     title=self.CONTEXT_TITLE,
+                                    summary=self.CONTEXT_SUMMARY,
                                     collapsed=self.app.size.width
                                     < self.CONTEXT_SIDE_MIN,
                                     classes="context-fold",
@@ -529,6 +618,27 @@ class ConsoleShell(Translated, Screen[ShellResult]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._fold_context(event.size.width)
+        narrow = event.size.width < brand.NARROW_WIDTH
+        if self.NARROW_FOOTER_KEYS is not None and narrow != self._narrow_footer:
+            self._narrow_footer = narrow
+            self.refresh_bindings()
+
+    _narrow_footer = False
+
+    @property
+    def active_bindings(self) -> dict[str, ActiveBinding]:
+        """The footer's keys: on a narrow terminal only `NARROW_FOOTER_KEYS` and the palette are
+        shown. The others are left out of the footer only; the keys themselves still work."""
+        bindings = super().active_bindings
+        keys = self.NARROW_FOOTER_KEYS
+        if keys is None or self.app.size.width >= brand.NARROW_WIDTH:
+            return bindings
+        palette = self.app.COMMAND_PALETTE_BINDING
+        return {
+            key: active
+            for key, active in bindings.items()
+            if not active.binding.show or key in keys or key == palette
+        }
 
     def on_mount(self) -> None:
         self._fold_context(self.size.width)
@@ -548,6 +658,10 @@ class ConsoleShell(Translated, Screen[ShellResult]):
             item.query_one(Static).update(self.menu_label(number, item.name or ""))
         for grid in self.query(FieldGrid):
             grid.relabel()
+        for card in self.query(SectionCard):
+            card.relabel()
+        for fold in self.query(Fold):
+            fold.relabel()
         self.query_one(Breadcrumbs).relabel()
 
     # Navigation: opening a section is the only effect.

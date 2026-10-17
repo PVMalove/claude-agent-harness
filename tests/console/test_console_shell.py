@@ -30,6 +30,8 @@ from harness.console.shell import (
     ConsoleShell,
     ContextPanel,
     FieldGrid,
+    Fold,
+    SectionCard,
     ShellIds,
     ShellSidebar,
 )
@@ -523,6 +525,152 @@ def test_the_menu_badges_are_shown_on_another_shell_screen(tmp_path: Path) -> No
     assert diagnostics[0].startswith("3 Диагностика")
     assert diagnostics[0].rstrip().endswith("✖ 2")
     assert orchestration[0].rstrip().endswith("3")
+
+
+def test_a_section_title_is_in_capitals_with_its_note_after_it() -> None:
+    from harness.console import brand, i18n
+
+    assert brand.section_title("Требует внимания", "2") == " ТРЕБУЕТ ВНИМАНИЯ  2 "
+    assert brand.section_title(" Действия ") == " ДЕЙСТВИЯ "
+    # A title in capitals still finds its English text.
+    assert i18n.tr("en", "HEALTH-ОТЧЁТ") == "HEALTH REPORT"
+    assert i18n.tr("en", "СОСТОЯНИЕ · 3") == "STATUS · 3"
+    assert i18n.tr("ru", "HEALTH-ОТЧЁТ") == "HEALTH-ОТЧЁТ"
+
+
+class CardShell(StubShell):
+    """A shell screen whose page is one section card and one fold."""
+
+    def compose_content(self) -> ComposeResult:
+        yield SectionCard(
+            Static("Содержимое", id="card-body"),
+            title="Проверки",
+            note="3",
+            id="stub-card",
+        )
+        yield Fold(
+            Static("Подробности", id="fold-body"),
+            title="Подробный отчёт",
+            summary="27 проверок · 11 пропущено",
+            id="stub-fold",
+        )
+
+
+def test_section_cards_and_folds_follow_the_language_with_muted_titles(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets._collapsible import CollapsibleTitle
+
+    from harness.console import brand
+
+    async def scenario() -> tuple[list[str], list[str], str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            screen = CardShell()
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+            card = screen.query_one("#stub-card", SectionCard)
+            fold = screen.query_one("#stub-fold", Fold)
+            title = fold.query_one(CollapsibleTitle)
+
+            def texts() -> list[str]:
+                return [str(card.border_title), str(title.render())]
+
+            ru = texts()
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            en = texts()
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            assert texts() == ru
+            title.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            return ru, en, card.styles.border_title_color.hex, not fold.collapsed
+
+    ru, en, color, opened = asyncio.run(scenario())
+    assert ru == [" ПРОВЕРКИ  3 ", "▸ Подробный отчёт  27 проверок · 11 пропущено"]
+    assert en[0] == " CHECKS  3 " and en[1].startswith("▸ Detailed report  ")
+    assert color.lower() == brand.PALETTE["muted"].lower()
+    assert opened
+
+
+def test_frame_titles_of_shell_screens_are_muted_capitals(tmp_path: Path) -> None:
+    from harness.console import brand
+    from harness.console.screens.diagnostics import DiagnosticsScreen
+    from harness.health.model import Report
+
+    report = Report(schema_version=1, repo=str(tmp_path), online=False, checks=[])
+
+    async def scenario() -> tuple[str, str, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            screen = DiagnosticsScreen(
+                tmp_path, collect_diagnostics=lambda _repo, *, online=False: report
+            )
+            await app.push_screen(screen)
+            await pilot.pause()
+            frame = screen.query_one("#diagnostics-scroll")
+            ru = str(frame.border_title)
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            return ru, str(frame.border_title), frame.styles.border_title_color.hex
+
+    ru, en, color = asyncio.run(scenario())
+    assert (ru, en) == (" HEALTH-ОТЧЁТ ", " HEALTH REPORT ")
+    assert color.lower() == brand.PALETTE["muted"].lower()
+
+
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_a_narrow_footer_shows_the_mockup_keys_and_hidden_keys_still_work(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    calls: list[bool] = []
+
+    def collect(_repo: Path, *, online: bool = False) -> DashboardData:
+        calls.append(online)
+        return _home_data()
+
+    async def scenario() -> set[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            home = DashboardScreen(tmp_path, collect_dashboard=collect)
+            await app.switch_screen(home)
+            await pilot.pause()
+            keys = set(_footer_keys(home)) - {app.COMMAND_PALETTE_BINDING}
+            await pilot.press("r")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return keys
+
+    keys = asyncio.run(scenario())
+    assert keys == ({"p", "f1", "f2"} if size[0] < 100 else {"r", "o", "p", "f1", "f2"})
+    # `r` is not in the narrow footer, but it still reruns the offline checks.
+    assert calls == [False, False]
+
+
+def test_the_footer_follows_a_resize_across_the_narrow_threshold(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[set[str], set[str]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            home = _home(tmp_path)
+            await app.switch_screen(home)
+            await pilot.pause()
+            wide = set(_footer_keys(home))
+            await pilot.resize_terminal(80, 24)
+            await pilot.pause()
+            await pilot.pause()
+            return wide, set(_footer_keys(home))
+
+    wide, narrow = asyncio.run(scenario())
+    assert {"r", "o"} <= wide
+    assert not {"r", "o"} & narrow and "p" in narrow
 
 
 def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:

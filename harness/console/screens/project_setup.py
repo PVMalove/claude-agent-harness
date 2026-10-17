@@ -101,6 +101,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     CRUMBS = "Главная › Открыть проект"
     SECTION = "Open project"
+    NARROW_FOOTER_KEYS = ("escape", "f1", "f2")
     AUTO_FOCUS = "#project-path"
     # Esc and the footer's "Назад" cancel through `action_cancel`, which waits for a running operation.
     BINDINGS = [Binding("escape", "cancel", "Назад")]
@@ -168,12 +169,12 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     def compose_content(self) -> ComposeResult:
         with VerticalScroll(id="setup-scroll"):
             with Vertical(id="setup-stage-frame", classes="frame") as stages:
-                stages.border_title = brand.frame_title("Этапы")
+                stages.border_title = brand.section_title("Этапы")
                 yield Static("", id="setup-stage", markup=False)
             with Horizontal(id="setup-columns"):
                 with Vertical(id="setup-left"):
                     with Vertical(id="project-frame", classes="frame") as project:
-                        project.border_title = brand.frame_title("Проект")
+                        project.border_title = brand.section_title("Проект")
                         yield Input(
                             value=str(self.repo),
                             placeholder="Путь к локальному Git-проекту",
@@ -198,7 +199,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                             markup=False,
                         )
                     with Vertical(id="capability-frame", classes="frame") as capability:
-                        capability.border_title = brand.frame_title("Состав Harness")
+                        capability.border_title = brand.section_title("Состав Harness")
                         yield Static(
                             "workflow нужен для project.json; Backend добавляет orchestration.json.",
                             classes="hint",
@@ -210,7 +211,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                                 )
                 with Vertical(id="setup-right"):
                     with Vertical(id="plan-frame", classes="frame") as plan:
-                        plan.border_title = brand.frame_title("План установки")
+                        plan.border_title = brand.section_title("План установки")
                         yield Static(_PLAN_HINT, id="installation-plan", markup=False)
                         with Horizontal(classes="actions"):
                             yield Button(
@@ -220,7 +221,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                                 compact=True,
                             )
                     with Vertical(id="checks-frame", classes="frame") as checks:
-                        checks.border_title = brand.frame_title("Проверки")
+                        checks.border_title = brand.section_title("Проверки")
                         with Horizontal(classes="actions"):
                             yield Button(
                                 "Офлайн",
@@ -253,7 +254,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                             classes="hint",
                         )
             with VerticalScroll(id="setup-output-scroll", classes="frame") as output:
-                output.border_title = brand.frame_title("Результат")
+                output.border_title = brand.section_title("Результат")
                 yield Static(_OUTPUT_HINT, id="setup-output", markup=False)
 
     def on_mount(self) -> None:

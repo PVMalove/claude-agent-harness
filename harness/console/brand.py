@@ -105,6 +105,13 @@ def frame_title(title: str) -> str:
     return f" {title.strip()} "
 
 
+def section_title(title: str, note: str = "") -> str:
+    """A section card's title for its top border: the title in capitals, then its counter or
+    note, if any (`" ТРЕБУЕТ ВНИМАНИЯ  2 "`)."""
+    heading = title.strip().upper()
+    return frame_title(f"{heading}  {note.strip()}" if note.strip() else heading)
+
+
 @dataclass(frozen=True)
 class BannerInfo:
     """What the banner shows beside the mark."""
