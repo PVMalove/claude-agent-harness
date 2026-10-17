@@ -50,8 +50,27 @@ digest, with separate source and canonical hashes. Checkpoints and manual or cle
 use that snapshot. Invalid or changed live configuration blocks a subsequent transition while
 accepted evidence remains saved. Missing or corrupt snapshots allow only unaccepted evidence
 capture with a remedy; they never reconstruct approval from current files. The runtime state
-store reconciles an unfinished composite write or hand-off at the start of the next command; a
-recovery UI is separate follow-up work.
+store reconciles an unfinished composite write or hand-off at the start of the next command; the
+`recovery` commands below show and release what it cannot reconcile on its own.
+
+### Runtime compatibility with `systemFields.v1`
+
+Every party that reads or writes system fields declares the contract it speaks. A runtime
+assignment may set `system_fields_contract` (for example `systemFields.v1`); an in-process runtime
+without the field runs the harness's own role contract. An external adapter answers its `contract`
+verb. A project extension other than `none` carries a `system_fields_contract` attribute. A worker
+may confirm the brief's `orchestration_policy.configuration.contract` with `dispatch self-report
+--system-fields-contract <version>`, and a completion report may repeat it in
+`system_fields_contract`.
+
+`dispatch preflight`, `dispatch create`, `dispatch send`, `qa run`, `dispatch self-report` and
+`report submit` check these declarations before a brief is written, a worker starts or a report is
+accepted. A missing, unsupported or mismatched version is a `runtime-compatibility` refusal: its
+`DIAGNOSTICS` line lists every declaration with its subject, source, status and pointer. Nothing is
+started or accepted on it. An incompatible report is kept only as unaccepted evidence. A refusal at
+send, self-report, report submit or `qa run` also holds the batch (see [Operator
+recovery](#operator-recovery)). A worker started before the confirmation flag existed confirms
+nothing and is judged on the brief's declarations.
 
 ## Lifecycle
 
@@ -473,11 +492,13 @@ detect them in this order: integrity, budget, route.
 | `integrity-failure` | `harness-snapshot-changed` | The installed harness runtime differs from the pinned snapshot |
 | `integrity-failure` | `deterministic-gate-failed` | The commit plan gate, or a failed revalidation of the pending report or its brief |
 | `integrity-failure` | `ledger-validation-failed` | Ledger validation fails; the command shows the stop and records nothing |
+| `integrity-failure` | `operational-hold` | The runtime state store holds the batch, or attention `operational-hold` |
 | `budget-exhausted` | `retry_policy.max_developer_retries` | A developer-retry beyond the budget |
 | `budget-exhausted` | `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes` | A checkpointed or rate-limited dispatch with a spent budget |
 | `budget-exhausted` | `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` | Attention `infrastructure-retry-repeated` or `tooling-retry-repeated` |
 | `no-automatic-route` | `unknown-reason` | The route has reason category `unknown`, or attention `unknown-reason` |
-| `no-automatic-route` | `abandon-dead-end` | The coordinator refuses the retry route, or the batch is `blocked` or `failed` |
+| `no-automatic-route` | `missing-evidence` | The coordinator refuses the retry route because structured evidence is missing |
+| `no-automatic-route` | `abandon-dead-end` | The batch is `blocked` or `failed` by a human decision |
 | `no-automatic-route` | `supersede-dead-end` | The batch is `abandoned`; only a human continues with `batch create --supersedes` |
 
 The coordinator records the stop once as the hashed `batch.auto_stop` (`category`, `reason`,
@@ -557,6 +578,56 @@ refuse while a condition is open. A conditional qa never counts as green QA evid
 still needs a real QA run. A conditional publish needs the remote branch to already point at the
 candidate, which closes its condition at once. A rewind retires the conditions of superseded
 dispatches. Prefer `resume-stop` when the failed stage can simply be restarted.
+
+### Operational holds and the `recovery` commands
+
+Unknown, missing, quarantined, unreadable or incompatible system data never becomes a decision. The
+coordinator holds the batch in its runtime state record (`suspended`, failure step
+`hold:<reason>`; a ledger quarantine keeps its own `quarantine` step) and raises attention
+`operational-hold`. The reasons are `unknown-value`, `missing-value`, `legacy-quarantine`,
+`unreadable-record` and `runtime-compatibility`. `needs_attention` stays a batch flag, and
+`suspended` stays a runtime state store state. A hold writes no lifecycle record, decision or
+approval. While it lasts, every command that settles or decides the batch refuses with the
+recovery route: `dispatch create`, `dispatch send`, `dispatch cancel`, self-report, heartbeat,
+checkpoint, `report submit`, `qa run`, `batch decide`, `resume-stop` and `rewind`. The decision
+packet then offers no option, and `route_preview` holds only the hold. A blocked report whose retry
+cause is unknown or whose retry route is refused gets a packet `operational_hold` without `abandon`
+or `accept`. The automatic path stops with `operational-hold` or `missing-evidence`, never with an
+abandon.
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery status --batch <id> --json
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery reload --batch <id>
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery resume --batch <id>
+```
+
+The commands run on the installed runtime, never read standard input, need no terminal or Textual,
+print one `recoveryStatus.v1` JSON document and exit 0 on success and 2 on refusal. Each check
+(`config`, `store`, `ledger`, `batch`, `lifecycle`, `snapshot`, `compatibility`, `operation`,
+`liveness`, `attention`, `approval`) reports `passed`, `pending`, `reconciled`, `refused` or
+`skipped`. Its diagnostics carry a pointer, the redacted expected and received values, a suggestion
+and a remedy.
+
+- `status` is read-only: it takes no lock and writes nothing.
+- `reload` re-reads and validates the current configuration and its runtime declarations; it never
+  starts a worker and suggests `resume`.
+- `resume` runs every check under the ledger lock. A refused check changes nothing; a batch the
+  ledger cannot read is held through the store alone, without a lifecycle record. Otherwise it
+  releases the hold and lets `settle` finish an unfinished operation from its durable intent. A
+  confirmed step is never repeated, and an ambiguous effect or a live worker stops instead of
+  starting a second worker. A recorded stop continues only through the audited `batch resume-stop`
+  with `--approved-by`, `--approved-at` and `--note`; any other stop needs `batch rewind`. Resume
+  creates no dispatch and rewrites no brief, and the next transition needs an approval with its
+  current digest. It never resolves attention or resets budgets, `auto_stop`, `manual_recovery` or
+  a terminal refusal.
+
+A quarantine is never released by a recovery command. `recovery_api` exposes the same contract to
+the Harness console: `fix` previews or applies the configuration's safe normalization through the
+configuration transaction without resuming. `skip` hides an allowlisted advisory
+(`config-normalized`, `unconfirmed-contract`) for one session. `abort` records that the operator
+left recovery and abandons, stops and cleans nothing. Each action except `skip` records its durable
+intent first, so a cancel, end of input or interrupt shows on restart. An internal exception is an
+`internal-error` diagnostic with a correlation ID, never a configuration problem.
 
 A timeout does not prove that a worker stopped. Stop it through the runtime first, then record:
 
@@ -677,7 +748,8 @@ The coordinator sets `needs_attention` (with `attention_reason`, `attention_sinc
 `last_safe_action`, `recommended_human_action`) when: a retry has waited longer than
 `attention_policy.retry_queue_seconds`; operational retries of one candidate exceed
 `max_infrastructure_retries`; a third consecutive `tooling-retry` on one candidate is decided
-(`tooling-retry-repeated`); a retry's reason is `unknown`; a dispatch's pinned Context Package no
+(`tooling-retry-repeated`); the runtime state store holds the batch (`operational-hold`, the first
+in priority); a retry's reason is `unknown`; a dispatch's pinned Context Package no
 longer matches the batch base or accepted candidate; or a live dispatch is silent past
 `stale_dispatch_seconds`. It is evaluated by `batch attention check`, by `batch decide --decision
 retry` and by `dispatch wait`. While it is set no next dispatch is created; nothing is deleted and
@@ -809,7 +881,10 @@ of the coordinator session — is a project choice recorded in the assignment pl
 transport resolves to `in-process`; `external` must be selected explicitly before an external worker can
 start. It changes nothing
 above: the same immutable brief goes out, the same self-report and heartbeat are required, and the
-same completion report comes back. For an in-process handoff, `dispatch send` records the brief but
+same completion report comes back. Before either transport is used, `dispatch send` checks the
+brief's `systemFields.v1` declarations, the external adapter's `contract` answer included (see
+[Runtime compatibility](#runtime-compatibility-with-systemfieldsv1)). For an in-process handoff,
+`dispatch send` records the brief but
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
 
@@ -832,8 +907,12 @@ while the effect is unknown. When the outcome is already observed but its ledger
 yet written, `dispatch cancel` commits that outcome first and then decides on the records it left,
 so a launched worker still needs `--runtime-stopped`. A worker that is still live contradicts a
 cancellation and stops the batch with `concurrency-conflict`. A non-zero `dispatch` exit still
-means no worker started. The orchestration [README](README.md) lists both adapter verbs for
-adapter authors.
+means no worker started. Before the hand-off, `dispatch send` asks `<adapter> contract [args] --repo
+<repo> --brief <brief>`. The adapter must answer within 30 seconds with exit code 0 and exactly
+`{"system_fields_contract": "<version>"}`. Any other answer declares nothing and refuses the send
+with `runtime-compatibility`. An adapter that cannot be started at all is left to the hand-off,
+which records it as an unavailable runtime. The orchestration [README](README.md) lists the three
+adapter verbs for adapter authors.
 
 An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
 The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator

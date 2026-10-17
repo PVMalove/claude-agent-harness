@@ -325,8 +325,25 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 - `dispatch cancel --dispatch <id> --runtime-stopped --approved-by <оператор> --approved-at <UTC> --reason <причина>`
   записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
 - `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
+- `recovery status --batch <id> --json` только читает: проверки сверки, их диагностику с pointer,
+  отредактированными expected и received и подсказкой, а также доступные действия.
+- `recovery reload --batch <id>` заново читает и проверяет текущий конфиг и не запускает worker.
+- `recovery resume --batch <id>` под блокировкой ledger повторяет проверки, снимает удержание batch
+  и завершает незаконченную операцию из durable intent. Подтверждённые шаги не повторяются, второй
+  worker не запускается. Записанная остановка продолжается только через аудируемый `resume-stop`
+  с `--approved-by`, `--approved-at` и `--note`.
 
-Runtime adapter для `transport: external` реализует два глагола. `<adapter> dispatch [args] --repo
+Неизвестные, отсутствующие, нечитаемые, quarantine- или несовместимые системные данные не
+становятся решением. Coordinator удерживает batch в runtime state store (`suspended`, шаг
+`hold:<причина>`) и поднимает attention `operational-hold`. Пока удержание действует, команды,
+которые сверяют или решают batch, отказывают, а decision packet не предлагает ни `abandon`, ни
+`accept`. Команды `recovery` не читают stdin, работают без TTY и без Textual. Они печатают один
+JSON-документ `recoveryStatus.v1` и завершаются кодом 0 при успехе и 2 при отказе.
+
+Runtime adapter для `transport: external` реализует три глагола. `<adapter> contract [args] --repo
+<repo> --brief <brief>` за 30 секунд с кодом 0 печатает ровно `{"system_fields_contract":
+"<версия>"}`. `dispatch send` вызывает его до запуска worker; другой ответ или неподдерживаемая
+версия дают отказ `runtime-compatibility`. `<adapter> dispatch [args] --repo
 <repo> --brief <brief>` запускает worker; ненулевой код выхода означает, что worker не запущен.
 `<adapter> observe [args] --repo <repo> --brief <brief>` только сообщает, запущен ли worker этого
 brief: за 30 секунд, с кодом 0 и одним JSON-объектом `{"dispatch_id", "launched", "live",
