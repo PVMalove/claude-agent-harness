@@ -6,7 +6,7 @@ import json
 import sys
 from types import SimpleNamespace
 
-from scripts.clean_room.support import run_step
+from scripts.clean_room.support import rewrite_recorded, run_step
 
 
 def run(ctx: SimpleNamespace) -> None:
@@ -221,10 +221,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
     )
     hand_edited["dispatches"][0]["state"] = "dispatched"
-    (lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json").write_text(
-        json.dumps(hand_edited, ensure_ascii=False, indent=2) + chr(10),
-        encoding="utf-8",
-    )
+    rewrite_recorded(batch_path, hand_edited)
     repaired = coordinator_run(
         "--state-dir",
         str(wedge_state),

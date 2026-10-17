@@ -657,6 +657,9 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
+        # Before the read of the batch: an interrupted composite write has not appended its audit
+        # event yet, and the strict read stops on it.
+        settle(repo, root, ledger, dispatch["batch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         _validate_dispatch(repo, core_config._config(repo), root, batch, dispatch)

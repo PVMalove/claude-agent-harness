@@ -23,6 +23,7 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
+from .runtime_reconcile import settle
 from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _qa_preparation_commands
 from .core.constants import (
@@ -812,6 +813,9 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     queue_path: Path | None = None
     with _lock(ledger):
         dispatch = ops._load_dispatch(root, args.dispatch)
+        # Before the read of the batch: an interrupted composite write has not appended its audit
+        # event yet, and the strict read stops on it.
+        settle(repo, root, ledger, dispatch["batch_id"])
         batch = ops._load_batch(root, dispatch["batch_id"])
         ops._validate_batch_integrity(root, batch)
         ops._validate_dispatch(repo, ops._config(repo), root, batch, dispatch)
