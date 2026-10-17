@@ -20,6 +20,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence, cast
 
 import pytest
 
@@ -107,6 +108,10 @@ def project() -> Iterator[Path]:
     shutil.copyfile(
         Path(runner.__file__), repo / ".harness" / "health" / "isolated_runner.py"
     )
+    shutil.copyfile(
+        Path(runner.__file__).with_name("isolated_runner_session.py"),
+        repo / ".harness/health/isolated_runner_session.py",
+    )
     _write_settings(
         repo,
         _settings(["tests/**"], [sys.executable, "-B", "tests/attack.py", "{test_id}"]),
@@ -145,6 +150,7 @@ class FakeLauncher:
         env: Mapping[str, str],
         log: Path,
         timeout: float,
+        session: bool = False,
     ) -> runner.Launch:
         argv = build(7)
         self.calls.append(argv)
@@ -239,9 +245,9 @@ def _refusal(repo: Path) -> tuple[str, str | None]:
 
 
 def test_load_settings(project: Path) -> None:
-    globs, command = runner.load_settings(project)
-    assert globs == ["tests/**"]
-    assert command[-1] == "{test_id}"
+    settings = runner.load_settings(project)
+    assert settings.test_paths == ["tests/**"]
+    assert settings.command[-1] == "{test_id}"
 
 
 def test_missing_project_json_means_no_test_paths(project: Path) -> None:
@@ -586,6 +592,7 @@ def test_probe_file_left_in_checkout_fails_the_probe(project: Path) -> None:
         env: Mapping[str, str],
         log: Path,
         timeout: float,
+        session: bool = False,
     ) -> runner.Launch:
         argv = build(7)
         Path(argv[-2]).write_text("escaped", encoding="utf-8")
@@ -683,6 +690,7 @@ def test_probe_function(project: Path) -> None:
         is None
     )
     assert [Path(bind).name for bind in _binds(launcher.calls[0])] == [
+        "tests",
         "cache",
         "reports",
     ]
@@ -969,3 +977,266 @@ def test_probe_fails_when_host_sockets_are_visible(
     monkeypatch.setattr(runner, "sandbox_argv", without_run)
     assert runner.probe(sandboxed) == "probe_failed"
     assert not list(sandboxed.glob(".harness-isolation-probe-*"))
+
+
+def test_build_precedes_test_with_private_artifacts(project: Path) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["compiler", "src/calc.py", "artifacts/out"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED] * 4)
+    outcome = _run(project, "legit", launcher)
+    assert outcome.result == "passed"
+    assert len(launcher.calls) == 4
+    preparation, selected = launcher.calls[1], launcher.calls[3]
+    assert preparation[-3:] == ["compiler", "src/calc.py", "artifacts/out"]
+    assert str(project / "tests") not in _binds(preparation)
+    target = str(project / "artifacts")
+    offset = preparation.index(target)
+    backing = preparation[offset - 1]
+    assert preparation[offset - 2] == "--bind" and backing != target
+    offset = selected.index(target)
+    assert selected[offset - 2 : offset] == ["--ro-bind", backing]
+    assert list((project / "artifacts").iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "built,reason",
+    [
+        (runner.Launch(True, 7), "build_failed"),
+        (runner.Launch(True, None, True), "build_timeout"),
+        (runner.Launch(False, 1), "isolation_unavailable"),
+    ],
+)
+def test_failed_preparation_never_starts_selected_test(
+    project: Path, built: runner.Launch, reason: str
+) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED, built])
+    outcome = _run(project, "legit", launcher)
+    assert outcome.result == "refused" and outcome.reason == reason
+    assert len(launcher.calls) == 2
+
+
+def test_preparation_probe_checks_its_artifact_mount(
+    sandboxed: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (sandboxed / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(sandboxed, data)
+    original = runner.sandbox_argv
+
+    def wrong_mount(
+        bwrap: str,
+        repo: Path,
+        binds: Sequence[Path | runner.Mount],
+        command: Sequence[str],
+        status_fd: int,
+    ) -> list[str]:
+        argv = original(bwrap, repo, binds, command, status_fd)
+        target = str(sandboxed / "artifacts")
+        if target in argv:
+            argv[argv.index(target) - 2] = "--ro-bind"
+        return argv
+
+    monkeypatch.setattr(runner, "sandbox_argv", wrong_mount)
+    outcome = runner.run_test(sandboxed, "legit")
+    assert (outcome.reason, outcome.detail) == ("isolation_unavailable", "probe_failed")
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "src/**",
+        ".harness/**",
+        "tests/**",
+        "tests/nested/**",
+        "artifacts/nested/**",
+        "alias/**",
+    ],
+)
+def test_unsafe_artifact_targets_refuse_without_launch(
+    project: Path, target: str
+) -> None:
+    (project / "artifacts").mkdir()
+    if target == "artifacts/nested/**":
+        (project / "artifacts/nested").mkdir()
+    (project / "tests/nested").mkdir()
+    (project / "alias").symlink_to(project / "artifacts", target_is_directory=True)
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**", target],
+    }
+    _write_settings(project, data)
+    before = _snapshot(project)
+    launcher = FakeLauncher([])
+    assert _run(project, "legit", launcher).reason == "write_zone_rejected"
+    assert launcher.calls == [] and _snapshot(project) == before
+
+
+@pytest.mark.parametrize(
+    "attack", ["direct", "child_py", "symlink", "project_json", "module"]
+)
+def test_preparation_cannot_write_protected_files(sandboxed: Path, attack: str) -> None:
+    (sandboxed / "artifacts").mkdir()
+    data = _settings(["tests/**"], [sys.executable, "tests/attack.py", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": [sys.executable, "tests/attack.py", attack],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(sandboxed, data)
+    before = _snapshot(sandboxed)
+    outcome = runner.run_test(sandboxed, "legit")
+    assert outcome.reason == "build_failed"
+    assert _snapshot(sandboxed) == before
+
+
+@pytest.mark.parametrize(
+    "test_id,uses_database", [("sql.constraints", True), ("domain.add", False)]
+)
+def test_only_matching_selected_tests_start_database(
+    project: Path, test_id: str, uses_database: bool
+) -> None:
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["sql.*"],
+        "command": ["foreground-db"],
+        "ready_command": ["ready"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED, STARTED])
+    assert _run(project, test_id, launcher).result == "passed"
+    selected = launcher.calls[-1]
+    assert (
+        any(part.endswith("isolated_runner_session.py") for part in selected)
+        is uses_database
+    )
+    assert "RUNNER_SECRET" not in launcher.envs[-1]
+
+
+def _fake_database_settings(project: Path, server: str, selected: str) -> None:
+    data = _settings(["tests/**"], [sys.executable, "-c", selected, "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["sql.*"],
+        "command": [sys.executable, "-c", server],
+        "ready_command": [
+            sys.executable,
+            "-c",
+            "import os,sys; sys.exit(not os.path.exists(os.environ['HARNESS_TEST_DATABASE_DIR']+'/ready'))",
+        ],
+    }
+    _write_settings(project, data)
+
+
+FAKE_DATABASE = "import os,time; open(os.environ['HARNESS_TEST_DATABASE_DIR']+'/ready','w').close(); time.sleep(120)"
+
+
+def test_private_database_lifecycle_and_result_channel(sandboxed: Path) -> None:
+    selected = """import os,sys
+from pathlib import Path
+from typing import Sequence, cast
+assert os.environ['HARNESS_TEST_DATABASE_DIR'].startswith('/tmp/harness-db-')
+assert os.path.isdir(os.environ['HARNESS_TEST_DATABASE_SOCKET_DIR'])
+try:
+    open('/proc/%d/fd/1' % os.getppid(), 'w')
+except PermissionError:
+    pass
+else:
+    raise AssertionError('helper result channel exposed')
+print('{"database":"unavailable"}')
+Path(os.environ['HARNESS_TEST_REPORT_DIR']+'/dbdir').write_text(os.environ['HARNESS_TEST_DATABASE_DIR'])
+sys.exit(3)
+"""
+    _fake_database_settings(sandboxed, FAKE_DATABASE, selected)
+    first = runner.run_test(sandboxed, "sql.constraint")
+    assert (first.result, first.reason, first.exit_code) == ("failed", "test_failed", 3)
+    second = runner.run_test(sandboxed, "sql.constraint")
+    directories = [
+        storage_path(sandboxed, "runs", f"isolated-test-{item.run_id}")
+        / "reports/dbdir"
+        for item in (first, second)
+    ]
+    assert directories[0].read_text() != directories[1].read_text()
+
+
+def test_database_start_failure_refuses_before_selected_test(sandboxed: Path) -> None:
+    _fake_database_settings(
+        sandboxed, "raise SystemExit(4)", "open('tests/should-not-run','w').close()"
+    )
+    outcome = runner.run_test(sandboxed, "sql.constraint")
+    assert outcome.reason == "database_unavailable" and outcome.result == "refused"
+    assert not (sandboxed / "tests/should-not-run").exists()
+
+
+def test_probe_refuses_unsafe_artifact_settings_without_running_commands(
+    project: Path,
+) -> None:
+    (project / "artifacts").mkdir()
+    (project / "artifacts/source.py").write_text("protected")
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED])
+    assert runner.probe(project, launcher=launcher) == "write_zone_rejected"
+    assert launcher.calls == []
+
+
+def test_probe_checks_both_phases_without_build_or_database_start(
+    project: Path,
+) -> None:
+    (project / "artifacts").mkdir()
+    data = _settings(["tests/**"], ["never-test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["build"] = {
+        "command": ["never-build"],
+        "artifact_paths": ["artifacts/**"],
+    }
+    cast(dict[str, object], data["test_runner"])["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["*"],
+        "command": ["never-db"],
+        "ready_command": ["never-ready"],
+    }
+    _write_settings(project, data)
+    launcher = FakeLauncher([STARTED, STARTED])
+    assert (
+        runner.probe(
+            project, launcher=launcher, platform="linux", which=lambda n: "bwrap"
+        )
+        is None
+    )
+    assert len(launcher.calls) == 2
+    assert all(runner.PROBE_SCRIPT in command for command in launcher.calls)
+    assert not any("never-" in part for command in launcher.calls for part in command)
+
+
+def test_probe_sanitizes_configuration_refusal(
+    project: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    data = _settings(["tests/**"], ["test", "{test_id}"])
+    cast(dict[str, object], data["test_runner"])["database"] = {"secret": "not-logged"}
+    _write_settings(project, data)
+    assert runner.main([str(project), "--probe"]) == 3
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "unavailable",
+        "reason": "config_invalid",
+        "detail": None,
+    }

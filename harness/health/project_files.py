@@ -83,7 +83,8 @@ TRACKER_PROJECT_RULE = (
 # glob is relative - no leading slash or backslash, no drive letter - and has no `..` segment.
 # `project.schema.json` repeats the pattern verbatim; tests keep the two in step.
 TEST_PATH_PATTERN = r"^(?![/\\])(?![A-Za-z]:)(?!(?:.*[/\\])?\.\.(?:[/\\]|$)).+$"
-TEST_RUNNER_FIELDS = ("command",)
+TEST_RUNNER_FIELDS = ("command", "build", "database")
+ARTIFACT_PATH_PATTERN = "^(?![/\\\\])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/*?\\[\\]{}\\\\\\x00-\\x1f]+(?:/[^/*?\\[\\]{}\\\\\\x00-\\x1f]+)*/\\*\\*$(?![\\s\\S])"
 # The one `test_runner.command` element the runner replaces with the selected test id.
 TEST_ID_PLACEHOLDER = "{test_id}"
 # Bound of the `git ls-files` skill inventory.
@@ -612,6 +613,58 @@ def test_runner_problems(value: object) -> list[str]:
     extra = sorted(str(key) for key in set(value) - set(TEST_RUNNER_FIELDS))
     if extra:
         problems.append(f"{prefix} has unknown field(s): {', '.join(extra)}")
+    for field, required in (
+        ("build", {"command", "artifact_paths"}),
+        ("database", {"engine", "test_ids", "command", "ready_command"}),
+    ):
+        if field not in value:
+            continue
+        settings = value[field]
+        label = f"{prefix}.{field}"
+        if not isinstance(settings, dict) or set(settings) != required:
+            problems.append(
+                f"{label} must contain exactly: {', '.join(sorted(required))}"
+            )
+            continue
+        for name in (
+            ("command", "ready_command") if field == "database" else ("command",)
+        ):
+            argv = settings[name]
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or not all(
+                    isinstance(part, str)
+                    and part
+                    and "\x00" not in part
+                    and TEST_ID_PLACEHOLDER not in part
+                    for part in argv
+                )
+            ):
+                problems.append(
+                    f"{label}.{name} must be non-empty argv without '{{test_id}}'"
+                )
+        name = "artifact_paths" if field == "build" else "test_ids"
+        items = settings[name]
+        if (
+            not isinstance(items, list)
+            or not items
+            or not all(
+                isinstance(item, str)
+                and item.strip()
+                and "\x00" not in item
+                and (field != "build" or re.fullmatch(ARTIFACT_PATH_PATTERN, item))
+                for item in items
+            )
+        ):
+            problems.append(f"{label}.{name} must be a non-empty list of valid strings")
+        elif len(set(items)) != len(items):
+            problems.append(f"{label}.{name} must be unique")
+        if field == "database" and not (
+            isinstance(settings["engine"], str)
+            and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", settings["engine"])
+        ):
+            problems.append(f"{label}.engine must be an engine identifier")
     if "command" not in value:
         problems.append(f"{prefix} missing required field(s): command")
         return problems

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -127,3 +128,105 @@ def test_install_rejects_an_invalid_test_flag_before_writing(
     assert flag in result.stderr
     assert "secret" not in result.stderr
     assert not (repo / ".harness").exists()
+
+
+def test_install_optional_build_database_and_health(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    result = _init(
+        repo,
+        "--test-path",
+        "tests/**",
+        "--test-runner-command",
+        "pytest {test_id}",
+        "--test-build-command",
+        "cc src/main.c -o artifacts/main",
+        "--test-artifact-path",
+        "artifacts/**",
+        "--test-database-engine",
+        "postgresql",
+        "--test-database-test-id",
+        "tests/sql*",
+        "--test-database-command",
+        "postgres",
+        "--test-database-ready-command",
+        "pg_isready",
+    )
+    assert result.returncode == 0, result.stderr
+    data = _installed_project_json(repo)
+    runner = cast(dict[str, object], data["test_runner"])
+    assert cast(dict[str, object], runner["build"])["artifact_paths"] == [
+        "artifacts/**"
+    ]
+    assert cast(dict[str, object], runner["database"])["engine"] == "postgresql"
+    health = subprocess.run(
+        [sys.executable, str(CLI), "health", str(repo)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    assert "test_runner" not in health.stdout + health.stderr
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ["--test-build-command", "cc"],
+        ["--test-artifact-path", "artifacts/**"],
+        ["--test-database-engine", "postgresql"],
+        ["--test-database-command", "postgres"],
+    ],
+)
+def test_install_incomplete_groups_write_nothing(
+    tmp_path: Path, flags: list[str]
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    result = _init(repo, *flags)
+    assert result.returncode == 2
+    assert not (repo / ".harness").exists()
+
+
+def test_installed_runner_delivers_database_session_helper(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    assert _init(repo).returncode == 0
+    assert (repo / ".harness/health/isolated_runner_session.py").is_file()
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_health_checks_optional_build_database_contract(
+    tmp_path: Path, invalid: bool
+) -> None:
+    repo = _repo(tmp_path / "repo")
+    assert (
+        _init(
+            repo, "--test-path", "tests/**", "--test-runner-command", "pytest {test_id}"
+        ).returncode
+        == 0
+    )
+    config = repo / ".harness/project.json"
+    data = json.loads(config.read_text())
+    data["test_runner"]["build"] = {
+        "command": ["compiler"],
+        "artifact_paths": [".build/**"],
+    }
+    data["test_runner"]["database"] = {
+        "engine": "postgresql",
+        "test_ids": ["sql.*"],
+        "command": ["postgres"],
+        "ready_command": [] if invalid else ["pg_isready"],
+    }
+    config.write_text(json.dumps(data))
+    health = subprocess.run(
+        [sys.executable, str(CLI), "health", str(repo), "--json"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    checks = json.loads(health.stdout)["checks"]
+    result = next(item for item in checks if item["id"] == "files.project_json")
+    assert result["status"] == ("fail" if invalid else "ok")
+    if invalid:
+        assert health.returncode != 0 and "ready_command" in result["message"]

@@ -28,6 +28,8 @@ CLAUDE_REPO="$(cd "$CLAUDE_REPO" 2>/dev/null && pwd -P || true)"
 [ "${CLAUDE_CODE_SAFE_MODE:-0}" = "1" ] && disabled claude_code_unsupported
 
 GIT_ROOT="$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$GIT_ROOT" ] || disabled project_untrusted
+GIT_ROOT="$(cd "$GIT_ROOT" 2>/dev/null && pwd -P || true)"
 [ "$GIT_ROOT" = "$REPO" ] || disabled project_untrusted
 [ "$(git -C "$REPO" rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ] || disabled project_untrusted
 
@@ -101,7 +103,8 @@ esac
 
 PROBE="$("$RUNNER" --probe 2>/dev/null || true)"
 PROBE_REASON="$(printf '%s' "$PROBE" | answer_reason unavailable \
-  isolation_unavailable runner_unavailable)"
+  isolation_unavailable runner_unavailable config_invalid write_zone_rejected \
+  test_paths_missing test_runner_missing)"
 case "$PROBE_REASON" in
   ok) ;;
   invalid) disabled isolation_unavailable ;;

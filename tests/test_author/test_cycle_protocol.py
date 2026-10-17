@@ -6,7 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.clean_room import isolated_test_runner, test_author_cycle
+import importlib
+
+isolated_test_runner = importlib.import_module("scripts.clean_room.isolated_test_runner")
+test_author_cycle = importlib.import_module("scripts.clean_room.test_author_cycle")
 
 ROOT = Path(__file__).resolve().parents[2]
 DEVELOPER = ROOT / "harness" / "orchestration" / "roles" / "developer.md"
