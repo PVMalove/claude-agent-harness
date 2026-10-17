@@ -936,6 +936,47 @@ def build_parser(
     )
     resolver_event.set_defaults(handler=handlers.resolver_event)
 
+    recovery = commands.add_parser(
+        "recovery",
+        help="status, reload and resume of a batch the coordinator holds or stopped; never "
+        "reads stdin, exits 0 on success and 2 on refusal",
+    )
+    recovery_commands = recovery.add_subparsers(dest="recovery_command", required=True)
+    for name, handler, help_text in (
+        (
+            "status",
+            handlers.recovery_status,
+            "read-only reconciliation checks, diagnostics and the available actions",
+        ),
+        (
+            "reload",
+            handlers.recovery_reload,
+            "re-read and validate the current configuration; never starts a worker",
+        ),
+        (
+            "resume",
+            handlers.recovery_resume,
+            "reconcile the batch and release its hold through the existing approval gates",
+        ),
+    ):
+        command = recovery_commands.add_parser(name, help=help_text)
+        _common(command)
+        command.add_argument("--batch", required=True)
+        command.add_argument(
+            "--json",
+            action="store_true",
+            help="structured output; the coordinator always prints JSON",
+        )
+        if name == "resume":
+            command.add_argument(
+                "--approved-by",
+                help="human who approves the audited resume-stop of a stopped batch",
+            )
+            command.add_argument("--approved-at", help="time of that approval")
+            command.add_argument("--note", help="what was checked before resuming")
+        # Recovery runs on the installed runtime, like resume-stop and rewind.
+        command.set_defaults(handler=handler, installed_runtime_only=True)
+
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)
     report_submit = report_commands.add_parser("submit", aliases=["record"])

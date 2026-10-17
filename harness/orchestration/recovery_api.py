@@ -49,6 +49,8 @@ from harness.orchestration.core.utils import (
     _now,
     _silent_seconds,
 )
+from harness.orchestration.ledger.lifecycle import LifecycleLedger
+from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
     RuntimeStateError,
     RuntimeStateStore,
@@ -92,7 +94,6 @@ OUTCOMES = ("done", "refused")
 INTENT_STATUSES = ("pending", "done", "refused", "interrupted", "aborted")
 # The closed allowlist of advisories ``skip`` may hide for one session.
 ADVISORIES = ("config-normalized", "unconfirmed-contract")
-STOPPED_STATES = frozenset({"paused", "blocked", "failed"})
 # The runtime failure codes a refusal keeps as its diagnostic code.
 _FAILURE_CODES = {
     "runtime-compatibility": "runtime-compatibility",
@@ -484,7 +485,6 @@ class Survey:
 
     def _ledger(self) -> None:
         from harness.orchestration.ledger.ledger_ops import _ledger_errors
-        from harness.orchestration.ledger.lifecycle import LifecycleLedger
 
         check = self.checks["ledger"]
         try:
@@ -539,16 +539,22 @@ class Survey:
                 ),
                 status="refused",
             )
-        elif batch["state"] in STOPPED_STATES:
+        elif (route := stopped_route(batch)) is not None:
+            check.evidence = {**check.evidence, "route": route}
+            remedy = (
+                "run 'recovery resume' with --approved-by, --approved-at and --note: it "
+                "records the audited batch resume-stop"
+                if route == "resume-stop"
+                else "choose the gate to continue from with 'batch rewind --to <gate>' and a "
+                "human approval; recovery never picks it"
+            )
             check.add(
                 RecoveryDiagnostic(
                     "approval-required",
                     "lifecycle",
-                    f"the batch is {batch['state']}: its recorded stop is resumed only with a "
-                    "human approval",
-                    remedy="run 'recovery resume' with --approved-by, --approved-at and --note "
-                    "(the audited batch resume-stop), or choose an earlier gate with batch "
-                    "rewind",
+                    f"the batch is {batch['state']}: its recorded stop is resumed only through "
+                    f"the audited {route} with a human approval",
+                    remedy=remedy,
                     severity="warning",
                 ),
                 status="pending",
@@ -575,7 +581,6 @@ class Survey:
             try:
                 read_snapshot(dispatch)
             except HarnessError as exc:
-                self.hold_reason = self.hold_reason or "missing-value"
                 check.add(
                     RecoveryDiagnostic(
                         "integrity-failure",
@@ -863,7 +868,7 @@ class Survey:
             }
         if self.checks["config"].status == "refused":
             if self.fix_available():
-                command = f"recovery fix --batch {self.batch_id}"
+                command = "config validate --fix --dry-run"
             else:
                 command = f"recovery reload --batch {self.batch_id}"
             return {
@@ -877,8 +882,16 @@ class Survey:
         return None
 
 
+def stopped_route(batch: JsonObject) -> str | None:
+    from harness.orchestration.workflow import recovery
+
+    return recovery.stopped_route(batch)
+
+
 def lifecycle_view(batch: JsonObject) -> JsonObject:
     """The lifecycle facts recovery preserves and shows; it never changes them itself."""
+    from harness.orchestration.workflow.recovery import STOPPED_STATES
+
     return {
         "state": batch["state"],
         "next_action": batch.get("next_action"),
@@ -932,7 +945,7 @@ def reload(repo: Path, root: Path, batch_id: str) -> JsonObject:
             "worker_started": False,
             "next": {"command": f"recovery resume --batch {batch_id}"}
             if outcome == "done"
-            else {"command": f"recovery fix --batch {batch_id}"}
+            else {"command": "config validate --fix --dry-run"}
             if survey.fix_available()
             else None,
         }
@@ -1036,4 +1049,223 @@ def abort(repo: Path, root: Path, batch_id: str) -> JsonObject:
         "worker_stopped": False,
         "worktree_cleaned": False,
         "intent": read_intent(store, batch_id),
+    }
+
+
+# -- resume --------------------------------------------------------------------------------------
+
+
+@dataclass
+class _Run:
+    """What one resume did, step by step; every step is safe to find again on a repeat."""
+
+    steps: list[JsonObject] = field(default_factory=list)
+    refused: list[RecoveryDiagnostic] = field(default_factory=list)
+
+    def step(self, name: str, detail: str, **evidence: object) -> None:
+        self.steps.append({"step": name, "detail": detail, **evidence})
+
+
+def resume(
+    repo: Path,
+    root: Path,
+    batch_id: str,
+    *,
+    approval: Mapping[str, str] | None = None,
+) -> JsonObject:
+    """Reconcile ``batch_id`` and release its hold, then continue a recorded stop through the
+    audited ``batch resume-stop`` when ``approval`` names the human, the time and the note.
+
+    Under the ledger lock every check of ``status`` runs first.  A refused check changes
+    nothing, except that a batch the ledger cannot read is held in the store.  Otherwise the
+    hold is released and ``settle`` finishes an unfinished operation from its durable intent: a
+    confirmed step is never repeated, and an ambiguous effect or a live worker stops instead of
+    starting a second one.  No approval, attention, budget, auto stop or terminal refusal is
+    changed, no brief is rewritten and no dispatch is created: the next transition needs its own
+    approval with the current digest."""
+    from harness.orchestration.ledger.ledger_ops import _ledger_lock
+
+    store = _store(repo, root, batch_id)
+    run = _Run()
+    with tracked(store, batch_id, "resume") as intent:
+        ledger = LifecycleLedger(root)
+        with _ledger_lock(ledger):
+            survey = Survey(repo, root, batch_id).run()
+            refusals = [
+                item
+                for name in CHECKS
+                if survey.checks[name].status == "refused"
+                for item in survey.checks[name].diagnostics
+                if item.fatal
+            ]
+            if refusals:
+                run.refused.extend(refusals)
+                _hold_unreadable(store, survey, run, refusals[0])
+            else:
+                _reconcile(repo, root, ledger, store, survey, run)
+        if not run.refused and survey.batch is not None:
+            _continue_stop(repo, root, batch_id, survey.batch, approval, run)
+        outcome = "refused" if run.refused else "done"
+        intent.finish(
+            outcome, outcome, None if not run.refused else run.refused[0].message
+        )
+    final = Survey(repo, root, batch_id).run()
+    return {
+        "contract": RECOVERY_CONTRACT,
+        "action": "resume",
+        "batch_id": batch_id,
+        "outcome": outcome,
+        "steps": run.steps,
+        "refusals": [item.to_dict() for item in run.refused],
+        "dispatch_created": False,
+        "worker_started": False,
+        "status": final.document(),
+        "next": _next_transition(root, final)
+        if outcome == "done"
+        else final.next_step(),
+    }
+
+
+def _hold_unreadable(
+    store: RuntimeStateStore,
+    survey: Survey,
+    run: _Run,
+    refusal: RecoveryDiagnostic,
+) -> None:
+    """Hold a batch whose ledger record does not read, through the store alone: no lifecycle
+    record is written for it, and every command that would act on it stops on the hold.  A
+    store that refused is not written either.  A readable batch is not held: the commands that
+    repair it (dispatch cancel, attention resolve) keep working."""
+    if (
+        survey.batch is not None
+        or survey.hold_reason is None
+        or survey.checks["store"].status == "refused"
+    ):
+        return
+    held = operational_hold.hold(
+        store, survey.batch_id, survey.hold_reason, refusal.message
+    )
+    if held is not None:
+        run.step(
+            "hold",
+            f"the batch is held ({held.reason}) until it reads and verifies again",
+            hold=held.to_dict(),
+        )
+
+
+def _reconcile(
+    repo: Path,
+    root: Path,
+    ledger: LifecycleLedger,
+    store: RuntimeStateStore,
+    survey: Survey,
+    run: _Run,
+) -> None:
+    """Release the hold, then finish an unfinished operation; the caller holds the lock."""
+    held = survey.hold
+    if held is not None:
+        operational_hold.release(store, survey.batch_id)
+        run.step("release", f"the {held.reason} hold is released", hold=held.to_dict())
+    try:
+        reconciled = settle(repo, root, ledger, survey.batch_id)
+    except RuntimeStateError as exc:
+        run.refused.append(RecoveryDiagnostic.from_error("operation", exc))
+        return
+    if reconciled:
+        run.step(
+            "reconcile",
+            "the unfinished operation was finished from its durable intent",
+        )
+
+
+def _continue_stop(
+    repo: Path,
+    root: Path,
+    batch_id: str,
+    batch: JsonObject,
+    approval: Mapping[str, str] | None,
+    run: _Run,
+) -> None:
+    """A recorded stop continues only through the audited ``batch resume-stop``."""
+    import argparse
+
+    from harness.orchestration.workflow.recovery import resume_stopped_batch
+
+    route = stopped_route(batch)
+    if route is None:
+        return
+    if route == "rewind" or approval is None:
+        run.refused.append(
+            RecoveryDiagnostic(
+                "approval-required",
+                "lifecycle",
+                f"the {batch['state']} batch continues only through the audited {route}",
+                remedy="repeat 'recovery resume' with --approved-by, --approved-at and --note"
+                if route == "resume-stop"
+                else "choose the gate with 'batch rewind --to <gate>' and a human approval",
+            )
+        )
+        return
+    try:
+        result = resume_stopped_batch(
+            argparse.Namespace(
+                repo=str(repo),
+                state_dir=str(root),
+                batch=batch_id,
+                approved_by=approval.get("approved_by"),
+                approved_at=approval.get("approved_at"),
+                note=approval.get("note"),
+            )
+        )
+    except HarnessError as exc:
+        run.refused.append(RecoveryDiagnostic.from_error("lifecycle", exc))
+        return
+    event = result.get("event")
+    run.step(
+        "resume-stop",
+        "the recorded stop continues through the audited resume-stop event",
+        event_sequence=event.get("sequence") if isinstance(event, dict) else None,
+        state=result.get("state"),
+    )
+
+
+def _next_transition(root: Path, survey: Survey) -> JsonObject | None:
+    """The command that continues the batch; a new transition needs its own approval."""
+    from harness.orchestration.core.constants import NEXT_ACTION_DISPATCH_ROLE
+    from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
+
+    batch = survey.batch
+    if batch is None:
+        return None
+    for entry in open_entries(batch):
+        dispatch_id = entry["dispatch_id"]
+        state = _load_dispatch_status(root, dispatch_id).get("state")
+        if entry.get("state") == "approved" and state == "approved":
+            command = (
+                f"qa run --dispatch {dispatch_id}"
+                if entry.get("role") == "qa"
+                else f"dispatch send --dispatch {dispatch_id}"
+            )
+            return {"command": command, "reason": "the approved brief was never sent"}
+        if entry.get("state") == "reported":
+            return {
+                "command": f"batch decision-packet --batch {batch['batch_id']}",
+                "reason": "a completion report awaits its decision",
+            }
+        if state in LIVE_DISPATCH_STATES:
+            return {
+                "command": f"dispatch wait --dispatch {dispatch_id}",
+                "reason": "a worker may still run; no second one is started",
+            }
+    action = str(batch.get("next_action"))
+    # A recovered stage names its role itself (``developer`` after a resume-stop).
+    role = NEXT_ACTION_DISPATCH_ROLE.get(
+        action, action if action in {"developer", "architect"} else None
+    )
+    if role is None or batch.get("state") in TERMINAL_BATCH_STATES:
+        return None
+    purpose = " --purpose publish" if action == "publish" else ""
+    return {
+        "command": f"dispatch propose --batch {batch['batch_id']} --role {role}{purpose}",
+        "reason": "the next transition needs an approval with its current digest",
     }
