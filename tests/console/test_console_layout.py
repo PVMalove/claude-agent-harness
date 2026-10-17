@@ -331,3 +331,46 @@ def test_harness_layout(tmp_path: Path, size: tuple[int, int], language: str) ->
     problems, menu_height = asyncio.run(scenario())
     assert problems == []
     assert menu_height >= 8  # the command list stays usable on the smallest terminal
+
+
+DIAGNOSTICS_TITLES = (".breadcrumbs",)
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_diagnostics_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.console.screens.diagnostics import DiagnosticsScreen
+    from harness.health.model import CheckResult, Fix, Report
+
+    long_repo = tmp_path / ("nested-directory-name-" * 3) / "project"
+    report = Report(
+        schema_version=1,
+        repo=str(long_repo),
+        online=False,
+        checks=[
+            CheckResult(id="files.lock", group="files", status="ok", message="lock ok"),
+            CheckResult(
+                id="environment.uv",
+                group="environment",
+                status="fail",
+                message="uv недоступен " * 6,
+                fix=Fix(text="поставить uv", command="echo installing-uv"),
+            ),
+            CheckResult(
+                id="net.pypi", group="net", status="skipped", message="offline"
+            ),
+        ],
+    )
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(long_repo)
+        async with app.run_test(size=size) as pilot:
+            screen = DiagnosticsScreen(
+                long_repo, collect_diagnostics=lambda repo, *, online=False: report
+            )
+            await _open(app, pilot, screen, language)
+            return layout_problems(screen, DIAGNOSTICS_TITLES)
+
+    assert asyncio.run(scenario()) == []
