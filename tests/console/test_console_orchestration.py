@@ -530,3 +530,34 @@ def test_worker_sessions_button_sits_in_the_header_and_shows_the_active_count(
     assert ru == "Рабочие сессии · 2" and en == "Worker sessions · 2"
     assert orphans == []  # no button stands outside the header
     assert opened
+
+
+@pytest.mark.parametrize("size", [(120, 30), (100, 24)])
+def test_the_page_opens_at_its_top_and_stays_there(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    """The command menu takes focus on arrival, which must not leave the page scrolled down."""
+    from tests.console._console_ledger_fixture import build_reports_fixture
+    from textual.containers import VerticalScroll
+
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[int, int, float]:
+        app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            page = app.screen.query_one("#orchestration-page", VerticalScroll)
+            first = page.scroll_y
+            await pilot.pause(0.3)
+            return page.max_scroll_y, first, page.scroll_y
+
+    max_scroll, first, later = asyncio.run(scenario())
+    assert max_scroll > 0  # the page does scroll at this size
+    assert first == 0 and later == 0
+
+
+def test_the_screen_uses_the_base_overview_repaint() -> None:
+    from harness.console.screens.commands import CommandMenuScreen
+
+    assert "_repaint_overview" not in vars(OrchestrationScreen)
+    assert OrchestrationScreen._repaint_overview is CommandMenuScreen._repaint_overview

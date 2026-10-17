@@ -188,13 +188,6 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
         ConsoleShell.sync_language(self)
         CommandMenuScreen.sync_language(self)
 
-    def _repaint_overview(self, language: str) -> None:
-        """The unavailable-ledger message is plain text; the statistics grid relabels itself."""
-        for panel in self.query(".overview"):
-            source = getattr(panel, "i18n_source", None)
-            if isinstance(panel, Static) and source:
-                panel.update(i18n.tr_text(language, source))
-
     def overview(self) -> ComposeResult:
         """Статистика пайплайна и история batch: слева состояния с числом batch, справа batch
         выбранного состояния."""
@@ -249,7 +242,7 @@ class OrchestrationScreen(ConsoleShell, CommandMenuScreen):
             self._show_batches(console_stats.ALL_STATES)
         # The command menu takes focus on arrival; the page still opens at its top.
         page = self.query_one("#orchestration-page", VerticalScroll)
-        self.set_timer(0.05, lambda: page.scroll_home(animate=False))
+        self.call_after_refresh(page.scroll_home, animate=False)
 
     def _show_batches(self, state: str) -> None:
         history = self.query_one("#batch-history", ListView)
