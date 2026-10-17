@@ -556,6 +556,35 @@ stay unchanged. Known current writer progress supplies the new startup SHA. A ne
 spends the remaining developer retry budget when its dispatch is created; rewind never resets
 continuation, rate-limit, resolver or attention counters.
 
+If the stopped writer made commits or left pending files without submitting a report or
+checkpoint, use the explicit preservation route. First inspect its registered issue worktree,
+full HEAD SHA, branch, and tracked/untracked changes. Stop the actual worker and record
+`dispatch cancel --runtime-stopped` with human approval. Then obtain human approval to continue
+that exact unfinished checkout and name every pending path:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch rewind \
+  --batch <id> --to developer --preserved-commit <full-HEAD-SHA> \
+  --preserved-file <pending-path-1> --preserved-file <pending-path-2> \
+  --approved-by <operator> --approved-at <UTC> --note "continue inspected unfinished work"
+```
+
+Omit `--preserved-file` for a clean checkout. A resolver uses `--to resolve-conflict` with its
+registered resolver boundary. Preservation requires the latest dispatch to be a cancelled work
+writer with a recorded runtime stop. HEAD must descend from its immutable startup snapshot;
+committed changes and every pending path must fit its write scope. A missing or extra path,
+foreign checkout/branch, symlink, live worker or forward gate is refused without changing files
+or ledger. Ordinary rewind still requires known progress and a clean checkout.
+
+The sealed recovery event records the source dispatch, original snapshot, preserved HEAD,
+checkout proof, file content/mode hashes and staged/unstaged diff hashes. The next writer brief
+carries `preserved_progress`, bound through the recovery event in its fresh transition digest.
+Preflight, proposal, brief creation, send and initial self-report recheck that checkout. If it
+changed, inspect it and make a new recovery decision; preserve the old evidence. Once startup
+succeeds the worker can continue editing, and historical ledger validation retains the handoff
+as evidence rather than treating it as a live file lock. Preservation neither accepts a report
+nor bypasses review/QA; fresh human dispatch approval and the existing retry budgets still apply.
+
 `batch decide --decision accept-conditional --infrastructure-failure --note <cause>` lets the
 pipeline move past a stage whose report is `blocked` by an infrastructure failure while the work
 itself looks complete: a developer report whose commits match the plan, for example, when the

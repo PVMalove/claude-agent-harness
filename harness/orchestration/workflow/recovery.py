@@ -488,15 +488,30 @@ def _require_known_checkout(repo: Path, batch: JsonObject, snapshot: str) -> Non
     from harness.orchestration.core.git_utils import _git
 
     checkout = Path(batch["worktree"]).resolve()
-    verified_checkout(
-        repo,
-        {"role": "developer", "branch": batch["branch"], "snapshot_commit": snapshot},
-        str(checkout),
+    preservation = (
+        "for a writer cancelled with --runtime-stopped and no completion report, repeat human-approved "
+        "batch rewind to its writer gate with --preserved-commit <full-HEAD-SHA> and "
+        "--preserved-file <path> for every pending file; otherwise register known progress; "
+        "never reset or stash to pass recovery"
     )
+    try:
+        verified_checkout(
+            repo,
+            {
+                "role": "developer",
+                "branch": batch["branch"],
+                "snapshot_commit": snapshot,
+            },
+            str(checkout),
+        )
+    except CoordinatorError as exc:
+        raise CoordinatorError(
+            exc.message, remedy=f"{exc.remedy}; {preservation}"
+        ) from exc
     if _git(checkout, "status", "--porcelain", "--untracked-files=all"):
         raise CoordinatorError(
             "rewind found unknown dirty files",
-            remedy="preserve and register progress before selecting a fresh gate; rewind never resets files",
+            remedy=preservation,
         )
 
 
@@ -551,13 +566,32 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
                 remedy="use integration resolve to register the conflicting candidate/target pair before dispatching a resolver",
             )
         candidate = _known_candidate(repo, root, batch, entries)
-        _require_known_checkout(
-            repo,
-            batch,
-            candidate
-            or writer_start(batch)
-            or cast(str, batch.get("branch_start_commit", batch["base_commit"])),
-        )
+        preserved = None
+        if getattr(args, "preserved_commit", None) is not None:
+            from harness.orchestration.workflow import preserved_progress
+
+            preserved = preserved_progress.capture(
+                repo,
+                root,
+                batch,
+                target,
+                args.preserved_commit,
+                getattr(args, "preserved_file", []),
+            )
+            candidate = preserved["head_commit"]
+        else:
+            if getattr(args, "preserved_file", []):
+                raise CoordinatorError(
+                    "--preserved-file requires --preserved-commit",
+                    remedy="name the stopped writer HEAD explicitly before preserving files",
+                )
+            _require_known_checkout(
+                repo,
+                batch,
+                candidate
+                or writer_start(batch)
+                or cast(str, batch.get("branch_start_commit", batch["base_commit"])),
+            )
         before = batch["state"]
         retired = _abandon_open_dispatches(ledger, root, batch, utils._now())
         evidence: JsonObject = {
@@ -571,13 +605,16 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
             "retired_dispatches": retired,
             "target": target,
             "superseded_candidate_registrations": [
-                r["source_dispatch_id"] for r in batch.get("candidate_registrations", [])
+                r["source_dispatch_id"]
+                for r in batch.get("candidate_registrations", [])
             ]
             if target_rank <= CANDIDATE_INVALIDATING_RANK
             else [],
         }
         if target == "architect" and "commit_plan" in batch:
             evidence["superseded_commit_plan"] = batch.pop("commit_plan")
+        if preserved is not None:
+            evidence["preserved_progress"] = preserved
         batch["state"] = (
             "awaiting-approval" if batch.get("coordinator_approval") else "planned"
         )
