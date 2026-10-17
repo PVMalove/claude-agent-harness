@@ -447,14 +447,20 @@ def test_escape_cancels_with_none_and_the_menu_opens_another_section(
     assert results == [None]
 
 
-def test_the_section_menu_waits_for_a_running_operation(tmp_path: Path) -> None:
-    async def scenario() -> tuple[bool, bool, bool, bool]:
+def test_the_section_menu_waits_for_a_running_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def scenario() -> tuple[bool, bool, list[str]]:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
             await pilot.press("p")
             await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
             screen = app.screen
             assert isinstance(screen, ProjectSetupScreen)
+            notes: list[str] = []
+            monkeypatch.setattr(
+                screen, "notify", lambda message, **_: notes.append(message)
+            )
             screen.query_one("#project-path", Input).blur()
             screen._set_busy(True)
             await pilot.press("6")
@@ -463,14 +469,24 @@ def test_the_section_menu_waits_for_a_running_operation(tmp_path: Path) -> None:
             await pilot.press("escape")
             await pilot.pause()
             escape_ignored = app.screen is screen
-            notified = bool(app._notifications)
             screen._set_busy(False)
             await pilot.press("6")
+            # Times out unless the section opens once the operation is over.
             await wait_until(pilot, lambda: app.screen is not screen)
-            return number_ignored, escape_ignored, notified, True
+            return number_ignored, escape_ignored, notes
 
-    number_ignored, escape_ignored, notified, left = asyncio.run(scenario())
-    assert number_ignored and escape_ignored and notified and left
+    number_ignored, escape_ignored, notes = asyncio.run(scenario())
+    assert number_ignored and escape_ignored
+    assert notes == ["Дождитесь окончания операции"] * 2
+
+
+def test_the_busy_note_has_an_english_text() -> None:
+    from harness.console import i18n
+
+    assert (
+        i18n.tr("en", "Дождитесь окончания операции")
+        == "Wait for the operation to finish"
+    )
 
 
 def test_setup_output_marks_report_statuses_but_not_plain_list_items() -> None:

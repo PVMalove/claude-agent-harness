@@ -47,7 +47,7 @@ _STAGES = (
     "Итоговая диагностика",
 )
 _TARGET_HINT = "Укажите путь к проекту и нажмите «Проверить путь»."
-_BUSY_NOTE = "Дождитесь окончания операции перед сменой проекта"
+_BUSY_NOTE = "Дождитесь окончания операции"
 _PLAN_HINT = "План появится после проверки пути."
 _OUTPUT_HINT = "Результат проверок и установки появится здесь."
 _AFTER_INSPECT = (
@@ -517,7 +517,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     def _wait_for_operation(self) -> bool:
         """True (after telling the user) while an operation runs: the screen is not left meanwhile."""
         if self.busy:
-            self.notify(_BUSY_NOTE, severity="warning")
+            language = getattr(self.app, "language", "ru")
+            self.notify(i18n.tr(language, _BUSY_NOTE), severity="warning")
         return self.busy
 
     async def open_section(self, index: int) -> None:
