@@ -162,6 +162,8 @@ def test_install_optional_build_database_and_health(tmp_path: Path) -> None:
         [sys.executable, str(CLI), "health", str(repo)],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     assert "test_runner" not in health.stdout + health.stderr
@@ -219,6 +221,8 @@ def test_health_checks_optional_build_database_contract(
         [sys.executable, str(CLI), "health", str(repo), "--json"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     checks = json.loads(health.stdout)["checks"]
