@@ -139,6 +139,15 @@ accept of its report, or of a later retry whose candidate sits on that target, p
 error refuses the retry with a remedy; a `tooling-retry` and a candidate that already contains the
 tip propose no target.
 
+A batch created on an issue branch that already holds commits of an earlier batch of the ticket
+(its `branch_start_commit` is a strict descendant of `integration_base_commit`) measures its own
+changes from `branch_start_commit`: the `changed_files` and `commit_map` of its developer and publish
+reports, their `scope_warnings`, a checkpoint and `risk assess` (`--base-commit`, `review_scope`).
+A superseding batch measures from `integration_base_commit`, as does a batch whose start is not a
+descendant of it (after an accepted rebase, or a resolver batch). A brief and a Context Package
+(`--base-commit`) stay on `integration_base_commit`. The rule does not tell accepted commits from
+unreviewed ones: commits an abandoned batch left on the branch are not reviewed by the new batch.
+
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
 `command`, `message`), when no finding, failed check, moved candidate or developer category
@@ -547,6 +556,35 @@ stay unchanged. Known current writer progress supplies the new startup SHA. A ne
 spends the remaining developer retry budget when its dispatch is created; rewind never resets
 continuation, rate-limit, resolver or attention counters.
 
+If the stopped writer made commits or left pending files without submitting a report or
+checkpoint, use the explicit preservation route. First inspect its registered issue worktree,
+full HEAD SHA, branch, and tracked/untracked changes. Stop the actual worker and record
+`dispatch cancel --runtime-stopped` with human approval. Then obtain human approval to continue
+that exact unfinished checkout and name every pending path:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch rewind \
+  --batch <id> --to developer --preserved-commit <full-HEAD-SHA> \
+  --preserved-file <pending-path-1> --preserved-file <pending-path-2> \
+  --approved-by <operator> --approved-at <UTC> --note "continue inspected unfinished work"
+```
+
+Omit `--preserved-file` for a clean checkout. A resolver uses `--to resolve-conflict` with its
+registered resolver boundary. Preservation requires the latest dispatch to be a cancelled work
+writer with a recorded runtime stop. HEAD must descend from its immutable startup snapshot;
+committed changes and every pending path must fit its write scope. A missing or extra path,
+foreign checkout/branch, symlink, live worker or forward gate is refused without changing files
+or ledger. Ordinary rewind still requires known progress and a clean checkout.
+
+The sealed recovery event records the source dispatch, original snapshot, preserved HEAD,
+checkout proof, file content/mode hashes and staged/unstaged diff hashes. The next writer brief
+carries `preserved_progress`, bound through the recovery event in its fresh transition digest.
+Preflight, proposal, brief creation, send and initial self-report recheck that checkout. If it
+changed, inspect it and make a new recovery decision; preserve the old evidence. Once startup
+succeeds the worker can continue editing, and historical ledger validation retains the handoff
+as evidence rather than treating it as a live file lock. Preservation neither accepts a report
+nor bypasses review/QA; fresh human dispatch approval and the existing retry budgets still apply.
+
 `batch decide --decision accept-conditional --infrastructure-failure --note <cause>` lets the
 pipeline move past a stage whose report is `blocked` by an infrastructure failure while the work
 itself looks complete: a developer report whose commits match the plan, for example, when the
@@ -765,6 +803,48 @@ above: the same immutable brief goes out, the same self-report and heartbeat are
 same completion report comes back. For an in-process handoff, `dispatch send` records the brief but
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
+
+The `backend-orchestration` capability installs standalone stdlib adapters at
+`.harness/adapters/claude_worker.py` and `.harness/adapters/codex_worker.py` through `harness init`
+or `harness adopt`. If that capability is already selected, use the ordinary managed lifecycle:
+
+```bash
+python /path/to/agent-harness/harness/bin/harness.py diff /path/to/project
+python /path/to/agent-harness/harness/bin/harness.py update /path/to/project
+```
+
+For an approved `external` dispatch, choose the adapter for its assigned runtime. Use the main
+repository path for both the coordinator and adapter; send selects the worker checkout as CWD:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/claude_worker.py
+```
+
+For a Codex dispatch, use:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/codex_worker.py
+```
+
+Python adapters are invoked through the coordinator's Python interpreter, so executable mode is
+not required. Both expose `dispatch --help`, `--repo`, `--brief`, `--dry-run` and
+`--extra-prompt-file`; binary overrides are `--claude-bin` and `--codex-bin`. A retry prompt file
+can be passed with `--adapter-arg=--extra-prompt-file --adapter-arg=/absolute/path/to/retry.txt`.
+
+Adapters pass the lifecycle prompt through stdin and return after detached startup. An early
+exit, including exit zero, is a launch failure with a bounded log tail. They reject `qa`,
+`purpose: publish`, a transport other than `external`, and absent or empty `allowed_tools`.
+Claude uses the brief's model, effort and native tool allowlist; its only additional directory is
+the incoming reports directory. Codex uses `codex exec` with the brief's model and effort,
+`read-only` for read-only roles and `workspace-write` for writers. Its prompt carries the tool
+allowlist; this is not a native Codex tool filter. Neither adapter grants `danger-full-access`.
+The worker still must self-report, send heartbeats and submit its report. An adapter does not
+accept reports or select the next role. QA and publish keep their coordinator boundaries.
+
+Managed updates refresh unchanged adapters. Unknown targets and symlinks are protected; local
+regular managed edits require an explicit force option. Capability removal and uninstall retain
+modified and unknown adapters. Console settings show missing/current/outdated status and require
+a fresh preview and explicit confirmation; they preserve capability selection and never enable force.
 
 When the project authors `access_policy`, the resolved access plan is pinned in the brief and bound
 to the approval digest. `dispatch send` blocks the handoff, with a reason and a concrete preparation

@@ -51,6 +51,12 @@ its issue branch at the immutable startup SHA. Code-review retains its explicit 
 QA and publish use their own coordinator boundaries. Send verifies the choice again and returns
 `worker_worktree` and `worker_snapshot_commit` for the launch prompt. The runtime must support
 starting in that existing checkout; `isolation: worktree` alone does not prove that attachment.
+In Claude Code the Agent tool cannot start a subagent in an existing checkout (it starts in the main
+checkout and `EnterWorktree` refuses it there). For a worker whose CWD is the worktree, use the
+`external` transport with `.harness/adapters/claude_worker.py`:
+`dispatch send --adapter <main-repo>/.harness/adapters/claude_worker.py` runs it in `worker_worktree`
+and it starts a detached headless `claude -p` there. An `in-process` subagent works through absolute
+paths and `git -C <worker_worktree>`; its self-report proves the checkout it works in, not its CWD.
 The worker probes and self-reports its actual canonical Git top-level, branch and HEAD. A main
 checkout at the same SHA is still the wrong path for a writer. Keep the coordinator and its CLI
 repo/state address in the main checkout. Never reset a candidate to satisfy a stale brief.

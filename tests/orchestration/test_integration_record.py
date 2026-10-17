@@ -310,36 +310,17 @@ class PublishedBranch:
         }
 
     def _follow_up_candidate(self, batch_id: str, name: str) -> str:
-        """The developer of a follow-up batch: its base is the integration tip, so its report maps
-        the already published commits of the branch together with the new one."""
+        """The developer of a follow-up batch: it starts on the already published branch, so its
+        report lists and maps only its own commit (issue #686)."""
         fx = self.fixture
         brief = fx._dispatch(batch_id, "developer")["brief"]
         fx._start(brief["dispatch_id"])
-        candidate, changed = fx._developer_commit(name)
-        base = fx._batch_record(batch_id)["base_commit"]
-        created = _git(
-            fx.worktree, "rev-list", "--reverse", f"{base}..{candidate}"
-        ).splitlines()
+        candidate, _ = fx._developer_commit(name)
+        changed = git_utils._changed_files_between(
+            self.repo, fx._batch_record(batch_id)["branch_start_commit"], candidate
+        )
         fx._submit(
-            brief["dispatch_id"],
-            fx._developer_report(
-                brief,
-                candidate,
-                changed,
-                commit_map=[
-                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
-                    for sha in created
-                    for entry in brief["commit_plan"]
-                ],
-                dod_coverage=[
-                    {"dod_item": item, "commits": [candidate]}
-                    for item in range(1, len(brief["definition_of_done"]) + 1)
-                ],
-                divergence_justification=(
-                    "the branch already holds the published commits of the earlier batch; "
-                    "the follow-up fix is the last commit"
-                ),
-            ),
+            brief["dispatch_id"], fx._developer_report(brief, candidate, changed)
         )
         fx._decide(batch_id, "accept")
         fx._assess(batch_id, candidate, changed)

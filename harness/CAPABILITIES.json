@@ -86,6 +86,7 @@
     "resources": [
       "orchestration",
       "orchestration.example.json",
+      "adapters",
       "context_builder"
     ]
   }

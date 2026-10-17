@@ -60,6 +60,7 @@ from harness.memory import (
     sync as memory_sync,
 )
 from harness.storage import storage_path
+from harness.runtime_adapters import adapter_problem, is_adapter
 from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
@@ -408,6 +409,16 @@ def ensure_links(
 def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]:
     """Записать снимок файлов возможностей, сформировать harness.lock и обновить реестр."""
     files = package_files(selected)
+    previous_hashes = (load_lock(repo) or {}).get("files") or {}
+    for relative in files:
+        if is_adapter(relative):
+            problem = adapter_problem(
+                repo, relative, previous_hashes.get(relative), force=force
+            )
+            if problem:
+                fail(
+                    f"adapter conflict: {relative}: {problem}; preserve or move the local file before retrying"
+                )
     skills_root = repo / ".harness/skills"
     skills_root.mkdir(parents=True, exist_ok=True)
 
@@ -415,6 +426,12 @@ def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]
         lock = load_lock(repo) or {}
         for relative in lock.get("files") or {}:
             path = repo / relative
+            if (
+                is_adapter(relative)
+                and relative not in files
+                and adapter_problem(repo, relative, previous_hashes.get(relative))
+            ):
+                continue
             if path.is_file():
                 path.unlink()
 
@@ -546,7 +563,9 @@ def snapshot_diff(repo: Path, override: list[str] | None = None) -> JsonObject:
         package_hash = digest(data)
         disk_hash = file_digest(repo / relative)
         old_hash = previous.get(relative)
-        if old_hash is None:
+        if is_adapter(relative) and adapter_problem(repo, relative, old_hash):
+            conflict.append(relative)
+        elif old_hash is None:
             added.append(relative)
         elif disk_hash is None:
             missing.append(relative)
@@ -1005,6 +1024,9 @@ def scaffold_pvmalove_extras(
         print("\n[WARNING] Следующие сидируемые файлы отличаются от шаблонов upstream:")
         for path in differing:
             print(f"  - {path.relative_to(repo)}")
+            print(
+                f"    После просмотра: --force-seed-file {path.relative_to(repo).as_posix()}"
+            )
         print(
             "Используйте --force-seed-files, чтобы перезаписать их (внимание: локальные изменения будут потеряны).\n"
         )
@@ -1094,6 +1116,9 @@ def cmd_diff(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
+        for relative in seed_differing(repo):
+            print(f"  seed_differing: {relative}")
+            print(f"    После просмотра: --force-seed-file {relative}")
         print_contract_proposals(proposals)
     return 0 if result["state"] == "clean" else 1
 
@@ -1138,8 +1163,25 @@ def cmd_update(args: argparse.Namespace) -> int:
         fail(f"project harness is missing; use 'harness init {repo}'")
     selected = selected_capabilities(args.capability or lock.get("capabilities"))
     result = snapshot_diff(repo, selected)
-    blocked = result.get("local_changed", []) + result.get("conflict", [])
+    current_files = package_files(selected)
+    blocked = [
+        relative
+        for relative in result.get("local_changed", []) + result.get("conflict", [])
+        if not (is_adapter(relative) and relative not in current_files)
+    ]
     force_managed = args.force or args.force_managed_files
+    for relative in current_files:
+        if is_adapter(relative):
+            problem = adapter_problem(
+                repo,
+                relative,
+                (lock.get("files") or {}).get(relative),
+                force=force_managed,
+            )
+            if problem:
+                fail(
+                    f"adapter conflict: {relative}: {problem}; preserve or move the local file before retrying"
+                )
     if blocked and not force_managed:
         print_diff(result)
         print("\n[ВНИМАНИЕ] Обнаружены изменённые стандартные скиллы (дрейф):")
@@ -1159,6 +1201,11 @@ def cmd_update(args: argparse.Namespace) -> int:
     current = set(package_files(selected).keys())
     for relative in sorted(previous - current):
         path = repo / relative
+        if is_adapter(relative) and adapter_problem(
+            repo, relative, (lock.get("files") or {}).get(relative)
+        ):
+            print(f"preserved adapter: {relative}")
+            continue
         if path.is_file():
             path.unlink()
 

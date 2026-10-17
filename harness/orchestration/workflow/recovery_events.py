@@ -142,6 +142,9 @@ def validate_events(root: Path, batch: JsonObject) -> None:
                     "recovery event diverged from source dispatch",
                     remedy="inspect the immutable dispatch evidence",
                 )
+        from harness.orchestration.workflow import preserved_progress
+
+        preserved_progress.validate_event(root, batch, event)
         if not any(
             a.get("details", {}).get("path") == f"batches/{batch['batch_id']}.json"
             and a["details"].get("decision") == event_audit(event)
@@ -162,7 +165,10 @@ def validate_events(root: Path, batch: JsonObject) -> None:
             ),
             (
                 "superseded_candidate_registrations",
-                {e["dispatch_id"] for e in batch.get("candidate_registrations", [])},
+                {
+                    e["source_dispatch_id"]
+                    for e in batch.get("candidate_registrations", [])
+                },
             ),
         ):
             values = event["evidence"].get(field, [])

@@ -458,10 +458,22 @@ estimate. Побайтно идентичные файлы (например, з
 `context_package_policy.section_index_min_tokens` (по умолчанию 20000). `sections` перечисляет
 заголовки уровней 1–3 (вне fenced code) с `start_line`/`end_line`; оценка учитывает только это
 оглавление, а роль читает лишь нужные ей диапазоны строк. Файл без заголовков учитывается целиком.
+
+Python-файл при том же пороге входит как индекс символов. Он состоит из верхнеуровневых функций,
+классов и методов классов; вложенное в функции и методы не перечисляется. Остальной код файла
+покрывают указатели `module header` (до первого определения) и `module code` (между определениями,
+после последнего и блоки вроде `if TYPE_CHECKING:`), поэтому индекс ничего не скрывает. Скрытые
+`repo_map_policy.redact_symbols` символы в заголовках остаются маркером `[REDACTED-SYMBOL]`. Индекс
+применяется, только если он дешевле файла. Файл без определений, с синтаксической ошибкой или другого
+формата учитывается целиком. Если пакет не помещается в лимит, самые тяжёлые стартовые файлы, для
+которых можно построить индекс, заменяются индексом по одному, пока пакет не уложится в лимит.
+Добавленный файл так не сократить: его текст уже лежит в diff, а связанные тесты и ADR остаются в
+пакете целиком.
+
 Для Python AST извлекает сигнатуры прямых локальных зависимостей, при этом текущий
 Discovery-контракт ограничивает разворачивание одним уровнем. Неподдержанный формат получает первые
-30 строк как deterministic fallback. При превышении token limit сборка завершается ошибкой и не
-обрезает пакет молча. Legacy `--max-package-size-bytes` можно задать как дополнительную диагностику,
+30 строк как deterministic fallback. Если и после замены файлов индексами пакет не помещается
+в token limit, сборка завершается ошибкой и не обрезает пакет молча. Legacy `--max-package-size-bytes` можно задать как дополнительную диагностику,
 но он не заменяет token limit.
 
 Запись package immutable, versioned и hash-проверяема. Она shared внутри batch. Один и тот же
@@ -1028,6 +1040,15 @@ Developer переносит коммиты над старой базой ро�
 принятого rebase-отчёта, как и его `tooling-retry`, считает от target и `changed_files`, и коммиты
 `carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate, а ветку
 обновляет `integration refresh` при подготовке PR (ADR 0014).
+
+Batch, созданный на ветке с коммитами более раннего batch того же тикета (его `branch_start_commit`
+строго потомок `integration_base_commit`), считает свои изменения от `branch_start_commit`. От него
+считаются `changed_files` и `commit_map` отчётов developer и publish, их `scope_warnings`,
+checkpoint и `risk assess` (`--base-commit`, `review_scope`). Замещающий batch считает от
+`integration_base_commit`; так же считает batch, чей старт не потомок этой базы (после принятого
+rebase и у resolver-batch). Бриф и Context Package (`--base-commit`) остаются на
+`integration_base_commit`. Правило не отличает принятые коммиты от непроверенных: коммиты
+оставленного (`abandon`) batch новый batch не ревьюит.
 
 Delta-review после fix-forward (#625) — тоже не новый переход и не новое решение. Coordinator сам
 выбирает объём следующего code-review в `dispatch propose` и `dispatch create --role code-review`
@@ -2292,6 +2313,29 @@ python .harness/orchestration/advisory.py classify-risk --text "data migration f
 авторитетным источником риска остаётся `coordinator.py risk assess`.
 
 ## 5. Необязательный внешний adapter
+
+Capability `backend-orchestration` поставляет два стандартных адаптера:
+`.harness/adapters/claude_worker.py` для Claude Code и `.harness/adapters/codex_worker.py` для Codex.
+Их устанавливают `harness init`/`adopt`, а обычный `harness update <repo>` восстанавливает
+отсутствующие файлы и обновляет управляемые версии. В настройках консоли доступны состояния,
+просмотр плана и явное подтверждение; текущий состав capability сохраняется.
+
+Для уже одобренного dispatch с выбранным `external` используйте адаптер назначенного runtime:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/claude_worker.py
+```
+
+Для Codex замените путь адаптера на `/path/to/project/.harness/adapters/codex_worker.py`.
+Coordinator запускает `.py` через свой Python в checkout worker. Параметры модели и effort
+берутся из immutable brief, lifecycle-промпт передаётся через stdin. Claude ограничивает
+дополнительный доступ каталогом входящих отчётов и использует нативный `allowed_tools`;
+Codex передаёт этот список в промпте, а sandbox выбирает по `access`: `read-only` или
+`workspace-write`. Это не нативный фильтр инструментов Codex.
+Оба адаптера отклоняют `qa`, `purpose: publish`, другой transport и отсутствующий `allowed_tools`.
+Ранний выход worker, даже с кодом `0`, возвращает ошибку запуска и конец лога.
+Для проверки команды без модели есть `dispatch --dry-run`, для тестового executable —
+`--claude-bin`/`--codex-bin`, для строк developer-retry — `--extra-prompt-file`.
 
 Для `transport: "external"` проект передаёт `--adapter <path>` в `dispatch send`. Это transport-only
 граница. Coordinator передаёт этому исполняемому файлу одобренный immutable brief через `--repo` и
