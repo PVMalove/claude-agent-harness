@@ -31,6 +31,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_STAGES,
     INCOMPLETE_ITEM_TARGET_ROLES,
     TERMINAL_BATCH_STATES,
+    ReviewRecommendation,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -52,7 +53,7 @@ from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import decisions, resolver_state
-from harness.orchestration.workflow.attention import _attention_findings
+from harness.orchestration.workflow.attention import _attention_findings, _held
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
     _pending_report,
@@ -65,6 +66,8 @@ from harness.orchestration.workflow.reports import (
 
 # An attention reason is a stop of the closed list: the automatic path never resolves attention.
 ATTENTION_STOPS = {
+    # The runtime state store holds the batch (issue #684): recovery resume, never an abandon.
+    "operational-hold": ("integrity-failure", "operational-hold"),
     "stale-dispatch": ("integrity-failure", "stale"),
     "stale-evidence": ("integrity-failure", "stale"),
     "retry-queued-too-long": ("integrity-failure", "stale"),
@@ -218,9 +221,9 @@ def accept_obstacles(
             obstacles.append(
                 f"the review has findings at or above the {auto_retry_min_severity} retry threshold"
             )
-        if review.get("recommendation") == "retry" or (
+        if review.get("recommendation") == ReviewRecommendation.RETRY or (
             auto_retry_min_severity != "info"
-            and review.get("recommendation") != "accept"
+            and review.get("recommendation") != ReviewRecommendation.ACCEPT
         ):
             obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(
@@ -320,14 +323,15 @@ def finish(
 ) -> Stop | None:
     """The second half of the table: ``None`` retries with ``routing`` (no I/O).
 
-    A route the coordinator refuses and an unknown reason are dead ends a human resolves; an
-    exhausted developer-retry budget stops too. A tooling-retry without a bug ticket for the
-    blocking tool is refused instead: the session can create one and run the command again.
+    A route the coordinator refuses for structured evidence it lacks and an unknown reason are
+    dead ends a human resolves -- never an abandon; an exhausted developer-retry budget stops
+    too. A tooling-retry without a bug ticket for the blocking tool is refused instead: the
+    session can create one and run the command again.
     """
     if refusal is not None or routing is None:
         return Stop(
             "no-automatic-route",
-            "abandon-dead-end",
+            "missing-evidence",
             {
                 "refused": refusal.message if refusal else None,
                 "remedy": refusal.remedy if refusal else None,
@@ -464,8 +468,13 @@ def _continuation_stops(config: JsonObject, batch: JsonObject) -> list[Stop]:
 def fact_stops(
     repo: Path, root: Path, config: JsonObject, batch: JsonObject, moment: str
 ) -> list[Stop]:
-    """Every stop the ledger facts of a validated batch show, in detection order."""
+    """Every stop the ledger facts of a validated batch and its runtime state store hold
+    show, in detection order."""
     stops: list[Stop] = []
+    if (held := _held(repo, root, batch.get("batch_id"))) is not None:
+        stops.append(
+            Stop("integrity-failure", "operational-hold", {"hold": held.to_dict()})
+        )
     try:
         _validate_harness_runtime_snapshot(repo, batch)
     except CoordinatorError as exc:

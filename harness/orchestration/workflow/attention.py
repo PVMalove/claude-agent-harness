@@ -13,7 +13,7 @@ import hashlib
 import uuid
 from pathlib import Path
 
-from harness.orchestration import extensions, operational_guards
+from harness.orchestration import extensions, operational_guards, operational_hold
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
@@ -53,6 +53,10 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+)
 from harness.orchestration.workflow.approval import _approval
 from harness.orchestration.workflow.history import (
     _pinned_package_stale,
@@ -72,14 +76,64 @@ def _stale_dispatch_finding(dispatch_id: str, silent: int) -> dict[str, str]:
     )
 
 
+def _held(repo: Path, root: Path, batch_id: object) -> operational_hold.Hold | None:
+    """The batch's operational hold; a store that cannot be located holds nothing here, since
+    every command that writes through it stops on its own."""
+    if not isinstance(batch_id, str):
+        return None
+    try:
+        store = RuntimeStateStore(repo, root)
+    except RuntimeStateError:
+        return None
+    return operational_hold.current_hold(store, batch_id)
+
+
+def _hold_finding(held: operational_hold.Hold) -> dict[str, str]:
+    """The attention a hold raises; a new hold (another revision) raises it again."""
+    return operational_guards.attention_finding(
+        "operational-hold",
+        f"{held.batch_id}:{held.step}:{held.revision}",
+        last_safe_action=f"the runtime state store holds batch {held.batch_id} "
+        f"({held.reason}): {held.message}; no dispatch, decision or abandon was recorded and "
+        "every brief, report and candidate is unchanged",
+        recommended_human_action=held.remedy,
+    )
+
+
+def _hold_with_attention(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    reason: str,
+    detail: str,
+) -> operational_hold.Hold | None:
+    """Hold the batch in the runtime state store and raise its attention in the same command;
+    the caller holds the ledger lock and raises its own refusal afterwards.  Only the attention
+    flag of the batch record changes: its state, next action and dispatches stay as they were."""
+    held = operational_hold.hold(
+        RuntimeStateStore(repo, root), batch["batch_id"], reason, detail
+    )
+    if held is not None and _apply_attention(
+        config, batch, [_hold_finding(held)], utils._now()
+    ):
+        _safe_id(batch["batch_id"], "batch")
+        _replace_record(ledger, BatchRecord.from_dict(batch))
+    return held
+
+
 def _attention_findings(
     repo: Path, root: Path, config: JsonObject, batch: JsonObject, moment: str
 ) -> list[dict[str, str]]:
-    """Every reason the batch currently needs a human, from ledger facts only. Nothing here changes
-    the lifecycle, deletes evidence or touches the candidate."""
+    """Every reason the batch currently needs a human, from ledger facts and the runtime state
+    store's hold only. Nothing here changes the lifecycle, deletes evidence or touches the
+    candidate."""
     policy = _attention_policy(config)
     now = _moment(moment, "attention moment")
     findings: list[dict[str, str]] = []
+    if (held := _held(repo, root, batch.get("batch_id"))) is not None:
+        findings.append(_hold_finding(held))
     entries = batch.get("dispatches", [])
     last = entries[-1] if entries else None
     decision = last.get("decision") if last else None

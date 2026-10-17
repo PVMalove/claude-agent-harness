@@ -64,6 +64,8 @@ from harness.orchestration.core.workspace import (
     _validate_worktree,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    LedgerUnreadableError,
+    _canonical_records_root,
     _ledger_lock,
     _load_batch,
     _load_dispatch_status,
@@ -98,9 +100,10 @@ from harness.orchestration.workflow.history import (
 
 
 def _batch_records(root: Path) -> Iterator[JsonObject]:
-    """Every batch record of the ledger, in batch-id order."""
+    """Every batch record of the ledger, in batch-id order.  The batch-create guards and the
+    resolver route decide on them, so the generation passes the strict read boundary first."""
     for path in sorted(
-        (_records_root(root) / BatchRecord.directory).glob("batch-*.json")
+        (_canonical_records_root(root) / BatchRecord.directory).glob("batch-*.json")
     ):
         yield _read_object(path, "batch record")
 
@@ -450,7 +453,8 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         try:
             ledger.ensure()
         except LedgerError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+            # No readable current generation: bootstrap diagnostics name an unreadable ledger.
+            raise LedgerUnreadableError(exc.message, remedy=exc.remedy) from exc
         _safe_id(record["batch_id"], "batch")
         _reject_duplicate_work(
             root, record["ticket"], record["branch"], record["worktree"]

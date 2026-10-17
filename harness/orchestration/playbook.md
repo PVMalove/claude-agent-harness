@@ -20,6 +20,58 @@ Every batch has one ticket, one issue branch, and one isolated worktree. The coo
 the resolved provider profile and model in the dispatch brief. Credentials never belong in the
 brief, project configuration, or reports.
 
+## Configuration validation and pinned evidence
+
+Runtime configuration passes through `normalization.v1` in memory before strict canonical
+validation. Only the enum fields listed in `config_boundary.NORMALIZATION_FIELDS` support
+unambiguous trimming and case folding. Documented aliases are `manual-all` → `manual_all` and
+`low-risk` → `low_risk` for `approval_policy`, and `in_process` → `in-process` for assignment
+transport. Each applied rule emits a structured warning with its field ID and version. IDs,
+models, paths, commands, extensions, ledger records, reports and approvals are never normalized.
+Explicit nulls, duplicate JSON keys, nonfinite numbers, secrets and ambiguous values are errors.
+Fuzzy spelling suggestions are diagnostics only.
+
+Inspect a configuration without writing it:
+
+```bash
+python .harness/orchestration/coordinator.py config validate --repo . --json
+python .harness/orchestration/coordinator.py config validate --repo . --canonical --json
+python .harness/orchestration/coordinator.py config validate --repo . --fix --dry-run --json
+python .harness/orchestration/coordinator.py config validate --repo . --fix --json
+```
+
+`--canonical` rejects spelling that requires normalization. `--fix` writes only a valid authored
+configuration through the shared transaction store, with expected-byte concurrency protection
+and a backup; `--dry-run` previews the diff. Headless validation never waits for input and returns
+exit code 2 for an invalid configuration. Runtime loading never writes the configuration file.
+
+Each new dispatch binds a complete canonical config, project and role snapshot to its approval
+digest, with separate source and canonical hashes. Checkpoints and manual or clean-room QA reports
+use that snapshot. Invalid or changed live configuration blocks a subsequent transition while
+accepted evidence remains saved. Missing or corrupt snapshots allow only unaccepted evidence
+capture with a remedy; they never reconstruct approval from current files. The runtime state
+store reconciles an unfinished composite write or hand-off at the start of the next command; the
+`recovery` commands below show and release what it cannot reconcile on its own.
+
+### Runtime compatibility with `systemFields.v1`
+
+Every party that reads or writes system fields declares the contract it speaks. A runtime
+assignment may set `system_fields_contract` (for example `systemFields.v1`); an in-process runtime
+without the field runs the harness's own role contract. An external adapter answers its `contract`
+verb. A project extension other than `none` carries a `system_fields_contract` attribute. A worker
+may confirm the brief's `orchestration_policy.configuration.contract` with `dispatch self-report
+--system-fields-contract <version>`, and a completion report may repeat it in
+`system_fields_contract`.
+
+`dispatch preflight`, `dispatch create`, `dispatch send`, `qa run`, `dispatch self-report` and
+`report submit` check these declarations before a brief is written, a worker starts or a report is
+accepted. A missing, unsupported or mismatched version is a `runtime-compatibility` refusal: its
+`DIAGNOSTICS` line lists every declaration with its subject, source, status and pointer. Nothing is
+started or accepted on it. An incompatible report is kept only as unaccepted evidence. A refusal at
+send, self-report, report submit or `qa run` also holds the batch (see [Operator
+recovery](#operator-recovery)). A worker started before the confirmation flag existed confirms
+nothing and is judged on the brief's declarations.
+
 ## Lifecycle
 
 The coordinator records exactly one current state for each batch. A role may report progress or a
@@ -451,11 +503,13 @@ detect them in this order: integrity, budget, route.
 | `integrity-failure` | `harness-snapshot-changed` | The installed harness runtime differs from the pinned snapshot |
 | `integrity-failure` | `deterministic-gate-failed` | The commit plan gate, or a failed revalidation of the pending report or its brief |
 | `integrity-failure` | `ledger-validation-failed` | Ledger validation fails; the command shows the stop and records nothing |
+| `integrity-failure` | `operational-hold` | The runtime state store holds the batch, or attention `operational-hold` |
 | `budget-exhausted` | `retry_policy.max_developer_retries` | A developer-retry beyond the budget |
 | `budget-exhausted` | `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes` | A checkpointed or rate-limited dispatch with a spent budget |
 | `budget-exhausted` | `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` | Attention `infrastructure-retry-repeated` or `tooling-retry-repeated` |
 | `no-automatic-route` | `unknown-reason` | The route has reason category `unknown`, or attention `unknown-reason` |
-| `no-automatic-route` | `abandon-dead-end` | The coordinator refuses the retry route, or the batch is `blocked` or `failed` |
+| `no-automatic-route` | `missing-evidence` | The coordinator refuses the retry route because structured evidence is missing |
+| `no-automatic-route` | `abandon-dead-end` | The batch is `blocked` or `failed` by a human decision |
 | `no-automatic-route` | `supersede-dead-end` | The batch is `abandoned`; only a human continues with `batch create --supersedes` |
 
 The coordinator records the stop once as the hashed `batch.auto_stop` (`category`, `reason`,
@@ -599,6 +653,64 @@ still needs a real QA run. A conditional publish needs the remote branch to alre
 candidate, which closes its condition at once. A rewind retires the conditions of superseded
 dispatches. Prefer `resume-stop` when the failed stage can simply be restarted.
 
+### Operational holds and the `recovery` commands
+
+Unknown, missing, quarantined, unreadable or incompatible system data never becomes a decision. The
+coordinator holds the batch in its runtime state record (`suspended`, failure step
+`hold:<reason>`; a ledger quarantine keeps its own `quarantine` step) and raises attention
+`operational-hold`. The reasons are `unknown-value`, `missing-value`, `legacy-quarantine`,
+`unreadable-record` and `runtime-compatibility`. `needs_attention` stays a batch flag, and
+`suspended` stays a runtime state store state. A hold writes no lifecycle record, decision or
+approval. While it lasts, every command that settles or decides the batch refuses with the
+recovery route: `dispatch create`, `dispatch send`, `dispatch cancel`, self-report, heartbeat,
+checkpoint, `report submit`, `qa run`, `batch decide`, `resume-stop` and `rewind`. The decision
+packet then offers no option, and `route_preview` holds only the hold. A blocked report whose retry
+cause is unknown or whose retry route is refused gets a packet `operational_hold` without `abandon`
+or `accept`. The automatic path stops with `operational-hold` or `missing-evidence`, never with an
+abandon. A `report submit` refused by a hold still keeps the report as unaccepted evidence and names
+its path.
+
+Recovery never resolves attention, and `resume` refuses with `attention-open` while attention is
+open. Read the diagnostics, fix the cause, resolve the `operational-hold` attention, then resume:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery status --batch <id> --json
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery reload --batch <id>
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch attention resolve --batch <id> --note '...' --approved-by <operator> --approved-at <UTC>
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery resume --batch <id>
+```
+
+The commands run on the installed runtime, never read standard input, need no terminal or Textual,
+print one `recoveryStatus.v1` JSON document and exit 0 on success and 2 on refusal. Each check
+(`config`, `store`, `ledger`, `batch`, `lifecycle`, `runtime`, `snapshot`, `context`,
+`compatibility`, `operation`, `liveness`, `attention`, `approval`) reports `passed`, `pending`,
+`reconciled`, `refused` or `skipped`. Its diagnostics carry a pointer, the redacted expected and
+received values, a suggestion and a remedy. `runtime` checks that the batch's pinned harness
+runtime is the installed one or a verified snapshot. `context` checks every open brief's Context
+Package against the batch's base and current developer candidate; a stale one is refused with
+`stale-evidence`, and that brief is cancelled and proposed again.
+
+- `status` is read-only: it takes no lock and writes nothing.
+- `reload` re-reads and validates the current configuration and its runtime declarations; it never
+  starts a worker and suggests `resume`.
+- `resume` runs every check under the ledger lock. A refused check changes nothing; a batch the
+  ledger cannot read is held through the store alone, without a lifecycle record. Otherwise it
+  releases the hold and lets `settle` finish an unfinished operation from its durable intent. A
+  confirmed step is never repeated, and an ambiguous effect or a live worker stops instead of
+  starting a second worker. A recorded stop continues only through the audited `batch resume-stop`
+  with `--approved-by`, `--approved-at` and `--note`; any other stop needs `batch rewind`. Resume
+  creates no dispatch and rewrites no brief, and the next transition needs an approval with its
+  current digest. It never resolves attention or resets budgets, `auto_stop`, `manual_recovery` or
+  a terminal refusal.
+
+A quarantine is never released by a recovery command. `recovery_api` exposes the same contract to
+the Harness console: `fix` previews or applies the configuration's safe normalization through the
+configuration transaction without resuming. `skip` hides an allowlisted advisory
+(`config-normalized`, `unconfirmed-contract`) for one session. `abort` records that the operator
+left recovery and abandons, stops and cleans nothing. Each action except `skip` records its durable
+intent first, so a cancel, end of input or interrupt shows on restart. An internal exception is an
+`internal-error` diagnostic with a correlation ID, never a configuration problem.
+
 A timeout does not prove that a worker stopped. Stop it through the runtime first, then record:
 
 ```bash
@@ -718,7 +830,8 @@ The coordinator sets `needs_attention` (with `attention_reason`, `attention_sinc
 `last_safe_action`, `recommended_human_action`) when: a retry has waited longer than
 `attention_policy.retry_queue_seconds`; operational retries of one candidate exceed
 `max_infrastructure_retries`; a third consecutive `tooling-retry` on one candidate is decided
-(`tooling-retry-repeated`); a retry's reason is `unknown`; a dispatch's pinned Context Package no
+(`tooling-retry-repeated`); the runtime state store holds the batch (`operational-hold`, the first
+in priority); a retry's reason is `unknown`; a dispatch's pinned Context Package no
 longer matches the batch base or accepted candidate; or a live dispatch is silent past
 `stale_dispatch_seconds`. It is evaluated by `batch attention check`, by `batch decide --decision
 retry` and by `dispatch wait`. While it is set no next dispatch is created; nothing is deleted and
@@ -762,13 +875,68 @@ remain untouched as migration evidence. `ledger reset --confirm RESET` selects a
 only after the literal confirmation, and refuses while any batch is `active`; prior generations
 remain immutable audit history.
 
-Every coordinator command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
+After that schema step, `ledger migrate` moves the selected generation to the canonical
+`systemFields.v1` values without rewriting a record. It builds a new generation that copies every
+record and audit event of its source byte for byte, so every `brief_sha256`, `report_sha256` and
+audit checksum stays valid, and the source generation stays as it was. Explicit rules, checked
+against the registry, map the known historical spellings `passed`, `not-run` and
+`not_run_architect_read_only` of `report.check_result`. Nothing is normalized by similarity. The
+rules apply only at the bound locations of fields that drive automatic decisions, and
+`migration/manifest.json` (`ledgerMigration.v1`) records each mapped value with the digest of its
+file. The rules for `rate-limit` and `429` of `continuation.termination_reason` are checked against
+the registry too, but the ledger has no location for that field: the coordinator keeps the value
+only inside a free-text note, so `ledger migrate` never applies them. A batch with a value that is
+neither a registry value nor the legacy spelling of a rule (`legacy-unknown`), or with a record
+file that is not a JSON object (`unreadable`), is quarantined. Its batch, plan, dispatch and status
+records move byte for byte to `migration/quarantine/<batch>/` beside its `legacy-unknown.json`
+evidence; its reports stay in place. No field receives a sentinel, a default or a success.
+`ledger migrate` moves the runtime state record of each quarantined batch to `suspended` with the
+failure step `quarantine`, creating the record when the batch has none; a `completed` record stays
+as it is, because it allows no further action. No command settles a quarantined batch back to
+`ready`, and no command releases a quarantine yet.
+
+Before `ledger migrate`, a record the validating loader cannot read stops that loader for every
+batch of the generation: each command that loads a batch or writes the ledger fails, which keeps
+every action denied, while the runtime state store records nothing for it. Only `ledger migrate`
+writes a denial to the store, for the batches it quarantines.
+
+The migration runs behind the durable intent of the runtime state store's ledger-scope record
+(`identity.batch_id: null`). It records the intent before it renames the checked staging
+generation to its target and switches the pointer by compare-and-swap. The next `ledger migrate`
+finishes a stopped migration from the selected target, or rebuilds the target from the unchanged
+source; a pointer on any other generation is a controlled `integrity-failure` stop. A migrated
+generation is migrated again only when the rules or the values of a bound field change.
+`ledger migrate` waits while a batch has an unfinished operation, and it needs a Git checkout to
+reach the runtime state store.
+
+`ledger inspect [--batch ID]` and `ledger export --batch ID` read a quarantined or unreadable batch
+without the validating loader. They take no lock, load no config and write nothing. `inspect` shows
+each batch's area (`operational` or `quarantine`), its findings and its runtime state; `export`
+prints the batch's records, reports and quarantine evidence as JSON, byte for byte (`utf-8` text or
+`base64`). On legacy state that no migration selected yet, both read the records in the state
+directory and report `generation: null`.
+
+Every other command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
 `acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
 `dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
 held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
 owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
 without an owner record only once it is stale, and never releases a lock whose owner record cannot
 be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
+
+A command stopped by an invalid current config, a busy ledger or an unreadable ledger prints one
+`DIAGNOSTICS: {json}` line before `ERROR` and `REMEDY`. An unreadable ledger has no readable
+current generation, or a pointer or any record of the selected generation that cannot be parsed;
+an ID with no record is an ordinary refusal. When the command named a batch or dispatch, it also
+overwrites the independent emergency record `runtimeEmergency.v1` (`emergency.json` beside the
+runtime state records), under its own bounded lock and after the ledger lock is released. The
+record is `suspended` diagnostics only: it carries no approval and no ledger state, nothing decides
+on it, and `suspended` never becomes a batch state. A runtime state store failure prints its own
+`DIAGNOSTICS` line with the store's code, step and durable revision, and records nothing, because
+the emergency record lives in that same store. A failed `batch create` or `batch preflight` names
+no batch, so it prints diagnostics for these failures and records nothing. Every other failure is
+an ordinary refusal and prints only `ERROR` and `REMEDY`. Diagnostics that cannot be built print
+`DIAGNOSTICS` with the code `internal-error` instead.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
@@ -800,7 +968,10 @@ of the coordinator session — is a project choice recorded in the assignment pl
 transport resolves to `in-process`; `external` must be selected explicitly before an external worker can
 start. It changes nothing
 above: the same immutable brief goes out, the same self-report and heartbeat are required, and the
-same completion report comes back. For an in-process handoff, `dispatch send` records the brief but
+same completion report comes back. Before either transport is used, `dispatch send` checks the
+brief's `systemFields.v1` declarations, the external adapter's `contract` answer included (see
+[Runtime compatibility](#runtime-compatibility-with-systemfieldsv1)). For an in-process handoff,
+`dispatch send` records the brief but
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
 
@@ -851,6 +1022,26 @@ to the approval digest. `dispatch send` blocks the handoff, with a reason and a 
 action, when the selected `runtime_access` implementation cannot prove and natively apply the plan
 for that exact worker; it never falls back to `inherit`. A blocker is a question for the human, not
 something to work around: do not edit the brief or the config to make the check pass.
+
+`dispatch send` records the hand-off's intent in the runtime state store before the transport is
+called, and marks the effect `unknown` right before an adapter or native launch. An outcome it
+observes is committed with its ledger records. When the process stops mid-call, or the launch gives
+no bound receipt, the next command for the batch reconciles the hand-off and never starts the
+worker again. It asks the adapter `<adapter> observe [args] --repo <repo> --brief <brief>`, or the
+native provider's optional `observe_launch(brief)`. The adapter must answer within 30 seconds with
+exit code 0 and one JSON object `{"dispatch_id", "launched", "live", "launch_id"?}`. Any other
+answer proves nothing, and the batch stops with `ambiguous-effect`. A person then stops the worker
+and runs `dispatch cancel --runtime-stopped` with an approval. A cancel without that flag is refused
+while the effect is unknown. When the outcome is already observed but its ledger records are not
+yet written, `dispatch cancel` commits that outcome first and then decides on the records it left,
+so a launched worker still needs `--runtime-stopped`. A worker that is still live contradicts a
+cancellation and stops the batch with `concurrency-conflict`. A non-zero `dispatch` exit still
+means no worker started. Before the hand-off, `dispatch send` asks `<adapter> contract [args] --repo
+<repo> --brief <brief>`. The adapter must answer within 30 seconds with exit code 0 and exactly
+`{"system_fields_contract": "<version>"}`. Any other answer declares nothing and refuses the send
+with `runtime-compatibility`. An adapter that cannot be started at all is left to the hand-off,
+which records it as an unavailable runtime. The orchestration [README](README.md) lists the three
+adapter verbs for adapter authors.
 
 An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
 The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator

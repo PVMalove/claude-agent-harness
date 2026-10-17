@@ -42,8 +42,10 @@ if _HARNESS_ROOT.name != "harness" or not (_HARNESS_ROOT / "__init__.py").is_fil
     sys.modules["harness"] = importlib.util.module_from_spec(_spec)
 
 from harness.errors import HarnessError, print_and_exit
+from harness.orchestration.config_commands import validate_config as validate_config
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration.core import constants
+from harness.orchestration.runtime_emergency import report_failure
 
 # -- Compatibility exports ----------------------------------------------------------------------
 # Existing Python callers use these lifecycle helpers through the CLI module. Batch QA gets its
@@ -89,6 +91,8 @@ from harness.orchestration.infrastructure_retry import (
     retry_infrastructure_dispatch as retry_infrastructure_dispatch,
 )
 from harness.orchestration.ledger.ledger_admin import clean_ledger as clean_ledger
+from harness.orchestration.ledger.ledger_admin import export_ledger as export_ledger
+from harness.orchestration.ledger.ledger_admin import inspect_ledger as inspect_ledger
 from harness.orchestration.ledger.ledger_admin import ledger_status as ledger_status
 from harness.orchestration.ledger.ledger_admin import validate_ledger as validate_ledger
 from harness.orchestration.ledger.ledger_admin import migrate_ledger as migrate_ledger
@@ -116,6 +120,15 @@ from harness.orchestration.workflow.batch import preflight_batch as preflight_ba
 from harness.orchestration.workflow.batch import resume_batch as resume_batch
 from harness.orchestration.workflow.recovery import (
     resume_stopped_batch as resume_stopped_batch,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_reload as recovery_reload,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_resume as recovery_resume,
+)
+from harness.orchestration.workflow.recovery_commands import (
+    recovery_status as recovery_status,
 )
 from harness.orchestration.workflow.recovery import rewind_batch as rewind_batch
 from harness.orchestration.workflow.carried_items import (
@@ -223,8 +236,15 @@ def main() -> int:
             return subprocess.call(pinned)
         output = args.handler(args)
     except HarnessError as exc:
+        # The handler has returned, so the ledger lock is released before anything is recorded.
+        report_failure(args, exc)
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+    if args.command == "config" and output.get("valid") is False:
+        return 2
+    # A recovery refusal prints its structured diagnostics and exits 2, never waiting for input.
+    if args.command == "recovery" and output.get("outcome") == "refused":
+        return 2
     return 0
 
 

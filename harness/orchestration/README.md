@@ -329,6 +329,37 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 - `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
 - `dispatch runtime-probe --dispatch <id> --runtime-command <runtime> [--runtime-arg <аргумент>]`
   запускает read-only READY probe app-server на brief dispatch без worker и без записи в ledger.
+- `recovery status --batch <id> --json` только читает: проверки сверки, их диагностику с pointer,
+  отредактированными expected и received и подсказкой, а также доступные действия.
+- `recovery reload --batch <id>` заново читает и проверяет текущий конфиг и не запускает worker.
+- `recovery resume --batch <id>` под блокировкой ledger повторяет проверки, включая снимок harness
+  runtime и Context Package открытых brief с их base и candidate, снимает удержание batch
+  и завершает незаконченную операцию из durable intent. Подтверждённые шаги не повторяются, второй
+  worker не запускается. Записанная остановка продолжается только через аудируемый `resume-stop`
+  с `--approved-by`, `--approved-at` и `--note`.
+
+Неизвестные, отсутствующие, нечитаемые, quarantine- или несовместимые системные данные не
+становятся решением. Coordinator удерживает batch в runtime state store (`suspended`, шаг
+`hold:<причина>`) и поднимает attention `operational-hold`. Пока удержание действует, команды,
+которые сверяют или решают batch, отказывают, а decision packet не предлагает ни `abandon`, ни
+`accept`. Recovery не разрешает attention, и `resume` при открытом attention отказывает. Поэтому
+после устранения причины сначала выполняется `batch attention resolve`, затем `recovery resume`.
+Команды `recovery` не читают stdin, работают без TTY и без Textual. Они печатают один JSON-документ
+`recoveryStatus.v1` и завершаются кодом 0 при успехе и 2 при отказе.
+
+Runtime adapter для `transport: external` реализует три глагола. `<adapter> contract [args] --repo
+<repo> --brief <brief>` за 30 секунд с кодом 0 печатает ровно `{"system_fields_contract":
+"<версия>"}`. `dispatch send` вызывает его до запуска worker; другой ответ или неподдерживаемая
+версия дают отказ `runtime-compatibility`. `<adapter> dispatch [args] --repo
+<repo> --brief <brief>` запускает worker; ненулевой код выхода означает, что worker не запущен.
+`<adapter> observe [args] --repo <repo> --brief <brief>` только сообщает, запущен ли worker этого
+brief: за 30 секунд, с кодом 0 и одним JSON-объектом `{"dispatch_id", "launched", "live",
+"launch_id"?}`. Coordinator вызывает `observe`, если `dispatch send` остановился во время запуска, и
+никогда не повторяет `dispatch`. Нативный провайдер `runtime_access` отвечает на тот же вопрос
+необязательным методом `observe_launch(brief)`. Если ответа нет или он не по контракту, batch
+останавливается с `ambiguous-effect`: оператор останавливает worker и выполняет
+`dispatch cancel --runtime-stopped`. Контракт подробно описан в
+[Role order, liveness, and transport](playbook.md#role-order-liveness-and-transport).
 
 Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
 новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет

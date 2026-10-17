@@ -1,0 +1,286 @@
+"""A real dispatched role can preserve evidence after live config breaks."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+from harness.orchestration import coordinator
+from harness.orchestration.core import workspace
+from harness.json_types import JsonObject
+from tests.orchestration import test_coordinator as fixtures
+
+
+@pytest.fixture
+def dispatched_architect() -> (
+    Iterator[tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject]]
+):
+    case = fixtures.CoordinatorLedgerMigrationTests()
+    case.setUp()
+    try:
+        batch = case._create_batch()
+        case._approve_batch(batch["batch_id"])
+        brief = case._create_architect_dispatch(batch["batch_id"])["brief"]
+        coordinator.send_dispatch(
+            fixtures._ns(
+                repo=str(case.repo),
+                state_dir=str(case.state_dir),
+                dispatch=brief["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        coordinator.self_report_dispatch(
+            fixtures._ns(
+                repo=str(case.repo),
+                state_dir=str(case.state_dir),
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(case.tmp / "worktree"),
+            )
+        )
+        yield case, brief
+    finally:
+        case.tearDown()
+        # unittest runs cleanups only for its own runner: stop the config patch here too.
+        case.doCleanups()
+
+
+def architect_report(brief: JsonObject) -> JsonObject:
+    return {
+        "dispatch_id": brief["dispatch_id"],
+        "ticket": brief["ticket"],
+        "role": "architect",
+        "outcome": "completed",
+        "output": "architecture recorded",
+        "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [],
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
+        "next_coordinator_action": "dispatch developer",
+        "report_language": "ru",
+    }
+
+
+def test_report_is_persisted_under_pinned_policy_when_live_config_is_invalid(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+) -> None:
+    case, brief = dispatched_architect
+    report = architect_report(brief)
+    inbox = workspace._prepare_agent_inbox(case.repo) / "report.json"
+    inbox.write_text(json.dumps(report))
+    (case.repo / ".harness/orchestration.json").write_text("{")
+
+    result = coordinator.submit_report(
+        fixtures._ns(
+            repo=str(case.repo),
+            state_dir=str(case.state_dir),
+            file=str(inbox),
+        )
+    )
+
+    assert result["state"] == "reported"
+    assert Path(result["report"]).is_file()
+    assert result["transition_blocked"] is True
+    assert "next_dispatch_id" not in result
+    assert (
+        brief["orchestration_policy"]["configuration"]["contract"] == "systemFields.v1"
+    )
+
+
+def test_corrupt_snapshot_captures_input_without_accepting_report(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+) -> None:
+    case, brief = dispatched_architect
+    report = architect_report(brief)
+    inbox = workspace._prepare_agent_inbox(case.repo) / "report.json"
+    inbox.write_text(json.dumps(report))
+    root = case._records_root()
+    path = root / "dispatches" / f"{brief['dispatch_id']}.json"
+    corrupted = json.loads(path.read_bytes())
+    corrupted["orchestration_policy"]["configuration"]["canonical_sha256"] = "0" * 64
+    path.write_text(json.dumps(corrupted))
+    # The batch pins the corrupted brief, so only the snapshot's own digest refuses it.
+    fixtures.repin_entry(
+        case.state_dir,
+        brief["batch_id"],
+        brief["dispatch_id"],
+        brief_sha256=fixtures.pinned_sha256(corrupted),
+    )
+
+    with pytest.raises(coordinator.CoordinatorError) as caught:
+        coordinator.submit_report(
+            fixtures._ns(
+                repo=str(case.repo),
+                state_dir=str(case.state_dir),
+                file=str(inbox),
+            )
+        )
+
+    assert caught.value.message == (
+        "dispatch pinned configuration failed integrity or version validation"
+    )
+    captures = list((root / "unaccepted-evidence").glob("*.json"))
+    assert len(captures) == 1
+    capture = json.loads(captures[0].read_bytes())
+    assert capture["accepted"] is False
+    assert capture["input"] == report
+    assert capture["diagnostic"] == caught.value.message
+    assert not (root / "reports" / f"{brief['dispatch_id']}.json").exists()
+
+
+def test_checkpoint_survives_invalid_live_config() -> None:
+    case = fixtures.CoordinatorRetryRoutingTests()
+    case.setUp()
+    try:
+        case._patch_config(worker_attestation_required=True)
+        batch = case._create_batch()
+        case._accepted_architect(batch["batch_id"])
+        brief = case._dispatch(batch["batch_id"], "developer")["brief"]
+        case._start(brief["dispatch_id"])
+        candidate, changed = case._developer_commit("checkpoint")
+        (case.repo / ".harness/orchestration.json").write_text("{")
+
+        checkpoint = case._checkpoint_writer(brief, candidate, changed)
+
+        stored = list((case._records() / "checkpoints").glob("*.json"))
+        assert len(stored) == 1
+        assert (
+            json.loads(stored[0].read_bytes())["commit_sha"] == checkpoint["commit_sha"]
+        )
+        assert (
+            case._batch_record(batch["batch_id"])["dispatches"][-1]["state"]
+            == "checkpointed"
+        )
+    finally:
+        case.tearDown()
+        # unittest runs cleanups only for its own runner: stop the config patch here too.
+        case.doCleanups()
+
+
+def test_qa_runner_preserves_report_if_gate_breaks_live_configuration() -> None:
+    import shlex
+    import subprocess
+    import sys
+
+    case = fixtures.CoordinatorRetryRoutingTests()
+    case.setUp()
+    try:
+        case.state_dir = case.repo / ".harness/orchestration/state"
+        path = case.repo / ".harness/orchestration.json"
+        script = f"from pathlib import Path; Path({str(path)!r}).write_text('{{')"
+        command = (
+            subprocess.list2cmdline(["python", "-c", script])
+            if sys.platform == "win32"
+            else "python -c " + shlex.quote(script)
+        )
+        path.write_text(json.dumps({"verification_commands": [command]}))
+        batch_id, candidate = case._qa_batch()
+        brief = case._dispatch(batch_id, "qa", candidate=candidate)["brief"]
+
+        result = coordinator.run_qa(
+            fixtures._ns(
+                repo=str(case.repo),
+                state_dir=None,
+                dispatch=brief["dispatch_id"],
+                lease_seconds=None,
+            )
+        )
+
+        assert result["state"] == "reported"
+        assert Path(result["report"]).is_file()
+        assert result["transition_blocked"] is True
+        assert "next_dispatch_id" not in result
+    finally:
+        case.tearDown()
+        # unittest runs cleanups only for its own runner: stop the config patch here too.
+        case.doCleanups()
+
+
+@pytest.mark.parametrize("policy", [None, 42, []])
+def test_invalid_policy_container_is_rejected_with_a_domain_error(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+    policy: object,
+) -> None:
+    case, brief = dispatched_architect
+    path = case._records_root() / "dispatches" / f"{brief['dispatch_id']}.json"
+    record = json.loads(path.read_bytes())
+    record["orchestration_policy"] = policy
+    path.write_text(json.dumps(record))
+    with pytest.raises(coordinator.CoordinatorError):
+        coordinator.send_dispatch(
+            fixtures._ns(
+                repo=str(case.repo),
+                state_dir=str(case.state_dir),
+                dispatch=brief["dispatch_id"],
+                adapter=None,
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+
+
+def _submit(
+    case: fixtures.CoordinatorLedgerMigrationTests, report: JsonObject
+) -> JsonObject:
+    inbox = workspace._prepare_agent_inbox(case.repo) / "report.json"
+    inbox.write_text(json.dumps(report))
+    return coordinator.submit_report(
+        fixtures._ns(
+            repo=str(case.repo), state_dir=str(case.state_dir), file=str(inbox)
+        )
+    )
+
+
+def test_an_incompatible_report_is_only_unaccepted_evidence(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+) -> None:
+    """A report that names another systemFields contract is never the canonical report: the
+    input is captured as unaccepted evidence and the dispatch stays as it was (issue #684)."""
+    from harness.orchestration.runtime_compatibility import RuntimeCompatibilityError
+
+    case, brief = dispatched_architect
+    report = {**architect_report(brief), "system_fields_contract": "systemFields.v2"}
+    root = case._records_root()
+    status_path = root / "dispatch-status" / f"{brief['dispatch_id']}.json"
+    status_before = status_path.read_bytes()
+
+    with pytest.raises(RuntimeCompatibilityError) as caught:
+        _submit(case, report)
+
+    assert caught.value.step == "report-submit"
+    assert "unaccepted evidence" in caught.value.remedy
+    [declaration] = [
+        item
+        for item in caught.value.evidence["declarations"]
+        if item["subject"] == "completion-report"
+    ]
+    assert declaration["status"] == "unsupported"
+    [capture_path] = list((root / "unaccepted-evidence").glob("*.json"))
+    capture = json.loads(capture_path.read_bytes())
+    assert capture["accepted"] is False
+    assert capture["input"] == report
+    assert not (root / "reports" / f"{brief['dispatch_id']}.json").exists()
+    assert status_path.read_bytes() == status_before
+
+
+def test_a_report_that_names_the_brief_contract_is_accepted(
+    dispatched_architect: tuple[fixtures.CoordinatorLedgerMigrationTests, JsonObject],
+) -> None:
+    case, brief = dispatched_architect
+
+    result = _submit(
+        case, {**architect_report(brief), "system_fields_contract": "systemFields.v1"}
+    )
+
+    assert result["state"] == "reported"
+    assert result["runtime_compatibility"]["compatible"] is True
+    subjects = [
+        item["subject"] for item in result["runtime_compatibility"]["declarations"]
+    ]
+    assert subjects == ["dispatch-brief", "runtime-assignment", "completion-report"]

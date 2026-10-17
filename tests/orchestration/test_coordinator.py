@@ -27,7 +27,7 @@ import threading
 import time
 import unittest
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import ClassVar, cast
@@ -46,8 +46,13 @@ from harness.orchestration import (
 )
 from harness.orchestration.core import config, constants, git_utils, utils, workspace
 from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+)
 from harness.orchestration.ledger import (
     BatchRecord,
+    DispatchRecord,
     DispatchStatusRecord,
     LifecycleLedger,
     PlanRecord,
@@ -86,21 +91,38 @@ INCOMPLETE_ITEM = {
 
 
 class ImmutableReportPersistenceTests(unittest.TestCase):
-    def test_markdown_failure_discards_the_incomplete_json_report(self) -> None:
+    def test_markdown_failure_keeps_the_json_report_behind_a_suspended_intent(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
-            root = Path(temporary) / "state"
+            repo = Path(temporary)
+            _git(repo, "init", "-q")
+            root = repo / constants.STATE_REL
             ledger = LifecycleLedger(root)
             ledger.ensure()
+            records = ledger.records_root()
             dispatch: JsonObject = {
                 "dispatch_id": "dispatch-0123456789abcdef",
                 "batch_id": "batch-0123456789abcdef",
             }
             batch: JsonObject = {
                 "batch_id": "batch-0123456789abcdef",
+                "state": "active",
                 "dispatches": [
                     {"dispatch_id": "dispatch-0123456789abcdef", "state": "dispatched"}
                 ],
             }
+            ledger.write_immutable(
+                records / "plans" / "batch-0123456789abcdef.json",
+                {"batch_id": "batch-0123456789abcdef"},
+            )
+            ledger.write_immutable(
+                records / "batches" / "batch-0123456789abcdef.json", batch
+            )
+            ledger.write_immutable(
+                records / "dispatch-status" / "dispatch-0123456789abcdef.json",
+                {"dispatch_id": "dispatch-0123456789abcdef", "state": "working"},
+            )
             report: JsonObject = {
                 "dispatch_id": "dispatch-0123456789abcdef",
                 "ticket": "291",
@@ -114,21 +136,31 @@ class ImmutableReportPersistenceTests(unittest.TestCase):
                 "blockers": {"status": "none", "details": ""},
                 "next_coordinator_action": "accept",
             }
-            failure = coordinator.CoordinatorError("disk full", remedy="free space")
             with (
                 mock.patch.object(
-                    reports,
-                    "_write_text_exclusive",
-                    side_effect=failure,
+                    LifecycleLedger, "write_artifact", side_effect=OSError("disk full")
                 ),
-                self.assertRaises(coordinator.CoordinatorError),
+                self.assertRaises(RuntimeStateError) as raised,
             ):
-                reports._persist_report(ledger, root, batch, dispatch, report)
+                reports._persist_report(
+                    ledger, root, batch, dispatch, report, repo=repo
+                )
 
-            report_path = (
-                ledger.records_root() / "reports" / "dispatch-0123456789abcdef.json"
+            self.assertEqual(raised.exception.code, "execution-failure")
+            self.assertTrue(
+                (records / "reports" / "dispatch-0123456789abcdef.json").exists()
             )
-            self.assertFalse(report_path.exists())
+            self.assertFalse(
+                (records / "reports" / "dispatch-0123456789abcdef.md").exists()
+            )
+            stored = RuntimeStateStore(repo, root).read("batch-0123456789abcdef")
+            assert stored is not None
+            self.assertEqual(stored["state"], "suspended")
+            self.assertEqual(stored["operation"]["phase"], "prepared")
+            self.assertEqual(
+                (stored["failure"]["code"], stored["failure"]["step"]),
+                ("execution-failure", "ledger:reports"),
+            )
 
 
 class GitUtilsValidationTests(unittest.TestCase):
@@ -162,6 +194,55 @@ def _git(repo: Path, *arguments: str) -> str:
 
 def _ns(**values: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
+
+
+def pinned_sha256(record: JsonObject) -> str:
+    """The digest a batch entry pins a brief or a report by: that of its canonical JSON."""
+    return hashlib.sha256(utils._canonical(record).encode("utf-8")).hexdigest()
+
+
+def repin_entry(
+    state_root: Path,
+    batch_id: str,
+    dispatch_id: str,
+    *,
+    brief_sha256: str | None = None,
+    report_sha256: str | None = None,
+) -> None:
+    """Pin the entry of ``dispatch_id`` in batch ``batch_id`` to the given ``brief_sha256`` and
+    ``report_sha256`` of a brief or report a test rewrote on disk, through a recorded ledger
+    transition, so the strict read of the batch reaches the check the test exercises and a
+    later transition starts from the pinned record.  A rewritten brief also gets the audit event
+    of its creation resealed with the digest it holds, as a ledger that recorded it so would."""
+    digests = {
+        key: digest
+        for key, digest in (
+            ("brief_sha256", brief_sha256),
+            ("report_sha256", report_sha256),
+        )
+        if digest is not None
+    }
+    ledger = LifecycleLedger(state_root)
+    records = ledger.records_root()
+    path = records / BatchRecord.directory / f"{batch_id}.json"
+    batch = json.loads(path.read_text(encoding="utf-8"))
+    for entry in batch["dispatches"]:
+        if entry["dispatch_id"] == dispatch_id:
+            entry.update(digests)
+    if brief_sha256 is not None:
+        relative = f"dispatches/{dispatch_id}.json"
+        brief = hashlib.sha256((records / relative).read_bytes()).hexdigest()
+        for event_path in (records / "audit").glob("*.json"):
+            event = json.loads(event_path.read_text(encoding="utf-8"))
+            if (
+                event["action"] == "immutable-record"
+                and event["details"]["path"] == relative
+            ):
+                event["details"]["sha256"] = brief
+                event.pop("record_sha256")
+                event["record_sha256"] = pinned_sha256(event)
+                event_path.write_text(utils._canonical(event), encoding="utf-8")
+    ledger.replace(path, batch)
 
 
 def _init_repo(tmp: Path) -> Path:
@@ -396,13 +477,69 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         original = architect.read_text(encoding="utf-8")
         architect.write_text("reinstalled\n", encoding="utf-8")
 
-        with mock.patch("harness.orchestration.ledger.lifecycle.LEDGER_VERSION", 99):
+        lifecycle_module = "harness.orchestration.ledger.lifecycle"
+        with (
+            mock.patch(f"{lifecycle_module}.LEDGER_VERSION", 99),
+            mock.patch(f"{lifecycle_module}.SUPPORTED_LEDGER_VERSIONS", (1, 2, 3, 99)),
+        ):
             with self.assertRaises(coordinator.CoordinatorError) as refused:
                 coordinator.migrate_ledger(args)
             self.assertIn(batch["batch_id"], refused.exception.message)
 
             architect.write_text(original, encoding="utf-8")
-            self.assertTrue(coordinator.migrate_ledger(args)["migrated"])
+            migrated = coordinator.migrate_ledger(args)
+            self.assertTrue(migrated["migrated"])
+            self.assertTrue(migrated["schema_upgraded"])
+
+    def test_ledger_migrate_moves_the_ledger_to_the_system_fields_once(self) -> None:
+        batch = self._create_batch()
+        args = _ns(repo=str(self.repo), state_dir=str(self.state_dir))
+        source = self._records_root().name
+
+        first = coordinator.migrate_ledger(args)
+        again = coordinator.migrate_ledger(args)
+
+        self.assertEqual(first["version"], 3)
+        self.assertTrue(first["migrated"])
+        self.assertFalse(first["schema_upgraded"])
+        self.assertNotEqual(first["generation"], source)
+        self.assertEqual(first["system_fields"]["source_generation"], source)
+        self.assertEqual(first["system_fields"]["quarantined"], [])
+        self.assertEqual(
+            again,
+            {
+                **first,
+                "migrated": False,
+                "system_fields": {**first["system_fields"], "migrated": False},
+            },
+        )
+        self.assertEqual(self._records_root().name, first["generation"])
+        self.assertEqual(
+            coordinator._load_batch(self.state_dir, batch["batch_id"])["state"],
+            "planned",
+        )
+
+    def test_ledger_inspect_and_export_run_on_the_installed_runtime_under_a_held_lock(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        parser = coordinator.parser()
+        common = ["--repo", str(self.repo), "--state-dir", str(self.state_dir)]
+        inspect = parser.parse_args(["ledger", "inspect", *common, "--batch", batch_id])
+        export = parser.parse_args(["ledger", "export", *common, "--batch", batch_id])
+
+        self.assertIs(inspect.handler, coordinator.inspect_ledger)
+        self.assertIs(export.handler, coordinator.export_ledger)
+        self.assertIsNone(coordinator.pinned_runtime_command(inspect))
+        self.assertIsNone(coordinator.pinned_runtime_command(export))
+        with LifecycleLedger(self.state_dir).lock():
+            [shown] = inspect.handler(inspect)["batches"]
+            exported = export.handler(export)
+        self.assertEqual((shown["batch_id"], shown["area"]), (batch_id, "operational"))
+        self.assertEqual(exported["area"], "operational")
+        self.assertIn(
+            f"batches/{batch_id}.json", [file["path"] for file in exported["files"]]
+        )
 
     def test_batch_approve_transitions_state_via_ledger_replace(self) -> None:
         batch = self._create_batch()
@@ -1588,11 +1725,18 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         parameters = inspect.signature(coordinator._persist_report).parameters
         self.assertEqual(
             list(parameters),
-            ["ledger", "root", "batch", "dispatch", "report", "auto_accept_policy"],
+            [
+                "ledger",
+                "root",
+                "batch",
+                "dispatch",
+                "report",
+                "repo",
+                "auto_accept_policy",
+            ],
         )
-        self.assertIs(
-            parameters["auto_accept_policy"].kind, inspect.Parameter.KEYWORD_ONLY
-        )
+        for name in ("repo", "auto_accept_policy"):
+            self.assertIs(parameters[name].kind, inspect.Parameter.KEYWORD_ONLY)
 
     def _ledger(self) -> LifecycleLedger:
         return LifecycleLedger(
@@ -1813,6 +1957,13 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         record = json.loads(path.read_text(encoding="utf-8"))
         record["worker_attestation_required"] = True
         path.write_text(json.dumps(record), encoding="utf-8")
+        # The batch pins the changed brief, so the strict read of the batch accepts it.
+        repin_entry(
+            self.state_dir,
+            record["batch_id"],
+            record["dispatch_id"],
+            brief_sha256=pinned_sha256(record),
+        )
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._self_report(
@@ -2031,6 +2182,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         from harness.orchestration.runtime_access import AccessError
 
         class ApplyOnly:
+            system_fields_contract = "systemFields.v1"
+
             def observe(
                 self, plan: JsonObject, transport: str
             ) -> extensions.RuntimeAccessObservation:
@@ -2089,6 +2242,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         launches: list[str] = []
 
         class ControlledNative:
+            system_fields_contract = "systemFields.v1"
+
             def observe(
                 self, plan: JsonObject, transport: str
             ) -> extensions.RuntimeAccessObservation:
@@ -2520,38 +2675,35 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(stored["dispatches"][1]["decision"]["decision"], "accept")
         self.assertIn(stored["next_action"], {"code-review", "qa"})
 
-    def test_manual_accept_rejects_a_legacy_invalid_check_result(self) -> None:
+    def _assert_a_legacy_check_result_is_never_written(
+        self, result: str, exact: str
+    ) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
-        candidate, changed = self._developer_commit("legacy-check-result")
+        candidate, changed = self._developer_commit(f"legacy-{result}-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "unknown")
+            brief, candidate, changed, checks_run=self._checks(brief, result)
         )
-        # Stage historical evidence with its normal digest, as if submitted before #669.
-        self._stage_report(
-            batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
-        )
-        before = {
-            path: path.read_bytes()
-            for path in self._records().rglob("*")
-            if path.is_file()
-        }
 
+        # The value a report held before #669 is refused by the ledger's own write boundary.
         with self.assertRaises(coordinator.CoordinatorError) as caught:
-            self._decide(batch["batch_id"], "accept")
+            self._stage_report(
+                batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
+            )
 
         self.assertIn("checks_run[0].result", caught.exception.message)
-        self.assertIn("unknown", caught.exception.message)
-        self.assertIn("not_run", caught.exception.remedy)
-        self.assertEqual(
-            before,
-            {
-                path: path.read_bytes()
-                for path in self._records().rglob("*")
-                if path.is_file()
-            },
-        )
+        self.assertIn(repr(result), caught.exception.message)
+        self.assertIn(exact, caught.exception.remedy)
+        for suffix in ("json", "md"):
+            self.assertFalse(
+                (
+                    self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
+                ).exists()
+            )
+
+    def test_a_legacy_invalid_check_result_is_never_written(self) -> None:
+        self._assert_a_legacy_check_result_is_never_written("unknown", "not_run")
 
     def _assert_skipped_check_is_recorded(self, result: str) -> None:
         batch = self._create_batch()
@@ -2570,26 +2722,204 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_not_run_is_recorded_as_a_skipped_check(self) -> None:
         self._assert_skipped_check_is_recorded("not_run")
 
-    def test_manual_accept_rejects_a_legacy_passed_report(self) -> None:
+    def test_a_legacy_passed_check_result_is_never_written(self) -> None:
+        self._assert_a_legacy_check_result_is_never_written("passed", "pass")
+
+    def _state_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for path in self.state_dir.rglob("*")
+            if path.is_file()
+        }
+
+    def _plant_unmigrated_batch(self) -> str:
+        """A batch only history could hold, written to disk and never through the ledger: its
+        approval policy is no registry value, which no check of the ledger's container finds."""
+        batch_id = "batch-0000beef"
+        records = self._records()
+        planted: dict[str, JsonObject] = {
+            "plans": {"batch_id": batch_id},
+            "batches": {
+                "batch_id": batch_id,
+                "state": "completed",
+                "approval_policy": "Manual",
+                "dispatches": [],
+            },
+        }
+        for directory, record in planted.items():
+            (records / directory / f"{batch_id}.json").write_text(
+                json.dumps(record), encoding="utf-8"
+            )
+        return batch_id
+
+    def test_an_unmigrated_ledger_refuses_automatic_commands_until_migrate(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        inbox = workspace._prepare_agent_inbox(self.repo)
+        report = inbox / f"{architect['dispatch_id']}.json"
+        report.write_text(
+            json.dumps(self._base_report(architect, "architect")), encoding="utf-8"
+        )
+        legacy = self._plant_unmigrated_batch()
+        heartbeat = self._args(
+            dispatch=architect["dispatch_id"],
+            note=None,
+            context_tokens=None,
+            context_source=None,
+        )
+        commands: dict[str, Callable[[], JsonObject]] = {
+            "dispatch heartbeat": lambda: coordinator.heartbeat_dispatch(heartbeat),
+            "dispatch self-report": lambda: coordinator.self_report_dispatch(
+                self._args(
+                    dispatch=architect["dispatch_id"],
+                    model="sonnet",
+                    worktree=str(self.worktree),
+                )
+            ),
+            "report submit": lambda: coordinator.submit_report(
+                self._args(file=str(report))
+            ),
+            "batch decide": lambda: self._decide(batch["batch_id"], "accept"),
+            "dispatch create": lambda: self._dispatch(batch["batch_id"], "developer"),
+            "ledger validate": lambda: ledger_admin.validate_ledger(self._args()),
+        }
+        before = self._state_bytes()
+
+        for name, command in commands.items():
+            with (
+                self.subTest(command=name),
+                self.assertRaises(ledger_ops.LedgerUnmigratedError) as caught,
+            ):
+                command()
+            self.assertTrue(
+                caught.exception.message.startswith(
+                    "run 'coordinator.py ledger migrate'"
+                )
+            )
+            self.assertIn(f"batches/{legacy}.json", caught.exception.message)
+        self.assertEqual(self._state_bytes(), before)
+
+        migrated = ledger_admin.migrate_ledger(self._args())
+
+        self.assertEqual(migrated["system_fields"]["quarantined"], [legacy])
+        self.assertTrue(ledger_admin.validate_ledger(self._args())["valid"])
+        self.assertEqual(
+            coordinator.heartbeat_dispatch(heartbeat)["dispatch_id"],
+            architect["dispatch_id"],
+        )
+
+    def _plant_passed_history(self, batch_id: str, dispatch_id: str) -> None:
+        """Rewrite the report of ``dispatch_id`` on disk as a report submitted before #669 held
+        it, with one check recorded as 'passed', and record the digest its batch pinned for it
+        through a ledger transition, as that history did: a later transition starts from it."""
+        records = self._records()
+        path = records / "reports" / f"{dispatch_id}.json"
+        report = json.loads(path.read_text(encoding="utf-8"))
+        report["checks_run"] = [
+            {"command": "make test", "result": "passed", "evidence": "n/a"}
+        ]
+        path.write_bytes(utils._canonical(report).encode("utf-8"))
+        repin_entry(
+            self.state_dir,
+            batch_id,
+            dispatch_id,
+            report_sha256=pinned_sha256(report),
+        )
+
+    def test_a_developer_retry_runs_on_a_migrated_ledger_with_mapped_history(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        batch_id = batch["batch_id"]
+        self._accepted_architect(batch_id)
+        architect_id = self._batch_record(batch_id)["dispatches"][0]["dispatch_id"]
+        self._plant_passed_history(batch_id, architect_id)
+        migrated = ledger_admin.migrate_ledger(self._args())
+        self.assertEqual(
+            (
+                migrated["system_fields"]["mapped"],
+                migrated["system_fields"]["quarantined"],
+            ),
+            (1, []),
+        )
+        developer = self._dispatch(batch_id, "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("failed-before-retry")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers={"status": "present", "details": "tests failed"},
+                checks_run=self._checks(developer, "fail"),
+            ),
+        )
+
+        decided = self._decide(batch_id, "retry", reason_category="code")
+        retry = self._dispatch(batch_id, "developer")["brief"]
+        self._start(retry["dispatch_id"])
+        fixed, changed = self._developer_commit("fixed-after-retry")
+        self._submit(
+            retry["dispatch_id"], self._developer_report(retry, fixed, changed)
+        )
+        accepted = self._decide(batch_id, "accept")
+
+        self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=None,
+            route="developer-retry",
+        )
+        self.assertEqual(accepted["next_action"], "risk-assessment")
+        # The mapped history keeps its bytes: nothing rewrote it into a canonical 'pass'.
+        report = json.loads(
+            (self._records() / "reports" / f"{architect_id}.json").read_text("utf-8")
+        )
+        self.assertEqual({c["result"] for c in report["checks_run"]}, {"passed"})
+
+    def test_manual_accept_refuses_a_mapped_legacy_passed_report_after_migrate(
+        self,
+    ) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
         candidate, changed = self._developer_commit("legacy-passed-result")
         report = self._developer_report(
-            brief, candidate, changed, checks_run=self._checks(brief, "passed")
+            brief, candidate, changed, checks_run=self._checks(brief, "pass")
         )
         self._stage_report(
             batch["batch_id"], brief["dispatch_id"], report, via_qa_lane=False
         )
-        paths = [
-            self._records() / "reports" / f"{brief['dispatch_id']}.{suffix}"
-            for suffix in ("json", "md")
-        ]
-        before = {path: path.read_bytes() for path in paths}
+        # History before #669: the report held 'passed', and its batch recorded that digest.
+        records = self._records()
+        planted = {**report, "checks_run": self._checks(brief, "passed")}
+        (records / "reports" / f"{brief['dispatch_id']}.json").write_bytes(
+            utils._canonical(planted).encode("utf-8")
+        )
+        repin_entry(
+            self.state_dir,
+            batch["batch_id"],
+            brief["dispatch_id"],
+            report_sha256=pinned_sha256(planted),
+        )
+        with self.assertRaises(ledger_ops.LedgerUnmigratedError):
+            self._decide(batch["batch_id"], "accept")
 
+        migrated = ledger_admin.migrate_ledger(self._args())
+        before = self._state_bytes()
+
+        # The mapped value is readable history, never an authorizing canonical 'pass'.
+        self.assertEqual(migrated["system_fields"]["mapped"], 1)
         with self.assertRaisesRegex(coordinator.CoordinatorError, "result is invalid"):
             self._decide(batch["batch_id"], "accept")
-        self.assertEqual(before, {path: path.read_bytes() for path in paths})
+        self.assertEqual(self._state_bytes(), before)
 
     def test_completion_report_retains_optional_memory_evidence(self) -> None:
         """Memory evidence survives submission but grants no authority to advance."""
@@ -3500,6 +3830,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     ledger_ops._load_batch(root, batch_id),
                     dispatch,
                     report,
+                    repo=self.repo,
                 )
 
     def _reported_qa(
@@ -3701,12 +4032,12 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(submitted["state"], "reported")
         self.assertIn("decision_packet", submitted)
         packet = submitted["decision_packet"]
-        self.assertEqual(packet["options"], ["retry", "block", "abandon"])
+        # The blocked report's cause is unknown: no abandon is offered on it (issue #684).
+        self.assertEqual(packet["options"], ["retry", "block"])
+        self.assertEqual(packet["operational_hold"]["reason"], "unknown-value")
         self.assertNotIn("accept", packet["options"])
         self.assertIn("recovery_route", packet)
-        self.assertEqual(
-            packet["recovery_route"]["options"], ["retry", "block", "abandon"]
-        )
+        self.assertEqual(packet["recovery_route"]["options"], ["retry", "block"])
 
         with self.assertRaises(coordinator.CoordinatorError) as caught:
             self._decide(batch["batch_id"], "accept")
@@ -6663,7 +6994,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             unflagged["route_preview"]["retry"]["route"], "developer-retry"
         )
-        self.assertEqual(unflagged["route_preview"]["abandon"], {"route": "abandon"})
+        # An unknown cause offers no abandon (issue #684); a named category routes as before.
+        self.assertNotIn("abandon", unflagged["route_preview"])
+        self.assertEqual(unflagged["operational_hold"]["reason"], "unknown-value")
         self.assertEqual(forced["route_preview"]["retry"]["route"], "developer-retry")
         retry = preview["route_preview"]["retry"]
         self.assertEqual(retry["route"], "same-candidate-rerun")
@@ -6729,9 +7062,10 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     "refused": "classifier failed",
                     "remedy": "fix the classifier",
                 },
-                "abandon": {"route": "abandon"},
             },
         )
+        # A refused route offers no abandon either (issue #684).
+        self.assertEqual(packet["operational_hold"]["reason"], "missing-value")
         self.assertEqual(refused.exception.message, "classifier failed")
 
     def test_a_routed_decision_audits_its_route_evidence_and_human_approver(
@@ -6869,15 +7203,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         with ledger_ops._ledger_lock(ledger):
             qa_lane._enqueue(ledger, open_id)
             record = ledger_ops._load_batch(root, batch["batch_id"])
-            record["dispatches"].append(
-                {
-                    "dispatch_id": open_id,
-                    "role": "qa",
-                    "state": "approved",
-                    "brief_sha256": "0" * 64,
-                }
-            )
-            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
+            brief: JsonObject = {
+                "dispatch_id": open_id,
+                "batch_id": batch["batch_id"],
+                "role": "qa",
+                "state": "approved",
+                "coordinator_approval": None,
+            }
+            ledger_ops._write_record(ledger, DispatchRecord.from_dict(brief))
             ledger_ops._write_record(
                 ledger,
                 DispatchStatusRecord.from_dict(
@@ -6888,6 +7221,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                     },
                 ),
             )
+            record["dispatches"].append(
+                {
+                    "dispatch_id": open_id,
+                    "role": "qa",
+                    "state": "approved",
+                    "brief_sha256": pinned_sha256(brief),
+                }
+            )
+            ledger_ops._replace_record(ledger, BatchRecord.from_dict(record))
 
         decided = self._decide(batch["batch_id"], "abandon", reason="operator restart")
 
@@ -7428,6 +7770,54 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         )
 
+    def test_an_unrecognized_termination_reason_takes_the_planned_trigger_path(
+        self,
+    ) -> None:
+        batch = self._create_batch(
+            definition_of_done=["first slice", "remaining slice"]
+        )
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(brief, first, changed)
+        facts = {
+            "dispatch_id": brief["dispatch_id"],
+            "remaining_definition_of_done": checkpoint["remaining_definition_of_done"],
+            "risks": checkpoint["risks"],
+            "dependencies": brief["dependencies"],
+        }
+        path = workspace._prepare_agent_inbox(self.repo) / "continuation-facts.json"
+        path.write_text(json.dumps(facts), encoding="utf-8")
+        resume = {
+            "dispatch": brief["dispatch_id"],
+            "trigger": "vertical-slice",
+            "measured_value": None,
+            "file": str(path),
+            "note": "resume the recorded green slice",
+            **self._approval(),
+        }
+        before = self._ledger_bytes()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.resume_dispatch(
+                self._args(termination_reason="Rate_Limit", **resume)
+            )
+        self.assertIn(
+            "write exactly 'rate-limit' or 'rate_limit'", caught.exception.message
+        )
+        self.assertIn("or pass --trigger", caught.exception.remedy)
+        self.assertEqual(before, self._ledger_bytes())
+
+        resumed = coordinator.resume_dispatch(
+            self._args(termination_reason="worker-exited", **resume)
+        )
+
+        self.assertEqual(resumed["authorization"], "continue")
+        decision = self._batch_record(batch["batch_id"])["coordinator_decisions"][-1]
+        self.assertEqual(decision["decision"], "continue")
+        self.assertEqual(decision["note"], "resume the recorded green slice")
+
     def test_committed_checkpoint_continuation_attests_exact_progress_and_completes_plan(
         self,
     ) -> None:
@@ -7888,6 +8278,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         class Recorder:
+            system_fields_contract = "systemFields.v1"
+
             def __init__(self) -> None:
                 self.events: list[extensions.AttentionEvent] = []
 
@@ -7930,6 +8322,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         class Broken:
+            system_fields_contract = "systemFields.v1"
+
             def notify(self, event: extensions.AttentionEvent) -> None:
                 raise RuntimeError("chat is down")
 
@@ -8324,11 +8718,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "dispatch_id",
                 "state",
                 "report",
+                "runtime_compatibility",
                 "auto_accepted",
                 "next_action",
                 "next_dispatch_id",
             },
         )
+        self.assertTrue(submitted["runtime_compatibility"]["compatible"])
         self.assertTrue(submitted["auto_accepted"])
         self.assertEqual(
             submitted["next_dispatch_id"],
@@ -8476,7 +8872,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256"},
+            | {
+                "runtime_access_sha256",
+                "infrastructure_retry_sha256",
+                "configuration_sha256",
+            },
         )
         self.assertEqual(
             proposal["transition_digest"],

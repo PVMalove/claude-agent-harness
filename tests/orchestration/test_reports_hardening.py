@@ -180,3 +180,61 @@ def test_drifted_facts_name_only_the_compared_facts(
 
     assert "blockers" not in caught.value.message
     assert "ordinary approval" in caught.value.remedy
+
+
+def _compatibility_dispatch() -> JsonObject:
+    return {
+        "dispatch_id": "dispatch-0123456789abcdef",
+        "role": "developer",
+        "resolved_runtime": "claude",
+        "resolved_transport": "in-process",
+        "orchestration_policy": {
+            "configuration": {"contract": "systemFields.v1"},
+            "extensions": {},
+        },
+    }
+
+
+def test_a_report_without_a_confirmation_is_judged_on_the_brief(tmp_path: Path) -> None:
+    evidence = reports._report_compatibility(
+        tmp_path / "state", {}, _compatibility_dispatch(), {}, {}
+    )
+
+    assert evidence["compatible"] is True
+    assert [item["subject"] for item in evidence["declarations"]] == [
+        "dispatch-brief",
+        "runtime-assignment",
+    ]
+
+
+def test_an_incompatible_confirmation_keeps_only_unaccepted_evidence(
+    tmp_path: Path,
+) -> None:
+    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+    from harness.orchestration.runtime_compatibility import RuntimeCompatibilityError
+
+    root = tmp_path / "state"
+    ledger = LifecycleLedger(root)
+    ledger.ensure()
+    status: JsonObject = {
+        "contract_self_report": {
+            "reported": "systemFields.v2",
+            "expected": "systemFields.v1",
+            "status": "unsupported",
+            "reported_at": "2026-10-17T00:00:00+00:00",
+        }
+    }
+    report: JsonObject = {"dispatch_id": "dispatch-0123456789abcdef", "output": "x"}
+
+    with pytest.raises(RuntimeCompatibilityError) as raised:
+        reports._report_compatibility(
+            root, {}, _compatibility_dispatch(), status, report
+        )
+
+    assert "unaccepted evidence" in raised.value.remedy
+    [capture] = list((ledger.records_root() / "unaccepted-evidence").glob("*.json"))
+    stored = json.loads(capture.read_bytes())
+    assert (stored["accepted"], stored["input"]) == (False, report)
+    assert not (ledger.records_root() / "reports").exists() or not list(
+        (ledger.records_root() / "reports").iterdir()
+    )

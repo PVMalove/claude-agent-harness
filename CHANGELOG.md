@@ -6,14 +6,29 @@
 
 ### Added
 
+- **[Миграция ledger по generations]:** `ledger migrate` создаёт проверенную generation с каноническими значениями `systemFields.v1`, а исходная generation и её история не меняются. Старые результаты проверок `passed`, `not-run` и `not_run_architect_read_only` сопоставляются явными правилами без нечёткой нормализации, а batch с неизвестным значением или нечитаемой записью уходит в quarantine, и действия по нему запрещены. Прерванную миграцию завершает следующий запуск, а повторный запуск ничего не меняет (#696).
+- **[Просмотр и экспорт ledger]:** `ledger inspect [--batch]` и `ledger export --batch` показывают и выгружают batch из quarantine или с нечитаемыми записями, не блокируя ledger и ничего не записывая (#696).
+- **[Совместимость рантаймов с systemFields.v1]:** назначение рантайма объявляет версию полем `system_fields_contract`, внешний adapter — глаголом `contract`, проектный extension — атрибутом `system_fields_contract`, а worker может подтвердить её флагом `dispatch self-report --system-fields-contract`. `dispatch preflight`, `dispatch create`, `dispatch send`, `qa run` и `report submit` до запуска и принятия возвращают структурированный отказ `runtime-compatibility` с evidence; несовместимый отчёт сохраняется только как непринятое evidence (#684).
+- **[Удержание batch вместо abandon]:** неизвестные, отсутствующие, нечитаемые или несовместимые данные удерживают batch в runtime state store и поднимают attention `operational-hold`. Decision packet, `route_preview` и auto policy в таком случае не предлагают abandon, успех или маршрут по умолчанию. После устранения причины человек разрешает attention командой `batch attention resolve`, затем `recovery resume` снимает удержание (#684).
+- **[Команды recovery]:** `recovery status`, `recovery reload` и `recovery resume --batch` работают без TTY и без Textual, печатают документ `recoveryStatus.v1` и завершаются кодом 0 или 2. `resume` сверяет store, ledger, brief, снимок harness runtime, snapshot конфигурации, Context Package открытых brief с base и candidate, совместимость, liveness, attention и approval, снимает удержание и не повторяет подтверждённые шаги. Общий API `recovery_api` даёт консоли действия fix, reload, resume, skip и abort с durable intent (#684).
 - **[Внешние runtime-адаптеры]:** Claude Code и Codex запускают отдельный worker в назначенном checkout по параметрам брифа. CLI устанавливает и обновляет адаптеры вместе с `backend-orchestration`, а настройки консоли показывают их состояние и требуют просмотра с подтверждением. Локальные файлы защищены от неявной замены; общий seed добавляет шесть разрешений для наблюдения за оркестрацией (#715).
-
 - **[Запуск Claude worker в issue-worktree]:** Установка `backend-orchestration` добавляет `.harness/adapters/claude_worker.py` — runtime adapter для `transport: external`. Инструмент Agent не умеет стартовать subagent в существующем checkout (subagent стартует в основном checkout, `EnterWorktree` его там отклоняет), поэтому Claude in-process worker не может стартовать в `worker_worktree`. `dispatch send --adapter` запускает адаптер в `worker_worktree`, а он стартует отделённый headless `claude -p` на модели, effort и `allowed_tools` из брифа с `dontAsk`. Адаптер лежит вне хешируемого runtime-пакета, поэтому его установка не меняет пин открытого batch. Skill `implement` и руководство `worktrees.md` описывают оба пути: адаптер даёт настоящий cwd, а in-process subagent работает по абсолютным путям и `git -C`, и его self-report доказывает checkout, в котором он работает, а не cwd (#718).
+
+### Changed
+
+- **[Остановка auto policy без abandon]:** отказанный маршрут retry останавливает auto policy с `missing-evidence`, а не с `abandon-dead-end`; `abandon-dead-end` остаётся только для batch в `blocked` или `failed` по решению человека (#684).
+- **[Ответ ledger migrate]:** `ledger migrate` требует Git checkout. В ответе появились поля `schema_upgraded` и `system_fields`, а `migrated` равно `true`, если изменилась схема ledger или значения полей (#696).
+- **[Строгое чтение batch]:** чтение ledger останавливается, если batch, статус его dispatch или бриф изменены в обход ledger или откатились к ранней записанной версии, даже когда `state` остался прежним. Остановка называет версии записи и ведёт к `ledger inspect` и `ledger export`; допустимая история ранних версий по-прежнему читается (#727).
 
 ### Fixed
 
+- **[Повтор publish и qa run]:** `dispatch publish` и `qa run` завершают прерванную запись до чтения batch, поэтому повтор команды после сбоя доходит до результата (#727).
 - **[Восстановление незавершённой разработки]:** `batch rewind --preserved-commit` сохраняет явно подтверждённые коммиты и перечисленные через `--preserved-file` незакоммиченные файлы остановленного writer без отчёта или checkpoint. Следующий запуск проверяет сохранённый checkout; история, ручные согласования и бюджеты повторов сохраняются (#733).
 - **[Кандидат после rewind]:** История и проверка ledger используют `source_dispatch_id` регистрации кандидата, поэтому повторный rewind после регистрации сохраняет читаемый ledger (#715).
+
+### Breaking Changes
+
+- **[Обязательное объявление systemFields.v1]:** внешний adapter должен отвечать на глагол `<adapter> contract [args] --repo <repo> --brief <brief>` строкой `{"system_fields_contract": "systemFields.v1"}`, а проектный extension — объявлять атрибут `system_fields_contract`. Extension без атрибута отклоняется в `dispatch preflight`, `dispatch create`, `dispatch send` и `qa run`, adapter без глагола `contract` — в `dispatch send`. Отказ `runtime-compatibility` не запускает worker; в `dispatch send` и `qa run` он ещё и удерживает batch до `recovery resume` (#684).
 
 ## [1.4.6] - 2026-10-14
 

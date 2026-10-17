@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import subprocess
 import tempfile
 import unittest
 from collections.abc import Callable
@@ -21,6 +23,7 @@ from harness.gate_runner.gate_runner import (
 )
 from harness.orchestration import coordinator, operation_access, qa_lane
 from harness.storage import storage_path
+from harness.orchestration.core import utils
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import (
     BatchRecord,
@@ -34,7 +37,11 @@ from harness.orchestration.ledger import (
     PlanRecord,
 )
 from harness.orchestration.qa_lane import QaWorkflowOps
+from harness.orchestration.runtime_intent import CompositeWrite
+from harness.orchestration.runtime_state_store import RuntimeStateStore
+from harness.orchestration.pinned_configuration import snapshot
 from harness.orchestration.workflow import reports, qa_integration
+from tests.orchestration.test_runtime_reconcile_faults import Crash
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
 OTHER_DISPATCH_ID = "dispatch-fedcba9876543210"
@@ -506,6 +513,8 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
 class QaLaneRunTests(QaLaneTestCase):
     def setUp(self) -> None:
         super().setUp()
+        # `run` settles an unfinished write of the batch, which needs the checkout's runtime state.
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         self.dispatch: JsonObject = {
             "dispatch_id": DISPATCH_ID,
             "state": "approved",
@@ -520,14 +529,33 @@ class QaLaneRunTests(QaLaneTestCase):
         )
 
     def _seed(
-        self, *, batch_state: str = "approved", status_state: str = "approved"
+        self,
+        *,
+        batch_state: str = "approved",
+        status_state: str = "approved",
+        policy: JsonObject | None = None,
     ) -> None:
+        approved = snapshot(policy or {}, {}, {"name": self.dispatch["role"]})
+        self.dispatch["orchestration_policy"] = {"configuration": approved}
+        self.dispatch["transition"] = {
+            "configuration_sha256": approved["canonical_sha256"]
+        }
         records = self.ledger.records_root()
+        # The batch pins the brief by its digest, as the strict read of a batch requires.
+        brief_sha256 = hashlib.sha256(
+            utils._canonical(self.dispatch).encode("utf-8")
+        ).hexdigest()
         batch: JsonObject = {
             "batch_id": BATCH_ID,
             "state": "active",
             "coordinator_approval": None,
-            "dispatches": [{"dispatch_id": DISPATCH_ID, "state": batch_state}],
+            "dispatches": [
+                {
+                    "dispatch_id": DISPATCH_ID,
+                    "state": batch_state,
+                    "brief_sha256": brief_sha256,
+                }
+            ],
         }
         self.ledger.write_immutable(
             records / PlanRecord.directory / f"{BATCH_ID}.json", {"batch_id": BATCH_ID}
@@ -554,6 +582,8 @@ class QaLaneRunTests(QaLaneTestCase):
             batch: object,
             dispatch: object,
             report: dict[str, object],
+            *,
+            repo: Path,
         ) -> Path:
             if report_error is not None:
                 raise report_error
@@ -617,6 +647,41 @@ class QaLaneRunTests(QaLaneTestCase):
         self.assertEqual(
             result, {"dispatch_id": DISPATCH_ID, "state": "queued", "position": 1}
         )
+
+    def test_repeated_run_settles_an_interrupted_batch_write_before_it_reads_the_batch(
+        self,
+    ) -> None:
+        self._seed()
+        live = (datetime.now(UTC) + timedelta(minutes=5)).isoformat()
+        self.ledger.write_immutable(
+            self.lane / "lease.json", self._lease(expires_at=live)
+        )
+        path = self.ledger.records_root() / BatchRecord.directory / f"{BATCH_ID}.json"
+        batch = coordinator._read_object(path, "batch record")
+        # One recorded transition, then a composite write that stops between the batch and its
+        # audit event.
+        self.ledger.replace_record(BatchRecord.from_dict(batch))
+        write = CompositeWrite(
+            self.ledger,
+            RuntimeStateStore(self.repo, self.root),
+            batch_id=BATCH_ID,
+            dispatch_id=DISPATCH_ID,
+            kind="checkpoint",
+            idempotency_key="key",
+        )
+        write.replace_record(BatchRecord.from_dict({**batch, "ticket": "225"}))
+        with mock.patch.object(LifecycleLedger, "_append_audit", side_effect=Crash):
+            with self.assertRaises(Crash):
+                write.commit()
+        with self.assertRaisesRegex(CoordinatorError, "last recorded transition"):
+            coordinator._load_batch(self.root, BATCH_ID)
+
+        result = qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(
+            result, {"dispatch_id": DISPATCH_ID, "state": "queued", "position": 1}
+        )
+        self.assertEqual(coordinator._load_batch(self.root, BATCH_ID)["ticket"], "225")
 
     def test_earlier_queue_entry_keeps_the_dispatch_queued(self) -> None:
         self._seed()
@@ -963,7 +1028,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def _run_staged(self, staged: QAStagesResult) -> dict[str, object]:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         persisted: list[dict[str, object]] = []
 
         def persist(
@@ -972,6 +1037,8 @@ class QaLaneRunTests(QaLaneTestCase):
             batch: object,
             dispatch: object,
             report: dict[str, object],
+            *,
+            repo: Path,
         ) -> Path:
             persisted.append(report)
             return root / "report.json"
@@ -1099,7 +1166,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def test_stages_that_disagree_with_the_artifact_release_the_lane(self) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         staged = self._staged()
         tampered = QAStagesResult(
             **{**staged.__dict__, "artifact": format_command_log("other", 0, "x")}
@@ -1127,7 +1194,7 @@ class QaLaneRunTests(QaLaneTestCase):
         self,
     ) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         with (
             mock.patch.object(qa_lane, "run_qa_stages", return_value=self._staged()),
             mock.patch.object(

@@ -11,12 +11,16 @@ from __future__ import annotations
 import argparse
 import contextlib
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration import operation_access, runtime_access, runtime_probe
+from harness.orchestration import (
+    operation_access,
+    runtime_access,
+    runtime_compatibility,
+    runtime_probe,
+)
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
@@ -68,9 +72,19 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
+from harness.orchestration.runtime_effect import (
+    DispatchSend,
+    EffectChannel,
+    EffectResult,
+    adapter_command,
+)
+from harness.orchestration.runtime_intent import canonical_sha256
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
+    _hold_with_attention,
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
@@ -134,6 +148,10 @@ class AdapterUnavailable(CoordinatorError):
     """The OS refused to start the adapter; no worker was handed a brief."""
 
 
+class AdapterRejected(CoordinatorError):
+    """The adapter exited non-zero: by its contract it started no worker."""
+
+
 def _run_adapter(command: list[str], *, cwd: Path | None = None) -> None:
     """Hand the brief to a project runtime adapter.
 
@@ -160,10 +178,102 @@ def _run_adapter(command: list[str], *, cwd: Path | None = None) -> None:
         ) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise CoordinatorError(
+        raise AdapterRejected(
             f"runtime adapter rejected dispatch: {detail}",
             remedy=f"inspect the runtime adapter's rejection above: {detail}",
         )
+
+
+def _hand_off(
+    dispatch: JsonObject,
+    transport: str,
+    command: list[str] | None,
+    worktree: Path,
+) -> EffectResult:
+    """Hand the brief to its transport once and classify the outcome; an error that leaves the
+    outcome unknown (an unconfirmed native handoff, anything unexpected) propagates."""
+    try:
+        evidence = runtime_access.apply_plan(
+            dispatch,
+            transport,
+            handoff=True,
+            command=tuple(command) if command is not None else None,
+        )
+        if evidence["status"] != runtime_access.RuntimeAccessStatus.LEGACY_INHERIT:
+            reason = "native-receipt"
+        elif command is None:
+            reason = "in-process"
+        else:
+            _run_adapter(command, cwd=worktree)
+            reason = "adapter-started"
+    except AdapterUnavailable as exc:
+        failure: JsonObject = {
+            "kind": "runtime-unavailable",
+            "operation": "startup",
+            "worker_started": False,
+            "snapshot_commit": dispatch.get("snapshot_commit"),
+            "error": exc.message,
+        }
+        error = CoordinatorError(
+            exc.message,
+            remedy="fix the adapter; batch auto-report observes the failure, batch auto-decide records its pause, then batch resume-stop requires human approval",
+        )
+        return EffectResult("blocked", "adapter-unavailable", failure, error)
+    except AdapterRejected as exc:
+        return EffectResult("unchanged", "adapter-rejected", None, exc)
+    except runtime_access.HandoffUnconfirmed:
+        raise
+    except runtime_access.AccessError as exc:
+        return EffectResult("unchanged", "access-refused", None, exc)
+    return EffectResult("dispatched", reason, evidence)
+
+
+def _runtime_compatibility(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    config: JsonObject,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    adapter: list[str] | None,
+    adapter_args: list[str],
+    brief: Path,
+    worktree: Path,
+) -> JsonObject:
+    """The systemFields declarations the brief runs on -- its pinned contract, its runtime
+    assignment in the configuration it was approved under, its frozen extensions and an external
+    adapter's ``contract`` answer -- or the structured ``runtime-compatibility`` refusal, after
+    the batch is held in the runtime state store with its attention raised.  An adapter that
+    cannot be started at all is left to the hand-off, which records it as an unavailable
+    runtime."""
+    answer = (
+        None
+        if adapter is None
+        else runtime_compatibility.adapter_declaration(
+            adapter,
+            adapter_args,
+            repo=repo,
+            brief=brief,
+            cwd=worktree,
+            expected=runtime_compatibility.dispatch_contract(dispatch),
+        )
+    )
+    try:
+        return runtime_compatibility.require_brief(
+            config, dispatch, step="send", adapter=answer
+        )
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        _hold_with_attention(
+            ledger, repo, root, config, batch, "runtime-compatibility", exc.message
+        )
+        raise runtime_compatibility.RuntimeCompatibilityError(
+            exc.step,
+            exc.declarations,
+            remedy=f"{exc.remedy}; the batch is held: once every party is compatible, resolve "
+            f"its attention with 'coordinator.py batch attention resolve --batch "
+            f"{batch['batch_id']}', then run 'coordinator.py recovery resume --batch "
+            f"{batch['batch_id']}'",
+        ) from exc
 
 
 def send_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -208,6 +318,8 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
+        # Before any read of the batch or status: an unfinished hand-off may still change them.
+        settle(repo, root, ledger, dispatch["batch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         config = core_config._config(repo)
@@ -284,14 +396,10 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
         )
         command = None
+        adapter_args = list(args.adapter_arg or [])
         adapter_preflight: JsonObject | None = None
         if adapter is not None:
-            command = (
-                [str(adapter)]
-                if adapter.suffix.lower() != ".py"
-                else [sys.executable, str(adapter)]
-            )
-            adapter_args = args.adapter_arg or []
+            command = adapter_command(adapter)
             if any(
                 argument in {"dispatch", "--repo", "--brief"}
                 or argument.startswith(("--repo=", "--brief="))
@@ -317,62 +425,50 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
-        access_evidence = runtime_access.apply_plan(
-            dispatch,
-            transport,
-            handoff=True,
-            command=tuple(command) if command is not None else None,
-        )
-        if command is not None and access_evidence["status"] == "legacy-inherit":
-            try:
-                _run_adapter(command, cwd=Path(launch["worktree"]))
-            except AdapterUnavailable as exc:
-                status.update(
-                    {
-                        "state": "blocked",
-                        "updated_at": utils._now(),
-                        "runtime_failure": {
-                            "kind": "runtime-unavailable",
-                            "operation": "startup",
-                            "worker_started": False,
-                            "snapshot_commit": dispatch.get("snapshot_commit"),
-                            "error": exc.message,
-                        },
-                    }
-                )
-                entry["state"] = "blocked"
-                batch["state"] = "blocked"
-                _replace_record(ledger, DispatchStatusRecord.from_dict(status))
-                _replace_record(ledger, BatchRecord.from_dict(batch))
-                raise CoordinatorError(
-                    exc.message,
-                    remedy="fix the adapter; batch auto-report observes the failure, batch auto-decide records its pause, then batch resume-stop requires human approval",
-                ) from exc
-        # The guard above proved this is the batch's own entry for the dispatch.
-        entry["state"] = "dispatched"
-        sent_at = utils._now()
-        _safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(
+        # Before the hand-off intent: an incompatible party starts nothing and writes nothing.
+        compatibility = _runtime_compatibility(
             ledger,
-            DispatchStatusRecord.from_dict(
-                {
-                    **status,
-                    "dispatch_id": dispatch["dispatch_id"],
-                    "state": "dispatched",
-                    "updated_at": sent_at,
-                    "heartbeat_at": sent_at,
-                    "runtime_access": access_evidence,
-                    "worker_worktree": launch["worktree"],
-                    "worker_snapshot_commit": launch["head_commit"],
-                }
-            ),
+            repo,
+            root,
+            config,
+            batch,
+            dispatch,
+            None if adapter is None else adapter_command(adapter),
+            adapter_args,
+            brief_path,
+            Path(launch["worktree"]),
         )
+        plan = dispatch.get("runtime_access")
+        if not runtime_access.is_legacy_plan(plan):
+            channel: EffectChannel = "native"
+        elif command is None:
+            channel = "none"
+        else:
+            channel = "adapter"
+        effect: JsonObject = {
+            "channel": channel,
+            "transport": transport,
+            "adapter": None if adapter is None else str(adapter),
+            "adapter_args": adapter_args,
+            "worker_worktree": launch["worktree"],
+            "worker_snapshot_commit": launch["head_commit"],
+            "brief_sha256": canonical_sha256(dispatch),
+            "plan_digest": plan.get("plan_digest") if isinstance(plan, dict) else None,
+        }
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        result = DispatchSend(
+            ledger,
+            RuntimeStateStore(repo, root),
+            batch=batch,
+            status=status,
+            effect=effect,
+        ).run(lambda: _hand_off(dispatch, transport, command, Path(launch["worktree"])))
+        access_evidence = result.evidence
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
         "runtime_access": access_evidence,
+        "runtime_compatibility": compatibility,
         "transport": transport,
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],
@@ -626,6 +722,9 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
+        # Before the read of the batch: an interrupted composite write has not appended its audit
+        # event yet, and the strict read stops on it.
+        settle(repo, root, ledger, dispatch["batch_id"])
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         _validate_dispatch(repo, core_config._config(repo), root, batch, dispatch)
@@ -770,7 +869,7 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             "next_coordinator_action": "accept publication or inspect remote evidence",
             "report_language": "ru",
         }
-        report_path = _persist_report(ledger, root, batch, dispatch, report)
+        report_path = _persist_report(ledger, root, batch, dispatch, report, repo=repo)
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",

@@ -8,24 +8,44 @@ only ones allowed to discard state -- each behind its own explicit subcommand.
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
 from harness.cleanup import _pid_active
+from harness.errors import HarnessError
 from harness.orchestration.core.constants import (
     LEDGER_LOCK_STALE_SECONDS,
     TERMINAL_BATCH_STATES,
 )
-from harness.orchestration.core.utils import CoordinatorError, JsonObject, _repo
+from harness.orchestration.core.utils import (
+    CoordinatorError,
+    JsonObject,
+    _repo,
+    _safe_id,
+)
 from harness.orchestration.core.workspace import _runtime_matches
+from harness.orchestration.ledger.generation_migration import export, inspection
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_errors,
     _ledger_lock,
     _state_root,
 )
-from harness.orchestration.ledger.lifecycle import LifecycleLedger, LEDGER_VERSION
+from harness.orchestration.ledger.lifecycle import (
+    LEDGER_VERSION,
+    BatchRecord,
+    LedgerError,
+    LifecycleLedger,
+)
+from harness.orchestration.ledger.strict_read import require_canonical
+from harness.orchestration.runtime_migration import migrate_system_fields
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
+    sanitize_detail,
+)
 
 
 def ledger_status(args: argparse.Namespace) -> JsonObject:
@@ -38,7 +58,9 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
 
 
 def validate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Read-only generation, audit, record graph and batch-contract validation."""
+    """Read-only generation, audit, record graph, canonical machine field, recorded batch
+    transition and batch-contract validation; history no migration vouches for names the
+    'ledger migrate' route."""
     from harness.orchestration.workflow.history import _validate_batch_integrity
     from harness.orchestration.core.utils import _read_object
 
@@ -50,22 +72,172 @@ def validate_ledger(args: argparse.Namespace) -> JsonObject:
         result = ledger.validate()
         if result["version"] == LEDGER_VERSION:
             records = ledger.records_root()
+            require_canonical(records)
             for batch_id in cast(list[str], result["batches"]):
-                _validate_batch_integrity(
-                    root,
-                    _read_object(records / "batches" / f"{batch_id}.json", "batch"),
-                )
+                name = f"{batch_id}.json"
+                batch = _read_object(records / "batches" / name, "batch")
+                LifecycleLedger.check_batch_transitions(records, batch, name)
+                _validate_batch_integrity(root, batch)
         return result
 
 
 def migrate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Explicitly validate legacy state and atomically select its versioned replacement."""
+    """Explicitly validate legacy state and atomically select its versioned replacement, then
+    migrate the selected generation to the canonical system fields behind a durable intent."""
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         _refuse_upgrade_under_pinned_batches(repo, ledger)
-        return ledger.migrate()
+        upgraded = ledger.migrate()
+        system = migrate_system_fields(repo, root, ledger)
+        pointer = ledger.pointer()
+    return {
+        "version": 0 if pointer is None else pointer["version"],
+        "generation": None if pointer is None else pointer["generation"],
+        "migrated": bool(upgraded["migrated"] or system["migrated"]),
+        "schema_upgraded": upgraded["migrated"],
+        "system_fields": system,
+    }
+
+
+def inspect_ledger(args: argparse.Namespace) -> JsonObject:
+    """Read-only inspection of the selected generation, its migration and its quarantine, or of
+    the records of a legacy ledger no migration selected yet (``generation`` ``None``), and of
+    the runtime state that denies a batch.  It takes no lock, loads no config and never reads a
+    record through the ledger's validating loader, so a quarantined or unreadable batch is shown
+    as a finding instead of stopping it.  The refusal the strict read's check of recorded
+    transitions gives an operational batch is shown as its ``transition_problem`` instead of
+    stopping it too."""
+    repo = _repo(args)
+    return inspection_report(
+        repo, _state_root(args, repo), getattr(args, "batch", None)
+    )
+
+
+def batch_inspection(repo: Path, root: Path, batch_id: str) -> JsonObject | None:
+    """The read-only inspection of one batch as ``ledger inspect --batch`` shows it -- its area
+    (operational or quarantine), its findings and its runtime state -- or ``None`` when the
+    ledger holds no such batch.  Recovery shows it for a batch the strict read refuses."""
+    try:
+        report = inspection_report(repo, root, batch_id)
+    except (HarnessError, OSError, ValueError):
+        # Evidence only: a ledger inspection cannot read either shows nothing more.
+        return None
+    batches = cast(list[JsonObject], report["batches"])
+    return batches[0] if batches else None
+
+
+def inspection_report(
+    repo: Path, root: Path, batch_id: str | None = None
+) -> JsonObject:
+    """The report of ``ledger inspect``, of every batch or only of ``batch_id``."""
+    records, generation = _lenient_records(LifecycleLedger(root))
+    report: JsonObject = (
+        {"generation": None, "migration": None, "unowned": [], "batches": []}
+        if records is None
+        else {**inspection(records), "generation": generation}
+    )
+    batches = cast(list[JsonObject], report["batches"])
+    if batch_id is not None:
+        batches = [batch for batch in batches if batch["batch_id"] == batch_id]
+        if not batches:
+            raise _no_batch(batch_id, generation)
+    for batch in batches:
+        batch["findings"] = [
+            {
+                **finding,
+                "value": sanitize_detail(repr(finding["value"])),
+                "reason": sanitize_detail(str(finding["reason"])),
+            }
+            for finding in batch["findings"]
+        ]
+        batch["transition_problem"] = (
+            None if records is None else _transition_problem(records, batch)
+        )
+    report["batches"] = batches
+    try:
+        store: RuntimeStateStore | None = RuntimeStateStore(repo, root)
+    except RuntimeStateError as exc:
+        store, report["runtime_state"] = None, {"available": False, "code": exc.code}
+    if store is not None:
+        report["runtime_state"] = {
+            "available": True,
+            "ledger_scope": _runtime(store, None),
+        }
+        for batch in batches:
+            batch["runtime"] = _runtime(store, str(batch["batch_id"]))
+    return report
+
+
+def export_ledger(args: argparse.Namespace) -> JsonObject:
+    """Read-only export of one batch, byte for byte: its graph and reports, or its quarantined
+    graph and evidence.  It takes no lock and writes nothing; the JSON goes to stdout."""
+    repo = _repo(args)
+    batch_id = _safe_id(args.batch, "batch")
+    records, generation = _lenient_records(LifecycleLedger(_state_root(args, repo)))
+    exported = None if records is None else export(records, batch_id)
+    if exported is None:
+        raise _no_batch(batch_id, generation)
+    return {**exported, "generation": generation}
+
+
+def _transition_problem(records: Path, batch: JsonObject) -> str | None:
+    """The bounded refusal the strict read gives the recorded transitions of ``batch``, as
+    inspection shows it; ``None`` when they pass or nothing is there to check: a quarantined
+    batch, or a batch record its findings already show unreadable."""
+    path = records / BatchRecord.directory / f"{batch['batch_id']}.json"
+    if batch["area"] != "operational" or not path.is_file():
+        return None
+    try:
+        record: object = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    try:
+        LifecycleLedger.check_batch_transitions(
+            records, cast(JsonObject, record), path.name
+        )
+    except LedgerError as exc:
+        return sanitize_detail(exc.message)
+    return None
+
+
+def _lenient_records(ledger: LifecycleLedger) -> tuple[Path | None, str | None]:
+    """The directory of the records the pointer names and its generation, never validated.  A
+    legacy ledger that no migration selected yet keeps its records in the state directory itself,
+    outside any generation; ``(None, None)`` without records."""
+    path = ledger.records_root_lenient()
+    if path is None or path == ledger.root:
+        return path, None
+    return path, path.name
+
+
+def _no_batch(batch_id: str, generation: str | None) -> CoordinatorError:
+    where = "the ledger" if generation is None else generation
+    return CoordinatorError(
+        f"{where} holds no batch {batch_id}, neither operational nor quarantined",
+        remedy="list the batches with 'coordinator.py ledger inspect'",
+    )
+
+
+def _runtime(store: RuntimeStateStore, batch_id: str | None) -> JsonObject | None:
+    """The runtime state of ``batch_id`` (``None``: the ledger scope) as inspection shows it."""
+    try:
+        record = store.read(batch_id)
+    except RuntimeStateError as exc:
+        return {"error": exc.code}
+    if record is None:
+        return None
+    operation = record["operation"]
+    return {
+        "state": record["state"],
+        "failure": record["failure"],
+        "operation": None
+        if operation is None
+        else {"kind": operation["kind"], "phase": operation["phase"]},
+    }
 
 
 def _refuse_upgrade_under_pinned_batches(repo: Path, ledger: LifecycleLedger) -> None:

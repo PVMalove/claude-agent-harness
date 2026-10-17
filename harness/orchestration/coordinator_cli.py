@@ -32,6 +32,27 @@ def build_parser(
     root.add_argument("--state-dir", help="coordinator state directory")
     commands = root.add_subparsers(dest="command", required=True)
 
+    config = commands.add_parser(
+        "config", help="inspect or explicitly normalize project config"
+    )
+    config_commands = config.add_subparsers(dest="config_command", required=True)
+    validate = config_commands.add_parser(
+        "validate", help="validate without changing lifecycle state"
+    )
+    _common(validate)
+    validate.add_argument("--json", action="store_true", help="structured diagnostics")
+    mode = validate.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--canonical", action="store_true", help="require canonical source spelling"
+    )
+    mode.add_argument(
+        "--fix", action="store_true", help="explicitly persist safe normalization"
+    )
+    validate.add_argument(
+        "--dry-run", action="store_true", help="preview --fix without writing"
+    )
+    validate.set_defaults(handler=handlers.validate_config)
+
     ledger = commands.add_parser(
         "ledger", help="inspect or explicitly maintain versioned lifecycle state"
     )
@@ -74,6 +95,25 @@ def build_parser(
         "--confirm", required=True, help="literal RESET acknowledgement"
     )
     ledger_reset.set_defaults(handler=handlers.reset_ledger)
+    # Read-only and lock-free, so they run on the installed runtime even for a pinned batch.
+    ledger_inspect = ledger_commands.add_parser(
+        "inspect",
+        help="Read-only view of the selected generation, its migration and quarantine",
+    )
+    _common(ledger_inspect)
+    ledger_inspect.add_argument("--batch", help="show only this batch")
+    ledger_inspect.set_defaults(
+        handler=handlers.inspect_ledger, installed_runtime_only=True
+    )
+    ledger_export = ledger_commands.add_parser(
+        "export",
+        help="Read-only JSON export of one batch's records, reports and quarantine evidence",
+    )
+    _common(ledger_export)
+    ledger_export.add_argument("--batch", required=True)
+    ledger_export.set_defaults(
+        handler=handlers.export_ledger, installed_runtime_only=True
+    )
 
     batch = commands.add_parser("batch")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
@@ -105,7 +145,9 @@ def build_parser(
     )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
-    create.add_argument("--required-gate", action="append")
+    create.add_argument(
+        "--required-gate", action="append", choices=defaults.REQUIRED_GATES
+    )
     create.add_argument("--dependency", action="append")
     create.add_argument(
         "--expected-file", action="append", help="planned changed path; repeated"
@@ -162,7 +204,11 @@ def build_parser(
     batch_list = batch_commands.add_parser("list")
     _common(batch_list)
     batch_list.add_argument("--ticket", help="only batches of this ticket")
-    batch_list.add_argument("--state", help="only batches in this state")
+    batch_list.add_argument(
+        "--state",
+        choices=[str(state) for state in defaults.BatchState],
+        help="only batches in this state",
+    )
     batch_list.add_argument(
         "--open", action="store_true", help="hide batches already in a terminal state"
     )
@@ -281,7 +327,7 @@ def build_parser(
     )
     decide.add_argument(
         "--reason-category",
-        choices=defaults.RETRY_REASON_CATEGORIES,
+        choices=[str(reason) for reason in defaults.RETRY_REASON_CATEGORIES],
         help="why the reporting role stopped, for retry; structured report data overrides an unsupported claim",
     )
     decide.add_argument(
@@ -401,7 +447,7 @@ def build_parser(
     )
     packet.add_argument(
         "--reason-category",
-        choices=defaults.RETRY_REASON_CATEGORIES,
+        choices=[str(reason) for reason in defaults.RETRY_REASON_CATEGORIES],
         help="preview the retry route as batch decide computes it with this --reason-category; the preview does not check the developer-retry budget",
     )
     packet.add_argument(
@@ -607,6 +653,11 @@ def build_parser(
     dispatch_self_report.add_argument(
         "--worktree",
         help="canonical Git worktree from git rev-parse --show-toplevel; required when project policy enables worker attestation",
+    )
+    dispatch_self_report.add_argument(
+        "--system-fields-contract",
+        help="optional: the systemFields contract version the worker speaks, e.g. "
+        "systemFields.v1; another version than the brief's is refused and recorded as evidence",
     )
     dispatch_self_report.set_defaults(handler=handlers.self_report_dispatch)
     dispatch_heartbeat = dispatch_commands.add_parser("heartbeat")
@@ -848,7 +899,9 @@ def build_parser(
     integration_link.add_argument("--candidate-commit", required=True)
     integration_link.add_argument("--target-commit", required=True)
     integration_link.add_argument(
-        "--result", required=True, choices=defaults.INTEGRATION_EVIDENCE_RESULTS
+        "--result",
+        required=True,
+        choices=[str(result) for result in defaults.INTEGRATION_EVIDENCE_RESULTS],
     )
     integration_link.add_argument(
         "--reference", required=True, help="where the check result can be inspected"
@@ -919,6 +972,47 @@ def build_parser(
         help="grant one more automatic resolver target after the two spent ones",
     )
     resolver_event.set_defaults(handler=handlers.resolver_event)
+
+    recovery = commands.add_parser(
+        "recovery",
+        help="status, reload and resume of a batch the coordinator holds or stopped; never "
+        "reads stdin, exits 0 on success and 2 on refusal",
+    )
+    recovery_commands = recovery.add_subparsers(dest="recovery_command", required=True)
+    for name, handler, help_text in (
+        (
+            "status",
+            handlers.recovery_status,
+            "read-only reconciliation checks, diagnostics and the available actions",
+        ),
+        (
+            "reload",
+            handlers.recovery_reload,
+            "re-read and validate the current configuration; never starts a worker",
+        ),
+        (
+            "resume",
+            handlers.recovery_resume,
+            "reconcile the batch and release its hold through the existing approval gates",
+        ),
+    ):
+        command = recovery_commands.add_parser(name, help=help_text)
+        _common(command)
+        command.add_argument("--batch", required=True)
+        command.add_argument(
+            "--json",
+            action="store_true",
+            help="structured output; the coordinator always prints JSON",
+        )
+        if name == "resume":
+            command.add_argument(
+                "--approved-by",
+                help="human who approves the audited resume-stop of a stopped batch",
+            )
+            command.add_argument("--approved-at", help="time of that approval")
+            command.add_argument("--note", help="what was checked before resuming")
+        # Recovery runs on the installed runtime, like resume-stop and rewind.
+        command.set_defaults(handler=handler, installed_runtime_only=True)
 
     report = commands.add_parser("report")
     report_commands = report.add_subparsers(dest="report_command", required=True)

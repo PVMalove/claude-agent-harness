@@ -28,11 +28,11 @@ from harness.orchestration.core.config import (
     _continuation_policy,
     _execution_policy,
     _reject_sensitive,
-    _role,
 )
 from harness.orchestration.core.constants import (
     CHECKPOINT_INPUT_FIELDS,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
+    CONTINUATION_DECISIONS,
     CONTINUATION_FACTS_FIELDS,
     FINDING_SEVERITIES,
     INCOMPLETE_ITEM_FIELDS,
@@ -52,6 +52,7 @@ from harness.orchestration.core.constants import (
     QA_STAGE_NAMES,
     QA_STAGES_FIELDS,
     QA_STAGES_OPTIONAL_FIELDS,
+    RATE_LIMIT_RESUME_DECISIONS,
     RATE_LIMIT_TERMINATION_REASONS,
     REPORT_CHECK_RESULTS,
     REPORT_FIELDS,
@@ -59,14 +60,21 @@ from harness.orchestration.core.constants import (
     REPORT_OUTCOMES,
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
+    TELEMETRY_SESSION_KINDS,
     TOOLING_BLOCKER_FIELDS,
     TOOLING_BLOCKER_UNCOMMITTED_FIELD,
+    ReviewRecommendation,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
     _commit_changed_files,
     _git_is_ancestor,
+)
+from harness.orchestration.core.system_fields import (
+    EXACT_SPELLING,
+    enum_refusal,
+    near_miss,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -92,16 +100,19 @@ from harness.orchestration.ledger.ledger_ops import (
     _records_root,
     _replace_record,
     _state_root,
-    _write_exclusive,
-    _write_record,
-    _write_text_exclusive,
 )
 from harness.orchestration.ledger.lifecycle import (
     BatchRecord,
     CheckpointRecord,
     DispatchStatusRecord,
-    LedgerError,
     LifecycleLedger,
+)
+from harness.orchestration import runtime_compatibility
+from harness.orchestration.runtime_intent import CompositeWrite, idempotency_key
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import (
+    RuntimeStateError,
+    RuntimeStateStore,
 )
 from harness.orchestration.runtime_attestation import (
     AttestationError,
@@ -141,13 +152,12 @@ def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]
         decision
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("dispatch_id") == dispatch_id
-        and decision.get("decision")
-        in {"continue", "continue-automatic", "continue-rate-limit"}
+        and decision.get("decision") in CONTINUATION_DECISIONS
     ]
     automatic = sum(
         1
         for decision in decisions
-        if decision.get("decision") in {"continue-automatic", "continue-rate-limit"}
+        if decision.get("decision") in RATE_LIMIT_RESUME_DECISIONS
     )
     return len(decisions), automatic
 
@@ -167,7 +177,10 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
+        # A hand-off its sender left unfinished may still have to write this dispatch's status.
+        settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
+        confirmation = _confirm_contract(ledger, repo, root, dispatch, status, args)
         progress = dispatch.get("preserved_progress")
         if (
             progress is not None
@@ -279,7 +292,72 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         "state": "working",
         "model": reported,
         "worktree": attestation.get("worktree") if attestation else None,
+        "system_fields_contract": None
+        if confirmation is None
+        else confirmation.to_dict(),
     }
+
+
+def _confirm_contract(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    status: JsonObject,
+    args: argparse.Namespace,
+) -> runtime_compatibility.Declaration | None:
+    """Keep the worker's optional systemFields confirmation on the dispatch status; one that is
+    not the brief's contract is recorded as evidence, holds the batch with its attention raised
+    and is refused before the worker counts as working.  Without the flag nothing is recorded: a
+    worker started before it existed confirms nothing."""
+    declared = getattr(args, "system_fields_contract", None)
+    if declared is None:
+        return None
+    confirmation = runtime_compatibility.self_report_declaration(dispatch, declared)
+    moment = utils._now()
+    status[runtime_compatibility.SELF_REPORT_FIELD] = (
+        runtime_compatibility.self_report_evidence(confirmation, moment)
+    )
+    if confirmation.status == "compatible":
+        return confirmation
+    status["updated_at"] = moment
+    _safe_id(dispatch["dispatch_id"], "dispatch")
+    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+    refusal = runtime_compatibility.RuntimeCompatibilityError(
+        "self-report",
+        [confirmation],
+        remedy=f"stop this worker, resolve the batch's attention with 'coordinator.py batch "
+        f"attention resolve --batch {dispatch['batch_id']}', run 'coordinator.py recovery "
+        f"resume --batch {dispatch['batch_id']}', start the worker on a runtime that speaks "
+        f"{confirmation.expected!r} and repeat dispatch self-report; the dispatch is not working",
+    )
+    _hold_incompatible(ledger, repo, root, dispatch, refusal)
+    raise refusal
+
+
+def _hold_incompatible(
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    refusal: runtime_compatibility.RuntimeCompatibilityError,
+) -> None:
+    """Hold the dispatch's batch for an incompatible party, with its attention raised."""
+    from harness.orchestration.workflow.attention import _hold_with_attention
+
+    try:
+        config = core_config._config(repo)
+    except CoordinatorError:
+        config = {}
+    _hold_with_attention(
+        ledger,
+        repo,
+        root,
+        config,
+        _load_batch(root, dispatch["batch_id"]),
+        "runtime-compatibility",
+        refusal.message,
+    )
 
 
 def heartbeat_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -305,6 +383,7 @@ def heartbeat_dispatch(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
+        settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
         moment = utils._now()
         status["updated_at"] = moment
@@ -440,7 +519,7 @@ def record_telemetry(args: argparse.Namespace) -> JsonObject:
             + INTERNAL_INVARIANT_REMEDY,
         )
     _reject_sensitive(payload, "telemetry payload")
-    if payload["session_kind"] not in {"worker", "coordinator"}:
+    if payload["session_kind"] not in TELEMETRY_SESSION_KINDS:
         raise CoordinatorError(
             "telemetry session_kind must be worker or coordinator",
             remedy="set session_kind to 'worker' or 'coordinator'",
@@ -638,12 +717,26 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
-        dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
+        dispatch_id = cast(str, checkpoint.get("dispatch_id"))
+        # Before any read of the batch or status: an unfinished write may still change them.
+        settle(repo, root, ledger, _load_dispatch(root, dispatch_id)["batch_id"])
+        dispatch, status = _live_status(root, dispatch_id)
         batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
-        role = _role(repo, dispatch["role"])
+        from harness.orchestration.pinned_configuration import (
+            read_snapshot,
+            capture_unaccepted,
+        )
+
+        try:
+            _validate_batch_integrity(root, batch)
+            pinned = read_snapshot(dispatch)
+            _validate_dispatch(repo, pinned["config"], root, batch, dispatch)
+        except CoordinatorError as exc:
+            path = capture_unaccepted(root, dispatch, checkpoint, exc)
+            raise CoordinatorError(
+                exc.message, remedy=f"{exc.remedy}; unaccepted evidence: {path}"
+            ) from exc
+        role = pinned["role"]
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if not entry or entry.get("state") != "dispatched":
             raise CoordinatorError(
@@ -672,7 +765,17 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
             **checkpoint,
         }
         _safe_id(record["checkpoint_id"], "checkpoint")
-        _write_record(ledger, CheckpointRecord.from_dict(record))
+        write = CompositeWrite(
+            ledger,
+            RuntimeStateStore(repo, root),
+            batch_id=batch["batch_id"],
+            dispatch_id=dispatch["dispatch_id"],
+            kind="checkpoint",
+            idempotency_key=idempotency_key(
+                "checkpoint", dispatch["dispatch_id"], {"checkpoint": checkpoint}
+            ),
+        )
+        write.write_record(CheckpointRecord.from_dict(record))
         entry["state"] = "checkpointed"
         # Batch-level pointer, the same ownership pattern as risk_assessments/context_packages;
         # dispatch_id is carried alongside since a checkpoint is dispatch-scoped, not batch-scoped.
@@ -686,11 +789,12 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
             }
         )
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        write.replace_record(BatchRecord.from_dict(batch))
         moment = utils._now()
         status.update({"state": "checkpointed", "updated_at": moment})
         _safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+        write.replace_record(DispatchStatusRecord.from_dict(status))
+        write.commit()
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "checkpointed",
@@ -719,12 +823,15 @@ def _authorize_planned_continuation(
     coordinator decision an accept/retry/block/fail already does, reusing that record type rather
     than inventing a new one. Under ``approval_policy: auto`` the policy gives that decision when
     no approval is passed (issue #643); the answer to a resolver's options stays a human's."""
-    trigger = args.trigger.strip() if _non_empty(args.trigger) else ""
-    if trigger not in PLANNED_TRIGGER_KINDS:
+    trigger = args.trigger
+    if (
+        refusal := enum_refusal("--trigger", trigger, PLANNED_TRIGGER_KINDS)
+    ) is not None:
+        problem, remedy = refusal
         raise CoordinatorError(
-            "a continuation without a recognized rate-limit termination reason is a planned trigger and "
-            f"requires --trigger to be one of {sorted(PLANNED_TRIGGER_KINDS)}",
-            remedy="pass --trigger naming one of the configured planned-trigger kinds",
+            "a continuation without a recognized rate-limit termination reason is a planned "
+            f"trigger: {problem}",
+            remedy=remedy,
         )
     threshold_key = PLANNED_TRIGGER_THRESHOLD_KEY.get(trigger)
     if threshold_key is not None:
@@ -821,13 +928,21 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
     decision. Anything else -- no reason, or one this coordinator does not recognize -- is treated
     as a planned trigger and requires the existing coordinator-decision approval, with its recorded
     facts checked against the checkpoint for drift."""
+    # Only an exact spelling is recognized: a variant of one is refused before anything is read,
+    # and any other text stays an unrecognized diagnostic, kept as it was given.
+    termination_reason = (
+        args.termination_reason if isinstance(args.termination_reason, str) else ""
+    )
+    if exact := near_miss(termination_reason, RATE_LIMIT_TERMINATION_REASONS):
+        raise CoordinatorError(
+            f"--termination-reason {termination_reason!r} is not a recognized rate-limit "
+            f"reason; write exactly {' or '.join(map(repr, exact))}",
+            remedy="pass --termination-reason as exactly one of: "
+            + ", ".join(sorted(RATE_LIMIT_TERMINATION_REASONS))
+            + f" ({EXACT_SPELLING}), or pass --trigger for a planned continuation",
+        )
     repo = _repo(args)
     root = _state_root(args, repo)
-    termination_reason = (
-        args.termination_reason.strip().lower()
-        if _non_empty(args.termination_reason)
-        else ""
-    )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
@@ -923,7 +1038,7 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 startup.recorded(root, batch, dispatch["dispatch_id"])
                 startup.point(repo, root, batch, dispatch)
         else:
-            if _non_empty(args.trigger) and args.trigger.strip() == "human-decision":
+            if args.trigger == "human-decision":
                 # The answer to the options a resolver listed is its own audit event; the same
                 # dispatch continues only once it is recorded, and nothing else is spent.
                 if not resolver_state.is_resolver_brief(
@@ -946,10 +1061,10 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                     batch,
                     kind="continuation",
                     dispatch_id=dispatch["dispatch_id"],
-                    rationale=f"planned trigger {args.trigger.strip()} with unchanged "
+                    rationale=f"planned trigger {args.trigger} with unchanged "
                     "continuation facts inside the continuation budget",
                     evidence={
-                        "trigger": args.trigger.strip(),
+                        "trigger": args.trigger,
                         "checkpoint_id": checkpoint["checkpoint_id"],
                         "continuations_spent": continuation_count,
                         "max_continuations": continuation_policy["max_continuations"],
@@ -1009,12 +1124,22 @@ def _persist_report(
     dispatch: JsonObject,
     report: JsonObject,
     *,
+    repo: Path,
     auto_accept_policy: str | None = None,
 ) -> Path:
-    """Persist a role report and advance its batch atomically under the coordinator lock.
+    """Persist a role report and advance its batch under the coordinator lock, behind a durable
+    intent in ``repo``'s runtime state store.
 
     ``auto_accept_policy`` is the policy ``report submit`` found authorized to decide the report; it
     is kept on the dispatch status so a stopped policy chain is completed with that same policy."""
+    if settle(repo, root, ledger, batch["batch_id"]):
+        raise RuntimeStateError(
+            "concurrency-conflict",
+            "reconcile",
+            "an unfinished composite write of this batch was reconciled after the request "
+            "read the batch",
+            remedy="repeat the command; it reads the reconciled ledger state",
+        )
     report_json = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.json"
     report_md = _records_root(root) / "reports" / f"{dispatch['dispatch_id']}.md"
     if report_json.exists() or report_md.exists():
@@ -1023,18 +1148,19 @@ def _persist_report(
             remedy="a completion report already exists at this immutable path -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
-    _write_exclusive(ledger, report_json, report)
-    try:
-        _write_text_exclusive(ledger, report_md, _report_markdown(report))
-    except CoordinatorError as exc:
-        try:
-            ledger.delete(report_json, reason="discard incomplete immutable report")
-        except LedgerError as cleanup:
-            raise CoordinatorError(cleanup.message, remedy=cleanup.remedy) from exc
-        raise CoordinatorError(
-            "refusing to overwrite immutable Markdown report",
-            remedy=f"a Markdown report already exists at this immutable path -- {INTERNAL_INVARIANT_REMEDY}",
-        ) from exc
+    report_sha256 = hashlib.sha256(_canonical(report).encode("utf-8")).hexdigest()
+    write = CompositeWrite(
+        ledger,
+        RuntimeStateStore(repo, root),
+        batch_id=batch["batch_id"],
+        dispatch_id=dispatch["dispatch_id"],
+        kind="report-submit",
+        idempotency_key=idempotency_key(
+            "report-submit", dispatch["dispatch_id"], {"report_sha256": report_sha256}
+        ),
+    )
+    write.write_immutable(report_json, report)
+    write.write_artifact(report_md, _report_markdown(report))
     entry = _dispatch_entry(batch, dispatch["dispatch_id"])
     if entry is None:
         raise CoordinatorError(
@@ -1044,9 +1170,7 @@ def _persist_report(
         )
     entry["state"] = "reported"
     entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
-    entry["report_sha256"] = hashlib.sha256(
-        _canonical(report).encode("utf-8")
-    ).hexdigest()
+    entry["report_sha256"] = report_sha256
     batch["state"] = "awaiting-approval"
     closed = _load_dispatch_status(root, dispatch["dispatch_id"])
     closed.update(
@@ -1059,9 +1183,10 @@ def _persist_report(
     if auto_accept_policy is not None:
         closed["auto_accept_policy"] = auto_accept_policy
     _safe_id(dispatch["dispatch_id"], "dispatch")
-    _replace_record(ledger, DispatchStatusRecord.from_dict(closed))
+    write.replace_record(DispatchStatusRecord.from_dict(closed))
     _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
+    write.replace_record(BatchRecord.from_dict(batch))
+    write.commit()
     return report_json
 
 
@@ -1075,10 +1200,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
             "composite review must contain independent standards and spec evidence",
             remedy="submit composite review evidence with independent standards and spec findings",
         )
-    if review.get("recommendation") is not None and review["recommendation"] not in (
-        "accept",
-        "retry",
-    ):
+    recommendation = review.get("recommendation")
+    if recommendation is not None and recommendation not in tuple(ReviewRecommendation):
         raise CoordinatorError(
             "composite review recommendation must be accept or retry",
             remedy="set review.recommendation to accept or retry",
@@ -1788,6 +1911,66 @@ def _report_markdown(report: JsonObject) -> str:
     return "\n".join(lines)
 
 
+def _report_compatibility(
+    root: Path,
+    config: JsonObject,
+    dispatch: JsonObject,
+    status: JsonObject,
+    report: JsonObject,
+    *,
+    ledger: LifecycleLedger | None = None,
+    repo: Path | None = None,
+) -> JsonObject:
+    """The evidence that the report was produced under the brief's systemFields contract.  An
+    incompatible report is kept only as unaccepted evidence -- no report record, no status
+    change, no lifecycle decision -- the batch is held with its attention raised (given the
+    ledger and repository), and the refusal names where the evidence is."""
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        return runtime_compatibility.require_compatible(
+            "report-submit",
+            runtime_compatibility.report_declarations(config, dispatch, status, report),
+        )
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        path = capture_unaccepted(root, dispatch, report, exc)
+        refusal = runtime_compatibility.RuntimeCompatibilityError(
+            exc.step,
+            exc.declarations,
+            remedy=f"{exc.remedy}; unaccepted evidence: {path}; the batch is held: resolve "
+            f"its attention with 'coordinator.py batch attention resolve --batch "
+            f"{dispatch.get('batch_id')}' and run 'coordinator.py recovery resume --batch "
+            f"{dispatch.get('batch_id')}' before the report is submitted again",
+        )
+        if ledger is not None and repo is not None:
+            _hold_incompatible(ledger, repo, root, dispatch, refusal)
+        raise refusal from exc
+
+
+def _settle_for_report(
+    repo: Path,
+    root: Path,
+    ledger: LifecycleLedger,
+    dispatch: JsonObject,
+    report: JsonObject,
+) -> None:
+    """Finish the batch's unfinished operation before the report is read.  A report that a
+    releasable operational hold refuses is kept as unaccepted evidence at once, so the worker's
+    output is not lost while the hold lasts; a quarantine keeps its batch untouched."""
+    from harness.orchestration import operational_hold
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        settle(repo, root, ledger, dispatch["batch_id"])
+    except RuntimeStateError as exc:
+        reason = operational_hold.reason_of(exc.step)
+        if reason is None or reason in operational_hold.PERMANENT_REASONS:
+            raise
+        path = capture_unaccepted(root, dispatch, report, exc)
+        exc.remedy = f"{exc.remedy}; unaccepted evidence: {path}"
+        raise
+
+
 def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     report = _read_object(
@@ -1798,16 +1981,32 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
+        _settle_for_report(repo, root, ledger, dispatch, report)
         batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
+        from harness.orchestration.pinned_configuration import (
+            read_snapshot,
+            capture_unaccepted,
+        )
+
+        try:
+            _validate_batch_integrity(root, batch)
+            pinned = read_snapshot(dispatch)
+            _validate_dispatch(repo, pinned["config"], root, batch, dispatch)
+        except CoordinatorError as exc:
+            path = capture_unaccepted(root, dispatch, report, exc)
+            raise CoordinatorError(
+                exc.message, remedy=f"{exc.remedy}; unaccepted evidence: {path}"
+            ) from exc
+        config = pinned["config"]
         if dispatch["role"] == "qa":
             raise CoordinatorError(
                 "QA reports must be produced by the clean-room QA runner",
                 remedy="run QA through the clean-room QA runner (qa run), not by hand",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        compatibility = _report_compatibility(
+            root, config, dispatch, status, report, ledger=ledger, repo=repo
+        )
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
@@ -1832,7 +2031,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 "a dispatched role must attest its canonical Git worktree before reporting",
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
-        role = _role(repo, dispatch["role"])
+        role = pinned["role"]
         _validate_report_in_batch(repo, root, batch, dispatch, report, role)
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
@@ -1910,7 +2109,13 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 batch.pop("risk_reassessment_candidate", None)
                 batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(
-            ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
+            ledger,
+            root,
+            batch,
+            dispatch,
+            report,
+            repo=repo,
+            auto_accept_policy=auto_accept_policy,
         )
         if resolver_state.is_resolver_brief(dispatch):
             resolver_state.record_report(ledger, root, batch, dispatch, report)
@@ -1918,7 +2123,33 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
         "report": str(report_json),
+        "runtime_compatibility": compatibility,
     }
+    # Acceptance belongs to the approved snapshot; progression belongs to a newly validated
+    # transition. Never invite resubmission of evidence already durably accepted.
+    try:
+        current_config = core_config._config(repo)
+        current_project = getattr(current_config, "project_snapshot", None)
+        if not isinstance(current_project, dict):
+            current_project = core_config._project(repo)
+    except CoordinatorError as exc:
+        response.update(
+            {
+                "transition_blocked": True,
+                "diagnostic": exc.message,
+                "remedy": exc.remedy,
+            }
+        )
+        return response
+    if dict(current_config) != dict(config) or current_project != pinned["project"]:
+        response.update(
+            {
+                "transition_blocked": True,
+                "diagnostic": "configuration changed since dispatch approval",
+                "remedy": "review the pending report and approve the next transition under current policy",
+            }
+        )
+        return response
     if rebase_check is not None:
         # The patch-id comparison of a rebase-fix-forward report (issue #504), for delta-review.
         response["rebase_check"] = rebase_check

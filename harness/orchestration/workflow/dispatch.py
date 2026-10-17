@@ -19,7 +19,9 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import (
     infrastructure_retry,
     operational_guards,
+    operational_hold,
     runtime_access,
+    runtime_compatibility,
 )
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -31,7 +33,10 @@ from harness.orchestration.contract import (
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
-from harness.orchestration.core.constants import ACCEPTED_DECISIONS
+from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
+    ContextPackageFreshness,
+)
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _approval_policy,
@@ -85,6 +90,9 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches
+from harness.orchestration.runtime_effect import unfinished_hand_off
+from harness.orchestration.runtime_reconcile import settle
+from harness.orchestration.runtime_state_store import RuntimeStateStore
 from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review
@@ -531,6 +539,23 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
+        runtime_stopped = (
+            bool(getattr(args, "runtime_stopped", False)) and not policy_retry
+        )
+        hand_off = unfinished_hand_off(
+            RuntimeStateStore(repo, root), dispatch["batch_id"], dispatch["dispatch_id"]
+        )
+        if hand_off == "observed":
+            # The hand-off's outcome is stored but not yet in the ledger: commit it first, so
+            # the cancellation is checked against the records the hand-off left.
+            settle(repo, root, ledger, dispatch["batch_id"])
+        elif hand_off == "unknown" and not runtime_stopped:
+            raise CoordinatorError(
+                "the hand-off of this dispatch may have started a worker, so cancelling it "
+                "requires a confirmed stop",
+                remedy="stop the worker, then cancel with --runtime-stopped and an approval; "
+                "the next command reconciles the hand-off",
+            )
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
         entry = next(
@@ -551,9 +576,6 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="the dispatch record was modified after its brief integrity hash was recorded -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-        runtime_stopped = (
-            bool(getattr(args, "runtime_stopped", False)) and not policy_retry
-        )
         cancellable = (
             {"approved", "dispatched", "checkpointed", "rate_limited"}
             if runtime_stopped
@@ -749,6 +771,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
+        # A batch the runtime state store holds takes no new brief until recovery releases it.
+        operational_hold.require_no_hold(
+            RuntimeStateStore(repo, root), batch["batch_id"]
+        )
         if batch.get("state") != "awaiting-approval":
             raise CoordinatorError(
                 "a dispatch requires a batch awaiting explicit approval",
@@ -844,6 +870,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 session_model=getattr(args, "model", None),
                 session_effort=getattr(args, "effort", None),
             )
+        )
+        # No brief is approved for a runtime or extension that speaks another contract.
+        runtime_compatibility.require_assignment(
+            config, role_name, resolved_runtime, transport, step="create"
         )
         # A writer's scope is the batch's explicit scope; a batch planned before scopes existed
         # was bounded by the role's write ceiling alone.
@@ -1077,7 +1107,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             if (
                 context_package_freshness is None
-                or context_package_freshness["status"] != "fresh"
+                or context_package_freshness["status"] != ContextPackageFreshness.FRESH
             ):
                 raise CoordinatorError(
                     "newly registered Context Package is stale; refresh before dispatch",
@@ -1152,7 +1182,17 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             transition["recovery_event_sha256"] = batch["recovery_events"][-1][
                 "record_sha256"
             ]
+        from harness.orchestration import pinned_configuration
+
         orchestration_policy = _orchestration_policy(config)
+        project_snapshot = getattr(config, "project_snapshot", None)
+        if not isinstance(project_snapshot, dict):
+            project_snapshot = core_config._project(repo)
+        pinned_config = pinned_configuration.snapshot(config, project_snapshot, role)
+        orchestration_policy["configuration"] = pinned_config
+        transition[pinned_configuration.TRANSITION_FIELD] = pinned_config[
+            "canonical_sha256"
+        ]
         transition[infrastructure_retry.TRANSITION_FIELD] = (
             operational_guards.policy_digest(
                 orchestration_policy["infrastructure_retry"]

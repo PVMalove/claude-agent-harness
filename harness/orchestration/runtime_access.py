@@ -12,6 +12,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import cast
 
@@ -25,10 +26,29 @@ from .core.utils import JsonObject
 
 # Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
 GIT_TIMEOUT_SECONDS = 60
+# The layer that set a component of a pinned plan: a whole legacy plan, the built-in default,
+# the access_policy defaults, or a qualified 'roles.<role>' or 'operations.<operation>' override.
+PLAN_SOURCES = ("legacy", "default", "defaults")
+PLAN_OVERRIDE_SECTIONS = ("roles", "operations")
+# Who observed a worker launch for the runtime_access extension, and how the plan reached it; a
+# proof with any other source or mechanism leaves the plan unverified and the send is refused.
+OBSERVATION_SOURCES = ("native-runtime", "runtime-adapter")
+OBSERVATION_MECHANISMS = ("native-apply", "confirmed-inheritance")
+
+
+# Whether a pinned plan is a legacy inherit or its access was confirmed for the worker launch.
+class RuntimeAccessStatus(StrEnum):
+    LEGACY_INHERIT = "legacy-inherit"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
 
 
 class AccessError(HarnessError):
     """The requested role access cannot be safely resolved or verified."""
+
+
+class HandoffUnconfirmed(AccessError):
+    """The native launch was called, but no bound receipt proves whether the worker started."""
 
 
 def _digest(plan: Mapping[str, object]) -> str:
@@ -83,8 +103,10 @@ def validate_plan(plan: object) -> None:
             not isinstance(value, str)
             or not value
             or (
-                value not in ("legacy", "default", "defaults")
-                and not value.startswith(("roles.", "operations."))
+                value not in PLAN_SOURCES
+                and not value.startswith(
+                    tuple(f"{section}." for section in PLAN_OVERRIDE_SECTIONS)
+                )
             )
             for value in sources.values()
         )
@@ -367,20 +389,33 @@ _REMEDY = (
 )
 
 
+def is_legacy_plan(plan: object) -> bool:
+    """Whether a pinned plan (``None`` in a brief older than access plans) only inherits the
+    session's access, so no native provider launches the worker; a malformed plan is not."""
+    if plan is None:
+        return True
+    if not isinstance(plan, dict):
+        return False
+    sources, network = plan.get("sources"), plan.get("network")
+    return (
+        plan.get("mode") == "inherit"
+        and isinstance(sources, dict)
+        and all(source == "legacy" for source in sources.values())
+        and not plan.get("filesystem")
+        and not plan.get("requirements")
+        and isinstance(network, dict)
+        and not network.get("hosts")
+    )
+
+
 def verify_plan(
     plan: JsonObject, transport: str
 ) -> tuple[JsonObject, extensions.RuntimeAccessObservation | None]:
     """Ask the pinned native implementation for fresh, worker-scoped evidence."""
     validate_plan(plan)
-    if (
-        plan["mode"] == "inherit"
-        and all(source == "legacy" for source in plan["sources"].values())
-        and not plan["filesystem"]
-        and not plan["requirements"]
-        and not plan["network"]["hosts"]
-    ):
+    if is_legacy_plan(plan):
         return {
-            "status": "legacy-inherit",
+            "status": RuntimeAccessStatus.LEGACY_INHERIT,
             "verified": [],
             "unverified": [],
             "remedy": None,
@@ -397,7 +432,9 @@ def verify_plan(
             observation = None
     reason = _observation_problem(plan, transport, observation)
     summary: JsonObject = {
-        "status": "unverified" if reason else "verified",
+        "status": RuntimeAccessStatus.UNVERIFIED
+        if reason
+        else RuntimeAccessStatus.VERIFIED,
         "reason": reason,
         "required": {
             "hosts": plan["network"]["hosts"],
@@ -427,8 +464,8 @@ def _observation_problem(
     if (
         not observation.environment_id
         or not observation.launch_id
-        or observation.source not in ("native-runtime", "runtime-adapter")
-        or observation.mechanism not in ("native-apply", "confirmed-inheritance")
+        or observation.source not in OBSERVATION_SOURCES
+        or observation.mechanism not in OBSERVATION_MECHANISMS
     ):
         return "native worker launch identity or application mechanism is unverified"
     try:
@@ -467,16 +504,16 @@ def apply_plan(
     """
     plan = brief.get("runtime_access")
     if plan is None:
-        return {"status": "legacy-inherit"}
+        return {"status": RuntimeAccessStatus.LEGACY_INHERIT}
     if not isinstance(plan, dict):
         raise AccessError(
             "invalid pinned access plan",
             remedy="create a new dispatch with a valid access plan",
         )
     verification, observation = verify_plan(plan, transport)
-    if verification["status"] == "legacy-inherit":
+    if verification["status"] == RuntimeAccessStatus.LEGACY_INHERIT:
         return verification
-    if verification["status"] != "verified" or observation is None:
+    if verification["status"] != RuntimeAccessStatus.VERIFIED or observation is None:
         raise AccessError(str(verification["reason"]), remedy=_REMEDY)
     provider = extensions.runtime_access(plan["runtime_extension"])
     launch = getattr(provider, "handoff", None) if handoff else None
@@ -507,11 +544,14 @@ def apply_plan(
         )
     # Set only for a handoff; the gate above refuses a provider without a callable handoff.
     if callable(launch):
-        # A project-supplied launch may fail in any way; the handoff must fail closed.
+        # A project-supplied launch may fail in any way; the handoff must fail closed, and
+        # from here on the worker may have started, so every refusal is unconfirmed.
         try:
             receipt = launch(brief, applied, command)
         except Exception as exc:
-            raise AccessError("native worker handoff failed", remedy=_REMEDY) from exc
+            raise HandoffUnconfirmed(
+                "native worker handoff failed", remedy=_REMEDY
+            ) from exc
         reason = _observation_problem(plan, transport, receipt)
         if (
             reason
@@ -522,7 +562,7 @@ def apply_plan(
             or receipt.launch_id != applied.launch_id
             or receipt.environment_id != applied.environment_id
         ):
-            raise AccessError(
+            raise HandoffUnconfirmed(
                 reason
                 or "native worker handoff receipt does not bind the approved dispatch and launch",
                 remedy=_REMEDY,

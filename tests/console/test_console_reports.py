@@ -282,7 +282,7 @@ def test_batch_timeline_orders_states_dispatches_decisions_and_risks(
         index("developer: dispatch-dev")
         < index("отчёт developer: completed")
         < index("accept → code-review")
-        < index("code-review (review): dispatch-review")
+        < index("code-review: dispatch-review")
         < index("accept → qa")
         < index("qa: dispatch-qa")
         < index("отчёт qa: completed")

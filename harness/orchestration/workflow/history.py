@@ -47,6 +47,7 @@ from harness.orchestration.core.constants import (
     CARRIED_ITEM_SOURCES,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTEXT_PACKAGE_FIELDS,
+    ContextPackageFreshness,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
@@ -86,11 +87,13 @@ from harness.orchestration.core.workspace import (
 )
 from harness.orchestration.ledger import JsonValue
 from harness.orchestration.ledger.ledger_ops import (
+    _canonical_records_root,
     _load_checkpoint,
     _load_context_package,
     _load_dispatch,
     _load_dispatch_status,
     _load_risk,
+    _read_batch,
     _records_root,
 )
 from harness.orchestration.ledger.recovery_chain import active_dispatches, active_risks
@@ -457,7 +460,9 @@ def _context_package_freshness(
             else {}
         ),
         "context_package_id": package["context_package_id"],
-        "status": "fresh" if fresh else "stale",
+        "status": ContextPackageFreshness.FRESH
+        if fresh
+        else ContextPackageFreshness.STALE,
         "checked_at": utils._now(),
         "registered_base_commit": package["base_commit"],
         "current_base_commit": current_base,
@@ -1023,9 +1028,12 @@ def _batches_for_ticket_branch(
     """Every integrity-checked batch recorded for this ticket and issue branch.
 
     A coordinator can retain abandoned planning attempts for the same ticket and issue branch;
-    they are audit evidence, so this lists them all and leaves the choice to the caller.
+    they are audit evidence, so this lists them all and leaves the choice to the caller.  The
+    QA and publish evidence of ``qa evidence`` and ``integration prepare`` is read from here, so
+    the generation passes the strict read boundary first and each batch its own graph check.
     """
-    batches_dir = _records_root(root) / "batches"
+    records = _canonical_records_root(root)
+    batches_dir = records / "batches"
     if not batches_dir.is_dir():
         raise CoordinatorError(
             "no orchestration batches exist for the ticket branch",
@@ -1035,6 +1043,7 @@ def _batches_for_ticket_branch(
     for path in sorted(batches_dir.glob("*.json")):
         batch = _read_object(path, "batch record")
         if batch.get("ticket") == ticket and batch.get("branch") == branch:
+            batch = _read_batch(records, path.stem)
             _validate_batch_integrity(root, batch)
             matches.append(batch)
     if not matches:
@@ -1145,7 +1154,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="create a fresh approved dispatch after a recorded recovery event",
         )
     policy = dispatch["orchestration_policy"]
-    if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
+    if not isinstance(policy, dict) or set(policy) - {
+        "infrastructure_retry",
+        "configuration",
+    } != {
         "approval_ttl_seconds",
         "attention",
         "context_pressure",
@@ -1156,6 +1168,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    if "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        read_snapshot(dispatch)
     from harness.orchestration.infrastructure_retry import pinned
 
     pinned(dispatch)
@@ -1276,6 +1292,13 @@ def _validate_resolver_section(dispatch: JsonObject) -> None:
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
+    pinned: JsonObject | None = None
+    policy = dispatch.get("orchestration_policy")
+    if isinstance(policy, dict) and "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        pinned = read_snapshot(dispatch)
+        config = pinned["config"]
     _validate_harness_runtime_snapshot(repo, batch)
     from harness.orchestration.workflow import preserved_progress
 
@@ -1474,9 +1497,10 @@ def _validate_dispatch(
         try:
             _, assignment = validate_brief_policy(
                 dispatch,
-                _project(repo),
+                pinned["project"] if pinned is not None else _project(repo),
                 config,
                 _roles_dir(repo),
+                role_manifest=pinned["role"] if pinned is not None else None,
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
@@ -1493,6 +1517,8 @@ def _validate_dispatch(
                 dispatch["resolved_runtime"],
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
+                replay=True,
+                role_manifest=pinned["role"] if pinned is not None else None,
             )
         )
         if (

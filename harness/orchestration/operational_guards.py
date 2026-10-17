@@ -34,6 +34,7 @@ TRANSITION_FIELDS = (
 # rebase target (issue #504) or a delta-review scope after a fix-forward (issue #625), so every
 # transition without one keeps the digest it always had.
 OPTIONAL_TRANSITION_FIELDS = (
+    "configuration_sha256",
     "recovery_event_sha256",
     "carried_items_sha256",
     "rebase_target_sha",
@@ -46,7 +47,9 @@ ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
 # A role that only reads (or the publish boundary) is re-run as a new dispatch, never resumed, so it
 # alone carries a retry idempotency key.
 KEYED_READ_ONLY_ROLES = ("architect", "code-review", "qa")
+# In priority order: a batch the runtime state store holds comes first (issue #684).
 ATTENTION_REASONS = (
+    "operational-hold",
     "unknown-reason",
     "infrastructure-retry-repeated",
     "tooling-retry-repeated",
@@ -138,6 +141,7 @@ def transition_digest(transition: Mapping[str, object]) -> str:
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
+            "configuration_sha256 for a new brief's pinned config, "
             "recovery_event_sha256 only after an audited recovery, "
             "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
             "when it carries an approved rebase target, delta_review_sha256 only when it "

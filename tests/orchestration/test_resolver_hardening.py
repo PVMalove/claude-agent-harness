@@ -16,6 +16,7 @@ from harness.orchestration import coordinator
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.workflow import resolver
 from harness.orchestration.workflow.batch import create_batch
+from scripts.clean_room.support import rewrite_recorded
 from tests.orchestration.test_conflict_resolver import ResolverFixture
 
 
@@ -41,7 +42,7 @@ class ResolverHardeningTests(ResolverFixture):
         path = self.fx._records() / "batches" / f"{batch_id}.json"
         batch = json.loads(path.read_text(encoding="utf-8"))
         change(batch)
-        path.write_text(json.dumps(batch), encoding="utf-8")
+        rewrite_recorded(path, batch)
 
     def test_a_target_moving_during_planning_names_the_planned_batch_to_close(
         self,
