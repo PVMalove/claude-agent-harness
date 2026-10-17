@@ -22,7 +22,13 @@ from .. import stats as console_stats
 from ..catalog import HARNESS_COMMANDS, CatalogEntry, process_argv
 from ..logtext import colorize_overview
 from ..runner import CommandRunner, capturing_runner
-from .commands import CommandForm, CommandMenuScreen, describe_command
+from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
+from .commands import (
+    CommandForm,
+    CommandMenuScreen,
+    command_menu_css,
+    describe_command,
+)
 
 _OTHER_GROUP = "Прочее"
 _GROUPS = {
@@ -109,10 +115,20 @@ class CommandFormScreen(CommandForm):
             self.dismiss(values)
 
 
-class HarnessScreen(CommandMenuScreen):
-    """Экран раздела Harness с меню доступных команд харнесса и обслуживания леджера."""
+class HarnessScreen(ConsoleShell, CommandMenuScreen):
+    """Экран раздела Harness на общей оболочке консоли: меню доступных команд харнесса и
+    обслуживания леджера."""
 
     CRUMB = "Harness"
+    CRUMBS = "Главная › Harness"
+    SECTION = "Harness"
+
+    # The shell's rules plus the command-menu rules under this screen's own type name.
+    CSS = (
+        SHELL_CSS
+        + command_menu_css("HarnessScreen")
+        + brand.shell_css("HarnessScreen #harness-page { height: 1fr; padding: 0 2; }")
+    )
 
     def __init__(
         self,
@@ -130,6 +146,17 @@ class HarnessScreen(CommandMenuScreen):
         # A command whose script is absent here (e.g. verify outside the harness repository)
         # would only ever fail with "can't open file", so it is not offered.
         self._entries = {entry.key: entry for entry in catalog if entry.available(repo)}
+
+    def compose_strip(self) -> ComposeResult:
+        yield WrappedValue(str(self.repo))
+
+    def compose_content(self) -> ComposeResult:
+        with VerticalScroll(id="harness-page"):
+            yield from self.compose_commands()
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        CommandMenuScreen.sync_language(self)
 
     def overview(self) -> ComposeResult:
         """Текущее состояние установки и сводка использования пайплайна."""
@@ -177,9 +204,9 @@ class HarnessScreen(CommandMenuScreen):
     def menu_cli_line(self, key: str) -> str:
         return self._entries[key].cli_line(self.repo)
 
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
+    async def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Обрабатывает выбор команды из списка, открывая форму параметров либо запуская команду сразу."""
-        if event.item.name is None:
+        if event.item.name is None or event.list_view.id == self.IDS.menu:
             return
         self.open_command(event.item.name)
 

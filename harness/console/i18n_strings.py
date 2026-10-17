@@ -24,6 +24,7 @@ EN: dict[str, str] = {
     "Требуется явное подтверждение просмотра": "Explicit preview confirmation is required",
     "План изменился: выполните просмотр заново": "The plan changed: preview it again",
     "Сначала устраните локальные изменения и коллизии": "Resolve local changes and collisions first",
+    "Дождитесь окончания операции": "Wait for the operation to finish",
     "Рабочее пространство": "Workspace",
     "Главная  ›  Рабочее пространство": "Home  ›  Workspace",
     "Продолжите работу в выбранной сессии или откройте другой проект.": "Continue a session or open another project.",
