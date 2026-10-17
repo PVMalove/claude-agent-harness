@@ -934,7 +934,7 @@ def test_dashboard_summary_shows_memory_health_without_interpreting_markup(
         ),
     )
     assert (
-        f"memory: {status} — индекс [test]"
+        f"memory: {brand.STATUS_ICONS[status]} {status} — индекс [test]"
         in Text.from_markup(_render_summary(data)).plain
     )
 
@@ -1219,3 +1219,157 @@ def test_dashboard_session_list_shows_role_labels_and_status_captions(
     assert f"bold {brand.ROLE_COLORS['developer']}" in {
         str(span.style) for span in cards[0].spans
     }
+
+
+# -- Diagnostics on the shared shell ---------------------------------------------------------
+
+
+def _mixed_report() -> Report:
+    return Report(
+        schema_version=1,
+        repo="/tmp/fake-repo",
+        online=False,
+        checks=[
+            CheckResult(id="files.lock", group="files", status="ok", message="lock ok"),
+            CheckResult(id="env.node", group="env", status="warn", message="node old"),
+            CheckResult(id="env.uv", group="env", status="fail", message="uv missing"),
+            CheckResult(
+                id="net.pypi", group="net", status="skipped", message="offline"
+            ),
+        ],
+    )
+
+
+def test_report_statuses_and_counters_are_shown_as_symbol_plus_text() -> None:
+    from harness.console.screens.diagnostics import _styled_report, render_report
+
+    report = _mixed_report()
+    before = render_report(report)
+    shown = _styled_report(report).plain.split("\n")
+    assert shown[0] == "Итого: ✔ ok=1 ⚠ warn=1 ✖ fail=1 ○ skipped=1"
+    assert "✔ [OK] files.lock: lock ok" in shown
+    assert "⚠ [WARN] env.node: node old" in shown
+    assert "✖ [FAIL] env.uv: uv missing" in shown
+    assert "○ - net.pypi: offline" in shown
+    # Only the display changes: the report text and the export keep the plain markers.
+    assert render_report(report) == before
+    assert "✔" not in before and "✖" not in before
+    english = _styled_report(report, "en").plain.split("\n")
+    assert english[0].startswith("Total: ✔ ok=1") and "○ skipped=1" in english[0]
+
+
+def test_a_zero_counter_keeps_its_symbol_and_is_muted() -> None:
+    from harness.console.screens.diagnostics import _styled_report
+
+    shown = _styled_report(_fake_report())
+    assert shown.plain.split("\n")[0] == "Итого: ✔ ok=1 ⚠ warn=0 ✖ fail=1 ○ skipped=0"
+    muted = brand.PALETTE["muted"]
+    styled = {
+        shown.plain[span.start : span.end]: str(span.style) for span in shown.spans
+    }
+    assert styled["⚠ "] == f"bold {muted}"
+    assert styled["✖ "] == f"bold {brand.STATUS_COLORS['fail']}"
+
+
+def test_diagnostics_sits_on_the_shell_with_the_section_menu(tmp_path: Path) -> None:
+    from textual.widgets import ListItem, ListView
+
+    from harness.console.chrome import TopBar
+    from harness.console.shell import Breadcrumbs
+    from tests.console._pilot_wait import crumb_text
+
+    async def scenario() -> tuple[str, int | None, list[str | None], bool, int, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = DiagnosticsScreen(
+                tmp_path,
+                collect_diagnostics=lambda repo, *, online=False: _fake_report(),
+            )
+            await app.push_screen(screen)
+            await _settle(pilot)
+            menu = screen.query_one("#shell-sections", ListView)
+            active = [
+                item.name for item in menu.query(ListItem) if item.has_class("-active")
+            ]
+            crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
+            focus = screen.query_one("#diagnostics-scroll").has_focus
+            topbars = len(screen.query(TopBar))
+            # The open section's own number is a no-op; another number opens its section.
+            await pilot.press("3")
+            await _settle(pilot)
+            stayed = app.screen is screen
+            await pilot.press("6")
+            await _settle(pilot)
+            return (
+                crumbs,
+                menu.index,
+                active,
+                focus,
+                topbars,
+                stayed and (app.screen is not screen),
+            )
+
+    crumbs, index, active, focus, topbars, navigated = asyncio.run(scenario())
+    assert crumbs == "Главная  ›  Диагностика"
+    assert index == SECTIONS.index("Diagnostics")
+    assert active == ["Diagnostics"]
+    assert focus and topbars == 1  # only the shell's own header
+    assert navigated
+
+
+def test_diagnostics_switches_language_and_goes_back_with_escape(
+    tmp_path: Path,
+) -> None:
+    from harness.console.shell import Breadcrumbs
+    from tests.console._pilot_wait import crumb_text
+    from textual.widgets import Static
+
+    async def scenario() -> tuple[str, str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = DiagnosticsScreen(
+                tmp_path,
+                collect_diagnostics=lambda repo, *, online=False: _fake_report(),
+            )
+            await app.push_screen(screen)
+            await _settle(pilot)
+            await pilot.press("f2")
+            await _settle(pilot)
+            crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
+            report = str(screen.query_one("#diagnostics-report", Static).content)
+            await pilot.press("escape")
+            await _settle(pilot)
+            return crumbs, report, app.screen is not screen
+
+    crumbs, report, went_back = asyncio.run(scenario())
+    assert crumbs == "Home  ›  Diagnostics"
+    assert report.startswith("Total: ✔ ok=1")
+    assert went_back
+
+
+def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> None:
+    from dataclasses import replace
+
+    from rich.text import Text
+
+    from harness.console.screens.dashboard import _render_cards, _render_summary
+
+    data = replace(
+        _fake_dashboard_data(),
+        fail=1,
+        problems=(
+            ("fail", "env.git", "git missing"),
+            ("warn", "repo_map.tier", "minimal"),
+        ),
+        memory_index=CheckResult(
+            id="memory.index", group="memory", status="ok", message="индекс готов"
+        ),
+    )
+    plain = Text.from_markup(_render_summary(data)).plain.split("\n")
+    assert plain[0] == "health (offline): ✔ ok=5 ⚠ warn=1 ✖ fail=1 ○ skipped=2"
+    assert "  ✖ fail env.git — git missing" in plain
+    assert "  ⚠ warn repo_map.tier — minimal" in plain
+    # A status is also never a colour alone on the cards.
+    harness_card, _orchestration, _repo_map = _render_cards(data, "1.0.0")
+    assert "память: [" in harness_card and "✔ ok" in harness_card
+    assert "дрейф: [" in harness_card and "✔ нет" in harness_card
