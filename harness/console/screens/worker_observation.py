@@ -182,9 +182,9 @@ class WorkerObservationScreen(ConsoleShell):
     .shell #worker-sessions { background: $surface; }
     .shell #worker-picker, .shell #worker-picker:focus { border: none; background: $surface; }
     .shell #worker-picker > ListItem.-highlight, .shell #worker-picker:focus > ListItem.-highlight {
-        background: $row-highlight; color: $text; text-style: none;
+        background: $row-highlight; color: $foreground; text-style: none;
     }
-    .shell #worker-actions Button { border: round $component-border; color: $text; }
+    .shell #worker-actions Button { border: round $component-border; color: $foreground; }
     .shell #worker-actions Button:hover, .shell #worker-actions Button:focus { border: round $primary; color: $primary; }
     .shell #worker-actions #worker-stop { color: $error; }
     .shell.-wide #worker-actions { height: 2; padding: 0 1; }

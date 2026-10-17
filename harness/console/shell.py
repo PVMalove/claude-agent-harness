@@ -256,7 +256,7 @@ class ShellIds:
 # single screen's widgets belong to that screen, never here.
 SHELL_CSS = brand.shell_css("""
 Screen.shell { background: $background; }
-.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $text; }
+.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $foreground; }
 .shell .breadcrumbs Static { width: auto; height: 1; }
 .shell .crumb-link { color: $primary; text-style: underline; }
 .shell .crumb-link:hover { background: $row-highlight; color: $selection-foreground; }
@@ -265,7 +265,7 @@ Screen.shell { background: $background; }
 .shell .crumb-current { width: 1fr; min-width: 1; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
 .shell .context-strip { height: auto; min-height: 2; border-bottom: solid $border-subtle; padding: 0 2; color: $text-muted; }
 .shell .context-strip Static { width: 1fr; height: auto; }
-.shell Button { min-width: 8; width: auto; color: $text; border: round $component-border; text-style: none; }
+.shell Button { min-width: 8; width: auto; color: $foreground; border: round $component-border; text-style: none; }
 .shell Button:hover, .shell Button:focus { border: round $primary; color: $primary; }
 .shell .context-strip Button { border: none; height: 1; min-width: 3; color: $primary; }
 .shell Button.-textual-compact, .shell Button.-textual-compact:hover, .shell Button.-textual-compact:focus { border: none; padding: 0 1; height: 1; min-height: 1; min-width: 0; }
@@ -303,7 +303,7 @@ Screen.shell { background: $background; }
 .shell.-narrow .context-panel, .shell.-fold-context .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
 .shell .context-fold { border: none; padding: 0; background: transparent; }
 .shell .context-fold > Contents { padding: 0; height: auto; }
-.shell .context-fold > CollapsibleTitle { display: none; padding: 0; color: $text; }
+.shell .context-fold > CollapsibleTitle { display: none; padding: 0; color: $foreground; }
 .shell.-fold-context .context-fold > CollapsibleTitle { display: block; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
@@ -311,7 +311,6 @@ Screen.shell { background: $background; }
 .shell.-narrow ShellSidebar .menu-heading { height: 1; }
 .shell.-narrow ShellSidebar .menu-context { display: none; }
 .shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
-.shell.-narrow WorkspaceHeader #topbar-right { display: none; }
 .shell.-narrow .breadcrumbs, .shell.-narrow .context-strip { min-height: 1; border: none; }
 .shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-color-active: $primary; scrollbar-background: $scrollbar-track; scrollbar-background-hover: $scrollbar-track; scrollbar-background-active: $scrollbar-track; }
 .shell ListView, .shell .frame, .shell Input, .shell TextArea, .shell Select > SelectCurrent { border: round $component-border; }
@@ -350,7 +349,11 @@ class ConsoleShell(Translated, Screen[ShellResult]):
     DEFAULT_CLASSES = "shell"
     SCOPED_CSS = False
     CSS = SHELL_CSS
-    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide"), (140, "-spacious")]
+    HORIZONTAL_BREAKPOINTS = [
+        (0, "-narrow"),
+        (brand.NARROW_WIDTH, "-wide"),
+        (140, "-spacious"),
+    ]
     BINDINGS = [
         Binding("escape", "back", "Назад"),
         *(

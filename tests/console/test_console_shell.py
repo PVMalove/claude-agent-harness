@@ -263,6 +263,90 @@ def test_escape_on_home_keeps_the_screen_and_the_footer_has_no_back_key(
     assert back_home
 
 
+LONG_BRANCH = "feature/issue-721-console-design-system-with-a-long-tail"
+
+
+def _git_repo(path: Path, branch: str) -> Path:
+    subprocess.run(
+        ["git", "init", "-q", "-b", branch, str(path)], check=True, capture_output=True
+    )
+    return path
+
+
+@pytest.mark.parametrize("branch", [LONG_BRANCH, None])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_the_top_bar_shows_project_and_branch_on_every_width(
+    tmp_path: Path, size: tuple[int, int], branch: str | None
+) -> None:
+    repo = _git_repo(tmp_path / "project", branch) if branch else tmp_path
+
+    async def scenario() -> tuple[str, bool]:
+        app = HarnessConsoleApp(repo)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot)
+            right = screen.query_one("#topbar-right", Static)
+            return str(right.render()), right.display and right.region.width > 0
+
+    text, shown = asyncio.run(scenario())
+    assert shown
+    assert not text.endswith("·") and " · " not in text.replace(" · ⎇", "")
+    if branch is None:
+        assert text == repo.name
+    elif size[0] >= 100:
+        assert text == f"{repo.name} · ⎇ {LONG_BRANCH}"
+    else:
+        # Narrow: the branch alone, shortened to the room the bar has.
+        assert text.startswith("⎇ feature/issue-721") and text.endswith("…")
+
+
+def test_where_text_never_leaves_a_dangling_separator() -> None:
+    from harness.console.chrome import where_text
+
+    assert where_text("project", None, 160) == "project"
+    assert where_text("project", "", 80) == "project"
+    assert where_text("project", "main", 160) == "project · ⎇ main"
+    assert where_text("project", "main", 80) == "⎇ main"
+    assert len(where_text("project", LONG_BRANCH, 80)) <= (80 - 4) // 2
+
+
+def _color(widget: object) -> str:
+    from textual.color import Color
+
+    return Color.from_rich_color(widget.rich_style.color).hex.lower()  # type: ignore[attr-defined]
+
+
+def test_shell_text_uses_the_foreground_token(tmp_path: Path) -> None:
+    from harness.console import brand
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            home = _home(tmp_path)
+            await app.switch_screen(home)
+            await pilot.pause()
+            colors = [
+                _color(home.query_one("#topbar-left")),
+                _color(home.query_one("#dashboard-offline")),
+                _color(home.query_one("#dashboard-online")),
+            ]
+            screen = await _open(app, pilot)
+            colors.append(_color(screen.query_one(".crumb-current")))
+            return colors
+
+    assert set(asyncio.run(scenario())) == {brand.PALETTE["foreground"].lower()}
+
+
+def test_the_shell_css_has_no_default_text_token() -> None:
+    import re
+
+    from harness.console import brand
+    from harness.console.chrome import WorkspaceHeader
+    from harness.console.shell import SHELL_CSS
+
+    for css in (SHELL_CSS, WorkspaceHeader.DEFAULT_CSS, DashboardScreen.CSS):
+        assert not re.search(r"\$text(?![\w-])", brand.shell_css(css))
+
+
 def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:
     async def scenario() -> tuple[list[str], str, list[str], str]:
         app = HarnessConsoleApp(tmp_path)
