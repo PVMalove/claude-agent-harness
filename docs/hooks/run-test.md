@@ -195,3 +195,9 @@ Clean-room сценарий `scripts/clean_room/isolated_test_runner_build_db.py
 `HARNESS_REQUIRE_TEST_DATABASE=1` делает отсутствие настоящей БД ошибкой;
 `HARNESS_REQUIRE_TEST_SANDBOX=1` требует песочницу и компилятор. Подменные процессы в unit-тестах
 проверяют только жизненный цикл и не заменяют это доказательство.
+
+Сценарий `scripts/clean_room/fast_implement_route.py` прогоняет через тот же установленный runner
+короткий маршрут `/fast-implement` со скриптованной заглушкой модели: цикл с автором на согласованном
+seam, откат на обычный `/tdd` при упавшем hook, недоступной изоляции и проекте без `test_paths`, а также
+отказы `build_failed` и `database_unavailable`, которые не считаются Red. Он не заменяет проверку на
+реальном Claude Code (`make test-author-probe`) и не измеряет качество тестов, написанных моделью.
