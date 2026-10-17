@@ -23,19 +23,32 @@ READY_SECONDS = 15.0
 
 def _stop(process: subprocess.Popen[bytes]) -> None:
     """Stop a foreground server and its group, even if readiness or the test failed."""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    if sys.platform != "win32":
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                continue
+            # A server can exit while a descendant keeps its group alive.
+            if sig == signal.SIGTERM:
+                continue
+            break
+    else:
         try:
-            os.killpg(process.pid, sig)
-        except ProcessLookupError:
-            pass
-        try:
+            process.terminate()
             process.wait(timeout=1)
-        except subprocess.TimeoutExpired:
-            continue
-        # A server can exit while a descendant keeps its group alive.
-        if sig == signal.SIGTERM:
-            continue
-        break
+        except (subprocess.TimeoutExpired, ProcessLookupError):
+            pass
+        if process.poll() is None:
+            try:
+                process.kill()
+                process.wait(timeout=1)
+            except (subprocess.TimeoutExpired, ProcessLookupError):
+                pass
 
 
 def _start(command: Sequence[str], env: Mapping[str, str]) -> subprocess.Popen[bytes]:

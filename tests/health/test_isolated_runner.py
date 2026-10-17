@@ -1028,15 +1028,15 @@ def test_failed_preparation_never_starts_selected_test(
 
 
 def test_preparation_probe_checks_its_artifact_mount(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    sandboxed: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (project / "artifacts").mkdir()
+    (sandboxed / "artifacts").mkdir()
     data = _settings(["tests/**"], ["test", "{test_id}"])
     cast(dict[str, object], data["test_runner"])["build"] = {
         "command": ["compiler"],
         "artifact_paths": ["artifacts/**"],
     }
-    _write_settings(project, data)
+    _write_settings(sandboxed, data)
     original = runner.sandbox_argv
 
     def wrong_mount(
@@ -1047,13 +1047,13 @@ def test_preparation_probe_checks_its_artifact_mount(
         status_fd: int,
     ) -> list[str]:
         argv = original(bwrap, repo, binds, command, status_fd)
-        target = str(project / "artifacts")
+        target = str(sandboxed / "artifacts")
         if target in argv:
             argv[argv.index(target) - 2] = "--ro-bind"
         return argv
 
     monkeypatch.setattr(runner, "sandbox_argv", wrong_mount)
-    outcome = runner.run_test(project, "legit")
+    outcome = runner.run_test(sandboxed, "legit")
     assert (outcome.reason, outcome.detail) == ("isolation_unavailable", "probe_failed")
 
 
@@ -1217,7 +1217,12 @@ def test_probe_checks_both_phases_without_build_or_database_start(
     }
     _write_settings(project, data)
     launcher = FakeLauncher([STARTED, STARTED])
-    assert runner.probe(project, launcher=launcher) is None
+    assert (
+        runner.probe(
+            project, launcher=launcher, platform="linux", which=lambda n: "bwrap"
+        )
+        is None
+    )
     assert len(launcher.calls) == 2
     assert all(runner.PROBE_SCRIPT in command for command in launcher.calls)
     assert not any("never-" in part for command in launcher.calls for part in command)
