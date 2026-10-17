@@ -8563,11 +8563,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 "dispatch_id",
                 "state",
                 "report",
+                "runtime_compatibility",
                 "auto_accepted",
                 "next_action",
                 "next_dispatch_id",
             },
         )
+        self.assertTrue(submitted["runtime_compatibility"]["compatible"])
         self.assertTrue(submitted["auto_accepted"])
         self.assertEqual(
             submitted["next_dispatch_id"],

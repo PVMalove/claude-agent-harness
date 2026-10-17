@@ -455,6 +455,9 @@ REPORT_OPTIONAL_FIELDS = {
     "incomplete_items",
     "carried_item_closure",
     "qa_stages",
+    # The systemFields contract the role worked under (issue #684); report submit refuses a report
+    # that names another one and keeps it only as unaccepted evidence.
+    "system_fields_contract",
 }
 # Per-stage evidence of a clean-room QA run (issue #618): the preparation commands, then the gate, in
 # one checkout. ``qa_stages`` is present only when the project declares ``qa_preparation``; a report

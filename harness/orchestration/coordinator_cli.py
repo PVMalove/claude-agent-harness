@@ -638,6 +638,11 @@ def build_parser(
         "--worktree",
         help="canonical Git worktree from git rev-parse --show-toplevel; required when project policy enables worker attestation",
     )
+    dispatch_self_report.add_argument(
+        "--system-fields-contract",
+        help="optional: the systemFields contract version the worker speaks, e.g. "
+        "systemFields.v1; another version than the brief's is refused and recorded as evidence",
+    )
     dispatch_self_report.set_defaults(handler=handlers.self_report_dispatch)
     dispatch_heartbeat = dispatch_commands.add_parser("heartbeat")
     _common(dispatch_heartbeat)

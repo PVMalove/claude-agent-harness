@@ -441,3 +441,103 @@ def test_create_and_preflight_refuse_an_unsupported_runtime_assignment(
     with pytest.raises(RuntimeCompatibilityError) as create:
         recovery._dispatch(brief["batch_id"], "architect")
     assert create.value.step == "create"
+
+
+# -- the worker's confirmation -------------------------------------------------------------------
+
+
+def _self_report(
+    fixture: test_recovery.RecoveryTests, dispatch_id: str, contract: str | None
+) -> JsonObject:
+    return coordinator.self_report_dispatch(
+        fixture._args(
+            dispatch=dispatch_id,
+            model="sonnet",
+            worktree=str(fixture.worktree),
+            system_fields_contract=contract,
+        )
+    )
+
+
+def _status(fixture: test_recovery.RecoveryTests, dispatch_id: str) -> JsonObject:
+    return coordinator._load_dispatch_status(fixture.state_dir, dispatch_id)
+
+
+def test_the_cli_takes_an_optional_contract_confirmation() -> None:
+    parsed = coordinator.parser().parse_args(
+        [
+            "dispatch",
+            "self-report",
+            "--dispatch",
+            "dispatch-0",
+            "--model",
+            "m",
+            "--system-fields-contract",
+            CONTRACT_VERSION,
+        ]
+    )
+    assert parsed.system_fields_contract == CONTRACT_VERSION
+    plain = coordinator.parser().parse_args(
+        ["dispatch", "self-report", "--dispatch", "dispatch-0", "--model", "m"]
+    )
+    assert plain.system_fields_contract is None
+
+
+def test_a_confirmed_contract_rides_into_the_report_evidence(
+    recovery: test_recovery.RecoveryTests,
+) -> None:
+    batch = recovery._create_batch()
+    brief = recovery._dispatch(batch["batch_id"], "architect")["brief"]
+    coordinator.send_dispatch(
+        recovery._args(
+            dispatch=brief["dispatch_id"], adapter=None, adapter_arg=None, checkout=None
+        )
+    )
+
+    started = _self_report(recovery, brief["dispatch_id"], CONTRACT_VERSION)
+
+    assert started["state"] == "working"
+    assert started["system_fields_contract"]["status"] == "compatible"
+    assert _status(recovery, brief["dispatch_id"])["contract_self_report"][
+        "status"
+    ] == ("compatible")
+    result = recovery._submit(
+        brief["dispatch_id"], recovery._base_report(brief, "architect")
+    )
+    statuses = {
+        item["subject"]: item["status"]
+        for item in result["runtime_compatibility"]["declarations"]
+    }
+    assert statuses["worker-self-report"] == "compatible"
+
+
+def test_an_incompatible_confirmation_is_evidence_and_never_a_working_dispatch(
+    recovery: test_recovery.RecoveryTests,
+) -> None:
+    batch = recovery._create_batch()
+    brief = recovery._dispatch(batch["batch_id"], "architect")["brief"]
+    coordinator.send_dispatch(
+        recovery._args(
+            dispatch=brief["dispatch_id"], adapter=None, adapter_arg=None, checkout=None
+        )
+    )
+
+    with pytest.raises(RuntimeCompatibilityError) as raised:
+        _self_report(recovery, brief["dispatch_id"], "systemFields.v2")
+
+    assert raised.value.step == "self-report"
+    status = _status(recovery, brief["dispatch_id"])
+    assert status["state"] == "dispatched"
+    assert "model_self_report" not in status
+    assert status["contract_self_report"]["status"] == "unsupported"
+    assert recovery._batch_record(batch["batch_id"])["state"] != "blocked"
+    # The recorded confirmation alone refuses the report: it stays unaccepted evidence.
+    with pytest.raises(RuntimeCompatibilityError) as refused:
+        recovery._submit(
+            brief["dispatch_id"], recovery._base_report(brief, "architect")
+        )
+    assert refused.value.step == "report-submit"
+    assert list((recovery._records() / "unaccepted-evidence").glob("*.json"))
+    assert not (
+        recovery._records() / "reports" / f"{brief['dispatch_id']}.json"
+    ).exists()

@@ -349,3 +349,61 @@ def dispatch_declarations(
     )
     declarations.extend(extension_declarations(names, expected=expected))
     return declarations
+
+
+# The dispatch-status field that keeps the worker's optional confirmation as evidence.
+SELF_REPORT_FIELD = "contract_self_report"
+
+
+def self_report_declaration(
+    dispatch: Mapping[str, object], declared: object
+) -> Declaration:
+    """The worker's confirmation in ``dispatch self-report`` against the brief's contract."""
+    return Declaration(
+        "worker-self-report",
+        str(dispatch.get("dispatch_id")),
+        "self-report",
+        declared,
+        dispatch_contract(dispatch),
+    )
+
+
+def self_report_evidence(declaration: Declaration, moment: str) -> JsonObject:
+    """What the dispatch status keeps of a confirmation: bounded and redacted."""
+    return {
+        "reported": safe_value(declaration.declared),
+        "expected": declaration.expected,
+        "status": declaration.status,
+        "reported_at": moment,
+    }
+
+
+def report_declarations(
+    config: Mapping[str, object],
+    dispatch: Mapping[str, object],
+    status: Mapping[str, object],
+    report: Mapping[str, object],
+) -> list[Declaration]:
+    """Every declaration a completion report is accepted on: the brief's, the worker's
+    confirmation when its self-report gave one, and the report's own optional field.  A worker
+    started before the confirmation existed confirms nothing, and its report is judged on the
+    brief's declarations alone."""
+    declarations = dispatch_declarations(config, dispatch)
+    expected = dispatch_contract(dispatch)
+    confirmation = status.get(SELF_REPORT_FIELD)
+    if isinstance(confirmation, dict):
+        declarations.append(
+            self_report_declaration(dispatch, confirmation.get("reported"))
+        )
+    if CONTRACT_FIELD in report:
+        declarations.append(
+            Declaration(
+                "completion-report",
+                str(dispatch.get("dispatch_id")),
+                "report",
+                report[CONTRACT_FIELD],
+                expected,
+                (CONTRACT_FIELD,),
+            )
+        )
+    return declarations

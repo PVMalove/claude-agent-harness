@@ -107,6 +107,7 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
+from harness.orchestration import runtime_compatibility
 from harness.orchestration.runtime_intent import CompositeWrite, idempotency_key
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import (
@@ -179,6 +180,7 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         # A hand-off its sender left unfinished may still have to write this dispatch's status.
         settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
+        confirmation = _confirm_contract(ledger, dispatch, status, args)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
         attestation: JsonObject | None = None
@@ -279,7 +281,41 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         "state": "working",
         "model": reported,
         "worktree": attestation.get("worktree") if attestation else None,
+        "system_fields_contract": None
+        if confirmation is None
+        else confirmation.to_dict(),
     }
+
+
+def _confirm_contract(
+    ledger: LifecycleLedger,
+    dispatch: JsonObject,
+    status: JsonObject,
+    args: argparse.Namespace,
+) -> runtime_compatibility.Declaration | None:
+    """Keep the worker's optional systemFields confirmation on the dispatch status; one that is
+    not the brief's contract is recorded as evidence and refused before the worker counts as
+    working.  Without the flag nothing is recorded: a worker started before it existed confirms
+    nothing."""
+    declared = getattr(args, "system_fields_contract", None)
+    if declared is None:
+        return None
+    confirmation = runtime_compatibility.self_report_declaration(dispatch, declared)
+    moment = utils._now()
+    status[runtime_compatibility.SELF_REPORT_FIELD] = (
+        runtime_compatibility.self_report_evidence(confirmation, moment)
+    )
+    if confirmation.status == "compatible":
+        return confirmation
+    status["updated_at"] = moment
+    _safe_id(dispatch["dispatch_id"], "dispatch")
+    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+    raise runtime_compatibility.RuntimeCompatibilityError(
+        "self-report",
+        [confirmation],
+        remedy=f"start the worker on a runtime that speaks {confirmation.expected!r} and "
+        "repeat dispatch self-report; the dispatch is not working and nothing else changed",
+    )
 
 
 def heartbeat_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -1833,6 +1869,32 @@ def _report_markdown(report: JsonObject) -> str:
     return "\n".join(lines)
 
 
+def _report_compatibility(
+    root: Path,
+    config: JsonObject,
+    dispatch: JsonObject,
+    status: JsonObject,
+    report: JsonObject,
+) -> JsonObject:
+    """The evidence that the report was produced under the brief's systemFields contract.  An
+    incompatible report is kept only as unaccepted evidence -- no report record, no status
+    change, no lifecycle decision -- and the refusal names where it is."""
+    from harness.orchestration.pinned_configuration import capture_unaccepted
+
+    try:
+        return runtime_compatibility.require_compatible(
+            "report-submit",
+            runtime_compatibility.report_declarations(config, dispatch, status, report),
+        )
+    except runtime_compatibility.RuntimeCompatibilityError as exc:
+        path = capture_unaccepted(root, dispatch, report, exc)
+        raise runtime_compatibility.RuntimeCompatibilityError(
+            exc.step,
+            exc.declarations,
+            remedy=f"{exc.remedy}; unaccepted evidence: {path}",
+        ) from exc
+
+
 def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     report = _read_object(
@@ -1866,6 +1928,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="run QA through the clean-room QA runner (qa run), not by hand",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
+        compatibility = _report_compatibility(root, config, dispatch, status, report)
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
             not entry
@@ -1982,6 +2045,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
         "report": str(report_json),
+        "runtime_compatibility": compatibility,
     }
     # Acceptance belongs to the approved snapshot; progression belongs to a newly validated
     # transition. Never invite resubmission of evidence already durably accepted.
