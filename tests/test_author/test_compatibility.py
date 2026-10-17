@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import find_bash
+
 ROOT = Path(__file__).resolve().parents[2]
 HOOKS = ROOT / "harness" / "project" / "hooks"
 AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
@@ -59,7 +61,7 @@ def project(tmp_path: Path) -> Path:
 def _run(project: Path, hook: str, payload: dict[str, object]) -> subprocess.CompletedProcess[str]:
     """Run one seeded hook as Claude Code does: JSON on stdin, project dir in the environment."""
     path = project / ".claude" / "hooks" / hook
-    command = [sys.executable, str(path)] if hook.endswith(".py") else ["bash", str(path)]
+    command = [sys.executable, str(path)] if hook.endswith(".py") else [find_bash(), str(path)]
     return subprocess.run(
         command,
         input=json.dumps(payload),

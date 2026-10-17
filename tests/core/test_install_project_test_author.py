@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.health.project_files import validate_project_json
+from tests.conftest import find_bash
 
 CLI = Path(__file__).resolve().parents[2] / "harness" / "bin" / "harness.py"
 REAL_GIT = shutil.which("git")
@@ -150,7 +151,7 @@ def test_installed_preflight_disables_author_for_nonempty_artifacts(
         )
     )
     preflight = subprocess.run(
-        ["bash", str(repo / ".claude/hooks/test-author-preflight.sh")],
+        [find_bash(), str(repo / ".claude/hooks/test-author-preflight.sh")],
         cwd=repo,
         env=dict(
             os.environ, CLAUDE_PROJECT_DIR=str(repo), CLAUDE_CONFIG_DIR=str(trust)

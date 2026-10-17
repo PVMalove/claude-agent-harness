@@ -11,6 +11,8 @@ from typing import cast
 
 import pytest
 
+from tests.conftest import find_bash
+
 ROOT = Path(__file__).resolve().parents[2]
 PREFLIGHT = ROOT / "harness" / "project" / "hooks" / "test-author-preflight.sh"
 GUARD = ROOT / "harness" / "project" / "hooks" / "test-author-guard.py"
@@ -80,7 +82,7 @@ def _run(
         else:
             environment[key] = value
     return subprocess.run(
-        [str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
+        [find_bash(), str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
         cwd=project,
         capture_output=True,
         text=True,
