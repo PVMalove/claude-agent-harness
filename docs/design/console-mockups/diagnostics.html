@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Диагностика — макет</title>
+<link rel="stylesheet" href="console.css">
+</head>
+<body>
+
+<div class="caption"><span><b>3 · Диагностика — широкий терминал (≈160×52), компактно</b></span><span>Демонстрационные данные. Упавшие проверки показаны один раз — в карточках; в группах — полный список по клику.</span></div>
+
+<div class="app wide dense" style="height:850px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div>
+  </div>
+  <div class="body" style="grid-template-columns:250px 1fr">
+    <nav>
+      <h6>Главное меню</h6>
+      <a href="#"><i>0</i>Главная</a>
+      <a href="#"><i>1</i>Открыть проект</a>
+      <a href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a>
+      <a class="on" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a>
+      <a href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>5</i>Оркестрация<em>3</em></a>
+      <a href="#"><i>6</i>Отчёты</a>
+      <a href="#"><i>7</i>Repo Map<em>full</em></a>
+      <a href="#"><i>8</i>Настройка</a>
+      <a href="#"><i>9</i>Справка</a>
+    </nav>
+
+    <main>
+      <div class="crumbs"><a href="#" title="Вернуться на главное меню">Главная</a><span class="sep">›</span><span class="cur">Диагностика</span></div>
+      <div class="strip"><span>Проект: claude-agent-harness · режим: офлайн · отчёт построен только что</span><span>Экспорт — клавиша <b style="color:var(--primary)">e</b></span></div>
+      <div class="page fill">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px">
+          <h1>Диагностика</h1>
+          <div class="sub">Отчёт <b style="color:var(--fg)">harness health</b>. Команды «Как исправить» консоль не выполняет — запустите их вручную.</div>
+        </div>
+
+        <div class="panel">
+          <div class="toolbar">
+            <div class="pills">
+              <span class="pill"><b class="e-ok">✔ 14</b><small>успешно</small></span>
+              <span class="pill"><b class="e-warn">⚠ 0</b><small>предупреждения</small></span>
+              <span class="pill sel"><b class="e-err">✖ 2</b><small>ошибки</small></span>
+              <span class="pill"><b style="color:var(--muted)">○ 11</b><small>не проверено</small></span>
+              <small style="color:var(--muted)">проверено 16 из 27</small>
+            </div>
+            <div class="tbtns"><a class="btn" href="#">Офлайн</a><a class="btn" href="#">Онлайн</a><a class="btn" href="#">Исправить</a><a class="btn" href="#">Экспорт <span style="color:var(--primary)">e</span></a></div>
+          </div>
+          <div class="cliline"><span>$ harness health .  <b style="color:var(--fg)">--online</b> для «Онлайн» · <b style="color:var(--fg)">--fix</b> для «Исправить» (два шага) · ○ не проверено ≠ успешно</span>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-h" style="margin-bottom:8px"><b>Требует исправления</b><span class="e-err">✖ 2</span></div>
+          <div class="cols" style="gap:12px">
+            <div class="mini">
+              <div class="l1"><span class="id">✖ files.skill_snapshot</span><span class="msg">Скиллы отличаются от установленной версии Harness</span></div>
+              <div class="l2">Как исправить: обновите набор, предварительно посмотрев diff.</div>
+              <div class="l3"><code>harness update .</code><a href="#">Обновить Harness (2) →</a></div>
+            </div>
+            <div class="mini">
+              <div class="l1"><span class="id">✖ files.integrations</span><span class="msg">Нужно проверить настройки интеграций</span></div>
+              <div class="l2">Как исправить: проверьте блок интеграций в project.json и повторите проверку.</div>
+              <div class="l3"><span style="color:var(--muted);font-size:13px">команды нет — правка в настройках</span><a href="#">Настройка (8) →</a></div>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-h" style="margin-bottom:8px"><b>Проверки по группам</b><span>27 · 6 групп</span>
+            <span style="margin-left:auto;display:flex;gap:6px;text-transform:none;letter-spacing:0"><span class="chip" style="color:var(--selfg);border-color:var(--primary);background:var(--sel)">Все</span><span class="chip">✖ 2</span><span class="chip">⚠ 0</span><span class="chip">○ 11</span></span></div>
+          <div class="grp"><div class="gh"><span>▸</span><b>Файлы харнесса</b><span style="color:var(--muted)">9</span><span class="n"><span class="e-ok">✔ 7</span><span class="e-err">✖ 2</span></span></div></div>
+          <div class="grp"><div class="gh"><span>▸</span><b>Repo Map</b><span style="color:var(--muted)">1</span><span class="n"><span class="e-ok">✔ 1</span></span></div></div>
+          <div class="grp"><div class="gh"><span>▸</span><b>Память проекта</b><span style="color:var(--muted)">2</span><span class="n"><span class="e-ok">✔ 2</span></span></div></div>
+          <div class="grp"><div class="gh"><span>▸</span><b>Окружение</b><span style="color:var(--muted)">6</span><span class="n"><span class="e-ok">✔ 4</span><span>○ 2</span></span></div></div>
+          <div class="grp"><div class="gh"><span>▸</span><b>Трекер задач</b><span style="color:var(--muted)">6</span><span class="n"><span>○ 6 · нужна «Онлайн»</span></span></div></div>
+          <div class="grp"><div class="gh"><span>▸</span><b>Оркестрация</b><span style="color:var(--muted)">3</span><span class="n"><span>○ 3</span></span></div></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">e</b>Экспорт</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Состояния экрана</b></span><span>Тексты — из кода, кроме отмеченных «предлагаю».</span></div>
+<div class="sheet">
+  <h3>Что видно при запуске, исправлении и сбое</h3>
+  <p>Новый запуск отменяет предыдущий (фоновый поток один). Сообщения самих проверок — данные ядра, они не переводятся при смене RU/EN; переводятся только служебные строки.</p>
+  <div class="states" style="grid-template-columns:210px 1fr 280px">
+    <span class="lab2">Отчёт строится</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>health выполняется…<small>Сводка и список появятся после завершения.</small></div></div>
+    <span class="res2">«Экспорт» → предупреждение «нечего экспортировать: отчёт ещё строится»</span>
+
+    <span class="lab2">Сбой health</span>
+    <div class="status err"><span>✖</span><div>health не выполнен: &lt;причина&gt;<small>Отчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9). (подсказка — предлагаю)</small></div></div>
+    <span class="res2">Приложение не закрывается: ошибка показана в отчёте</span>
+
+    <span class="lab2">«Исправить», шаг 1</span>
+    <div class="status warn"><span>⚠</span><div>Кнопка меняется на «Подтвердить фиксы»<small>Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными.</small></div></div>
+    <span class="res2">Любое другое действие сбрасывает подтверждение</span>
+
+    <span class="lab2">«Исправить», шаг 2</span>
+    <div class="status ok"><span>✔</span><div>Применённые фиксы: …<small>Список выполненных команд под сводкой; отчёт перестроен.</small></div></div>
+    <span class="res2">Строка CLI у «Исправить» повторяет режим: с <b>--online</b>, если отчёт онлайн</span>
+
+    <span class="lab2">Онлайн-запуск</span>
+    <div class="status ok"><span>✔</span><div>Трекер и права проверены<small>Группа «Трекер задач» переходит из ○ в ✔ или ✖.</small></div></div>
+    <span class="res2">$ harness health . --online</span>
+  </div>
+</div>
+
+<div class="caption"><span><b>3 · Диагностика — узкий терминал (≈80×24)</b></span><span>Одна колонка: сводка и ошибки сверху, группы раскрываются по одной.</span></div>
+
+<div class="app narrow" style="height:1000px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">⎇ feature/issue-721…</div>
+  </div>
+  <div class="body">
+    <main>
+      <div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Диагностика</span></div>
+      <div class="page fill">
+        <div><h1>Диагностика</h1></div>
+        <div class="tiles" style="grid-template-columns:repeat(4,1fr);gap:8px">
+          <div class="tile"><b class="e-ok" style="font-size:18px">✔ 14</b><span>ок</span></div>
+          <div class="tile"><b class="e-warn" style="font-size:18px">⚠ 0</b><span>предупр.</span></div>
+          <div class="tile sel"><b class="e-err" style="font-size:18px">✖ 2</b><span>ошибки</span></div>
+          <div class="tile"><b style="color:var(--muted);font-size:18px">○ 11</b><span>не пров.</span></div>
+        </div>
+        <div class="btns" style="margin-top:0"><a class="btn" href="#">Офлайн</a><a class="btn" href="#">Онлайн</a><a class="btn" href="#">Исправить</a><a class="btn" href="#">Экспорт</a></div>
+        <div class="fixcard">
+          <div class="id"><span>✖ files.skill_snapshot</span></div>
+          <div class="msg">Скиллы отличаются от версии Harness</div>
+          <div class="code">harness update .<span class="hint2">y — копировать</span></div>
+          <a class="go" href="#">Обновить Harness (2) →</a>
+        </div>
+        <div class="fixcard">
+          <div class="id"><span>✖ files.integrations</span></div>
+          <div class="msg">Проверьте настройки интеграций</div>
+          <a class="go" href="#">Настройка (8) →</a>
+        </div>
+        <div class="card fold"><span>▸ Файлы харнесса</span><span><span class="e-ok">✔ 7</span> · <span class="e-err">✖ 2</span></span></div>
+        <div class="card fold"><span>▸ Остальные группы</span><span>5 групп</span></div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">e</b>Экспорт</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="legend">
+  Из кода: полный отчёт с итогом, группами и статусами; пояснение «команды не выполняются»; действия «Офлайн», «Онлайн», «Исправить» (двухшаговое), «Экспорт» и их CLI-эквиваленты;
+  блок «Как исправить» с текстом и командой; применённые фиксы. Группы и id проверок взяты из ядра health; сами сообщения и тексты исправлений в макете демонстрационные.
+  Новое: счётчики-плитки, разбор «Требует исправления» с переходом в нужный раздел меню, группы со сворачиванием вместо плоского текста, фильтры по статусу.
+</div>
+</body>
+</html>

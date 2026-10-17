@@ -2,18 +2,28 @@
 
 Принятые макеты Harness console — дизайн-источник эпика #720. Исходные страницы приватны, поэтому
 здесь лежат их локальные копии. Файлы сохранены без изменений. Данные и действия в макетах
-условные: они не запускают worker и не показывают состояние реального проекта.
+условные: они не запускают команды и не показывают состояние реального проекта. Пути вида
+`/home/…/claude-agent-harness` в примерах — демонстрационные значения.
 
-| Макет | Файл | Происхождение |
-| --- | --- | --- |
-| Общая консоль и наблюдение за worker, три компоновки через `?variant=console\|workspace\|focus` | [issue-716-harness-console-prototype.html](issue-716-harness-console-prototype.html) | #716, #711 |
-| Раздел консоли для восстановления, полная страница с локальными CSS и JS | [issue-684/site/index.html](issue-684/site/index.html#console) | #684, #681 |
-| HTML-фрагмент раздела консоли | [issue-684/console-section.html](issue-684/console-section.html) | #684 |
-| Ранняя версия страницы | [issue-684/earlier-site/index.html](issue-684/earlier-site/index.html) | #684 |
+Все страницы подключают общий [console.css](console.css), поэтому лежат в одном каталоге.
 
-Открывать файлы нужно локально в браузере; GitHub показывает их как исходный текст. Ссылки на
-`issue-716-guide-worker-startup-recovery.md` и `sandbox-and-observability-findings.md` внутри HTML
-указывают на материалы задач, которые не отслеживаются Git, поэтому не открываются.
+| Экран | Макет |
+| --- | --- |
+| Главное окно консоли | [home.html](home.html) |
+| Открыть проект | [open-project.html](open-project.html) |
+| Диагностика | [diagnostics.html](diagnostics.html) |
+| Harness | [harness.html](harness.html) |
+| Отчёты | [reports.html](reports.html) |
+| Repo Map | [repo-map.html](repo-map.html) |
+| Настройка | [configuration.html](configuration.html) |
+| Обновить Harness | [update-harness.html](update-harness.html) |
+| Оркестрация | [orchestration.html](orchestration.html) |
+| Восстановление | [recovery.html](recovery.html) |
+| Контейнерный запуск | [container-route.html](container-route.html) |
+| Справка | [help.html](help.html) |
+
+Открывать файлы нужно локально в браузере; GitHub показывает их как исходный текст, например
+`xdg-open docs/design/console-mockups/home.html`.
 
 Наличие макета не означает, что функция уже реализована в консоли. Реализация идёт тикетами
 эпика #720.
