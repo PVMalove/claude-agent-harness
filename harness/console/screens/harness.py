@@ -122,6 +122,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     CRUMB = "Harness"
     CRUMBS = "Главная › Harness"
     SECTION = "Harness"
+    NARROW_FOOTER_KEYS = ("escape", "enter", "y")
 
     # The shell's rules plus the command-menu rules under this screen's own type name.
     CSS = (
@@ -169,7 +170,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             classes="overview",
             markup=False,
         )
-        panel.border_title = brand.frame_title("Состояние")
+        panel.border_title = brand.section_title("Состояние")
         panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
 

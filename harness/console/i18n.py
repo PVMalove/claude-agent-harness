@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 
-from .i18n_strings import EN, EN_PHRASES, EN_PREFIXES, RU_FROM_EN
+from .i18n_strings import EN, EN_PHRASES, EN_PREFIXES, FACT_LABELS_EN, RU_FROM_EN
 
 LANGUAGES = ("ru", "en")
 LANGUAGE_ENV = "HARNESS_CONSOLE_LANG"
@@ -85,6 +85,48 @@ def section_label(language: str, key: str) -> str:
     return _SECTIONS.get(key, {}).get(language, key)
 
 
+# A jump names the section it opens; a few sections are named by the action instead.
+_JUMPS = {
+    "Configuration": {"ru": "Открыть настройку", "en": "Open setup"},
+}
+
+
+def jump_label(language: str, section: str) -> str:
+    """The label of a jump to `section`, e.g. `Обновить Harness` or `Открыть настройку`."""
+    return _JUMPS.get(section, {}).get(language) or section_label(language, section)
+
+
+def count_noun(
+    language: str, count: int, ru: tuple[str, str, str], en: tuple[str, str]
+) -> str:
+    """`count` with its noun in the right form: `21 проверка`, `3 проверки`, `27 проверок`,
+    `1 check`, `27 checks`. `ru` holds the forms for 1, 2-4 and 5+, `en` for 1 and the rest."""
+    if language == "en":
+        return f"{count} {en[0] if count == 1 else en[1]}"
+    if count % 10 == 1 and count % 100 != 11:
+        noun = ru[0]
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        noun = ru[1]
+    else:
+        noun = ru[2]
+    return f"{count} {noun}"
+
+
+def checks_count(language: str, total: int, skipped: int) -> str:
+    """`27 проверок · 11 пропущено` / `27 checks · 11 skipped`."""
+    checks = count_noun(
+        language, total, ("проверка", "проверки", "проверок"), ("check", "checks")
+    )
+    if language == "en":
+        return f"{checks} · {skipped} skipped"
+    return f"{checks} · {skipped} пропущено"
+
+
+def fact_label(language: str, label: str) -> str:
+    """The label of a fact in a context card (`Ветка`, `Объём`) in `language`."""
+    return FACT_LABELS_EN.get(label, label) if language == "en" else label
+
+
 def group_title(language: str, group: str) -> str:
     return group if language == "ru" else _GROUPS_EN.get(group, group)
 
@@ -100,15 +142,27 @@ def palette_command(language: str, title: str, help_text: str) -> tuple[str, str
     return title, help_text
 
 
+# Section titles are drawn in capitals: a capitalised source finds its English in capitals too.
+_EN_UPPER = {russian.upper(): english.upper() for russian, english in EN.items()}
+
+
+def _english(text: str) -> str | None:
+    if text in EN:
+        return EN[text]
+    return _EN_UPPER.get(text)
+
+
 def tr(language: str, text: str) -> str:
     """A fixed interface string in `language`. Unknown text (data, paths, CLI output) is returned
     as it is, so only the strings listed in `i18n_strings` ever change."""
     if language == "en":
-        if text in EN:
-            return EN[text]
+        english = _english(text)
+        if english is not None:
+            return english
         head, separator, rest = text.partition(" · ")
-        if separator and head in EN:
-            return EN[head] + separator + rest
+        english = _english(head) if separator else None
+        if english is not None:
+            return english + separator + rest
         for prefix, english in EN_PREFIXES.items():
             if text.startswith(prefix):
                 return english + text[len(prefix) :]

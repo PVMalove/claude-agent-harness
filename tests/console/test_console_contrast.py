@@ -81,9 +81,16 @@ def test_muted_text_reaches_four_and_a_half_to_one_on_the_surfaces() -> None:
 
 
 def test_the_shell_draws_component_borders_with_the_component_token() -> None:
+    """A component's edge (button, field, list) reaches 3:1; only the edge of a section card is
+    a decorative divider, like `.card` in the mockups."""
     css = brand.shell_css(shell.SHELL_CSS)
-    for rule in re.findall(r"border: round (#[0-9a-fA-F]{6})", css):
-        assert rule in {TOKENS["component-border"], brand.PALETTE["primary"]}
+    decorative = (".section-card", ".context-fold")
+    for selector, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css):
+        for color in re.findall(r"border: round (#[0-9a-fA-F]{6})", body):
+            allowed = {TOKENS["component-border"], brand.PALETTE["primary"]}
+            if any(name in selector for name in decorative):
+                allowed.add(TOKENS["border-subtle"])
+            assert color in allowed, selector.strip()
     assert TOKENS["component-border"] in css
 
 

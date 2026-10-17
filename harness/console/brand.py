@@ -17,6 +17,8 @@ from . import json_fields
 
 THEME_NAME = "harness-warm"
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
+# Terminals narrower than this many columns get the shell's narrow layout.
+NARROW_WIDTH = 100
 
 # Terracotta/coral accents and amber on a soft graphite background.
 PALETTE = {
@@ -44,6 +46,9 @@ SHELL_TOKENS = {
     "selection-background": "#45332c",
     "selection-foreground": "#f6baa3",
     "selection-edge": "#d97757",
+    # The outline of the selected main-menu entry, drawn around its fill (decorative: the fill
+    # and the selection colour of its text already mark it).
+    "selection-outline": "#6b4a3c",
     "row-highlight": "#35302b",
     "scrollbar-thumb": "#f2ece1",
     "scrollbar-track": "#8a8378",
@@ -95,9 +100,29 @@ def shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(limit - 1, 0)] + "…"
 
 
+def elide_path(path: str, width: int) -> str:
+    """`path` cut from the left to `width` cells at a separator, `…/Code/project`, so its end
+    (the project) stays readable; a path that fits is kept whole."""
+    if len(path) <= width:
+        return path
+    parts = path.split("/")
+    for start in range(1, len(parts)):
+        tail = "…/" + "/".join(parts[start:])
+        if len(tail) <= width:
+            return tail
+    return "…" + path[len(path) - max(width - 1, 0) :] if width > 1 else "…"
+
+
 def frame_title(title: str) -> str:
     """Add symmetric spacing to Textual's built-in border label padding."""
     return f" {title.strip()} "
+
+
+def section_title(title: str, note: str = "") -> str:
+    """A section card's title for its top border: the title in capitals, then its counter or
+    note, if any (`" ТРЕБУЕТ ВНИМАНИЯ  2 "`)."""
+    heading = title.strip().upper()
+    return frame_title(f"{heading}  {note.strip()}" if note.strip() else heading)
 
 
 @dataclass(frozen=True)

@@ -162,6 +162,8 @@ class HarnessConsoleApp(App[None]):
         ScrollBar.renderer = ThinScrollBarRender
         self.repo = repo
         self.health_counts: HealthCounts | None = None
+        # Menu badges per section, published by the home screen and shown by every shell screen.
+        self.section_badges: dict[str, tuple[str, str]] = {}
         self.language = i18n.default_language()
         self.restart_requested = False
         self.commands_running = 0

@@ -49,8 +49,10 @@ def _translated(
 
 
 def _translate_widget(widget: DOMNode, language: str) -> None:
+    # A `no-i18n` widget (a section card, a fold) translates its own title in `relabel`.
+    own = widget.has_class("no-i18n")
     title = getattr(widget, "border_title", None)
-    if title and str(title).strip():
+    if title and str(title).strip() and not own:
         widget.border_title = _translated(  # type: ignore[attr-defined]
             widget, "border_title", str(title), language, _title(widget), strip=True
         )
@@ -58,7 +60,8 @@ def _translate_widget(widget: DOMNode, language: str) -> None:
         widget.label = _translated(widget, "label", str(widget.label), language)
         widget.refresh(layout=True)
     elif isinstance(widget, Collapsible):
-        widget.title = _translated(widget, "title", widget.title, language)
+        if not own:
+            widget.title = _translated(widget, "title", widget.title, language)
     elif isinstance(widget, Input) and widget.placeholder:
         widget.placeholder = _translated(
             widget, "placeholder", widget.placeholder, language
@@ -71,7 +74,7 @@ def _translate_widget(widget: DOMNode, language: str) -> None:
         isinstance(widget, Static)
         and type(widget) is Static
         and not isinstance(widget.parent, TopBar)
-        and not widget.has_class("no-i18n")
+        and not own
     ):
         content = getattr(widget, "content", None)
         if isinstance(content, str) and content:
