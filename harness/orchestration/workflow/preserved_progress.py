@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import re
 import stat
+from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import NoReturn, cast
 
-from harness.orchestration.contract import paths_inside
 from harness.orchestration.core.git_utils import _run_git, git_environment, git_failure
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.ledger.ledger_ops import (
@@ -57,6 +57,13 @@ def _valid_path(path: object) -> bool:
     )
 
 
+def _inside_scope(paths: list[str], scope: list[str]) -> bool:
+    return all(
+        _valid_path(path) and any(fnmatchcase(path, pattern) for pattern in scope)
+        for path in paths
+    )
+
+
 def _checkout_state(checkout: Path, scope: list[str]) -> JsonObject:
     names = sorted(
         set(
@@ -74,7 +81,7 @@ def _checkout_state(checkout: Path, scope: list[str]) -> JsonObject:
             + _names(checkout, "ls-files", "--others", "--exclude-standard", "-z")
         )
     )
-    if any(not _valid_path(p) for p in names) or not paths_inside(names, scope):
+    if not _inside_scope(names, scope):
         _refuse("preserved dirty files exceed the stopped writer scope")
     files: JsonObject = {}
     for name in names:
@@ -188,9 +195,7 @@ def capture(
     committed = _names(
         checkout, "diff", "--name-only", "--no-renames", "-z", snapshot, commit, "--"
     )
-    if any(not _valid_path(p) for p in committed) or not paths_inside(
-        committed, brief["write_paths"]
-    ):
+    if not _inside_scope(committed, brief["write_paths"]):
         _refuse("preserved commits exceed the stopped writer scope")
     state = _checkout_state(checkout, brief["write_paths"])
     if sorted(files) != sorted(state["files"]):
@@ -275,8 +280,7 @@ def validate_event(root: Path, batch: JsonObject, event: JsonObject) -> None:
         or not isinstance(progress.get("head_commit"), str)
         or re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", progress["head_commit"]) is None
         or not isinstance(files, dict)
-        or any(not _valid_path(p) for p in files)
-        or not paths_inside(list(files), brief.get("write_paths", []))
+        or not _inside_scope(list(files), brief.get("write_paths", []))
         or any(
             not isinstance(progress.get(k), str)
             or re.fullmatch(r"[0-9a-f]{64}", progress[k]) is None

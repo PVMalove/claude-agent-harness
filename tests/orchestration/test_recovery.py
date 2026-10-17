@@ -484,7 +484,7 @@ class RecoveryTests(unittest.TestCase):
         self,
     ) -> None:
         self._configure_preserved_recovery(approval_policy="auto")
-        batch = self._create_batch()
+        batch = self._create_batch(allowed_paths=["services/*.py"])
         self._accepted_architect(batch["batch_id"])
         brief = self._dispatch(batch["batch_id"], "developer")["brief"]
         self._start(brief["dispatch_id"])
