@@ -288,6 +288,8 @@ class DashboardScreen(ConsoleShell):
     SECTION = HOME_SECTION
     CRUMBS = "Главная › Рабочее пространство"
     HAS_CONTEXT = True
+    # Home is the bottom of the screen stack: Esc has nowhere to go.
+    CAN_GO_BACK = False
     IDS = ShellIds(
         navigation="dashboard-sections",
         menu="section-menu",

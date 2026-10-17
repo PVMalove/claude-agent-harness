@@ -18,6 +18,7 @@ from textual.binding import Binding
 from textual.widgets import Button, ListItem, ListView, Static
 
 from harness.console.app import HarnessConsoleApp
+from harness.console.data import DashboardData
 from harness.console.screens.dashboard import DashboardScreen
 from harness.console.crumbs import Crumb
 from harness.console.wrap import SEPARATORS
@@ -205,6 +206,61 @@ def test_escape_goes_back(tmp_path: Path) -> None:
             assert app.screen is not screen
 
     asyncio.run(scenario())
+
+
+def _footer_keys(screen: object) -> list[str]:
+    from textual.widgets._footer import FooterKey
+
+    return [key.key for key in screen.query(FooterKey)]  # type: ignore[attr-defined]
+
+
+def _home_data() -> DashboardData:
+    return DashboardData(
+        ok=5,
+        warn=0,
+        fail=2,
+        skipped=1,
+        repo_map_tier="Repo Map: tier=full (offline parser bundle detected)",
+        harness_version="9.9.9",
+        drift_state="drift",
+        active_batches=3,
+        problems=(
+            ("fail", "files.skill_snapshot", "snapshot differs"),
+            ("fail", "files.integrations", "integrations need a check"),
+        ),
+    )
+
+
+def _home(tmp_path: Path) -> DashboardScreen:
+    return DashboardScreen(
+        tmp_path, collect_dashboard=lambda _repo, *, online=False: _home_data()
+    )
+
+
+def test_escape_on_home_keeps_the_screen_and_the_footer_has_no_back_key(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[bool, list[str], list[str], bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            home = _home(tmp_path)
+            await app.switch_screen(home)
+            await pilot.pause()
+            home_keys = _footer_keys(home)
+            await pilot.press("escape")
+            await pilot.pause()
+            stayed = app.screen is home
+            other = await _open(app, pilot)
+            other_keys = _footer_keys(other)
+            await pilot.press("escape")
+            await pilot.pause()
+            return stayed, home_keys, other_keys, app.screen is home
+
+    stayed, home_keys, other_keys, back_home = asyncio.run(scenario())
+    assert stayed
+    assert "escape" not in home_keys
+    assert "escape" in other_keys
+    assert back_home
 
 
 def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:

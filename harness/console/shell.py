@@ -352,7 +352,7 @@ class ConsoleShell(Translated, Screen[ShellResult]):
     CSS = SHELL_CSS
     HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide"), (140, "-spacious")]
     BINDINGS = [
-        Binding("escape", "app.pop_screen", "Назад"),
+        Binding("escape", "back", "Назад"),
         *(
             Binding(str(number), f"section({number})", show=False)
             for number in range(len(SECTIONS))
@@ -362,6 +362,9 @@ class ConsoleShell(Translated, Screen[ShellResult]):
     SECTION: str | None = None
     CRUMBS = "Главная"
     HAS_CONTEXT = False
+    # False for the bottom of the screen stack (home): there is nothing to go back to, so Esc is
+    # neither shown in the footer nor run.
+    CAN_GO_BACK = True
     # Narrower than this, the context panel folds into a collapsible block under the content
     # (`-fold-context`), titled `CONTEXT_TITLE`; 0 leaves the choice to the narrow layout alone.
     CONTEXT_SIDE_MIN = 0
@@ -481,6 +484,15 @@ class ConsoleShell(Translated, Screen[ShellResult]):
         self.query_one(Breadcrumbs).relabel()
 
     # Navigation: opening a section is the only effect.
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "back" and not self.CAN_GO_BACK:
+            return False
+        return super().check_action(action, parameters)
+
+    async def action_back(self) -> None:
+        """Return to the previous screen."""
+        await self.app.pop_screen()
+
     async def open_section(self, index: int) -> None:
         """Open section `index` through the home screen's opener; Home returns to it."""
         from .screens.dashboard import DashboardScreen
