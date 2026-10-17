@@ -22,6 +22,7 @@ correlation ID.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import uuid
@@ -309,7 +310,7 @@ def tracked(store: RuntimeStateStore, batch_id: str, action: str) -> Iterator[In
     store.write_recovery_intent(batch_id, intent.record)
     try:
         yield intent
-    except (KeyboardInterrupt, EOFError) as exc:
+    except (KeyboardInterrupt, EOFError, asyncio.CancelledError) as exc:
         intent.finish("interrupted", None, type(exc).__name__)
         raise RecoveryInterrupted(
             f"recovery {action} was interrupted; its intent is recorded",
@@ -351,7 +352,9 @@ def config_declarations(config: Mapping[str, object]) -> JsonObject:
     declarations: list[runtime_compatibility.Declaration] = []
     plans = config.get("assignment_plans")
     for role, plan in (plans if isinstance(plans, dict) else {}).items():
-        runtimes = plan.get("runtimes") if isinstance(plan, dict) else None
+        if not isinstance(plan, dict):
+            continue
+        runtimes = plan.get("runtimes")
         transport = str(plan.get("transport", "in-process"))
         for runtime in runtimes if isinstance(runtimes, dict) else {}:
             declaration = runtime_compatibility.assignment_declaration(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -309,6 +310,15 @@ def test_reload_refuses_an_incompatible_runtime_declaration(recovery: Fixture) -
 # -- skip and abort ------------------------------------------------------------------------------
 
 
+def test_config_declarations_pass_over_a_plan_that_is_not_an_object() -> None:
+    evidence = recovery_api.config_declarations(
+        {"assignment_plans": {"developer": "inherit"}}
+    )
+
+    assert evidence["compatible"] is True
+    assert evidence["declarations"] == []
+
+
 def test_skip_hides_only_an_allowlisted_advisory_for_one_session(
     recovery: Fixture,
 ) -> None:
@@ -364,7 +374,9 @@ def test_abort_flushes_its_intent_and_changes_nothing_else(recovery: Fixture) ->
 # -- durable intent and internal errors ----------------------------------------------------------
 
 
-@pytest.mark.parametrize("signal", [KeyboardInterrupt, EOFError])
+@pytest.mark.parametrize(
+    "signal", [KeyboardInterrupt, EOFError, asyncio.CancelledError]
+)
 def test_an_interrupted_action_keeps_its_intent_for_a_restart(
     recovery: Fixture, monkeypatch: pytest.MonkeyPatch, signal: type[BaseException]
 ) -> None:
