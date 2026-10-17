@@ -274,5 +274,5 @@ def test_shell_tokens_do_not_shadow_the_palette() -> None:
 def test_shell_css_resolves_only_the_shell_tokens() -> None:
     css = "A { border: solid $border-subtle; color: $text; background: $selection-background; }"
     assert brand.shell_css(css) == (
-        "A { border: solid #38352f; color: $text; background: #45332c; }"
+        "A { border: solid #3a3731; color: $text; background: #45332c; }"
     )

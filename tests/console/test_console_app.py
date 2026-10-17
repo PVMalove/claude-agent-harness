@@ -78,11 +78,14 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
             assert sections.query_one("#open-project", ListItem)
             assert sections.query_one("#update-harness", ListItem)
             menu_items = list(sections.query("#section-menu > ListItem"))
-            assert [item.name for item in menu_items[:2]] == [
+            assert [item.name for item in menu_items[:3]] == [
+                "Home",
                 "Open project",
                 "Update Harness",
             ]
-            assert len(menu_items) == 9
+            assert len(menu_items) == 10
+            assert menu_items[0].has_class("-active")
+            assert not menu_items[1].has_class("-active")
             assert not sections.query(Button)
             assert screen.query_one("#dashboard-summary").display
             assert (
@@ -183,14 +186,14 @@ def test_dashboard_project_entries_switch_language_without_changing_order(
         async with app.run_test(size=(120, 36)):
             await app.push_screen(screen)
             for language, expected in (
-                ("ru", ("1 Открыть проект", "2 Обновить Harness")),
-                ("en", ("1 Open project", "2 Update Harness")),
+                ("ru", ("0 Главная", "1 Открыть проект", "2 Обновить Harness")),
+                ("en", ("0 Home", "1 Open project", "2 Update Harness")),
             ):
                 setattr(app, "language", language)
                 screen.sync_language()
                 items = list(screen.query("#section-menu > ListItem").results(ListItem))
                 assert [item.name for item in items] == list(SECTIONS)
-                for item, label in zip(items[:2], expected):
+                for item, label in zip(items[:3], expected):
                     output = StringIO()
                     Console(file=output, width=30).print(item.query_one(Static).content)
                     assert label in output.getvalue()
@@ -1172,3 +1175,47 @@ def test_home_uses_workspace_shell_and_keeps_technical_report_collapsed(
             assert context.region.width >= 25
 
     asyncio.run(scenario())
+
+
+def test_dashboard_session_list_shows_role_labels_and_status_captions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The home session list uses the shared role label and a symbol-plus-words caption."""
+    from rich.text import Text
+    from textual.widgets import ListView, Static
+
+    from harness.console import reports
+
+    stages = [
+        reports.StageEntry(
+            "dispatch-a", "batch-a", "#721", "developer", "working", "2026-10-16"
+        ),
+        reports.StageEntry(
+            "dispatch-b", "batch-a", "#722", "qa", "approved", "2026-10-15"
+        ),
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> list[Text]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(140, 40)):
+            sessions = app.screen.query_one("#home-sessions", ListView)
+            return [
+                card
+                for item in sessions.children
+                for card in [item.query_one(Static).content]
+                if isinstance(card, Text)
+            ]
+
+    cards = asyncio.run(scenario())
+    assert [card.plain.splitlines()[0] for card in cards] == [
+        "#721  ·  developer",
+        "#722  ·  qa",
+    ]
+    assert "▶ Выполняется" in cards[0].plain
+    assert "○ Готов к запуску" in cards[1].plain
+    assert f"bold {brand.ROLE_COLORS['developer']}" in {
+        str(span.style) for span in cards[0].spans
+    }

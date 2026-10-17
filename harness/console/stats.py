@@ -104,6 +104,19 @@ def pipeline_stats_text(stats: PipelineStats) -> str:
     )
 
 
+def pipeline_stats_fields(stats: PipelineStats) -> list[tuple[str, str]]:
+    """(label, value) for each line of `pipeline_stats_text`, so a screen can show the label and its
+    value apart."""
+    if not stats.batches:
+        return []
+    return [
+        (label, value)
+        for label, _, value in (
+            line.partition(": ") for line in pipeline_stats_text(stats).split("\n")
+        )
+    ]
+
+
 def state_order(by_state: dict[str, int]) -> list[str]:
     """Known lifecycle states in lifecycle order, then any unknown state the ledger holds."""
     known = [state for state in BATCH_STATES if by_state.get(state)]
