@@ -10,7 +10,6 @@ from __future__ import annotations
 EN: dict[str, str] = {
     "Дождитесь окончания операции": "Wait for the operation to finish",
     "Рабочее пространство": "Workspace",
-    "Главная  ›  Рабочее пространство": "Home  ›  Workspace",
     "Продолжите работу в выбранной сессии или откройте другой проект.": "Continue a session or open another project.",
     "Открыть проект →": "Open project →",
     "Открыть сессии →": "Open sessions →",

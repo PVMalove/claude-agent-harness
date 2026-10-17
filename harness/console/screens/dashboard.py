@@ -286,7 +286,7 @@ class DashboardScreen(ConsoleShell):
     # The section menu owns the keyboard on arrival.
     AUTO_FOCUS = "#section-menu"
     SECTION = HOME_SECTION
-    CRUMBS = "Главная › Рабочее пространство"
+    CRUMBS = "Главная"
     HAS_CONTEXT = True
     # Home is the bottom of the screen stack: Esc has nowhere to go.
     CAN_GO_BACK = False

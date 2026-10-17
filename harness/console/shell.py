@@ -256,7 +256,9 @@ class ShellIds:
 # single screen's widgets belong to that screen, never here.
 SHELL_CSS = brand.shell_css("""
 Screen.shell { background: $background; }
-.shell .breadcrumbs { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $foreground; }
+.shell .crumb-row { height: auto; min-height: 2; padding: 0 2; border-bottom: solid $border-subtle; color: $foreground; }
+.shell .crumb-row .menu-toggle { margin-right: 1; color: $primary; text-style: bold; }
+.shell .breadcrumbs { width: 1fr; height: auto; }
 .shell .breadcrumbs Static { width: auto; height: 1; }
 .shell .crumb-link { color: $primary; text-style: underline; }
 .shell .crumb-link:hover { background: $row-highlight; color: $selection-foreground; }
@@ -311,7 +313,7 @@ Screen.shell { background: $background; }
 .shell.-narrow ShellSidebar .menu-heading { height: 1; }
 .shell.-narrow ShellSidebar .menu-context { display: none; }
 .shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
-.shell.-narrow .breadcrumbs, .shell.-narrow .context-strip { min-height: 1; border: none; }
+.shell.-narrow .crumb-row, .shell.-narrow .context-strip { min-height: 1; border: none; }
 .shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-color-active: $primary; scrollbar-background: $scrollbar-track; scrollbar-background-hover: $scrollbar-track; scrollbar-background-active: $scrollbar-track; }
 .shell ListView, .shell .frame, .shell Input, .shell TextArea, .shell Select > SelectCurrent { border: round $component-border; }
 .shell ListView:focus, .shell .frame:focus, .shell .frame:focus-within, .shell Input:focus, .shell TextArea:focus, .shell Select:focus > SelectCurrent { border: round $primary; }
@@ -431,11 +433,14 @@ class ConsoleShell(Translated, Screen[ShellResult]):
                 self._menu(), id=ids.navigation, context=self.sidebar_context()
             )
             with Vertical(id=ids.content, classes="shell-main"):
-                yield Breadcrumbs(self.crumbs(), id=ids.breadcrumbs)
-                with ContextStrip():
+                # The menu toggle opens the crumb row on a narrow terminal; `Breadcrumbs` remounts
+                # its own children, so the toggle sits beside it rather than inside.
+                with Horizontal(classes="crumb-row"):
                     yield Button(
-                        "☰", id=ids.toggle, classes="menu-toggle", compact=True
+                        "≡", id=ids.toggle, classes="menu-toggle", compact=True
                     )
+                    yield Breadcrumbs(self.crumbs(), id=ids.breadcrumbs)
+                with ContextStrip():
                     yield from self.compose_strip()
                 with Horizontal(id=ids.body, classes="shell-body"):
                     with Vertical(classes="shell-content"):

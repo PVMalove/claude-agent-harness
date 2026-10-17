@@ -347,6 +347,40 @@ def test_the_shell_css_has_no_default_text_token() -> None:
         assert not re.search(r"\$text(?![\w-])", brand.shell_css(css))
 
 
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_the_crumb_row_starts_with_the_menu_toggle_and_home_has_one_crumb(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    async def scenario() -> tuple[str, bool, bool, str, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            home = _home(tmp_path)
+            await app.switch_screen(home)
+            await pilot.pause()
+            row = home.query_one(".crumb-row")
+            toggle = row.children[0]
+            crumbs = home.query_one(Breadcrumbs)
+            assert isinstance(toggle, Button) and toggle.id == "dashboard-menu"
+            left_of_crumbs = toggle.region.right <= crumbs.region.x
+            ru = crumb_text(crumbs)
+            await pilot.press("f2")
+            await pilot.pause()
+            await pilot.pause()
+            return (
+                str(toggle.label),
+                toggle.display and left_of_crumbs,
+                not home.query(".context-strip .menu-toggle"),
+                ru,
+                crumb_text(crumbs),
+            )
+
+    label, toggle_first, strip_free, ru, en = asyncio.run(scenario())
+    assert label == "≡"
+    assert toggle_first == (size[0] < 100)
+    assert strip_free
+    assert (ru, en) == ("Главная", "Home")
+
+
 def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:
     async def scenario() -> tuple[list[str], str, list[str], str]:
         app = HarnessConsoleApp(tmp_path)
