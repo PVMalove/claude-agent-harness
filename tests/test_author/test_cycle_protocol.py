@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEVELOPER = ROOT / "harness" / "orchestration" / "roles" / "developer.md"
 COMMON = ROOT / "harness" / "orchestration" / "roles" / "_common.md"
 AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
+FAST_IMPLEMENT = ROOT / "skills" / "first-party" / "pvmalove" / "fast-implement" / "SKILL.md"
+TDD = ROOT / "skills" / "first-party" / "pvmalove" / "tdd" / "SKILL.md"
 GUIDE = ROOT / "harness" / "project" / "docs-agents" / "test-author.md"
 ROOT_GUIDE = ROOT / "docs" / "agents" / "test-author.md"
 
@@ -30,8 +32,34 @@ DEVELOPER_MARKERS = (
     "immediately",
     "ordinary blocker path",
 )
+FAST_MARKERS = (
+    "Agree the seams before the first test",
+    "test-author-preflight.sh",
+    '{"status":"ok"}',
+    "Neither route adds a coordinator, architect or QA step",
+    "algorithm or implementation snippet",
+    "needs_skeleton",
+    "contract_gap",
+    "never weakened",
+    "Not a behavioral Red",
+    "Green immediately",
+    "three consecutive failed author calls",
+    "no dispatch and no ledger state",
+)
+SHORT_ROUTE_MARKERS = ("/fast-implement", "short route")
 AGENT_MARKERS = ("`status`", "needs_skeleton", "contract_gap", "failed assertion", "already Green")
-GUIDE_MARKERS = ("needs_skeleton", "contract_gap", "три", "не ослабляется", "ledger")
+GUIDE_MARKERS = (
+    "needs_skeleton",
+    "contract_gap",
+    "три",
+    "не ослабляется",
+    "ledger",
+    "Короткий маршрут `/fast-implement`",
+    "Включение (opt-in)",
+    "Защищённое окружение",
+    "bubblewrap 0.9.0+",
+    "Откат на обычный маршрут",
+)
 
 
 def _text(path: Path) -> str:
@@ -40,8 +68,15 @@ def _text(path: Path) -> str:
 
 @pytest.mark.parametrize(
     ("path", "markers"),
-    [(DEVELOPER, DEVELOPER_MARKERS), (AGENT, AGENT_MARKERS), (GUIDE, GUIDE_MARKERS)],
-    ids=lambda value: value.name if isinstance(value, Path) else "",
+    [
+        (DEVELOPER, DEVELOPER_MARKERS),
+        (DEVELOPER, SHORT_ROUTE_MARKERS),
+        (TDD, SHORT_ROUTE_MARKERS),
+        (FAST_IMPLEMENT, FAST_MARKERS),
+        (AGENT, AGENT_MARKERS),
+        (GUIDE, GUIDE_MARKERS),
+    ],
+    ids=lambda value: value.parent.name if isinstance(value, Path) else "",
 )
 def test_protocol_markers(path: Path, markers: tuple[str, ...]) -> None:
     text = " ".join(_text(path).split())
@@ -55,6 +90,10 @@ def test_common_contract_points_to_the_cycle() -> None:
 
 def test_guide_copies_are_identical() -> None:
     assert _text(GUIDE) == _text(ROOT_GUIDE)
+
+
+def test_target_guide_does_not_point_at_repository_root_docs() -> None:
+    assert not [ref for ref in ("docs/hooks/", "docs/adr/", "docs/skills/") if ref in _text(GUIDE)]
 
 
 def test_cycle_scenario_passes_on_a_minimal_project(tmp_path: Path) -> None:

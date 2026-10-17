@@ -166,3 +166,34 @@ def test_installed_preflight_disables_author_for_nonempty_artifacts(
         "reason": "write_zone_rejected",
     }
     assert protected.read_text() == "protected"
+
+
+def test_update_restores_the_test_author_runner_and_tdd_skill(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "repo")
+    assert _init(repo).returncode == 0
+    removed = (
+        ".claude/agents/test-author.md",
+        ".claude/hooks/test-author-guard.py",
+        ".claude/hooks/test-author-preflight.sh",
+        ".claude/hooks/run-test.sh",
+    )
+    for relative in removed:
+        (repo / relative).unlink()
+    shutil.rmtree(repo / ".harness/skills/tdd")
+
+    result = subprocess.run(
+        [sys.executable, str(CLI), "update", str(repo)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    for relative in (*removed, ".harness/skills/tdd/SKILL.md"):
+        assert (repo / relative).is_file(), relative
+    registry = (repo / ".harness/skills/REGISTRY.md").read_text(encoding="utf-8")
+    assert "| `tdd` | `.harness/skills/tdd` |" in registry
+    assert "| `fast-implement` | `.harness/skills/fast-implement` |" in registry
