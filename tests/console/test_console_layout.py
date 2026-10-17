@@ -170,8 +170,6 @@ def sessions(monkeypatch: pytest.MonkeyPatch) -> None:
 
 DASHBOARD_TITLES = (
     "#dashboard-title",
-    ".card-title",
-    ".context-label",
     ".breadcrumbs",
 )
 
@@ -186,6 +184,10 @@ async def last_card_is_reachable(
         if not _shown(panel) or not panel.children:
             continue
         last = panel.children[-1]
+        if last.has_class("context-fold") and not getattr(last, "collapsed", True):
+            # The panel's cards sit inside its fold (shown open beside the content).
+            cards = list(last.query(".section-card"))
+            last = cards[-1] if cards else last
         last.scroll_visible(animate=False, immediate=True)
         await pilot.pause()  # type: ignore[attr-defined]
         visible = panel.content_region.intersection(screen.region)

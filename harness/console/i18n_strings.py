@@ -102,6 +102,11 @@ EN: dict[str, str] = {
     "Разрешить один раз": "Allow once",
     "⚠ Требуется разрешение native runtime; решение принимает человек.": "Warning: native permission required; the operator decides.",
     "Рабочие сессии": "Working sessions",
+    "ветка, Harness, Repo Map, память": "branch, Harness, Repo Map, memory",
+    "карта для HEAD": "map for HEAD",
+    "нет карты для HEAD": "no map for HEAD",
+    "кэш": "cache",
+    "построена": "built",
     "↑↓ выбор · Enter — открыть наблюдение. Выбор сессии не запускает новый процесс.": "↑↓ select · Enter opens observation. Selecting a session starts no new process.",
     "ГЛАВНОЕ МЕНЮ": "MAIN MENU",
     "Выберите worker": "Select worker",
@@ -324,6 +329,27 @@ EN: dict[str, str] = {
     "Прочее": "Other",
     "Решения": "Decisions",
     "Риск": "Risk",
+}
+
+# Labels of the facts in the home screen's context cards. Kept apart from `EN`: a label such as
+# `Состояние` reads differently here than as a frame title.
+FACT_LABELS_EN: dict[str, str] = {
+    "Проект": "Project",
+    "Ветка": "Branch",
+    "Установлен": "Installed",
+    "Модули": "Modules",
+    "Дрейф": "Drift",
+    "Активных batch": "Active batches",
+    "Уровень": "Tier",
+    "Актуальность": "Freshness",
+    "Файлов": "Files",
+    "Связей": "Links",
+    "Источник": "Source",
+    "Объём": "Size",
+    "Состояние": "State",
+    "Индекс": "Index",
+    "Источники": "Sources",
+    "Лимит поиска": "Search limit",
 }
 
 # Prefixes of dynamic lines whose rest (a path, an id) is kept: "Цель: /x" -> "Target: /x".

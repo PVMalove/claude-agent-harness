@@ -364,7 +364,7 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
         async with app.run_test():
             mark = str(app.screen.query_one("#brand-mark", Static).content)
             info = str(app.screen.query_one("#brand-info", Static).content)
-            card = str(app.screen.query_one("#card-harness", Static).content)
+            card = _facts_text(app.screen.query_one("#card-harness-facts", Static))
         return mark, info, card
 
     mark, info, card = asyncio.run(scenario())
@@ -376,6 +376,16 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
     assert "pvmalove-suite" in card and "pvmalove-suite" not in info
     assert "~/work/app" in info
     assert "ветка feature/issue-7-x · commit не определён" in info
+
+
+def _facts_text(facts: object) -> str:
+    """The facts of a context card as `label value` lines."""
+    from rich.table import Table
+
+    table = facts.content  # type: ignore[attr-defined]
+    assert isinstance(table, Table)
+    labels, values = (column._cells for column in table.columns)
+    return "\n".join(f"{label} {value}" for label, value in zip(labels, values))
 
 
 def test_console_registers_and_selects_the_warm_theme(tmp_path: Path) -> None:
@@ -1489,7 +1499,11 @@ def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> 
 
     from rich.text import Text
 
-    from harness.console.screens.dashboard import _render_cards, _render_summary
+    from harness.console.screens.dashboard import (
+        HomeContext,
+        _render_summary,
+        home_facts,
+    )
 
     data = replace(
         _fake_dashboard_data(),
@@ -1507,9 +1521,15 @@ def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> 
     assert "  ✖ fail env.git — git missing" in plain
     assert "  ⚠ warn repo_map.tier — minimal" in plain
     # A status is also never a colour alone on the cards.
-    harness_card, _orchestration, _repo_map = _render_cards(data, "1.0.0")
-    assert "память: [" in harness_card and "✔ ok" in harness_card
-    assert "дрейф: [" in harness_card and "✔ нет" in harness_card
+    banner = brand.BannerInfo(
+        version="1.0.0", capabilities=(), repo="~/app", branch=None
+    )
+    cards = {
+        card_id: dict(rows)
+        for card_id, _title, rows in home_facts(data, banner, HomeContext(), "app")
+    }
+    assert cards["card-harness"]["Дрейф"].plain == "✔ нет"
+    assert cards["card-memory"]["Состояние"].plain == "✔ индекс готов"
 
 
 def test_a_long_path_is_cut_from_the_left_at_a_separator() -> None:
@@ -1719,3 +1739,246 @@ def test_a_jump_from_requires_attention_opens_the_section_and_runs_no_command(
 
     assert asyncio.run(scenario())
     assert runner.calls == []
+
+
+def _home_context() -> object:
+    from harness.console.repo_map import MapEdge, MapFile, RepoMapView
+    from harness.console.repo_map_settings import MemoryStatus
+    from harness.console.screens.dashboard import HomeContext
+
+    view = RepoMapView(
+        payload={},
+        origin="кэш",
+        commit="a" * 40,
+        tier="full",
+        parser="tree-sitter",
+        degradation_reason="",
+        estimated_tokens=38400,
+        provenance={},
+        files=tuple(MapFile(f"f{index}.py", (), "ok") for index in range(412)),
+        edges=tuple(
+            MapEdge(f"f{index}.py", "f0.py", "import", "high") for index in range(1860)
+        ),
+        diagnostics=(),
+    )
+    memory = MemoryStatus(True, True, ("adr", "glossary"), 18, top_k=5, max_tokens=1000)
+    return HomeContext(repo_map=view, memory=memory)
+
+
+def _context_data() -> DashboardData:
+    from dataclasses import replace
+
+    return replace(
+        _attention_data(),
+        repo_map_tier="Repo Map: tier=full (offline parser bundle detected)",
+        memory_index=CheckResult(
+            id="memory.index",
+            group="memory",
+            status="ok",
+            message="индекс валиден (FTS5)",
+        ),
+    )
+
+
+_BANNER = brand.BannerInfo(
+    version="1.4.6",
+    capabilities=("backend-orchestration",),
+    repo="~/Code/claude-agent-harness",
+    branch="feature/issue-721-console-design-system",
+    installed_version="1.4.6",
+    installed_commit="85abd57a",
+)
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_home_context_cards_show_only_facts_the_console_reads(language: str) -> None:
+    from harness.console.screens.dashboard import HomeContext, home_facts
+
+    cards = home_facts(
+        _context_data(),
+        _BANNER,
+        _home_context(),  # type: ignore[arg-type]
+        "claude-agent-harness",
+        language,
+    )
+    shown = {
+        title: [(label, value.plain) for label, value in rows]
+        for _id, title, rows in cards
+    }
+    assert list(shown) == [
+        "Контекст проекта",
+        "Harness",
+        "Оркестрация",
+        "Repo Map",
+        "Память проекта",
+    ]
+    if language == "ru":
+        assert shown["Repo Map"] == [
+            ("Уровень", "full"),
+            ("Актуальность", "✔ карта для HEAD"),
+            ("Файлов", "412"),
+            ("Связей", "1860"),
+            ("Источник", "кэш"),
+            ("Объём", "≈38 400 токенов"),
+        ]
+        assert shown["Память проекта"] == [
+            ("Состояние", "✔ индекс валиден (FTS5)"),
+            ("Индекс", "18 документов"),
+            ("Источники", "adr · glossary"),
+            ("Лимит поиска", "5 · 1 000 токенов"),
+        ]
+        assert shown["Harness"] == [
+            ("Установлен", "1.4.6 · 85abd57a"),
+            ("Модули", "backend-orchestration"),
+            ("Дрейф", "⚠ есть"),
+        ]
+    else:
+        assert [value for _label, value in shown["Repo Map"]] == [
+            "full",
+            "✔ map for HEAD",
+            "412",
+            "1860",
+            "cache",
+            "≈38,400 tokens",
+        ]
+        assert shown["Память проекта"][1:] == [
+            ("Индекс", "18 documents"),
+            ("Источники", "adr · glossary"),
+            ("Лимит поиска", "5 · 1,000 tokens"),
+        ]
+    assert shown["Контекст проекта"] == [
+        ("Проект", "claude-agent-harness"),
+        ("Ветка", "feature/issue-721-console-design-system"),
+    ]
+    # Without a cached map or a memory policy nothing is invented: unknown facts are a dash.
+    bare = {
+        title: dict((label, value.plain) for label, value in rows)
+        for _id, title, rows in home_facts(
+            _fake_dashboard_data(),
+            brand.BannerInfo(version="1", capabilities=(), repo="~/x", branch=None),
+            HomeContext(),
+            "x",
+            language,
+        )
+    }
+    assert bare["Контекст проекта"]["Ветка"] == "—"
+    assert bare["Harness"]["Модули"] == "—"
+    assert set(bare["Repo Map"]) == {"Уровень", "Актуальность"}
+    assert bare["Память проекта"] == {"Состояние": "—"}
+
+
+def _fact_labels(facts: object) -> list[str]:
+    from rich.table import Table
+
+    table = facts.content  # type: ignore[attr-defined]
+    assert isinstance(table, Table)
+    return [str(label) for label in table.columns[0]._cells]
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_right_panel_is_cards_of_facts_and_folds_on_a_narrow_terminal(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from textual.widgets import Collapsible, Static
+
+    from harness.console.shell import SectionCard
+
+    async def scenario() -> dict[str, object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _context_data(),
+                    collect_banner=lambda _repo: _BANNER,
+                    collect_context=lambda _repo: _home_context(),  # type: ignore[arg-type,return-value]
+                )
+            )
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+            screen = app.screen
+            panel = screen.query_one("#dashboard-context")
+            fold = panel.query_one(".context-fold", Collapsible)
+            report = screen.query_one("#dashboard-details")
+            cards = list(panel.query(SectionCard))
+            return {
+                "titles": [str(card.border_title).strip() for card in cards],
+                "labels": [
+                    label
+                    for card in cards
+                    for label in _fact_labels(card.query_one(Static))
+                ],
+                "collapsed": fold.collapsed,
+                "fold_on_screen": screen.region.contains_region(fold.region),
+                "fold_under_report": fold.region.y >= report.region.bottom,
+                "observation": len(
+                    screen.query("#dashboard-sessions, .context-note, .menu-context")
+                ),
+                "beside": panel.region.x >= report.region.right,
+            }
+
+    seen = asyncio.run(scenario())
+    if language == "ru":
+        assert seen["titles"] == [
+            "КОНТЕКСТ ПРОЕКТА",
+            "HARNESS",
+            "ОРКЕСТРАЦИЯ",
+            "REPO MAP",
+            "ПАМЯТЬ ПРОЕКТА",
+        ]
+        assert seen["labels"] == [
+            "Проект",
+            "Ветка",
+            "Установлен",
+            "Модули",
+            "Дрейф",
+            "Активных batch",
+            "Уровень",
+            "Актуальность",
+            "Файлов",
+            "Связей",
+            "Источник",
+            "Объём",
+            "Состояние",
+            "Индекс",
+            "Источники",
+            "Лимит поиска",
+        ]
+    else:
+        assert seen["titles"] == [
+            "PROJECT CONTEXT",
+            "HARNESS",
+            "ORCHESTRATION",
+            "REPO MAP",
+            "PROJECT MEMORY",
+        ]
+        assert seen["labels"] == [
+            "Project",
+            "Branch",
+            "Installed",
+            "Modules",
+            "Drift",
+            "Active batches",
+            "Tier",
+            "Freshness",
+            "Files",
+            "Links",
+            "Source",
+            "Size",
+            "State",
+            "Index",
+            "Sources",
+            "Search limit",
+        ]
+    assert seen["observation"] == 0
+    if size[0] >= 100:
+        assert not seen["collapsed"] and seen["beside"]
+    else:
+        # Folded under the technical report and on screen without scrolling.
+        assert (
+            seen["collapsed"] and seen["fold_on_screen"] and seen["fold_under_report"]
+        )

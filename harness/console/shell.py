@@ -181,16 +181,13 @@ def check_route(check_id: str) -> CheckRoute:
 class ShellSidebar(Vertical):
     """The main menu column. Its look lives in `SHELL_CSS`, with the rest of the shell."""
 
-    def __init__(self, menu: ListView, *, id: str, context: str = "") -> None:
+    def __init__(self, menu: ListView, *, id: str) -> None:
         super().__init__(id=id)
         self.menu = menu
-        self.context = context
 
     def compose(self) -> ComposeResult:
         yield Static("ГЛАВНОЕ МЕНЮ", classes="menu-heading")
         yield self.menu
-        if self.context:
-            yield Static(self.context, classes="menu-context", markup=False)
 
 
 class CrumbLink(Static, can_focus=True):
@@ -562,7 +559,6 @@ Screen.shell { background: $background; }
 .shell .context-note { height: auto; border: round $component-border; padding: 0 1; margin-top: 1; color: $text-muted; }
 .shell ShellSidebar { width: 30; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
 .shell ShellSidebar .menu-heading { height: 2; padding-left: 2; color: $text-muted; }
-.shell ShellSidebar .menu-context { height: auto; padding: 1; color: $text-muted; }
 .shell ShellSidebar ListView, .shell ShellSidebar ListView:focus { height: 1fr; border: none; padding: 0; margin: 0; background: $surface; }
 .shell ShellSidebar ListView > ListItem { height: 3; padding: 1 2; color: $text-muted; background: $surface; text-style: none; }
 .shell ShellSidebar ListView > ListItem.-highlight, .shell ShellSidebar ListView:focus > ListItem.-highlight {
@@ -606,7 +602,6 @@ Screen.shell { background: $background; }
 .shell.-narrow ShellSidebar ListView > ListItem { height: 1; padding: 0 1; }
 .shell.-narrow ShellSidebar ListView > ListItem.-highlight, .shell.-narrow ShellSidebar ListView:focus > ListItem.-highlight,
 .shell.-short ShellSidebar ListView > ListItem.-highlight, .shell.-short ShellSidebar ListView:focus > ListItem.-highlight { outline: none; }
-.shell.-narrow ShellSidebar .menu-context { display: none; }
 .shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
 .shell.-narrow .crumb-row, .shell.-narrow .context-strip { min-height: 1; border: none; }
 .shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-color-active: $primary; scrollbar-background: $scrollbar-track; scrollbar-background-hover: $scrollbar-track; scrollbar-background-active: $scrollbar-track; }
@@ -649,6 +644,17 @@ def repo_map_tier_name(message: str) -> str | None:
     """`full` or `minimal` from the `repo_map.tier` check message; None when it names no tier."""
     found = re.search(r"tier=(\w+)", message)
     return found.group(1) if found else None
+
+
+def fact_table(rows: Sequence[tuple[str, Text | str]], language: str) -> Table:
+    """Facts of a context card: the label on the left (muted), the value on the right."""
+    table = Table.grid(expand=True, padding=(0, 1))
+    # One label width for every card, so the values of neighbouring cards line up.
+    table.add_column(min_width=12, no_wrap=True, style=brand.PALETTE["muted"])
+    table.add_column(ratio=1, overflow="fold")
+    for label, value in rows:
+        table.add_row(i18n.fact_label(language, label), value)
+    return table
 
 
 def menu_label(
@@ -740,9 +746,6 @@ class ConsoleShell(Translated, Screen[ShellResult]):
     def compose_context(self) -> ComposeResult:
         yield from ()
 
-    def sidebar_context(self) -> str:
-        return ""
-
     def menu_label(self, number: int, name: str) -> Text | Table:
         badges: dict[str, Badge] = getattr(self.app, "section_badges", {})
         return menu_label(
@@ -782,9 +785,7 @@ class ConsoleShell(Translated, Screen[ShellResult]):
         ids = self.IDS
         yield WorkspaceHeader(self.CRUMBS)
         with Horizontal(classes="shell-frame"):
-            yield ShellSidebar(
-                self._menu(), id=ids.navigation, context=self.sidebar_context()
-            )
+            yield ShellSidebar(self._menu(), id=ids.navigation)
             with Vertical(id=ids.content, classes="shell-main"):
                 # The menu toggle opens the crumb row on a narrow terminal; `Breadcrumbs` remounts
                 # its own children, so the toggle sits beside it rather than inside.
