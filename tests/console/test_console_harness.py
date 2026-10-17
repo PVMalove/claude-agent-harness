@@ -346,3 +346,36 @@ def test_harness_sits_on_the_shell_and_the_section_menu_runs_nothing(
     assert active == ["Harness"]
     assert focused and stayed and left
     assert runner.calls == []
+
+
+def test_harness_screen_opens_help_switches_language_and_goes_back(
+    tmp_path: Path,
+) -> None:
+    from harness.console.app import HarnessConsoleApp
+    from harness.console.screens.help import HelpScreen
+    from harness.console.shell import Breadcrumbs
+    from tests.console._pilot_wait import crumb_text
+
+    async def scenario() -> tuple[bool, bool, str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = HarnessScreen(tmp_path, command_runner=_RecordingRunner())
+            await app.push_screen(screen)
+            await _settle(pilot, app)
+            await pilot.press("f1")
+            await _settle(pilot, app)
+            help_open = isinstance(app.screen, HelpScreen)
+            await pilot.press("escape")
+            await _settle(pilot, app)
+            help_closed = app.screen is screen
+            await pilot.press("f2")
+            await _settle(pilot, app)
+            crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
+            await pilot.press("escape")
+            await _settle(pilot, app)
+            return help_open, help_closed, crumbs, app.screen is not screen
+
+    help_open, help_closed, crumbs, went_back = asyncio.run(scenario())
+    assert help_open and help_closed
+    assert crumbs == "Home  ›  Harness"
+    assert went_back
