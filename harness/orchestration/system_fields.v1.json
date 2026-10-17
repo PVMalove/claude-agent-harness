@@ -929,6 +929,98 @@
         "unsupported"
       ]
     },
+    "recovery.action": {
+      "description": "An action of the shared recovery API of the core, the CLI and the Harness console; each records its durable intent first, except skip.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "fix": "Preview, or apply through the configuration transaction, the safe normalization of the current configuration; never resumes.",
+        "reload": "Re-read and validate the current configuration; never starts a worker.",
+        "resume": "Reconcile the batch and release its hold through the existing approval gates.",
+        "skip": "Hide one allowlisted advisory for one session; never changes an execution policy.",
+        "abort": "Record that the operator left recovery; abandons no batch, stops no worker and cleans no worktree."
+      }
+    },
+    "recovery.check": {
+      "description": "A reconciliation check of the recovery status, in the order it runs.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config": "The current configuration is readable, valid and canonical after normalization.",
+        "store": "The batch's runtime state record is readable, and whether the store holds the batch.",
+        "ledger": "The selected ledger generation validates.",
+        "batch": "The batch record reads through the strict canonical boundary with its brief, checkpoint and report hashes.",
+        "lifecycle": "The batch is neither terminal nor stopped without a human approval.",
+        "snapshot": "Every open brief's pinned configuration snapshot and contract verify.",
+        "compatibility": "Every open brief and the current configuration run on compatible systemFields parties.",
+        "operation": "No unfinished operation, or one resume reconciles from its durable intent.",
+        "liveness": "Which workers may still run; resume never starts another one.",
+        "attention": "No unresolved attention; recovery never resolves it.",
+        "approval": "No unsent brief rests on an expired approval, and a changed policy needs a fresh digest."
+      }
+    },
+    "recovery.check_status": {
+      "description": "The result of one reconciliation check.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "passed": "Nothing blocks recovery here.",
+        "pending": "Resume reconciles or releases it, or needs the approval it names.",
+        "reconciled": "Resume reconciled it in this run.",
+        "refused": "It blocks recovery until its diagnostics are resolved.",
+        "skipped": "Its input could not be read, so it did not run."
+      }
+    },
+    "recovery.diagnostic_code": {
+      "description": "The cause a recovery diagnostic names; an exception that is not a refusal is internal-error, never a configuration problem.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-invalid": "The current configuration is unreadable or invalid at the pointer.",
+        "config-advisory": "A configuration warning, such as a normalized spelling; skippable only when allowlisted.",
+        "runtime-compatibility": "A party declares a missing, unsupported or mismatched systemFields contract.",
+        "integrity-failure": "A ledger, runtime state or snapshot record does not verify.",
+        "ambiguous-effect": "An unfinished hand-off may have started a worker and nothing proves it.",
+        "concurrency-conflict": "Another writer or a live worker contradicts the recorded state.",
+        "storage-unavailable": "The runtime state store cannot be read or written.",
+        "live-worker": "A worker may still run; no second one is started.",
+        "attention-open": "The batch needs human attention that recovery never resolves.",
+        "approval-required": "A transition needs a human approval with the current digest.",
+        "approval-stale": "An unsent brief rests on an expired approval.",
+        "terminal-refusal": "The batch is terminal and is never resumed.",
+        "internal-error": "An internal invariant was violated; the diagnostic carries a correlation ID."
+      }
+    },
+    "recovery.outcome": {
+      "description": "How a recovery action ended; the CLI exits 0 on done and 2 on refused.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "done": "The action completed.",
+        "refused": "The action stopped on its diagnostics; nothing it could not prove was changed."
+      }
+    },
+    "recovery.intent_status": {
+      "description": "The durable status of the operator's last recovery intent of a batch; evidence, never an authorization.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "pending": "The action started and has not ended; a restart shows it and repeats it safely.",
+        "done": "The action completed.",
+        "refused": "The action stopped on a refusal or an internal error.",
+        "interrupted": "The action was cancelled, reached end of input or was interrupted.",
+        "aborted": "The operator left recovery without changing the batch."
+      }
+    },
+    "recovery.advisory": {
+      "description": "The closed allowlist of advisories that recovery skip hides for one session.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "config-normalized": "A configuration spelling the normalizer already maps to its canonical value.",
+        "unconfirmed-contract": "A live worker started before it confirmed its systemFields contract."
+      }
+    },
     "operational_hold.reason": {
       "description": "Why the runtime state store holds a batch suspended: the failure step hold:<reason>, or the ledger migration's quarantine step. A held batch takes no action through the store until recovery resume re-checks the cause; nothing is abandoned, retried or decided on it.",
       "automatic_decisions": true,

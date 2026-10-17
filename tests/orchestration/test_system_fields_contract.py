@@ -24,6 +24,7 @@ from harness.orchestration import (
     operation_access,
     operational_guards,
     operational_hold,
+    recovery_api,
     runtime_access,
     runtime_attestation,
     runtime_compatibility,
@@ -296,6 +297,13 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "telemetry.session_kind",
         "ledger.generation_purpose",
         "runtime_compatibility.subject",
+        "recovery.action",
+        "recovery.check",
+        "recovery.check_status",
+        "recovery.diagnostic_code",
+        "recovery.outcome",
+        "recovery.intent_status",
+        "recovery.advisory",
     }
 
 
@@ -797,6 +805,19 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "operational_hold.reason": {
         "operational_hold.HOLD_REASONS": operational_hold.HOLD_REASONS
     },
+    "recovery.action": {"recovery_api.ACTIONS": recovery_api.ACTIONS},
+    "recovery.check": {"recovery_api.CHECKS": recovery_api.CHECKS},
+    "recovery.check_status": {
+        "recovery_api.CHECK_STATUSES": recovery_api.CHECK_STATUSES
+    },
+    "recovery.diagnostic_code": {
+        "recovery_api.DIAGNOSTIC_CODES": recovery_api.DIAGNOSTIC_CODES
+    },
+    "recovery.outcome": {"recovery_api.OUTCOMES": recovery_api.OUTCOMES},
+    "recovery.intent_status": {
+        "recovery_api.INTENT_STATUSES": recovery_api.INTENT_STATUSES
+    },
+    "recovery.advisory": {"recovery_api.ADVISORIES": recovery_api.ADVISORIES},
     "runtime_compatibility.subject": {
         "runtime_compatibility.SUBJECTS": runtime_compatibility.SUBJECTS
     },
