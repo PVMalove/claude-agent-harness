@@ -499,3 +499,10 @@ def test_setup_output_marks_report_statuses_but_not_plain_list_items() -> None:
         "✖ [FAIL] env.uv: нет",
         "○ - net: офлайн",
     ]
+
+
+def test_styled_log_ignores_foreign_lines_that_only_look_like_a_report_total() -> None:
+    from harness.console.screens.diagnostics import styled_log
+
+    text = "Итого: 3 файла\n- элемент списка"
+    assert styled_log(text).plain == text

@@ -76,8 +76,9 @@ def _translated_report(report: Report, language: str) -> str:
 
 _COUNTER = re.compile(r"\b(ok|warn|fail|skipped)=(\d+)")
 _CHECK_MARKERS = {"[OK] ": "ok", "[WARN] ": "warn", "[FAIL] ": "fail"}
-# The totals line in either language (see `render_report` and its translation).
-_TOTALS = ("Итого:", "Total:")
+# The totals line in either language (see `render_report` and its translation): the whole counter
+# list is required, so foreign output that merely starts with "Итого:" does not start a report.
+_TOTALS = re.compile(r"(Итого|Total): ok=\d+ warn=\d+ fail=\d+ skipped=\d+")
 
 
 def _icon(status: str, *, muted: bool = False) -> Text:
@@ -118,7 +119,7 @@ def styled_log(text: str) -> Text:
     for index, line in enumerate(text.split("\n")):
         if index:
             shown.append("\n")
-        if line.startswith(_TOTALS):
+        if _TOTALS.match(line):
             in_report = True
             shown.append_text(_summary_line(line))
         else:
