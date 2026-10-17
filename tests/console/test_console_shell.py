@@ -21,6 +21,7 @@ from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
 from harness.console.crumbs import Crumb
 from harness.console.wrap import SEPARATORS
+from tests.console._pilot_wait import crumb_text
 from harness.console.shell import (
     SECTIONS,
     Breadcrumbs,
@@ -82,7 +83,7 @@ def test_wide_shell_shows_menu_breadcrumbs_content_and_context_side_by_side(
             assert not screen.query_one("#shell-menu", Button).display
             assert sidebar.region.right <= fields.region.x
             assert fields.region.right <= context.region.x
-            assert screen.query_one("#shell-breadcrumbs", Breadcrumbs).text == (
+            assert crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs)) == (
                 "Главная  ›  Отчёты"
             )
             menu = screen.query_one("#stub-sections", ListView)
@@ -221,7 +222,7 @@ def test_language_switch_relabels_menu_and_breadcrumbs(tmp_path: Path) -> None:
                 ]
 
             def crumbs() -> str:
-                return screen.query_one("#shell-breadcrumbs", Breadcrumbs).text
+                return crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
 
             before = labels(), crumbs()
             await pilot.press("f2")
@@ -423,7 +424,7 @@ def test_a_narrow_terminal_collapses_the_middle_crumbs_into_an_ellipsis(
             await app.push_screen(screen)
             await pilot.pause()
             await pilot.pause()
-            wide = screen.query_one(Breadcrumbs).text
+            wide = crumb_text(screen.query_one(Breadcrumbs))
             await pilot.resize_terminal(60, 30)
             await pilot.pause()
             await pilot.pause()
@@ -453,11 +454,11 @@ def test_breadcrumbs_follow_the_language(tmp_path: Path) -> None:
             await app.push_screen(screen)
             await pilot.pause()
             await pilot.pause()
-            before = screen.query_one(Breadcrumbs).text
+            before = crumb_text(screen.query_one(Breadcrumbs))
             await pilot.press("f2")
             await pilot.pause()
             await pilot.pause()
-            return before, screen.query_one(Breadcrumbs).text
+            return before, crumb_text(screen.query_one(Breadcrumbs))
 
     ru, en = asyncio.run(scenario())
     assert ru.startswith("Главная  ›  Оркестрация")

@@ -105,7 +105,7 @@ def test_status_module_does_not_import_textual() -> None:
 def test_every_role_has_its_own_colour_and_an_unknown_role_is_muted() -> None:
     from harness.console import session_card
 
-    assert set(session_card.ROLES) == {
+    assert set(brand.ROLE_COLORS) == {
         "architect",
         "developer",
         "code-review",
@@ -113,9 +113,9 @@ def test_every_role_has_its_own_colour_and_an_unknown_role_is_muted() -> None:
         "publish",
         "verification",
     }
-    colors = [brand.ROLE_COLORS[role] for role in session_card.ROLES]
+    colors = [brand.ROLE_COLORS[role] for role in brand.ROLE_COLORS]
     assert len(set(colors)) == len(colors)
-    for role in session_card.ROLES:
+    for role in brand.ROLE_COLORS:
         label = session_card.role_label(role)
         assert label.plain == role
         assert brand.ROLE_COLORS[role] in str(label.style)

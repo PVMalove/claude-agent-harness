@@ -11,11 +11,9 @@ from rich.text import Text
 from . import brand
 from .status import Status, session_status
 
-ROLES = tuple(brand.ROLE_COLORS)
-
 
 def role_label(role: str) -> Text:
-    """The role name in its own colour; a role outside `ROLES` is shown plainly in the muted tone."""
+    """The role name in its own colour; a role outside `brand.ROLE_COLORS` is shown plainly in the muted tone."""
     color = brand.ROLE_COLORS.get(role, brand.PALETTE["muted"])
     return Text(role, style=f"bold {color}")
 

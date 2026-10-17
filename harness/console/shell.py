@@ -18,7 +18,7 @@ from textual.widgets import Button, Collapsible, Footer, ListItem, ListView, Sta
 
 from . import brand, i18n
 from .chrome import WorkspaceHeader
-from .crumbs import ELLIPSIS, SEPARATOR, Crumb, collapse_crumbs, split_path
+from .crumbs import ELLIPSIS, Crumb, collapse_crumbs, split_path
 from .wrap import wrap_value
 from .translate import Translated
 
@@ -97,15 +97,6 @@ class Breadcrumbs(Horizontal):
     def _shown(self, labels: Sequence[str]) -> list[int | None]:
         width = self.content_size.width or self.app.size.width
         return collapse_crumbs(labels, width)
-
-    @property
-    def text(self) -> str:
-        """The path as shown, segments joined by the separator."""
-        labels = self._labels()
-        return SEPARATOR.join(
-            ELLIPSIS if index is None else labels[index]
-            for index in self._shown(labels)
-        )
 
     def relabel(self) -> None:
         """Redraw the segments after a change of the path, the language or the width."""

@@ -21,6 +21,7 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import ListItem, ListView, Static, TextArea
 
+from tests.console._pilot_wait import crumb_text
 from harness.console.shell import Breadcrumbs
 from harness.console.app import HarnessConsoleApp
 from harness.console.coordinator_catalog import (
@@ -412,7 +413,7 @@ def test_orchestration_sits_on_the_shell_and_keeps_its_content(tmp_path: Path) -
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(120, 60)) as pilot:
             screen = await _shell_orchestration(app, pilot, tmp_path)
-            assert screen.query_one("#shell-breadcrumbs", Breadcrumbs).text == (
+            assert crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs)) == (
                 "Главная  ›  Оркестрация"
             )
             menu = screen.query_one("#shell-sections", ListView)
@@ -469,7 +470,7 @@ def test_orchestration_switches_language_and_goes_back_with_escape(
             screen = await _shell_orchestration(app, pilot, tmp_path)
             await pilot.press("f2")
             await _settle(pilot, app)
-            crumbs = screen.query_one("#shell-breadcrumbs", Breadcrumbs).text
+            crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
             item = screen.query("#shell-sections > ListItem").results(ListItem)
             label = str(list(item)[5].query_one(Static).content)
             await pilot.press("escape")
@@ -542,7 +543,7 @@ def test_the_page_opens_at_its_top_and_stays_there(
 
     build_reports_fixture(tmp_path)
 
-    async def scenario() -> tuple[int, int, float]:
+    async def scenario() -> tuple[int, float, float]:
         app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
         async with app.run_test(size=size) as pilot:
             await pilot.pause()

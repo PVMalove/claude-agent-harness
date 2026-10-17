@@ -17,6 +17,7 @@ from textual.pilot import Pilot
 from textual.widgets import RichLog, Static, Select, TabbedContent, Button
 
 from harness.orchestration.core.utils import JsonObject
+from tests.console._pilot_wait import crumb_text
 from harness.console.shell import Breadcrumbs
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.worker_observation import WorkerObservationScreen
@@ -476,7 +477,7 @@ def test_worker_menu_navigation_runs_no_command_and_back_keys_work(
             await pilot.press("f2")
             await pilot.pause()
             await pilot.pause()
-            crumbs = screen.query_one("#worker-breadcrumbs", Breadcrumbs).text
+            crumbs = crumb_text(screen.query_one("#worker-breadcrumbs", Breadcrumbs))
             assert crumbs.startswith("Home  ›  Orchestration")
             await pilot.press("escape")
             await pilot.pause()
@@ -717,7 +718,7 @@ def test_the_batch_crumb_is_a_link_only_when_the_batch_timeline_exists(
             await pilot.pause()
             crumbs = screen.query_one(Breadcrumbs)
             links = [str(link.content) for link in crumbs.query(CrumbLink)]
-            shown = crumbs.text
+            shown = crumb_text(crumbs)
             if len(links) == 3:
                 list(crumbs.query(CrumbLink))[-1].focus()
                 await pilot.press("enter")
