@@ -65,7 +65,10 @@ expectation to reach Green; a justified contract change needs a new call and a n
 `needs_skeleton`, write only types and signatures without logic, then rerun the subagent. A compile,
 import, fixture or environment error is not Red, and a test that is green at once does not count as
 a cycle. After three consecutive failed calls on one test, stop and report a blocker. The full
-protocol is in `developer.md` of the orchestration roles.
+protocol is in `developer.md` of the orchestration roles. The `/fast-implement` short route runs
+the same protocol in one session; there the seam is the one the developer agreed before the first
+test, instead of one taken from an architect brief, and an unavailable author keeps the ordinary
+route with the reason stated.
 
 For a bug fix, begin with a minimal reproducer at the seam where the bug is observable. Keep the
 expectation that describes the bug. Weakening it for Green only hides the regression and leaves no

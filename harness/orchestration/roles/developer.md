@@ -64,6 +64,10 @@ rephrased (see "Never work around a hook" in `_common.md`). A local author retry
 guard denial create no new dispatch, add no ledger state and do not bypass the recovery rules of
 ADR 0012.
 
+The `/fast-implement` short route runs this same cycle in its single session, with the seam agreed
+by the human before the first test instead of taken from the architect brief. It adds no coordinator,
+architect or QA step, and an unavailable author keeps the ordinary route with the reason stated.
+
 A developer retry receives, besides its brief, the retry handoff (the playbook's "Developer-retry
 handoff") and its starting files. Start from the handoff's findings and starting files: they replace
 re-reading the earlier work, and the existing candidate history is the code to extend.
