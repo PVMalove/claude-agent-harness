@@ -3,6 +3,7 @@
 from __future__ import annotations
 import argparse
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -479,6 +480,324 @@ class RecoveryTests(unittest.TestCase):
         )
         coordinator.validate_ledger(self._args())
 
+    def test_cli_rewind_preserves_unreported_writer_commits_and_pending_files(
+        self,
+    ) -> None:
+        self._configure_preserved_recovery(approval_policy="auto")
+        batch = self._create_batch(allowed_paths=["services/*.py"])
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, _ = self._developer_commit("preserved")
+        pending = self.worktree / "services" / "pending.py"
+        pending.write_text("VALUE = 'pending'\n", encoding="utf-8")
+        original = pending.read_bytes()
+        tracked = self.worktree / "services/preserved.py"
+        tracked.write_text("VALUE = 'staged'\n", encoding="utf-8")
+        _git(self.worktree, "add", "services/preserved.py")
+        tracked.write_text("VALUE = 'unstaged'\n", encoding="utf-8")
+        original_status = _git(self.worktree, "status", "--porcelain")
+        # Elapse time at the public clock boundary; never edit ledger status to manufacture stale.
+        later = datetime.now().astimezone() + timedelta(hours=2)
+
+        class Later(datetime):
+            @classmethod
+            def now(cls, tz: tzinfo | None = None) -> Later:
+                return cls.fromtimestamp(later.timestamp(), tz)
+
+        with mock.patch("harness.orchestration.core.utils.datetime", Later):
+            paused = coordinator.auto_decide(self._args(batch=batch["batch_id"]))
+        self.assertEqual(paused["batch_state"], "paused")
+        self.assertEqual(
+            self._batch_record(batch["batch_id"])["auto_stop"]["reason"], "stale"
+        )
+        coordinator.cancel_dispatch(
+            self._args(
+                dispatch=brief["dispatch_id"],
+                runtime_stopped=True,
+                reason="operator stopped the runtime",
+                **self._approval(),
+            )
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ORCHESTRATION_ROOT / "coordinator.py"),
+                "--repo",
+                str(self.repo),
+                "batch",
+                "rewind",
+                "--batch",
+                batch["batch_id"],
+                "--to",
+                "developer",
+                "--approved-by",
+                "Malove",
+                "--approved-at",
+                self.APPROVED_AT,
+                "--note",
+                "continue preserved writer progress without accepting it",
+                "--preserved-commit",
+                candidate,
+                "--preserved-file",
+                "services/pending.py",
+                "--preserved-file",
+                "services/preserved.py",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), candidate)
+        self.assertEqual(pending.read_bytes(), original)
+        renewed = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(renewed["snapshot_commit"], candidate)
+        handoff = renewed["preserved_progress"]
+        self.assertEqual(handoff["source_dispatch_id"], brief["dispatch_id"])
+        self.assertEqual(
+            set(handoff["files"]), {"services/pending.py", "services/preserved.py"}
+        )
+        self.assertNotEqual(renewed["transition_digest"], brief["transition_digest"])
+        self._start(renewed["dispatch_id"])
+        self.assertEqual(pending.read_bytes(), original)
+        self.assertEqual(_git(self.worktree, "status", "--porcelain"), original_status)
+        self.assertEqual(
+            decisions._developer_retry_count(self._batch_record(batch["batch_id"])), 1
+        )
+        stored = self._batch_record(batch["batch_id"])
+        self.assertTrue(stored["manual_recovery"])
+        self.assertFalse(
+            any(
+                e.get("decision", {}).get("decision") == "accept"
+                and e["role"] == "developer"
+                for e in stored["dispatches"]
+            )
+        )
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+        # The historical handoff must not freeze legitimate post-startup writer progress.
+        self._developer_commit("continued")
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_preserved_handoff_refuses_drift_at_each_launch_boundary(self) -> None:
+        for boundary, mutation in (
+            ("preflight", "bytes"),
+            ("propose", "bytes"),
+            ("create", "index"),
+            ("send", "bytes"),
+            ("self-report", "extra"),
+        ):
+            with self.subTest(boundary=boundary, mutation=mutation):
+                self._configure_preserved_recovery()
+                batch = self._create_batch()
+                self._accepted_architect(batch["batch_id"])
+                source = self._dispatch(batch["batch_id"], "developer")["brief"]
+                self._start(source["dispatch_id"])
+                candidate, _ = self._developer_commit("preserved")
+                pending = self.worktree / "services/pending.py"
+                pending.write_text("pending\n", encoding="utf-8")
+                coordinator.cancel_dispatch(
+                    self._args(
+                        dispatch=source["dispatch_id"],
+                        runtime_stopped=True,
+                        reason="runtime stopped",
+                        **self._approval(),
+                    )
+                )
+                coordinator.rewind_batch(
+                    self._args(
+                        batch=batch["batch_id"],
+                        to="developer",
+                        note="preserve unfinished work",
+                        preserved_commit=candidate,
+                        preserved_file=["services/pending.py"],
+                        **self._approval(),
+                    )
+                )
+                proposal = self._propose(batch["batch_id"], "developer")
+                renewed: JsonObject = {}
+                if boundary in {"send", "self-report"}:
+                    renewed = self._dispatch(batch["batch_id"], "developer")["brief"]
+                if boundary == "self-report":
+                    coordinator.send_dispatch(
+                        self._args(
+                            dispatch=renewed["dispatch_id"],
+                            adapter=None,
+                            adapter_arg=None,
+                            checkout=None,
+                            worktree=str(self.worktree),
+                        )
+                    )
+                if mutation == "index":
+                    _git(self.worktree, "add", "services/pending.py")
+                elif mutation == "extra":
+                    (self.worktree / "services/foreign.py").write_text("foreign\n")
+                else:
+                    pending.write_text("changed after approval\n", encoding="utf-8")
+                before = self._ledger_bytes()
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "changed after human approval"
+                ):
+                    if boundary == "preflight":
+                        coordinator.preflight_dispatch(
+                            self._args(
+                                **self._proposal_fields(
+                                    batch["batch_id"], "developer", "work", None
+                                )
+                            )
+                        )
+                    elif boundary == "propose":
+                        self._propose(batch["batch_id"], "developer")
+                    elif boundary == "create":
+                        coordinator.create_dispatch(
+                            self._args(
+                                transition_digest=proposal["transition_digest"],
+                                **self._proposal_fields(
+                                    batch["batch_id"], "developer", "work", None
+                                ),
+                                **self._approval(),
+                            )
+                        )
+                    elif boundary == "send":
+                        coordinator.send_dispatch(
+                            self._args(
+                                dispatch=renewed["dispatch_id"],
+                                adapter=None,
+                                adapter_arg=None,
+                                checkout=None,
+                                worktree=str(self.worktree),
+                            )
+                        )
+                    else:
+                        coordinator.self_report_dispatch(
+                            self._args(
+                                dispatch=renewed["dispatch_id"],
+                                model="sonnet",
+                                worktree=str(self.worktree),
+                            )
+                        )
+                self.assertEqual(self._ledger_bytes(), before)
+                self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), candidate)
+                self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+            self.tearDown()
+            self.setUp()
+
+    def _configure_preserved_recovery(
+        self, approval_policy: str = "manual_all"
+    ) -> None:
+        (self.repo / ".harness/orchestration.json").write_text(
+            json.dumps(
+                {
+                    "provider_profiles": {},
+                    "assignment_plans": {},
+                    "concurrency_budget": 1,
+                    "verification_commands": ["true"],
+                    "worker_attestation_required": True,
+                    "approval_policy": approval_policy,
+                    "auto_retry_min_severity": "warning",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_preserved_rewind_refuses_unconfirmed_or_foreign_progress(self) -> None:
+        for scenario, message in (
+            ("live", "worker may still be running"),
+            ("missing-file", "does not match all pending"),
+            ("extra-file", "does not match all pending"),
+            ("wrong-head", "immutable startup snapshot"),
+            ("wrong-branch", "branch"),
+            ("unrelated-head", "not a descendant"),
+            ("dirty-outside", "dirty files exceed"),
+            ("commit-outside", "commits exceed"),
+            ("staged-outside", "dirty files exceed"),
+            ("symlink", "symlink"),
+            ("forward", "skip forward"),
+            ("policy", "explicit human approval"),
+        ):
+            with self.subTest(scenario=scenario):
+                self._configure_preserved_recovery()
+                # Narrow immutable scope so foreign files are distinguishable from writer work.
+                batch = self._create_batch(allowed_paths=["services/**"])
+                self._accepted_architect(batch["batch_id"])
+                source = self._dispatch(batch["batch_id"], "developer")["brief"]
+                self._start(source["dispatch_id"])
+                candidate, _ = self._developer_commit("preserved")
+                pending = self.worktree / "services/pending.py"
+                pending.write_text("pending\n", encoding="utf-8")
+                files = ["services/pending.py"]
+                if scenario != "live":
+                    coordinator.cancel_dispatch(
+                        self._args(
+                            dispatch=source["dispatch_id"],
+                            runtime_stopped=True,
+                            reason="runtime stopped",
+                            **self._approval(),
+                        )
+                    )
+                if scenario == "missing-file":
+                    files = []
+                elif scenario == "extra-file":
+                    files.append("services/absent.py")
+                elif scenario == "wrong-head":
+                    candidate = source["snapshot_commit"]
+                elif scenario == "wrong-branch":
+                    _git(self.worktree, "checkout", "-b", "feature/issue-999-foreign")
+                elif scenario == "unrelated-head":
+                    candidate = _git(
+                        self.worktree,
+                        "commit-tree",
+                        f"{candidate}^{{tree}}",
+                        "-m",
+                        "unrelated fixture root",
+                    )
+                    _git(
+                        self.worktree,
+                        "update-ref",
+                        f"refs/heads/{self.branch}",
+                        candidate,
+                    )
+                elif scenario == "dirty-outside":
+                    (self.worktree / "foreign.py").write_text("foreign\n")
+                    files.append("foreign.py")
+                elif scenario == "commit-outside":
+                    (self.worktree / "foreign.py").write_text("foreign\n")
+                    _git(self.worktree, "add", "foreign.py")
+                    _git(self.worktree, "commit", "-m", "foreign fixture change")
+                    candidate = _git(self.worktree, "rev-parse", "HEAD")
+                elif scenario == "staged-outside":
+                    foreign = self.worktree / "foreign.py"
+                    foreign.write_text("staged foreign\n")
+                    _git(self.worktree, "add", "foreign.py")
+                    foreign.unlink()
+                elif scenario == "symlink":
+                    pending.unlink()
+                    pending.symlink_to(self.repo / "README.md")
+                before = self._ledger_bytes()
+                status_before = _git(self.worktree, "status", "--porcelain")
+                with self.assertRaisesRegex(coordinator.CoordinatorError, message):
+                    coordinator.rewind_batch(
+                        self._args(
+                            batch=batch["batch_id"],
+                            to="qa" if scenario == "forward" else "developer",
+                            note="preserve unfinished work",
+                            preserved_commit=candidate,
+                            preserved_file=files,
+                            approved_by="policy:auto"
+                            if scenario == "policy"
+                            else "Malove",
+                            approved_at=self.APPROVED_AT,
+                        )
+                    )
+                self.assertEqual(self._ledger_bytes(), before)
+                self.assertEqual(
+                    _git(self.worktree, "status", "--porcelain"), status_before
+                )
+                self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+            self.tearDown()
+            self.setUp()
+
     def _approval(self) -> JsonObject:
         return {"approved_by": "Malove", "approved_at": self.APPROVED_AT}
 
@@ -510,7 +829,10 @@ class RecoveryTests(unittest.TestCase):
         }
 
     def _create_batch(
-        self, *, definition_of_done: list[str] | None = None
+        self,
+        *,
+        definition_of_done: list[str] | None = None,
+        allowed_paths: list[str] | None = None,
     ) -> JsonObject:
         _git(
             self.repo,
@@ -524,6 +846,8 @@ class RecoveryTests(unittest.TestCase):
         plan = self._batch_plan()
         if definition_of_done is not None:
             plan["definition_of_done"] = definition_of_done
+        if allowed_paths is not None:
+            plan["allowed_path"] = allowed_paths
         batch = coordinator.create_batch(self._args(**plan))
         coordinator.approve_batch(
             self._args(batch=batch["batch_id"], **self._approval())

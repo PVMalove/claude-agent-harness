@@ -107,6 +107,21 @@ cd claude-agent-harness
 | Локальные правки managed-файлов | Показывает как `local_changed`/`conflict`, не трогает | Без флага отказывается; `--force-managed-files` перезаписывает snapshot, `--force` — snapshot и seed |
 | Когда | Быстрая проверка перед чем угодно | Когда решили реально подтянуть новую версию |
 
+#### Внешние runtime-адаптеры
+
+`backend-orchestration` устанавливает `.harness/adapters/claude_worker.py` и
+`.harness/adapters/codex_worker.py` через `init`, `adopt` и `update`. Если capability уже выбрана,
+обычного `update` достаточно для установки отсутствующего адаптера или обновления стандартной версии.
+`diff` показывает расхождения управляемых файлов. Неизвестные файлы и symlink-пути защищены;
+для замены локально изменённого управляемого файла нужен явный `--force-managed-files`.
+При снятии capability и удалении харнесса локальные адаптеры остаются на месте, а `cleanup` их не удаляет.
+
+Общий seed `.claude/settings.local.json` содержит шесть разрешений для наблюдения за оркестрацией:
+`dispatch wait`, `dispatch status`, `batch auto-decide`, `batch auto-report`, `batch decision-packet`
+и `ledger validate`. Правила не разрешают отправку dispatch и ручное одобрение переходов.
+Существующие настройки сохраняются; text/JSON diff и `update` показывают расхождение с шаблоном.
+После просмотра замените только этот seed явным `--force-seed-file .claude/settings.local.json`.
+
 #### Какую capability выбрать
 
 | | `project-foundation` | `mattpocock-suite` | `pvmalove-suite` | `backend-orchestration` |

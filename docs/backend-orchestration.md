@@ -2338,6 +2338,29 @@ python .harness/orchestration/advisory.py classify-risk --text "data migration f
 
 ## 5. Необязательный внешний adapter
 
+Capability `backend-orchestration` поставляет два стандартных адаптера:
+`.harness/adapters/claude_worker.py` для Claude Code и `.harness/adapters/codex_worker.py` для Codex.
+Их устанавливают `harness init`/`adopt`, а обычный `harness update <repo>` восстанавливает
+отсутствующие файлы и обновляет управляемые версии. В настройках консоли доступны состояния,
+просмотр плана и явное подтверждение; текущий состав capability сохраняется.
+
+Для уже одобренного dispatch с выбранным `external` используйте адаптер назначенного runtime:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/claude_worker.py
+```
+
+Для Codex замените путь адаптера на `/path/to/project/.harness/adapters/codex_worker.py`.
+Coordinator запускает `.py` через свой Python в checkout worker. Параметры модели и effort
+берутся из immutable brief, lifecycle-промпт передаётся через stdin. Claude ограничивает
+дополнительный доступ каталогом входящих отчётов и использует нативный `allowed_tools`;
+Codex передаёт этот список в промпте, а sandbox выбирает по `access`: `read-only` или
+`workspace-write`. Это не нативный фильтр инструментов Codex.
+Оба адаптера отклоняют `qa`, `purpose: publish`, другой transport и отсутствующий `allowed_tools`.
+Ранний выход worker, даже с кодом `0`, возвращает ошибку запуска и конец лога.
+Для проверки команды без модели есть `dispatch --dry-run`, для тестового executable —
+`--claude-bin`/`--codex-bin`, для строк developer-retry — `--extra-prompt-file`.
+
 Для `transport: "external"` проект передаёт `--adapter <path>` в `dispatch send`. Это transport-only
 граница. Coordinator передаёт этому исполняемому файлу одобренный immutable brief через `--repo` и
 `--brief`.

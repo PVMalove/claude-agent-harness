@@ -267,6 +267,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         _validate_batch_integrity(root, batch)
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
+        from harness.orchestration.workflow import preserved_progress
+
+        progress = dispatch.get("preserved_progress")
+        if progress is not None:
+            preserved_progress.require_current(repo, root, batch, progress)
         from harness.orchestration.workflow.recovery import verified_checkout
 
         worker_path = getattr(args, "worktree", None) or (

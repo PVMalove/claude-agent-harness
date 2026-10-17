@@ -592,6 +592,7 @@ def test_every_phase_keeps_its_content_in_frames(tmp_path: Path) -> None:
         "Цель",
         "Редактирование конфигурации",
         "Сохранённые версии",
+        "Адаптеры runtime",
     ]
     assert phases["editing"] == ["Цель", "Шаг", "Параметр", "ИИ-подсказки", "Действия"]
     assert phases["review"] == [

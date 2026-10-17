@@ -230,6 +230,16 @@ def build_parser(
     rewind.add_argument("--approved-by", required=True)
     rewind.add_argument("--approved-at", required=True)
     rewind.add_argument("--note", required=True)
+    rewind.add_argument(
+        "--preserved-commit",
+        help="explicitly preserve the full HEAD SHA of the latest writer cancelled with --runtime-stopped",
+    )
+    rewind.add_argument(
+        "--preserved-file",
+        action="append",
+        default=[],
+        help="confirm one pending repository-relative writer path; repeat for every dirty file",
+    )
     rewind.set_defaults(handler=handlers.rewind_batch, installed_runtime_only=True)
     batch_restore_runtime = batch_commands.add_parser(
         "restore-runtime",

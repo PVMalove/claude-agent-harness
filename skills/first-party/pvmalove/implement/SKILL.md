@@ -130,6 +130,22 @@ main checkout. A selected path is intent; self-report proves the worker's actual
 brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
 belongs writes it outside the project.
 
+**Claude Code runtime.** The Agent tool cannot select an existing checkout: a subagent starts in the
+main checkout, and `EnterWorktree` refuses it there. Two paths exist; state which one the batch uses.
+- `external` (strict): set the worker roles' `transport` to `external` in `.harness/orchestration.json`
+  and send with `--adapter <main-repo>/.harness/adapters/claude_worker.py` (absolute path).
+  `dispatch send` runs the adapter in `send.worker_worktree`, and it starts a detached headless
+  `claude -p` there on the brief's model, effort and `allowed_tools`, so the worker's CWD is the
+  issue worktree. The adapter builds the prompt; for a retry, put the retry lines in a file inside the
+  repository and pass `--adapter-arg=--extra-prompt-file=<path>`. A permission layer may refuse
+  launching an agent from the coordinator session; that refusal is a stop, so show the developer the
+  exact `dispatch send` command to run in their own terminal, then continue with `dispatch wait`.
+- `in-process` (weaker evidence): the subagent's CWD is the main checkout, so the template's CWD check
+  would stop it. Replace that check in its prompt: probe `git -C <worker_worktree>` for the top-level,
+  branch and HEAD, run every command with `git -C` or `cd <worker_worktree> &&`, and use absolute
+  paths for every file. Its self-report then proves the checkout it works in, not its CWD; say so in
+  the final report.
+
 `dispatch send` checks the adapter's flags against its `dispatch --help` before the handoff and
 refuses an unsupported one: fix the `--adapter-arg` values and send the same approved dispatch
 again. Show any `limitation` in the send result's `adapter_preflight`. To diagnose an app-server
