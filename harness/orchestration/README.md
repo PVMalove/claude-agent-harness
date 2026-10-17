@@ -328,7 +328,8 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 - `recovery status --batch <id> --json` только читает: проверки сверки, их диагностику с pointer,
   отредактированными expected и received и подсказкой, а также доступные действия.
 - `recovery reload --batch <id>` заново читает и проверяет текущий конфиг и не запускает worker.
-- `recovery resume --batch <id>` под блокировкой ledger повторяет проверки, снимает удержание batch
+- `recovery resume --batch <id>` под блокировкой ledger повторяет проверки, включая снимок harness
+  runtime и Context Package открытых brief с их base и candidate, снимает удержание batch
   и завершает незаконченную операцию из durable intent. Подтверждённые шаги не повторяются, второй
   worker не запускается. Записанная остановка продолжается только через аудируемый `resume-stop`
   с `--approved-by`, `--approved-at` и `--note`.
@@ -337,8 +338,10 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 становятся решением. Coordinator удерживает batch в runtime state store (`suspended`, шаг
 `hold:<причина>`) и поднимает attention `operational-hold`. Пока удержание действует, команды,
 которые сверяют или решают batch, отказывают, а decision packet не предлагает ни `abandon`, ни
-`accept`. Команды `recovery` не читают stdin, работают без TTY и без Textual. Они печатают один
-JSON-документ `recoveryStatus.v1` и завершаются кодом 0 при успехе и 2 при отказе.
+`accept`. Recovery не разрешает attention, и `resume` при открытом attention отказывает. Поэтому
+после устранения причины сначала выполняется `batch attention resolve`, затем `recovery resume`.
+Команды `recovery` не читают stdin, работают без TTY и без Textual. Они печатают один JSON-документ
+`recoveryStatus.v1` и завершаются кодом 0 при успехе и 2 при отказе.
 
 Runtime adapter для `transport: external` реализует три глагола. `<adapter> contract [args] --repo
 <repo> --brief <brief>` за 30 секунд с кодом 0 печатает ровно `{"system_fields_contract":

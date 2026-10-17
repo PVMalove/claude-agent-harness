@@ -1388,7 +1388,7 @@ candidate и evidence, но запрещает создание следующе
 
 | `attention_reason` | Когда |
 | --- | --- |
-| `operational-hold` | runtime state store удерживает batch; снимается после `recovery resume` и решения человека |
+| `operational-hold` | runtime state store удерживает batch; после устранения причины человек разрешает attention, затем `recovery resume` снимает удержание |
 | `unknown-reason` | retry с причиной `unknown` |
 | `infrastructure-retry-repeated` | operational retry одного candidate больше `max_infrastructure_retries` |
 | `tooling-retry-repeated` | третий подряд `tooling-retry` на одном candidate; снимается после исправления инструмента |
@@ -2312,7 +2312,8 @@ Adapter отвечает за запуск worker в выбранной сред
 До запуска worker coordinator вызывает `<adapter> contract [args] --repo <repo> --brief <brief>`.
 Adapter за 30 секунд с кодом 0 печатает ровно `{"system_fields_contract": "systemFields.v1"}`.
 Другой ответ, неподдерживаемая версия или таймаут дают отказ `runtime-compatibility`: worker не
-запускается, а batch удерживается до `recovery resume`. Если adapter вообще нельзя запустить,
+запускается, а batch удерживается до `recovery resume`. Без глагола `contract` adapter тоже
+получает этот отказ. Если adapter вообще нельзя запустить,
 `dispatch send` записывает недоступный runtime, как раньше. Глагол `observe` описан в
 `.harness/orchestration/README.md`.
 
@@ -2407,21 +2408,31 @@ branch уже указывает на candidate. Report должен быть `b
 `runtime-compatibility`. Quarantine миграции ledger остаётся на своём шаге `quarantine`.
 Coordinator также поднимает attention `operational-hold`. Удержание не пишет lifecycle-запись,
 решение или approval. Пока оно действует, команды, которые сверяют или решают batch, отказывают с
-маршрутом восстановления. Decision packet при этом не предлагает вариантов, а blocked-отчёт с
-неизвестной или отказанной причиной retry не получает `abandon` и `accept`. Auto policy
-останавливается с `operational-hold` или `missing-evidence`, а не с abandon.
+маршрутом восстановления. Отклонённый удержанием `report submit` всё равно сохраняет отчёт как
+непринятое evidence и называет путь к нему. Decision packet при этом не предлагает вариантов, а
+blocked-отчёт с неизвестной или отказанной причиной retry не получает `abandon` и `accept`. Auto
+policy останавливается с `operational-hold` или `missing-evidence`, а не с abandon.
+
+Recovery никогда не разрешает attention, а `resume` отказывает с `attention-open`, пока attention
+открыт. Поэтому порядок такой: прочитать диагностику, устранить причину, разрешить attention
+`operational-hold`, затем снять удержание.
 
 ```bash
 python .harness/orchestration/coordinator.py --repo . recovery status --batch <id> --json
 python .harness/orchestration/coordinator.py --repo . recovery reload --batch <id>
+python .harness/orchestration/coordinator.py --repo . batch attention resolve --batch <id> --note '…' --approved-by … --approved-at …
 python .harness/orchestration/coordinator.py --repo . recovery resume --batch <id>
 ```
 
 Команды работают на установленном runtime, не читают stdin, не требуют TTY и Textual, печатают
 JSON-документ `recoveryStatus.v1` и завершаются кодом 0 при успехе и 2 при отказе. Каждая проверка
-(`config`, `store`, `ledger`, `batch`, `lifecycle`, `snapshot`, `compatibility`, `operation`,
-`liveness`, `attention`, `approval`) показывает статус и диагностику: pointer, отредактированные
-expected и received, подсказку и remedy.
+(`config`, `store`, `ledger`, `batch`, `lifecycle`, `runtime`, `snapshot`, `context`,
+`compatibility`, `operation`, `liveness`, `attention`, `approval`) показывает статус и
+диагностику: pointer, отредактированные expected и received, подсказку и remedy. `runtime`
+проверяет, что закреплённый harness runtime batch совпадает с установленным или есть его
+проверенный snapshot. `context` проверяет Context Package каждого открытого brief и его base и
+candidate относительно batch. Устаревший пакет даёт отказ `stale-evidence`: такой brief отменяют и
+предлагают заново.
 
 - `status` только читает и не берёт блокировку.
 - `reload` заново читает и проверяет текущий конфиг и объявления рантаймов, не запуская worker.

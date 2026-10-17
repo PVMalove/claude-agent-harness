@@ -593,20 +593,28 @@ checkpoint, `report submit`, `qa run`, `batch decide`, `resume-stop` and `rewind
 packet then offers no option, and `route_preview` holds only the hold. A blocked report whose retry
 cause is unknown or whose retry route is refused gets a packet `operational_hold` without `abandon`
 or `accept`. The automatic path stops with `operational-hold` or `missing-evidence`, never with an
-abandon.
+abandon. A `report submit` refused by a hold still keeps the report as unaccepted evidence and names
+its path.
+
+Recovery never resolves attention, and `resume` refuses with `attention-open` while attention is
+open. Read the diagnostics, fix the cause, resolve the `operational-hold` attention, then resume:
 
 ```bash
 python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery status --batch <id> --json
 python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery reload --batch <id>
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch attention resolve --batch <id> --note '...' --approved-by <operator> --approved-at <UTC>
 python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> recovery resume --batch <id>
 ```
 
 The commands run on the installed runtime, never read standard input, need no terminal or Textual,
 print one `recoveryStatus.v1` JSON document and exit 0 on success and 2 on refusal. Each check
-(`config`, `store`, `ledger`, `batch`, `lifecycle`, `snapshot`, `compatibility`, `operation`,
-`liveness`, `attention`, `approval`) reports `passed`, `pending`, `reconciled`, `refused` or
-`skipped`. Its diagnostics carry a pointer, the redacted expected and received values, a suggestion
-and a remedy.
+(`config`, `store`, `ledger`, `batch`, `lifecycle`, `runtime`, `snapshot`, `context`,
+`compatibility`, `operation`, `liveness`, `attention`, `approval`) reports `passed`, `pending`,
+`reconciled`, `refused` or `skipped`. Its diagnostics carry a pointer, the redacted expected and
+received values, a suggestion and a remedy. `runtime` checks that the batch's pinned harness
+runtime is the installed one or a verified snapshot. `context` checks every open brief's Context
+Package against the batch's base and current developer candidate; a stale one is refused with
+`stale-evidence`, and that brief is cancelled and proposed again.
 
 - `status` is read-only: it takes no lock and writes nothing.
 - `reload` re-reads and validates the current configuration and its runtime declarations; it never
