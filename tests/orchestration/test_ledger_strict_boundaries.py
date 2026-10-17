@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import subprocess
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from unittest import mock
@@ -41,6 +42,7 @@ from harness.orchestration.ledger.lifecycle import (
     GENERATION_PURPOSES,
     SYSTEM_FIELDS_MIGRATION,
     BatchRecord,
+    DispatchStatusRecord,
     LedgerError,
     LedgerUnmigrated,
     LifecycleLedger,
@@ -50,7 +52,7 @@ from harness.orchestration.ledger.strict_read import require_canonical, unvouche
 from harness.orchestration.runtime_intent import CompositeWrite
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import RuntimeStateError
-from harness.orchestration.workflow import reports
+from harness.orchestration.workflow import delivery, reports
 from tests.orchestration.test_ledger_migration import (
     BATCH_A,
     BATCH_B,
@@ -844,10 +846,12 @@ def _event(
 
 def _legacy_history(scene: Scene) -> None:
     """Batch A and one audit event of every action and generation purpose, in the shapes earlier
-    harness versions wrote them; the one batch transition wrote the record the batch holds."""
+    harness versions wrote them; the transitions wrote the records the batch and its dispatch
+    status hold."""
     scene.seed(BATCH_A, DISPATCH_A)
     digest = "0" * 64
     written = sha((scene.generation / f"batches/{BATCH_A}.json").read_bytes())
+    status = sha((scene.generation / f"dispatch-status/{DISPATCH_A}.json").read_bytes())
     events: list[tuple[str, JsonObject]] = [
         *(
             ("generation-created", {"purpose": purpose})
@@ -870,7 +874,7 @@ def _legacy_history(scene: Scene) -> None:
             {
                 "path": f"dispatch-status/{DISPATCH_A}.json",
                 "before_sha256": digest,
-                "sha256": digest,
+                "sha256": status,
             },
         ),
         ("deletion", {"path": "qa-lane/lease.json", "sha256": digest, "reason": "x"}),
@@ -1009,10 +1013,11 @@ def test_a_batch_state_its_transitions_did_not_leave_is_a_controlled_stop(
     assert _state(scene) == before
 
 
-def test_an_interrupted_batch_transition_is_read_once_reconciled(
-    scene: Scene, monkeypatch: pytest.MonkeyPatch
+def _interrupt_batch_write(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch, batch: JsonObject
 ) -> None:
-    _moved(scene)
+    """A composite write that replaced batch A with ``batch`` and stopped before it appended the
+    audit event of that transition."""
     write = CompositeWrite(
         scene.ledger,
         scene.store(),
@@ -1021,11 +1026,18 @@ def test_an_interrupted_batch_transition_is_read_once_reconciled(
         kind="checkpoint",
         idempotency_key="key",
     )
-    write.replace_record(BatchRecord.from_dict(_batch("completed")))
+    write.replace_record(BatchRecord.from_dict(batch))
     crash_on(monkeypatch, LifecycleLedger, "_append_audit", 1)
     with pytest.raises(Crash):
         write.commit()
     monkeypatch.undo()
+
+
+def test_an_interrupted_batch_transition_is_read_once_reconciled(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _moved(scene)
+    _interrupt_batch_write(scene, monkeypatch, _batch("completed"))
 
     with pytest.raises(
         LedgerUnreadableError, match="last recorded transition"
@@ -1259,6 +1271,310 @@ def test_a_closed_chain_without_the_version_the_record_holds_names_the_change(
     assert NOT_ONE_CHAIN not in caught.value.message
     assert "interrupted" in caught.value.remedy
     _assert_no_repair_route(caught.value.remedy)
+
+
+def _record_versions(scene: Scene) -> list[bytes]:
+    """Batch A written through the ledger: awaiting approval, blocked, failed; the bytes of each
+    version, in order."""
+    batch = scene.generation / f"batches/{BATCH_A}.json"
+    scene.ledger.write_immutable(
+        scene.generation / f"plans/{BATCH_A}.json", {"batch_id": BATCH_A}
+    )
+    scene.ledger.write_record(BatchRecord.from_dict(_batch()))
+    versions = [batch.read_bytes()]
+    for state in ("blocked", "failed"):
+        scene.ledger.replace_record(BatchRecord.from_dict(_batch(state)))
+        versions.append(batch.read_bytes())
+    return versions
+
+
+def test_a_batch_edited_after_its_last_transition_without_a_new_state_is_a_controlled_stop(
+    scene: Scene,
+) -> None:
+    *_, written = _record_versions(scene)
+    assert _load_batch(scene.root, BATCH_A)["state"] == "failed"
+    edited = sha(scene.put(f"batches/{BATCH_A}.json", _batch("failed", note="edit")))
+    before = _state(scene)
+
+    with pytest.raises(
+        LedgerUnreadableError, match="changed after its last recorded transition"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+    with pytest.raises(CoordinatorError, match="last recorded transition"):
+        ledger_admin.validate_ledger(_args(scene))
+
+    assert sha(written)[:12] in caught.value.message
+    assert edited[:12] in caught.value.message
+    assert NOT_ONE_CHAIN not in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_batch_rolled_back_byte_for_byte_to_an_earlier_recorded_version_is_a_controlled_stop(
+    scene: Scene,
+) -> None:
+    _, blocked, failed = _record_versions(scene)
+    (scene.generation / f"batches/{BATCH_A}.json").write_bytes(blocked)
+    before = _state(scene)
+
+    with pytest.raises(
+        LedgerUnreadableError, match="changed after its last recorded transition"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert sha(blocked)[:12] in caught.value.message
+    assert sha(failed)[:12] in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_history_the_current_transition_table_refuses_is_still_read(
+    scene: Scene,
+) -> None:
+    """An early version allowed ``completed -> failed``; the history it wrote stays readable
+    because a recorded transition is never checked against today's table."""
+    scene.put(f"plans/{BATCH_A}.json", {"batch_id": BATCH_A})
+    scene.put(f"batches/{BATCH_A}.json", _batch("completed"))
+    with pytest.raises(LedgerError, match="'completed' -> 'failed'"):
+        scene.ledger.replace_record(BatchRecord.from_dict(_batch("failed")))
+    _recorded(
+        scene,
+        "failed",
+        [
+            _link("awaiting-approval", "active"),
+            _link("active", "completed"),
+            _link("completed", "failed"),
+        ],
+        range(3),
+    )
+    before = _state(scene)
+
+    assert _load_batch(scene.root, BATCH_A)["state"] == "failed"
+    assert _state(scene) == before
+
+
+def _status(state: str = "reported", **changes: object) -> JsonObject:
+    return {"dispatch_id": DISPATCH_A, "state": state, **changes}
+
+
+def _status_file(scene: Scene) -> Path:
+    return scene.generation / f"dispatch-status/{DISPATCH_A}.json"
+
+
+def _record_status_versions(scene: Scene) -> list[bytes]:
+    """The status of dispatch A of a seeded batch moved twice through the ledger; the bytes of
+    each version, in order."""
+    scene.seed(BATCH_A, DISPATCH_A)
+    versions = [_status_file(scene).read_bytes()]
+    for note in ("first", "second"):
+        scene.ledger.replace_record(DispatchStatusRecord.from_dict(_status(note=note)))
+        versions.append(_status_file(scene).read_bytes())
+    return versions
+
+
+def test_a_dispatch_status_moved_through_the_ledger_is_read(scene: Scene) -> None:
+    _record_status_versions(scene)
+    before = _state(scene)
+
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+    assert _state(scene) == before
+
+
+DISPATCH_STATUS = "dispatch status"
+
+
+def _edit_status(scene: Scene, versions: list[bytes]) -> None:
+    _status_file(scene).write_bytes(canonical(_status(note="edit")))
+
+
+def _roll_status_back(scene: Scene, versions: list[bytes]) -> None:
+    _status_file(scene).write_bytes(versions[1])
+
+
+STATUS_EDITS: dict[str, Callable[[Scene, list[bytes]], None]] = {
+    "an edit after the last transition": _edit_status,
+    "a rollback to an earlier recorded version": _roll_status_back,
+}
+
+
+@pytest.mark.parametrize("edit", sorted(STATUS_EDITS))
+def test_a_dispatch_status_changed_outside_the_ledger_is_a_controlled_stop(
+    scene: Scene, edit: str
+) -> None:
+    versions = _record_status_versions(scene)
+    STATUS_EDITS[edit](scene, versions)
+    held = sha(_status_file(scene).read_bytes())
+    before = _state(scene)
+
+    match = "changed after its last recorded transition"
+    with pytest.raises(LedgerUnreadableError, match=match) as caught:
+        _load_batch(scene.root, BATCH_A)
+    with pytest.raises(CoordinatorError, match=match):
+        ledger_admin.validate_ledger(_args(scene))
+
+    assert caught.value.message.startswith(DISPATCH_STATUS)
+    assert held[:12] in caught.value.message
+    assert sha(versions[-1])[:12] in caught.value.message
+    assert not isinstance(caught.value, LedgerUnmigratedError)
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_dispatch_status_edited_between_transitions_breaks_its_chain(
+    scene: Scene,
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    scene.ledger.replace_record(DispatchStatusRecord.from_dict(_status(note="first")))
+    written = sha(_status_file(scene).read_bytes())
+    edited = sha(scene.put(f"dispatch-status/{DISPATCH_A}.json", _status(note="edit")))
+    scene.ledger.replace_record(DispatchStatusRecord.from_dict(_status(note="second")))
+    before = _state(scene)
+
+    with pytest.raises(LedgerUnreadableError, match=NOT_ONE_CHAIN) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert caught.value.message.startswith(f"{DISPATCH_STATUS} transitions")
+    assert written[:12] in caught.value.message and edited[:12] in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_dispatch_brief_that_differs_from_its_audit_record_is_a_controlled_stop(
+    scene: Scene,
+) -> None:
+    """The brief and the digest the batch pins are changed together: only the audit event that
+    recorded the brief tells."""
+    batch = scene.seed(BATCH_A, DISPATCH_A)
+    brief = f"dispatches/{DISPATCH_A}.json"
+    recorded = sha((scene.generation / brief).read_bytes())
+    _event(scene, 0, "immutable-record", {"path": brief, "sha256": recorded})
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+    changed: JsonObject = {
+        "dispatch_id": DISPATCH_A,
+        "batch_id": BATCH_A,
+        "state": "approved",
+        "role": "developer",
+        "purpose": "work",
+        "note": "edit",
+    }
+    scene.put(brief, changed)
+    [entry] = batch["dispatches"]
+    entry["brief_sha256"] = sha(canonical(changed))
+    scene.put(f"batches/{BATCH_A}.json", batch)
+    before = _state(scene)
+
+    with pytest.raises(
+        LedgerUnreadableError, match="changed after its creation was recorded"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert DISPATCH_A in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_batch_no_transition_moved_that_changed_outside_the_ledger_is_a_controlled_stop(
+    scene: Scene,
+) -> None:
+    scene.ledger.write_immutable(
+        scene.generation / f"plans/{BATCH_A}.json", {"batch_id": BATCH_A}
+    )
+    scene.ledger.write_record(BatchRecord.from_dict(_batch()))
+    created = sha((scene.generation / f"batches/{BATCH_A}.json").read_bytes())
+    assert _load_batch(scene.root, BATCH_A)["state"] == "awaiting-approval"
+    edited = sha(scene.put(f"batches/{BATCH_A}.json", _batch(note="edit")))
+    before = _state(scene)
+
+    with pytest.raises(
+        LedgerUnreadableError, match="changed after its creation was recorded"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert caught.value.message.startswith("batch record")
+    assert created[:12] in caught.value.message and edited[:12] in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_a_dispatch_status_no_transition_moved_that_changed_outside_the_ledger_is_a_controlled_stop(
+    scene: Scene,
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    relative = f"dispatch-status/{DISPATCH_A}.json"
+    created = sha(_status_file(scene).read_bytes())
+    _event(scene, 0, "immutable-record", {"path": relative, "sha256": created})
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+    edited = sha(scene.put(relative, _status(note="edit")))
+    before = _state(scene)
+
+    with pytest.raises(
+        LedgerUnreadableError, match="changed after its creation was recorded"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+
+    assert caught.value.message.startswith(DISPATCH_STATUS)
+    assert created[:12] in caught.value.message and edited[:12] in caught.value.message
+    _assert_no_repair_route(caught.value.remedy)
+    assert _state(scene) == before
+
+
+def test_an_interrupted_dispatch_status_write_is_read_once_reconciled(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scene.seed(BATCH_A, DISPATCH_A)
+    scene.ledger.replace_record(DispatchStatusRecord.from_dict(_status(note="first")))
+    write = CompositeWrite(
+        scene.ledger,
+        scene.store(),
+        batch_id=BATCH_A,
+        dispatch_id=DISPATCH_A,
+        kind="checkpoint",
+        idempotency_key="key",
+    )
+    write.replace_record(DispatchStatusRecord.from_dict(_status(note="second")))
+    crash_on(monkeypatch, LifecycleLedger, "_append_audit", 1)
+    with pytest.raises(Crash):
+        write.commit()
+    monkeypatch.undo()
+
+    with pytest.raises(
+        LedgerUnreadableError, match="last recorded transition"
+    ) as caught:
+        _load_batch(scene.root, BATCH_A)
+    assert "interrupted" in caught.value.remedy
+    assert settle(scene.repo, scene.root, scene.ledger, BATCH_A) is True
+
+    assert _load_batch(scene.root, BATCH_A)["batch_id"] == BATCH_A
+
+
+def _interrupted_after_a_recorded_move(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Batch A of a seeded history blocked through the ledger, then failed by a composite write
+    that stopped between the batch and its audit event."""
+    batch = scene.seed(BATCH_A, DISPATCH_A)
+    scene.ledger.replace_record(BatchRecord.from_dict({**batch, "state": "blocked"}))
+    _interrupt_batch_write(scene, monkeypatch, {**batch, "state": "failed"})
+    with pytest.raises(LedgerUnreadableError, match="last recorded transition"):
+        _load_batch(scene.root, BATCH_A)
+
+
+def test_a_repeated_publish_settles_the_interrupted_write_before_it_reads_the_batch(
+    scene: Scene, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _interrupted_after_a_recorded_move(scene, monkeypatch)
+    subprocess.run(
+        ["git", "-C", str(scene.repo), "remote", "add", "origin", str(scene.repo)],
+        check=True,
+    )
+
+    # The scene's batch is no full record, so the check after the read refuses it: the refusal
+    # is that one, not the strict read's stop on the unfinished write.
+    with pytest.raises(CoordinatorError) as caught:
+        delivery.publish_dispatch(_args(scene, dispatch=DISPATCH_A, remote="origin"))
+
+    assert caught.value.message == "batch record is incomplete"
+    assert _load_batch(scene.root, BATCH_A)["state"] == "failed"
 
 
 # --- An unmigrated ledger names the ledger migrate route (DoD 4) --------------------------------

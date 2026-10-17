@@ -14,6 +14,7 @@ from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.ledger.lifecycle import LifecycleLedger, BatchRecord
 from harness.orchestration.workflow import carried_items, commit_plan, decisions
+from scripts.clean_room.support import rewrite_recorded
 from tests.orchestration.test_coordinator import (
     _init_repo,
     _git,
@@ -267,7 +268,7 @@ class RecoveryTests(unittest.TestCase):
             {k: v for k, v in event.items() if k != "record_sha256"}
         )
         path = self._records() / "batches" / f"{batch['batch_id']}.json"
-        path.write_text(json.dumps(stored), encoding="utf-8")
+        rewrite_recorded(path, stored)
         before = self._ledger_bytes()
         with self.assertRaisesRegex(coordinator.CoordinatorError, "audit"):
             coordinator.validate_ledger(self._args())
