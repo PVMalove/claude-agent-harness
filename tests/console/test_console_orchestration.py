@@ -472,7 +472,8 @@ def test_orchestration_switches_language_and_goes_back_with_escape(
             await _settle(pilot, app)
             crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
             item = screen.query("#shell-sections > ListItem").results(ListItem)
-            label = str(list(item)[5].query_one(Static).content)
+            # The entry is a grid of its label and its badge; the label is the first cell.
+            label = str(list(item)[5].query_one(Static).content.columns[0]._cells[0])  # type: ignore[union-attr]
             await pilot.press("escape")
             await _settle(pilot, app)
             return crumbs, label, app.screen is not screen
@@ -528,7 +529,7 @@ def test_worker_sessions_button_sits_in_the_header_and_shows_the_active_count(
             return ru, en, page_buttons, isinstance(app.screen, WorkerObservationScreen)
 
     ru, en, orphans, opened = asyncio.run(scenario())
-    assert ru == "Рабочие сессии · 2" and en == "Worker sessions · 2"
+    assert ru == "Рабочие сессии · 2" and en == "Working sessions · 2"
     assert orphans == []  # no button stands outside the header
     assert opened
 

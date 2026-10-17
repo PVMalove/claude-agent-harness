@@ -95,6 +95,9 @@ class MemoryStatus:
     indexed: int | None
     problem: str = ""
     inactive: str = ""  # why memory is on but reads nothing, e.g. no allow_paths
+    # The search limits of the memory policy: hits per query and tokens per answer.
+    top_k: int | None = None
+    max_tokens: int | None = None
 
 
 def memory_status(repo: Path) -> MemoryStatus:
@@ -122,7 +125,14 @@ def memory_status(repo: Path) -> MemoryStatus:
             else "не заданы source_types"
         )
     return MemoryStatus(
-        policy.enabled, policy.active, policy.source_types, indexed, "", inactive
+        policy.enabled,
+        policy.active,
+        policy.source_types,
+        indexed,
+        "",
+        inactive,
+        policy.top_k,
+        policy.max_tokens,
     )
 
 

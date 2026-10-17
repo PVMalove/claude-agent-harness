@@ -62,7 +62,7 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
         async with app.run_test(size=size) as pilot:
             await app.push_screen(screen)
             await pilot.pause()
-            checks = screen.query_one("#dashboard-attention-scroll")
+            checks = screen.query_one("#dashboard-check")
             for button in checks.query(Button):
                 assert checks.region.contains_region(button.region)
             assert [button.id for button in checks.query(Button)] == [
@@ -364,7 +364,7 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
         async with app.run_test():
             mark = str(app.screen.query_one("#brand-mark", Static).content)
             info = str(app.screen.query_one("#brand-info", Static).content)
-            card = str(app.screen.query_one("#card-harness", Static).content)
+            card = _facts_text(app.screen.query_one("#card-harness-facts", Static))
         return mark, info, card
 
     mark, info, card = asyncio.run(scenario())
@@ -376,6 +376,16 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
     assert "pvmalove-suite" in card and "pvmalove-suite" not in info
     assert "~/work/app" in info
     assert "ветка feature/issue-7-x · commit не определён" in info
+
+
+def _facts_text(facts: object) -> str:
+    """The facts of a context card as `label value` lines."""
+    from rich.table import Table
+
+    table = facts.content  # type: ignore[attr-defined]
+    assert isinstance(table, Table)
+    labels, values = (column._cells for column in table.columns)
+    return "\n".join(f"{label} {value}" for label, value in zip(labels, values))
 
 
 def test_console_registers_and_selects_the_warm_theme(tmp_path: Path) -> None:
@@ -1138,10 +1148,7 @@ def test_dashboard_checks_live_in_the_attention_frame_and_have_no_diagnostics_bu
         async with app.run_test(size=(120, 48)) as pilot:
             await app.push_screen(screen)
             await pilot.pause()
-            return [
-                b.id
-                for b in screen.query_one("#dashboard-attention-scroll").query(Button)
-            ]
+            return [b.id for b in screen.query_one("#dashboard-check").query(Button)]
 
     assert asyncio.run(scenario()) == ["dashboard-offline", "dashboard-online"]
 
@@ -1180,7 +1187,11 @@ def test_home_uses_workspace_shell_and_keeps_technical_report_collapsed(
 def test_dashboard_session_list_shows_role_labels_and_status_captions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The home session list uses the shared role label and a symbol-plus-words caption."""
+    """One line per session: ticket and role (the shared role label), the dispatch, a
+    symbol-plus-words status and how long ago the dispatch was recorded."""
+    from datetime import UTC, datetime
+
+    from rich.table import Table
     from rich.text import Text
     from textual.widgets import ListView, Static
 
@@ -1188,37 +1199,173 @@ def test_dashboard_session_list_shows_role_labels_and_status_captions(
 
     stages = [
         reports.StageEntry(
-            "dispatch-a", "batch-a", "#721", "developer", "working", "2026-10-16"
+            "dispatch-a",
+            "batch-a",
+            "#721",
+            "developer",
+            "working",
+            "2026-10-17T14:38:00+00:00",
         ),
         reports.StageEntry(
-            "dispatch-b", "batch-a", "#722", "qa", "approved", "2026-10-15"
+            "dispatch-b",
+            "batch-a",
+            "#722",
+            "qa",
+            "approved",
+            "2026-10-17T12:10:00+00:00",
+        ),
+        reports.StageEntry(
+            "dispatch-c", "batch-a", "#723", "qa", "approved", "2026-10-15"
         ),
     ]
     monkeypatch.setattr(
         reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
     )
+    now = datetime(2026, 10, 17, 14, 40, tzinfo=UTC)
 
-    async def scenario() -> list[Text]:
+    async def scenario() -> tuple[list[list[Text]], list[int], str]:
         app = HarnessConsoleApp(tmp_path)
-        async with app.run_test(size=(140, 40)):
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo,
+                    *,
+                    online=False: _fake_dashboard_data(),
+                    now=lambda: now,
+                )
+            )
+            await pilot.pause()
             sessions = app.screen.query_one("#home-sessions", ListView)
-            return [
-                card
-                for item in sessions.children
-                for card in [item.query_one(Static).content]
-                if isinstance(card, Text)
-            ]
+            rows = []
+            for item in sessions.children:
+                table = item.query_one(Static).content
+                assert isinstance(table, Table)
+                cells = [column._cells[0] for column in table.columns]
+                rows.append([cell for cell in cells if isinstance(cell, Text)])
+            card = app.screen.query_one("#home-sessions-card")
+            return (
+                rows,
+                [item.region.height for item in sessions.children],
+                str(card.border_title),
+            )
 
-    cards = asyncio.run(scenario())
-    assert [card.plain.splitlines()[0] for card in cards] == [
-        "#721  ·  developer",
-        "#722  ·  qa",
+    rows, heights, title = asyncio.run(scenario())
+    assert title == " РАБОЧИЕ СЕССИИ  3 "
+    assert heights == [1, 1, 1]
+    assert [[cell.plain for cell in row] for row in rows] == [
+        ["#721 developer", "dispatch-a", "▶ Выполняется", "2 мин"],
+        ["#722 qa", "dispatch-b", "○ Готов к запуску", "2 ч"],
+        # A time without a time zone is unknown, not guessed.
+        ["#723 qa", "dispatch-c", "○ Готов к запуску", ""],
     ]
-    assert "▶ Выполняется" in cards[0].plain
-    assert "○ Готов к запуску" in cards[1].plain
     assert f"bold {brand.ROLE_COLORS['developer']}" in {
-        str(span.style) for span in cards[0].spans
+        str(span.style) for span in rows[0][0].spans
     }
+
+
+def test_elapsed_time_and_check_counts_read_naturally() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from harness.console import i18n
+    from harness.console.session_card import elapsed_text
+
+    now = datetime(2026, 10, 17, 14, 40, tzinfo=UTC)
+    assert elapsed_text(now - timedelta(seconds=30), now, "ru") == "0 мин"
+    assert elapsed_text(now - timedelta(minutes=14), now, "en") == "14 min"
+    assert elapsed_text(now - timedelta(hours=3, minutes=5), now, "ru") == "3 ч"
+    assert elapsed_text(now - timedelta(days=2, hours=1), now, "en") == "2 d"
+    assert elapsed_text(None, now, "ru") == ""
+    assert elapsed_text(now + timedelta(minutes=1), now, "ru") == ""
+    assert i18n.checks_count("ru", 27, 11) == "27 проверок · 11 пропущено"
+    assert i18n.checks_count("ru", 21, 0) == "21 проверка · 0 пропущено"
+    assert i18n.checks_count("ru", 34, 2) == "34 проверки · 2 пропущено"
+    assert i18n.checks_count("ru", 12, 2) == "12 проверок · 2 пропущено"
+    assert i18n.checks_count("en", 1, 0) == "1 check · 0 skipped"
+    assert i18n.checks_count("en", 27, 11) == "27 checks · 11 skipped"
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_check_block_sessions_and_report_follow_each_other(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    size: tuple[int, int],
+    language: str,
+) -> None:
+    from textual.widgets import Button, Static
+    from textual.widgets._collapsible import CollapsibleTitle
+
+    from harness.console import reports
+
+    stages = [
+        reports.StageEntry(
+            f"dispatch-{index}", "batch-a", f"#72{index}", "developer", "working", ""
+        )
+        for index in range(3)
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda _repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> dict[str, object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                )
+            )
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+            screen = app.screen
+            label = screen.query_one("#dashboard-check-label", Static)
+            hint = screen.query_one("#home-sessions-hint", Static)
+            sessions = screen.query_one("#home-sessions-card")
+            report = screen.query_one("#dashboard-details")
+            return {
+                "label": str(label.render()) if label.display else None,
+                "on": [
+                    str(button.label)
+                    for button in screen.query("#dashboard-check Button").results(
+                        Button
+                    )
+                    if button.has_class("-on")
+                ],
+                "mode": str(
+                    screen.query_one("#dashboard-attention-mode", Static).render()
+                ),
+                "hint": str(hint.render()) if hint.display else None,
+                "gap": report.region.y - sessions.region.bottom,
+                "report": str(report.query_one(CollapsibleTitle).render()),
+            }
+
+    seen = asyncio.run(scenario())
+    ru = language == "ru"
+    if size[0] >= 100:
+        assert seen["label"] == ("ПРОВЕРКА" if ru else "CHECK")
+        assert seen["hint"] == (
+            "↑↓ выбор · Enter — открыть наблюдение. Выбор сессии не запускает новый процесс."
+            if ru
+            else "↑↓ select · Enter opens observation. Selecting a session starts no new process."
+        )
+    else:
+        assert seen["label"] is None and seen["hint"] is None
+    assert seen["on"] == (["Офлайн"] if ru else ["Offline"])
+    assert seen["mode"] == ("offline · пропущено 2" if ru else "offline · skipped 2")
+    # The report sits directly under the sessions, with the number of checks at its right end.
+    assert seen["gap"] in (0, 1)
+    report = str(seen["report"])
+    assert report.startswith(
+        "▸ " + ("Подробный технический отчёт" if ru else "Detailed technical report")
+    )
+    assert report.endswith(
+        "10 проверок · 2 пропущено" if ru else "10 checks · 2 skipped"
+    )
 
 
 # -- Diagnostics on the shared shell ---------------------------------------------------------
@@ -1352,7 +1499,11 @@ def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> 
 
     from rich.text import Text
 
-    from harness.console.screens.dashboard import _render_cards, _render_summary
+    from harness.console.screens.dashboard import (
+        HomeContext,
+        _render_summary,
+        home_facts,
+    )
 
     data = replace(
         _fake_dashboard_data(),
@@ -1370,6 +1521,464 @@ def test_dashboard_summary_shows_counters_and_problems_as_symbol_plus_text() -> 
     assert "  ✖ fail env.git — git missing" in plain
     assert "  ⚠ warn repo_map.tier — minimal" in plain
     # A status is also never a colour alone on the cards.
-    harness_card, _orchestration, _repo_map = _render_cards(data, "1.0.0")
-    assert "память: [" in harness_card and "✔ ok" in harness_card
-    assert "дрейф: [" in harness_card and "✔ нет" in harness_card
+    banner = brand.BannerInfo(
+        version="1.0.0", capabilities=(), repo="~/app", branch=None
+    )
+    cards = {
+        card_id: dict(rows)
+        for card_id, _title, rows in home_facts(data, banner, HomeContext(), "app")
+    }
+    assert cards["card-harness"]["Дрейф"].plain == "✔ нет"
+    assert cards["card-memory"]["Состояние"].plain == "✔ индекс готов"
+
+
+def test_a_long_path_is_cut_from_the_left_at_a_separator() -> None:
+    path = "/home/malove/Projects/Code/claude-agent-harness"
+    assert brand.elide_path(path, 80) == path
+    assert brand.elide_path(path, 28) == "…/Code/claude-agent-harness"
+    assert brand.elide_path(path, 23) == "…/claude-agent-harness"
+    assert brand.elide_path(path, 10) == "…t-harness"
+
+
+class _Runner:
+    """Records every command; opening a section from home must run none."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+
+def _attention_data() -> DashboardData:
+    from dataclasses import replace
+
+    return replace(
+        _fake_dashboard_data(),
+        fail=2,
+        warn=1,
+        drift_state="drift",
+        problems=(
+            ("fail", "files.skill_snapshot", "snapshot differs from 1.4.6"),
+            ("fail", "files.integrations", "integrations: tracker token missing"),
+            ("warn", "environment.uv", "uv 0.4 is older than 0.5"),
+        ),
+    )
+
+
+def _long_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "home" / "malove" / "Projects" / "Code" / "claude-agent-harness"
+    repo.mkdir(parents=True)
+    return repo
+
+
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_path_line_ends_with_the_open_another_project_action(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from textual.widgets import Button, Static
+
+    repo = _long_repo(tmp_path)
+
+    async def scenario() -> tuple[str, int, int, str | None, list[str]]:
+        app = HarnessConsoleApp(repo)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    repo,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                )
+            )
+            await pilot.pause()
+            await pilot.pause()
+            path = app.screen.query_one("#dashboard-path", Static)
+            shown = [
+                str(button.label)
+                for button in app.screen.query(".context-strip Button").results(Button)
+                if button.display and button.region.width
+            ]
+            return (
+                str(path.render()),
+                path.region.height,
+                path.content_size.width,
+                str(path.tooltip),
+                shown,
+            )
+
+    text, height, width, tooltip, actions = asyncio.run(scenario())
+    # One line, cut from the left only when it must be; the whole path is the tooltip.
+    assert height == 1 and tooltip == str(repo)
+    assert text == brand.elide_path(str(repo), width)
+    assert text.endswith("/Code/claude-agent-harness")
+    if size[0] >= 100:
+        assert actions == ["Открыть другой проект →"]
+    else:
+        assert text.startswith("…/") and len(text) <= width
+        assert actions == ["Проект →"]
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_requires_attention_lists_every_problem_with_a_jump_to_its_section(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from textual.color import Color
+    from textual.widgets import Static
+
+    from harness.console.shell import JumpLink, SectionCard
+
+    async def scenario() -> dict[str, object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                )
+            )
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+            card = app.screen.query_one("#dashboard-attention-card", SectionCard)
+            rows = list(card.query(".problem-row"))
+            symbol = rows[0].query_one(".problem-symbol", Static)
+            title = rows[0].query_one(".problem-title", Static)
+            caption = rows[0].query_one(".problem-caption", Static)
+            return {
+                "card": str(card.border_title),
+                "alert": card.has_class("-alert"),
+                "left": card.styles.border_left[1],
+                "title_color": card.styles.border_title_color,
+                "titles": [
+                    str(row.query_one(".problem-title", Static).render())
+                    for row in rows
+                ],
+                "links": [str(link.render()) for link in card.query(JumpLink)],
+                "symbol": Color.parse(str(symbol.content.style)),  # type: ignore[union-attr]
+                "title_fg": Color.from_rich_color(title.rich_style.color),
+                "caption": str(caption.render()) if caption.display else None,
+                "visible": all(
+                    app.screen.region.contains_region(row.region) for row in rows
+                ),
+            }
+
+    seen = asyncio.run(scenario())
+    ru = language == "ru"
+    assert seen["card"] == (
+        " ТРЕБУЕТ ВНИМАНИЯ  3 " if ru else " REQUIRES ATTENTION  3 "
+    )
+    assert seen["alert"]
+    left = seen["left"]
+    assert isinstance(left, Color)
+    error = Color.parse(brand.PALETTE["error"])
+    assert max(abs(a - b) for a, b in zip(left.rgb, error.rgb)) <= 2
+    assert seen["title_color"] == Color.parse(brand.PALETTE["muted"])
+    assert seen["titles"] == (
+        [
+            "Скиллы отличаются от установленной версии Harness",
+            "Нужно проверить настройки интеграций",
+            "uv недоступен",
+        ]
+        if ru
+        else [
+            "Skills differ from the installed Harness version",
+            "Integration settings need attention",
+            "uv is unavailable",
+        ]
+    )
+    if size[0] >= 100:
+        assert seen["links"] == (
+            ["Обновить Harness  2 →", "Открыть настройку  8 →", "Диагностика  3 →"]
+            if ru
+            else ["Update Harness  2 →", "Open setup  8 →", "Diagnostics  3 →"]
+        )
+        assert seen["caption"] == "files.skill_snapshot · snapshot differs from 1.4.6"
+    else:
+        assert seen["links"] == ["2 →", "8 →", "3 →"]
+        assert seen["caption"] is None
+    # Only the symbol carries the status colour; the title stays in the text colour.
+    assert seen["symbol"] == Color.parse(brand.PALETTE["error"])
+    assert seen["title_fg"] == Color.parse(brand.PALETTE["foreground"])
+    assert seen["visible"]
+
+
+def test_a_jump_from_requires_attention_opens_the_section_and_runs_no_command(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.update_harness import UpdateHarnessScreen
+    from harness.console.shell import JumpLink
+
+    runner = _Runner()
+
+    async def scenario() -> bool:
+        app = HarnessConsoleApp(tmp_path, command_runner=runner)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _attention_data(),
+                    command_runner=runner,
+                )
+            )
+            await pilot.pause()
+            link = app.screen.query(JumpLink).first()
+            link.focus()
+            await pilot.press("enter")
+            for _ in range(3):
+                await pilot.pause()
+            return isinstance(app.screen, UpdateHarnessScreen)
+
+    assert asyncio.run(scenario())
+    assert runner.calls == []
+
+
+def _home_context() -> object:
+    from harness.console.repo_map import MapEdge, MapFile, RepoMapView
+    from harness.console.repo_map_settings import MemoryStatus
+    from harness.console.screens.dashboard import HomeContext
+
+    view = RepoMapView(
+        payload={},
+        origin="кэш",
+        commit="a" * 40,
+        tier="full",
+        parser="tree-sitter",
+        degradation_reason="",
+        estimated_tokens=38400,
+        provenance={},
+        files=tuple(MapFile(f"f{index}.py", (), "ok") for index in range(412)),
+        edges=tuple(
+            MapEdge(f"f{index}.py", "f0.py", "import", "high") for index in range(1860)
+        ),
+        diagnostics=(),
+    )
+    memory = MemoryStatus(True, True, ("adr", "glossary"), 18, top_k=5, max_tokens=1000)
+    return HomeContext(repo_map=view, memory=memory)
+
+
+def _context_data() -> DashboardData:
+    from dataclasses import replace
+
+    return replace(
+        _attention_data(),
+        repo_map_tier="Repo Map: tier=full (offline parser bundle detected)",
+        memory_index=CheckResult(
+            id="memory.index",
+            group="memory",
+            status="ok",
+            message="индекс валиден (FTS5)",
+        ),
+    )
+
+
+_BANNER = brand.BannerInfo(
+    version="1.4.6",
+    capabilities=("backend-orchestration",),
+    repo="~/Code/claude-agent-harness",
+    branch="feature/issue-721-console-design-system",
+    installed_version="1.4.6",
+    installed_commit="85abd57a",
+)
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_home_context_cards_show_only_facts_the_console_reads(language: str) -> None:
+    from harness.console.screens.dashboard import HomeContext, home_facts
+
+    cards = home_facts(
+        _context_data(),
+        _BANNER,
+        _home_context(),  # type: ignore[arg-type]
+        "claude-agent-harness",
+        language,
+    )
+    shown = {
+        title: [(label, value.plain) for label, value in rows]
+        for _id, title, rows in cards
+    }
+    assert list(shown) == [
+        "Контекст проекта",
+        "Harness",
+        "Оркестрация",
+        "Repo Map",
+        "Память проекта",
+    ]
+    if language == "ru":
+        assert shown["Repo Map"] == [
+            ("Уровень", "full"),
+            ("Актуальность", "✔ карта для HEAD"),
+            ("Файлов", "412"),
+            ("Связей", "1860"),
+            ("Источник", "кэш"),
+            ("Объём", "≈38 400 токенов"),
+        ]
+        assert shown["Память проекта"] == [
+            ("Состояние", "✔ индекс валиден (FTS5)"),
+            ("Индекс", "18 документов"),
+            ("Источники", "adr · glossary"),
+            ("Лимит поиска", "5 · 1 000 токенов"),
+        ]
+        assert shown["Harness"] == [
+            ("Установлен", "1.4.6 · 85abd57a"),
+            ("Модули", "backend-orchestration"),
+            ("Дрейф", "⚠ есть"),
+        ]
+    else:
+        assert [value for _label, value in shown["Repo Map"]] == [
+            "full",
+            "✔ map for HEAD",
+            "412",
+            "1860",
+            "cache",
+            "≈38,400 tokens",
+        ]
+        assert shown["Память проекта"][1:] == [
+            ("Индекс", "18 documents"),
+            ("Источники", "adr · glossary"),
+            ("Лимит поиска", "5 · 1,000 tokens"),
+        ]
+    assert shown["Контекст проекта"] == [
+        ("Проект", "claude-agent-harness"),
+        ("Ветка", "feature/issue-721-console-design-system"),
+    ]
+    # Without a cached map or a memory policy nothing is invented: unknown facts are a dash.
+    bare = {
+        title: dict((label, value.plain) for label, value in rows)
+        for _id, title, rows in home_facts(
+            _fake_dashboard_data(),
+            brand.BannerInfo(version="1", capabilities=(), repo="~/x", branch=None),
+            HomeContext(),
+            "x",
+            language,
+        )
+    }
+    assert bare["Контекст проекта"]["Ветка"] == "—"
+    assert bare["Harness"]["Модули"] == "—"
+    assert set(bare["Repo Map"]) == {"Уровень", "Актуальность"}
+    assert bare["Память проекта"] == {"Состояние": "—"}
+
+
+def _fact_labels(facts: object) -> list[str]:
+    from rich.table import Table
+
+    table = facts.content  # type: ignore[attr-defined]
+    assert isinstance(table, Table)
+    return [str(label) for label in table.columns[0]._cells]
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_home_right_panel_is_cards_of_facts_and_folds_on_a_narrow_terminal(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from textual.widgets import Collapsible, Static
+
+    from harness.console.shell import SectionCard
+
+    async def scenario() -> dict[str, object]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.switch_screen(
+                DashboardScreen(
+                    tmp_path,
+                    collect_dashboard=lambda _repo, *, online=False: _context_data(),
+                    collect_banner=lambda _repo: _BANNER,
+                    collect_context=lambda _repo: _home_context(),  # type: ignore[arg-type,return-value]
+                )
+            )
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.pause()
+            screen = app.screen
+            panel = screen.query_one("#dashboard-context")
+            fold = panel.query_one(".context-fold", Collapsible)
+            report = screen.query_one("#dashboard-details")
+            cards = list(panel.query(SectionCard))
+            return {
+                "titles": [str(card.border_title).strip() for card in cards],
+                "labels": [
+                    label
+                    for card in cards
+                    for label in _fact_labels(card.query_one(Static))
+                ],
+                "collapsed": fold.collapsed,
+                "fold_on_screen": screen.region.contains_region(fold.region),
+                "fold_under_report": fold.region.y >= report.region.bottom,
+                "observation": len(
+                    screen.query("#dashboard-sessions, .context-note, .menu-context")
+                ),
+                "beside": panel.region.x >= report.region.right,
+            }
+
+    seen = asyncio.run(scenario())
+    if language == "ru":
+        assert seen["titles"] == [
+            "КОНТЕКСТ ПРОЕКТА",
+            "HARNESS",
+            "ОРКЕСТРАЦИЯ",
+            "REPO MAP",
+            "ПАМЯТЬ ПРОЕКТА",
+        ]
+        assert seen["labels"] == [
+            "Проект",
+            "Ветка",
+            "Установлен",
+            "Модули",
+            "Дрейф",
+            "Активных batch",
+            "Уровень",
+            "Актуальность",
+            "Файлов",
+            "Связей",
+            "Источник",
+            "Объём",
+            "Состояние",
+            "Индекс",
+            "Источники",
+            "Лимит поиска",
+        ]
+    else:
+        assert seen["titles"] == [
+            "PROJECT CONTEXT",
+            "HARNESS",
+            "ORCHESTRATION",
+            "REPO MAP",
+            "PROJECT MEMORY",
+        ]
+        assert seen["labels"] == [
+            "Project",
+            "Branch",
+            "Installed",
+            "Modules",
+            "Drift",
+            "Active batches",
+            "Tier",
+            "Freshness",
+            "Files",
+            "Links",
+            "Source",
+            "Size",
+            "State",
+            "Index",
+            "Sources",
+            "Search limit",
+        ]
+    assert seen["observation"] == 0
+    if size[0] >= 100:
+        assert not seen["collapsed"] and seen["beside"]
+    else:
+        # Folded under the technical report and on screen without scrolling.
+        assert (
+            seen["collapsed"] and seen["fold_on_screen"] and seen["fold_under_report"]
+        )

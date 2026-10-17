@@ -80,11 +80,22 @@ class TopBar(Horizontal):
         self.query_one("#topbar-right", Static).update(right.rstrip())
 
 
+def where_text(project: str, branch: str | None, width: int) -> str:
+    """The right side of the top bar: `project · ⎇ branch` on a wide terminal and the branch alone,
+    shortened to fit, on a narrow one; only the project when there is no branch."""
+    if not branch:
+        return project
+    if width < brand.NARROW_WIDTH:
+        return f"⎇ {brand.shorten(branch, max(12, (width - 4) // 2 - 4))}"
+    limit = max(16, width // 2 - len(project) - 10)
+    return f"{project} · ⎇ {brand.shorten(branch, limit)}"
+
+
 class WorkspaceHeader(TopBar):
     """Product identity stays in the window bar; breadcrumbs belong to the content below it."""
 
     DEFAULT_CSS = brand.shell_css("""
-    WorkspaceHeader { height: 3; margin: 0; padding: 1 2 0 2; background: $surface; color: $text; border-bottom: solid $border-subtle; }
+    WorkspaceHeader { height: 3; margin: 0; padding: 1 2 0 2; background: $surface; color: $foreground; border-bottom: solid $border-subtle; }
     WorkspaceHeader #topbar-left { width: 1fr; }
     WorkspaceHeader #topbar-right { width: 1fr; color: $text-muted; }
     """)
@@ -98,8 +109,7 @@ class WorkspaceHeader(TopBar):
         )
         repo = getattr(self.app, "repo", None)
         project = repo.name if repo else ""
-        branch = self._branch or ""
-        limit = max(16, self.size.width // 2 - len(project) - 8)
+        width = self.size.width or self.app.size.width
         self.query_one("#topbar-right", Static).update(
-            escape(f"{project} · {brand.shorten(branch, limit)}")
+            escape(where_text(project, self._branch, width))
         )

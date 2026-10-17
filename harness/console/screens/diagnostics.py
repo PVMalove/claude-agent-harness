@@ -169,6 +169,7 @@ class DiagnosticsScreen(ConsoleShell):
 
     CRUMBS = "Главная › Диагностика"
     SECTION = "Diagnostics"
+    NARROW_FOOTER_KEYS = ("escape", "e", "f2")
     AUTO_FOCUS = "#diagnostics-scroll"
     CSS = SHELL_CSS + brand.shell_css("""
     DiagnosticsScreen #diagnostics-scroll { height: 1fr; }
@@ -201,10 +202,10 @@ class DiagnosticsScreen(ConsoleShell):
     def compose_content(self) -> ComposeResult:
         """Формирует структуру виджетов экрана диагностики: отчёт и действия в рамках."""
         with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
-            report.border_title = brand.frame_title("Health-отчёт")
+            report.border_title = brand.section_title("Health-отчёт")
             yield Static(_RUNNING, id="diagnostics-report", markup=False)
         with Vertical(id="diagnostics-actions", classes="frame") as actions:
-            actions.border_title = brand.frame_title("Действия")
+            actions.border_title = brand.section_title("Действия")
             with Horizontal(classes="action-row"):
                 yield Button("Офлайн", id="offline-checks", compact=True)
                 yield Static(
