@@ -229,6 +229,33 @@ def test_dashboard_layout(
     assert asyncio.run(scenario()) == []
 
 
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_home_with_problems_sessions_and_context_layout(
+    tmp_path: Path, sessions: None, size: tuple[int, int], language: str
+) -> None:
+    """The full home screen of the mockup: problems with jumps, working sessions, the context cards
+    and both folds stay inside the screen and their columns at every size."""
+    from tests.console.test_console_home import BANNER, CONTEXT, DATA
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            home = DashboardScreen(
+                tmp_path,
+                collect_dashboard=lambda _repo, *, online=False: DATA,
+                collect_banner=lambda _repo: BANNER,
+                collect_context=lambda _repo: CONTEXT,
+            )
+            await app.switch_screen(home)
+            screen = await _open(app, pilot, None, language)
+            return layout_problems(
+                screen, DASHBOARD_TITLES
+            ) + await last_card_is_reachable(screen, pilot)
+
+    assert asyncio.run(scenario()) == []
+
+
 ORCHESTRATION_TITLES = (".breadcrumbs", "#orchestration-title")
 
 
