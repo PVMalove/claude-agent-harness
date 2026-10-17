@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import dataclass
+from harness.runtime_adapters import AdapterStatus
 from pathlib import Path
 
 from harness.configuration import parse_object, read_config_bundle, reject_secrets
@@ -188,3 +189,126 @@ class ConfigurationDraft:
     def diff(self) -> str:
         """Unified diff of the saved files against this draft; empty when unchanged."""
         return bundle_diff(self.original, self.encoded(), "текущий", "новый")
+
+
+@dataclass(frozen=True)
+class RuntimeAdapterPreview:
+    adapters: list["AdapterStatus"]
+    capabilities: list[str]
+    fingerprint: str
+    text: str
+    blocked: bool
+
+
+def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
+    """Preview adapter installation through update without changing capability selection."""
+    import hashlib
+    from harness.bin.harness import (
+        load_lock,
+        package_files,
+        snapshot_diff,
+        seed_differing,
+        seed_template_files,
+    )
+    from harness.health.project_files import file_digest
+    from harness.runtime_adapters import adapter_statuses
+
+    try:
+        lock = load_lock(repo)
+    except SystemExit as exc:
+        raise ValueError("Не удалось прочитать snapshot харнесса") from exc
+    if lock is None:
+        raise ValueError("Сначала установите харнесс проекта")
+    selected = list(lock.get("capabilities") or [])
+    enabled = "backend-orchestration" in selected
+    sources = package_files(selected if enabled else ["backend-orchestration"])
+    previous = lock.get("files") or {}
+    adapters = adapter_statuses(repo, sources, previous)
+    snapshot = snapshot_diff(repo, selected)
+    fingerprints = {
+        path: "symlink" if (repo / path).is_symlink() else file_digest(repo / path)
+        for path in set(sources)
+        | set(previous)
+        | set(seed_template_files(repo, orchestration_enabled=True))
+        | {".harness/harness.lock"}
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "disk": fingerprints,
+                "source": {
+                    path: hashlib.sha256(data).hexdigest()
+                    for path, data in sources.items()
+                },
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    lines = [
+        "Возможности: " + ", ".join(selected),
+        "Обновятся управляемые файлы харнесса:",
+    ]
+    for key in (
+        "added",
+        "missing",
+        "package_changed",
+        "local_changed",
+        "conflict",
+        "retired",
+    ):
+        lines.extend(f"{key}: {path}" for path in snapshot.get(key, []))
+    differing = seed_differing(repo)
+    if differing:
+        lines.append("Seed-файлы сохраняются: " + ", ".join(differing))
+    blocked = not enabled or bool(
+        snapshot.get("local_changed") or snapshot.get("conflict")
+    )
+    if not enabled:
+        import shlex
+
+        lines.append(
+            "Capability backend-orchestration не выбрана. Выберите состав явно в CLI:"
+        )
+        lines.append(
+            shlex.join(
+                [
+                    "harness",
+                    "update",
+                    str(repo),
+                    "--capability",
+                    "backend-orchestration",
+                ]
+            )
+        )
+    if enabled and blocked:
+        lines.append(
+            "Сначала устраните локальные изменения и коллизии. Принудительное обновление не включено."
+        )
+    return RuntimeAdapterPreview(
+        adapters, selected, fingerprint, "\n".join(lines), blocked
+    )
+
+
+def apply_runtime_adapters(
+    repo: Path, preview: RuntimeAdapterPreview, *, confirmed: bool = False
+) -> str:
+    """Apply only a confirmed fresh preview through the existing CLI update implementation."""
+    import subprocess
+    from harness.bin.harness import HARNESS_CLI
+
+    if not confirmed:
+        raise ValueError("Требуется явное подтверждение просмотра")
+    current = preview_runtime_adapters(repo)
+    if current.fingerprint != preview.fingerprint:
+        raise ValueError("План изменился: выполните просмотр заново")
+    if current.blocked:
+        raise ValueError("Сначала устраните локальные изменения и коллизии")
+    command = [*HARNESS_CLI, "update", str(repo)]
+    for capability in preview.capabilities:
+        command.extend(["--capability", capability])
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False, timeout=300
+    )
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or result.stdout.strip())
+    return result.stdout.strip()

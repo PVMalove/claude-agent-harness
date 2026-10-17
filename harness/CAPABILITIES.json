@@ -88,6 +88,7 @@
       "configuration_schema.py",
       "configuration_store.py",
       "orchestration.example.json",
+      "adapters",
       "context_builder"
     ]
   }

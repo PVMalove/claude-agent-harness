@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from harness.cleanup import _active_worktrees, _clear_read_only, _git
+from harness.runtime_adapters import ADAPTER_ROOT, adapter_problem
 from harness.health.project_files import (
     DISCOVERY_LINKS,
     LOCK_REL,
@@ -142,6 +143,50 @@ def _managed_files(repo: Path) -> set[str]:
     return set(files) if isinstance(files, dict) else set()
 
 
+def _adapter_removal_plan(
+    repo: Path,
+) -> tuple[list[UninstallItem], list[dict[str, str]]]:
+    """Keep adapter paths whose ownership or unchanged contents cannot be proved."""
+    root = repo / ADAPTER_ROOT
+    if root.is_symlink():
+        return [], [
+            {"path": ADAPTER_ROOT, "reason": "symlink adapter target: preserved"}
+        ]
+    if not root.is_dir():
+        return (
+            (
+                [],
+                [
+                    {
+                        "path": ADAPTER_ROOT,
+                        "reason": "non-directory adapter target: preserved",
+                    }
+                ],
+            )
+            if root.exists()
+            else ([], [])
+        )
+    try:
+        lock = json.loads((repo / LOCK_REL).read_text(encoding="utf-8"))
+        hashes = lock.get("files") or {}
+    except (OSError, ValueError, AttributeError):
+        hashes = {}
+    if not isinstance(hashes, dict):
+        hashes = {}
+    remove: list[UninstallItem] = []
+    skipped: list[dict[str, str]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_dir() and not path.is_symlink():
+            continue
+        relative = path.relative_to(repo).as_posix()
+        problem = adapter_problem(repo, relative, hashes.get(relative))
+        if problem:
+            skipped.append({"path": relative, "reason": problem + ": preserved"})
+        else:
+            remove.append({"kind": "file", "path": relative, "backup": False})
+    return remove, skipped
+
+
 def plan_uninstall(repo: Path) -> UninstallPlan:
     """Построить план полного удаления харнесса без изменения файлов."""
     checkout = repo.expanduser().resolve()
@@ -158,7 +203,29 @@ def plan_uninstall(repo: Path) -> UninstallPlan:
         elif active:
             blocked = "есть активные batch оркестрации: завершите или отмените их перед удалением"
         backup.extend(_harness_backups(checkout, _managed_files(checkout)))
-        remove.append({"kind": "directory", "path": HARNESS_DIR, "backup": False})
+        adapters, preserved = _adapter_removal_plan(checkout)
+        if preserved:
+            skipped.extend(preserved)
+            remove.extend(adapters)
+            for child in sorted(harness_dir.iterdir()):
+                if child.name == "adapters":
+                    continue
+                kind = (
+                    "link"
+                    if child.is_symlink()
+                    else "directory"
+                    if child.is_dir()
+                    else "file"
+                )
+                remove.append(
+                    {
+                        "kind": kind,
+                        "path": child.relative_to(checkout).as_posix(),
+                        "backup": False,
+                    }
+                )
+        else:
+            remove.append({"kind": "directory", "path": HARNESS_DIR, "backup": False})
 
     for relative, target in DISCOVERY_LINKS.items():
         path = checkout / relative

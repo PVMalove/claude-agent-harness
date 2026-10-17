@@ -3,6 +3,16 @@
     "commit": "",
     "pr": ""
   },
+  "permissions": {
+    "allow": [
+      "Bash(python .harness/orchestration/coordinator.py --repo * dispatch wait*)",
+      "Bash(python .harness/orchestration/coordinator.py --repo * dispatch status*)",
+      "Bash(python .harness/orchestration/coordinator.py --repo * batch auto-decide*)",
+      "Bash(python .harness/orchestration/coordinator.py --repo * batch auto-report*)",
+      "Bash(python .harness/orchestration/coordinator.py --repo * batch decision-packet*)",
+      "Bash(python .harness/orchestration/coordinator.py --repo * ledger validate*)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

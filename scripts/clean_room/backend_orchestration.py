@@ -96,6 +96,29 @@ def _require_recovery_route_table(playbook: str) -> None:
         )
 
 
+def _require_startup_recovery_contract(skill: str, playbook: str) -> None:
+    """Обязательное правило #679: skill и playbook называют команды восстановления после сбоя запуска.
+
+    Проверяются только имена команд и флагов, а не формулировки: перефразирование не ломает check.
+    """
+    required = (
+        "batch auto-report",
+        "batch decision-packet",
+        "dispatch status",
+        "ledger validate",
+        "batch resume-stop",
+        "batch rewind",
+        "dispatch runtime-probe",
+        "--runtime-stopped",
+    )
+    for name, text in (("implement skill", skill), ("playbook", playbook)):
+        missing = [token for token in required if token not in text]
+        if missing:
+            sys.exit(
+                f"{name} is missing startup-recovery commands: {', '.join(missing)}"
+            )
+
+
 def run(ctx: SimpleNamespace) -> None:
     """Установка backend-orchestration, Repo Map и health.
 
@@ -384,6 +407,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not playbook_path.is_file():
         sys.exit("backend-orchestration playbook missing")
     playbook = playbook_path.read_text(encoding="utf-8")
+    _require_startup_recovery_contract(installed_implement, playbook)
     contract = orchestration_project / ".harness/docs/technical-english.md"
     for continuation_rule in ("integration next", "verification-failure"):
         if continuation_rule not in playbook:

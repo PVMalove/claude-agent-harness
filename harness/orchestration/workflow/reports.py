@@ -181,6 +181,17 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
         settle(repo, root, ledger, _load_dispatch(root, args.dispatch)["batch_id"])
         dispatch, status = _live_status(root, args.dispatch)
         confirmation = _confirm_contract(ledger, repo, root, dispatch, status, args)
+        progress = dispatch.get("preserved_progress")
+        if (
+            progress is not None
+            and not status.get("model_self_report")
+            and status.get("last_event") != "resumed"
+        ):
+            from harness.orchestration.workflow import preserved_progress
+
+            batch = _load_batch(root, dispatch["batch_id"])
+            _validate_batch_integrity(root, batch)
+            preserved_progress.require_current(repo, root, batch, progress)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
         attestation: JsonObject | None = None

@@ -275,6 +275,10 @@ DEFAULT_COMMUNICATION_POLICY = {
     "coordinator_report_language": "ru",
 }
 LIVE_DISPATCH_STATES = {DispatchState.DISPATCHED, DispatchState.WORKING}
+# The read-only commands an operator inspects before choosing any recovery or abandon (#679).
+RECOVERY_EVIDENCE_COMMANDS = (
+    "batch auto-report, batch decision-packet, dispatch status and ledger validate"
+)
 REVIEW_SEVERITIES = {"none", "clean", "warning", "blocker"}
 FINDING_SEVERITIES = {"info", "warning", "blocker"}
 # Retry thresholds ordered by rank; `error` is a threshold only and ranks with `blocker`.

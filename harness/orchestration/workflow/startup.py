@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
 from harness.orchestration.core.git_utils import _git
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -30,6 +32,102 @@ FIELDS = frozenset(
         "record_sha256",
     }
 )
+
+
+WorkerProcessState = Literal[
+    "absent", "reported", "rejected-at-startup", "stopped", "live", "unknown"
+]
+# A restart needs a known worker outcome; silence, a timeout or a stop ACK is never one.
+RESTARTABLE_WORKER_STATES: frozenset[WorkerProcessState] = frozenset(
+    {"absent", "reported", "rejected-at-startup", "stopped"}
+)
+
+
+def worker_process_state(
+    status: Mapping[str, object], *, runtime_stopped: bool = False
+) -> WorkerProcessState:
+    """Return the strongest recorded fact about the worker process, never a guess from silence.
+
+    ``absent``: the adapter could not start the runtime, so no worker exists.  ``reported``: the
+    worker returned its final report.  ``rejected-at-startup``: the coordinator refused its
+    model/worktree self-report; recovery retires that dispatch and the ledger rejects its late
+    writes, which is the existing ``resume-stop`` contract for a mismatch.  ``stopped``: the
+    operator confirmed with ``--runtime-stopped`` that the worker has stopped.  ``live`` and
+    ``unknown`` never allow a restart.
+    """
+    state = status.get("state")
+    if state in LIVE_DISPATCH_STATES:
+        return "live"
+    failure = status.get("runtime_failure")
+    if isinstance(failure, Mapping) and failure.get("worker_started") is False:
+        return "absent"
+    if state == "reported":
+        return "reported"
+    if runtime_stopped:
+        return "stopped"
+    if any(
+        isinstance(status.get(field), Mapping)
+        and cast(Mapping[str, object], status[field]).get("match") is False
+        for field in ("model_self_report", "worktree_attestation")
+    ):
+        return "rejected-at-startup"
+    return "unknown"
+
+
+def assess_startup(
+    dispatch: Mapping[str, object],
+    status: Mapping[str, object],
+    *,
+    runtime_stopped: bool = False,
+) -> JsonObject:
+    """Explain a stopped startup from recorded facts without inventing a model or an exit.
+
+    The classification names the strongest cause: a refused self-report (``model-mismatch``,
+    ``worktree-mismatch``, the stop reasons ``auto-report`` already uses), then a runtime failure,
+    then a missing self-report.  A runtime probe never fills a missing self-report.
+    """
+    from harness.orchestration.runtime_attestation import requires_attestation
+    from harness.orchestration.workflow import failure_classifier
+
+    model = status.get("model_self_report")
+    model_match = (
+        cast(Mapping[str, object], model).get("match")
+        if isinstance(model, Mapping)
+        else None
+    )
+    tree = status.get("worktree_attestation")
+    tree_match = not requires_attestation(dispatch) or (
+        isinstance(tree, Mapping) and tree.get("match") is True
+    )
+    failure = status.get("runtime_failure")
+    runtime_failure = failure_classifier.classify_runtime_failure(
+        failure if isinstance(failure, Mapping) else None
+    )
+    worker = worker_process_state(status, runtime_stopped=runtime_stopped)
+    if model_match is False:
+        classification: str | None = "model-mismatch"
+    elif model_match is True and not tree_match:
+        classification = "worktree-mismatch"
+    elif runtime_failure is not None:
+        classification = cast(str, runtime_failure["category"])
+    elif model_match is None:
+        classification = "model-self-report-missing"
+    else:
+        classification = None
+    unknowns: list[str] = []
+    if model_match is None:
+        unknowns.append("the active model identity is not known")
+    if worker in {"live", "unknown", "rejected-at-startup"}:
+        unknowns.append(f"worker termination is not proven ({worker})")
+    return {
+        "classification": classification,
+        "worker_state": worker,
+        "restart_allowed": worker in RESTARTABLE_WORKER_STATES,
+        "model_match": model_match,
+        "worktree_match": tree_match,
+        "runtime_failure": runtime_failure,
+        "unknowns": unknowns,
+    }
 
 
 def _scope(dispatch: JsonObject) -> str:

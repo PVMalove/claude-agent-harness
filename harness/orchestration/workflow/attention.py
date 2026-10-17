@@ -28,6 +28,7 @@ from harness.orchestration.core.constants import (
     CONTEXT_TELEMETRY_SOURCES,
     LIVE_DISPATCH_STATES,
     OPERATIONAL_REASON_CATEGORIES,
+    RECOVERY_EVIDENCE_COMMANDS,
     TERMINAL_BATCH_STATES,
     TOOLING_REASON_CATEGORY,
 )
@@ -69,7 +70,9 @@ def _stale_dispatch_finding(dispatch_id: str, silent: int) -> dict[str, str]:
         "stale-dispatch",
         dispatch_id,
         last_safe_action=f"dispatch {dispatch_id} has been silent for {silent}s; its brief and any report stay as immutable evidence and nothing was cancelled",
-        recommended_human_action="decide whether to keep waiting, cancel the unsent brief, or abandon the batch; then resolve this attention",
+        recommended_human_action=f"silence does not prove the worker stopped; inspect {RECOVERY_EVIDENCE_COMMANDS}, "
+        "then keep waiting, or stop the runtime and record dispatch cancel --runtime-stopped before "
+        "batch resume-stop or batch rewind; batch abandon is a separate human decision; then resolve this attention",
     )
 
 

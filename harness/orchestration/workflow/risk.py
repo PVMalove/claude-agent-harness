@@ -46,6 +46,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     RiskAssessmentRecord,
 )
+from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.carried_items import (
     open_coordinator_findings,
     open_incomplete_items,
@@ -122,11 +123,9 @@ def _trigger_patterns(trigger: str) -> tuple[str, ...]:
     return tuple(patterns)
 
 
-def _candidate_changed_files(
-    repo: Path, batch: JsonObject, candidate: str
-) -> list[str]:
-    """The files ``candidate`` changes against the batch base, as a risk assessment measures them."""
-    base = batch.get("integration_base_commit") or batch.get("base_commit")
+def _candidate_changed_files(repo: Path, base: str | None, candidate: str) -> list[str]:
+    """The files ``candidate`` changes against ``base`` (``rebase.batch_base``), as a risk
+    assessment measures them."""
     return (
         _changed_files_between(repo, base, candidate)
         if base
@@ -164,7 +163,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "risk assessment requires a batch awaiting coordinator approval",
                 remedy="move the batch to awaiting coordinator approval before registering a risk assessment",
             )
-        base = batch.get("integration_base_commit") or batch.get("base_commit")
+        base = rebase.batch_base(repo, batch)
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)
             if requested_base != base:
@@ -177,7 +176,7 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 "risk assessment base must be an ancestor of the candidate commit",
                 remedy="pass a risk assessment base that is an ancestor of candidate_commit",
             )
-        if _candidate_changed_files(repo, batch, candidate) != changed_files:
+        if _candidate_changed_files(repo, base, candidate) != changed_files:
             raise CoordinatorError(
                 "changed_files must exactly match the candidate diff",
                 remedy="regenerate changed_files from the actual diff for candidate_commit",

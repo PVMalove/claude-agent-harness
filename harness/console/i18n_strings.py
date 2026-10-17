@@ -8,6 +8,22 @@ is not listed: it comes from the CLI and stays as it is."""
 from __future__ import annotations
 
 EN: dict[str, str] = {
+    "Адаптеры runtime": "Runtime adapters",
+    "актуален": "current",
+    "требует обновления": "outdated",
+    "Установка и обновление требуют просмотра и подтверждения.": "Installation and updates require a preview and confirmation.",
+    "Просмотр установки и обновления": "Preview installation and update",
+    "Обновить адаптеры runtime?": "Update runtime adapters?",
+    "Сначала установите харнесс проекта": "Install the project harness first",
+    "Не удалось прочитать snapshot харнесса": "Could not read the harness snapshot",
+    "Возможности: ": "Capabilities: ",
+    "Обновятся управляемые файлы харнесса:": "Managed harness files will be updated:",
+    "Seed-файлы сохраняются: ": "Seed files are preserved: ",
+    "Capability backend-orchestration не выбрана. Выберите состав явно в CLI:": "The backend-orchestration capability is not selected. Select capabilities explicitly in the CLI:",
+    "Сначала устраните локальные изменения и коллизии. Принудительное обновление не включено.": "Resolve local changes and collisions first. Forced updates are disabled.",
+    "Требуется явное подтверждение просмотра": "Explicit preview confirmation is required",
+    "План изменился: выполните просмотр заново": "The plan changed: preview it again",
+    "Сначала устраните локальные изменения и коллизии": "Resolve local changes and collisions first",
     # frame titles
     "Цель": "Target",
     "Шаг": "Step",

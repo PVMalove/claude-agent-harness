@@ -180,7 +180,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `symbol_graph_depth` | 2 | Глубина import-графа для каждого автоматического пакета. |
 | `max_related_tests` | 25 | Предохранитель: больше связанных тестов — ошибка сборки пакета. |
 | `min_starting_files` / `max_starting_files` | 5 / 10 | Число стартовых файлов при ручной регистрации пакета. |
-| `section_index_min_tokens` | 20000 | С какого размера Markdown попадает в пакет оглавлением, а не целиком. |
+| `section_index_min_tokens` | 20000 | С какого размера Markdown- или Python-файл попадает в пакет оглавлением или индексом символов, а не целиком. |
 
 ### `adaptive_continuation_policy`
 
@@ -316,15 +316,19 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 не создаёт новую остановку. `blocked` и `failed` сохраняют работу и допускают ручное восстановление.
 Терминальные состояния — `completed`, `abandoned` и старое `not-required`.
 
-- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина>`
+- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина> [--runtime-stopped]`
   готовит повтор того же этапа после доказанного сбоя запуска. Каждый следующий шаг требует
-  человеческого approval; исходный `auto_stop` остаётся историей.
+  человеческого approval; исходный `auto_stop` остаётся историей. Если `dispatch status` показывает
+  `live` или `unknown`, команда отказывает: остановите worker через runtime и передайте
+  `--runtime-stopped`.
 - `batch rewind --batch <id> --to code-review --approved-by <оператор> --approved-at <UTC> --note <причина>`
   возвращает к достигнутому этапу. Git history не меняется. Старые зависимые risk/review/QA
   перестают разрешать продолжение. Новая работа developer расходует оставшийся retry budget.
 - `dispatch cancel --dispatch <id> --runtime-stopped --approved-by <оператор> --approved-at <UTC> --reason <причина>`
   записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
 - `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
+- `dispatch runtime-probe --dispatch <id> --runtime-command <runtime> [--runtime-arg <аргумент>]`
+  запускает read-only READY probe app-server на brief dispatch без worker и без записи в ledger.
 - `recovery status --batch <id> --json` только читает: проверки сверки, их диагностику с pointer,
   отредактированными expected и received и подсказкой, а также доступные действия.
 - `recovery reload --batch <id>` заново читает и проверяет текущий конфиг и не запускает worker.

@@ -142,6 +142,9 @@ from harness.orchestration.workflow.decisions import decide_batch as decide_batc
 from harness.orchestration.workflow.decisions import decision_packet as decision_packet
 from harness.orchestration.workflow.delivery import dispatch_status as dispatch_status
 from harness.orchestration.workflow.delivery import publish_dispatch as publish_dispatch
+from harness.orchestration.workflow.delivery import (
+    probe_dispatch_runtime as probe_dispatch_runtime,
+)
 from harness.orchestration.workflow.delivery import send_dispatch as send_dispatch
 from harness.orchestration.workflow.delivery import wait_dispatch as wait_dispatch
 from harness.orchestration.workflow.dispatch import cancel_dispatch as cancel_dispatch

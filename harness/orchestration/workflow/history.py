@@ -614,7 +614,7 @@ def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> 
     for registration in reversed(registrations):
         if (
             isinstance(registration, dict)
-            and registration.get("dispatch_id") in excluded
+            and registration.get("source_dispatch_id") in excluded
         ):
             continue
         if not isinstance(registration, dict):
@@ -1300,6 +1300,9 @@ def _validate_dispatch(
         pinned = read_snapshot(dispatch)
         config = pinned["config"]
     _validate_harness_runtime_snapshot(repo, batch)
+    from harness.orchestration.workflow import preserved_progress
+
+    preserved_progress.validate_dispatch(batch, dispatch)
     _reject_sensitive(dispatch, "dispatch record")
     try:
         runtime_access.validate_binding(dispatch)
@@ -1341,6 +1344,7 @@ def _validate_dispatch(
     accepted |= {fields - {"delta_review_scope"} for fields in set(accepted)}
     # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
+    accepted |= {fields | {"preserved_progress"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",

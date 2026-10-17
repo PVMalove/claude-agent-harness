@@ -11,6 +11,8 @@
 - **[Совместимость рантаймов с systemFields.v1]:** назначение рантайма объявляет версию полем `system_fields_contract`, внешний adapter — глаголом `contract`, проектный extension — атрибутом `system_fields_contract`, а worker может подтвердить её флагом `dispatch self-report --system-fields-contract`. `dispatch preflight`, `dispatch create`, `dispatch send`, `qa run` и `report submit` до запуска и принятия возвращают структурированный отказ `runtime-compatibility` с evidence; несовместимый отчёт сохраняется только как непринятое evidence (#684).
 - **[Удержание batch вместо abandon]:** неизвестные, отсутствующие, нечитаемые или несовместимые данные удерживают batch в runtime state store и поднимают attention `operational-hold`. Decision packet, `route_preview` и auto policy в таком случае не предлагают abandon, успех или маршрут по умолчанию. После устранения причины человек разрешает attention командой `batch attention resolve`, затем `recovery resume` снимает удержание (#684).
 - **[Команды recovery]:** `recovery status`, `recovery reload` и `recovery resume --batch` работают без TTY и без Textual, печатают документ `recoveryStatus.v1` и завершаются кодом 0 или 2. `resume` сверяет store, ledger, brief, снимок harness runtime, snapshot конфигурации, Context Package открытых brief с base и candidate, совместимость, liveness, attention и approval, снимает удержание и не повторяет подтверждённые шаги. Общий API `recovery_api` даёт консоли действия fix, reload, resume, skip и abort с durable intent (#684).
+- **[Внешние runtime-адаптеры]:** Claude Code и Codex запускают отдельный worker в назначенном checkout по параметрам брифа. CLI устанавливает и обновляет адаптеры вместе с `backend-orchestration`, а настройки консоли показывают их состояние и требуют просмотра с подтверждением. Локальные файлы защищены от неявной замены; общий seed добавляет шесть разрешений для наблюдения за оркестрацией (#715).
+- **[Запуск Claude worker в issue-worktree]:** Установка `backend-orchestration` добавляет `.harness/adapters/claude_worker.py` — runtime adapter для `transport: external`. Инструмент Agent не умеет стартовать subagent в существующем checkout (subagent стартует в основном checkout, `EnterWorktree` его там отклоняет), поэтому Claude in-process worker не может стартовать в `worker_worktree`. `dispatch send --adapter` запускает адаптер в `worker_worktree`, а он стартует отделённый headless `claude -p` на модели, effort и `allowed_tools` из брифа с `dontAsk`. Адаптер лежит вне хешируемого runtime-пакета, поэтому его установка не меняет пин открытого batch. Skill `implement` и руководство `worktrees.md` описывают оба пути: адаптер даёт настоящий cwd, а in-process subagent работает по абсолютным путям и `git -C`, и его self-report доказывает checkout, в котором он работает, а не cwd (#718).
 
 ### Changed
 
@@ -21,10 +23,36 @@
 ### Fixed
 
 - **[Повтор publish и qa run]:** `dispatch publish` и `qa run` завершают прерванную запись до чтения batch, поэтому повтор команды после сбоя доходит до результата (#727).
+- **[Восстановление незавершённой разработки]:** `batch rewind --preserved-commit` сохраняет явно подтверждённые коммиты и перечисленные через `--preserved-file` незакоммиченные файлы остановленного writer без отчёта или checkpoint. Следующий запуск проверяет сохранённый checkout; история, ручные согласования и бюджеты повторов сохраняются (#733).
+- **[Кандидат после rewind]:** История и проверка ledger используют `source_dispatch_id` регистрации кандидата, поэтому повторный rewind после регистрации сохраняет читаемый ledger (#715).
 
 ### Breaking Changes
 
 - **[Обязательное объявление systemFields.v1]:** внешний adapter должен отвечать на глагол `<adapter> contract [args] --repo <repo> --brief <brief>` строкой `{"system_fields_contract": "systemFields.v1"}`, а проектный extension — объявлять атрибут `system_fields_contract`. Extension без атрибута отклоняется в `dispatch preflight`, `dispatch create`, `dispatch send` и `qa run`, adapter без глагола `contract` — в `dispatch send`. Отказ `runtime-compatibility` не запускает worker; в `dispatch send` и `qa run` он ещё и удерживает batch до `recovery resume` (#684).
+
+## [1.4.6] - 2026-10-14
+
+### Fixed
+
+- **[База повторного batch]:** Batch, созданный на ветке с коммитами более раннего batch того же тикета, считает свои изменения от `branch_start_commit`, а не от `integration_base_commit`. Отчёты developer и publish, `scope_warnings`, checkpoint и оценка риска больше не включают чужие коммиты в `changed_files`, `commit_map` и `review_scope`. `risk assess --base-commit` принимает эту базу; замещающий batch и бриф считают, как раньше (#686).
+- **[Context Package]:** Крупный Python-файл среди стартовых входит в пакет индексом символов с диапазонами строк, а не целиком. Если пакет не помещается в лимит токенов, самые тяжёлые стартовые файлы заменяются индексом вместо отказа `dispatch create` и `dispatch propose` (#687).
+
+## [1.4.5] - 2026-10-13
+
+### Added
+
+- **[Стадии в отчётах консоли]:** Раздел «Отчёты» показывает все записанные стадии, в том числе без отчёта, а не только завершённые отчёты. Стадия без отчёта открывает хронологию batch, а список обновляется клавишей `r` или кнопкой ↻ (#676).
+- **[Фильтры и порядок стадий]:** Стадии отбираются по статусу и по завершённости (все, незавершённые, завершённые) вместе с прежними фильтрами по тикету, роли, результату и дате. Порядок задаётся по времени, тикету, роли или статусу в обе стороны, а стадии с неизвестным временем остаются в конце (#676).
+- **[Время до PR]:** Список и хронология batch показывают начало работы и время до создания PR, которое консоль при входе и по обновлению читает через `gh` или `glab` без записи в ledger. Если запрос не удался, значение остаётся «неизвестно», а при отсутствии PR консоль пишет «PR ещё не создан» (#676).
+- **[Оценка запуска в dispatch status]:** `dispatch status` показывает для каждого dispatch оценку `startup`: состояние worker (`absent`, `reported`, `rejected-at-startup`, `stopped`, `live` или `unknown`), классификацию сбоя и то, что осталось неизвестным. Capacity, rate-limit и service-unavailable различаются между собой и отделены от дефектов кода (#679).
+- **[Проверка флагов adapter]:** `dispatch send` сверяет `--adapter-arg` с `dispatch --help` adapter и отклоняет неподдерживаемый флаг до передачи brief, оставляя dispatch одобренным и неотправленным. Если справка не отвечает, причина попадает в `adapter_preflight` как ограничение, а не как подтверждение возможностей (#679).
+- **[Проба runtime без worker]:** `dispatch runtime-probe` проверяет app-server runtime по brief: модель в `model/list`, поля `thread/start` и один `turn/start` на read-only thread без инструментов. Ошибка capacity, rate-limit или недоступности после `thread/start` даёт классифицированный сбой, а не READY; проба ничего не пишет в ledger и не заменяет model self-report (#679).
+
+### Fixed
+
+- **[Рекомендация для списка в настройке]:** Принятая рекомендация для поля-списка обновляет галочки выбора, а последующие правки сохраняются; частичный выбор больше не искажает JSON черновика (#676).
+- **[Преждевременный abandon]:** Предупреждение о молчащем dispatch и сообщения о восстановлении называют read-only команды `batch auto-report`, `batch decision-packet`, `dispatch status` и `ledger validate` и предлагают ожидание, `resume-stop` или `rewind`, а `batch abandon` остаётся отдельным решением человека. Исчерпанный бюджет инфраструктурных повторов оставляет batch в состоянии остановки до выбора человека, счётчики не сбрасываются (#679).
+- **[Перезапуск неизвестного worker]:** `batch resume-stop` отказывает, если `dispatch status` показывает worker в состоянии `live` или `unknown`, пока оператор не остановит worker через runtime и не повторит команду с `--runtime-stopped`. Прежний путь для отклонённого self-report, отчёта и сбоя запуска не меняется (#679).
 
 ## [1.4.4] - 2026-10-12
 

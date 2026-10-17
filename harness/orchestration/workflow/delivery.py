@@ -19,6 +19,7 @@ from harness.orchestration import (
     operation_access,
     runtime_access,
     runtime_compatibility,
+    runtime_probe,
 )
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
@@ -80,13 +81,13 @@ from harness.orchestration.runtime_effect import (
 from harness.orchestration.runtime_intent import canonical_sha256
 from harness.orchestration.runtime_reconcile import settle
 from harness.orchestration.runtime_state_store import RuntimeStateStore
+from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
     _hold_with_attention,
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
-    _effective_base,
     _validate_batch_integrity,
     _validate_dispatch,
 )
@@ -323,6 +324,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         _validate_batch_integrity(root, batch)
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
+        from harness.orchestration.workflow import preserved_progress
+
+        progress = dispatch.get("preserved_progress")
+        if progress is not None:
+            preserved_progress.require_current(repo, root, batch, progress)
         from harness.orchestration.workflow.recovery import verified_checkout
 
         worker_path = getattr(args, "worktree", None) or (
@@ -391,6 +397,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         command = None
         adapter_args = list(args.adapter_arg or [])
+        adapter_preflight: JsonObject | None = None
         if adapter is not None:
             command = adapter_command(adapter)
             if any(
@@ -402,6 +409,19 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
                     "adapter arguments cannot override dispatch, repo or brief",
                     remedy="pass adapter arguments that do not collide with --dispatch, --repo or --brief",
                 )
+            if adapter_args:
+                # Only now: a send that fails any check above never runs the adapter (#679).
+                adapter_preflight = runtime_probe.probe_adapter(
+                    command, adapter_args, cwd=Path(launch["worktree"])
+                )
+                if adapter_preflight["status"] == "unsupported":
+                    raise CoordinatorError(
+                        "runtime adapter dispatch does not support "
+                        + ", ".join(adapter_preflight["unsupported_arguments"]),
+                        remedy="remove or repair the unsupported --adapter-arg flags and send the "
+                        "same approved dispatch again; nothing was handed off and the brief is "
+                        "unchanged",
+                    )
             command.append("dispatch")
             command.extend(adapter_args)
             command.extend(["--repo", str(repo), "--brief", str(brief_path)])
@@ -457,6 +477,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         "report_staging_path": dispatch.get("report_staging_path")
         or str(_agent_inbox(repo) / f"{dispatch['dispatch_id']}.json"),
         "next_role_action": "dispatch self-report",
+        **({"adapter_preflight": adapter_preflight} if adapter_preflight else {}),
         "heartbeat": {
             "every_seconds": dispatch.get("liveness", {}).get(
                 "heartbeat_every_seconds"
@@ -559,6 +580,8 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
 def dispatch_status(args: argparse.Namespace) -> JsonObject:
     """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
     reason for the coordinator to change state on its own."""
+    from harness.orchestration.workflow.startup import assess_startup
+
     repo = _repo(args)
     root = _state_root(args, repo)
     config = core_config._config(repo)
@@ -616,6 +639,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "transport": dispatch.get("resolved_transport"),
                     "resolved_model": dispatch["resolved_model"],
                     "model_self_report": status.get("model_self_report"),
+                    "startup": assess_startup(dispatch, status),
                     "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
@@ -647,6 +671,36 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
         "stale_after_seconds": threshold,
         "stale": [entry["dispatch_id"] for entry in entries if entry["stale"]],
         "dispatches": entries,
+    }
+
+
+def probe_dispatch_runtime(args: argparse.Namespace) -> JsonObject:
+    """Run the read-only app-server READY probe (#552) against one dispatch's immutable brief.
+
+    The probe changes no ledger record and hands no brief to a worker; its result is evidence for
+    a launch or recovery decision and never replaces the worker's model self-report.
+    """
+    timeout = (
+        runtime_probe.APP_SERVER_PROBE_TIMEOUT_SECONDS
+        if args.timeout is None
+        else args.timeout
+    )
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 1:
+        raise CoordinatorError(
+            "runtime probe timeout must be a positive number of seconds",
+            remedy="pass --timeout as a positive number of seconds",
+        )
+    repo = _repo(args)
+    dispatch = _load_dispatch(_state_root(args, repo), args.dispatch)
+    worktree = Path(args.worktree or dispatch["worktree"]).resolve()
+    return {
+        "dispatch_id": dispatch["dispatch_id"],
+        **runtime_probe.probe_app_server(
+            [args.runtime_command, *(args.runtime_arg or [])],
+            dispatch,
+            cwd=worktree,
+            timeout=timeout,
+        ),
     }
 
 
@@ -788,9 +842,10 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
+        base = rebase.batch_base(repo, batch)
         changed = (
-            _changed_files_between(repo, _effective_base(batch), candidate)
-            if batch.get("base_commit")
+            _changed_files_between(repo, base, candidate)
+            if base
             else _commit_changed_files(repo, candidate)
         )
         report = {

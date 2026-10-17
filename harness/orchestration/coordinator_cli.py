@@ -241,6 +241,12 @@ def build_parser(
     resume_stop.add_argument("--approved-by", required=True)
     resume_stop.add_argument("--approved-at", required=True)
     resume_stop.add_argument("--note", required=True)
+    resume_stop.add_argument(
+        "--runtime-stopped",
+        action="store_true",
+        help="operator confirms the worker whose self-report was refused, or whose outcome is "
+        "unknown, has actually stopped; silence or a timeout is insufficient",
+    )
     resume_stop.set_defaults(
         handler=handlers.resume_stopped_batch, installed_runtime_only=True
     )
@@ -265,6 +271,16 @@ def build_parser(
     rewind.add_argument("--approved-by", required=True)
     rewind.add_argument("--approved-at", required=True)
     rewind.add_argument("--note", required=True)
+    rewind.add_argument(
+        "--preserved-commit",
+        help="explicitly preserve the full HEAD SHA of the latest writer cancelled with --runtime-stopped",
+    )
+    rewind.add_argument(
+        "--preserved-file",
+        action="append",
+        default=[],
+        help="confirm one pending repository-relative writer path; repeat for every dirty file",
+    )
     rewind.set_defaults(handler=handlers.rewind_batch, installed_runtime_only=True)
     batch_restore_runtime = batch_commands.add_parser(
         "restore-runtime",
@@ -737,6 +753,27 @@ def build_parser(
         help="operator confirms the old startup session stopped; required for --trigger startup-failure",
     )
     dispatch_resume.set_defaults(handler=handlers.resume_dispatch)
+    dispatch_runtime_probe = dispatch_commands.add_parser(
+        "runtime-probe",
+        help="read-only app-server READY probe against a dispatch's brief; starts no worker",
+    )
+    _common(dispatch_runtime_probe)
+    dispatch_runtime_probe.add_argument("--dispatch", required=True)
+    dispatch_runtime_probe.add_argument(
+        "--runtime-command", required=True, help="the runtime executable to probe"
+    )
+    dispatch_runtime_probe.add_argument(
+        "--runtime-arg",
+        action="append",
+        help="one argument that starts its app-server on stdio; repeat as needed",
+    )
+    dispatch_runtime_probe.add_argument(
+        "--worktree", help="worker checkout to probe; defaults to the brief's worktree"
+    )
+    dispatch_runtime_probe.add_argument(
+        "--timeout", type=int, help="seconds for the whole probe; defaults to 120"
+    )
+    dispatch_runtime_probe.set_defaults(handler=handlers.probe_dispatch_runtime)
     dispatch_status_command = dispatch_commands.add_parser("status")
     _common(dispatch_status_command)
     dispatch_status_command.add_argument("--dispatch")
