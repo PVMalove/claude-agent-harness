@@ -1457,7 +1457,10 @@ class RecoveryTests(unittest.TestCase):
         marker = self.tmp / "adapter-cwd.txt"
         adapter = self.tmp / "cwd-adapter.py"
         adapter.write_text(
-            "import os\nfrom pathlib import Path\n"
+            "import os, sys\nfrom pathlib import Path\n"
+            "if sys.argv[1] == 'contract':\n"
+            '    print(\'{"system_fields_contract": "systemFields.v1"}\')\n'
+            "    sys.exit(0)\n"
             f"Path({str(marker)!r}).write_text(os.getcwd(), encoding='utf-8')\n",
             encoding="utf-8",
         )

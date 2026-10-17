@@ -570,7 +570,8 @@
           "description": "Список используемых профилей провайдеров из provider_profiles."
         },
         "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6.1-sol', 'gpt-6-luna' и др."},
-        "effort": {"type": "string", "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'."}
+        "effort": {"type": "string", "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'."},
+        "system_fields_contract": {"type": "string", "minLength": 1, "description": "Версия контракта системных полей, на которой работает рантайм, например 'systemFields.v1'. Без поля in-process рантайм работает на версии самого harness, а external-рантайм объявляет её глаголом адаптера 'contract'. Неподдерживаемую версию dispatch preflight и dispatch send отклоняют как runtime-compatibility."}
       }
     },
     "toolList": {

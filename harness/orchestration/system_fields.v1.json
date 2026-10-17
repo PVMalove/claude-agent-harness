@@ -924,6 +924,33 @@
         "unsupported"
       ]
     },
+    "runtime_compatibility.status": {
+      "description": "How one party's declared systemFields contract version compares with the version a dispatch runs under. dispatch preflight, dispatch create and dispatch send start nothing and report submit accepts nothing unless every declaration is compatible.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "compatible": "The party declares the supported version the dispatch runs under; the step proceeds.",
+        "missing": "The party declares no version; the step stops with a runtime-compatibility refusal and its evidence.",
+        "unsupported": "Sentinel: the party declares a version this harness does not support. The step stops with a runtime-compatibility refusal and its evidence; nothing is read with defaults filled in.",
+        "mismatch": "The party declares a supported version other than the one the dispatch runs under; the step stops with a runtime-compatibility refusal and its evidence."
+      },
+      "sentinels": [
+        "unsupported"
+      ]
+    },
+    "runtime_compatibility.subject": {
+      "description": "Who declared a systemFields contract version in a runtime-compatibility check.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "runtime-assignment": "A runtime assignment of the project config; an in-process runtime without the field runs the harness's own version.",
+        "external-adapter": "An external runtime adapter, through its contract verb.",
+        "extension": "A selected project extension, through its system_fields_contract attribute.",
+        "dispatch-brief": "The contract version pinned in the approved brief's configuration snapshot.",
+        "worker-self-report": "The worker's optional confirmation in dispatch self-report.",
+        "completion-report": "The optional system_fields_contract field of a completion report."
+      }
+    },
     "extension.kind": {
       "description": "Kind of an orchestration extension in the project extensions section; each kind has one entry point.",
       "automatic_decisions": false,

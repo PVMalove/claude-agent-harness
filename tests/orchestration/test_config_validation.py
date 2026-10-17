@@ -404,3 +404,50 @@ def test_overlapping_alias_rule_is_diagnosed_without_guessing(
     assert result.returncode == 2
     assert json.loads(result.stdout)["diagnostics"][0]["code"] == "config-ambiguous"
     assert (project / ".harness/orchestration.json").read_bytes() == before
+
+
+def test_a_runtime_assignment_may_declare_its_system_fields_contract(
+    project: Path,
+) -> None:
+    authored = read_config(project)
+    runtime = authored["assignment_plans"]["architect"]["runtimes"]["claude"]
+    runtime["system_fields_contract"] = "systemFields.v1"
+    write_config(project, authored)
+
+    result = run_cli(project, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["valid"] is True
+
+
+@pytest.mark.parametrize("value", ["", 1, None])
+def test_a_blank_or_nonstring_contract_declaration_is_a_config_error(
+    project: Path, value: object
+) -> None:
+    authored = read_config(project)
+    runtime = authored["assignment_plans"]["architect"]["runtimes"]["claude"]
+    runtime["system_fields_contract"] = value
+    write_config(project, authored)
+
+    result = run_cli(project, "--json")
+
+    assert result.returncode == 2
+    pointers = {item["pointer"] for item in json.loads(result.stdout)["diagnostics"]}
+    assert "/assignment_plans/architect/runtimes/claude/system_fields_contract" in (
+        pointers
+    )
+
+
+def test_an_unsupported_contract_version_is_left_to_the_compatibility_check(
+    project: Path,
+) -> None:
+    """The version is a runtime-compatibility refusal of dispatch preflight and send, with
+    its evidence; the config itself stays valid."""
+    authored = read_config(project)
+    runtime = authored["assignment_plans"]["architect"]["runtimes"]["claude"]
+    runtime["system_fields_contract"] = "systemFields.v2"
+    write_config(project, authored)
+
+    result = run_cli(project, "--json")
+
+    assert result.returncode == 0, result.stdout + result.stderr

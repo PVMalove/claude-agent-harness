@@ -614,3 +614,84 @@ def test_a_git_command_that_hangs_or_cannot_start_is_a_preflight_error(
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RuntimeCompatibilityPreflightTests(_PreflightFixture):
+    """Preflight checks the systemFields declarations before anything else (issue #684)."""
+
+    def test_a_compatible_preflight_shows_its_declarations(self) -> None:
+        packet = self._prepare().decision_packet
+        evidence = cast(JsonObject, packet["runtime_compatibility"])
+        self.assertTrue(evidence["compatible"])
+        self.assertEqual(evidence["checked_at_send"], [])
+        [declaration] = cast(list[JsonObject], evidence["declarations"])
+        self.assertEqual(
+            (declaration["subject"], declaration["source"]),
+            ("runtime-assignment", "built-in"),
+        )
+
+    def test_an_unsupported_assignment_is_refused_before_the_worktree_is_read(
+        self,
+    ) -> None:
+        from harness.orchestration.runtime_compatibility import (
+            RuntimeCompatibilityError,
+        )
+
+        config: JsonObject = {
+            "assignment_plans": {
+                "developer": {
+                    "runtimes": {
+                        "claude": {"system_fields_contract": "systemFields.v2"}
+                    }
+                }
+            }
+        }
+        with (
+            patch.object(dispatch_preflight, "_git") as git,
+            self.assertRaises(RuntimeCompatibilityError) as raised,
+        ):
+            self._prepare(config=config)
+        git.assert_not_called()
+        self.assertEqual(raised.exception.code, "runtime-compatibility")
+        self.assertEqual(raised.exception.step, "preflight")
+
+    def test_an_external_assignment_leaves_its_adapter_to_send(self) -> None:
+        config: JsonObject = {
+            "assignment_plans": {
+                "developer": {"transport": "external", "runtimes": {"claude": {}}}
+            }
+        }
+        evidence = cast(
+            JsonObject,
+            self._prepare(config=config).decision_packet["runtime_compatibility"],
+        )
+        self.assertEqual(evidence["declarations"], [])
+        self.assertEqual(evidence["checked_at_send"], ["external-adapter"])
+
+    def test_an_undeclared_project_extension_is_refused(self) -> None:
+        from harness.orchestration import extensions
+        from harness.orchestration.runtime_compatibility import (
+            RuntimeCompatibilityError,
+        )
+
+        class Notifier:
+            def notify(self, event: object) -> None:
+                return None
+
+        extensions.register("human_notifier", "test-preflight-undeclared", Notifier())
+        self.addCleanup(
+            extensions.unregister, "human_notifier", "test-preflight-undeclared"
+        )
+        config: JsonObject = {
+            **cast(JsonObject, self.state["config"]),
+            "extensions": {"human_notifier": "test-preflight-undeclared"},
+        }
+        with self.assertRaises(RuntimeCompatibilityError) as raised:
+            self._prepare(config=config)
+        statuses = [
+            item["status"]
+            for item in cast(
+                list[JsonObject], raised.exception.evidence["declarations"]
+            )
+        ]
+        self.assertEqual(statuses, ["compatible", "missing"])

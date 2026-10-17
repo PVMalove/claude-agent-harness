@@ -25,6 +25,7 @@ from harness.orchestration import (
     operational_guards,
     runtime_access,
     runtime_attestation,
+    runtime_compatibility,
 )
 from harness.orchestration.core import ci_source, constants, system_fields
 from harness.orchestration.core.runtime_state_contract import RUNTIME_VOCABULARIES
@@ -222,6 +223,7 @@ def test_sentinels_name_their_safe_handling() -> None:
         "ci.verdict_reason": ("unavailable",),
         "operation_access.check_state": ("unsupported",),
         "operation_access.status": ("unsupported",),
+        "runtime_compatibility.status": ("unsupported",),
     }
     registry = load_registry()
     for field_id, names in sentinels.items():
@@ -292,6 +294,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "batch.required_gate",
         "telemetry.session_kind",
         "ledger.generation_purpose",
+        "runtime_compatibility.subject",
     }
 
 
@@ -787,6 +790,12 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
         "operation_access.OperationAccessStatus": operation_access.OperationAccessStatus
     },
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
+    "runtime_compatibility.status": {
+        "runtime_compatibility.STATUSES": runtime_compatibility.STATUSES
+    },
+    "runtime_compatibility.subject": {
+        "runtime_compatibility.SUBJECTS": runtime_compatibility.SUBJECTS
+    },
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
     "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
     "ledger.migration_disposition": {

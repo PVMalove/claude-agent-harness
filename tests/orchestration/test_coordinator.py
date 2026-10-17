@@ -2182,6 +2182,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         from harness.orchestration.runtime_access import AccessError
 
         class ApplyOnly:
+            system_fields_contract = "systemFields.v1"
+
             def observe(
                 self, plan: JsonObject, transport: str
             ) -> extensions.RuntimeAccessObservation:
@@ -2240,6 +2242,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         launches: list[str] = []
 
         class ControlledNative:
+            system_fields_contract = "systemFields.v1"
+
             def observe(
                 self, plan: JsonObject, transport: str
             ) -> extensions.RuntimeAccessObservation:
@@ -8129,6 +8133,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         class Recorder:
+            system_fields_contract = "systemFields.v1"
+
             def __init__(self) -> None:
                 self.events: list[extensions.AttentionEvent] = []
 
@@ -8171,6 +8177,8 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self,
     ) -> None:
         class Broken:
+            system_fields_contract = "systemFields.v1"
+
             def notify(self, event: extensions.AttentionEvent) -> None:
                 raise RuntimeError("chat is down")
 

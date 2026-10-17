@@ -20,6 +20,7 @@ from harness.orchestration import (
     infrastructure_retry,
     operational_guards,
     runtime_access,
+    runtime_compatibility,
 )
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -854,6 +855,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 session_model=getattr(args, "model", None),
                 session_effort=getattr(args, "effort", None),
             )
+        )
+        # No brief is approved for a runtime or extension that speaks another contract.
+        runtime_compatibility.require_assignment(
+            config, role_name, resolved_runtime, transport, step="create"
         )
         # A writer's scope is the batch's explicit scope; a batch planned before scopes existed
         # was bounded by the role's write ceiling alone.

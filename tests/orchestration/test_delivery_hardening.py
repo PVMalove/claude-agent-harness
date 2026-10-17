@@ -19,6 +19,7 @@ from harness.orchestration import coordinator
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.workflow import delivery
 from tests.orchestration import test_coordinator as coordinator_tests
+from tests.orchestration import test_recovery
 
 # Never bind the TestCase class to a module name here: pytest would collect and run its suite again.
 
@@ -131,3 +132,25 @@ def test_adapter_starts_in_the_selected_issue_worktree(tmp_path: Path) -> None:
     delivery._run_adapter(
         [sys.executable, "-c", script, str(tmp_path.resolve())], cwd=tmp_path
     )
+
+
+def test_an_adapter_that_cannot_start_is_an_unavailable_runtime_not_a_contract_refusal(
+    recovery: test_recovery.RecoveryTests,
+) -> None:
+    """The contract verb cannot run either: the hand-off records the unavailable runtime, so the
+    existing launch-failure recovery applies instead of a compatibility verdict (issue #684)."""
+    from harness.orchestration.runtime_compatibility import RuntimeCompatibilityError
+    from tests.orchestration.test_runtime_effect import external_brief, send_external
+
+    brief, _ = external_brief(recovery)
+    adapter = recovery.tmp / "adapter-without-execute-permission"
+    adapter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    adapter.chmod(0o600)
+
+    with pytest.raises(CoordinatorError) as raised:
+        send_external(recovery, brief, adapter)
+
+    assert not isinstance(raised.value, RuntimeCompatibilityError)
+    status = coordinator._load_dispatch_status(recovery.state_dir, brief["dispatch_id"])
+    assert status["runtime_failure"]["kind"] == "runtime-unavailable"
+    assert status["runtime_failure"]["worker_started"] is False
