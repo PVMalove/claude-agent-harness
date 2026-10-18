@@ -373,8 +373,8 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 
 - Компоненты `mode` (`inherit`, `sandbox`, `unsandboxed`), `network.hosts` и `filesystem`
   выбираются независимо от транспорта роли: `in-process` или `external`. Компонент `container`
-  называет образы встроенного исполнителя `docker` (см. ниже); план без него сохраняет прежнюю
-  форму и прежний digest.
+  называет образы встроенного исполнителя `docker`, а `environment` — имена переменных окружения
+  для его worker-а (см. ниже). План без этих компонентов сохраняет прежнюю форму и прежний digest.
 - Override роли (`roles`) или операции (`operations`: `qa`, `git`, `publish`) заменяет только те
   компоненты, которые в нём указаны, а остальные берутся из `defaults`. Операции `qa`, `git` и
   `publish` выполняет сам coordinator, а не worker, поэтому к ним применяются только `defaults` и
@@ -418,7 +418,11 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 
 ```json
 "access_policy": {
-  "defaults": {"mode": "sandbox", "container": {"worker_image": "harness-worker:local"}},
+  "defaults": {
+    "mode": "sandbox",
+    "container": {"worker_image": "harness-worker:local"},
+    "environment": ["LLM_API_KEY"]
+  },
   "roles": {"developer": {"container": {"worker_image": "harness-worker:dev"}}}
 },
 "extensions": {"runtime_access": "docker"}
@@ -430,6 +434,12 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
   берёт теги только из конфига и не опрашивает движок, сеть и образы. `harness health` и схема
   требуют `access_policy.defaults.container`, если выбран `docker`: без него роль осталась бы без
   образа.
+- Компонент `environment` — список уникальных имён переменных окружения (`[A-Za-z_][A-Za-z0-9_]*`),
+  никогда не значений. Override роли или операции заменяет список целиком. План хранит имена в
+  отсортированном виде, поэтому они входят в `plan_digest` и закрепляются в brief при approval:
+  имя, добавленное в конфиг после `dispatch propose`, этот dispatch не получает. Значения остаются в
+  окружении хоста и не попадают в конфиг, brief, digest, argv, evidence, логи, тексты ошибок и слои
+  образа. Auth-файлы агента не монтируются.
 - Каждая роль, которую отправляет `dispatch send`, должна иметь `transport: external` в
   `assignment_plans`. Исполнитель оборачивает команду external-адаптера и не знает конкретного
   агента.
@@ -438,9 +448,13 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
   находит локальный id каждого образа. При успехе evidence содержит движок, режим и id образов. Явный
   блокер с собственным remedy дают: недоступный движок, rootless Docker, `engine: podman`, движок,
   чей режим нельзя определить по `docker info`, отсутствующий образ, транспорт `in-process`, режим
-  `unsandboxed`, непустой `network.hosts` и корень плана с запятой, кавычкой, переводом строки или
-  внутри `/harness-home`. Preflight перечисляет все блокеры сразу, и ни один из них не создаёт
-  контейнер.
+  `unsandboxed`, непустой `network.hosts`, корень плана с запятой, кавычкой, переводом строки или
+  внутри `/harness-home`, отсутствующая в окружении coordinator-а переменная из `environment` и имя,
+  которое исполнитель задаёт сам (`HOME`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`,
+  `GIT_CONFIG_VALUE_0`, `HARNESS_EXECUTOR`). Блокер называет только имена переменных. Preflight
+  перечисляет все блокеры сразу, и ни один из них не создаёт контейнер. `dispatch send` проверяет
+  переменные ещё раз: пропавшая после approval переменная отклоняет send, а dispatch остаётся
+  `approved`.
 - Харнесс образы не собирает и не скачивает. Отсутствующий образ соберите или скачайте сами, затем
   повторите `dispatch preflight` и `dispatch propose`.
 - `dispatch propose` опрашивает движок и закрепляет id образов в поле brief `runtime_images`
@@ -458,7 +472,9 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
   запускает его `docker start` без ожидания (detached). Контейнер получает `--network none`,
   пользователя хоста `--user <uid>:<gid>`, `--cap-drop ALL`, `no-new-privileges`, HOME на tmpfs
   `/harness-home`, `safe.directory=*` через `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`
-  и маркер `HARNESS_EXECUTOR=docker`. Каждый корень плана монтируется по тому же абсолютному пути:
+  и маркер `HARNESS_EXECUTOR=docker`. Каждое имя из `environment` закреплённого плана передаётся как
+  `--env NAME` без значения: значение docker CLI берёт из окружения coordinator-а, которое он
+  наследует. Каждый корень плана монтируется по тому же абсолютному пути:
   `read` — read-only, `write` — read-write; других монтирований нет. Метки `harness.dispatch`,
   `harness.repository` и `harness.plan_digest` связывают контейнер с dispatch. Квитанция в
   `dispatch status` (`runtime_access.evidence`) называет id контейнера как `launch_id`, движок,
