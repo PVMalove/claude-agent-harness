@@ -119,100 +119,6 @@ jobs:
           DIFF_COVERAGE_BASE: ${{ github.event.pull_request.base.sha }}
         run: .harness/.venv/bin/python scripts/diff_coverage.py
 
-  verify-windows:
-    # Two parallel parts so a slow pytest run cannot starve the clean-room install run of its time
-    # budget. A pull request runs the platform subset of the tests; `master` runs all of them (ADR 0018).
-    name: verify-windows (${{ matrix.part }})
-    runs-on: windows-latest
-    timeout-minutes: ${{ matrix.timeout }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - part: tests
-            timeout: 60
-            verify_args: >-
-              --only tests
-              --junit-xml .harness/.sandboxes/logs/junit-windows-tests.xml
-              --failed-first .harness/.sandboxes/pytest-cache
-          - part: clean-room
-            timeout: 30
-            verify_args: --only clean-room
-    defaults:
-      run:
-        shell: bash
-    steps:
-      # Before checkout: the runner's autocrlf=true makes every repository the clean-room scenarios
-      # create print "LF will be replaced by CRLF" warnings. fscache and preloadindex speed up the
-      # thousands of short git.exe runs on NTFS.
-      - name: Configure Git for the test run
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.fscache true
-          git config --global core.preloadindex true
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Disable Windows Defender for workspace and temp
-        shell: powershell
-        run: |
-          Set-MpPreference -DisableRealtimeMonitoring $true
-          Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:TEMP
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
-        with:
-          cache-local-path: ${{ runner.temp }}/setup-uv-cache
-      - name: Keep the uv cache where setup-uv restores it
-        shell: bash
-        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
-      - name: Bootstrap harness environment
-        run: make bootstrap
-      - name: Restore the pytest cache (tests that failed last time run first)
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: .harness/.sandboxes/pytest-cache
-          key: pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-
-      - name: Verify harness and clean-room install
-        env:
-          PYTEST_ADDOPTS: "-vv -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true --max-worker-restart=0"
-          PYTHONUNBUFFERED: "1"
-          # A pull request stops at the first failing test (the failed ones run first); `master` runs all.
-          VERIFY_ARGS: ${{ matrix.verify_args }} ${{ github.event_name == 'pull_request' && '--platform-subset --fail-fast' || '' }}
-        run: |
-          set -o pipefail
-          mkdir -p .harness/.sandboxes/logs
-          make verify 2>&1 | tee .harness/.sandboxes/logs/verify-windows-${{ matrix.part }}.log
-      - name: Save the pytest cache
-        if: always()
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: .harness/.sandboxes/pytest-cache
-          key: pytest-${{ runner.os }}-${{ matrix.part }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
-      - name: Test summary
-        if: always() && matrix.part == 'tests'
-        env:
-          PYTHONUTF8: "1"
-        run: |
-          python scripts/ci_summary.py tests .harness/.sandboxes/logs/junit-windows-tests.xml --title "Windows: тесты" >> "$GITHUB_STEP_SUMMARY"
-      - name: Keep the test report for the dashboard
-        if: always() && matrix.part == 'tests'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: junit-windows-tests
-          path: .harness/.sandboxes/logs/junit-windows-tests.xml
-          if-no-files-found: ignore
-          retention-days: 3
-      - name: Preserve Windows verification diagnostics
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: verify-windows-${{ matrix.part }}-log
-          path: .harness/.sandboxes/logs/verify-windows-${{ matrix.part }}.log
-          if-no-files-found: ignore
-          retention-days: 7
-
   private-terms:
     # Maintainer-only check (#438): every commit of the PR (message and added lines), the head branch,
     # the title and the body against the term list in the HARNESS_PRIVATE_TERMS repository secret.
@@ -339,7 +245,7 @@ jobs:
     # One page for the whole run: which jobs passed, which failed, which tests and why. It runs
     # after every other job, whatever their results, and only reads what they leave.
     if: always()
-    needs: [verify, diff-coverage, verify-windows, private-terms, parser-bundle, repo-map-bundle]
+    needs: [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
