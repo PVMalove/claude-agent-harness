@@ -1462,7 +1462,7 @@ def _validate_dispatch(
                 + INTERNAL_INVARIANT_REMEDY,
             )
     accepted_commands = accepted_verification_commands(
-        batch, dispatch["role"], dispatch["purpose"]
+        batch, dispatch["role"], dispatch["purpose"], brief=dispatch
     )
     if dispatch["verification_commands"] not in accepted_commands:
         raise CoordinatorError(
@@ -1477,6 +1477,7 @@ def _validate_dispatch(
                 _project(repo),
                 config,
                 _roles_dir(repo),
+                allowed_paths=cast(list[str] | None, batch.get("allowed_paths")),
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc

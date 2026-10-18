@@ -763,12 +763,20 @@ only after the literal confirmation, and refuses while any batch is `active`; pr
 remain immutable audit history.
 
 Every coordinator command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
-`acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
-`dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
-held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
-owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
-without an owner record only once it is stale, and never releases a lock whose owner record cannot
-be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
+`acquired_at`, and where the platform has `/proc` its `pid_namespace` and `boot_id`, plus the
+coordinator `operation` when known). A busy lock fails a write command with a remedy to repeat it;
+`dispatch wait` and `dispatch status` keep polling instead (`dispatch status` answers
+`ledger_busy`). `coordinator.py --repo . ledger lock-status` shows the lock without taking it: its
+owner, `held_seconds`, `remaining_seconds` until the timeout release, the verdict and whether a
+release is available now. A lock that stays held is released only by
+`coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive or
+runs on another host, releases a dead owner's lock, and releases only once it is stale a lock
+without an owner record or an owner from another PID namespace or boot (`owner-in-other-environment`:
+a sandboxed worker's pid names another process outside its sandbox); concurrent releases are
+serialised. Only a human operator may run `ledger release-lock --force --approved-by
+--approved-at --reason`: it releases the lock whatever the verdict and writes an integrity-checked
+record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. Nobody
+removes the lock or any state file by hand.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
@@ -888,7 +896,11 @@ It must contain, at minimum:
 - `prohibited changes`: paths, operations, or decisions outside the declared scope;
 - `verification commands`: exact project commands and any mandatory risk-review gate. A developer
   work dispatch may use focused developer commands; clean-room QA always uses the full verification
-  commands;
+  commands. `batch create` freezes the developer and review lists of the first
+  `verification_profiles` entry whose `paths` cover every allowed path, else the general lists, and
+  freezes `retry_verification` when configured: a developer-retry brief then runs its `lint`
+  commands and one `test_command` over the Context Package's `related_tests`, or the developer list
+  when there are none;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
 - `coordinator approval`: approving person, timestamp, and the approved concurrency decision;
 - `commit plan` (developer work): ordered entries `{id, summary, expected_paths, covers}`, where

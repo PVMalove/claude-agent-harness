@@ -512,6 +512,8 @@ EN_COMMANDS: dict[str, str] = {
     "Оценить риск": "Assess risk",
     "Зарегистрировать Context Package": "Register a Context Package",
     "Состояние ledger": "Ledger status",
+    "Состояние lock ledger": "Ledger lock status",
+    "Снять lock ledger": "Release the ledger lock",
 }
 EN.update(EN_COMMANDS)
 EN["Отчёты"] = "Reports"

@@ -17,10 +17,23 @@ FORBIDDEN = re.compile(
 GIT_TIMEOUT_SECONDS = 60
 
 
-def git_messages(commit_range: str) -> list[tuple[str, str]]:
-    """Получить список пар (хеш коммита, текст сообщения) для заданного диапазона коммитов git."""
+def git_messages(
+    commit_range: str, exclude_reachable_from: str | None = None
+) -> list[tuple[str, str]]:
+    """Получить список пар (хеш коммита, текст сообщения) для заданного диапазона коммитов git.
+
+    `exclude_reachable_from` убирает из диапазона коммиты, уже достижимые из этой ссылки.
+    """
+    exclusion = ["--not", exclude_reachable_from] if exclude_reachable_from else []
     result = subprocess.run(
-        ["git", "log", "--format=%H%x00%B%x00", "--no-merges", commit_range],
+        [
+            "git",
+            "log",
+            "--format=%H%x00%B%x00",
+            "--no-merges",
+            commit_range,
+            *exclusion,
+        ],
         capture_output=True,
         text=True,
         check=True,
@@ -34,12 +47,17 @@ def main() -> int:
     """Точка входа CLI: проверка сообщений коммитов и тела PR на запрещённые упоминания AI-агентов."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--commit-range")
+    # A PR into an integration branch carries default-branch commits its base lacks: they are
+    # already published and cannot be rewritten, so they are not checked again.
+    parser.add_argument("--exclude-reachable-from")
     parser.add_argument("--pr-body-file", type=Path)
     args = parser.parse_args()
 
     violations: list[str] = []
     if args.commit_range:
-        for commit, message in git_messages(args.commit_range):
+        for commit, message in git_messages(
+            args.commit_range, args.exclude_reachable_from
+        ):
             match = FORBIDDEN.search(message)
             if match:
                 violations.append(

@@ -26,11 +26,10 @@ from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
     _approval_policy,
+    _batch_verification_commands,
     _communication_policy,
-    _developer_verification_commands,
     _preflight_policy,
     _reject_sensitive,
-    _review_verification_commands,
     _verification_commands,
 )
 from harness.orchestration.core.constants import (
@@ -402,6 +401,9 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     # A superseding batch is approved by a human before the lock (issue #506).
     superseded = supersede.request(args)
     root = _state_root(args, repo)
+    developer_commands, review_commands = _batch_verification_commands(
+        config, allowed_paths
+    )
     record: JsonObject = {
         "batch_id": f"batch-{uuid.uuid4()}",
         "created_at": utils._now(),
@@ -422,8 +424,8 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "definition_of_done": dod,
         "goal": getattr(args, "goal", None) or "",
         "prohibited_changes": prohibited,
-        "developer_verification_commands": _developer_verification_commands(config),
-        "review_verification_commands": _review_verification_commands(config),
+        "developer_verification_commands": developer_commands,
+        "review_verification_commands": review_commands,
         "verification_commands": _verification_commands(config),
         "required_gates": _strings(
             getattr(args, "required_gate", None) or ["none"], "required_gates"
@@ -441,6 +443,9 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "risk_escalations": [],
         "risk_reassessment_required": False,
     }
+    # Frozen like the command lists, and only when configured: a legacy batch keeps its shape.
+    if isinstance(config.get("retry_verification"), dict):
+        record["retry_verification"] = config["retry_verification"]
     _reject_sensitive(record, "batch")
     _store_runtime_snapshot(
         root, _runtime_snapshot_root(repo).parent, record["harness_runtime_sha256"]

@@ -62,6 +62,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import (
+    FORCE_RELEASE_COMMAND,
     BatchRecord,
     DispatchRecord,
     DispatchStatusRecord,
@@ -568,8 +569,10 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
             ],
             "lock": ledger.lock_state(),
             "remedy": "repeat dispatch status: another coordinator operation holds the ledger "
-            "lock. If it stays held, run 'coordinator.py ledger release-lock', which refuses a "
-            "lock whose owner process is alive",
+            "lock. 'coordinator.py ledger lock-status' shows its holder, age and when a timeout "
+            "release becomes available. If it stays held, run 'coordinator.py ledger "
+            "release-lock', which refuses a lock whose owner process is alive; for the lock of a "
+            f"stopped sandboxed worker, an operator can run '{FORCE_RELEASE_COMMAND}'",
         }
     return {
         "stale_after_seconds": threshold,

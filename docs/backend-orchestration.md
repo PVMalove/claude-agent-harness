@@ -209,6 +209,37 @@ task-scoped проверки, а в `verification_commands` — независи
 полученную команду через `test_summary.py`; в report остаются исходная команда и bounded summary, а
 санитизированный полный лог доступен только для упавшей проверки.
 
+Необязательный `verification_profiles` уточняет эти два списка по области batch:
+
+```json
+"verification_profiles": [
+  {
+    "paths": ["harness/console/**", "tests/console/**"],
+    "developer": ["make lint", "pytest -q -n 8 tests/console"],
+    "review": ["make lint", "pytest -q -n 8 tests/console"]
+  }
+]
+```
+
+`batch create` берёт первый профиль, чьи `paths` покрывают все `--allowed-path` batch, и
+замораживает его `developer` и `review` вместо `developer_verification_commands` и
+`review_verification_commands`. Если ни один профиль не покрывает batch целиком или ключа нет,
+batch получает общие списки. Brief проверяется по профилю своей области, а clean-room QA всегда
+выполняет `verification_commands`.
+
+Необязательный `retry_verification` ускоряет повторную попытку developer:
+
+```json
+"retry_verification": {"lint": ["make lint"], "test_command": "pytest -q -n 8"}
+```
+
+Brief developer-retry получает команды `lint` и одну команду `test_command`, к которой добавлены
+пути `related_tests` его Context Package (их число ограничивает `max_related_tests`). Первый
+developer-dispatch, code-review и QA не меняются. Если связанных тестов нет или ключ не задан,
+повтор выполняет обычные команды developer. Значение замораживается в batch при `batch create`, а
+отчёт retry, как и любой другой, должен перечислить в `checks_run` ровно команды brief. Пути
+тестов экранируются по правилам POSIX-оболочки.
+
 Граница записи — не подсказка. Write-роль изменяет только пути, явно закреплённые за batch
 (`--allowed-path`, они попадают в `write_paths` brief), и только внутри потолка роли, который задаёт
 `write_paths` роли в assignment plan (по умолчанию — весь репозиторий). Coordinator не создаёт batch
@@ -1632,9 +1663,11 @@ coordinator выносит человеку, а сам по таймауту с�
 ### Занятый ledger, `report complete` и `ledger release-lock`
 
 Каждая команда coordinator-а берёт эксклюзивный lock ledger-а (`.coordinator.lock` в каталоге
-state). Lock записывает владельца — `pid`, `host` и `acquired_at`. Держит lock тот, кто первым
-эксклюзивно создал эту запись. Процесс получает отказ и не пишет в чужой lock, если его ещё пустой
-каталог lock успели снять и занять снова. Пока lock держит другая операция, команда записи
+state). Lock записывает владельца — `pid`, `host` и `acquired_at`. На платформе с `/proc` запись
+дополняют `pid_namespace` (ссылка `/proc/self/ns/pid`) и `boot_id`, а также `operation` — команда
+coordinator-а, которая взяла lock. Старые записи без этих полей читаются как раньше. Держит lock
+тот, кто первым эксклюзивно создал эту запись. Процесс получает отказ и не пишет в чужой lock,
+если его ещё пустой каталог lock успели снять и занять снова. Пока lock держит другая операция, команда записи
 завершается ошибкой `ledger is locked by another operation`. Её remedy предлагает повторить
 команду и называет `ledger release-lock`, а не ручное удаление.
 
@@ -1653,6 +1686,19 @@ lock. У остальных команд занятый lock остаётся о
 останавливается на шаге, который не смог прочитать состояние. Она ничего не пишет и в remedy
 называет себя для повтора.
 
+Состояние lock показывает команда только для чтения. Она не берёт lock и поэтому работает, когда
+ledger занят:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger lock-status
+```
+
+Ответ — `{"locked": false}` или объект с полями `acquired_at`, `held_seconds`, `owner`,
+`operation`, `verdict` (вердикт из таблицы ниже), `stale_after_seconds`, `remaining_seconds` (сколько
+осталось до снятия по таймауту, не меньше нуля) и `release_available` (снимет ли lock обычный
+`release-lock` прямо сейчас). Те же сведения показывает панель «Lock ledger» в разделе оркестрации
+консоли Harness; время удержания и остаток обновляются на живом экране.
+
 Lock, который остаётся занятым, снимает только команда с проверкой владельца:
 
 ```bash
@@ -1663,8 +1709,10 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock
 
 | Владелец lock | Вердикт |
 | --- | --- |
-| Процесс владельца жив (на этом host) | отказ `owner-alive` — при любом возрасте lock |
+| Процесс владельца жив (на этом host, в том же PID-пространстве и загрузке) | отказ `owner-alive` — при любом возрасте lock |
 | Владелец на другом host | отказ `owner-on-another-host`: запустите команду на том host |
+| Владелец из другого PID-пространства или другой загрузки, lock младше `LEDGER_LOCK_STALE_SECONDS` | отказ `owner-in-other-environment`: pid воркера из sandbox (`--unshare-pid`) указывает на чужой процесс, поэтому его не проверить |
+| Владелец из другого PID-пространства или другой загрузки, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
 | Процесс владельца завершился (на этом host) | снимается, `owner-dead` |
 | Нет читаемой записи владельца, lock младше `LEDGER_LOCK_STALE_SECONDS` (3600 с) | отказ `owner-unknown-recent`; remedy называет, через сколько секунд lock можно снять |
 | Нет читаемой записи владельца, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
@@ -1693,6 +1741,25 @@ lock при этом не трогается. Объект `lock` описыва
 снимает сама при выходе процесса. Второй параллельный запуск получает отказ
 `another ledger release-lock is releasing the ledger lock` и повторяется после первого. Удалять lock
 или другие файлы state вручную нельзя.
+
+Если lock оставил остановленный воркер, а его pid совпал с живым процессом (старая запись без
+`pid_namespace`, вердикт `owner-alive`), или ждать таймаута нельзя, оператор снимает lock
+принудительно:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger release-lock --force \
+  --approved-by "<оператор>" --approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --reason "<почему владелец не завершит операцию>"
+```
+
+Без `--approved-by`, `--approved-at` или `--reason` команда отказывает; одобрение `policy:...`
+отвергается, а при `human_approval_gate: tty` его нужно подтвердить на терминале. Ни одна политика,
+включая `auto`, эту команду не запускает. Перед снятием команда пишет запись аудита с контрольной
+суммой (`record_sha256`) в `lock-audit/` каталога state: кто и когда одобрил, причину, вердикт
+проверки и прежнее состояние lock. Если после записи снять lock не удалось, вторая запись
+`ledger-lock-force-release-failed` называет первую. `ledger validate` проверяет контрольные суммы
+этих записей; подмену записи вместе с её суммой или удаление файла он не обнаруживает. В консоли
+то же действие — команда «Снять lock ledger» с подтверждением.
 
 ### Отчётность и мониторинг токенов: `dispatch telemetry`
 
