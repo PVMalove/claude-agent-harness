@@ -343,6 +343,12 @@ def qa_run_status(run: QaRun) -> Status:
 
 
 ReportLine = tuple[Status | None, str]
+_REVIEW_SEVERITIES = {
+    "none": "accepted",
+    "clean": "accepted",
+    "warning": "warning",
+    "blocker": "error",
+}
 _CHECK_RESULTS = {
     "pass": "accepted",
     "fail": "error",
@@ -376,11 +382,7 @@ def _review_lines(review: JsonObject) -> list[ReportLine]:
             continue
         findings = _objects(evidence.get("findings"))
         severity = text(evidence.get("severity"), "?")
-        status = (
-            Status("warning", severity, severity)
-            if findings
-            else Status("accepted", "clean", "clean")
-        )
+        status = Status(_REVIEW_SEVERITIES.get(severity, "warning"), severity, severity)
         lines.append((status, f"{axis} · находок: {len(findings)}"))
         lines.extend(
             (

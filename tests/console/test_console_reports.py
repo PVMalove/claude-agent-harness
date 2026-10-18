@@ -13,6 +13,7 @@ from tests.console._console_ledger_fixture import (
     build_reports_fixture,
 )
 from harness.console.export import render_markdown
+from harness.orchestration.ledger.lifecycle import JsonObject
 from harness.console.reports import (
     QA_LOG_TAIL_LINES,
     REPORT_SECTIONS,
@@ -511,8 +512,37 @@ def test_report_review_lines_mark_each_axis_and_keep_the_findings(
         ("", "candidate: " + "a" * 40),
         ("⚠ low", "standards · находок: 1"),
         ("", "  [low] имя функции: reports.py:10"),
-        ("✔ clean", "spec · находок: 0"),
+        ("✔ none", "spec · находок: 0"),
     ]
+
+
+def test_report_review_axis_verdict_follows_the_recorded_severity_not_the_findings_count() -> (
+    None
+):
+    info: JsonObject = {"severity": "info", "summary": "заметка", "evidence": "a.py:1"}
+    review: JsonObject = {
+        "candidate_commit": "c" * 40,
+        "standards": {"severity": "clean", "findings": [info]},
+        "spec": {"severity": "warning", "findings": []},
+    }
+    lines = dict(report_section_lines({"review": review}))["Review"]
+    axes = {
+        text.split(" · ")[0]: status.render("ru")
+        for status, text in lines
+        if status is not None
+    }
+    assert axes == {"standards": "✔ clean", "spec": "⚠ warning"}
+
+    for severity, shown in (
+        ("none", "✔ none"),
+        ("clean", "✔ clean"),
+        ("warning", "⚠ warning"),
+        ("blocker", "✖ blocker"),
+    ):
+        single: JsonObject = {"standards": {"severity": severity, "findings": []}}
+        [(status, text)] = dict(report_section_lines({"review": single}))["Review"][1:]
+        assert status is not None and status.render("ru") == shown
+        assert text == "standards · находок: 0"
 
 
 def test_qa_run_status_is_failed_when_any_command_exits_non_zero(
