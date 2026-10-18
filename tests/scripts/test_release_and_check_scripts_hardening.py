@@ -137,3 +137,53 @@ def test_public_metadata_checks_an_existing_pr_body_file(
     )
 
     assert check_public_metadata.main() == expected
+
+
+def _commit(repo: Path, message: str) -> str:
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-q", "--allow-empty", "-m", message],
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_public_metadata_skips_commits_the_default_branch_already_has(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An integration PR carries default-branch commits its base lacks; their published messages
+    # cannot be rewritten, so only the commits new to both branches are checked.
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", "-b", "master", str(repo)], check=True)
+    for key, value in (("user.name", "dev"), ("user.email", "dev@example.invalid")):
+        subprocess.run(["git", "-C", str(repo), "config", key, value], check=True)
+    base = _commit(repo, "feat: integration base")
+    _commit(repo, "feat: squash merge\n\nCo-authored-by: someone")
+    subprocess.run(["git", "-C", str(repo), "branch", "published"], check=True)
+    head = _commit(repo, "fix: sync")
+    monkeypatch.chdir(repo)
+
+    for exclude, expected in ((None, 1), ("published", 0)):
+        argv = ["check_public_metadata.py", "--commit-range", f"{base}..{head}"]
+        if exclude:
+            argv += ["--exclude-reachable-from", exclude]
+        monkeypatch.setattr(sys, "argv", argv)
+        assert check_public_metadata.main() == expected
+
+    _commit(repo, "fix: new\n\nCo-authored-by: someone")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_public_metadata.py",
+            "--commit-range",
+            f"{base}..HEAD",
+            "--exclude-reachable-from",
+            "published",
+        ],
+    )
+    assert check_public_metadata.main() == 1
