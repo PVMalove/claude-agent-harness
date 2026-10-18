@@ -18,9 +18,9 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.storage import storage_root
 
-from . import extensions
+from . import container_executor, extensions
 from .contract import access_policy_problems
-from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES
+from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES, CONTAINER_ENGINES
 from .core.utils import JsonObject
 
 # Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
@@ -65,12 +65,19 @@ def validate_plan(plan: object) -> None:
         "runtime_extension",
         "plan_digest",
     }
-    if not isinstance(plan, dict) or set(plan) != fields:
+    # A plan carries the container component only when its policy authored one (issue #704).
+    if not isinstance(plan, dict) or set(plan) - {"container"} != fields:
         raise AccessError("runtime access plan schema mismatch", remedy=remedy)
-    components = {key: plan[key] for key in ("mode", "network")}
+    components = {
+        key: plan[key] for key in ("mode", "network", "container") if key in plan
+    }
     if access_policy_problems({"defaults": components}, set()):
         raise AccessError(
-            "runtime access plan has invalid mode or network", remedy=remedy
+            "runtime access plan has invalid mode, network or container", remedy=remedy
+        )
+    if "container" in plan and "engine" not in plan["container"]:
+        raise AccessError(
+            "runtime access container does not name its engine", remedy=remedy
         )
     hosts = plan["network"]["hosts"]
     if hosts != sorted(set(host.lower() for host in hosts)):
@@ -78,7 +85,13 @@ def validate_plan(plan: object) -> None:
     sources = plan["sources"]
     if (
         not isinstance(sources, dict)
-        or set(sources) != {"mode", "network", "filesystem"}
+        or set(sources)
+        != {
+            "mode",
+            "network",
+            "filesystem",
+            *(("container",) if "container" in plan else ()),
+        }
         or any(
             not isinstance(value, str)
             or not value
@@ -126,6 +139,7 @@ def validate_plan(plan: object) -> None:
             or plan["filesystem"]
             or plan["requirements"]
             or plan["runtime_extension"] != "none"
+            or "container" in plan
         ):
             raise AccessError(
                 "legacy runtime access must preserve empty inherit", remedy=remedy
@@ -143,6 +157,18 @@ def validate_plan(plan: object) -> None:
         raise AccessError("runtime access plan digest mismatch", remedy=remedy)
 
 
+def _pins_images(plan: JsonObject, role: object, purpose: object) -> bool:
+    """A docker plan of a dispatch that ``dispatch send`` hands off pins its image digests.
+
+    QA and publish are coordinator operations that never go through send, so they pin none.
+    """
+    return (
+        plan["runtime_extension"] == container_executor.EXTENSION_NAME
+        and "container" in plan
+        and dispatch_operation(str(role), str(purpose)) is None
+    )
+
+
 def validate_binding(brief: Mapping[str, object]) -> None:
     """A historical brief has neither field; a new one binds the entire canonical plan."""
     transition = brief.get("transition")
@@ -151,7 +177,11 @@ def validate_binding(brief: Mapping[str, object]) -> None:
         if isinstance(transition, dict)
         else None
     )
-    if "runtime_access" not in brief and bound is None:
+    if (
+        "runtime_access" not in brief
+        and bound is None
+        and "runtime_images" not in brief
+    ):
         return
     validate_plan(brief.get("runtime_access"))
     plan = cast(JsonObject, brief["runtime_access"])
@@ -159,6 +189,18 @@ def validate_binding(brief: Mapping[str, object]) -> None:
         raise AccessError(
             "runtime access plan is not bound to its approval transition",
             remedy="propose and approve a new dispatch for this access plan",
+        )
+    if _pins_images(plan, brief.get("role"), brief.get("purpose")) != (
+        "runtime_images" in brief
+    ) or (
+        "runtime_images" in brief
+        and not container_executor.valid_pins(
+            brief["runtime_images"], plan["container"]
+        )
+    ):
+        raise AccessError(
+            "runtime images are not pinned exactly for the brief's container plan",
+            remedy="propose and approve a new dispatch so that it pins the current images",
         )
     if plan["requirements"]:
         checkout = [
@@ -253,6 +295,9 @@ def resolve_plan(
         "filesystem": [],
     }
     sources: JsonObject = {key: "default" for key in selected}
+    # The container component has no default: a plan carries it only when a layer authors it, so
+    # every plan without one keeps its historical shape and digest.
+    container: JsonObject | None = None
     layers = [("defaults", policy.get("defaults", {}))]
     for section, name in (
         ("roles", None if operation else role),
@@ -271,6 +316,9 @@ def resolve_plan(
             if key in layer:
                 selected[key] = layer[key]
                 sources[key] = label
+        if "container" in layer:
+            container = layer["container"]
+            sources["container"] = label
     try:
         result = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
@@ -357,6 +405,16 @@ def resolve_plan(
         "requirements": requirements,
         "runtime_extension": extension,
     }
+    if container is not None:
+        # Tags and the engine come from the config alone; nothing here probes an engine or image.
+        plan["container"] = {
+            "engine": container.get("engine", CONTAINER_ENGINES[0]),
+            **{
+                key: container[key]
+                for key in ("worker_image", "proxy_image")
+                if key in container
+            },
+        }
     plan["plan_digest"] = _digest(plan)
     return plan
 
@@ -388,14 +446,22 @@ def verify_plan(
     provider = extensions.runtime_access(plan["runtime_extension"])
     # The inert extension uses the telemetry observe signature and is never a permission proof.
     observation = None
+    blocked: extensions.RuntimeAccessBlocked | None = None
     if plan["runtime_extension"] != "none":
         try:
             observation = provider.observe(plan, transport)
+        except extensions.RuntimeAccessBlocked as exc:
+            # A provider that names its blocker hands the human its own remedy and facts.
+            blocked = exc
         except (
             Exception
         ):  # A failing provider is unverified evidence, never a crash of preflight.
             observation = None
-    reason = _observation_problem(plan, transport, observation)
+    reason = (
+        blocked.message
+        if blocked is not None
+        else _observation_problem(plan, transport, observation)
+    )
     summary: JsonObject = {
         "status": "unverified" if reason else "verified",
         "reason": reason,
@@ -405,11 +471,35 @@ def verify_plan(
         },
         "verified": [] if reason else ["mode", "network", "filesystem"],
         "unverified": ["mode", "network", "filesystem"] if reason else [],
-        "remedy": _REMEDY if reason else None,
+        "remedy": (blocked.remedy if blocked is not None else _REMEDY)
+        if reason
+        else None,
     }
+    if blocked is not None:
+        summary["environment"] = blocked.facts
     if observation is not None:
         summary["evidence"] = asdict(observation)
     return summary, observation
+
+
+def pin_images(
+    plan: JsonObject, transport: str, role: str, purpose: str
+) -> JsonObject | None:
+    """Observe and pin the image digests a docker dispatch runs; ``None`` for any other plan.
+
+    The approval binds them through the transition digest, never through ``plan_digest``: the
+    plan stays a function of the config, while a rebuilt image changes under the same tag.
+    """
+    if not _pins_images(plan, role, purpose):
+        return None
+    verification, observation = verify_plan(plan, transport)
+    if verification["status"] != "verified" or not isinstance(
+        observation, container_executor.ContainerObservation
+    ):
+        raise AccessError(
+            str(verification["reason"]), remedy=str(verification["remedy"] or _REMEDY)
+        )
+    return container_executor.pins(observation)
 
 
 def _observation_problem(
@@ -453,6 +543,13 @@ def _observation_problem(
     return None
 
 
+def _same_launch(applied: str, receipt: str) -> bool:
+    """The receipt names the applied launch, or the real one a handoff-time identity became."""
+    if applied == extensions.LAUNCH_AT_HANDOFF:
+        return bool(receipt) and receipt != extensions.LAUNCH_AT_HANDOFF
+    return receipt == applied
+
+
 def apply_plan(
     brief: JsonObject,
     transport: str,
@@ -477,7 +574,9 @@ def apply_plan(
     if verification["status"] == "legacy-inherit":
         return verification
     if verification["status"] != "verified" or observation is None:
-        raise AccessError(str(verification["reason"]), remedy=_REMEDY)
+        raise AccessError(
+            str(verification["reason"]), remedy=str(verification["remedy"] or _REMEDY)
+        )
     provider = extensions.runtime_access(plan["runtime_extension"])
     launch = getattr(provider, "handoff", None) if handoff else None
     if handoff and not callable(launch):
@@ -488,6 +587,8 @@ def apply_plan(
     # A project-supplied provider may fail in any way; the send must fail closed.
     try:
         applied = provider.apply(brief, observation)
+    except extensions.RuntimeAccessBlocked as exc:
+        raise AccessError(exc.message, remedy=exc.remedy) from exc
     except Exception as exc:
         raise AccessError(
             "native runtime could not apply the approved worker access", remedy=_REMEDY
@@ -510,6 +611,8 @@ def apply_plan(
         # A project-supplied launch may fail in any way; the handoff must fail closed.
         try:
             receipt = launch(brief, applied, command)
+        except extensions.RuntimeAccessBlocked as exc:
+            raise AccessError(exc.message, remedy=exc.remedy) from exc
         except Exception as exc:
             raise AccessError("native worker handoff failed", remedy=_REMEDY) from exc
         reason = _observation_problem(plan, transport, receipt)
@@ -519,7 +622,7 @@ def apply_plan(
             or not receipt.applied
             or not receipt.handed_off
             or receipt.dispatch_id != brief["dispatch_id"]
-            or receipt.launch_id != applied.launch_id
+            or not _same_launch(applied.launch_id, receipt.launch_id)
             or receipt.environment_id != applied.environment_id
         ):
             raise AccessError(

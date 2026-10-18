@@ -372,7 +372,9 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 ```
 
 - Компоненты `mode` (`inherit`, `sandbox`, `unsandboxed`), `network.hosts` и `filesystem`
-  выбираются независимо от транспорта роли: `in-process` или `external`.
+  выбираются независимо от транспорта роли: `in-process` или `external`. Компонент `container`
+  называет образы встроенного исполнителя `docker` (см. ниже); план без него сохраняет прежнюю
+  форму и прежний digest.
 - Override роли (`roles`) или операции (`operations`: `qa`, `git`, `publish`) заменяет только те
   компоненты, которые в нём указаны, а остальные берутся из `defaults`. Операции `qa`, `git` и
   `publish` выполняет сам coordinator, а не worker, поэтому к ним применяются только `defaults` и
@@ -394,14 +396,90 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
   worker, применяет план и выполняет handoff (`observe`, `apply`, `handoff`). Значение `none` ничего
   не доказывает, поэтому без нативной реализации coordinator блокирует `dispatch send` для плана с
   `sandbox`, `unsandboxed`, хостами или путями. Блокировка наступает до передачи работы: тихой
-  подмены и отката на `inherit` нет, а нативное подтверждение ничем не заменяется. Харнесс такую
-  реализацию не поставляет, и `my_runtime:factory` в примере выше — модуль вашего проекта. Пока он не
-  подключён, любой `access_policy`, даже `mode: inherit`, блокирует `dispatch send`. `dispatch status`
-  сохраняет статус и доказательство worker (`runtime_access`).
+  подмены и отката на `inherit` нет, а нативное подтверждение ничем не заменяется. Харнесс
+  поставляет одну реализацию — встроенный контейнерный исполнитель `docker` (следующий раздел).
+  Любую другую среду подключает модуль вашего проекта, как `my_runtime:factory` в примере выше. Пока
+  проект не выбрал реализацию, любой `access_policy`, даже `mode: inherit`, блокирует
+  `dispatch send`. `dispatch status` сохраняет статус и доказательство worker (`runtime_access`).
 
-Если `dispatch send` остановлен, ошибка называет причину. Remedy одинаковый: подготовить указанные
+Если `dispatch send` остановлен, ошибка называет причину. Реализация, которая сама называет свой
+блокер (так делает `docker`), передаёт и собственный remedy, а `dispatch preflight` показывает её
+наблюдения в `runtime_access.verification.environment`. Иначе remedy общий: подготовить указанные
 хосты, пути и режим в новой сессии runtime; подключить реализацию `runtime_access`, которая
 проверяет реальный запуск worker; повторить `dispatch preflight`.
+
+### Встроенный контейнерный исполнитель `docker`
+
+Значение `extensions.runtime_access: "docker"` выбирает исполнитель из поставки харнесса: каждый
+утверждённый external dispatch запускается в отдельном контейнере rootful Docker без сети. Контракт
+исполнителя описывает [ADR 0018](adr/0018-container-executor.md); этот раздел описывает
+поддержанную часть. Проектные реализации `module:factory` работают, как раньше, а хост-процесс не
+может зарегистрировать другую реализацию под именем `docker`.
+
+```json
+"access_policy": {
+  "defaults": {"mode": "sandbox", "container": {"worker_image": "harness-worker:local"}},
+  "roles": {"developer": {"container": {"worker_image": "harness-worker:dev"}}}
+},
+"extensions": {"runtime_access": "docker"}
+```
+
+- Компонент `container` содержит `worker_image` (обязателен), необязательный `proxy_image` и
+  необязательный `engine` (`docker` по умолчанию или `podman`). Тег — одна ссылка на образ без
+  пробелов и без ведущего `-`. Override роли или операции заменяет компонент целиком. Resolver
+  берёт теги только из конфига и не опрашивает движок, сеть и образы. `harness health` и схема
+  требуют `access_policy.defaults.container`, если выбран `docker`: без него роль осталась бы без
+  образа.
+- Каждая роль, которую отправляет `dispatch send`, должна иметь `transport: external` в
+  `assignment_plans`. Исполнитель оборачивает команду external-адаптера и не знает конкретного
+  агента.
+- `dispatch preflight` опрашивает движок только на чтение: `docker info` определяет режим
+  (`rootful`, `rootless`, `unknown` или `unavailable`) и ID демона, а `docker image inspect`
+  находит локальный id каждого образа. При успехе evidence содержит движок, режим и id образов. Явный
+  блокер с собственным remedy дают: недоступный движок, rootless Docker, `engine: podman`, движок,
+  чей режим нельзя определить по `docker info`, отсутствующий образ, транспорт `in-process`, режим
+  `unsandboxed`, непустой `network.hosts` и корень плана с запятой, кавычкой, переводом строки или
+  внутри `/harness-home`. Preflight перечисляет все блокеры сразу, и ни один из них не создаёт
+  контейнер.
+- Харнесс образы не собирает и не скачивает. Отсутствующий образ соберите или скачайте сами, затем
+  повторите `dispatch preflight` и `dispatch propose`.
+- `dispatch propose` опрашивает движок и закрепляет id образов в поле brief `runtime_images`
+  (`{"worker": "sha256:…", "proxy": "sha256:…" | null}`) рядом с планом. Его sha256 входит в
+  transition digest (`runtime_images_sha256`), но не в `plan_digest`: план остаётся функцией
+  конфига, а образ под тем же тегом может измениться. `dispatch create` опрашивает движок ещё раз,
+  поэтому образ, пересобранный после `propose`, меняет digest, и explicit approval со старым digest
+  отклоняется. Поле есть только у brief, который отправляет `dispatch send`; QA и publish его не
+  получают. Brief без поля остаётся валидным.
+- `dispatch send` запускает только закреплённые id. Если образ пропал или изменился после
+  `propose`, send отклоняется, а dispatch остаётся `approved`. Remedy — вернуть образ с
+  закреплённым id либо пересобрать или скачать образ, отменить dispatch (`dispatch cancel`) и
+  повторить `dispatch propose`: approval для другого образа не переиспользуется.
+- Handoff создаёт контейнер `harness-<dispatch_id>` командой `docker create --pull never` и
+  запускает его `docker start` без ожидания (detached). Контейнер получает `--network none`,
+  пользователя хоста `--user <uid>:<gid>`, `--cap-drop ALL`, `no-new-privileges`, HOME на tmpfs
+  `/harness-home`, `safe.directory=*` через `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`
+  и маркер `HARNESS_EXECUTOR=docker`. Каждый корень плана монтируется по тому же абсолютному пути:
+  `read` — read-only, `write` — read-write; других монтирований нет. Метки `harness.dispatch`,
+  `harness.repository` и `harness.plan_digest` связывают контейнер с dispatch. Квитанция в
+  `dispatch status` (`runtime_access.evidence`) называет id контейнера как `launch_id`, движок,
+  режим, id образов и механизм `native-apply`.
+- Если `docker create` или `docker start` завершились ошибкой, исполнитель удаляет контейнер
+  (`docker rm --force harness-<dispatch_id>`), send отклоняется с текстом ошибки движка и
+  результатом удаления, а dispatch остаётся `approved` и его можно отправить снова.
+- Адаптер должен лежать внутри монтирований плана и запускаться в образе: `--entrypoint` получает
+  путь адаптера. Для `.py`-адаптера coordinator передаёт интерпретатор хоста, которого в образе
+  обычно нет, поэтому нужен исполняемый адаптер. Флаги агента для запуска в контейнере проектный
+  адаптер выставляет по маркеру `HARNESS_EXECUTOR`.
+
+Ограничения: контейнер не имеет сети, поэтому агент, которому нужен API модели, в нём пока не
+работает; egress-proxy для `network.hosts` не реализован, и непустой список даёт блокер. Rootless
+Docker и Podman не поддерживаются. Worker видит `shared_storage` только для чтения, а в хранилище
+пишет только в `.sandboxes/scratch`, поэтому команды coordinator, которые меняют ledger
+(`dispatch self-report`, `dispatch heartbeat`, `report submit`), из контейнера не выполняются. После выхода worker
+контейнер остаётся: coordinator не снимает exit code и не удаляет контейнер. Отдельный
+`--checkout` роли `code-review` в контейнер не монтируется. QA и операции `git` и `publish`
+по-прежнему выполняет coordinator в своём окружении, а не в контейнере: операция с
+`mode: sandbox` останавливается как неподдерживаемая (раздел ниже).
 
 ### Доступ QA, Git и publish
 
@@ -425,8 +503,9 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
   Он лишь означает, что coordinator работает в своём окружении. Coordinator принимает `sandbox` и
   `unsandboxed`, только если подключённая реализация `runtime_access` подтверждает их для процесса
   coordinator (`observe` с транспортом `in-process`). Без неё режим считается неподдерживаемым.
-  Харнесс не поставляет такую реализацию и не заявляет нативной поддержки. Ваш проект определяет,
-  что именно подтверждает ваша реализация.
+  Харнесс не поставляет такую реализацию и не заявляет нативной поддержки: встроенный `docker`
+  подтверждает только external worker, а для процесса coordinator даёт блокер. Ваш проект
+  определяет, что именно подтверждает ваша реализация.
 - Результат. Подтверждённый отказ (`denied`), неподдерживаемый режим (`unsupported`) и непроверенное
   требование (`unverified`, например путь не существует или remote недоступен) останавливают
   действие до первого изменения. Ошибка называет ресурс, путь и причину. Её remedy — конкретное

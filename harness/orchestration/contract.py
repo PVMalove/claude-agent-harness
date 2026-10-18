@@ -33,6 +33,14 @@ from harness.json_types import JsonObject as JsonObject
 ROLE_MODES = {"write", "read-only"}
 ROLE_TRANSPORTS = {"in-process", "external"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+# An image reference becomes one argv element of the engine: no spaces, and never a leading '-'
+# that the engine would read as an option.
+CONTAINER_IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
+# Without a container default the built-in executor would leave a role plan without an image.
+DOCKER_CONTAINER_PROBLEM = (
+    "orchestration extensions.runtime_access 'docker' requires "
+    "access_policy.defaults.container with a worker_image"
+)
 EFFORT_LEVELS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 )
@@ -1095,7 +1103,12 @@ def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
 
 def access_policy_problems(value: object, roles: set[str]) -> list[str]:
     """Validate authored access independently of role transport and tool policy."""
-    from .core.constants import ACCESS_MODES, ACCESS_OPERATIONS, ACCESS_RESOURCES
+    from .core.constants import (
+        ACCESS_MODES,
+        ACCESS_OPERATIONS,
+        ACCESS_RESOURCES,
+        CONTAINER_ENGINES,
+    )
 
     errors: list[str] = []
     host_pattern = re.compile(
@@ -1103,11 +1116,36 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
     )
 
     def component(item: object, label: str) -> None:
-        if not isinstance(item, dict) or set(item) - {"mode", "network", "filesystem"}:
+        if not isinstance(item, dict) or set(item) - {
+            "mode",
+            "network",
+            "filesystem",
+            "container",
+        }:
             errors.append(f"{label} must be an access component object with known keys")
             return
         if "mode" in item and item["mode"] not in ACCESS_MODES:
             errors.append(f"{label}.mode must be inherit, sandbox or unsandboxed")
+        if "container" in item:
+            container = item["container"]
+            if (
+                not isinstance(container, dict)
+                or set(container) - {"engine", "worker_image", "proxy_image"}
+                or "worker_image" not in container
+                or container.get("engine", CONTAINER_ENGINES[0])
+                not in CONTAINER_ENGINES
+                or any(
+                    not isinstance(container[key], str)
+                    or CONTAINER_IMAGE_REF.fullmatch(container[key]) is None
+                    for key in ("worker_image", "proxy_image")
+                    if key in container
+                )
+            ):
+                errors.append(
+                    f"{label}.container must name a worker_image, an optional proxy_image as "
+                    "image references without spaces or a leading '-', and an optional engine "
+                    "docker or podman"
+                )
         if "network" in item:
             network = item["network"]
             hosts = network.get("hosts") if isinstance(network, dict) else None
@@ -1283,6 +1321,15 @@ def configuration_problems(
             )
     if "access_policy" in config:
         problems.extend(access_policy_problems(config["access_policy"], set(roles)))
+    selected_extensions = config.get("extensions")
+    policy = config.get("access_policy")
+    defaults = policy.get("defaults") if isinstance(policy, dict) else None
+    if (
+        isinstance(selected_extensions, dict)
+        and selected_extensions.get("runtime_access") == "docker"
+        and not (isinstance(defaults, dict) and "container" in defaults)
+    ):
+        problems.append(DOCKER_CONTAINER_PROBLEM)
     profiles = config.get("provider_profiles")
     profile_capabilities: dict[str, set[str]] = {}
     profile_fallbacks: dict[str, list[str]] = {}
