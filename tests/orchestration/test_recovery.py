@@ -2187,7 +2187,9 @@ class RecoveryTests(unittest.TestCase):
         )
         self._accepted_architect(batch_id)
         self._blocked_developer(batch_id)
-        self._decide(batch_id, "retry", reason_category="verification-infrastructure")
+        self._decide(
+            batch_id, "retry", reason_category="verification-infrastructure"
+        )
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
         coordinator.rewind_batch(
             self._args(
