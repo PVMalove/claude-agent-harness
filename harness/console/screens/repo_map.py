@@ -151,6 +151,7 @@ class RepoMapScreen(ConsoleShell):
     RepoMapScreen.-narrow #file-relations-scroll { height: auto; max-height: 10; }
     RepoMapScreen.-narrow #tab-files { overflow-y: auto; }
     RepoMapScreen.-narrow #search-status { height: 3; }
+    RepoMapScreen.-narrow .settings-row { layout: vertical; }
     RepoMapScreen.-narrow .strip-note { display: none; }
     """)
 

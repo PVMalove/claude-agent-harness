@@ -739,6 +739,7 @@ EN.update(
         "Источник": "Source",
         "Рёбер": "Edges",
         "Файлов": "Files",
+        "последнее действие": "last action",
     }
 )
 EN_PHRASES.update(
