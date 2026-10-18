@@ -175,6 +175,51 @@
       },
       "description": "Цель: быстрая проверка при ревью. За что отвечает: команды, которые code-review запускает на candidate commit. Варианты: массив строк (может быть пустым); если не задан, используются полные verification_commands."
     },
+    "verification_profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths", "developer", "review"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1},
+            "description": "Пути или glob-шаблоны области профиля относительно корня репозитория (например, 'harness/console/**')."
+          },
+          "developer": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "Команды проверки developer для batch этой области."
+          },
+          "review": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "Команды проверки code-review для batch этой области."
+          }
+        }
+      },
+      "description": "Цель: фокусные проверки по области batch. За что отвечает: при batch create выбирается первый профиль, чьи paths покрывают все allowed_paths batch; его developer и review замораживаются в batch вместо developer_verification_commands и review_verification_commands. Варианты: массив объектов {paths, developer, review}; если ни один профиль не покрывает batch целиком или ключ не задан, используются общие списки. Clean-room QA всегда выполняет verification_commands."
+    },
+    "retry_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lint", "test_command"],
+      "properties": {
+        "lint": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Команды lint, с которых начинается brief developer-retry (например, ['make lint'])."
+        },
+        "test_command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Команда тестов, к которой добавляются пути related_tests Context Package (например, 'pytest -q -n 8')."
+        }
+      },
+      "description": "Цель: быстрые проверки developer-retry. За что отвечает: brief developer-retry получает команды lint и одну команду тестов по related_tests своего Context Package (в пределах context_package_policy.max_related_tests); первый developer-dispatch, code-review и clean-room QA не меняются. Варианты: объект {lint, test_command}; если ключ не задан или связанных тестов нет, retry выполняет обычные команды developer batch. Значение замораживается в batch при batch create."
+    },
     "test_path_patterns": {
       "type": "array",
       "items": {

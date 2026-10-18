@@ -7,7 +7,9 @@ these instead of repeating them.
 
 import json
 import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -15,6 +17,39 @@ import pytest
 from harness.repo_map import repo_map
 
 BUNDLE_ENV = "HARNESS_PARSER_BUNDLE_DIR"
+
+
+def find_bash() -> str:
+    """Путь к рабочему bash.
+
+    На Windows голый `bash` в PATH может указывать на заглушку WSL в System32,
+    которая без установленного дистрибутива завершается ошибкой. Поэтому на Windows
+    ищется реальный bash из поставки Git for Windows.
+    """
+    if sys.platform != "win32":
+        return "bash"
+    git_exe = shutil.which("git")
+    if git_exe:
+        for ancestor in Path(git_exe).resolve().parents:
+            for candidate in (
+                ancestor / "bin" / "bash.exe",
+                ancestor / "usr" / "bin" / "bash.exe",
+            ):
+                if candidate.is_file():
+                    return str(candidate)
+    for root in (
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramW6432"),
+        os.environ.get("ProgramFiles(x86)"),
+    ):
+        if root:
+            for candidate in (
+                Path(root) / "Git" / "bin" / "bash.exe",
+                Path(root) / "Git" / "usr" / "bin" / "bash.exe",
+            ):
+                if candidate.is_file():
+                    return str(candidate)
+    return "bash"
 
 
 def _git(repo: Path, *args: str) -> str:

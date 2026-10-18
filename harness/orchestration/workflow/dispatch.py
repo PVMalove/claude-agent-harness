@@ -29,6 +29,7 @@ from harness.orchestration.contract import (
     paths_inside,
     resolve_allowed_tools,
     resolve_min_repo_map_tier,
+    retry_verification_commands,
     role_verification_commands,
 )
 from harness.orchestration.core import config as core_config
@@ -141,9 +142,28 @@ from harness.orchestration.workflow.risk import (
 
 
 def _dispatch_verification_commands(
-    batch: JsonObject, role_name: str, purpose: str
+    batch: JsonObject,
+    role_name: str,
+    purpose: str,
+    *,
+    next_action: object = None,
+    context_package: JsonObject | None = None,
 ) -> list[str]:
-    """Вернуть неизменяемый список проверок роли, замороженный в ``batch``."""
+    """Вернуть неизменяемый список проверок роли, замороженный в ``batch``.
+
+    Developer-retry batch с замороженным ``retry_verification`` получает lint и тесты из
+    ``related_tests`` своего Context Package; без связанных тестов остаётся список developer.
+    """
+    if (
+        next_action == "developer-retry"
+        and (role_name, purpose) == ("developer", "work")
+        and context_package is not None
+    ):
+        retry = retry_verification_commands(
+            batch.get("retry_verification"), context_package.get("related_tests")
+        )
+        if retry is not None:
+            return retry
     return cast(list[str], role_verification_commands(batch, role_name, purpose))
 
 
@@ -386,7 +406,13 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
                     repo, root, batch, context_package_id=package["context_package_id"]
                 ),
             }
-        checks = _dispatch_verification_commands(batch, args.role, args.purpose)
+        checks = _dispatch_verification_commands(
+            batch,
+            args.role,
+            args.purpose,
+            next_action=batch.get("next_action"),
+            context_package=package,
+        )
         state = {
             "repo": str(repo),
             "config": config,
@@ -1148,7 +1174,13 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                             ),
                         )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
-        dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
+        dispatch_commands = _dispatch_verification_commands(
+            batch,
+            role_name,
+            purpose,
+            next_action=next_action,
+            context_package=context_package,
+        )
         carried = delta_review.with_closure_items(
             carried_items.brief_section(root, batch, role_name, purpose),
             root,

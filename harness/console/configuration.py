@@ -40,6 +40,8 @@ def default_document(repo: Path, name: str) -> JsonObject:
             "BRANCH_PATTERN": "^feature/issue-[0-9]+-.+",
             "QA_GATE_COMMANDS": "[]",
             "TRACKER_FIELD": '\n  "tracker": ' + json.dumps(field) + ",",
+            # Like `harness init` without --test-path and --test-runner-command: no test fields.
+            "TEST_FIELDS": "",
         },
     )
     return parse_object(rendered.encode("utf-8"), name)

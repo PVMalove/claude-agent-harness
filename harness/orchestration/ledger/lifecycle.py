@@ -19,8 +19,9 @@ import socket
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -42,6 +43,42 @@ LOCK_DIRECTORY = ".coordinator.lock"
 LOCK_OWNER = "owner.json"
 # The operating-system file lock that lets one release at a time judge and remove the ledger lock.
 LOCK_RELEASE_GUARD = ".coordinator.lock.release"
+# Append-only, integrity-checked records of human-approved forced lock releases. The lock belongs
+# to the state root rather than to a generation, so its audit lives beside it.
+LOCK_AUDIT_DIRECTORY = "lock-audit"
+# The one action of a lock-audit record.  These records sit at the state root, outside every
+# generation, so the generation audit vocabulary (`AUDIT_ACTIONS`), the migration and its
+# quarantine never apply to them; `validate()` checks them against this action instead.
+LOCK_AUDIT_ACTION = "ledger-lock-force-release"
+PID_NAMESPACE_LINK = Path("/proc/self/ns/pid")
+BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
+# The coordinator command that takes the lock, recorded in the owner record when it is known.
+_LOCK_OPERATION: ContextVar[str | None] = ContextVar(
+    "ledger_lock_operation", default=None
+)
+
+
+def set_lock_operation(operation: str | None) -> None:
+    """Name the coordinator operation every later lock of this process records as its owner."""
+    _LOCK_OPERATION.set(operation)
+
+
+def lock_environment() -> dict[str, str]:
+    """The PID namespace and boot of this process, as far as the platform reveals them.
+
+    A pid identifies a process only inside one PID namespace of one boot: a worker sandboxed with
+    ``--unshare-pid`` records a pid that names another process, or a kernel thread, outside its
+    sandbox. Both values are absent where the platform has no ``/proc``."""
+    environment: dict[str, str] = {}
+    with contextlib.suppress(OSError):
+        environment["pid_namespace"] = os.readlink(PID_NAMESPACE_LINK)
+    with contextlib.suppress(OSError):
+        boot_id = BOOT_ID_FILE.read_text(encoding="utf-8").strip()
+        if boot_id:
+            environment["boot_id"] = boot_id
+    return environment
+
+
 RECORD_DIRECTORIES = (
     "batches",
     "plans",
@@ -192,12 +229,18 @@ def _path_segment(value: object) -> bool:
     )
 
 
+LOCK_BUSY_REMEDY = (
+    "repeat the command once the other operation finishes; 'coordinator.py ledger lock-status' "
+    "shows the holder, its age and when a timeout release becomes available. If the lock stays "
+    "held, run 'coordinator.py ledger release-lock', which releases it only when its owner process "
+    "is gone; for the lock of a stopped sandboxed worker, an operator can run 'coordinator.py "
+    "ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>'"
+)
+
+
 def _lock_busy() -> LedgerLockBusy:
     return LedgerLockBusy(
-        "ledger is locked by another operation",
-        remedy="repeat the command once the other operation finishes; if the lock stays held, "
-        "run 'coordinator.py ledger release-lock', which releases it only when its owner process "
-        "is gone",
+        "ledger is locked by another operation", remedy=LOCK_BUSY_REMEDY
     )
 
 
@@ -993,17 +1036,18 @@ class LifecycleLedger:
         owner = lock_dir / LOCK_OWNER
         created = False
         try:
+            record: JsonObject = {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "acquired_at": _now(),
+                **lock_environment(),
+            }
+            operation = _LOCK_OPERATION.get()
+            if operation:
+                record["operation"] = operation
             with owner.open("x", encoding="utf-8") as stream:
                 created = True
-                stream.write(
-                    json.dumps(
-                        {
-                            "pid": os.getpid(),
-                            "host": socket.gethostname(),
-                            "acquired_at": _now(),
-                        }
-                    )
-                )
+                stream.write(json.dumps(record))
         except (FileExistsError, FileNotFoundError) as exc:
             raise _lock_busy() from exc
         except OSError as exc:
@@ -1083,7 +1127,12 @@ class LifecycleLedger:
             finally:
                 _guard_byte(handle, acquire=False)
 
-    def break_lock(self, observed: JsonObject) -> None:
+    def break_lock(
+        self,
+        observed: JsonObject,
+        *,
+        before_release: Callable[[JsonObject], None] | None = None,
+    ) -> None:
         """Remove the lock ``lock_state()`` returned as ``observed``, and only that lock.
 
         The caller decides whether the lock may go; this only guarantees it removes the lock it
@@ -1091,7 +1140,9 @@ class LifecycleLedger:
         one, and nothing else can change it before it goes: a holder only creates an owner record
         where none exists and removes only its own, and the observed owner was judged gone.  An
         unreadable record goes only when it was observed unreadable; a lock observed without a
-        record goes by rmdir, which never removes a record created since."""
+        record goes by rmdir, which never removes a record created since.  ``before_release``
+        runs under the same guard once the lock is confirmed and before it goes; when it raises,
+        the lock stays."""
         lock_dir = self.root / LOCK_DIRECTORY
         owner = lock_dir / LOCK_OWNER
         changed = LedgerError(
@@ -1105,12 +1156,48 @@ class LifecycleLedger:
                 for key in ("owner", "owner_record", "acquired_at")
             ):
                 raise changed
+            if before_release is not None:
+                before_release(current)
             try:
                 if current["owner_record"] != "absent":
                     owner.unlink()
                 lock_dir.rmdir()
             except OSError as exc:
                 raise changed from exc
+
+    def force_break_lock(self, observed: JsonObject, decision: JsonObject) -> str:
+        """Remove the observed lock whatever its owner, after auditing the human ``decision``.
+
+        The audit record (who, when, why, the verdict and the lock as it was) is written under the
+        release guard before the lock goes, so a lock never disappears without one.  Returns the
+        audit id."""
+        audit_id = f"audit-{uuid.uuid4()}"
+
+        def audit(current: JsonObject) -> None:
+            record: JsonObject = {
+                "audit_id": audit_id,
+                "at": _now(),
+                "action": LOCK_AUDIT_ACTION,
+                "details": {**decision, "lock": current},
+            }
+            record["record_sha256"] = hashlib.sha256(
+                _canonical(record).encode("utf-8")
+            ).hexdigest()
+            directory = self.root / LOCK_AUDIT_DIRECTORY
+            try:
+                directory.mkdir(exist_ok=True)
+                with (directory / f"{audit_id}.json").open(
+                    "x", encoding="utf-8"
+                ) as out:
+                    out.write(_canonical(record))
+            except OSError as exc:
+                raise LedgerError(
+                    f"forced ledger lock release could not be audited: {exc.strerror}",
+                    remedy=f"make {directory} writable, then repeat the forced release",
+                ) from exc
+
+        self.break_lock(observed, before_release=audit)
+        return audit_id
 
     @property
     def pointer_path(self) -> Path:
@@ -1268,6 +1355,7 @@ class LifecycleLedger:
         elif pointer or self._legacy_records_present():
             self._validate_legacy(root)
             self._validate_audit(root / "audit")
+        self._validate_lock_audit(self.root / LOCK_AUDIT_DIRECTORY)
         return {
             "valid": True,
             "version": version,
@@ -2365,4 +2453,21 @@ class LifecycleLedger:
                     f"{refusal[0]}",
                     remedy=f"read {path.name} with {LEDGER_INSPECT}: the ledger never writes "
                     f"such an event and rewrites none -- {INTERNAL_INVARIANT_REMEDY}",
+                )
+
+    @staticmethod
+    def _validate_lock_audit(root: Path) -> None:
+        """Verify each forced-release record of the state root's ``lock-audit/``: its checksum,
+        its one action, its details object and the audit id its file is named after."""
+        for path in sorted(root.glob("*.json")):
+            record = verified_audit(path)
+            if (
+                record.get("action") != LOCK_AUDIT_ACTION
+                or record.get("audit_id") != path.stem
+                or not isinstance(record.get("details"), dict)
+            ):
+                raise LedgerError(
+                    f"ledger lock audit record {path.name} is not a forced lock release record",
+                    remedy=f"only 'coordinator.py ledger release-lock --force' writes {path.name}"
+                    f" and nothing rewrites it -- {INTERNAL_INVARIANT_REMEDY}",
                 )

@@ -917,12 +917,22 @@ prints the batch's records, reports and quarantine evidence as JSON, byte for by
 directory and report `generation: null`.
 
 Every other command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
-`acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
-`dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
-held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
-owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
-without an owner record only once it is stale, and never releases a lock whose owner record cannot
-be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
+`acquired_at`, and where the platform has `/proc` its `pid_namespace` and `boot_id`, plus the
+coordinator `operation` when known). A busy lock fails a write command with a remedy to repeat it;
+`dispatch wait` and `dispatch status` keep polling instead (`dispatch status` answers
+`ledger_busy`). `coordinator.py --repo . ledger lock-status` shows the lock without taking it: its
+owner, `held_seconds`, `remaining_seconds` until the timeout release, the verdict and whether a
+release is available now. A lock that stays held is released only by
+`coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive or
+runs on another host, releases a dead owner's lock, and releases only once it is stale a lock
+without an owner record or an owner from another PID namespace or boot (`owner-in-other-environment`:
+a sandboxed worker's pid names another process outside its sandbox); concurrent releases are
+serialised. Only a human operator may run `ledger release-lock --force --approved-by
+--approved-at --reason`: it releases the lock whatever the verdict and writes an integrity-checked
+record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. That
+directory sits beside the generations, so no migration or quarantine moves it, and `ledger
+validate` checks each record's checksum and its one action `ledger-lock-force-release`. Nobody
+removes the lock or any state file by hand.
 
 A command stopped by an invalid current config, a busy ledger or an unreadable ledger prints one
 `DIAGNOSTICS: {json}` line before `ERROR` and `REMEDY`. An unreadable ledger has no readable

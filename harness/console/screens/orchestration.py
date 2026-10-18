@@ -16,6 +16,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Checkbox, Input, ListItem, ListView, Static, TextArea
 
 from .. import brand, i18n
+from .. import ledger_lock
 from .. import reports as console_reports
 from .. import stats as console_stats
 from ..coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand, process_argv
@@ -106,12 +107,14 @@ class CoordinatorCommandFormScreen(CommandForm):
 
 
 class OrchestrationScreen(CommandMenuScreen):
-    """Экран раздела Orchestration: статистика пайплайна, история batch с фильтром по состоянию
-    (выбор batch открывает его хронологию) и список команд координатора."""
+    """Экран раздела Orchestration: статистика пайплайна, живое состояние lock ledger, история
+    batch с фильтром по состоянию (выбор batch открывает его хронологию) и список команд
+    координатора."""
 
     CRUMB = "Оркестрация"
 
     DEFAULT_CSS = """
+    OrchestrationScreen #ledger-lock { height: auto; }
     OrchestrationScreen #pipeline-history { height: 11; max-height: 40%; margin: 0 1; }
     OrchestrationScreen #state-filter { width: 32; height: 100%; border-title-color: $primary; }
     OrchestrationScreen #batch-history { width: 1fr; height: 100%; border-title-color: $primary; }
@@ -126,11 +129,18 @@ class OrchestrationScreen(CommandMenuScreen):
         load_view: Callable[
             [Path], console_reports.LedgerView
         ] = console_reports.load_ledger_view,
+        load_lock: ledger_lock.LockLoader = ledger_lock.load_lock_status,
+        lock_refresh_seconds: float = 1.0,
     ) -> None:
-        """Инициализирует экран раздела Orchestration со списком доступных команд координатора."""
+        """Инициализирует экран раздела Orchestration со списком доступных команд координатора.
+
+        Состояние lock ledger перечитывается каждые ``lock_refresh_seconds``: время удержания и
+        остаток до снятия по таймауту идут на живом экране без перезапуска."""
         super().__init__(repo, command_runner=command_runner)
         self._entries = {entry.key: entry for entry in catalog}
         self._view = load_view(repo)
+        self._load_lock = load_lock
+        self._lock_refresh_seconds = lock_refresh_seconds
 
     def overview(self) -> ComposeResult:
         """Статистика пайплайна и история batch: слева состояния с числом batch, справа batch
@@ -149,6 +159,14 @@ class OrchestrationScreen(CommandMenuScreen):
         panel.border_title = brand.frame_title("Состояние и статистика")
         panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
+        lock = Static(
+            ledger_lock.current_lock_text(self.repo, self._load_lock),
+            id="ledger-lock",
+            classes="overview",
+            markup=False,
+        )
+        lock.border_title = brand.frame_title("Lock ledger")
+        yield lock
         if view.unavailable:
             return
         with Horizontal(id="pipeline-history"):
@@ -168,6 +186,13 @@ class OrchestrationScreen(CommandMenuScreen):
     def on_mount(self) -> None:
         if not self._view.unavailable:
             self._show_batches(console_stats.ALL_STATES)
+        self.set_interval(self._lock_refresh_seconds, self._refresh_lock)
+
+    def _refresh_lock(self) -> None:
+        """Перечитать состояние lock ledger без его захвата и обновить панель."""
+        self.query_one("#ledger-lock", Static).update(
+            ledger_lock.current_lock_text(self.repo, self._load_lock)
+        )
 
     def _show_batches(self, state: str) -> None:
         history = self.query_one("#batch-history", ListView)

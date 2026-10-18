@@ -8,6 +8,7 @@ from textual.app import App
 from harness.configuration import read_config_bundle
 from harness.configuration_store import ConfigurationStore
 from harness.console.screens.configuration_versions import ConfigurationVersionsScreen
+from tests.console._pilot_wait import press, wait_until
 from tests.console.test_console_configuration_app import installed_project
 
 
@@ -27,13 +28,16 @@ def test_restore_requires_confirmation_and_retains_current_version(
     async def scenario() -> None:
         app = Host()
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.pause()
-            await pilot.click("#restore-version")
-            await pilot.pause()
+            await wait_until(pilot, lambda: bool(app.screen.query("#restore-version")))
+            await press(pilot, "#restore-version")
+            await wait_until(pilot, lambda: bool(app.screen.query("#confirm")))
             assert (tmp_path / ".harness/project.json").read_bytes() == after
-            await pilot.click("#confirm")
+            await press(pilot, "#confirm")
             await app.workers.wait_for_complete()
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: (tmp_path / ".harness/project.json").read_bytes() == before,
+            )
             assert (tmp_path / ".harness/project.json").read_bytes() == before
             backups = [v for v in store.versions() if v.id != saved.id]
             assert len(backups) == 1
@@ -61,7 +65,12 @@ def test_versions_screen_groups_its_content_in_frames_and_names_the_storage_path
     async def scenario() -> tuple[list[str], str, str]:
         app = _host(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: bool(app.screen.query(".frame"))
+                and bool(app.screen.query("#versions-path"))
+                and bool(app.screen.query("#version-diff")),
+            )
             screen = app.screen
             frames = [str(f.border_title).strip() for f in screen.query(".frame")]
             path = str(screen.query_one("#versions-path", Static).content)
@@ -83,7 +92,12 @@ def test_an_empty_store_says_so_and_offers_nothing_to_restore(tmp_path: Path) ->
     async def scenario() -> tuple[bool, bool, str]:
         app = _host(tmp_path)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: bool(app.screen.query("#restore-version"))
+                and bool(app.screen.query("#configuration-version"))
+                and bool(app.screen.query("#versions-empty")),
+            )
             screen = app.screen
             return (
                 screen.query_one("#restore-version", Button).disabled,
@@ -106,7 +120,7 @@ def test_a_storage_path_with_brackets_is_shown_as_plain_text(tmp_path: Path) -> 
     async def scenario() -> str:
         app = _host(repo)
         async with app.run_test(size=(120, 48)) as pilot:
-            await pilot.pause()
+            await wait_until(pilot, lambda: bool(app.screen.query("#versions-path")))
             return str(app.screen.query_one("#versions-path", Static).content)
 
     shown = asyncio.run(scenario())

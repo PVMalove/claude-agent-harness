@@ -24,6 +24,7 @@ from collections.abc import Callable, Iterable, Iterator, Set
 from fnmatch import fnmatchcase
 from pathlib import PurePosixPath
 
+from harness.orchestration import contract
 from harness.orchestration.core.constants import (
     COMMIT_MAP_DROPPED_FIELDS,
     COMMIT_MAP_PLANNED_FIELDS,
@@ -238,11 +239,7 @@ def accepted_plan_sha256(batch: JsonObject) -> str | None:
 
 def is_developer_retry(dispatch: JsonObject) -> bool:
     """A developer-retry brief keeps the strict one-commit-one-entry commit_map."""
-    transition = dispatch.get("transition")
-    return (
-        isinstance(transition, dict)
-        and transition.get("next_action") == "developer-retry"
-    )
+    return contract.is_developer_retry(dispatch)
 
 
 def rebase_target(dispatch: JsonObject) -> str | None:

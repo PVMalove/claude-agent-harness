@@ -196,7 +196,7 @@ class PytestCommandTest(unittest.TestCase):
     def test_windows_configuration(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="win32", cpu_count=8)
         self.assertIn("-n", cmd)
-        self.assertEqual(cmd[cmd.index("-n") + 1], "4")
+        self.assertEqual(cmd[cmd.index("-n") + 1], "8")
         self.assertIn("--ignore=tests/memory/test_eval.py", cmd)
         self.assertIn("--ignore=tests/memory/test_vector_probe.py", cmd)
         self.assertNotIn("--ignore=tests/orchestration/test_coordinator.py", cmd)
@@ -216,8 +216,16 @@ class PytestCommandTest(unittest.TestCase):
     def test_posix_configuration(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=8)
         self.assertIn("-n", cmd)
-        self.assertEqual(cmd[cmd.index("-n") + 1], "4")
+        self.assertEqual(cmd[cmd.index("-n") + 1], "8")
         self.assertNotIn("--ignore=tests/memory/test_eval.py", cmd)
+
+    def test_workers_are_capped_at_eight(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=16)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "8")
+
+    def test_fewer_cpus_than_the_cap_use_every_cpu(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=6)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "6")
         self.assertNotIn("--ignore=tests/memory/test_vector_probe.py", cmd)
 
     def test_default_run_has_no_cache_no_stop_and_no_report(self) -> None:
