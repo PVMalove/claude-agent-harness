@@ -187,6 +187,12 @@ class ReportsScreen(ConsoleShell):
         if self._initial_timings and any(batch.branch for batch in self.view.batches):
             self.action_refresh()
 
+    def on_screen_resume(self) -> None:
+        # The list takes focus on arrival; the page still opens at its top, with the heading.
+        self.call_after_refresh(
+            self.query_one("#reports-page", VerticalScroll).scroll_home, animate=False
+        )
+
     def compose_strip(self) -> ComposeResult:
         yield Static(f"Проект: {self.repo.name}", id="reports-project", markup=False)
 

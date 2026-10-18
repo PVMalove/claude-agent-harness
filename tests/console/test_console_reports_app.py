@@ -949,3 +949,21 @@ def test_detail_screens_follow_the_console_language(tmp_path: Path) -> None:
     assert footer["b"] == "Timeline" and footer["e"] == "Export"
     assert "Started" in fields and "Status" in fields
     assert summary == "runs: 1 · failed attempts: 1"
+
+
+def test_a_narrow_terminal_opens_the_list_page_at_its_heading(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[int, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(4):
+                await pilot.pause()
+            page = app.screen.query_one("#reports-page")
+            return int(page.scroll_y), type(app.screen.focused).__name__
+
+    scroll, focused = asyncio.run(scenario())
+    # The list has the focus (its keys are in the footer), and the page is not scrolled past the
+    # heading and the buttons to show it.
+    assert focused == "OpenableList"
+    assert scroll == 0
