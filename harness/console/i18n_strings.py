@@ -714,3 +714,39 @@ EN_PHRASES.update(
     }
 )
 EN_PREFIXES["Прогон "] = "Run "
+EN.update(
+    {
+        "b Собрать карту": "b Build map",
+        "b Собрать": "b Build",
+        "e MD": "e MD",
+        "j JSON": "j JSON",
+        "j Экспорт в JSON": "j Export to JSON",
+        "Свод": "Sum.",
+        "Диагн.": "Diag.",
+        "Настр.": "Sett.",
+        "Markdown": "Markdown",
+        "Данные карты из кэша; сеть не используется": "Map data comes from the cache; the network is not used",
+        "Установка и сборка запускают команду из формы подтверждения": "Install and build run the command from the confirmation form",
+        "дерево · ←→ раскрыть": "tree · ←→ expand",
+        "по входящей степени": "by incoming degree",
+        "Provenance парсера": "Parser provenance",
+        "выберите файл": "select a file",
+        "связей нет": "no links",
+        "исходящие": "outgoing",
+        "входящие": "incoming",
+        "Деградация": "Degradation",
+        "Токенов (оценка)": "Tokens (estimate)",
+        "Источник": "Source",
+        "Рёбер": "Edges",
+        "Файлов": "Files",
+    }
+)
+EN_PHRASES.update(
+    {
+        "политика:": "policy:",
+        "входящих": "incoming",
+        "исходящих": "outgoing",
+        "диагностик нет": "no diagnostics",
+        "найдено файлов": "files found",
+    }
+)
