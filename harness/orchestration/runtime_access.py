@@ -65,19 +65,26 @@ def validate_plan(plan: object) -> None:
         "runtime_extension",
         "plan_digest",
     }
-    # A plan carries the container component only when its policy authored one (issue #704).
-    if not isinstance(plan, dict) or set(plan) - {"container"} != fields:
+    # A plan carries the container and environment components only when its policy authored
+    # them (issues #704 and #705).
+    authored = ("container", "environment")
+    if not isinstance(plan, dict) or set(plan) - set(authored) != fields:
         raise AccessError("runtime access plan schema mismatch", remedy=remedy)
     components = {
-        key: plan[key] for key in ("mode", "network", "container") if key in plan
+        key: plan[key] for key in ("mode", "network", *authored) if key in plan
     }
     if access_policy_problems({"defaults": components}, set()):
         raise AccessError(
-            "runtime access plan has invalid mode, network or container", remedy=remedy
+            "runtime access plan has invalid mode, network, container or environment",
+            remedy=remedy,
         )
     if "container" in plan and "engine" not in plan["container"]:
         raise AccessError(
             "runtime access container does not name its engine", remedy=remedy
+        )
+    if "environment" in plan and plan["environment"] != sorted(plan["environment"]):
+        raise AccessError(
+            "runtime access environment names are not canonical", remedy=remedy
         )
     hosts = plan["network"]["hosts"]
     if hosts != sorted(set(host.lower() for host in hosts)):
@@ -90,7 +97,7 @@ def validate_plan(plan: object) -> None:
             "mode",
             "network",
             "filesystem",
-            *(("container",) if "container" in plan else ()),
+            *(key for key in authored if key in plan),
         }
         or any(
             not isinstance(value, str)
@@ -139,7 +146,7 @@ def validate_plan(plan: object) -> None:
             or plan["filesystem"]
             or plan["requirements"]
             or plan["runtime_extension"] != "none"
-            or "container" in plan
+            or any(key in plan for key in authored)
         ):
             raise AccessError(
                 "legacy runtime access must preserve empty inherit", remedy=remedy
@@ -295,9 +302,10 @@ def resolve_plan(
         "filesystem": [],
     }
     sources: JsonObject = {key: "default" for key in selected}
-    # The container component has no default: a plan carries it only when a layer authors it, so
-    # every plan without one keeps its historical shape and digest.
+    # The container and environment components have no default: a plan carries each only when a
+    # layer authors it, so every plan without one keeps its historical shape and digest.
     container: JsonObject | None = None
+    environment: list[str] | None = None
     layers = [("defaults", policy.get("defaults", {}))]
     for section, name in (
         ("roles", None if operation else role),
@@ -319,6 +327,9 @@ def resolve_plan(
         if "container" in layer:
             container = layer["container"]
             sources["container"] = label
+        if "environment" in layer:
+            environment = layer["environment"]
+            sources["environment"] = label
     try:
         result = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
@@ -415,6 +426,9 @@ def resolve_plan(
                 if key in container
             },
         }
+    if environment is not None:
+        # Names only: no resolver call reads a value, so none can reach the plan or its digest.
+        plan["environment"] = sorted(environment)
     plan["plan_digest"] = _digest(plan)
     return plan
 

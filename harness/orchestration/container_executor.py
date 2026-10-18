@@ -32,6 +32,17 @@ ENGINE_TIMEOUT_SECONDS = 30
 CONTAINER_HOME = "/harness-home"
 # A project adapter reads this marker to set its agent's flags for a container run (ADR 0018).
 EXECUTOR_ENV = ("HARNESS_EXECUTOR", EXTENSION_NAME)
+# The worker environment the executor sets itself; preflight and send block a plan name that
+# would replace it.
+FIXED_ENV = (
+    ("HOME", CONTAINER_HOME),
+    # Docker creates the parents of nested mount points as root; Git must still trust them.
+    ("GIT_CONFIG_COUNT", "1"),
+    ("GIT_CONFIG_KEY_0", "safe.directory"),
+    ("GIT_CONFIG_VALUE_0", "*"),
+    EXECUTOR_ENV,
+)
+RESERVED_ENV_NAMES = frozenset(name for name, _ in FIXED_ENV)
 # ``inherit`` asks for no particular mode; the container isolates the worker either way.
 SUPPORTED_MODES = ("inherit", "sandbox")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
@@ -128,7 +139,11 @@ def mounts(requirements: Sequence[Mapping[str, object]]) -> list[tuple[str, str]
 def create_argv(
     brief: Mapping[str, object], command: Sequence[str], user: str
 ) -> list[str]:
-    """The exact ``docker create`` of the approved worker: plan roots only, no network."""
+    """The exact ``docker create`` of the approved worker: plan roots only, no network.
+
+    A plan's environment names become ``--env NAME`` without a value: the engine reads each
+    value from its own inherited environment, so no value enters the argv.
+    """
     data = cast(JsonObject, brief)
     plan = data["runtime_access"]
     dispatch_id = str(data["dispatch_id"])
@@ -156,17 +171,12 @@ def create_argv(
         "no-new-privileges",
         "--tmpfs",
         f"{CONTAINER_HOME}:rw,exec,nosuid,nodev,mode=1777",
-        "--env",
-        f"HOME={CONTAINER_HOME}",
-        # Docker creates the parents of nested mount points as root; Git must still trust them.
-        "--env",
-        "GIT_CONFIG_COUNT=1",
-        "--env",
-        "GIT_CONFIG_KEY_0=safe.directory",
-        "--env",
-        "GIT_CONFIG_VALUE_0=*",
-        "--env",
-        "=".join(EXECUTOR_ENV),
+    ]
+    for pair in FIXED_ENV:
+        argv += ["--env", "=".join(pair)]
+    for name in plan.get("environment", []):
+        argv += ["--env", name]
+    argv += [
         "--label",
         f"harness.dispatch={dispatch_id}",
         "--label",
@@ -303,6 +313,21 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
         block(
             f"mode {data['mode']} cannot run in a container",
             "set the role's access_policy mode to sandbox or inherit",
+        )
+    names = data.get("environment", [])
+    reserved = [name for name in names if name in RESERVED_ENV_NAMES]
+    if reserved:
+        block(
+            f"the docker executor sets these environment names itself: {', '.join(reserved)}",
+            "remove these names from the access_policy environment",
+        )
+    # Only presence is read: a value never enters a blocker, its remedy or the evidence.
+    missing = [name for name in names if name not in os.environ]
+    if missing:
+        block(
+            f"the host environment has no variable named: {', '.join(missing)}",
+            f"set each of {', '.join(missing)} in the coordinator's environment, then "
+            "repeat dispatch preflight",
         )
     for path in sorted({item["path"] for item in data["requirements"]}):
         if _UNSAFE_PATH.search(path) or _overlaps_home(path):

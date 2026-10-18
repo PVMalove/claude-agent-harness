@@ -698,6 +698,124 @@ class DockerHandoffTests(DockerFixture):
             self.assertTrue(callable(getattr(provider, method, None)), method)
 
 
+class DockerEnvironmentTests(DockerFixture):
+    """Variables reach the worker by name only; their values never leave the host (issue #705)."""
+
+    SECRET = "synthetic-secret-value-5d1e"
+    OTHER_SECRET = "synthetic-proxy-value-9b2c"
+
+    def setUp(self) -> None:
+        environ = mock.patch.dict(
+            os.environ, {"LLM_API_KEY": self.SECRET, "HTTPS_PROXY": self.OTHER_SECRET}
+        )
+        environ.start()
+        self.addCleanup(environ.stop)
+        for name in ("MISSING_KEY", "EXTRA_KEY"):
+            os.environ.pop(name, None)
+        super().setUp()
+        self.configure(environment=["LLM_API_KEY", "HTTPS_PROXY"])
+
+    def passed_names(self) -> list[str]:
+        [create] = [call for call in self.engine.calls if call[1] == "create"]
+        return [
+            value
+            for flag, value in zip(create, create[1:])
+            if flag == "--env" and "=" not in value
+        ]
+
+    def assert_no_value_anywhere(self, *texts: str) -> None:
+        for text in (*texts, *(json.dumps(call) for call in self.engine.calls)):
+            self.assertNotIn(self.SECRET, text)
+            self.assertNotIn(self.OTHER_SECRET, text)
+        for path in self.fx.tmp.rglob("*"):
+            if path.is_file():
+                content = path.read_bytes()
+                self.assertNotIn(self.SECRET.encode(), content, path)
+                self.assertNotIn(self.OTHER_SECRET.encode(), content, path)
+
+    def test_send_passes_each_approved_name_to_the_engine_without_its_value(
+        self,
+    ) -> None:
+        dispatched = self.fx._dispatch(self.batch_id, "architect")
+        self.engine.reset()
+
+        sent = self.send(dispatched["brief"]["dispatch_id"])
+
+        self.assertEqual(self.passed_names(), ["HTTPS_PROXY", "LLM_API_KEY"])
+        self.assertEqual(
+            dispatched["brief"]["runtime_access"]["environment"],
+            ["HTTPS_PROXY", "LLM_API_KEY"],
+        )
+        status = coordinator.dispatch_status(
+            self.fx._args(dispatch=sent["dispatch_id"], batch=None, stale_after=None)
+        )
+        self.assertEqual(status["dispatches"][0]["state"], "dispatched")
+        self.assert_no_value_anywhere(
+            json.dumps(dispatched), json.dumps(sent), json.dumps(status)
+        )
+
+    def test_a_missing_variable_blocks_preflight_and_propose_by_its_name(
+        self,
+    ) -> None:
+        self.configure(environment=["LLM_API_KEY", "MISSING_KEY"])
+
+        verification = self.preflight()
+        with self.assertRaises(runtime_access.AccessError) as refused:
+            self.fx._propose(self.batch_id, "architect")
+
+        self.assertEqual(verification["status"], "unverified")
+        self.assertIn("MISSING_KEY", verification["reason"])
+        self.assertIn("MISSING_KEY", verification["remedy"])
+        self.assertNotIn("LLM_API_KEY", verification["reason"])
+        self.assertIn("MISSING_KEY", refused.exception.message)
+        self.assert_no_container_was_created()
+        self.assert_no_value_anywhere(
+            json.dumps(verification),
+            refused.exception.message,
+            refused.exception.remedy,
+        )
+
+    def test_names_changed_or_lost_after_approval_never_change_the_approved_launch(
+        self,
+    ) -> None:
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        os.environ["EXTRA_KEY"] = "extra"
+        self.configure(environment=["LLM_API_KEY", "HTTPS_PROXY", "EXTRA_KEY"])
+        del os.environ["LLM_API_KEY"]
+
+        with self.assertRaises(runtime_access.AccessError) as missing:
+            self.send(brief["dispatch_id"])
+
+        self.assertIn("LLM_API_KEY", missing.exception.message)
+        self.assertEqual(self.state(brief["dispatch_id"]), "approved")
+        self.assert_no_container_was_created()
+
+        os.environ["LLM_API_KEY"] = self.SECRET
+        self.engine.reset()
+        self.send(brief["dispatch_id"])
+
+        self.assertEqual(self.passed_names(), ["HTTPS_PROXY", "LLM_API_KEY"])
+        self.assertEqual(self.state(brief["dispatch_id"]), "dispatched")
+
+    def test_a_name_the_executor_sets_itself_is_blocked(self) -> None:
+        for name in (
+            "HOME",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "HARNESS_EXECUTOR",
+        ):
+            with self.subTest(name=name):
+                self.configure(environment=[name])
+
+                verification = self.preflight()
+
+                self.assertEqual(verification["status"], "unverified")
+                self.assertIn(name, verification["reason"])
+                self.assertIn("environment", verification["remedy"])
+        self.assert_no_container_was_created()
+
+
 class HandoffLaunchIdentityTests(unittest.TestCase):
     """Only a handoff-time identity may become another launch id in the receipt."""
 

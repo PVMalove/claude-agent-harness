@@ -26,7 +26,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `workflow/fix_forward.py` | История Fix-forward: retry-цепочка, основания диапазонов и происхождение rebased-копий для проверки report и delta-review. |
 | `operational_guards.py` | Чистая привязка transition к brief, дайджест approval и retry key; lifecycle и policy проверяет coordinator. |
 | `runtime_access.py`, `operation_access.py` | План доступа (`access_policy`) и его проверка перед QA, Git и publish. Эти операции выполняет сам coordinator. |
-| `container_executor.py` | Встроенный `runtime_access` `docker`: проверка движка и образов, закрепление их digest и detached-запуск worker в rootful Docker без сети. Образы не собирает и не скачивает. |
+| `container_executor.py` | Встроенный `runtime_access` `docker`: проверка движка и образов, закрепление их digest и detached-запуск worker в rootful Docker без сети; переменные из `environment` передаёт только по именам. Образы не собирает и не скачивает. |
 | `dispatch_preflight.py`, `runtime_attestation.py` | Проверка worktree, ветки и SHA воркера; защитные проверки перед dispatch. |
 | `advisory.py`, `extensions.py` | Advisory-вызовы и подключаемые extensions (health, классификатор retry, уведомления). |
 | `roles/` | Role manifest'ы: режим (`read-only`/`write`), требуемые capability, risk triggers. |
@@ -115,7 +115,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `worker_attestation_required` | логическое | `false` | Включает проверку фактического worktree и SHA для остальных ролей. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review startup-attestation обязательна при любом значении. Пример включает `true` для всех ролей. |
 | `communication_policy` | объект | `en` / `ru` | `agent_to_agent_language` всегда `en`, `coordinator_report_language` всегда `ru`. |
 | `tool_policy` | объект | по режиму роли | Рабочий набор инструментов роли в brief (см. ниже). |
-| `access_policy` | объект | — | Доступ ролей и операций `qa`/`git`/`publish` к сети и файловой системе (см. «Доступ QA, Git и publish»). Компонент `container` задаёт образы встроенного исполнителя `docker`. Opt-in: любой `access_policy` блокирует `dispatch send`, пока проект не выбрал реализацию `extensions.runtime_access` (встроенный `docker` или свою `module:factory`). Поэтому пример его не содержит. |
+| `access_policy` | объект | — | Доступ ролей и операций `qa`/`git`/`publish` к сети и файловой системе (см. «Доступ QA, Git и publish»). Компонент `container` задаёт образы встроенного исполнителя `docker`, а `environment` — имена переменных окружения, которые он передаёт worker-у без значений. Opt-in: любой `access_policy` блокирует `dispatch send`, пока проект не выбрал реализацию `extensions.runtime_access` (встроенный `docker` или свою `module:factory`). Поэтому пример его не содержит. |
 | `extensions` | объект | все `none` | Подключаемые интерфейсы вне ядра (см. ниже). |
 
 Отдельные разделы ниже описывают политики `context_package_policy`,
