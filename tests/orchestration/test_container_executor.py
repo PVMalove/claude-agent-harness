@@ -8,16 +8,20 @@ container-engine command boundary, is replaced by a scripted engine that records
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from collections.abc import Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
 
 from harness.orchestration import (
     container_executor,
     coordinator,
+    extensions,
     operational_guards,
     runtime_access,
 )
@@ -102,8 +106,12 @@ class DockerFixture(unittest.TestCase):
         patcher = mock.patch.object(container_executor, "run_engine", self.engine)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The adapter marks a run on the host: under the executor it must only run in the container.
+        self.adapter_ran = self.fx.tmp / "adapter-ran"
         self.adapter = self.fx.tmp / "adapter.sh"
-        self.adapter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        self.adapter.write_text(
+            f"#!/bin/sh\ntouch '{self.adapter_ran}'\n", encoding="utf-8"
+        )
         self.adapter.chmod(0o755)
         self.configure()
         self.batch_id = self.fx._create_batch()["batch_id"]
@@ -162,6 +170,23 @@ class DockerFixture(unittest.TestCase):
             "verification"
         ]
         return verification
+
+    def send(self, dispatch_id: str) -> JsonObject:
+        sent: JsonObject = coordinator.send_dispatch(
+            self.fx._args(
+                dispatch=dispatch_id,
+                adapter=str(self.adapter),
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        return sent
+
+    def state(self, dispatch_id: str) -> str:
+        status = coordinator.dispatch_status(
+            self.fx._args(dispatch=dispatch_id, batch=None, stale_after=None)
+        )
+        return str(status["dispatches"][0]["state"])
 
     def assert_no_container_was_created(self) -> None:
         kinds = set(self.engine.kinds())
@@ -344,23 +369,6 @@ class DockerPreflightTests(DockerFixture):
 class DockerApprovalTests(DockerFixture):
     """Propose pins the image digests; approval and send never reuse them for another image."""
 
-    def send(self, dispatch_id: str) -> JsonObject:
-        sent: JsonObject = coordinator.send_dispatch(
-            self.fx._args(
-                dispatch=dispatch_id,
-                adapter=str(self.adapter),
-                adapter_arg=None,
-                checkout=None,
-            )
-        )
-        return sent
-
-    def state(self, dispatch_id: str) -> str:
-        status = coordinator.dispatch_status(
-            self.fx._args(dispatch=dispatch_id, batch=None, stale_after=None)
-        )
-        return str(status["dispatches"][0]["state"])
-
     def test_propose_pins_the_digests_outside_the_plan_and_approval_binds_them(
         self,
     ) -> None:
@@ -412,12 +420,12 @@ class DockerApprovalTests(DockerFixture):
         self.assertIn(f"image {WORKER_TAG} is not present", refused.exception.message)
         self.assertIn(f"build or pull {WORKER_TAG}", refused.exception.remedy)
 
-    def test_an_image_changed_or_missing_after_approval_is_refused(self) -> None:
+    def test_send_refuses_an_image_changed_or_missing_after_approval(self) -> None:
         brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
         self.engine.images[WORKER_TAG] = REBUILT_ID
 
         with self.assertRaises(runtime_access.AccessError) as changed:
-            runtime_access.apply_plan(brief, "external")
+            self.send(brief["dispatch_id"])
 
         self.assertEqual(
             changed.exception.message,
@@ -468,6 +476,298 @@ class DockerApprovalTests(DockerFixture):
         with self.assertRaises(runtime_access.AccessError):
             runtime_access.validate_binding(
                 {**legacy, "runtime_images": brief["runtime_images"]}
+            )
+
+
+class DockerHandoffTests(DockerFixture):
+    """Send starts the worker detached in its own container and records the linked receipt."""
+
+    def expected_create(self, brief: JsonObject, brief_path: str) -> list[str]:
+        plan = brief["runtime_access"]
+        root = {item["resource"]: item["path"] for item in plan["requirements"]}
+        self.assertEqual(
+            {
+                item["access"]
+                for item in plan["requirements"]
+                if item["resource"] != "artifacts"
+            },
+            {"read"},
+        )
+        dispatch_id = brief["dispatch_id"]
+        return [
+            "docker",
+            "create",
+            "--pull",
+            "never",
+            "--name",
+            f"harness-{dispatch_id}",
+            "--network",
+            "none",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            "/harness-home:rw,exec,nosuid,nodev,mode=1777",
+            "--env",
+            "HOME=/harness-home",
+            "--env",
+            "GIT_CONFIG_COUNT=1",
+            "--env",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "--env",
+            "GIT_CONFIG_VALUE_0=*",
+            "--env",
+            "HARNESS_EXECUTOR=docker",
+            "--label",
+            f"harness.dispatch={dispatch_id}",
+            "--label",
+            f"harness.repository={root['git_common']}",
+            "--label",
+            f"harness.plan_digest={plan['plan_digest']}",
+            "--workdir",
+            root["checkout"],
+            # Parents first: the worktree, Git metadata, storage, then its nested scratch.
+            "--mount",
+            f"type=bind,source={root['checkout']},target={root['checkout']},readonly",
+            "--mount",
+            f"type=bind,source={root['git_common']},target={root['git_common']},readonly",
+            "--mount",
+            f"type=bind,source={root['shared_storage']},"
+            f"target={root['shared_storage']},readonly",
+            "--mount",
+            f"type=bind,source={root['artifacts']},target={root['artifacts']}",
+            "--entrypoint",
+            str(self.adapter.resolve()),
+            WORKER_ID,
+            "dispatch",
+            "--repo",
+            str(self.repo.resolve()),
+            "--brief",
+            brief_path,
+        ]
+
+    def test_send_starts_the_worker_detached_with_exactly_the_plan_mounts(self) -> None:
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        self.engine.reset()
+
+        sent = self.send(brief["dispatch_id"])
+
+        create = self.expected_create(brief, sent["brief"])
+        self.assertEqual(
+            self.engine.calls,
+            [
+                ["docker", "info", "--format", "{{json .}}"],
+                ["docker", "image", "inspect", "--format", "{{.Id}}", WORKER_TAG],
+                create,
+                ["docker", "start", CONTAINER_ID],
+            ],
+        )
+        mounted = {
+            value.split(",")[1].removeprefix("source=")
+            for flag, value in zip(create, create[1:])
+            if flag == "--mount"
+        }
+        self.assertEqual(
+            mounted, {item["path"] for item in brief["runtime_access"]["requirements"]}
+        )
+        self.assertFalse(self.adapter_ran.exists())
+        self.assertFalse(set(self.engine.kinds()) & FORBIDDEN)
+        status = coordinator.dispatch_status(
+            self.fx._args(dispatch=brief["dispatch_id"], batch=None, stale_after=None)
+        )["dispatches"][0]
+        self.assertEqual(status["state"], "dispatched")
+        proof = status["runtime_access"]
+        self.assertEqual(proof, json.loads(json.dumps(sent["runtime_access"])))
+        self.assertEqual(
+            (proof["status"], proof["dispatch_id"], proof["plan_digest"]),
+            ("applied", brief["dispatch_id"], brief["runtime_access"]["plan_digest"]),
+        )
+        evidence = proof["evidence"]
+        self.assertEqual(
+            {
+                key: evidence[key]
+                for key in (
+                    "launch_id",
+                    "dispatch_id",
+                    "applied",
+                    "handed_off",
+                    "engine",
+                    "engine_mode",
+                    "worker_image_id",
+                    "proxy_image_id",
+                    "mechanism",
+                    "environment_id",
+                )
+            },
+            {
+                "launch_id": CONTAINER_ID,
+                "dispatch_id": brief["dispatch_id"],
+                "applied": True,
+                "handed_off": True,
+                "engine": "docker",
+                "engine_mode": "rootful",
+                "worker_image_id": WORKER_ID,
+                "proxy_image_id": None,
+                "mechanism": "native-apply",
+                "environment_id": f"docker:{DAEMON_ID}",
+            },
+        )
+
+    def test_a_failed_launch_removes_the_container_and_keeps_the_dispatch_approved(
+        self,
+    ) -> None:
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        name = f"harness-{brief['dispatch_id']}"
+        cases: tuple[tuple[str, BaseException | str, str], ...] = (
+            ("create", "invalid mount config", "docker create failed: invalid mount"),
+            (
+                "create",
+                OSError("docker vanished"),
+                "docker create failed: docker vanished",
+            ),
+            (
+                "create",
+                subprocess.TimeoutExpired(["docker"], 30),
+                "docker create failed",
+            ),
+            ("start", "exec format error", "docker start failed: exec format error"),
+            ("start", OSError("daemon gone"), "docker start failed: daemon gone"),
+        )
+        for kind, failure, message in cases:
+            with self.subTest(kind=kind, failure=failure):
+                self.engine.reset()
+                self.engine.failures = {kind: failure, "rm": "no such container"}
+
+                with self.assertRaises(runtime_access.AccessError) as refused:
+                    self.send(brief["dispatch_id"])
+
+                self.assertIn(message, refused.exception.message)
+                self.assertIn(
+                    f"container {name} was removed", refused.exception.message
+                )
+                self.assertIn("send the dispatch again", refused.exception.remedy)
+                self.assertEqual(
+                    self.engine.calls[-1], ["docker", "rm", "--force", name]
+                )
+                self.assertEqual(self.state(brief["dispatch_id"]), "approved")
+        self.engine.reset()
+
+        self.send(brief["dispatch_id"])
+
+        self.assertEqual(self.state(brief["dispatch_id"]), "dispatched")
+
+    def test_a_create_without_a_container_id_is_a_failed_launch(self) -> None:
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        engine = self.engine
+
+        def unnamed(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            if list(argv[:2]) == ["docker", "create"]:
+                engine.calls.append(list(argv))
+                return _done(list(argv), "WARNING: something\n")
+            return engine(argv)
+
+        with (
+            mock.patch.object(container_executor, "run_engine", unnamed),
+            self.assertRaises(runtime_access.AccessError) as refused,
+        ):
+            self.send(brief["dispatch_id"])
+
+        self.assertIn(
+            "docker create returned no container id", refused.exception.message
+        )
+        self.assertEqual(engine.kinds()[-2:], ["create", "rm"])
+        self.assertEqual(self.state(brief["dispatch_id"]), "approved")
+
+    def test_the_built_in_executor_offers_the_whole_provider_contract(self) -> None:
+        provider = extensions.runtime_access("docker")
+
+        for method in ("observe", "apply", "handoff"):
+            self.assertTrue(callable(getattr(provider, method, None)), method)
+
+
+class HandoffLaunchIdentityTests(unittest.TestCase):
+    """Only a handoff-time identity may become another launch id in the receipt."""
+
+    def receipt_check(self, observed: str, received: str) -> None:
+        directory = self.enterContext(
+            tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        )
+        plan = _plan(
+            Path(directory) / "repo",
+            {
+                "access_policy": {"defaults": {"mode": "sandbox"}},
+                "extensions": {"runtime_access": "test-launch-identity"},
+            },
+        )
+
+        class Native:
+            def observe(
+                self, plan: JsonObject, transport: str
+            ) -> extensions.RuntimeAccessObservation:
+                return extensions.RuntimeAccessObservation(
+                    plan_digest=plan["plan_digest"],
+                    transport=transport,
+                    supported_modes=("sandbox",),
+                    effective_mode="sandbox",
+                    mechanism="native-apply",
+                    environment_id="worker-host",
+                    launch_id=observed,
+                    source="native-runtime",
+                    observed_at=datetime.now(UTC).isoformat(),
+                    hosts=(),
+                    filesystem=tuple(
+                        (item["path"], item["access"]) for item in plan["requirements"]
+                    ),
+                )
+
+            def apply(
+                self,
+                brief: JsonObject,
+                observation: extensions.RuntimeAccessObservation,
+            ) -> extensions.RuntimeAccessObservation:
+                return replace(observation, applied=True)
+
+            def handoff(
+                self,
+                brief: JsonObject,
+                observation: extensions.RuntimeAccessObservation,
+                command: tuple[str, ...] | None,
+            ) -> extensions.RuntimeAccessObservation:
+                return replace(
+                    observation,
+                    dispatch_id=brief["dispatch_id"],
+                    handed_off=True,
+                    launch_id=received,
+                )
+
+        extensions.register("runtime_access", "test-launch-identity", Native())
+        self.addCleanup(extensions.unregister, "runtime_access", "test-launch-identity")
+        runtime_access.apply_plan(
+            {"dispatch_id": "dispatch-1", "runtime_access": plan},
+            "external",
+            handoff=True,
+            command=("adapter",),
+        )
+
+    def test_a_handoff_time_identity_becomes_the_real_launch_id(self) -> None:
+        self.receipt_check(extensions.LAUNCH_AT_HANDOFF, CONTAINER_ID)
+        self.receipt_check("reserved-launch", "reserved-launch")
+
+    def test_any_other_change_of_launch_identity_is_refused(self) -> None:
+        for observed, received in (
+            ("reserved-launch", CONTAINER_ID),
+            (extensions.LAUNCH_AT_HANDOFF, extensions.LAUNCH_AT_HANDOFF),
+        ):
+            with (
+                self.subTest(observed=observed, received=received),
+                self.assertRaises(runtime_access.AccessError) as refused,
+            ):
+                self.receipt_check(observed, received)
+            self.assertIn(
+                "does not bind the approved dispatch", refused.exception.message
             )
 
 

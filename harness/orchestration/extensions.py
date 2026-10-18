@@ -142,15 +142,27 @@ class RuntimeAccessObservation:
 
 
 class RuntimeAccess(Protocol):
-    """Confirm and apply permissions for a specific native worker launch."""
+    """Confirm and apply permissions for a specific native worker launch.
+
+    Any method may raise ``RuntimeAccessBlocked`` to name its blocker and remedy; the built-in
+    ``docker`` implementation lives in ``container_executor``.
+    """
 
     def observe(
         self, plan: Mapping[str, object], transport: str
-    ) -> RuntimeAccessObservation | None: ...
+    ) -> RuntimeAccessObservation | None:
+        """Observe the worker environment read-only; it never creates the worker.
+
+        A ``launch_id`` of ``LAUNCH_AT_HANDOFF`` says the real identity exists only after the
+        handoff, whose receipt must then name it.
+        """
+        ...
 
     def apply(
         self, brief: Mapping[str, object], observation: RuntimeAccessObservation
-    ) -> RuntimeAccessObservation | None: ...
+    ) -> RuntimeAccessObservation | None:
+        """Apply the approved plan, or confirm its inheritance, for the observed launch."""
+        ...
 
     def handoff(
         self,

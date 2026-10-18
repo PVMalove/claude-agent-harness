@@ -543,6 +543,13 @@ def _observation_problem(
     return None
 
 
+def _same_launch(applied: str, receipt: str) -> bool:
+    """The receipt names the applied launch, or the real one a handoff-time identity became."""
+    if applied == extensions.LAUNCH_AT_HANDOFF:
+        return bool(receipt) and receipt != extensions.LAUNCH_AT_HANDOFF
+    return receipt == applied
+
+
 def apply_plan(
     brief: JsonObject,
     transport: str,
@@ -604,6 +611,8 @@ def apply_plan(
         # A project-supplied launch may fail in any way; the handoff must fail closed.
         try:
             receipt = launch(brief, applied, command)
+        except extensions.RuntimeAccessBlocked as exc:
+            raise AccessError(exc.message, remedy=exc.remedy) from exc
         except Exception as exc:
             raise AccessError("native worker handoff failed", remedy=_REMEDY) from exc
         reason = _observation_problem(plan, transport, receipt)
@@ -613,7 +622,7 @@ def apply_plan(
             or not receipt.applied
             or not receipt.handed_off
             or receipt.dispatch_id != brief["dispatch_id"]
-            or receipt.launch_id != applied.launch_id
+            or not _same_launch(applied.launch_id, receipt.launch_id)
             or receipt.environment_id != applied.environment_id
         ):
             raise AccessError(

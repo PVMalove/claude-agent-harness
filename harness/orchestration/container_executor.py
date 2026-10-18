@@ -35,6 +35,7 @@ EXECUTOR_ENV = ("HARNESS_EXECUTOR", EXTENSION_NAME)
 # ``inherit`` asks for no particular mode; the container isolates the worker either way.
 SUPPORTED_MODES = ("inherit", "sandbox")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+_CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 # A comma, quote or line break would let a root inject options into its ``--mount`` value.
 _UNSAFE_PATH = re.compile(r'[,"\n\r]')
 
@@ -101,6 +102,110 @@ def valid_pins(images: object, container: Mapping[str, object]) -> bool:
             if "proxy_image" in container
             else images["proxy"] is None
         )
+    )
+
+
+def container_name(dispatch_id: str) -> str:
+    """The name of a dispatch's container: a failed launch removes exactly this object."""
+    return f"harness-{dispatch_id}"
+
+
+def mounts(requirements: Sequence[Mapping[str, object]]) -> list[tuple[str, str]]:
+    """One bind mount per plan root, read-write when any requirement writes it.
+
+    Parents come before the roots nested in them, so a nested mount is never hidden.
+    """
+    access: dict[str, str] = {}
+    for item in requirements:
+        path, mode = str(item["path"]), str(item["access"])
+        if access.get(path) != "write":
+            access[path] = mode
+    return sorted(
+        access.items(), key=lambda pair: (len(PurePosixPath(pair[0]).parts), pair[0])
+    )
+
+
+def create_argv(
+    brief: Mapping[str, object], command: Sequence[str], user: str
+) -> list[str]:
+    """The exact ``docker create`` of the approved worker: plan roots only, no network."""
+    data = cast(JsonObject, brief)
+    plan = data["runtime_access"]
+    dispatch_id = str(data["dispatch_id"])
+
+    def root(resource: str) -> str:
+        return str(
+            next(i["path"] for i in plan["requirements"] if i["resource"] == resource)
+        )
+
+    argv = [
+        "docker",
+        "create",
+        # The default would pull a missing image; the harness never builds or pulls one.
+        "--pull",
+        "never",
+        "--name",
+        container_name(dispatch_id),
+        "--network",
+        "none",
+        "--user",
+        user,
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        f"{CONTAINER_HOME}:rw,exec,nosuid,nodev,mode=1777",
+        "--env",
+        f"HOME={CONTAINER_HOME}",
+        # Docker creates the parents of nested mount points as root; Git must still trust them.
+        "--env",
+        "GIT_CONFIG_COUNT=1",
+        "--env",
+        "GIT_CONFIG_KEY_0=safe.directory",
+        "--env",
+        "GIT_CONFIG_VALUE_0=*",
+        "--env",
+        "=".join(EXECUTOR_ENV),
+        "--label",
+        f"harness.dispatch={dispatch_id}",
+        "--label",
+        f"harness.repository={root('git_common')}",
+        "--label",
+        f"harness.plan_digest={plan['plan_digest']}",
+        "--workdir",
+        root("checkout"),
+    ]
+    for path, access in mounts(plan["requirements"]):
+        argv += [
+            "--mount",
+            f"type=bind,source={path},target={path}"
+            + ("" if access == "write" else ",readonly"),
+        ]
+    # The image is the pinned id, never the tag: a retag after approval cannot change it.
+    argv += ["--entrypoint", command[0], data["runtime_images"]["worker"], *command[1:]]
+    return argv
+
+
+def _launch(name: str, argv: list[str]) -> str:
+    """Create and start the container detached; any failure removes what it created."""
+    ok, output = _engine(argv)
+    if ok and _CONTAINER_ID.fullmatch(output):
+        started, detail = _engine(["docker", "start", output])
+        if started:
+            return output
+        failure = f"docker start failed: {detail}"
+    elif ok:
+        failure = f"docker create returned no container id: {output!r}"
+    else:
+        failure = f"docker create failed: {output}"
+    # Removal is best effort: its own result never changes the refusal below.
+    _engine(["docker", "rm", "--force", name])
+    raise extensions.RuntimeAccessBlocked(
+        f"{failure}; container {name} was removed",
+        remedy="fix the engine error, for example a missing plan root or an adapter outside "
+        "the plan's mounts, and send the dispatch again: it stays approved",
+        facts={"container": name},
     )
 
 
@@ -297,3 +402,41 @@ class DockerExecutor:
                 facts={"pinned": pinned, "current": current},
             )
         return replace(observation, applied=True)
+
+    def handoff(
+        self,
+        brief: Mapping[str, object],
+        observation: extensions.RuntimeAccessObservation,
+        command: tuple[str, ...] | None,
+    ) -> ContainerObservation:
+        """Start the approved adapter command detached in the worker's own container.
+
+        The receipt names the real container id as its ``launch_id``. Nothing waits for the
+        worker, and nothing builds, pulls or runs an image attached.
+        """
+        if not isinstance(observation, ContainerObservation):
+            raise extensions.RuntimeAccessBlocked(
+                "the docker executor cannot launch with another provider's evidence",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+                facts={"provider": type(observation).__name__},
+            )
+        if not command:
+            raise extensions.RuntimeAccessBlocked(
+                "the docker executor wraps the external runtime adapter and received no "
+                "adapter command",
+                remedy="send the external dispatch with --adapter",
+                facts={"engine": observation.engine},
+            )
+        dispatch_id = str(brief["dispatch_id"])
+        container_id = _launch(
+            container_name(dispatch_id),
+            create_argv(brief, command, f"{os.getuid()}:{os.getgid()}"),
+        )
+        return replace(
+            observation,
+            applied=True,
+            handed_off=True,
+            dispatch_id=dispatch_id,
+            launch_id=container_id,
+            observed_at=datetime.now(UTC).isoformat(),
+        )
