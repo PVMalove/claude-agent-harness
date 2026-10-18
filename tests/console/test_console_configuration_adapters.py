@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.console._pilot_wait import press, wait_until
 from tests.core.test_uninstall import git, harness
 
 
@@ -115,20 +116,23 @@ def test_settings_screen_shows_status_and_requires_modal_confirmation(
             assert "claude_worker" in status and "codex_worker" in status
             assert "не установлен" in status
             assert not any((project / ".harness/adapters").glob("*.py"))
-            await pilot.click("#preview-adapters")
-            await pilot.pause()
+            await press(pilot, "#preview-adapters")
+            await wait_until(pilot, lambda: isinstance(app.screen, ConfirmConfiguration))
             assert isinstance(app.screen, ConfirmConfiguration)
             assert ".harness/adapters/claude_worker.py" in app.screen.text
-            await pilot.click("#cancel")
-            await pilot.pause()
+            await press(pilot, "#cancel")
+            await wait_until(
+                pilot, lambda: not isinstance(app.screen, ConfirmConfiguration)
+            )
             assert not any((project / ".harness/adapters").glob("*.py"))
-            await pilot.click("#preview-adapters")
-            await pilot.pause()
-            await pilot.click("#confirm")
-            for _ in range(30):
-                await pilot.pause(0.1)
-                if (project / ".harness/adapters/codex_worker.py").exists():
-                    break
+            await press(pilot, "#preview-adapters")
+            await wait_until(pilot, lambda: isinstance(app.screen, ConfirmConfiguration))
+            await press(pilot, "#confirm")
+            await wait_until(
+                pilot,
+                lambda: (project / ".harness/adapters/claude_worker.py").is_file()
+                and (project / ".harness/adapters/codex_worker.py").is_file(),
+            )
             assert (project / ".harness/adapters/claude_worker.py").is_file()
             assert (project / ".harness/adapters/codex_worker.py").is_file()
 
