@@ -26,6 +26,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import (
+    FORCE_RELEASE_COMMAND,
     LEDGER_VERSION,
     LifecycleLedger,
     lock_environment,
@@ -165,7 +166,7 @@ def _release_verdict(
     return False, "owner-unknown-recent"
 
 
-def _judge(state: JsonObject) -> tuple[bool, str]:
+def _release_verdict_here(state: JsonObject) -> tuple[bool, str]:
     """The verdict of this process on ``state``: its host, PID namespace and boot."""
     return _release_verdict(
         state,
@@ -185,7 +186,7 @@ def ledger_lock_status(args: argparse.Namespace) -> JsonObject:
     state = ledger.lock_state()
     if state is None:
         return {"locked": False}
-    releasable, verdict = _judge(state)
+    releasable, verdict = _release_verdict_here(state)
     owner = state.get("owner")
     held = cast(int, state["held_seconds"])
     return {
@@ -221,7 +222,7 @@ def _force_release(
             "sandbox that was stopped",
         )
     approval = approvals._approval(args)
-    _, verdict = _judge(state)
+    _, verdict = _release_verdict_here(state)
     with _ledger_errors():
         audit_id = ledger.force_break_lock(
             state, {**approval, "reason": reason.strip(), "verdict": verdict}
@@ -246,7 +247,7 @@ def release_ledger_lock(args: argparse.Namespace) -> JsonObject:
         return {"released": False, "lock": None}
     if getattr(args, "force", False):
         return _force_release(args, ledger, state)
-    release, reason = _judge(state)
+    release, reason = _release_verdict_here(state)
     if not release:
         owner = state["owner"]
         holder = (
@@ -255,16 +256,12 @@ def release_ledger_lock(args: argparse.Namespace) -> JsonObject:
             else "an unrecorded owner"
         )
         remaining = LEDGER_LOCK_STALE_SECONDS - cast(int, state["held_seconds"])
-        forced = (
-            "; an operator can release it now with 'coordinator.py ledger release-lock --force "
-            "--approved-by <operator> --approved-at <time> --reason <why>'"
-        )
+        forced = f"; an operator can release it now with '{FORCE_RELEASE_COMMAND}'"
         remedy = {
             "owner-alive": "let the owner process finish its ledger operation and repeat the "
             "command that met the lock; a lock whose owner process is alive is never released. "
             "If the recorded pid belongs to a stopped sandboxed worker and names an unrelated "
-            "process here, an operator can release the lock with 'coordinator.py ledger "
-            "release-lock --force --approved-by <operator> --approved-at <time> --reason <why>'",
+            f"process here, an operator can release the lock with '{FORCE_RELEASE_COMMAND}'",
             "owner-on-another-host": "run 'coordinator.py ledger release-lock' on the owner's "
             "host, where its process can be checked" + forced,
             "owner-in-other-environment": "repeat 'coordinator.py ledger release-lock' in "
