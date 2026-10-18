@@ -1,7 +1,8 @@
 """Каталог команд раздела Orchestration: декларативные структуры данных стандартной библиотеки,
 полученные интроспекцией активного парсера аргументов координатора (`harness.orchestration.coordinator.parser()`)
 и охватывающие доступные оператору подкоманды координатора, перечисленные в `_TARGETS` (batch, decide,
-decision packet, dispatch, qa status, risk, context-package, ledger status).
+decision packet, dispatch, qa status, risk, context-package, ledger status, ledger lock-status и
+ledger release-lock).
 
 В отличие от `harness/console/catalog.py`, где `CatalogEntry.argv` задан вручную, каждый кортеж
 `CoordinatorCommand.fields` строится обходом реального дерева `argparse.ArgumentParser` CLI координатора.
@@ -128,6 +129,21 @@ _TARGETS: tuple[_Target, ...] = (
     ),
     _Target(
         "ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE
+    ),
+    _Target(
+        "ledger-lock-status",
+        ("ledger", "lock-status"),
+        "Состояние lock ledger",
+        "ledger",
+        _REVERSIBLE,
+    ),
+    # A forced release needs a human approval and leaves an audit record: it asks first.
+    _Target(
+        "ledger-release-lock",
+        ("ledger", "release-lock"),
+        "Снять lock ledger",
+        "ledger",
+        _TERMINAL,
     ),
 )
 

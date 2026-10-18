@@ -73,6 +73,13 @@ MINIMAL_VALUES = {
     "dispatch-status": {},
     "qa-status": {},
     "ledger-status": {},
+    "ledger-lock-status": {},
+    "ledger-release-lock": {
+        "force": "1",
+        "approved_by": "dev",
+        "approved_at": "now",
+        "reason": "orphaned worker",
+    },
 }
 
 EXPECTED_HANDLER = {
@@ -93,6 +100,8 @@ EXPECTED_HANDLER = {
     "dispatch-status": "dispatch_status",
     "qa-status": "qa_status",
     "ledger-status": "ledger_status",
+    "ledger-lock-status": "ledger_lock_status",
+    "ledger-release-lock": "release_ledger_lock",
 }
 
 EXPECTED_REVERSIBILITY = {
@@ -113,6 +122,8 @@ EXPECTED_REVERSIBILITY = {
     "dispatch-status": Reversibility.REVERSIBLE,
     "qa-status": Reversibility.REVERSIBLE,
     "ledger-status": Reversibility.REVERSIBLE,
+    "ledger-lock-status": Reversibility.REVERSIBLE,
+    "ledger-release-lock": Reversibility.TERMINAL_COORDINATOR_ACTION,
 }
 
 

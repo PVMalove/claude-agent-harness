@@ -568,8 +568,11 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
             ],
             "lock": ledger.lock_state(),
             "remedy": "repeat dispatch status: another coordinator operation holds the ledger "
-            "lock. If it stays held, run 'coordinator.py ledger release-lock', which refuses a "
-            "lock whose owner process is alive",
+            "lock. 'coordinator.py ledger lock-status' shows its holder, age and when a timeout "
+            "release becomes available. If it stays held, run 'coordinator.py ledger "
+            "release-lock', which refuses a lock whose owner process is alive; for the lock of a "
+            "stopped sandboxed worker, an operator can run 'coordinator.py ledger release-lock "
+            "--force --approved-by <operator> --approved-at <time> --reason <why>'",
         }
     return {
         "stale_after_seconds": threshold,
