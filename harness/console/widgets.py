@@ -6,6 +6,7 @@ from __future__ import annotations
 from rich.segment import Segment
 from rich.style import Style
 from textual.binding import Binding
+from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.strip import Strip
 from textual.widgets import Checkbox, ListView, RadioButton, SelectionList
@@ -78,3 +79,10 @@ class OpenableList(ListView):
         Binding("down", "cursor_down", "Выбор", key_display="↑↓"),
         Binding("enter", "select_cursor", "Открыть"),
     ]
+
+
+class ScrollingView(VerticalScroll):
+    """A `VerticalScroll` whose key the footer names: `↑↓ Прокрутка`. The keys are the scroll's own;
+    only their footer hint is new."""
+
+    BINDINGS = [Binding("down", "scroll_down", "Прокрутка", key_display="↑↓")]

@@ -688,6 +688,29 @@ EN.update(
         "Стадии, completion reports и хронология batch из ledger.": "Stages, completion reports and the batch timeline from the ledger.",
         "Enter — открыть отчёт": "Enter — open the report",
         "Enter — хронология": "Enter — timeline",
+        "b Хронология batch": "b Batch timeline",
+        "e Экспорт в Markdown": "e Export to Markdown",
+        "файлы": "files",
+        "До PR": "To PR",
+        "Начало": "Started",
+        "События": "Events",
+        "Попытки qa-lane": "qa-lane attempts",
+        "Попытки qa-lane и каждый прогон QA-gate, новые сверху.": "qa-lane attempts and every QA gate run, newest first.",
+        "QA-логов в ledger нет": "No QA logs in the ledger",
+        "дата неизвестна": "date unknown",
+        "неизвестно": "unknown",
+        "время ?": "time ?",
     }
 )
-EN_PHRASES.update({"хронология": "timeline"})
+EN_PHRASES.update(
+    {
+        "хронология": "timeline",
+        "маршрут:": "route:",
+        "от старых к новым": "oldest first",
+        "неудачных попыток:": "failed attempts:",
+        "неудачных": "failed",
+        "прогонов:": "runs:",
+        "диспатчей ещё не было": "no dispatches yet",
+    }
+)
+EN_PREFIXES["Прогон "] = "Run "

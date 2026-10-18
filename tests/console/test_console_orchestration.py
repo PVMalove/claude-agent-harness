@@ -369,14 +369,17 @@ def test_pipeline_stats_and_history_filter_by_state_and_open_a_timeline(
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, BatchTimelineScreen)
-            timeline = str(app.screen.query_one("#batch-timeline", Static).content)
+            timeline = "\n".join(
+                str(widget.content)
+                for widget in app.screen.query_one("#batch-timeline").query(Static)
+            )
         return stats_text, everything, blocked, timeline
 
     stats_text, everything, blocked, timeline = asyncio.run(scenario())
     assert "Запусков (batch)\n2, тикетов: 2" in stats_text
     assert everything == ["batch-stuck", "batch-flow"]
     assert blocked == ["batch-stuck"]
-    assert "[decision] решение coordinator: block" in timeline
+    assert "решение coordinator: block" in timeline
 
 
 def test_without_a_ledger_the_section_says_so_and_keeps_its_commands(

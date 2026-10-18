@@ -3,6 +3,7 @@ real lifecycle-ledger fixture (tests/_console_ledger_fixture.py). No textual nee
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from tests.console._console_ledger_fixture import (
@@ -19,6 +20,9 @@ from harness.console.reports import (
     ReportEntry,
     StageEntry,
     batch_status,
+    outcome_status,
+    qa_run_status,
+    report_section_lines,
     stage_status,
     filter_reports,
     load_ledger_view,
@@ -465,3 +469,57 @@ def test_batch_status_names_the_state_with_a_symbol_and_keeps_an_unknown_one() -
     assert batch_status(batch("blocked")).render("ru") == "⚠ заблокирован"
     assert batch_status(batch("active")).render("en") == "▶ in progress"
     assert batch_status(batch("mystery")).render("ru") == "⚠ mystery"
+
+
+def test_outcome_status_keeps_the_ledger_word_beside_its_symbol() -> None:
+    assert outcome_status("completed").render("ru") == "✔ completed"
+    assert outcome_status("blocked").render("ru") == "⚠ blocked"
+    assert outcome_status("failed").render("ru") == "✖ failed"
+    assert outcome_status("odd").render("ru") == "⚠ odd"
+
+
+def test_report_section_lines_give_every_check_and_every_risk_a_symbol_and_label(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    reports = {entry.dispatch_id: entry for entry in load_ledger_view(tmp_path).reports}
+
+    developer = dict(report_section_lines(reports["dispatch-dev"].report))
+    assert list(developer) == list(REPORT_SECTIONS)
+    [(status, check)] = developer["Checks"]
+    assert status is not None and status.render("ru") == "✔ pass"
+    assert check == "make test — 412 passed"
+    [(risk, _)] = developer["Risks"]
+    assert risk is not None and risk.render("ru") == "✔ нет"
+    assert developer["Output"] == [(None, LONG_OUTPUT)]
+
+    blocked = dict(report_section_lines(reports["dispatch-stuck"].report))
+    [(blocker, details)] = blocked["Blockers"]
+    assert blocker is not None and blocker.render("ru") == "⚠ есть"
+    assert details == "нет токена трекера в окружении"
+
+
+def test_report_review_lines_mark_each_axis_and_keep_the_findings(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    reports = {entry.dispatch_id: entry for entry in load_ledger_view(tmp_path).reports}
+
+    lines = dict(report_section_lines(reports["dispatch-review"].report))["Review"]
+    shown = [(status.render("ru") if status else "", text) for status, text in lines]
+    assert shown == [
+        ("", "candidate: " + "a" * 40),
+        ("⚠ low", "standards · находок: 1"),
+        ("", "  [low] имя функции: reports.py:10"),
+        ("✔ clean", "spec · находок: 0"),
+    ]
+
+
+def test_qa_run_status_is_failed_when_any_command_exits_non_zero(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    [run] = load_ledger_view(tmp_path).qa_runs
+    assert qa_run_status(run).render("ru") == "✔ passed"
+    failing = replace(run, commands=[("make lint", 1)])
+    assert qa_run_status(failing).render("ru") == "✖ failed"

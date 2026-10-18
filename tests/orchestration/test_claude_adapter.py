@@ -229,7 +229,9 @@ def test_worker_context_probe_keeps_the_exact_filesystem_refusal(
 
 
 @posix_runtime
-@pytest.mark.parametrize("panel_open", [False, True], ids=["panel-closed", "panel-open"])
+@pytest.mark.parametrize(
+    "panel_open", [False, True], ids=["panel-closed", "panel-open"]
+)
 def test_native_permission_uses_control_frames_without_extra_model_messages(
     external_worker: recovery_tests.RecoveryTests,
     reachable_endpoint: str,
