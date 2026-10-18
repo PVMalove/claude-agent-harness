@@ -1100,7 +1100,8 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
     for screen_class in (ConfigurationScreen, ConfigurationVersionsScreen):
         assert issubclass(screen_class, ConsoleShell)
         own = screen_class.__dict__.get("BINDINGS", [])
-        assert not [b for b in own if getattr(b, "key", b[0]) == "escape"], screen_class
+        keys = [b.key if isinstance(b, Binding) else b[0] for b in own]
+        assert "escape" not in keys, screen_class
 
     screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
     names = (

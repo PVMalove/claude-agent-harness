@@ -169,3 +169,25 @@ def test_versions_stand_on_the_shared_frame_and_wait_for_a_running_restore(
             screen.busy = False
 
     asyncio.run(scenario())
+
+
+def test_restore_says_why_it_is_off_and_goes_on_with_a_version_chosen(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Button, Static
+
+    installed_project(tmp_path)
+
+    async def scenario() -> tuple[str, str]:
+        app = _host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#restore-reason")))
+            note = app.screen.query_one("#restore-reason", Static)
+            await wait_until(pilot, lambda: str(note.content) != "")
+            empty = str(note.content)
+            assert app.screen.query_one("#restore-version", Button).disabled
+            return empty, str(app.screen.query_one("#restore-version", Button).tooltip)
+
+    empty, tooltip = asyncio.run(scenario())
+    assert empty == "«Восстановить версию»: сохранённых версий нет"
+    assert tooltip == "сохранённых версий нет"

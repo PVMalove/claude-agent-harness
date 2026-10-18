@@ -214,6 +214,20 @@ class ConfigurationDraft:
         return bundle_diff(self.original, self.encoded(), "текущий", "новый")
 
 
+# The words of an update plan, one per `harness diff --json` field: a symbol and a word, never a
+# key. The Update Harness screen tags its file list with the same words.
+SNAPSHOT_TAGS = {
+    "package_changed": "✔ обновится",
+    "added": "✔ добавится",
+    "missing": "⚠ восстановится",
+    "local_changed": "⚠ ваши правки",
+    "conflict": "✖ конфликт",
+    "retired": "⚠ удалится",
+}
+_NO_CAPABILITY = "⚠ Capability backend-orchestration не выбрана"
+_BLOCKED_BY_FILES = "⚠ Сначала устраните локальные изменения и коллизии"
+
+
 @dataclass(frozen=True)
 class RuntimeAdapterPreview:
     adapters: list["AdapterStatus"]
@@ -221,6 +235,8 @@ class RuntimeAdapterPreview:
     fingerprint: str
     text: str
     blocked: bool
+    # The blocking line of the plan (the reason `Подтвердить` is unavailable); empty when not blocked.
+    reason: str = ""
 
 
 def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
@@ -279,7 +295,7 @@ def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
         "conflict",
         "retired",
     ):
-        lines.extend(f"{key}: {path}" for path in snapshot.get(key, []))
+        lines.extend(f"{SNAPSHOT_TAGS[key]}  {path}" for path in snapshot.get(key, []))
     differing = seed_differing(repo)
     if differing:
         lines.append("Seed-файлы сохраняются: " + ", ".join(differing))
@@ -289,9 +305,7 @@ def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
     if not enabled:
         import shlex
 
-        lines.append(
-            "Capability backend-orchestration не выбрана. Выберите состав явно в CLI:"
-        )
+        lines.append(_NO_CAPABILITY + ". Выберите состав явно в CLI:")
         lines.append(
             shlex.join(
                 [
@@ -304,11 +318,10 @@ def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
             )
         )
     if enabled and blocked:
-        lines.append(
-            "Сначала устраните локальные изменения и коллизии. Принудительное обновление не включено."
-        )
+        lines.append(_BLOCKED_BY_FILES + ". Принудительное обновление не включено.")
+    reason = "" if not blocked else _NO_CAPABILITY if not enabled else _BLOCKED_BY_FILES
     return RuntimeAdapterPreview(
-        adapters, selected, fingerprint, "\n".join(lines), blocked
+        adapters, selected, fingerprint, "\n".join(lines), blocked, reason
     )
 
 

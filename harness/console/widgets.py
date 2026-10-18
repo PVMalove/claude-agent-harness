@@ -4,19 +4,28 @@ rebuild without recomposing its frame."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from rich.segment import Segment
 from rich.style import Style
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.strip import Strip
-from textual.widgets import Checkbox, ListView, RadioButton, SelectionList
+from textual.widgets import (
+    Button,
+    Checkbox,
+    ListView,
+    RadioButton,
+    SelectionList,
+    Static,
+)
 from textual.widgets.option_list import OptionDoesNotExist
 
-from . import brand
+from . import brand, i18n
+from .status import Status
 
 CHECKED = "☑"
 UNCHECKED = "☐"
@@ -108,3 +117,67 @@ class ComposedPage(Vertical):
 
     def compose(self) -> ComposeResult:
         yield from self._build()
+
+
+class ActionButton(Button):
+    """A `Button` whose Enter key the footer names, `Enter Выбрать` (Textual's own binding is hidden)."""
+
+    BINDINGS = [Binding("enter", "press", "Выбрать")]
+
+
+class ReasonNote(Static):
+    """Why actions are unavailable: one muted line `«label»: reason` per disabled button, and the same
+    reason as that button's tooltip (a disabled button cannot take focus, so a tooltip alone is not
+    enough). `reasons` returns the (button, reason) pairs that apply now; `relabel` asks again, so a
+    screen calls it after a state change or a language switch. With no pair the note is hidden."""
+
+    DEFAULT_CLASSES = "reason-note no-i18n"
+
+    def __init__(
+        self,
+        reasons: Callable[[], Iterable[tuple[Button, str]]],
+        *,
+        id: str | None = None,
+    ) -> None:
+        super().__init__("", id=id, markup=False)
+        self._reasons = reasons
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def relabel(self) -> None:
+        language = getattr(self.app, "language", "ru")
+        lines = []
+        for button, reason in self._reasons():
+            text = i18n.tr_text(language, reason)
+            button.tooltip = text
+            lines.append(f"«{button.label}»: {text}")
+        shown = "\n".join(lines)
+        if shown != str(self.content):
+            self.update(shown)
+        self.display = bool(lines)
+
+
+class StatusLine(Static):
+    """A status as a symbol and a text in the console language (`✔ актуален`), coloured; `relabel`
+    redraws it after a language switch."""
+
+    DEFAULT_CLASSES = "status-line no-i18n"
+
+    def __init__(
+        self, status: Status, *, id: str | None = None, classes: str = ""
+    ) -> None:
+        super().__init__("", id=id, markup=False)
+        self.add_class(*classes.split())
+        self.status = status
+
+    def on_mount(self) -> None:
+        self.relabel()
+
+    def set_status(self, status: Status) -> None:
+        self.status = status
+        self.relabel()
+
+    def relabel(self) -> None:
+        language = getattr(self.app, "language", "ru")
+        self.update(Text(self.status.render(language), style=self.status.color))

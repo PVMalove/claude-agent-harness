@@ -16,7 +16,7 @@ from ..crumbs import Crumb
 from ..shell import SHELL_CSS, ConsoleShell, SectionCard
 from ..logtext import colorize_diff
 from ..configuration import bundle_diff
-from ..widgets import ComposedPage
+from ..widgets import ComposedPage, ReasonNote
 from .configuration import ConfirmConfiguration
 
 
@@ -45,6 +45,8 @@ class ConfigurationVersionsScreen(ConsoleShell):
         self.expected: Bundle = {}
         self.candidate: Bundle | None = None
         self.busy = False
+        # The chosen version cannot be applied as it is (its files fail the contract).
+        self.broken = False
         self.versions: dict[str, ConfigurationVersion] = {}
 
     def compose_strip(self) -> ComposeResult:
@@ -89,6 +91,29 @@ class ConfigurationVersionsScreen(ConsoleShell):
             yield Static("", id="version-status", markup=False)
             with Horizontal(classes="actions"):
                 yield Button("Восстановить версию", id="restore-version", disabled=True)
+            yield ReasonNote(self._restore_reasons, id="restore-reason")
+
+    def _restore_reasons(self) -> list[tuple[Button, str]]:
+        button = self.query_one("#restore-version", Button)
+        if not button.disabled:
+            return []
+        if self.busy:
+            reason = "откат выполняется"
+        elif not self.versions:
+            reason = "сохранённых версий нет"
+        elif self.broken:
+            reason = "версию нельзя применить как есть"
+        else:
+            reason = "версия не выбрана"
+        return [(button, reason)]
+
+    def _refresh_notes(self) -> None:
+        for note in self.query(ReasonNote):
+            note.relabel()
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        self._refresh_notes()
 
     async def _rebuild_page(self) -> None:
         """Rebuild the page below the frame; the menu, breadcrumbs and footer stay as they are."""
@@ -112,14 +137,18 @@ class ConfigurationVersionsScreen(ConsoleShell):
                     (diff or "Изменений нет") + self._compatibility_note(self.selected)
                 )
             )
+            self.broken = False
             self.query_one("#restore-version", Button).disabled = False
+            self._refresh_notes()
         except (OSError, ValueError) as exc:
             self.candidate = None
             self.query_one("#version-diff", Static).update(
                 f"{exc}\nАктивная конфигурация не изменена. Версию нельзя применить как есть: "
                 "примените другую версию или исправьте поля в мастере и сохраните новый набор."
             )
+            self.broken = True
             self.query_one("#restore-version", Button).disabled = True
+            self._refresh_notes()
 
     def _compatibility_note(self, identifier: str) -> str:
         made = self.versions[identifier].package_version
@@ -153,6 +182,7 @@ class ConfigurationVersionsScreen(ConsoleShell):
             return
         self.busy = True
         self.query_one("#restore-version", Button).disabled = True
+        self._refresh_notes()
         selected, expected = self.selected, self.expected.copy()
 
         def work() -> None:

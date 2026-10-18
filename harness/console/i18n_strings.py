@@ -755,3 +755,46 @@ EN_PHRASES.update(
         "найдено файлов": "files found",
     }
 )
+# Configuration screens: the adapter plan, the reasons an action is unavailable, narrow labels.
+EN.update(
+    {
+        "Файлы project.json и orchestration.json, сохранённые версии и адаптеры runtime.": "The project.json and orchestration.json files, saved versions and runtime adapters.",
+        "Оба": "Both",
+        "Версии / восстановить": "Versions / restore",
+        "Просмотр обновления": "Preview update",
+        "Фокус": "Focus",
+        "Выбрать": "Select",
+        "внешний транспорт оркестрации (transport: external)": "external orchestration transport (transport: external)",
+        "Установка и обновление требуют просмотра и подтверждения. Консоль не включает force и не меняет transport.": "Installing and updating require review and confirmation. The console does not enable force and does not change the transport.",
+        "актуален": "up to date",
+        "требует обновления": "needs an update",
+        "не установлен": "not installed",
+    }
+)
+EN_PHRASES.update(
+    {
+        "Возможности:": "Capabilities:",
+        "Обновятся управляемые файлы харнесса:": "Managed harness files will be updated:",
+        "Seed-файлы сохраняются:": "Seed files are preserved:",
+        "✔ обновится": "✔ will update",
+        "✔ добавится": "✔ will be added",
+        "⚠ восстановится": "⚠ will be restored",
+        "⚠ ваши правки": "⚠ your edits",
+        "✖ конфликт": "✖ conflict",
+        "⚠ удалится": "⚠ will be removed",
+        "⚠ Capability backend-orchestration не выбрана": "⚠ Capability backend-orchestration is not selected",
+        "Выберите состав явно в CLI:": "Choose the set explicitly in the CLI:",
+        "⚠ Сначала устраните локальные изменения и коллизии": "⚠ Resolve local changes and collisions first",
+        "Принудительное обновление не включено.": "Forced updates are disabled.",
+        "это первый шаг": "this is the first step",
+        "в черновике есть ошибки: исправьте их на шагах": "the draft has errors: fix them on the steps",
+        "файлы изменены снаружи: сначала загрузите внешние изменения": "the files changed outside: load the external changes first",
+        "записей пока нет": "no entries yet",
+        "список пока пуст": "the list is empty",
+        "сначала получите совет: «Спросить ИИ»": "get advice first: “Ask AI”",
+        "откат выполняется": "a restore is running",
+        "сохранённых версий нет": "there are no saved versions",
+        "версию нельзя применить как есть": "the version cannot be applied as it is",
+        "версия не выбрана": "no version is selected",
+    }
+)

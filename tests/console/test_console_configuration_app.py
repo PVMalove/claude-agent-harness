@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from typing import cast
+from typing import TYPE_CHECKING, cast
 import json
 from pathlib import Path
 from threading import Event
@@ -12,6 +12,7 @@ from threading import Event
 import pytest
 
 from textual.app import App
+from textual.screen import Screen
 from textual.pilot import Pilot
 from textual.widgets import Button, RadioButton, RadioSet, Static, TextArea
 
@@ -20,6 +21,9 @@ from harness.console.configuration import ConfigurationDraft
 from harness.console.configuration_steps import ConfigurationStep
 from harness.console.advisor import Advice, AdvisorUnavailable
 from harness.console.screens.configuration import ConfigurationScreen
+
+if TYPE_CHECKING:
+    from harness.console.app import HarnessConsoleApp
 
 from tests.console._pilot_wait import crumb_text, press, wait_until
 
@@ -316,7 +320,7 @@ def test_back_keeps_answers_and_missing_capability_is_explained(
         async with app.run_test(size=(120, 48)) as pilot:
             await pilot.click("#configure-orchestration")
             await pilot.pause()
-            error = str(app.screen.query_one("#config-error", Static).render())
+            error = str(app.screen.query_one("#config-error", Static).content)
             assert "backend-orchestration" in error
             await pilot.click("#configure-project")
             await pilot.pause()
@@ -591,7 +595,7 @@ def test_every_phase_keeps_its_content_in_cards(tmp_path: Path) -> None:
     assert phases["choose"] == [
         "РЕДАКТИРОВАНИЕ КОНФИГУРАЦИИ",
         "СОХРАНЁННЫЕ ВЕРСИИ",
-        "АДАПТЕРЫ RUNTIME",
+        "АДАПТЕРЫ RUNTIME  внешний транспорт оркестрации (transport: external)",
     ]
     assert phases["editing"] == ["ШАГ", "ПАРАМЕТР", "ИИ-ПОДСКАЗКИ", "ДЕЙСТВИЯ"]
     assert phases["review"] == [
@@ -619,7 +623,7 @@ def test_a_message_appears_in_the_actions_frame_and_hides_again(tmp_path: Path) 
             shown = frame.display
             assert (
                 str(app.screen.query_one("#config-error", Static).content)
-                == "Ошибка поля"
+                == "✖ Ошибка поля"
             )
             cast(ConfigurationScreen, app.screen)._set_message("")
             await pilot.pause()
@@ -1110,3 +1114,146 @@ def test_a_running_write_keeps_the_wizard_open_for_every_way_out(
             screen.busy = False
 
     asyncio.run(scenario())
+
+
+def _console_app(repo: Path) -> "HarnessConsoleApp":
+    from harness.console.app import HarnessConsoleApp
+
+    return HarnessConsoleApp(repo)
+
+
+def test_start_page_footer_names_tab_and_enter_and_narrow_keeps_three_keys(
+    tmp_path: Path,
+) -> None:
+    async def keys(size: tuple[int, int]) -> dict[str, str]:
+        app = _console_app(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.push_screen(ConfigurationScreen(tmp_path))
+            await wait_until(pilot, lambda: app.screen.focused is not None)
+            await pilot.pause()
+            return {
+                key: str(active.binding.description)
+                for key, active in app.screen.active_bindings.items()
+                if active.binding.show
+            }
+
+    wide = asyncio.run(keys((160, 52)))
+    assert wide["tab"] == "Фокус" and wide["enter"] == "Выбрать"
+    assert {"escape", "f1", "f2"} <= set(wide)
+    narrow = asyncio.run(keys((80, 24)))
+    assert {"escape", "enter", "f2"} <= set(narrow)
+    assert "tab" not in narrow and "f1" not in narrow
+
+
+def test_narrow_buttons_take_the_short_labels_and_wide_ones_the_long(
+    tmp_path: Path,
+) -> None:
+    async def labels(size: tuple[int, int]) -> list[str]:
+        app = Host(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#configure-both")))
+            await pilot.pause()
+            return [
+                str(app.screen.query_one(f"#{name}", Button).label)
+                for name in ("configure-both", "open-versions")
+            ]
+
+    assert asyncio.run(labels((160, 52))) == ["Оба файла", "Версии / восстановить"]
+    assert asyncio.run(labels((80, 24))) == ["Оба", "Версии"]
+
+
+def test_the_previous_step_button_says_why_it_is_off_and_english_follows(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> tuple[str, str, str]:
+        app = _console_app(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await app.push_screen(ConfigurationScreen(tmp_path))
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#actions-reason")))
+            note = app.screen.query_one("#actions-reason", Static)
+            await wait_until(pilot, lambda: str(note.content) != "")
+            ru = str(note.content)
+            tooltip = str(app.screen.query_one("#previous-step", Button).tooltip)
+            app.action_toggle_language()
+            await wait_until(pilot, lambda: str(note.content) != ru)
+            return ru, tooltip, str(note.content)
+
+    ru, tooltip, en = asyncio.run(scenario())
+    assert ru == "«Предыдущий шаг»: это первый шаг"
+    assert tooltip == "это первый шаг"
+    assert en == "«Previous step»: this is the first step"
+
+
+def test_review_explains_every_disabled_action(tmp_path: Path) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> str:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            await press(pilot, "#review-config")
+            await wait_until(pilot, lambda: bool(screen.query("#apply-config")))
+            assert screen.draft is not None
+            screen.draft.set_value("project.json", ("language",), "xx")
+            await screen._rebuild_page()
+            note = screen.query_one("#actions-reason", Static)
+            await wait_until(pilot, lambda: str(note.content) != "")
+            assert screen.query_one("#apply-config", Button).disabled
+            assert screen.query_one("#save-version", Button).disabled
+            return str(note.content)
+
+    shown = asyncio.run(scenario())
+    assert "«Применить»: в черновике есть ошибки" in shown
+    assert "«Сохранить версию»: в черновике есть ошибки" in shown
+
+
+def test_every_message_is_a_symbol_and_a_text(tmp_path: Path) -> None:
+    async def scenario() -> list[str]:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#config-error")))
+            screen = cast(ConfigurationScreen, app.screen)
+            shown = []
+            for text, kind in (
+                ("Выполняется…", "running"),
+                ("Конфигурация применена.", "accepted"),
+                ("Ошибка поля", "error"),
+            ):
+                screen._set_message(text, kind)
+                await pilot.pause()
+                shown.append(str(screen.query_one("#config-error", Static).content))
+            return shown
+
+    assert asyncio.run(scenario()) == [
+        "▶ Выполняется…",
+        "✔ Конфигурация применена.",
+        "✖ Ошибка поля",
+    ]
+
+
+def test_long_names_wrap_and_never_widen_the_page_at_80x24(tmp_path: Path) -> None:
+    repo = tmp_path / ("very-long-project-name-" * 5).rstrip("-")
+    repo.mkdir()
+    installed_project(repo)
+
+    async def scenario() -> list[str]:
+        from tests.console.test_console_layout import layout_problems
+
+        app = Host(repo)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#configure-both")))
+            await pilot.pause()
+            screen = app.screen
+            assert screen.query_one("#configuration-project", Static).region.width <= 80
+            problems = layout_problems(cast(Screen[None], screen))
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(screen.query("#step-jump")))
+            await pilot.pause()
+            return problems + layout_problems(cast(Screen[None], screen))
+
+    assert asyncio.run(scenario()) == []

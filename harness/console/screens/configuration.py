@@ -12,6 +12,7 @@ from typing import Awaitable, Callable, cast
 
 from rich.json import JSON
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -32,12 +33,21 @@ from textual.widgets import (
 
 from harness.configuration import read_config_bundle
 from harness.configuration_store import ConfigurationStore, StaleConfiguration
+from harness.runtime_adapters import AdapterStatus
 from .. import brand, i18n
 from ..crumbs import Crumb
-from ..shell import SHELL_CSS, ConsoleShell, SectionCard
+from ..shell import SHELL_CSS, ConsoleShell, SectionCard, WrappedValue
+from ..status import Status
 from ..translate import Translated
 from ..logtext import colorize_diff
-from ..widgets import CheckBox, ComposedPage, RoundRadioButton
+from ..widgets import (
+    ActionButton,
+    CheckBox,
+    ComposedPage,
+    ReasonNote,
+    RoundRadioButton,
+    StatusLine,
+)
 from ..advisor import PROVIDERS, Advice, AdvisorUnavailable, advise, availability
 from ..configuration import (
     ConfigurationDraft,
@@ -64,6 +74,23 @@ _TARGETS = {
 }
 
 
+# The three states of a runtime adapter: its symbol and text come from the console's status words.
+_ADAPTER_STATUS = {
+    "current": Status("accepted", "актуален", "up to date"),
+    "outdated": Status("warning", "требует обновления", "needs an update"),
+    "missing": Status("not_started", "не установлен", "not installed"),
+}
+# The start page's buttons: id -> (label, label on a narrow terminal).
+_START_LABELS = {
+    "configure-project": ("project.json", "project.json"),
+    "configure-orchestration": ("orchestration.json", "orchestration.json"),
+    "configure-both": ("Оба файла", "Оба"),
+    "save-current-version": ("Сохранить версию", "Сохранить версию"),
+    "open-versions": ("Версии / восстановить", "Версии"),
+    "preview-adapters": ("Просмотр установки и обновления", "Просмотр обновления"),
+}
+
+
 class Phase(StrEnum):
     CHOOSE = "choose"
     EDITING = "editing"
@@ -86,31 +113,53 @@ def _short(value: object, limit: int = 48) -> str:
 
 
 class ConfirmConfiguration(Translated, ModalScreen[bool]):
+    """A confirmation: the first line of `text` is the bold title, the rest is the plan. A disabled
+    `Подтвердить` says why (`reason`) beside the buttons."""
+
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
-    DEFAULT_CSS = """
+    DEFAULT_CSS = brand.shell_css("""
     ConfirmConfiguration { align: center middle; }
     ConfirmConfiguration > Vertical {
         width: 80%; max-width: 100; height: auto; max-height: 80%; padding: 0 1;
         border: round $primary; border-title-color: $primary;
     }
-    ConfirmConfiguration #confirm-text { height: auto; max-height: 20; }
+    ConfirmConfiguration #confirm-title { height: auto; text-style: bold; margin-bottom: 1; }
+    ConfirmConfiguration #confirm-text { height: auto; max-height: 20; border: round $border-subtle; padding: 0 1; }
     ConfirmConfiguration #confirm-text Static { height: auto; }
     ConfirmConfiguration .actions { height: auto; }
-    """
+    ConfirmConfiguration .reason-note { height: auto; color: $text-muted; }
+    ConfirmConfiguration Button { min-width: 8; width: auto; border: round $component-border; }
+    ConfirmConfiguration Button:hover, ConfirmConfiguration Button:focus { border: round $primary; color: $primary; }
+    """)
 
-    def __init__(self, text: str, *, enabled: bool = True) -> None:
+    def __init__(self, text: str, *, enabled: bool = True, reason: str = "") -> None:
         super().__init__()
         self.text = text
         self.enabled = enabled
+        self.reason = reason
 
     def compose(self) -> ComposeResult:
+        title, _, plan = self.text.partition("\n")
         with Vertical() as dialog:
             dialog.border_title = brand.frame_title("Подтверждение")
-            with VerticalScroll(id="confirm-text"):
-                yield Static(self.text, markup=False)
+            yield Static(title, id="confirm-title", markup=False)
+            if plan:
+                with VerticalScroll(id="confirm-text"):
+                    yield Static(plan, markup=False)
             with Horizontal(classes="actions"):
-                yield Button("Подтвердить", id="confirm", disabled=not self.enabled)
+                confirm = Button("Подтвердить", id="confirm", disabled=not self.enabled)
+                yield confirm
                 yield Button("Отмена", id="cancel")
+            yield ReasonNote(
+                lambda: [(confirm, self.reason)]
+                if confirm.disabled and self.reason
+                else [],
+                id="confirm-reason",
+            )
+
+    def sync_language(self) -> None:
+        for note in self.query(ReasonNote):
+            note.relabel()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm")
@@ -126,10 +175,28 @@ class ConfigurationScreen(ConsoleShell):
     SECTION = "Configuration"
     CRUMBS = "Главная › Настройка конфигурации"
     NARROW_FOOTER_KEYS = ("escape", "enter", "f2")
+    AUTO_FOCUS = "#configure-project"
+    # Textual's Screen binds Tab with no footer hint; the footer names it here.
+    BINDINGS = [Binding("tab", "app.focus_next", "Фокус")]
     CSS = SHELL_CSS + brand.shell_css("""
     ConfigurationScreen #configuration-page { width: 100%; height: 1fr; padding: 0 2; }
     ConfigurationScreen #configuration-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
+    ConfigurationScreen #configuration-title { height: 1; text-style: bold; }
+    ConfigurationScreen #configuration-subtitle { color: $text-muted; margin-bottom: 1; }
+    ConfigurationScreen #configuration-row { width: 100%; height: auto; layout: vertical; }
+    ConfigurationScreen.-spacious #configuration-row { layout: horizontal; }
+    ConfigurationScreen #configuration-row > SectionCard { width: 1fr; }
+    ConfigurationScreen.-spacious #configuration-row > SectionCard:first-child { margin-right: 1; }
     ConfigurationScreen .store-path { color: $text-muted; }
+    ConfigurationScreen .reason-note { height: auto; color: $text-muted; }
+    ConfigurationScreen #adapter-status { height: auto; }
+    ConfigurationScreen.-spacious #adapter-status { layout: grid; grid-size: 2; grid-gutter: 0 1; }
+    ConfigurationScreen .adapter-block { height: auto; border: round $border-subtle; padding: 0 1; }
+    ConfigurationScreen.-narrow .adapter-block { border: none; padding: 0; }
+    ConfigurationScreen .adapter-head { height: auto; }
+    ConfigurationScreen .adapter-name { width: 1fr; text-style: bold; }
+    ConfigurationScreen .adapter-state { width: auto; }
+    ConfigurationScreen .adapter-path, ConfigurationScreen .adapter-problem { color: $text-muted; }
     ConfigurationScreen .configuration-choice { height: auto; }
     ConfigurationScreen .actions { height: auto; }
     ConfigurationScreen Static { height: auto; }
@@ -176,6 +243,8 @@ class ConfigurationScreen(ConsoleShell):
         self.choice_page = 0
         self.text_mode = False
         self.message = ""
+        self.message_kind = "error"
+        self._narrow = False
         self.busy = False
         self.stale = False
         self.advice: Advice | None = None
@@ -230,31 +299,51 @@ class ConfigurationScreen(ConsoleShell):
         with SectionCard(title="Действия", id="configuration-actions") as actions:
             # The start screen has no actions: this card appears there only with a message.
             actions.display = self.phase is not Phase.CHOOSE or bool(self.message)
-            error = Static(self.message, id="config-error", markup=False)
+            error = Static(self._message_text(), id="config-error", markup=False)
             error.display = bool(self.message)
             yield error
+            reasons: list[tuple[Button, str]] = []
             with Horizontal(classes="actions"):
                 if self.phase is Phase.EDITING:
-                    yield Button(
+                    previous = Button(
                         "Предыдущий шаг", id="previous-step", disabled=self.index == 0
                     )
+                    if previous.disabled:
+                        reasons.append((previous, "это первый шаг"))
+                    yield previous
                     yield Button("Далее", id="next-step")
                     yield Button("Просмотр", id="review-config")
                 elif self.phase is Phase.REVIEW:
                     assert self.draft is not None
                     invalid = bool(self.draft.problems())
                     yield Button("К шагам", id="back-to-steps")
-                    yield Button(
+                    apply = Button(
                         "Применить", id="apply-config", disabled=invalid or self.stale
                     )
-                    yield Button(
+                    save = Button(
                         "Сохранить версию", id="save-version", disabled=invalid
                     )
+                    why = []
+                    if invalid:
+                        why.append("в черновике есть ошибки: исправьте их на шагах")
+                    if self.stale:
+                        why.append(
+                            "файлы изменены снаружи: сначала загрузите внешние изменения"
+                        )
+                    if why:
+                        reasons.append((apply, "; ".join(why)))
+                    if invalid:
+                        reasons.append(
+                            (save, "в черновике есть ошибки: исправьте их на шагах")
+                        )
+                    yield apply
+                    yield save
                     if self.stale:
                         yield Button(
                             "Загрузить внешние изменения", id="reload-external"
                         )
                     yield Button("Версии и откат", id="open-versions")
+            yield ReasonNote(lambda: reasons, id="actions-reason")
 
     async def _rebuild_page(self) -> None:
         """Rebuild the page below the frame: the menu, breadcrumbs and footer stay as they are."""
@@ -270,72 +359,129 @@ class ConfigurationScreen(ConsoleShell):
                 widget.focus()
                 return
 
-    def _set_message(self, text: str) -> None:
+    def _remember(self, text: str, kind: str = "error") -> None:
+        self.message = text
+        self.message_kind = kind
+
+    def _message_text(self) -> Text | str:
+        """The message as a status: its symbol, its text in the console language, its colour."""
+        if not self.message:
+            return ""
+        status = Status(
+            self.message_kind, self.message, i18n.tr_text("en", self.message)
+        )
+        return Text(status.render(self._language()), style=status.color)
+
+    def _set_message(self, text: str, kind: str = "error") -> None:
         """Show a message in the actions card, which the start screen otherwise hides."""
+        self._remember(text, kind)
         error = self.query_one("#config-error", Static)
-        error.update(text)
+        error.update(self._message_text())
         error.display = bool(text)
         self.query_one("#configuration-actions").display = (
             self.phase is not Phase.CHOOSE or bool(text)
         )
 
+    def _is_narrow(self) -> bool:
+        return self.app.size.width < brand.NARROW_WIDTH
+
+    def _start_button(self, identifier: str) -> ActionButton:
+        wide, narrow = _START_LABELS[identifier]
+        return ActionButton(narrow if self._is_narrow() else wide, id=identifier)
+
+    def _store_line(self) -> WrappedValue:
+        return WrappedValue(
+            self._store_text(), id="configuration-store-path", classes="store-path"
+        )
+
+    def _store_text(self) -> str:
+        prefix = i18n.tr(self._language(), "Хранилище: ")
+        return prefix + str(ConfigurationStore(self.repo).root)
+
     def _compose_choose(self) -> ComposeResult:
-        with SectionCard(
-            title="Редактирование конфигурации",
-            id="configuration-editing",
-            classes="configuration-choice",
-        ):
-            yield Static("Выберите, какие файлы настроить.")
-            with Horizontal(classes="actions"):
-                yield Button("project.json", id="configure-project")
-                yield Button("orchestration.json", id="configure-orchestration")
-                yield Button("Both files", id="configure-both")
-            yield Static("Изменения применяются после просмотра и подтверждения.")
-        with SectionCard(
-            title="Сохранённые версии",
-            id="configuration-versions",
-            classes="configuration-choice",
-        ):
-            yield Static("Сохранить текущий набор без редактирования.")
-            yield Static(
-                "Хранилище: " + str(ConfigurationStore(self.repo).root),
-                id="configuration-store-path",
-                classes="store-path",
-                markup=False,
-            )
-            yield Input(
-                placeholder="Описание версии (необязательно)", id="version-description"
-            )
-            with Horizontal(classes="actions"):
-                yield Button("Save version", id="save-current-version")
-                yield Button("Versions / restore", id="open-versions")
+        yield Static("Настройка конфигурации", id="configuration-title")
+        yield Static(
+            "Файлы project.json и orchestration.json, сохранённые версии и адаптеры runtime.",
+            id="configuration-subtitle",
+            classes="wide-only",
+        )
+        with Horizontal(id="configuration-row"):
+            with SectionCard(
+                title="Редактирование конфигурации",
+                id="configuration-editing",
+                classes="configuration-choice",
+            ):
+                yield Static("Выберите, какие файлы настроить.", classes="wide-only")
+                with Horizontal(classes="actions"):
+                    yield self._start_button("configure-project")
+                    yield self._start_button("configure-orchestration")
+                    yield self._start_button("configure-both")
+                yield Static(
+                    "Изменения применяются после просмотра и подтверждения.",
+                    classes="wide-only",
+                )
+            with SectionCard(
+                title="Сохранённые версии",
+                id="configuration-versions",
+                classes="configuration-choice",
+            ):
+                yield Static(
+                    "Сохранить текущий набор без редактирования.", classes="wide-only"
+                )
+                yield Input(
+                    placeholder="Описание версии (необязательно)",
+                    id="version-description",
+                )
+                yield self._store_line()
+                with Horizontal(classes="actions"):
+                    yield self._start_button("save-current-version")
+                    yield self._start_button("open-versions")
+        yield from self._compose_adapters()
+
+    def _compose_adapters(self) -> ComposeResult:
         with SectionCard(
             title="Адаптеры runtime",
+            note="внешний транспорт оркестрации (transport: external)",
             id="configuration-adapters",
             classes="configuration-choice",
         ):
             try:
                 preview = preview_runtime_adapters(self.repo)
             except (ValueError, OSError) as exc:
-                yield Static(str(exc), markup=False)
-            else:
-                labels = {
-                    "missing": "не установлен",
-                    "current": "актуален",
-                    "outdated": "требует обновления",
-                }
+                message = str(exc)
+                yield StatusLine(
+                    Status("error", message, i18n.tr_text("en", message)),
+                    id="adapter-error",
+                )
+                return
+            with Vertical(id="adapter-status"):
+                for item in preview.adapters:
+                    yield from self._compose_adapter(item)
+            yield Static(
+                "Установка и обновление требуют просмотра и подтверждения. "
+                "Консоль не включает force и не меняет transport.",
+                classes="wide-only",
+            )
+            yield self._start_button("preview-adapters")
+
+    def _compose_adapter(self, item: AdapterStatus) -> ComposeResult:
+        with Vertical(classes="adapter-block"):
+            with Horizontal(classes="adapter-head"):
                 yield Static(
-                    "\n".join(
-                        Path(item["path"]).stem + ": " + labels[item["status"]]
-                        for item in preview.adapters
-                    ),
-                    id="adapter-status",
+                    Path(item["path"]).stem,
+                    classes="adapter-name no-i18n",
                     markup=False,
                 )
-                yield Static(
-                    "Установка и обновление требуют просмотра и подтверждения."
+                yield StatusLine(
+                    _ADAPTER_STATUS[item["status"]], classes="adapter-state"
                 )
-                yield Button("Просмотр установки и обновления", id="preview-adapters")
+            yield WrappedValue(item["path"], classes="adapter-path wide-only")
+            if item["problem"]:
+                yield Static(
+                    f"{brand.STATUS_ICONS['warn']} {item['problem']}",
+                    classes="adapter-problem no-i18n",
+                    markup=False,
+                )
 
     def _preview_adapters(self) -> None:
         try:
@@ -347,6 +493,7 @@ class ConfigurationScreen(ConsoleShell):
             ConfirmConfiguration(
                 "Обновить адаптеры runtime?\n" + preview.text,
                 enabled=not preview.blocked,
+                reason=preview.reason,
             ),
             lambda confirmed: self._confirmed_adapters(confirmed, preview),
         )
@@ -531,12 +678,26 @@ class ConfigurationScreen(ConsoleShell):
             )
         else:
             yield Static(empty, classes="row-muted")
+        reasons: list[tuple[Button, str]] = []
         with Horizontal(classes="actions"):
             if field.is_map:
-                yield Button("Настроить запись", id="menu-open", disabled=not rows)
-                yield Button("Удалить запись", id="menu-remove", disabled=not rows)
+                open_entry = Button(
+                    "Настроить запись", id="menu-open", disabled=not rows
+                )
+                remove = Button("Удалить запись", id="menu-remove", disabled=not rows)
+                if not rows:
+                    reasons += [
+                        (open_entry, "записей пока нет"),
+                        (remove, "записей пока нет"),
+                    ]
+                yield open_entry
+                yield remove
             else:
-                yield Button("Удалить элемент", id="menu-remove", disabled=not rows)
+                remove = Button("Удалить элемент", id="menu-remove", disabled=not rows)
+                if not rows:
+                    reasons.append((remove, "список пока пуст"))
+                yield remove
+        yield ReasonNote(lambda: reasons, id="menu-reason")
         yield Input(
             placeholder="Имя новой записи" if field.is_map else "Новый элемент",
             id="menu-new",
@@ -696,10 +857,17 @@ class ConfigurationScreen(ConsoleShell):
                     disabled=key in self.provider_status
                     and not status.startswith("Готов"),
                 )
+        accept = Button("Принять совет ИИ", id="use-advisor", disabled=True)
         with Horizontal(classes="actions"):
             yield Button("Проверить CLI", id="check-advisor")
             yield Button("Спросить ИИ", id="ask-advisor")
-            yield Button("Принять совет ИИ", id="use-advisor", disabled=True)
+            yield accept
+        yield ReasonNote(
+            lambda: [(accept, "сначала получите совет: «Спросить ИИ»")]
+            if accept.disabled
+            else [],
+            id="advisor-reason",
+        )
         yield Static("", id="advisor-output", markup=False)
 
     def _compose_review(self) -> ComposeResult:
@@ -739,18 +907,44 @@ class ConfigurationScreen(ConsoleShell):
                     markup=False,
                 )
         with SectionCard(title="Версия", id="configuration-version"):
-            yield Static(
-                "Хранилище: " + str(ConfigurationStore(self.repo).root),
-                id="configuration-store-path",
-                classes="store-path",
-                markup=False,
-            )
+            yield self._store_line()
             yield Input(
                 placeholder="Описание версии (необязательно)",
                 id="version-description",
             )
 
+    def on_resize(self, event: events.Resize) -> None:
+        narrow = event.size.width < brand.NARROW_WIDTH
+        if narrow != self._narrow:
+            self._narrow = narrow
+            self._relabel_buttons()
+
+    def _relabel_buttons(self) -> None:
+        """The start page's buttons carry a shorter label on a narrow terminal."""
+        if self.phase is not Phase.CHOOSE:
+            return
+        language = self._language()
+        for identifier, labels in _START_LABELS.items():
+            for button in self.query(f"#{identifier}").results(Button):
+                button.label = i18n.tr(language, labels[self._narrow])
+
+    def _refresh_notes(self) -> None:
+        for note in self.query(ReasonNote):
+            note.relabel()
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        self._relabel_buttons()
+        for line in self.query(StatusLine):
+            line.relabel()
+        for error in self.query("#config-error").results(Static):
+            error.update(self._message_text())
+        for store in self.query(".store-path").results(WrappedValue):
+            store.set_value(self._store_text())
+        self._refresh_notes()
+
     def on_mount(self) -> None:
+        self._narrow = self._is_narrow()
         if self.focus_target is not None:
             name, path = self.focus_target
             self.call_later(self._start, (name,), path)
@@ -774,10 +968,10 @@ class ConfigurationScreen(ConsoleShell):
                 0,
             )
             self.phase = Phase.EDITING
-            self.message = ""
+            self._remember("")
             self._set_page()
         except (ValueError, OSError) as exc:
-            self.message = str(exc)
+            self._remember(str(exc))
         await self._rebuild_page()
         if self.phase is Phase.EDITING and not self.provider_status:
             # Availability is probed without a model request; the result labels the options.
@@ -829,11 +1023,10 @@ class ConfigurationScreen(ConsoleShell):
                 self.draft.set_value(field.file, field.path, value)
             elif field.present(self.draft):
                 self.draft.remove_value(field.file, field.path)
-            self.message = ""
+            self._remember("")
             return True
         except ValueError as exc:
-            self.message = str(exc)
-            self._set_message(self.message)
+            self._set_message(str(exc))
             return False
 
     async def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -1036,19 +1229,24 @@ class ConfigurationScreen(ConsoleShell):
         try:
             conflicts = self.draft.rebase(read_config_bundle(self.repo))
         except (ValueError, OSError) as exc:
-            self.message = str(exc)
+            self._remember(str(exc))
         else:
             self.stale = False
-            self.message = "Внешние изменения загружены, ваши правки сохранены." + (
-                " Изменено и снаружи, оставлены ваши значения: " + ", ".join(conflicts)
-                if conflicts
-                else ""
+            self._remember(
+                "Внешние изменения загружены, ваши правки сохранены."
+                + (
+                    " Изменено и снаружи, оставлены ваши значения: "
+                    + ", ".join(conflicts)
+                    if conflicts
+                    else ""
+                ),
+                "accepted",
             )
         await self._rebuild_page()
 
     def _operation(self, run: Callable[[], str], reload: bool = False) -> None:
         self.busy = True
-        self._set_message("Выполняется…")
+        self._set_message("Выполняется…", "running")
 
         def work() -> None:
             stale = False
@@ -1060,16 +1258,18 @@ class ConfigurationScreen(ConsoleShell):
             except (ValueError, OSError) as exc:
                 message, ok = str(exc), False
             call_from_worker(
-                self, lambda: self._finished(message, ok and reload, stale)
+                self, lambda: self._finished(message, ok and reload, stale, ok)
             )
 
         self.run_worker(work, thread=True, group="configuration", exclusive=True)
 
-    async def _finished(self, message: str, reload: bool, stale: bool) -> None:
+    async def _finished(
+        self, message: str, reload: bool, stale: bool, ok: bool = False
+    ) -> None:
         self.busy = False
-        self.message = message
+        kind = "accepted" if ok else "error"
         self.stale = stale or (self.stale and not reload)
-        self._set_message(message)
+        self._set_message(message, kind)
         if stale:
             await self._rebuild_page()
         elif reload:
@@ -1078,7 +1278,7 @@ class ConfigurationScreen(ConsoleShell):
                     self.repo, tuple(self.draft.documents)
                 )
             await self._rebuild_page()
-            self._set_message(message)
+            self._set_message(message, kind)
 
     def _selected_provider(self) -> str | None:
         index = self.query_one("#advisor-provider", RadioSet).pressed_index
@@ -1101,6 +1301,7 @@ class ConfigurationScreen(ConsoleShell):
         self.advisor_pending = True
         self.advice = None
         self.query_one("#use-advisor", Button).disabled = True
+        self._refresh_notes()
         self.query_one("#advisor-output", Static).update(
             "Запрашивается рекомендация через текущую авторизацию CLI…"
         )
@@ -1162,6 +1363,7 @@ class ConfigurationScreen(ConsoleShell):
         self.advice = advice
         self.query_one("#advisor-output", Static).update(message)
         self.query_one("#use-advisor", Button).disabled = advice is None
+        self._refresh_notes()
 
     # Every way out of the wizard - Esc, a number key, the menu, a breadcrumb - goes through one
     # guard: it waits for a running write and asks before an unapplied draft is dropped.
