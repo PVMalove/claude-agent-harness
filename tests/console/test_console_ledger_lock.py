@@ -71,6 +71,23 @@ def test_a_live_owner_is_never_announced_as_released_by_the_timeout() -> None:
     assert "таймаут не снимает живого владельца" in text
 
 
+def test_an_owner_on_another_host_has_no_timeout_countdown() -> None:
+    text = ledger_lock.lock_text(_status(verdict="owner-on-another-host"))
+
+    assert "до снятия по таймауту: не применяется (владелец на другом хосте)" in text
+
+
+def test_the_english_console_gets_an_english_panel() -> None:
+    text = ledger_lock.lock_text(_status(), "en")
+
+    assert "Ledger lock held: report submit" in text
+    assert "Held for: 3 min 20 s" in text
+    assert "until the timeout release:" in text
+    assert "another PID namespace" in text
+    assert not any("а" <= char <= "я" for char in text.lower())
+    assert ledger_lock.lock_text({"locked": False}, "en") == "The ledger lock is free."
+
+
 def test_durations_read_in_hours_minutes_and_seconds() -> None:
     assert ledger_lock.duration(45) == "45 с"
     assert ledger_lock.duration(200) == "3 мин 20 с"

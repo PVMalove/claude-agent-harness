@@ -237,6 +237,32 @@ class LedgerLockCommandTests(unittest.TestCase):
         self.assertEqual(details["lock"]["owner"], before["owner"])
         self.assertIn("record_sha256", audit)
 
+    def test_a_forced_release_that_fails_after_its_audit_records_the_failure(
+        self,
+    ) -> None:
+        self._orphan()
+        # A stray file keeps the lock directory from being removed after the audit is written.
+        (self.lock_dir / "stray").write_text("x", encoding="utf-8")
+
+        with self.assertRaises(CoordinatorError):
+            self._force()
+
+        records = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in (self.state_dir / "lock-audit").glob("*.json")
+        ]
+        actions = {record["action"]: record for record in records}
+        self.assertEqual(
+            set(actions),
+            {"ledger-lock-force-release", "ledger-lock-force-release-failed"},
+        )
+        self.assertEqual(
+            actions["ledger-lock-force-release-failed"]["details"]["release_audit_id"],
+            actions["ledger-lock-force-release"]["audit_id"],
+        )
+        # The strict audit check accepts the failure record beside the release it names.
+        lifecycle.LifecycleLedger._validate_lock_audit(self.state_dir / "lock-audit")
+
     def test_ledger_validate_passes_after_a_forced_release_and_guards_its_audit(
         self,
     ) -> None:

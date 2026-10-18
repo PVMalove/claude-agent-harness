@@ -1501,6 +1501,7 @@ def _validate_dispatch(
                 config,
                 _roles_dir(repo),
                 role_manifest=pinned["role"] if pinned is not None else None,
+                allowed_paths=cast(list[str] | None, batch.get("allowed_paths")),
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc

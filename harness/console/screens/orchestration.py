@@ -23,7 +23,12 @@ from ..coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand, proc
 from ..logtext import colorize_overview
 from ..runner import CommandRunner, capturing_runner
 from ..widgets import CheckBox
-from .commands import CommandForm, CommandMenuScreen, describe_command
+from .commands import (
+    CommandForm,
+    CommandMenuScreen,
+    call_from_worker,
+    describe_command,
+)
 
 _GROUP_TITLES = {
     "batch": "Batch",
@@ -160,7 +165,7 @@ class OrchestrationScreen(CommandMenuScreen):
         panel.i18n_source = text  # type: ignore[attr-defined]
         yield panel
         lock = Static(
-            ledger_lock.current_lock_text(self.repo, self._load_lock),
+            ledger_lock.current_lock_text(self.repo, self._load_lock, self._language),
             id="ledger-lock",
             classes="overview",
             markup=False,
@@ -189,10 +194,20 @@ class OrchestrationScreen(CommandMenuScreen):
         self.set_interval(self._lock_refresh_seconds, self._refresh_lock)
 
     def _refresh_lock(self) -> None:
-        """Перечитать состояние lock ledger без его захвата и обновить панель."""
-        self.query_one("#ledger-lock", Static).update(
-            ledger_lock.current_lock_text(self.repo, self._load_lock)
-        )
+        """Перечитать состояние lock ledger без его захвата и обновить панель.
+
+        Чтение идёт в фоновом потоке, чтобы медленная файловая система не задерживала экран; текст
+        строится на текущем языке консоли."""
+        language = self._language
+
+        def work() -> None:
+            text = ledger_lock.current_lock_text(self.repo, self._load_lock, language)
+            call_from_worker(self, lambda: self._show_lock(text))
+
+        self.run_worker(work, thread=True, exclusive=True, group="ledger-lock")
+
+    def _show_lock(self, text: str) -> None:
+        self.query_one("#ledger-lock", Static).update(text)
 
     def _show_batches(self, state: str) -> None:
         history = self.query_one("#batch-history", ListView)

@@ -931,7 +931,8 @@ serialised. Only a human operator may run `ledger release-lock --force --approve
 --approved-at --reason`: it releases the lock whatever the verdict and writes an integrity-checked
 record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. That
 directory sits beside the generations, so no migration or quarantine moves it, and `ledger
-validate` checks each record's checksum and its one action `ledger-lock-force-release`. Nobody
+validate` checks each record's checksum and its action: `ledger-lock-force-release`, or
+`ledger-lock-force-release-failed` when the lock could not be removed after it was audited. Nobody
 removes the lock or any state file by hand.
 
 A command stopped by an invalid current config, a busy ledger or an unreadable ledger prints one
@@ -1089,7 +1090,11 @@ It must contain, at minimum:
 - `prohibited changes`: paths, operations, or decisions outside the declared scope;
 - `verification commands`: exact project commands and any mandatory risk-review gate. A developer
   work dispatch may use focused developer commands; clean-room QA always uses the full verification
-  commands;
+  commands. `batch create` freezes the developer and review lists of the first
+  `verification_profiles` entry whose `paths` cover every allowed path, else the general lists, and
+  freezes `retry_verification` when configured: a developer-retry brief then runs its `lint`
+  commands and one `test_command` over the Context Package's `related_tests`, or the developer list
+  when there are none;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
 - `coordinator approval`: approving person, timestamp, and the approved concurrency decision;
 - `commit plan` (developer work): ordered entries `{id, summary, expected_paths, covers}`, where

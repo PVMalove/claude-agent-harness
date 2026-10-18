@@ -313,9 +313,12 @@ def verification_profile_problems(value: object) -> list[str]:
 def verification_profile_for(
     config: Mapping[str, object], allowed_paths: list[str]
 ) -> Mapping[str, object] | None:
-    """The first profile whose paths cover every allowed path of a batch, or none."""
+    """The first profile whose paths cover every allowed path of a batch, or none.
+
+    An empty scope covers nothing: ``paths_inside`` holds vacuously for it, and the narrowest
+    profile must never become the checks of a batch whose scope is unknown."""
     profiles = config.get("verification_profiles")
-    if not isinstance(profiles, list):
+    if not isinstance(profiles, list) or not allowed_paths:
         return None
     for profile in profiles:
         if not isinstance(profile, dict):
@@ -610,8 +613,12 @@ def validate_brief_policy(
     *,
     expected_transport: str | None = None,
     role_manifest: JsonObject | None = None,
+    allowed_paths: list[str] | None = None,
 ) -> tuple[JsonObject, JsonObject]:
-    """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации."""
+    """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации.
+
+    ``allowed_paths`` — область batch brief: по ней выбирается единственный профиль проверок,
+    чьи команды допустимы для brief."""
     reject_sensitive(brief, "dispatch brief")
     from .runtime_access import AccessError, validate_binding
 
@@ -722,7 +729,11 @@ def validate_brief_policy(
                 remedy=INTERNAL_INVARIANT_REMEDY,
             )
     accepted_commands = accepted_verification_commands(
-        config, str(brief.get("role")), str(brief.get("purpose")), brief=brief
+        config,
+        str(brief.get("role")),
+        str(brief.get("purpose")),
+        brief=brief,
+        allowed_paths=allowed_paths,
     )
     if brief["verification_commands"] not in accepted_commands:
         raise ContractError(
@@ -852,7 +863,8 @@ def role_verification_commands(
     return fallback
 
 
-PROFILE_ROLE_FIELDS = {"developer": "developer", "code-review": "review"}
+# The field of a verification profile that holds the commands of each work role.
+PROFILE_FIELD_BY_ROLE = {"developer": "developer", "code-review": "review"}
 
 
 def accepted_verification_commands(
@@ -861,6 +873,7 @@ def accepted_verification_commands(
     purpose: str,
     *,
     brief: Mapping[str, object] | None = None,
+    allowed_paths: list[str] | None = None,
 ) -> list[object]:
     """Вернуть допустимые списки проверок для уже записанного brief роли.
 
@@ -868,24 +881,26 @@ def accepted_verification_commands(
     ``verification_commands``; такие записи остаются валидными, чтобы незавершённые batch
     продолжались без ручной правки ledger.
 
-    Конфиг с ``verification_profiles`` допускает и списки профилей: batch замораживает
-    список профиля своей области. Brief developer-retry допускает команды ``retry_verification``
-    источника над ``related_tests`` своего Context Package; замороженный batch несёт этот ключ,
-    только если он был задан при ``batch create``.
+    Конфиг с ``verification_profiles`` допускает список того профиля, который покрывает
+    ``allowed_paths`` batch, и только его: ``batch create`` замораживает именно этот список.
+    Brief developer-retry допускает команды ``retry_verification`` источника над
+    ``related_tests`` своего Context Package (сводка brief привязана к пакету его
+    ``context_package_sha256``); замороженный batch несёт этот ключ, только если он был задан
+    при ``batch create``.
     """
     accepted = [role_verification_commands(source, role, purpose)]
     if purpose != "work":
         return accepted
     if role in NO_GATE_WORK_ROLES:
         accepted.append(source.get("verification_commands"))
-    profiles = source.get("verification_profiles")
-    field = PROFILE_ROLE_FIELDS.get(role)
-    if field is not None and isinstance(profiles, list):
-        accepted.extend(
-            profile[field]
-            for profile in profiles
-            if isinstance(profile, dict) and string_list(profile.get(field))
-        )
+    field = PROFILE_FIELD_BY_ROLE.get(role)
+    profile = (
+        verification_profile_for(source, allowed_paths)
+        if field is not None and allowed_paths
+        else None
+    )
+    if profile is not None and field is not None and string_list(profile.get(field)):
+        accepted.append(profile[field])
     if role == "developer" and brief is not None and is_developer_retry(brief):
         summary = brief.get("context_package_summary")
         retry = retry_verification_commands(
