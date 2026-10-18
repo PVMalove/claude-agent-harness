@@ -896,7 +896,11 @@ It must contain, at minimum:
 - `prohibited changes`: paths, operations, or decisions outside the declared scope;
 - `verification commands`: exact project commands and any mandatory risk-review gate. A developer
   work dispatch may use focused developer commands; clean-room QA always uses the full verification
-  commands;
+  commands. `batch create` freezes the developer and review lists of the first
+  `verification_profiles` entry whose `paths` cover every allowed path, else the general lists, and
+  freezes `retry_verification` when configured: a developer-retry brief then runs its `lint`
+  commands and one `test_command` over the Context Package's `related_tests`, or the developer list
+  when there are none;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
 - `coordinator approval`: approving person, timestamp, and the approved concurrency decision;
 - `commit plan` (developer work): ordered entries `{id, summary, expected_paths, covers}`, where
