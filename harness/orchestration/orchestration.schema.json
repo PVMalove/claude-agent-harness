@@ -55,6 +55,26 @@
         },
         "required": ["worker_attestation_required"]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "extensions": {
+            "properties": {"runtime_access": {"const": "docker"}},
+            "required": ["runtime_access"]
+          }
+        },
+        "required": ["extensions"]
+      },
+      "then": {
+        "properties": {
+          "access_policy": {
+            "properties": {"defaults": {"required": ["container"]}},
+            "required": ["defaults"]
+          }
+        },
+        "required": ["access_policy"]
+      }
     }
   ],
   "properties": {
@@ -380,9 +400,9 @@
     },
     "extensions": {
       "type": "object",
-      "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier"]},
+      "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier", "runtime_access"]},
       "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
-      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии и проверки здоровья. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'."
+      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и native-доступа worker-а. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'. Для 'runtime_access' встроено имя 'docker' — контейнерный исполнитель; он требует access_policy.defaults.container."
     },
     "preflight_policy": {
       "type": "object",
@@ -412,6 +432,34 @@
             "sandbox",
             "unsandboxed"
           ]
+        },
+        "container": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker_image"
+          ],
+          "description": "Образы контейнерного исполнителя extensions.runtime_access 'docker'. Override роли или операции заменяет компонент целиком. Resolver не опрашивает движок и образы: digest образов закрепляет dispatch propose. Харнесс образы не собирает и не скачивает.",
+          "properties": {
+            "engine": {
+              "enum": [
+                "docker",
+                "podman"
+              ],
+              "default": "docker",
+              "description": "Движок контейнеров. Исполнитель поддерживает только rootful Docker; 'podman' даёт явный блокер."
+            },
+            "worker_image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
+              "description": "Тег образа worker-а, например 'harness-worker:local'."
+            },
+            "proxy_image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
+              "description": "Необязательный тег образа egress-proxy. Если тег задан, образ должен присутствовать, и dispatch propose закрепляет его digest."
+            }
+          }
         },
         "network": {
           "type": "object",

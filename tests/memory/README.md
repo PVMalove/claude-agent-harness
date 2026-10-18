@@ -30,9 +30,14 @@ The reproducibility test checks the complete report and CLI exit code 0 on that 
 `baseline_fts5_initial.json` preserves the original single-label measurement byte-for-byte:
 recall@1 **0.70**, recall@3 **0.75**, recall@5 **0.85**, noise **0.83**, FAIL.
 The historical test reconstructs that dataset, verifies its original SHA-256, reproduces the
-entire old report and confirms that ranked paths have not changed. The current version-2 baseline
-is an **annotation correction, not a retrieval-engine improvement**: queries, source bytes, FTS5,
-top-5 window and thresholds are identical. Vector comparisons must use the same reviewed
+entire old report and confirms that both baselines index the same sources, that only archived
+sources differ and that ranked paths match the active baseline. Version 2 was an **annotation correction, not a retrieval-engine improvement**:
+queries, source bytes, FTS5, top-5 window and thresholds were identical to the initial measurement.
+Version 3 explicitly re-evaluates the corpus after #635 adds the container executor term to
+`CONTEXT.md`. Only that source hash changes: the aggregate retrieval metrics and every query's
+ranked paths are identical to version 2. `fixtures/initial-corpus.json` preserves the original
+`CONTEXT.md` for historical reproduction; `baseline_fts5_initial.json` is unchanged.
+Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.
 
 Reproduce the baseline without enabling memory in this checkout:
