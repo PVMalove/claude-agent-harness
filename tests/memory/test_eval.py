@@ -425,6 +425,16 @@ def test_initial_single_label_measurement_is_preserved(initial_corpus: Path) -> 
     current = json.loads(
         GOLDEN.with_name("baseline_fts5.json").read_text(encoding="utf-8")
     )
+    archived = json.loads(
+        (GOLDEN.parent / "fixtures/initial-corpus.json").read_text(encoding="utf-8")
+    )
+    assert initial["source_hashes"].keys() == current["source_hashes"].keys()
+    changed = {
+        path
+        for path, digest in initial["source_hashes"].items()
+        if digest != current["source_hashes"][path]
+    }
+    assert changed <= archived.keys()
     assert initial["engine"] == current["engine"]
     old_labels = {
         result["ticket_id"]: result["expected"]
@@ -446,3 +456,6 @@ def test_initial_single_label_measurement_is_preserved(initial_corpus: Path) -> 
     report = evaluate_memory(initial_corpus, dataset=dataset)
     assert report.to_dict() == initial["report"]
     assert report.gate_passed is False
+    assert [item.retrieved for item in report.query_results] == [
+        item["retrieved"] for item in current["report"]["query_results"]
+    ]

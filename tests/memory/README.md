@@ -29,8 +29,9 @@ The reproducibility test checks the complete report and CLI exit code 0 on that 
 
 `baseline_fts5_initial.json` preserves the original single-label measurement byte-for-byte:
 recall@1 **0.70**, recall@3 **0.75**, recall@5 **0.85**, noise **0.83**, FAIL.
-The historical test reconstructs that dataset, verifies its original SHA-256 and reproduces the
-entire old report. Version 2 was an **annotation correction, not a retrieval-engine improvement**:
+The historical test reconstructs that dataset, verifies its original SHA-256, reproduces the
+entire old report and confirms that both baselines index the same sources, that only archived
+sources differ and that ranked paths match the active baseline. Version 2 was an **annotation correction, not a retrieval-engine improvement**:
 queries, source bytes, FTS5, top-5 window and thresholds were identical to the initial measurement.
 Version 3 explicitly re-evaluates the corpus after #635 adds the container executor term to
 `CONTEXT.md`. Only that source hash changes: the aggregate retrieval metrics and every query's
