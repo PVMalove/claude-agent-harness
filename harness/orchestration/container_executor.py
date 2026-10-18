@@ -272,6 +272,52 @@ def _image_id(tag: str, block: _Block) -> str | None:
     return None
 
 
+def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) -> None:
+    """Block every plan property the executor cannot run; it reads only the plan and the host."""
+    if transport != "external":
+        block(
+            f"the docker executor launches only an external dispatch, not {transport}",
+            "set the role's assignment_plans transport to external, then repeat dispatch "
+            "preflight and propose",
+        )
+    if not data.get("container"):
+        block(
+            "the access plan has no container component",
+            "set access_policy.defaults.container.worker_image, then repeat dispatch "
+            "preflight and propose",
+        )
+    elif engine != EXTENSION_NAME:
+        block(
+            f"container engine {engine} is not supported; the docker executor runs "
+            "rootful Docker only",
+            "set the access_policy container engine to docker or omit it",
+        )
+    hosts = data["network"]["hosts"]
+    if hosts:
+        block(
+            f"network hosts {', '.join(hosts)} need an egress proxy that the docker "
+            "executor does not provide",
+            "set the role's access_policy network.hosts to []",
+        )
+    if data["mode"] not in SUPPORTED_MODES:
+        block(
+            f"mode {data['mode']} cannot run in a container",
+            "set the role's access_policy mode to sandbox or inherit",
+        )
+    for path in sorted({item["path"] for item in data["requirements"]}):
+        if _UNSAFE_PATH.search(path) or _overlaps_home(path):
+            block(
+                f"plan root {path!r} cannot be mounted safely",
+                "move the root to a path without commas, quotes or line breaks outside "
+                f"{CONTAINER_HOME}",
+            )
+    if not hasattr(os, "getuid"):
+        block(
+            "the host has no POSIX user identity for the container user",
+            "run the coordinator on a POSIX host",
+        )
+
+
 class DockerExecutor:
     """Run the approved worker in one rootful Docker container without network."""
 
@@ -289,48 +335,7 @@ class DockerExecutor:
         def block(reason: str, remedy: str) -> None:
             blockers.append({"reason": reason, "remedy": remedy})
 
-        if transport != "external":
-            block(
-                f"the docker executor launches only an external dispatch, not {transport}",
-                "set the role's assignment_plans transport to external, then repeat dispatch "
-                "preflight and propose",
-            )
-        if not container:
-            block(
-                "the access plan has no container component",
-                "set access_policy.defaults.container.worker_image, then repeat dispatch "
-                "preflight and propose",
-            )
-        elif engine != EXTENSION_NAME:
-            block(
-                f"container engine {engine} is not supported; the docker executor runs "
-                "rootful Docker only",
-                "set the access_policy container engine to docker or omit it",
-            )
-        hosts = data["network"]["hosts"]
-        if hosts:
-            block(
-                f"network hosts {', '.join(hosts)} need an egress proxy that the docker "
-                "executor does not provide",
-                "set the role's access_policy network.hosts to []",
-            )
-        if data["mode"] not in SUPPORTED_MODES:
-            block(
-                f"mode {data['mode']} cannot run in a container",
-                "set the role's access_policy mode to sandbox or inherit",
-            )
-        for path in sorted({item["path"] for item in data["requirements"]}):
-            if _UNSAFE_PATH.search(path) or _overlaps_home(path):
-                block(
-                    f"plan root {path!r} cannot be mounted safely",
-                    "move the root to a path without commas, quotes or line breaks outside "
-                    f"{CONTAINER_HOME}",
-                )
-        if not hasattr(os, "getuid"):
-            block(
-                "the host has no POSIX user identity for the container user",
-                "run the coordinator on a POSIX host",
-            )
+        _plan_support(data, transport, engine, block)
         engine_mode, environment_id = "not-probed", ""
         worker_id = proxy_id = None
         if container and engine == EXTENSION_NAME:
