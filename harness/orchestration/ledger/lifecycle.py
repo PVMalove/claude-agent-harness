@@ -132,12 +132,17 @@ def _validate_record_state(directory: str, value: JsonObject) -> None:
         _parse_state(value.get("state"), DispatchState)
 
 
+# The operator's audited release of a lock whatever its owner verdict; every remedy names it.
+FORCE_RELEASE_COMMAND = (
+    "coordinator.py ledger release-lock --force --approved-by <operator> "
+    "--approved-at <time> --reason <why>"
+)
 LOCK_BUSY_REMEDY = (
     "repeat the command once the other operation finishes; 'coordinator.py ledger lock-status' "
     "shows the holder, its age and when a timeout release becomes available. If the lock stays "
     "held, run 'coordinator.py ledger release-lock', which releases it only when its owner process "
-    "is gone; for the lock of a stopped sandboxed worker, an operator can run 'coordinator.py "
-    "ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>'"
+    f"is gone; for the lock of a stopped sandboxed worker, an operator can run "
+    f"'{FORCE_RELEASE_COMMAND}'"
 )
 
 
@@ -801,7 +806,8 @@ class LifecycleLedger:
         The caller decides whether the lock may go; this only guarantees it removes the lock it
         judged.  Under the release guard the lock is read again and must still be the observed
         one, and nothing else can change it before it goes: a holder only creates an owner record
-        where none exists and removes only its own, and the observed owner was judged gone.  An
+        where none exists and removes only its own, and the observed owner was judged gone (or an
+        operator approved its forced release, see ``force_break_lock``).  An
         unreadable record goes only when it was observed unreadable; a lock observed without a
         record goes by rmdir, which never removes a record created since.  ``before_release``
         runs under the same guard once the lock is confirmed and before it goes; when it raises,
@@ -832,35 +838,56 @@ class LifecycleLedger:
         """Remove the observed lock whatever its owner, after auditing the human ``decision``.
 
         The audit record (who, when, why, the verdict and the lock as it was) is written under the
-        release guard before the lock goes, so a lock never disappears without one.  Returns the
-        audit id."""
+        release guard before the lock goes, so a lock never disappears without one.  When the
+        removal then fails, a second record (``ledger-lock-force-release-failed``, naming the
+        first) says so, and the error is raised.  Returns the audit id."""
         audit_id = f"audit-{uuid.uuid4()}"
+        audited = False
 
         def audit(current: JsonObject) -> None:
-            record: JsonObject = {
-                "audit_id": audit_id,
-                "at": _now(),
-                "action": "ledger-lock-force-release",
-                "details": {**decision, "lock": current},
-            }
-            record["record_sha256"] = hashlib.sha256(
-                _canonical(record).encode("utf-8")
-            ).hexdigest()
-            directory = self.root / LOCK_AUDIT_DIRECTORY
-            try:
-                directory.mkdir(exist_ok=True)
-                with (directory / f"{audit_id}.json").open(
-                    "x", encoding="utf-8"
-                ) as out:
-                    out.write(_canonical(record))
-            except OSError as exc:
-                raise LedgerError(
-                    f"forced ledger lock release could not be audited: {exc.strerror}",
-                    remedy=f"make {directory} writable, then repeat the forced release",
-                ) from exc
+            nonlocal audited
+            self._write_lock_audit(
+                audit_id,
+                "ledger-lock-force-release",
+                {**decision, "lock": current},
+            )
+            audited = True
 
-        self.break_lock(observed, before_release=audit)
+        try:
+            self.break_lock(observed, before_release=audit)
+        except LedgerError as exc:
+            if audited:
+                self._write_lock_audit(
+                    f"audit-{uuid.uuid4()}",
+                    "ledger-lock-force-release-failed",
+                    {"release_audit_id": audit_id, "error": exc.message},
+                )
+            raise
         return audit_id
+
+    def _write_lock_audit(
+        self, audit_id: str, action: str, details: JsonObject
+    ) -> None:
+        """Create one integrity-checked record in ``lock-audit/``; an existing one is never touched."""
+        record: JsonObject = {
+            "audit_id": audit_id,
+            "at": _now(),
+            "action": action,
+            "details": details,
+        }
+        record["record_sha256"] = hashlib.sha256(
+            _canonical(record).encode("utf-8")
+        ).hexdigest()
+        directory = self.root / LOCK_AUDIT_DIRECTORY
+        try:
+            directory.mkdir(exist_ok=True)
+            with (directory / f"{audit_id}.json").open("x", encoding="utf-8") as out:
+                out.write(_canonical(record))
+        except OSError as exc:
+            raise LedgerError(
+                f"forced ledger lock release could not be audited: {exc.strerror}",
+                remedy=f"make {directory} writable, then repeat the forced release",
+            ) from exc
 
     @property
     def pointer_path(self) -> Path:

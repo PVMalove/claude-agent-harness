@@ -237,9 +237,9 @@ def accepted_plan_sha256(batch: JsonObject) -> str | None:
     return digest if isinstance(digest, str) else None
 
 
-def is_developer_retry(dispatch: JsonObject) -> bool:
-    """A developer-retry brief keeps the strict one-commit-one-entry commit_map."""
-    return contract.is_developer_retry(dispatch)
+# A developer-retry brief keeps the strict one-commit-one-entry commit_map; the contract owns the
+# test because brief validation needs it too.
+is_developer_retry = contract.is_developer_retry
 
 
 def rebase_target(dispatch: JsonObject) -> str | None:

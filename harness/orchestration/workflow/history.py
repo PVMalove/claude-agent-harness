@@ -1509,6 +1509,7 @@ def _validate_dispatch(
                 _project(repo),
                 config,
                 _roles_dir(repo),
+                allowed_paths=cast(list[str] | None, batch.get("allowed_paths")),
             )
         except ContractError as exc:
             raise CoordinatorError(exc.message, remedy=exc.remedy) from exc

@@ -209,6 +209,37 @@ task-scoped проверки, а в `verification_commands` — независи
 полученную команду через `test_summary.py`; в report остаются исходная команда и bounded summary, а
 санитизированный полный лог доступен только для упавшей проверки.
 
+Необязательный `verification_profiles` уточняет эти два списка по области batch:
+
+```json
+"verification_profiles": [
+  {
+    "paths": ["harness/console/**", "tests/console/**"],
+    "developer": ["make lint", "pytest -q -n 8 tests/console"],
+    "review": ["make lint", "pytest -q -n 8 tests/console"]
+  }
+]
+```
+
+`batch create` берёт первый профиль, чьи `paths` покрывают все `--allowed-path` batch, и
+замораживает его `developer` и `review` вместо `developer_verification_commands` и
+`review_verification_commands`. Если ни один профиль не покрывает batch целиком или ключа нет,
+batch получает общие списки. Brief проверяется по профилю своей области, а clean-room QA всегда
+выполняет `verification_commands`.
+
+Необязательный `retry_verification` ускоряет повторную попытку developer:
+
+```json
+"retry_verification": {"lint": ["make lint"], "test_command": "pytest -q -n 8"}
+```
+
+Brief developer-retry получает команды `lint` и одну команду `test_command`, к которой добавлены
+пути `related_tests` его Context Package (их число ограничивает `max_related_tests`). Первый
+developer-dispatch, code-review и QA не меняются. Если связанных тестов нет или ключ не задан,
+повтор выполняет обычные команды developer. Значение замораживается в batch при `batch create`, а
+отчёт retry, как и любой другой, должен перечислить в `checks_run` ровно команды brief. Пути
+тестов экранируются по правилам POSIX-оболочки.
+
 Граница записи — не подсказка. Write-роль изменяет только пути, явно закреплённые за batch
 (`--allowed-path`, они попадают в `write_paths` brief), и только внутри потолка роли, который задаёт
 `write_paths` роли в assignment plan (по умолчанию — весь репозиторий). Coordinator не создаёт batch
@@ -1747,10 +1778,12 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock --forc
 
 Без `--approved-by`, `--approved-at` или `--reason` команда отказывает; одобрение `policy:...`
 отвергается, а при `human_approval_gate: tty` его нужно подтвердить на терминале. Ни одна политика,
-включая `auto`, эту команду не запускает. Перед снятием команда пишет неизменяемую запись аудита в
-`lock-audit/` каталога state: кто и когда одобрил, причину, вердикт проверки и прежнее состояние
-lock. `ledger validate` проверяет целостность этих записей. В консоли то же действие — команда
-«Снять lock ledger» с подтверждением.
+включая `auto`, эту команду не запускает. Перед снятием команда пишет запись аудита с контрольной
+суммой (`record_sha256`) в `lock-audit/` каталога state: кто и когда одобрил, причину, вердикт
+проверки и прежнее состояние lock. Если после записи снять lock не удалось, вторая запись
+`ledger-lock-force-release-failed` называет первую. `ledger validate` проверяет контрольные суммы
+этих записей; подмену записи вместе с её суммой или удаление файла он не обнаруживает. В консоли
+то же действие — команда «Снять lock ledger» с подтверждением.
 
 ### Отчётность и мониторинг токенов: `dispatch telemetry`
 
