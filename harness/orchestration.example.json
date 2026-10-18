@@ -299,6 +299,22 @@
   },
   "developer_verification_commands": [],
   "review_verification_commands": [],
+  "verification_profiles": [
+    {
+      "paths": [
+        "harness/console/**",
+        "tests/console/**"
+      ],
+      "developer": [
+        "make lint",
+        "pytest -q -n 8 tests/console"
+      ],
+      "review": [
+        "make lint",
+        "pytest -q -n 8 tests/console"
+      ]
+    }
+  ],
   "verification_commands": [],
   "test_path_patterns": [
     "tests/**",

@@ -103,6 +103,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `qa_project_file_checks` | список строк | `[]` | Офлайн-проверки файлов проекта (например, согласованность lock-файла). QA запускает их только после упавшей `qa_preparation`. Упавшая проверка подтверждает дефект проекта. Без проб и проверок QA не подтверждает инфраструктурную причину. |
 | `developer_verification_commands` | список строк | = `verification_commands` | Быстрые проверки developer. Без поля developer гоняет полный gate, а `harness health` предупреждает. |
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
+| `verification_profiles` | список `{paths, developer, review}` | нет | Проверки по области batch. При `batch create` берётся первый профиль, чьи `paths` покрывают все `--allowed-path`; его `developer` и `review` замораживаются в batch вместо двух полей выше. Частичное покрытие или отсутствие ключа — общие списки. Clean-room QA всегда выполняет `verification_commands`. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
 | `approval_policy` | `manual_all` \| `milestone` \| `low_risk` \| `auto` | `manual_all` | Какие report политика принимает без человека (см. ниже). |
 | `auto_retry_min_severity` | `info` \| `warning` \| `error` \| `blocker` | `info` | Порог review findings для автоматического retry. Фиксируется при создании batch; CLI `batch create --auto-retry-min-severity` может переопределить проектное значение. `info` сохраняет прежнее поведение. |
@@ -285,6 +286,8 @@ coordinator проверяет план на своём процессе: реж
    - `verification_commands` — полный gate clean-room QA;
    - `developer_verification_commands` и `review_verification_commands` — быстрые task-scoped
      проверки для developer и code-review;
+   - `verification_profiles` — необязательные проверки по области batch, например для
+     `harness/console/**` и `tests/console/**` только `make lint` и тесты консоли;
    - `qa_preparation` — установка зависимостей перед gate;
    - `qa_environment_probes` и `qa_project_file_checks` — независимые проба окружения и офлайн-проверка
      файлов проекта. Только вместе они позволяют coordinator подтвердить инфраструктурную причину

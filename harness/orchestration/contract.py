@@ -48,6 +48,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "backend_zones",
     "developer_verification_commands",
     "review_verification_commands",
+    "verification_profiles",
     "qa_preparation",
     "qa_environment_probes",
     "qa_project_file_checks",
@@ -227,6 +228,63 @@ def paths_inside(paths: list[str], boundaries: list[str]) -> bool:
     return all(
         any(_inside(path, boundary) for boundary in boundaries) for path in paths
     )
+
+
+VERIFICATION_PROFILE_FIELDS = ("paths", "developer", "review")
+
+
+def verification_profile_problems(value: object) -> list[str]:
+    """Problems of the optional ``verification_profiles`` list; none when the key is absent.
+
+    A profile maps a batch scope (``paths``) to its developer and review commands. Its paths use
+    the canonical form ``paths_inside`` compares, so a profile that cannot match is rejected here.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [
+            "orchestration verification_profiles must be a list of {paths, developer, review} objects when provided"
+        ]
+    problems: list[str] = []
+    for index, profile in enumerate(value):
+        label = f"orchestration verification_profiles[{index}]"
+        if not isinstance(profile, dict):
+            problems.append(
+                f"{label} must be an object with paths, developer and review"
+            )
+            continue
+        extra = sorted(set(profile) - set(VERIFICATION_PROFILE_FIELDS))
+        if extra:
+            problems.append(f"{label} has unknown field(s): {', '.join(extra)}")
+        paths = profile.get("paths")
+        if not (
+            string_list(paths)
+            and paths
+            and all(is_clean_path_pattern(path) for path in paths)
+        ):
+            problems.append(
+                f"{label}.paths must be a non-empty list of repo-relative paths or globs without a leading '/', a backslash, or a '.', '..' or empty segment"
+            )
+        for key in ("developer", "review"):
+            if not string_list(profile.get(key)):
+                problems.append(f"{label}.{key} must be a list of command strings")
+    return problems
+
+
+def verification_profile_for(
+    config: Mapping[str, object], allowed_paths: list[str]
+) -> Mapping[str, object] | None:
+    """The first profile whose paths cover every allowed path of a batch, or none."""
+    profiles = config.get("verification_profiles")
+    if not isinstance(profiles, list):
+        return None
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        paths = profile.get("paths")
+        if string_list(paths) and paths and paths_inside(allowed_paths, paths):
+            return profile
+    return None
 
 
 def low_risk_patterns(config: Mapping[str, object]) -> list[str]:
@@ -1335,6 +1393,7 @@ def configuration_problems(
         problems.append(
             "orchestration review_verification_commands must be a list of strings when provided"
         )
+    problems.extend(verification_profile_problems(config.get("verification_profiles")))
     for qa_key in ("qa_preparation", "qa_environment_probes", "qa_project_file_checks"):
         qa_commands = config.get(qa_key)
         if qa_commands is not None and not string_list(qa_commands):
