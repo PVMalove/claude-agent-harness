@@ -104,6 +104,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `developer_verification_commands` | список строк | = `verification_commands` | Быстрые проверки developer. Без поля developer гоняет полный gate, а `harness health` предупреждает. |
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
 | `verification_profiles` | список `{paths, developer, review}` | нет | Проверки по области batch. При `batch create` берётся первый профиль, чьи `paths` покрывают все `--allowed-path`; его `developer` и `review` замораживаются в batch вместо двух полей выше. Частичное покрытие или отсутствие ключа — общие списки. Clean-room QA всегда выполняет `verification_commands`. |
+| `retry_verification` | `{lint, test_command}` | нет | Проверки developer-retry: команды `lint` и одна команда `test_command` по `related_tests` Context Package (в пределах `max_related_tests`). Первый developer-dispatch, code-review и QA не меняются. Без связанных тестов или без ключа retry выполняет обычные команды developer. Значение замораживается в batch при `batch create`. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
 | `approval_policy` | `manual_all` \| `milestone` \| `low_risk` \| `auto` | `manual_all` | Какие report политика принимает без человека (см. ниже). |
 | `auto_retry_min_severity` | `info` \| `warning` \| `error` \| `blocker` | `info` | Порог review findings для автоматического retry. Фиксируется при создании batch; CLI `batch create --auto-retry-min-severity` может переопределить проектное значение. `info` сохраняет прежнее поведение. |
@@ -288,6 +289,8 @@ coordinator проверяет план на своём процессе: реж
      проверки для developer и code-review;
    - `verification_profiles` — необязательные проверки по области batch, например для
      `harness/console/**` и `tests/console/**` только `make lint` и тесты консоли;
+   - `retry_verification` — необязательные быстрые проверки developer-retry: lint и тесты,
+     связанные с изменёнными файлами; полный набор остаётся за QA;
    - `qa_preparation` — установка зависимостей перед gate;
    - `qa_environment_probes` и `qa_project_file_checks` — независимые проба окружения и офлайн-проверка
      файлов проекта. Только вместе они позволяют coordinator подтвердить инфраструктурную причину

@@ -443,6 +443,9 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         "risk_escalations": [],
         "risk_reassessment_required": False,
     }
+    # Frozen like the command lists, and only when configured: a legacy batch keeps its shape.
+    if isinstance(config.get("retry_verification"), dict):
+        record["retry_verification"] = config["retry_verification"]
     _reject_sensitive(record, "batch")
     _store_runtime_snapshot(
         root, _runtime_snapshot_root(repo).parent, record["harness_runtime_sha256"]
