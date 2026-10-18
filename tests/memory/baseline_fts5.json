@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "engine": "sqlite3 FTS5 bm25, path tie-break",
   "corpus": "Tracked ADRs and CONTEXT.md; excludes task archives and tracker snapshots",
   "k_values": [
@@ -12,7 +12,7 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "a6a0f93a5f83d94a5dc1991b2e581323f7e51f1bd1bf4b2bad18ecbe8943abb6",
   "source_hashes": {
-    "CONTEXT.md": "4cc40d8edeba5f4d6d82d3422833399e93b2788f530907f083038d79f8568b48",
+    "CONTEXT.md": "530a19a9280ad1d8134ed4b923f87c430abc5b4879c0135ec0cd9afd0b37e9f6",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
     "docs/adr/0003-orchestration-core.md": "eba04529bff1e9899409cba2434c2f423e9e29862e96ed16a334ec9b6dbb09bf",
@@ -482,5 +482,6 @@
     ],
     "gate_passed": true
   },
-  "annotation_revision": "Source-grounded multi-label correction; queries, corpus, engine, window and thresholds unchanged. Initial single-label measurement is baseline_fts5_initial.json."
+  "annotation_revision": "Version 2 corrected source-grounded multi-label annotations; version 3 re-evaluates the updated corpus. Initial single-label measurement remains unchanged in baseline_fts5_initial.json.",
+  "corpus_revision": "Issue #635 adds the container executor term to CONTEXT.md. Dataset, engine, windows, thresholds, metrics and ranked paths are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
 }
