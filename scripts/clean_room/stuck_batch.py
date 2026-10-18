@@ -173,7 +173,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
     )
     if (
-        record["state"] != "failed"
+        record["state"] != "abandoned"
         or record["abandoned"]["reason"]
         != "external worker died before the model self-report"
     ):
@@ -212,8 +212,9 @@ def run(ctx: SimpleNamespace) -> None:
         == 0
     ):
         sys.exit("coordinator abandoned a fully closed batch a second time")
-    # Repair case: a batch whose state was moved by hand without closing what it held. The open
-    # dispatch would otherwise be surfaced as live for ever.
+    # A hand-edited terminal record is diagnostic evidence, never a recovery authorization.
+    batch_path = lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json"
+    original = batch_path.read_bytes()
     hand_edited = json.loads(
         (lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json").read_text(
             encoding="utf-8"
@@ -238,20 +239,19 @@ def run(ctx: SimpleNamespace) -> None:
         "--reason",
         "closing a dispatch left open by a hand-edited record",
     )
-    if repaired.returncode != 0:
-        sys.exit(
-            "coordinator cannot close a dispatch left open on a terminal batch: "
-            + repaired.stderr
-        )
+    if repaired.returncode == 0:
+        sys.exit("coordinator changed a hand-edited terminal batch")
     if (
         json.loads(
             (
                 lifecycle_records(wedge_state) / "batches" / f"{wedged_batch}.json"
             ).read_text(encoding="utf-8")
         )["dispatches"][0]["state"]
-        != "abandoned"
+        != "dispatched"
     ):
-        sys.exit("repair did not close the dangling dispatch")
+        sys.exit("terminal refusal rewrote the dangling dispatch")
+    # Restore only this deliberately corrupted test fixture before testing a new batch.
+    batch_path.write_bytes(original)
     # Closing the old batch is what frees the ticket to be started clean.
     sync_origin_base()
     restart = coordinator_run(

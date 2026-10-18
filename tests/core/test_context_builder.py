@@ -26,9 +26,11 @@ from unittest.mock import patch
 import pytest
 
 from harness.context_builder.context_builder import (
+    ContextPackage,
     ContextPackageError,
     _dependency_context,
     _fallback_excerpt,
+    _python_sections,
     _redact_symbols,
     build_context_package,
     estimate_tokens,
@@ -366,6 +368,250 @@ class ContextBuilderTests(ContextBuilderFixture):
         (starting,) = package.starting_files
         self.assertEqual(starting.sections, [])
         self.assertGreaterEqual(package.estimated_tokens, estimate_tokens(guide))
+
+    def _commit_files(self, files: dict[str, str], message: str) -> str:
+        """Закоммитить файлы и вернуть хэш коммита."""
+        for path, text in files.items():
+            _write(self.repo, path, text)
+        _run("add", ".", cwd=self.repo)
+        _run("commit", "-qm", message, cwd=self.repo)
+        return _head(self.repo)
+
+    def _commit_module(self, path: str, text: str, message: str) -> str:
+        """Закоммитить один модуль и вернуть хэш коммита."""
+        return self._commit_files({path: text}, message)
+
+    def _seeded_package(
+        self, snapshot: str, *, section_index_min_tokens: int | None
+    ) -> ContextPackage:
+        """Собрать пакет по одному стартовому файлу `pkg/big.py` из снимка `snapshot`."""
+        return build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["pkg/big.py"],
+            section_index_min_tokens=section_index_min_tokens,
+        )
+
+    @staticmethod
+    def _large_module(functions: int = 60, body_lines: int = 40) -> str:
+        """Собрать большой Python-модуль из функций с длинными телами."""
+        return "import os\n\n\n" + "\n".join(
+            f"def func_{index}():\n"
+            + "".join(
+                f"    value_{line} = os.sep + '{index}'\n" for line in range(body_lines)
+            )
+            + "    return value_0\n\n"
+            for index in range(functions)
+        )
+
+    def test_a_large_python_starting_file_is_seeded_as_a_section_index(self) -> None:
+        """Проверить, что большой Python-файл включается индексом символов, а не целиком."""
+        module = self._large_module()
+        snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
+
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
+
+        (starting,) = package.starting_files
+        self.assertIn("section index", starting.reason)
+        self.assertEqual(starting.sections[0].heading, "module header")
+        lines = module.split("\n")
+        function = starting.sections[1]
+        self.assertEqual(lines[function.start_line - 1], "def func_0():")
+        self.assertIn("pkg/big.py", package.file_hashes)
+        self.assertLess(package.estimated_tokens, estimate_tokens(module) // 10)
+
+    def test_a_python_file_below_the_threshold_keeps_its_full_content(self) -> None:
+        """Проверить, что Python-файл меньше порога остаётся целиком."""
+        module = self._large_module()
+        snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
+
+        package = self._seeded_package(
+            snapshot, section_index_min_tokens=estimate_tokens(module) + 1
+        )
+
+        (starting,) = package.starting_files
+        self.assertEqual(starting.sections, [])
+        self.assertGreaterEqual(package.estimated_tokens, estimate_tokens(module))
+
+    def test_a_python_file_whose_index_costs_more_than_the_file_stays_whole(
+        self,
+    ) -> None:
+        """Проверить, что индекс не применяется, если он дороже самого файла."""
+        # One-line bodies make each index entry (~70 bytes) larger than the function itself.
+        module = self._large_module(functions=1500, body_lines=1)
+        snapshot = self._commit_module("pkg/big.py", module, "feat: add many tiny defs")
+
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
+
+        (starting,) = package.starting_files
+        self.assertEqual(starting.sections, [])
+
+    def _commit_three_modules(self) -> tuple[str, dict[str, str]]:
+        """Закоммитить три модуля разного размера и вернуть коммит и их содержимое."""
+        modules = {
+            "pkg/large.py": self._large_module(functions=40),
+            "pkg/medium.py": self._large_module(functions=30),
+            "pkg/small.py": self._large_module(functions=20),
+        }
+        return self._commit_files(modules, "feat: add three modules"), modules
+
+    def test_a_package_over_budget_indexes_its_heaviest_starting_files_first(
+        self,
+    ) -> None:
+        """Проверить, что нехватка бюджета заменяет индексом самые тяжёлые файлы, а не роняет пакет."""
+        snapshot, modules = self._commit_three_modules()
+        sizes = {path: estimate_tokens(text) for path, text in modules.items()}
+        limit = sizes["pkg/medium.py"] + sizes["pkg/small.py"] + 5_000
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=list(modules),
+            max_package_tokens=limit,
+            section_index_min_tokens=sizes["pkg/large.py"] + 1,
+        )
+
+        indexed = {item.path for item in package.starting_files if item.sections}
+        self.assertEqual(indexed, {"pkg/large.py"})
+        self.assertLessEqual(package.estimated_tokens, limit)
+
+    def test_a_package_within_budget_indexes_nothing_below_the_threshold(self) -> None:
+        """Проверить, что без нехватки бюджета файлы ниже порога остаются целиком."""
+        snapshot, modules = self._commit_three_modules()
+        total = sum(estimate_tokens(text) for text in modules.values())
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=list(modules),
+            max_package_tokens=total + 5_000,
+            section_index_min_tokens=total,
+        )
+
+        self.assertFalse([item for item in package.starting_files if item.sections])
+
+    def test_a_package_over_budget_without_an_index_still_fails_clearly(self) -> None:
+        """Проверить, что файл без индекса не скрывает превышение бюджета: ошибка прежняя."""
+        text = "line of plain text\n" * 2_000
+        snapshot = self._commit_module("notes/big.txt", text, "docs: add big notes")
+
+        with self.assertRaisesRegex(
+            ContextPackageError, r"exceeds max_package_tokens=1000"
+        ):
+            build_context_package(
+                self.repo,
+                snapshot,
+                snapshot,
+                min_starting_files=1,
+                seed_paths=["notes/big.txt"],
+                max_package_tokens=1_000,
+                section_index_min_tokens=100,
+            )
+
+    def test_redact_symbols_does_not_turn_a_large_python_file_back_into_full_content(
+        self,
+    ) -> None:
+        """Проверить, что скрытые символы после def не отключают индекс крупного модуля."""
+        (self.repo / ".harness").mkdir(exist_ok=True)
+        (self.repo / ".harness" / "orchestration.json").write_text(
+            json.dumps({"repo_map_policy": {"redact_symbols": ["func_3"]}}),
+            encoding="utf-8",
+        )
+        module = self._large_module()
+        snapshot = self._commit_module("pkg/big.py", module, "feat: add a big module")
+
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
+
+        (starting,) = package.starting_files
+        self.assertIn(
+            "def [REDACTED-SYMBOL]", [item.heading for item in starting.sections]
+        )
+        self.assertLess(package.estimated_tokens, estimate_tokens(module) // 10)
+
+    def test_a_mirror_copy_stays_a_pointer_when_the_budget_forces_an_index(
+        self,
+    ) -> None:
+        """Проверить, что зеркальная копия при деградации остаётся указателем, а оригинал получает индекс."""
+        module = self._large_module()
+        snapshot = self._commit_files(
+            {"pkg/a.py": module, "pkg/b.py": module}, "feat: add a mirrored module"
+        )
+
+        package = build_context_package(
+            self.repo,
+            snapshot,
+            snapshot,
+            min_starting_files=1,
+            seed_paths=["pkg/a.py", "pkg/b.py"],
+            max_package_tokens=estimate_tokens(module) // 2,
+            section_index_min_tokens=estimate_tokens(module) + 1,
+        )
+
+        by_path = {item.path: item for item in package.starting_files}
+        self.assertTrue(by_path["pkg/a.py"].sections)
+        self.assertEqual(by_path["pkg/b.py"].sections, [])
+        self.assertIn("byte-identical mirror of pkg/a.py", by_path["pkg/b.py"].reason)
+
+    def test_a_large_added_python_file_is_not_saved_by_its_index(self) -> None:
+        """Проверить, что добавленный большой файл по-прежнему упирается в лимит: его текст уже в diff."""
+        before = self._commit_module("pkg/small.py", "VALUE = 1\n", "feat: add small")
+        module = self._large_module()
+        after = self._commit_module("pkg/big.py", module, "feat: add a big module")
+
+        with self.assertRaisesRegex(ContextPackageError, "exceeds max_package_tokens"):
+            build_context_package(
+                self.repo,
+                before,
+                after,
+                min_starting_files=1,
+                max_package_tokens=estimate_tokens(module) // 2,
+                section_index_min_tokens=1_000,
+            )
+
+    def test_a_large_python_file_with_a_syntax_error_stays_whole(self) -> None:
+        """Проверить, что неразбираемый Python-файл остаётся целиком без индекса."""
+        module = self._large_module() + "def broken(:\n"
+        snapshot = self._commit_module(
+            "pkg/big.py", module, "feat: add a broken module"
+        )
+
+        package = self._seeded_package(snapshot, section_index_min_tokens=1_000)
+
+        (starting,) = package.starting_files
+        self.assertEqual(starting.sections, [])
+        self.assertGreaterEqual(package.estimated_tokens, estimate_tokens(module))
+
+    def test_a_changed_large_python_file_fits_the_budget_as_an_index(self) -> None:
+        """Проверить, что изменённый большой модуль не срывает пакет, когда помещается индекс."""
+        module = self._large_module()
+        before = self._commit_module("pkg/big.py", module, "feat: add a big module")
+        after = self._commit_module(
+            "pkg/big.py", module + "def extra():\n    return 1\n", "feat: extend it"
+        )
+        limit = estimate_tokens(module) // 2
+
+        with self.assertRaises(ContextPackageError):
+            build_context_package(
+                self.repo, before, after, min_starting_files=1, max_package_tokens=limit
+            )
+        package = build_context_package(
+            self.repo,
+            before,
+            after,
+            min_starting_files=1,
+            max_package_tokens=limit,
+            section_index_min_tokens=1_000,
+        )
+
+        (starting,) = package.starting_files
+        self.assertTrue(starting.sections)
+        self.assertLessEqual(package.estimated_tokens, limit)
 
     def test_fails_clearly_instead_of_silently_returning_fewer_than_the_minimum_starting_files(
         self,
@@ -851,6 +1097,136 @@ class DependencyContextUnitTests(unittest.TestCase):
         """Проверить, что резервная выдержка контекста ограничена максимум 30 строками."""
         text = "\n".join(str(index) for index in range(40))
         self.assertEqual(_fallback_excerpt(text), [str(index) for index in range(30)])
+
+
+class PythonSectionsTests(unittest.TestCase):
+    """Модульные тесты индекса символов Python-файла для крупных стартовых файлов."""
+
+    SOURCE = "\n".join(
+        [
+            "import os",
+            "",
+            "LIMIT = 3",
+            "",
+            "",
+            "def plain():",
+            "    return 1",
+            "",
+            "",
+            "@decorator",
+            "@other",
+            "async def decorated():",
+            "    return 2",
+            "",
+            "",
+            "class Box:",
+            '    """Doc."""',
+            "",
+            "    def first(self):",
+            "        def inner():",
+            "            return 1",
+            "",
+            "        return inner",
+            "",
+            "    @property",
+            "    async def second(self):",
+            "        return 2",
+            "",
+        ]
+    )
+
+    def test_indexes_the_module_header_definitions_and_methods_with_line_ranges(
+        self,
+    ) -> None:
+        """Проверить заголовок модуля, функции, классы и методы с диапазонами строк."""
+        sections = _python_sections(self.SOURCE)
+
+        self.assertEqual(
+            [
+                (item.heading, item.level, item.start_line, item.end_line)
+                for item in sections
+            ],
+            [
+                ("module header", 1, 1, 5),
+                ("def plain", 1, 6, 7),
+                ("async def decorated", 1, 10, 13),
+                ("class Box", 1, 16, 27),
+                ("def first", 2, 19, 23),
+                ("async def second", 2, 25, 27),
+            ],
+        )
+
+    def test_covers_module_code_between_after_and_inside_blocks_of_definitions(
+        self,
+    ) -> None:
+        """Проверить, что код вне определений (между ними, в хвосте и в блоке if) попадает в индекс."""
+        source = "\n".join(
+            [
+                "import os",
+                "",
+                "def a():",
+                "    return 1",
+                "X = 1",
+                "Y = 2",
+                "def b():",
+                "    return 2",
+                "",
+                "if os.name:",
+                "    def c():",
+                "        return 3",
+                "",
+            ]
+        )
+
+        sections = _python_sections(source)
+
+        self.assertEqual(
+            [(item.heading, item.start_line, item.end_line) for item in sections],
+            [
+                ("module header", 1, 2),
+                ("def a", 3, 4),
+                ("module code", 5, 6),
+                ("def b", 7, 8),
+                ("module code", 9, 12),
+            ],
+        )
+
+    def test_a_redacted_symbol_marker_does_not_break_the_index(self) -> None:
+        """Проверить, что маркер скрытого символа после def, class и import не ломает разбор."""
+        source = "\n".join(
+            [
+                "from pkg import [REDACTED-SYMBOL]",
+                "",
+                "class [REDACTED-SYMBOL]:",
+                "    def [REDACTED-SYMBOL](self):",
+                "        return pkg.[REDACTED-SYMBOL]",
+                "",
+            ]
+        )
+
+        sections = _python_sections(source)
+
+        self.assertEqual(
+            [(item.heading, item.start_line, item.end_line) for item in sections],
+            [
+                ("module header", 1, 2),
+                ("class [REDACTED-SYMBOL]", 3, 5),
+                ("def [REDACTED-SYMBOL]", 4, 5),
+            ],
+        )
+
+    def test_a_file_that_starts_with_a_definition_has_no_module_header(self) -> None:
+        """Проверить, что без кода перед первым определением заголовок модуля не добавляется."""
+        sections = _python_sections("def only():\n    return 1\n")
+
+        self.assertEqual([item.heading for item in sections], ["def only"])
+
+    def test_invalid_empty_or_definition_free_python_has_no_index(self) -> None:
+        """Проверить, что синтаксическая ошибка, пустой файл и файл без определений дают пустой индекс."""
+        self.assertEqual(_python_sections("def broken(:\n    pass\n"), [])
+        self.assertEqual(_python_sections("x = 1\0\n"), [])
+        self.assertEqual(_python_sections(""), [])
+        self.assertEqual(_python_sections("LIMIT = 3\nNAME = 'x'\n"), [])
 
 
 class GuardHotPathTests(unittest.TestCase):

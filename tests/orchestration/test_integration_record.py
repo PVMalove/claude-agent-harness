@@ -310,36 +310,17 @@ class PublishedBranch:
         }
 
     def _follow_up_candidate(self, batch_id: str, name: str) -> str:
-        """The developer of a follow-up batch: its base is the integration tip, so its report maps
-        the already published commits of the branch together with the new one."""
+        """The developer of a follow-up batch: it starts on the already published branch, so its
+        report lists and maps only its own commit (issue #686)."""
         fx = self.fixture
         brief = fx._dispatch(batch_id, "developer")["brief"]
         fx._start(brief["dispatch_id"])
-        candidate, changed = fx._developer_commit(name)
-        base = fx._batch_record(batch_id)["base_commit"]
-        created = _git(
-            fx.worktree, "rev-list", "--reverse", f"{base}..{candidate}"
-        ).splitlines()
+        candidate, _ = fx._developer_commit(name)
+        changed = git_utils._changed_files_between(
+            self.repo, fx._batch_record(batch_id)["branch_start_commit"], candidate
+        )
         fx._submit(
-            brief["dispatch_id"],
-            fx._developer_report(
-                brief,
-                candidate,
-                changed,
-                commit_map=[
-                    {"commit_sha": sha, "plan_entry_id": entry["id"]}
-                    for sha in created
-                    for entry in brief["commit_plan"]
-                ],
-                dod_coverage=[
-                    {"dod_item": item, "commits": [candidate]}
-                    for item in range(1, len(brief["definition_of_done"]) + 1)
-                ],
-                divergence_justification=(
-                    "the branch already holds the published commits of the earlier batch; "
-                    "the follow-up fix is the last commit"
-                ),
-            ),
+            brief["dispatch_id"], fx._developer_report(brief, candidate, changed)
         )
         fx._decide(batch_id, "accept")
         fx._assess(batch_id, candidate, changed)
@@ -738,6 +719,12 @@ class IntegrationEvidenceLinkTests(unittest.TestCase):
         invalid: list[JsonObject] = [
             {"kind": "manual"},
             {"result": "ok"},
+            {"result": " passed "},
+            {"result": "Passed"},
+            {"result": "pass"},
+            {"result": "пройдено"},
+            {"result": None},
+            {"result": []},
             {"candidate_commit": "abc123"},
             {"candidate_commit": "A" * 40},
             {"target_commit": "g" * 40},
@@ -765,6 +752,22 @@ class IntegrationEvidenceLinkTests(unittest.TestCase):
             self.link()
         self.assertIn("integrity", raised.exception.message)
         self.assertEqual(self.evidence_files(), [])
+
+    def test_a_stored_result_alias_is_refused_on_status_read(self) -> None:
+        linked = self.link()
+        path = (
+            self.branch.records()
+            / "reports/integration-evidence"
+            / f"{linked['evidence_id']}.json"
+        )
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["result"] = "pass"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        before = path.read_bytes()
+        with self.assertRaises(CoordinatorError) as raised:
+            coordinator.integration_status(self.branch.args(record=self.record_id))
+        self.assertIn("passed", raised.exception.remedy)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_the_public_cli_group_reaches_link_evidence(self) -> None:
         parsed = coordinator.parser().parse_args(

@@ -462,8 +462,8 @@ def run(ctx: SimpleNamespace) -> None:
         "changed_files": [],
         # The architect owns no verification gate: its brief approves no commands to report.
         "checks_run": [],
-        "risks": "none",
-        "blockers": "none",
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "accept and dispatch the developer",
         "report_language": "ru",
     }
@@ -679,8 +679,8 @@ def run(ctx: SimpleNamespace) -> None:
                 "evidence": "1 passed",
             }
         ],
-        "risks": "none",
-        "blockers": "none",
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "accept",
         "report_language": "ru",
         "risk_triggers": ["authorization-security"],
@@ -846,7 +846,26 @@ def run(ctx: SimpleNamespace) -> None:
         ["git", "checkout", "-q", candidate_sha], cwd=mismatched_checkout, check=True
     )
 
-    mutable_file = orchestration_project / "services" / "unreviewed.tmp"
+    # A matching candidate SHA in the coordinator checkout is not a valid worker checkout.
+    main_checkout = coordinator_run(
+        "dispatch",
+        "send",
+        "--dispatch",
+        review_id,
+        "--adapter",
+        str(fake_adapter),
+        "--checkout",
+        str(orchestration_project),
+        "--worktree",
+        str(orchestration_project),
+    )
+    if main_checkout.returncode == 0 or fake_adapter_log.exists():
+        sys.exit("coordinator handed a review worker the main checkout")
+
+    run_step(
+        ["git", "checkout", "--detach", candidate_sha], cwd=shared_worktree, check=True
+    )
+    mutable_file = shared_worktree / "services" / "unreviewed.tmp"
     mutable_file.write_text("outside the pinned commit\n", encoding="utf-8")
     if (
         coordinator_run(
@@ -857,7 +876,7 @@ def run(ctx: SimpleNamespace) -> None:
             "--adapter",
             str(fake_adapter),
             "--checkout",
-            str(orchestration_project),
+            str(shared_worktree),
         ).returncode
         == 0
     ):
@@ -876,7 +895,7 @@ def run(ctx: SimpleNamespace) -> None:
         "--adapter",
         str(fake_adapter),
         "--checkout",
-        str(orchestration_project),
+        str(shared_worktree),
     )
     if review_sent.returncode != 0:
         sys.exit(
@@ -899,8 +918,11 @@ def run(ctx: SimpleNamespace) -> None:
                 "evidence": "review scope inspected",
             }
         ],
-        "risks": "standards warning requires coordinator decision",
-        "blockers": "none",
+        "risks": {
+            "status": "present",
+            "details": "standards warning requires coordinator decision",
+        },
+        "blockers": {"status": "none", "details": ""},
         "next_coordinator_action": "override-warning or retry",
         "report_language": "ru",
         "review": {
@@ -915,14 +937,14 @@ def run(ctx: SimpleNamespace) -> None:
                         "summary": "style warning",
                     }
                 ],
-                "risks": "style risk",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "style risk"},
+                "blockers": {"status": "none", "details": ""},
             },
             "spec": {
                 "severity": "clean",
                 "findings": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
             },
         },
     }

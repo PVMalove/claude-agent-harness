@@ -228,6 +228,7 @@ class TokenControlTests(unittest.TestCase):
         batch_id = "batch-372-abc"
         legacy_fields = {
             "batch_id": batch_id,
+            "state": "planned",
             "created_at": "2026-01-01T00:00:00+00:00",
             "base_commit": "a" * 40,
             "integration_ref": "main",
@@ -263,6 +264,7 @@ class TokenControlTests(unittest.TestCase):
         batch_id = "batch-372-abc"
         legacy_fields = {
             "batch_id": batch_id,
+            "state": "planned",
             "created_at": "2026-01-01T00:00:00+00:00",
             "base_commit": "a" * 40,
             "integration_ref": "main",

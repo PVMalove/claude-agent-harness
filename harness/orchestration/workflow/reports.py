@@ -20,6 +20,8 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.contract import NO_GATE_WORK_ROLES
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
+from harness.orchestration.core.check_results import parse_check_result
+from harness.orchestration.core.report_evidence import evidence_text, validate_evidence
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _context_advisory,
@@ -51,6 +53,7 @@ from harness.orchestration.core.constants import (
     QA_STAGES_FIELDS,
     QA_STAGES_OPTIONAL_FIELDS,
     RATE_LIMIT_TERMINATION_REASONS,
+    REPORT_CHECK_RESULTS,
     REPORT_FIELDS,
     REPORT_OPTIONAL_FIELDS,
     REPORT_OUTCOMES,
@@ -102,6 +105,7 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.runtime_attestation import (
     AttestationError,
+    requires_attestation,
 )
 from harness.orchestration.runtime_attestation import (
     attest as attest_runtime_worktree,
@@ -137,10 +141,13 @@ def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]
         decision
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("dispatch_id") == dispatch_id
-        and decision.get("decision") in {"continue", "continue-automatic"}
+        and decision.get("decision")
+        in {"continue", "continue-automatic", "continue-rate-limit"}
     ]
     automatic = sum(
-        1 for decision in decisions if decision.get("decision") == "continue-automatic"
+        1
+        for decision in decisions
+        if decision.get("decision") in {"continue-automatic", "continue-rate-limit"}
     )
     return len(decisions), automatic
 
@@ -161,11 +168,22 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, args.dispatch)
+        progress = dispatch.get("preserved_progress")
+        if (
+            progress is not None
+            and not status.get("model_self_report")
+            and status.get("last_event") != "resumed"
+        ):
+            from harness.orchestration.workflow import preserved_progress
+
+            batch = _load_batch(root, dispatch["batch_id"])
+            _validate_batch_integrity(root, batch)
+            preserved_progress.require_current(repo, root, batch, progress)
         expected = dispatch["resolved_model"]
         model_matched = reported == expected
         attestation: JsonObject | None = None
         worktree_matched = True
-        if dispatch.get("worker_attestation_required", False):
+        if requires_attestation(dispatch):
             supplied_worktree = getattr(args, "worktree", None)
             if not _non_empty(supplied_worktree):
                 worktree_matched = False
@@ -175,17 +193,36 @@ def self_report_dispatch(args: argparse.Namespace) -> JsonObject:
                 }
             else:
                 try:
-                    startup = dispatch
+                    startup = {
+                        **dispatch,
+                        **(
+                            {"worker_worktree": status["worker_worktree"]}
+                            if status.get("worker_worktree")
+                            else {}
+                        ),
+                    }
                     if status.get("last_event") == "resumed":
                         batch = _load_batch(root, dispatch["batch_id"])
                         _validate_batch_integrity(root, batch)
-                        checkpoint = _latest_checkpoint_for_dispatch(
-                            root, batch, dispatch["dispatch_id"]
-                        )
+                        if any(
+                            c["dispatch_id"] == dispatch["dispatch_id"]
+                            for c in batch.get("checkpoints", [])
+                        ):
+                            checkpoint = _latest_checkpoint_for_dispatch(
+                                root, batch, dispatch["dispatch_id"]
+                            )
+                        else:
+                            from harness.orchestration.workflow import (
+                                startup as startup_evidence,
+                            )
+
+                            checkpoint = startup_evidence.recorded(
+                                root, batch, dispatch["dispatch_id"]
+                            )
                         # The approved continuation starts at recorded progress. Keep the
                         # original snapshot for the full dispatch's commit-plan evidence.
                         startup = {
-                            **dispatch,
+                            **startup,
                             "snapshot_commit": checkpoint["commit_sha"],
                         }
                     attestation = {
@@ -312,13 +349,35 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
-        _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if (
+            entry
+            and entry.get("state") == "rate_limited"
+            and status.get("state") == "rate_limited"
+        ):
+            return {
+                "dispatch_id": dispatch["dispatch_id"],
+                "event": "rate_limited",
+                "retry_not_before": status["retry_not_before"],
+            }
+        has_checkpoint = any(
+            c["dispatch_id"] == dispatch["dispatch_id"]
+            for c in batch.get("checkpoints", [])
+        )
+        startup_point = None
+        if has_checkpoint:
+            _latest_checkpoint_for_dispatch(root, batch, dispatch["dispatch_id"])
+        else:
+            from harness.orchestration.workflow import startup
+
+            startup_point = startup.point(repo, root, batch, dispatch)
+        if (
             not entry
-            or entry.get("state") != "checkpointed"
-            or status.get("state") != "checkpointed"
+            or entry.get("state")
+            not in ({"checkpointed"} if has_checkpoint else {"dispatched"})
+            or status.get("state")
+            not in ({"checkpointed"} if has_checkpoint else {"dispatched", "working"})
         ):
             raise CoordinatorError(
                 "rate_limited requires a checkpointed write dispatch",
@@ -336,6 +395,10 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
             }
         )
         entry["state"] = "rate_limited"
+        if startup_point is not None and startup_point not in batch.get(
+            "startup_evidence", []
+        ):
+            batch.setdefault("startup_evidence", []).append(startup_point)
         batch.setdefault("liveness_events", []).append(
             {
                 "dispatch_id": dispatch["dispatch_id"],
@@ -347,7 +410,13 @@ def rate_limited_dispatch(args: argparse.Namespace) -> JsonObject:
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(ledger, DispatchStatusRecord.from_dict(status))
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        _replace_record(
+            ledger,
+            BatchRecord.from_dict(batch),
+            decision=startup.audit(startup_point)
+            if startup_point is not None
+            else None,
+        )
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "event": "rate_limited",
@@ -448,11 +517,7 @@ def _validate_checkpoint(
             remedy="only checkpoint a write role; a read-only role completes in a single worker session",
         )
     for field in ("risks", "blockers"):
-        if not _non_empty(checkpoint[field]):
-            raise CoordinatorError(
-                f"checkpoint {field} must be a non-empty string",
-                remedy=f"set checkpoint {field} to a non-empty string",
-            )
+        validate_evidence(checkpoint[field], f"checkpoint {field}")
     commit_sha = checkpoint["commit_sha"]
     if (
         not isinstance(commit_sha, str)
@@ -728,6 +793,7 @@ def _check_continuation_facts_unchanged(
             remedy="the continuation facts dispatch_id does not match the dispatched role -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    validate_evidence(facts["risks"], "continuation facts risks")
     unchanged = (
         facts["remaining_definition_of_done"]
         == checkpoint["remaining_definition_of_done"]
@@ -744,7 +810,7 @@ def _check_continuation_facts_unchanged(
 
 
 def resume_dispatch(args: argparse.Namespace) -> JsonObject:
-    """Start a new worker session for a checkpointed dispatch, under the same dispatch ID.
+    """Start a new worker session at a checkpoint or proven startup SHA, under the same ID.
 
     The resumed session is put through the exact same liveness contract as a first session: its
     prior model self-report is discarded, so `dispatch self-report` and `dispatch heartbeat` are
@@ -767,6 +833,11 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
         _validate_batch_integrity(root, batch)
+        if batch["state"] in {"paused", "blocked", "failed"}:
+            raise CoordinatorError(
+                "batch stop must be recovered before continuing a session",
+                remedy="use human batch resume-stop or batch rewind before dispatch resume",
+            )
         config = core_config._config(repo)
         _validate_dispatch(repo, config, root, batch, dispatch)
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
@@ -776,14 +847,36 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
             and entry.get("state") == "rate_limited"
             and status.get("state") == "rate_limited"
         )
+        startup_restart = (
+            getattr(args, "trigger", None) == "startup-failure"
+            and entry is not None
+            and entry.get("state") == "dispatched"
+            and status.get("state") in LIVE_DISPATCH_STATES
+            and not (
+                status.get("last_event") == "resumed"
+                and not status.get("model_self_report")
+            )
+            and not any(
+                c["dispatch_id"] == dispatch["dispatch_id"]
+                for c in batch.get("checkpoints", [])
+            )
+        )
         if (
             not entry
-            or (entry.get("state") != "checkpointed" and not resumable_rate_limit)
-            or (status.get("state") != "checkpointed" and not resumable_rate_limit)
+            or (
+                entry.get("state") != "checkpointed"
+                and not resumable_rate_limit
+                and not startup_restart
+            )
+            or (
+                status.get("state") != "checkpointed"
+                and not resumable_rate_limit
+                and not startup_restart
+            )
         ):
             raise CoordinatorError(
                 "only a checkpointed or rate-limited dispatch may start a new worker session",
-                remedy="only start a new worker session for a checkpointed or rate-limited dispatch",
+                remedy="use a recorded checkpoint or 429; before the first checkpoint, --trigger startup-failure requires --runtime-stopped, unchanged facts and human approval",
             )
         continuation_policy = _continuation_policy(config)
         continuation_count, rate_limit_count = _continuation_counts(
@@ -794,7 +887,13 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                 "continuation budget is exhausted for this dispatch; submit a final report or block for a new scoped batch",
                 remedy="submit a final completion report, or block this batch for a new, newly scoped batch",
             )
-        if termination_reason in RATE_LIMIT_TERMINATION_REASONS:
+        startup_point = None
+        if startup_restart:
+            from harness.orchestration.workflow import startup
+
+            authorization = startup.restart_authorization(dispatch, args)
+            startup_point = startup.point(repo, root, batch, dispatch)
+        elif termination_reason in RATE_LIMIT_TERMINATION_REASONS:
             if rate_limit_count >= continuation_policy["max_rate_limit_resumes"]:
                 raise CoordinatorError(
                     "automatic rate-limit resume budget is exhausted; require a newly scoped batch instead of looping",
@@ -809,6 +908,20 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                     remedy="wait for the recorded retry-after window to elapse before resuming",
                 )
             authorization = _authorize_rate_limit_continuation(termination_reason)
+            if batch.get("auto_stop") or batch.get("manual_recovery"):
+                authorization = {
+                    "decision": "continue-rate-limit",
+                    **_approval(args),
+                    "note": f"human-approved termination_reason={termination_reason} after recovery",
+                }
+            if not any(
+                c["dispatch_id"] == dispatch["dispatch_id"]
+                for c in batch.get("checkpoints", [])
+            ):
+                from harness.orchestration.workflow import startup
+
+                startup.recorded(root, batch, dispatch["dispatch_id"])
+                startup.point(repo, root, batch, dispatch)
         else:
             if _non_empty(args.trigger) and args.trigger.strip() == "human-decision":
                 # The answer to the options a resolver listed is its own audit event; the same
@@ -844,6 +957,10 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                     moment=authorization["approved_at"],
                 )
         entry["state"] = "dispatched"
+        if startup_point is not None and startup_point not in batch.get(
+            "startup_evidence", []
+        ):
+            batch.setdefault("startup_evidence", []).append(startup_point)
         batch.setdefault("coordinator_decisions", []).append(
             {
                 "dispatch_id": dispatch["dispatch_id"],
@@ -851,7 +968,13 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
             }
         )
         _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        _replace_record(
+            ledger,
+            BatchRecord.from_dict(batch),
+            decision=startup.audit(startup_point)
+            if startup_point is not None
+            else None,
+        )
         moment = utils._now()
         _safe_id(dispatch["dispatch_id"], "dispatch")
         _replace_record(
@@ -863,6 +986,11 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
                     "updated_at": moment,
                     "heartbeat_at": moment,
                     "last_event": "resumed",
+                    **(
+                        {"worker_worktree": status["worker_worktree"]}
+                        if status.get("worker_worktree")
+                        else {}
+                    ),
                 }
             ),
         )
@@ -939,15 +1067,21 @@ def _persist_report(
 
 def _validate_review(review: object, dispatch: JsonObject) -> None:
     # ``carried_items`` (issue #499) is optional: the review's account of the brief's carried items.
-    if not isinstance(review, dict) or set(review) - {"carried_items"} != {
-        "candidate_commit",
-        "scope",
-        "standards",
-        "spec",
-    }:
+    if not isinstance(review, dict) or set(review) - {
+        "carried_items",
+        "recommendation",
+    } != {"candidate_commit", "scope", "standards", "spec"}:
         raise CoordinatorError(
             "composite review must contain independent standards and spec evidence",
             remedy="submit composite review evidence with independent standards and spec findings",
+        )
+    if review.get("recommendation") is not None and review["recommendation"] not in (
+        "accept",
+        "retry",
+    ):
+        raise CoordinatorError(
+            "composite review recommendation must be accept or retry",
+            remedy="set review.recommendation to accept or retry",
         )
     if (
         review["candidate_commit"] != dispatch["candidate_commit"]
@@ -983,13 +1117,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
                     f"composite review {axis} must reference the prior review as evidence",
                     remedy=f"composite review {axis} must cite the prior review as evidence for a delta-review",
                 )
-            if not _non_empty(evidence["risks"]) or not _non_empty(
-                evidence["blockers"]
-            ):
-                raise CoordinatorError(
-                    f"composite review {axis} must state risks and blockers",
-                    remedy=f"composite review {axis} must state its risks and blockers explicitly",
-                )
+            for field in ("risks", "blockers"):
+                validate_evidence(evidence[field], f"composite review {axis} {field}")
             continue
         if evidence["severity"] not in REVIEW_SEVERITIES:
             raise CoordinatorError(
@@ -1033,11 +1162,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
                 f"composite review {axis} hides a warning finding",
                 remedy=f"composite review {axis} must disclose every warning finding, not hide it",
             )
-        if not _non_empty(evidence["risks"]) or not _non_empty(evidence["blockers"]):
-            raise CoordinatorError(
-                f"composite review {axis} must state risks and blockers",
-                remedy=f"composite review {axis} must state its risks and blockers explicitly",
-            )
+        for field in ("risks", "blockers"):
+            validate_evidence(evidence[field], f"composite review {axis} {field}")
     carried_items.validate_review_accounting(review, dispatch)
 
 
@@ -1199,7 +1325,7 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
     """Shape and consistency of a QA report's ``qa_stages`` against its checks and outcome (issue #618).
 
     The stage list is the evidence: its gate entries must be the leading approved verification
-    commands with the same results as ``checks_run``, every later command is ``not-run``, and the
+    commands with the same results as ``checks_run``, every later command is ``not_run``, and the
     failed stage, the code-check fact, the diagnosis and the outcome must follow from the entries.
     """
     if "qa_stages" not in report:
@@ -1312,9 +1438,11 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
     expected = [(entry["command"], entry["result"]) for entry in gate] + [
         (command, QA_NOT_RUN_RESULT) for command in approved[len(gate) :]
     ]
-    if [(check["command"], check["result"]) for check in checks] != expected:
+    if [
+        (check["command"], parse_check_result(check["result"])) for check in checks
+    ] != expected:
         raise refuse(
-            "does not agree with checks_run (a command never reached is not-run)"
+            "does not agree with checks_run (a command never reached is not_run)"
         )
     if failed_stage is None:
         expected_outcome = "completed"
@@ -1382,19 +1510,24 @@ def _validate_report(
                 f"completion report {field} does not match the approved dispatch",
                 remedy=f"resubmit completion report {field} matching the approved dispatch",
             )
-    if report["outcome"] not in REPORT_OUTCOMES:
+    if (
+        not isinstance(report["outcome"], str)
+        or report["outcome"] not in REPORT_OUTCOMES
+    ):
         raise CoordinatorError(
             "completion report outcome is invalid",
-            remedy="set outcome to one of the accepted completion-report outcomes",
+            remedy=f"set outcome to an exact English enum value: {', '.join(sorted(REPORT_OUTCOMES))}",
         )
     _validate_tooling_blocker(report, dispatch)
     _validate_incomplete_items(report, role)
-    for field in ("output", "risks", "blockers", "next_coordinator_action"):
+    for field in ("output", "next_coordinator_action"):
         if not _non_empty(report[field]):
             raise CoordinatorError(
                 f"completion report {field} must be a non-empty string",
                 remedy=f"set completion report {field} to a non-empty string",
             )
+    for field in ("risks", "blockers"):
+        validate_evidence(report[field], f"completion report {field}")
     changed_files = _strings(
         report["changed_files"], "completion report changed_files", allow_empty=True
     )
@@ -1409,7 +1542,7 @@ def _validate_report(
             "completion report checks_run must be a non-empty list",
             remedy="set checks_run to a non-empty list",
         )
-    for check in checks:
+    for position, check in enumerate(checks):
         if not isinstance(check, dict) or set(check) != {
             "command",
             "result",
@@ -1425,6 +1558,17 @@ def _validate_report(
             raise CoordinatorError(
                 "completion report checks_run entries must contain text evidence",
                 remedy="each checks_run entry must contain text evidence of the check result",
+            )
+        allowed_results = REPORT_CHECK_RESULTS
+        if parse_check_result(check["result"]) not in allowed_results:
+            raise CoordinatorError(
+                f"completion report checks_run[{position}].result is invalid "
+                f"({check['result']!r}) for command {check['command']!r}",
+                remedy=f"set checks_run[{position}].result to one of: "
+                f"{', '.join(sorted(allowed_results))}; use pass only if the evidence "
+                "confirms the command passed, fail if it failed, "
+                "or not_run if it was not executed; aliases and translated values are invalid; "
+                "correct the staging report and submit it again",
             )
         if len(check["evidence"]) > MAX_CHECK_EVIDENCE_CHARS:
             raise CoordinatorError(
@@ -1569,8 +1713,8 @@ def _report_markdown(report: JsonObject) -> str:
         )
     lines.extend(
         [
-            f"- Risks: {report['risks']}",
-            f"- Blockers: {report['blockers']}",
+            f"- Risks: {evidence_text(report['risks'])}",
+            f"- Blockers: {evidence_text(report['blockers'])}",
             f"- Next coordinator action: {report['next_coordinator_action']}",
         ]
     )
@@ -1628,8 +1772,8 @@ def _report_markdown(report: JsonObject) -> str:
                 [
                     f"- Review {axis.title()} severity: {evidence['severity']}",
                     f"- Review {axis.title()} findings: {len(evidence['findings'])}",
-                    f"- Review {axis.title()} risks: {evidence['risks']}",
-                    f"- Review {axis.title()} blockers: {evidence['blockers']}",
+                    f"- Review {axis.title()} risks: {evidence_text(evidence['risks'])}",
+                    f"- Review {axis.title()} blockers: {evidence_text(evidence['blockers'])}",
                 ]
             )
             if "inherited_from" in evidence:
@@ -1681,7 +1825,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 remedy="pass --model naming the model actually running this session before reporting",
             )
         if (
-            dispatch.get("worker_attestation_required", False)
+            requires_attestation(dispatch)
             and status.get("worktree_attestation", {}).get("match") is not True
         ):
             raise CoordinatorError(

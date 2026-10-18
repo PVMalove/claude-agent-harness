@@ -27,6 +27,9 @@ from typing import cast
 # `harness/`. Alias `harness` to whichever of the two this file actually lives under so
 # `from harness...` resolves the same way in both places. See docs/adr/0001.
 _HARNESS_ROOT: Path = Path(__file__).resolve().parents[1]
+if __name__ == "__main__" or _HARNESS_ROOT.name != "harness":
+    # Installed runtime imports are read-only operations; lazy imports must not dirty checkouts.
+    sys.dont_write_bytecode = True
 _REPO_ROOT: Path = _HARNESS_ROOT.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -85,8 +88,13 @@ from harness.orchestration.workflow.reports import _validate_report as _validate
 from harness.orchestration.infrastructure_retry import (
     retry_infrastructure_dispatch as retry_infrastructure_dispatch,
 )
+from harness.orchestration.ledger.lifecycle import set_lock_operation
 from harness.orchestration.ledger.ledger_admin import clean_ledger as clean_ledger
+from harness.orchestration.ledger.ledger_admin import (
+    ledger_lock_status as ledger_lock_status,
+)
 from harness.orchestration.ledger.ledger_admin import ledger_status as ledger_status
+from harness.orchestration.ledger.ledger_admin import validate_ledger as validate_ledger
 from harness.orchestration.ledger.ledger_admin import migrate_ledger as migrate_ledger
 from harness.orchestration.ledger.ledger_admin import (
     release_ledger_lock as release_ledger_lock,
@@ -110,6 +118,10 @@ from harness.orchestration.workflow.batch import (
 )
 from harness.orchestration.workflow.batch import preflight_batch as preflight_batch
 from harness.orchestration.workflow.batch import resume_batch as resume_batch
+from harness.orchestration.workflow.recovery import (
+    resume_stopped_batch as resume_stopped_batch,
+)
+from harness.orchestration.workflow.recovery import rewind_batch as rewind_batch
 from harness.orchestration.workflow.carried_items import (
     carry_over_findings as carry_over_findings,
 )
@@ -121,6 +133,9 @@ from harness.orchestration.workflow.decisions import decide_batch as decide_batc
 from harness.orchestration.workflow.decisions import decision_packet as decision_packet
 from harness.orchestration.workflow.delivery import dispatch_status as dispatch_status
 from harness.orchestration.workflow.delivery import publish_dispatch as publish_dispatch
+from harness.orchestration.workflow.delivery import (
+    probe_dispatch_runtime as probe_dispatch_runtime,
+)
 from harness.orchestration.workflow.delivery import send_dispatch as send_dispatch
 from harness.orchestration.workflow.delivery import wait_dispatch as wait_dispatch
 from harness.orchestration.workflow.dispatch import cancel_dispatch as cancel_dispatch
@@ -204,6 +219,10 @@ def main() -> int:
         except (AttributeError, OSError):
             pass
     args: argparse.Namespace = parser().parse_args()
+    # The lock owner record names the command, so `ledger lock-status` can say what holds it.
+    command = getattr(args, "command", None)
+    subcommand = getattr(args, f"{command}_command", None) if command else None
+    set_lock_operation(" ".join(str(part) for part in (command, subcommand) if part))
     try:
         pinned = pinned_runtime_command(args)
         if pinned is not None:

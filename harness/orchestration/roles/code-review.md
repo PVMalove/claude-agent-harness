@@ -63,7 +63,7 @@ candidate) or `qa`.
 
 When the approved verification cannot run at all (unavailable Bash/WSL wrapper, transport failure,
 rate limit, context limit), report `outcome: blocked` with empty `findings` and severity `none` on
-both axes, and state the operational cause in `blockers`. Never invent a finding to explain an
+both axes, and state `blockers.status: present` and the operational cause in `blockers.details`. Never invent a finding to explain an
 infrastructure stop: the coordinator routes such a report to a new review of the same candidate, and
 routes any finding, warning or blocker severity to a developer retry.
 
@@ -74,6 +74,12 @@ The completion report records the fixed diff and originating requirement as evid
 separate Standards and Spec findings with severity, residual risks, and blockers. The two reports
 remain independent rather than being collapsed into one score. The completion report records no
 production changes and no integration action for this read-only role.
+
+Set `review.recommendation` to `accept` or `retry`. Use `accept` when the reviewed candidate meets
+the required gates and its remaining findings do not require another developer pass; use `retry`
+when the candidate needs a fix. The coordinator records every finding in the report. Its configured
+`auto_retry_min_severity` decides which severities cause an automatic retry, and never removes
+lower-severity findings from the ledger.
 
 For every approved verification command, run the installed bounded wrapper. A code-review work
 brief may carry the project's focused `review_verification_commands`; this is independent proof,

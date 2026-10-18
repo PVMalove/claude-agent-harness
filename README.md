@@ -37,7 +37,7 @@ CONTEXT.md определяет архитектурные термины. По�
 к исходному репозиторию; установщик их не переносит. Установщик устанавливает проектные руководства,
 hooks, агентов и конфигурацию из отдельных шаблонов `harness/project/`.
 
-В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
+В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 [![Граница исходного харнесса и целевого проекта](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
 
@@ -78,6 +78,7 @@ reports. Tree-sitter parser работает в отдельном worker-про
 | [`ask-matt`](./docs/skills/ask-matt.md) | Определяет скилл или сценарий, подходящий для ситуации; маршрутизатор по установленным скиллам. |
 | [`architect`](./docs/skills/architect.md#интерактивный-скилл-architect) | Вручную сравнивает архитектурные варианты и прецеденты, возвращает brief решения; при включённой памяти использует read-only поиск. |
 | [`diagnosing-bugs`](./docs/skills/diagnosing-bugs.md) | Диагностирует сложные дефекты и регрессии; при включённой памяти ищет прошлые фиксы перед проверкой гипотез. |
+| [`tdd`](./docs/skills/tdd.md) | Разработка через тесты с Refactor после Green; правила тестов общие для developer и тест-автора. |
 | [`grilling`](./docs/skills/grilling.md) | Базовый механизм интервью: последовательно уточняет план, решение или идею до выявления пробелов. |
 | [`grill-me`](./docs/skills/grill-me.md) | Интервью для уточнения плана или дизайна. |
 | [`grill-with-docs`](./docs/skills/grill-with-docs.md) | Интервью с ведением ADR и глоссария по ходу обсуждения. |
@@ -115,7 +116,7 @@ reports. Tree-sitter parser работает в отдельном worker-про
 | [`research`](./docs/skills/vendor/research.md) | Исследует вопрос по первоисточникам и сохраняет выводы Markdown-файлом в репозитории. |
 | [`resolving-merge-conflicts`](./docs/skills/vendor/resolving-merge-conflicts.md) | Разрешает конфликты незавершённого merge или rebase. |
 | [`setup-matt-pocock-skills`](./docs/skills/vendor/setup-matt-pocock-skills.md) | Однократно настраивает репозиторий для инженерных скиллов: трекер, метки, структуру доменных документов. |
-| [`tdd`](./docs/skills/vendor/tdd.md) | Разработка через тестирование: red-green-refactor и интеграционные тесты. |
+| [`tdd`](./docs/skills/vendor/tdd.md)* | Разработка через тестирование: red-green-refactor и интеграционные тесты. |
 | [`teach`](./docs/skills/vendor/teach.md) | Объясняет пользователю новый навык или понятие в рабочем пространстве. |
 | [`to-questionnaire`](./docs/skills/vendor/to-questionnaire.md) | Преобразует вопрос, требующий внешнего ответа, в опросник для другого участника. |
 | [`to-spec`](./docs/skills/vendor/to-spec.md)* | Формирует спецификацию по итогам обсуждения и публикует её в трекер. |
@@ -187,7 +188,7 @@ snapshot, `harness update` обновляет его и сохраняет ло�
 `.harness/docs/project-memory.md` (контракт интерактивного поиска по памяти) и
 `.harness/docs/technical-english.md`, а при `pvmalove-suite` и `backend-orchestration` ещё и шаблоны
 проектных руководств из `harness/project/docs-agents/`, которые разворачиваются как
-`docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`. `harness update`
+`docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`. `harness update`
 обновляет эти файлы. Для существующего проекта следуйте
 [инструкции обновления и включения памяти](./docs/harness-guide.md#обновление-существующего-проекта-и-включение-памяти):
 обновление сохраняет `project.json`, поэтому schema и opt-in поля памяти нужно перенести отдельно.
@@ -255,22 +256,38 @@ python3 harness/bin/harness.py console /path/to/repository
 запуске загружается `textual`, поэтому требуется доступ к сети. При отсутствии `uv` или сети пульт
 выводит причину и текстовый отчёт `harness health`.
 
-Пульт оформлен терракотовыми и янтарными акцентами на графитовом фоне с тонкими скруглёнными
-рамками. На главном экране — знак харнесса и сведения об установке: версия, capability, путь
-репозитория и ветка. Ниже расположен дашборд со счётчиками проверок, числом открытых batch
-оркестрации, уровнем Repo Map, версией харнесса и состоянием дрейфа snapshot; действие
-«Online checks» пересчитывает счётчики с `--online`. Разделы меню:
+Пульт оформлен терракотовыми и янтарными акцентами на графитовом фоне: каждый блок экрана лежит
+в тонкой скруглённой рамке. Верхняя строка показывает версию консоли, путь «Главная › раздел», ветку
+и счётчики проверок; нажатие на неё открывает палитру команд. На главном экране слева находится
+меню разделов, справа — рамка «Требует внимания» с кнопками офлайн- и онлайн-проверок, три карточки
+(Harness, Orchestration, Repo Map) и рамка «Подробный отчёт». Знак харнесса и сведения об
+установке (версия консоли и commit её источника, версия и commit установленного харнесса, путь
+репозитория, ветка и commit выбранного проекта) видны, пока хватает высоты терминала.
+Язык интерфейса переключает `F2` (русский / English); начальный язык задаёт переменная
+`HARNESS_CONSOLE_LANG`. Разделы меню:
 
 | Раздел | Содержание |
 |---|---|
+| `Open project` | Выбор другого локального Git-репозитория, план init/adopt/update, установка и итоговая диагностика. |
+| `Update Harness` | Версии, дрейф управляемых файлов, выбор режима обновления и seed-файлов, просмотр diff и подтверждённый запуск. |
 | `Diagnostics` | Полный отчёт `health`, действия «online checks» и «apply fixes» (`health --fix`, требует повторного нажатия). |
 | `Harness` | Состояние установки (версия, capability, скиллы, управляемые файлы, дата lock) и сводка использования конвейера; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка `.harness` soft/hard (план и применение), удаление харнесса из проекта (план и применение), registry, lock-project-skills, list, health, Repo Map, ledger и удаление worktree. |
 | `Orchestration` | Статистика конвейера (запуски, тикеты, состояния, dispatch по ролям, итоги отчётов, QA) и история batch с фильтром по состоянию — выбор batch открывает хронологию; команды coordinator: batch, dispatch, qa status, risk assess, context-package, ledger status. |
 | `Reports` | Отчёты ролей из ledger с фильтрами по тикету, роли, outcome и дате, хронология batch и QA-логи. |
-| `Repo Map` | Карта репозитория для HEAD: сводка, дерево файлов с сигнатурами, поиск символов, связи, хабы. |
+| `Repo Map` | Карта репозитория для HEAD: сводка, дерево файлов с сигнатурами, поиск символов, связи, хабы. Вкладка «Настройки»: режим `minimal`/`full`, парсеры языков проекта (установка с PyPI по явной кнопке) и память проекта (инициализация, синхронизация, пересборка). |
+| `Настройка конфигурации` | Пошаговый черновик `project.json` и `orchestration.json`, пояснения и необязательные CLI-подсказки, просмотр различий, локальные версии и откат. |
 | `Help` | Справка по разделам, клавишам и правилам безопасности пульта. |
 
-Клавиши: `Esc` — возврат или отмена, `e` — экспорт в Markdown, `j` — экспорт Repo Map в JSON,
+«Открыть проект» выбирает другой локальный Git-репозиторий, показывает
+план init/adopt/update и после подтверждённой установки делает его целью всех экранов.
+«Обновить Harness» показывает, какие управляемые и seed-файлы изменятся, позволяет выбрать
+перезаписываемые seed-файлы (флаг `--force-seed-file PATH` повторяется для каждого файла) и
+открывает diff до подтверждения.
+Мастер записывает JSON только после проверки и итогового подтверждения; перед записью
+сохраняет прежний набор. Подробнее: [настройка, версии и CLI-помощник](docs/console-configuration.md).
+
+Клавиши: `1`–`9` — разделы главного экрана, `y` — копировать CLI-строку выбранной команды,
+`F2` — язык, `Esc` — возврат или отмена, `e` — экспорт в Markdown, `j` — экспорт Repo Map в JSON,
 `b` — хронология batch в отчёте или построение карты в `Repo Map`, `F3` — QA-логи в `Reports`,
 `F1` — справка с любого экрана, `Ctrl+P` — палитра команд, `Ctrl+Q` — выход.
 

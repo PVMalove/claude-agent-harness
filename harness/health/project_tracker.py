@@ -15,8 +15,11 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+
 from typing import Literal
 from urllib.parse import urlsplit
+
+from harness.configuration import read_config_file
 
 from .process import run_tool
 from .project_files import TRACKER_HOSTED_TYPES, tracker_field_problems
@@ -192,10 +195,11 @@ def _declared_tracker(repo: Path) -> tuple[ProjectJsonState, ProjectTracker | No
     """The tracker field of .harness/project.json; only a valid field is returned. The validity of
     the other project.json fields does not matter here - files.project_json reports it."""
     path = repo / PROJECT_JSON_REL
-    if not path.is_file():
-        return "absent", None
     try:
-        data: object = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_config_file(path)
+        if raw is None:
+            return "absent", None
+        data: object = json.loads(raw)
     except (OSError, ValueError):
         return "invalid", None
     if not isinstance(data, dict):

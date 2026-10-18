@@ -83,6 +83,7 @@ cd claude-agent-harness
 | `registry` | Пересобирает `.harness/skills/REGISTRY.md` | да |
 | `lock-project-skills` | Фиксирует хэши скиллов, которыми владеет сам проект | да |
 | `memory build/search/rebuild` | Локальный FTS5-кэш и указатели на разрешённые источники | build/rebuild — да; search — нет |
+| `parsers status/install` | Парсеры Repo Map: состояние bundle и установка парсеров выбранных языков (`--language`, повторяемый); `install` скачивает закреплённые wheels с PyPI и проверяет их SHA-256 | install — да (скачивает файлы), status — нет |
 | `health` | Диагностика установки и окружения | только с `--fix` |
 | `list` | Список установленных скиллов | нет |
 | `cleanup` | Предпросмотр и удаление одноразовых данных `.harness` | только с `--apply` |
@@ -106,12 +107,27 @@ cd claude-agent-harness
 | Локальные правки managed-файлов | Показывает как `local_changed`/`conflict`, не трогает | Без флага отказывается; `--force-managed-files` перезаписывает snapshot, `--force` — snapshot и seed |
 | Когда | Быстрая проверка перед чем угодно | Когда решили реально подтянуть новую версию |
 
+#### Внешние runtime-адаптеры
+
+`backend-orchestration` устанавливает `.harness/adapters/claude_worker.py` и
+`.harness/adapters/codex_worker.py` через `init`, `adopt` и `update`. Если capability уже выбрана,
+обычного `update` достаточно для установки отсутствующего адаптера или обновления стандартной версии.
+`diff` показывает расхождения управляемых файлов. Неизвестные файлы и symlink-пути защищены;
+для замены локально изменённого управляемого файла нужен явный `--force-managed-files`.
+При снятии capability и удалении харнесса локальные адаптеры остаются на месте, а `cleanup` их не удаляет.
+
+Общий seed `.claude/settings.local.json` содержит шесть разрешений для наблюдения за оркестрацией:
+`dispatch wait`, `dispatch status`, `batch auto-decide`, `batch auto-report`, `batch decision-packet`
+и `ledger validate`. Правила не разрешают отправку dispatch и ручное одобрение переходов.
+Существующие настройки сохраняются; text/JSON diff и `update` показывают расхождение с шаблоном.
+После просмотра замените только этот seed явным `--force-seed-file .claude/settings.local.json`.
+
 #### Какую capability выбрать
 
 | | `project-foundation` | `mattpocock-suite` | `pvmalove-suite` | `backend-orchestration` |
 |---|---|---|---|---|
 | Скиллов | 5 | 25 | 32 | 32 + роли |
-| Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)) | Согласованная backend-работа несколькими ролями |
+| Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации)) | Согласованная backend-работа несколькими ролями |
 | Даёт | `grilling`, `handoff`, `writing-for-agents`, `research`, `domain-modeling` | Все upstream-скиллы | Спека → тикеты → implement → commit + push (разделы 1–5) | Coordinator, role manifests, playbook, clean-room QA |
 | Проектные файлы | Нет | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` | То же + `.harness/orchestration.json` |
 
@@ -257,9 +273,12 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--branch-pattern` | Регулярное выражение для имён issue-веток |
 | `--qa-gate-command` | Команда полного гейта качества; повторяем, порядок сохраняется ([раздел 6](#qa-gate-skill-context-fork)) |
 | `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
+| `--test-path`, `--test-runner-command` | Поля `test_paths` (glob, повторяем) и `test_runner` (команда теста, делится на аргументы без шелла, один аргумент — `{test_id}`) изолированного runner ([run-test](./hooks/run-test.md)) |
 
-Флаги от `--language` до `--tracker-project` читает только `pvmalove-suite`, и CLI пишет их в
-`.harness/project.json`. Их можно опустить — тогда `init` спросит интерактивно.
+Флаги от `--language` до `--test-runner-command` читает только `pvmalove-suite`, и CLI пишет их в
+`.harness/project.json`. Их можно опустить — тогда `init` спросит интерактивно. Флаги `--test-*`
+`init` не спрашивает: без них поля `test_paths` и `test_runner` не пишутся, и тест-автор выключен.
+Некорректное значение харнесс отклоняет до записи файлов.
 
 **Поле `tracker`** в `.harness/project.json` явно задаёт трекер проекта
 ([ADR 0011](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0011-explicit-project-tracker.md)).
@@ -308,7 +327,7 @@ python harness\bin\harness.py init C:\path\to\repository `
 продолжения PR: refresh, resolver, маршрут провала проверки, подтверждение, проверку или handoff для
 ручного merge. Подробности — в [руководстве по backend-оркестрации](./backend-orchestration.md).
 
-При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/pr-composer.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
+При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/{pr-composer,test-author}.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
 
 - Этот справочник и руководство по backend-оркестрации — документация для разработчика: они лежат
   в `docs/` исходного репозитория и в целевой проект **не** попадают. Контракт интерактивного поиска
@@ -345,6 +364,7 @@ python3 harness/bin/harness.py diff /path/to/repository --json   # машино�
 python3 harness/bin/harness.py update /path/to/repository --capability pvmalove-suite
 python3 harness/bin/harness.py update /path/to/repository --force-managed-files   # перезаписать snapshot
 python3 harness/bin/harness.py update /path/to/repository --force-seed-files      # перезаписать seed-файлы
+python3 harness/bin/harness.py update /path/to/repository --force-seed-file .claude/rules/token-efficiency.md   # только этот seed-файл
 ```
 
 - Без флага `update` отказывается перезаписывать локально изменённые managed files: он показывает их
@@ -352,8 +372,11 @@ python3 harness/bin/harness.py update /path/to/repository --force-seed-files    
 - `--force-managed-files` перезаписывает только managed snapshot и заодно удаляет файлы, которых
   больше нет в текущей версии capability.
 - Seed-файлы (`docs/agents/`, hooks, rules, agents, `.harness/project.schema.json`,
-  `.harness/orchestration.json`) команда сохраняет; `--force-seed-files` разрешает их перезапись, а
-  `--force` объединяет оба действия и может потерять project-owned настройки. Существующий
+  `.harness/orchestration.json`) команда сохраняет; `--force-seed-files` разрешает их перезапись,
+  `--force-seed-file <путь>` (повторяемый) перезаписывает только указанные файлы — путь от корня
+  проекта, неизвестный путь отклоняется до записи; список отличающихся от шаблона файлов даёт поле
+  `seed_differing` в `harness diff --json`. `--force` объединяет оба действия (managed и все
+  seed-файлы) и может потерять project-owned настройки. Существующий
   `.harness/project.json` сохраняется даже с force-флагами, поэтому новые поля в него добавляют
   вручную.
 - `update` не проверяет и не трогает `.harness/overlays/project-local.lock` и
@@ -681,13 +704,19 @@ textual. При аварийном завершении TUI пульт сооб�
 оркестрации или «не подключено», tier Repo Map, версия харнесса и статус дрейфа. Действие «Online
 checks» пересчитывает счётчики с `--online` и показывает CLI-эквивалент.
 
+Кнопка «Проект» ведёт по шагам «выбор проекта → предварительные проверки →
+установка/внедрение → настройка → итоговая диагностика» для выбранного локального Git-проекта.
+Установка идёт через ту же форму подтверждения, что и команды раздела `Harness`, а после неё проект
+становится целью всех экранов. Подробности: [настройка, версии и CLI-помощник](console-configuration.md).
+
 | Раздел | Что внутри |
 |---|---|
 | `Diagnostics` | Полный отчёт `health`, «online checks» и «apply fixes» (`health --fix`, после online checks — `--online --fix`; требует повторного нажатия). Health работает в фоновом потоке, отчёт экспортируется в Markdown |
 | `Harness` | Панель «Состояние»: установленная версия (и версия пакета, если они расходятся), capability, число скиллов и управляемых файлов, время обновления lock, подключена ли оркестрация и сводка использования пайплайна (`harness/console/stats.py`). Ниже — команды из `harness/console/catalog.py`: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса (план и применение), registry, lock-project-skills, list, health, Repo Map, parser bundle, verify, ledger migrate/clean/reset, удаление worktree |
 | `Orchestration` | Статистика пайплайна (запуски и тикеты, состояния, диспатчи по ролям, итоги отчётов, QA, период) и история: слева все состояния batch с числом, справа batch выбранного состояния, Enter открывает хронологию. Ниже — команды coordinator из `harness/console/coordinator_catalog.py` |
 | `Reports` | Completion reports из леджера с фильтрами по тикету, роли, outcome и дате; хронология batch; QA-логи |
-| `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика |
+| `Repo Map` | Карта для HEAD из кэша или построение: сводка, дерево файлов с сигнатурами, поиск символа, связи, топ-10 хабов, диагностика. Вкладка «Настройки»: режим карты `minimal`/`full` (`repo_map_policy.tier`), мастер на шаге `repo_map_policy`, установка парсеров выбранных языков (`harness parsers install`) и память проекта: инициализация (`memory_policy` по умолчанию и `harness memory build`), синхронизация, пересборка, мастер на шаге `memory` |
+| `Настройка конфигурации` | Пошаговый мастер `project.json` и `orchestration.json` (`harness/console/configuration_steps.py`): пояснения и рекомендации по признакам проекта, проверка по схеме и валидаторам, различия, применение с автоматической резервной копией, локальные версии в `.harness/config_versions/` и откат, необязательные подсказки через авторизованный Codex CLI или Claude Code CLI (`harness/console/advisor.py`) |
 | `Help` | Справка по разделам, клавишам и правилам безопасности (`harness/console/help_text.py`) |
 
 | Клавиша | Действие |
@@ -724,13 +753,18 @@ checks» пересчитывает счётчики с `--online` и показ
   проверенная запись. Иначе «Построить карту» (`b`) после предупреждения запускает
   `python -B .harness/repo_map/repo_map.py --repo <repo> --commit <HEAD>`. Раздел читает только поля
   схемы v1 и принимает карту лишь после `harness.repo_map.contract.validation_error`.
+- Мастер конфигурации пишет оба JSON только после проверки и подтверждения. Перед записью он
+  сохраняет текущий набор отдельной версией, а запись пары файлов идёт через журнал и
+  восстанавливается после сбоя. ИИ-помощник не пишет файлы и не запускает команды: его ответ
+  попадает в черновик только по кнопке.
 
-Код разложен по шву stdlib/textual. Модули `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text,stats}.py`
+Код разложен по шву stdlib/textual. Модули `harness/console/{pin,runner,launcher,data,catalog,coordinator_catalog,reports,export,repo_map,json_fields,brand,help_text,stats,advisor,configuration,configuration_steps,project_target,project_facts}.py`
 не импортируют `textual`, и тесты проверяют их без него. `harness/console/app.py` и
 `harness/console/screens/*.py` импортируют его только внутри перезапущенного процесса. Pilot-тесты
 (`tests/console/test_console_app.py`, `tests/console/test_console_harness.py`,
 `tests/console/test_console_orchestration.py`, `tests/console/test_console_reports_app.py`,
-`tests/console/test_console_repo_map_app.py`) пропускаются через `pytest.importorskip`, если textual
+`tests/console/test_console_repo_map_app.py`, `tests/console/test_console_configuration_app.py`,
+`tests/console/test_console_configuration_versions_app.py`, `tests/console/test_console_project_setup.py`) пропускаются через `pytest.importorskip`, если textual
 не установлен. `textual` — только в `[dependency-groups].dev` `pyproject.toml`, тем же pin'ом, что и
 в коде (`tests/console/test_console_pin.py` держит их равными).
 
@@ -903,7 +937,7 @@ on-ramps (`/triage` для входящих багов и фича-реквес�
 `CONTEXT.md` — чистый глоссарий, без деталей реализации.
 
 **В этом репозитории:** first-party-слой переопределяет `/grilling`, `/grill-me` и `/grill-with-docs`
-([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)). Так все точки входа завершаются
+([раздел 7](#7-локальные-кастомизации)). Так все точки входа завершаются
 одинаковым выбором: `/to-spec` или доработка плана.
 
 ### `/wayfinder`
@@ -1017,7 +1051,7 @@ integration/reports
 интерфейсы и решения, без путей к файлам и кода (кроме сниппета из прототипа, если он кодирует
 решение точно).
 
-**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): публикуемый
+**В этом репозитории** ([раздел 7](#7-локальные-кастомизации)): публикуемый
 issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (не `status::ready` — декомпозиции
 ещё не было) + `task-report::required` и секцией `## Integration Branch`. `/to-spec` создаёт
 указанную ветку от `base_branch`, если её нет. `/to-tickets` переносит её в дочерние тикеты.
@@ -1082,7 +1116,7 @@ issue — **эпик** с метками `bug`/`enhancement` + `status::specs` (
    - Итоговая таблица (Ticket / What to build / Est. Time / Labels): описания генерирует дешёвая
      модель (`haiku`) одним вызовом на пакет. Язык колонки — из `.harness/project.json`.
 
-**В этом репозитории** ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов)): дочерние тикеты
+**В этом репозитории** ([раздел 7](#7-локальные-кастомизации)): дочерние тикеты
 эпика (`status::specs`) линкуются родительской связью трекера (на GitHub — native sub-issues, на
 GitLab — секция `## Parent: #<N>` и связь `relates_to`), а не лейблом `epic::<slug>`. Тикет,
 заблокированный другим открытым тикетом той же декомпозиции, получает `status::blocked`. Блокер
@@ -1224,7 +1258,7 @@ python .harness/orchestration/coordinator.py --repo . dispatch status --batch <b
 **Базовая версия в апстриме** состоит из пяти шагов: реализация тикета, `/tdd` при необходимости,
 регулярный тайпчек и тесты, `/code-review` по готовности, коммит.
 
-**В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации-11-изменённых-скиллов))
+**В этом репозитории** first-party override ([раздел 7](#7-локальные-кастомизации))
 добавляет три фазы. Ту же Phase 1 выполняет и `/implement` перед `batch create`.
 
 [![/fast-implement: одна сессия от тикета до push](./diagrams/previews/fast-implement.workflow.png)](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/fast-implement.workflow.html)
@@ -1500,9 +1534,9 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 
 ---
 
-## 7. Локальные кастомизации (11 изменённых скиллов)
+## 7. Локальные кастомизации
 
-`.harness/harness.lock` фиксирует 11 скиллов с намеренными правками поверх апстрима. В `harness diff`
+`.harness/harness.lock` фиксирует скиллы из таблицы ниже с намеренными правками поверх апстрима. В `harness diff`
 они видны как `local_changed` — это ожидаемо. `harness update --force` или
 `harness adopt --replace-conflicts` их бы стёрли.
 
@@ -1515,6 +1549,7 @@ python .harness/reporting/delivery_stats.py --repo . --epic 95 \
 | `ask-matt` | Отражает выбор разработчика: двухосевое ревью либо переход к commit и push. |
 | `code-review` | Выводит отчёт на языке из `.harness/project.json` (`### Communication language`). |
 | `diagnosing-bugs` | Перед гипотезами ищет прошлые фиксы через read-only `harness memory search`, если память включена. Воспроизведение остаётся обязательным. |
+| `tdd` | Добавляет Refactor после Green и проверяемые правила тестов: одно поведение на согласованном seam, ожидание из независимого источника, детерминированные часы и RNG. SQL и транзакции тест проверяет на той же СУБД, что в production. |
 | `grilling` | При включённой памяти ищет прецеденты до первого раунда проектирования. Указатели не отменяют opt-in Live Artifact. Вопросы фронтира задаёт через `AskUserQuestion` (вкладка на вопрос, варианты или «Other»). Текст — запасной формат для открытых вопросов. |
 | `grill-me` | Тонкая обёртка над first-party `/grilling` с единым финальным выбором: `/to-spec` или правки плана. |
 | `grill-with-docs` | Тонкая обёртка над `/grilling` с `/domain-modeling`: тот же финальный выбор плюс `CONTEXT.md`/ADR. |
@@ -1674,7 +1709,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 
 ## 12. Полный каталог скиллов проекта
 
-Все 25 скиллов апстрима (capability `mattpocock-suite`) + 11 `pvmalove`-переопределений и 7
+Все 25 скиллов апстрима (capability `mattpocock-suite`) + `pvmalove`-переопределения ([раздел 7](#7-локальные-кастомизации)) и 7
 дополнительных first-party скиллов (`qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`,
 `fast-implement`, `delivery-stats`, `architect`). `pr-composer` поставляется отдельно как subagent.
 «Только вручную» = `disable-model-invocation: true` (скилл вызывают только как `/имя`).

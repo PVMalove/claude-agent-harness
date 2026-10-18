@@ -14,9 +14,11 @@ pytest.importorskip("textual")
 
 from textual.app import App
 from textual.pilot import Pilot
-from textual.widgets import Input, ListView, Static
+from textual.widgets import Button, Input, ListView, Select, Static
 
+from tests.console._pilot_wait import wait_until
 from tests.console._console_ledger_fixture import QA_LOG_SHA256, build_reports_fixture
+from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
 from harness.console.screens.dashboard import SECTIONS, DashboardScreen
 from harness.console.screens.reports import (
@@ -28,6 +30,8 @@ from harness.console.screens.reports import (
 
 
 class _ReportsHost(App[None]):
+    CSS = HarnessConsoleApp.CSS
+
     def __init__(self, repo: Path) -> None:
         super().__init__()
         self.repo = repo
@@ -46,14 +50,10 @@ def _static_text(app: App[None], selector: str) -> str:
     return str(app.screen.query_one(selector, Static).content)
 
 
-async def _until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
+async def _until(pilot: Pilot[None], condition: Callable[[], object]) -> None:
     """Pause until `condition` holds: filtering rebuilds the report list asynchronously, and one
     pause is not always enough on a slow runner."""
-    for _ in range(50):
-        if condition():
-            return
-        await pilot.pause(0.05)
-    assert condition()
+    await wait_until(pilot, condition)
 
 
 def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> None:
@@ -77,7 +77,7 @@ def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> N
             menu.focus()
             menu.index = SECTIONS.index("Reports")
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, ReportsScreen))
             return isinstance(app.screen, ReportsScreen)
 
     assert asyncio.run(scenario())
@@ -113,6 +113,149 @@ def test_report_list_filters_by_ticket_and_role(tmp_path: Path) -> None:
     assert status == "отчётов: 1 из 4"
 
 
+def test_current_stage_opens_timeline_and_refresh_preserves_filters_sort_and_selection(
+    tmp_path: Path,
+) -> None:
+    from harness.orchestration.core.constants import STATE_REL
+    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+    from tests.console._console_ledger_fixture import _Batch
+
+    build_reports_fixture(tmp_path)
+    ledger = LifecycleLedger(tmp_path / STATE_REL)
+    batch = _Batch(ledger, "batch-live", "#303")
+    batch.save("awaiting-approval")
+    batch.dispatch("dispatch-live", "developer")
+    status_path = batch.root / "dispatch-status/dispatch-live.json"
+    ledger.write_immutable(
+        status_path, {"dispatch_id": "dispatch-live", "state": "working"}
+    )
+
+    async def scenario() -> None:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(100, 35)) as pilot:
+            rendered = "\n".join(
+                "".join(segment.text for segment in strip)
+                for strip in app.screen._compositor.render_strips()
+            )
+            assert "Все стадии" in rendered
+            assert "По времени" in rendered
+            assert "По убыванию" in rendered
+            assert "dispatch-live" in _report_names(app)
+            app.screen.query_one("#filter-state", Input).value = "working"
+            await _until(pilot, lambda: _report_names(app) == ["dispatch-live"])
+            listing = app.screen.query_one("#report-list", ListView)
+            listing.focus()
+            listing.index = 0
+            await pilot.press("enter")
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
+            assert "отчёт ещё не получен" in _static_text(app, "#batch-timeline")
+            await pilot.press("escape")
+            await _until(pilot, lambda: isinstance(app.screen, ReportsScreen))
+            app.screen.query_one("#filter-state", Input).value = ""
+            app.screen.query_one("#filter-role", Input).value = "developer"
+            app.screen.query_one("#sort-field", Select).value = "ticket"
+            app.screen.query_one("#sort-direction", Select).value = "desc"
+            await _until(
+                pilot,
+                lambda: _report_names(app)
+                == ["dispatch-live", "dispatch-stuck", "dispatch-dev"],
+            )
+            listing = app.screen.query_one("#report-list", ListView)
+            listing.index = 0
+            batch.report("dispatch-live", "developer", "completed", output="Обновлено")
+            ledger.replace(
+                status_path, {"dispatch_id": "dispatch-live", "state": "reported"}
+            )
+            refresh = app.screen.query_one("#refresh-reports", Button)
+            assert refresh.region.height == 1
+            assert refresh.region.width <= 5
+            await pilot.click("#refresh-reports")
+            await app.workers.wait_for_complete()
+            await _until(pilot, lambda: not refresh.disabled)
+            assert _report_names(app) == [
+                "dispatch-live",
+                "dispatch-stuck",
+                "dispatch-dev",
+            ]
+            assert listing.highlighted_child is not None
+            assert listing.highlighted_child.name == "dispatch-live"
+            assert app.screen.query_one("#filter-role", Input).value == "developer"
+            assert app.screen.query_one("#sort-field", Select).value == "ticket"
+            listing.focus()
+            await pilot.press("enter")
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, ReportScreen)
+                and bool(app.screen.query("#section-output")),
+            )
+            assert _static_text(app, "#section-output") == "Обновлено"
+            await pilot.press("escape")
+            await _until(pilot, lambda: isinstance(app.screen, ReportsScreen))
+            app.screen.query_one("#filter-completion", Select).value = "open"
+            await _until(
+                pilot,
+                lambda: not _report_names(app)
+                and bool(app.screen.query("#reports-empty")),
+            )
+            assert "Ничего не найдено" in _static_text(app, "#reports-empty")
+
+    asyncio.run(scenario())
+
+
+def test_batch_rows_and_timeline_show_start_and_time_to_pr_in_a_narrow_window(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+    from harness.console.reports import load_ledger_view
+
+    build_reports_fixture(tmp_path)
+    view = load_ledger_view(tmp_path)
+    view.batches[:] = [
+        replace(
+            batch,
+            created_at="2026-10-12T10:00:00Z",
+            pr_created_at="2026-10-12T12:14:00Z",
+            pr_url="https://example.test/pr/10",
+            pr_state="found",
+        )
+        for batch in view.batches
+    ]
+
+    class Host(App[None]):
+        CSS = HarnessConsoleApp.CSS
+
+        def on_mount(self) -> None:
+            self.push_screen(ReportsScreen(tmp_path, load_view=lambda _repo: view))
+
+    async def scenario() -> None:
+        app = Host()
+        async with app.run_test(size=(60, 35)) as pilot:
+            listing = app.screen.query_one("#batch-list", ListView)
+            first = str(listing.children[0].query_one(Static).content)
+            assert "12.10.2026 10:00 UTC" in first
+            assert "blocked · до PR: 2 ч 14 мин" in first
+            refresh = app.screen.query_one("#refresh-reports", Button)
+            assert refresh.region.height == 1
+            assert refresh.region.right <= 60
+            listing.focus()
+            listing.index = 0
+            await pilot.press("enter")
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
+            text = _static_text(app, "#batch-timeline")
+            assert "Начало: 12.10.2026 10:00 UTC" in text
+            assert "blocked · до PR: 2 ч 14 мин" in text
+
+    asyncio.run(scenario())
+
+
 def test_report_screen_shows_sections_wrapped_to_the_screen_width(
     tmp_path: Path,
 ) -> None:
@@ -125,8 +268,14 @@ def test_report_screen_shows_sections_wrapped_to_the_screen_width(
             report_list.focus()
             report_list.index = 3  # dispatch-dev, the one with the long Output
             await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, ReportScreen)
+            await _until(
+                pilot,
+                lambda: (
+                    isinstance(app.screen, ReportScreen)
+                    and bool(app.screen.query("#section-output"))
+                    and app.screen.query_one("#section-output", Static).size.height > 1
+                ),
+            )
             titles = [
                 str(widget.content)
                 for widget in app.screen.query(".section-title").results(Static)
@@ -144,7 +293,7 @@ def test_report_screen_shows_sections_wrapped_to_the_screen_width(
     assert titles == ["Output", "Checks", "Risks", "Blockers", "Next action"]
     assert width <= screen_width
     assert height > 1  # the long Output wraps instead of running off-screen
-    assert blockers == "нет"
+    assert blockers == "none"
 
 
 def test_report_text_is_rendered_literally_not_as_markup(tmp_path: Path) -> None:
@@ -159,7 +308,12 @@ def test_report_text_is_rendered_literally_not_as_markup(tmp_path: Path) -> None
             report_list.focus()
             report_list.index = 0
             await pilot.press("enter")
-            await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, ReportScreen)
+                and bool(app.screen.query("#section-output"))
+                and bool(app.screen.query("#section-review")),
+            )
             return _static_text(app, "#section-output"), _static_text(
                 app, "#section-review"
             )
@@ -179,9 +333,13 @@ def test_report_screen_opens_its_batch_timeline(tmp_path: Path) -> None:
             report_list.focus()
             report_list.index = 1  # dispatch-qa
             await pilot.press("enter")
-            await pilot.pause()
+            await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
             await pilot.press("b")
-            await pilot.pause()
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
             return isinstance(app.screen, BatchTimelineScreen), _static_text(
                 app, "#batch-timeline"
             )
@@ -209,7 +367,11 @@ def test_batch_list_opens_a_blocked_batch_timeline(tmp_path: Path) -> None:
             batch_list.focus()
             batch_list.index = 0
             await pilot.press("enter")
-            await pilot.pause()
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
             return _static_text(app, "#batch-timeline")
 
     text = asyncio.run(scenario())
@@ -234,7 +396,7 @@ async def _open_report(app: App[None], pilot: Pilot[None], index: int) -> None:
     report_list.focus()
     report_list.index = index
     await pilot.press("enter")
-    await pilot.pause()
+    await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
 
 
 def test_qa_report_shows_its_gate_log_tail_and_attempts(tmp_path: Path) -> None:
@@ -244,6 +406,7 @@ def test_qa_report_shows_its_gate_log_tail_and_attempts(tmp_path: Path) -> None:
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             await _open_report(app, pilot, 1)  # dispatch-qa
+            await _until(pilot, lambda: bool(app.screen.query("#section-qa-log")))
             return _static_text(app, "#section-qa-log")
 
     text = asyncio.run(scenario())
@@ -260,7 +423,11 @@ def test_qa_logs_screen_lists_every_log_and_attempt(tmp_path: Path) -> None:
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             await pilot.press("f3")
-            await pilot.pause()
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, QaLogsScreen)
+                and bool(app.screen.query("#qa-logs")),
+            )
             return isinstance(app.screen, QaLogsScreen), _static_text(app, "#qa-logs")
 
     is_qa_logs, text = asyncio.run(scenario())
@@ -279,6 +446,7 @@ def test_report_export_writes_markdown_into_the_ticket_folder(tmp_path: Path) ->
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             await _open_report(app, pilot, 1)  # dispatch-qa
+            await _until(pilot, lambda: bool(app.screen.query("#export")))
             await pilot.press("e")
             await pilot.pause()
 
@@ -303,8 +471,7 @@ def test_timeline_export_writes_markdown_table(tmp_path: Path) -> None:
             batch_list.focus()
             batch_list.index = 1  # batch-flow
             await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, BatchTimelineScreen)
+            await _until(pilot, lambda: isinstance(app.screen, BatchTimelineScreen))
             await pilot.press("e")
             await pilot.pause()
 

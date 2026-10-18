@@ -33,6 +33,8 @@ from harness.orchestration.ledger import (
     RiskAssessmentRecord,
 )
 from harness.orchestration.core.constants import (
+    BatchState,
+    DispatchState,
     CONTEXT_PACKAGE_FIELDS,
     LEGACY_CONTEXT_PACKAGE_FIELDS,
     LEGACY_CONTEXT_PACKAGE_FIELDS_NO_TOKENS,
@@ -81,7 +83,7 @@ class ValueObjectRoundTripTests(unittest.TestCase):
 
             original = BatchRecord(
                 batch_id="batch-1",
-                state="planned",
+                state=BatchState.PLANNED,
                 dispatches=[],
                 coordinator_approval=None,
                 extra={"ticket": "#194", "base_commit": "deadbeef"},
@@ -100,7 +102,7 @@ class ValueObjectRoundTripTests(unittest.TestCase):
         """The ledger preserves nested JSON at its unvalidated record boundary."""
         original = BatchRecord(
             batch_id="batch-1",
-            state="planned",
+            state=BatchState.PLANNED,
             dispatches=[
                 {
                     "dispatch_id": "dispatch-1",
@@ -125,7 +127,7 @@ class ValueObjectRoundTripTests(unittest.TestCase):
             original = DispatchRecord(
                 dispatch_id="dispatch-1",
                 batch_id="batch-1",
-                state="approved",
+                state=DispatchState.APPROVED,
                 coordinator_approval={
                     "approved_by": "Malove",
                     "approved_at": "2026-09-17T00:00:00Z",
@@ -157,7 +159,7 @@ class ValueObjectRoundTripTests(unittest.TestCase):
             (
                 DispatchStatusRecord(
                     dispatch_id="dispatch-1",
-                    state="working",
+                    state=DispatchState.WORKING,
                     extra={"heartbeat_note": "none"},
                 ),
                 "dispatch-status/dispatch-1.json",
@@ -202,7 +204,7 @@ class RecordApiTests(unittest.TestCase):
             (
                 BatchRecord(
                     batch_id="batch-1",
-                    state="planned",
+                    state=BatchState.PLANNED,
                     dispatches=[],
                     coordinator_approval=None,
                 ),
@@ -214,14 +216,16 @@ class RecordApiTests(unittest.TestCase):
                 DispatchRecord(
                     dispatch_id="dispatch-1",
                     batch_id="batch-1",
-                    state="approved",
+                    state=DispatchState.APPROVED,
                     coordinator_approval=None,
                 ),
                 "dispatches",
                 "dispatch-1",
             ),
             (
-                DispatchStatusRecord(dispatch_id="dispatch-1", state="working"),
+                DispatchStatusRecord(
+                    dispatch_id="dispatch-1", state=DispatchState.WORKING
+                ),
                 "dispatch-status",
                 "dispatch-1",
             ),
@@ -266,7 +270,9 @@ class RecordApiTests(unittest.TestCase):
             ledger = LifecycleLedger(state_root)
             ledger.ensure()
 
-            record = DispatchStatusRecord(dispatch_id="dispatch-1", state="approved")
+            record = DispatchStatusRecord(
+                dispatch_id="dispatch-1", state=DispatchState.APPROVED
+            )
             ledger.write_record(record)
 
             path = ledger.records_root() / "dispatch-status" / "dispatch-1.json"
@@ -283,10 +289,14 @@ class RecordApiTests(unittest.TestCase):
             ledger.ensure()
 
             ledger.write_record(
-                DispatchStatusRecord(dispatch_id="dispatch-1", state="approved")
+                DispatchStatusRecord(
+                    dispatch_id="dispatch-1", state=DispatchState.APPROVED
+                )
             )
             ledger.replace_record(
-                DispatchStatusRecord(dispatch_id="dispatch-1", state="working")
+                DispatchStatusRecord(
+                    dispatch_id="dispatch-1", state=DispatchState.WORKING
+                )
             )
 
             path = ledger.records_root() / "dispatch-status" / "dispatch-1.json"
@@ -304,7 +314,7 @@ class RecordApiTests(unittest.TestCase):
             ledger.write_record(
                 BatchRecord(
                     batch_id="batch-1",
-                    state="planned",
+                    state=BatchState.PLANNED,
                     dispatches=[],
                     coordinator_approval=None,
                 )
@@ -314,7 +324,7 @@ class RecordApiTests(unittest.TestCase):
                 ledger.replace_record(
                     BatchRecord(
                         batch_id="batch-1",
-                        state="not-a-real-state",
+                        state=BatchState.ACTIVE,
                         dispatches=[],
                         coordinator_approval=None,
                     )
@@ -331,7 +341,7 @@ class RecordApiTests(unittest.TestCase):
             def batch(state: str) -> BatchRecord:
                 return BatchRecord(
                     batch_id="batch-1",
-                    state=state,
+                    state=BatchState(state),
                     dispatches=[],
                     coordinator_approval=None,
                 )
@@ -383,7 +393,9 @@ class RecordApiTests(unittest.TestCase):
             for bad_id in ("../evil", "a/b", "a\\b", "", "."):
                 with self.assertRaises(LedgerError):
                     ledger.write_record(
-                        DispatchStatusRecord(dispatch_id=bad_id, state="approved")
+                        DispatchStatusRecord(
+                            dispatch_id=bad_id, state=DispatchState.APPROVED
+                        )
                     )
 
 
@@ -631,7 +643,7 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
             with self.assertRaises(LedgerError):
                 ledger.replace(batch_path, {**batch, "state": "awaiting-approval"})
 
-    def test_abandoned_is_reachable_only_after_a_report_and_is_terminal(self) -> None:
+    def test_abandoned_requires_operator_refusal_and_is_terminal(self) -> None:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temporary:
             ledger = LifecycleLedger(Path(temporary) / "state")
             ledger.ensure()
@@ -658,7 +670,18 @@ class StructuralValidationCharacterizationTests(unittest.TestCase):
                 "coordinator_approval": {"approved_by": "a", "approved_at": "b"},
             }
             ledger.replace(batch_path, approved)
-            ledger.replace(batch_path, {**approved, "state": "abandoned"})
+            ledger.replace(
+                batch_path,
+                {
+                    **approved,
+                    "state": "abandoned",
+                    "abandoned": {
+                        "approved_by": "operator",
+                        "approved_at": "now",
+                        "reason": "explicit refusal",
+                    },
+                },
+            )
 
             for target in ("awaiting-approval", "active", "failed", "completed"):
                 with self.assertRaises(LedgerError, msg=target):

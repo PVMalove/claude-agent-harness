@@ -27,10 +27,12 @@ from harness.orchestration.contract import (
     paths_inside,
     resolve_allowed_tools,
     resolve_min_repo_map_tier,
+    retry_verification_commands,
     role_verification_commands,
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import ACCEPTED_DECISIONS
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _approval_policy,
@@ -83,7 +85,8 @@ from harness.orchestration.ledger.lifecycle import (
     DispatchStatusRecord,
     LifecycleLedger,
 )
-from harness.orchestration.workflow import carried_items
+from harness.orchestration.ledger.recovery_chain import active_dispatches
+from harness.orchestration.workflow import carried_items, conditions
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
@@ -131,9 +134,28 @@ from harness.orchestration.workflow.risk import (
 
 
 def _dispatch_verification_commands(
-    batch: JsonObject, role_name: str, purpose: str
+    batch: JsonObject,
+    role_name: str,
+    purpose: str,
+    *,
+    next_action: object = None,
+    context_package: JsonObject | None = None,
 ) -> list[str]:
-    """Вернуть неизменяемый список проверок роли, замороженный в ``batch``."""
+    """Вернуть неизменяемый список проверок роли, замороженный в ``batch``.
+
+    Developer-retry batch с замороженным ``retry_verification`` получает lint и тесты из
+    ``related_tests`` своего Context Package; без связанных тестов остаётся список developer.
+    """
+    if (
+        next_action == "developer-retry"
+        and (role_name, purpose) == ("developer", "work")
+        and context_package is not None
+    ):
+        retry = retry_verification_commands(
+            batch.get("retry_verification"), context_package.get("related_tests")
+        )
+        if retry is not None:
+            return retry
     return cast(list[str], role_verification_commands(batch, role_name, purpose))
 
 
@@ -168,9 +190,7 @@ def _accepted_divergence(
     A developer-retry builds on that history and keeps its strict commit_map, so the commit
     boundaries a reviewer has to judge are the ones the initial or rebase report recorded.
     """
-    for item in plan_rules.decided_entries(
-        batch, "developer", {"accept", "override-warning"}
-    ):
+    for item in plan_rules.decided_entries(batch, "developer", ACCEPTED_DECISIONS):
         developer = _load_dispatch(root, item["dispatch_id"])
         if developer.get("purpose", "work") != "work" or plan_rules.is_developer_retry(
             developer
@@ -235,9 +255,15 @@ def _dispatch_approval_mode(
         getattr(args, "approved_at", None)
     ):
         return "explicit"
-    if getattr(args, "_policy_infrastructure_retry", False):
+    if getattr(args, "_policy_infrastructure_retry", False) and not (
+        batch.get("manual_recovery") or batch.get("auto_stop")
+    ):
         return "policy:infrastructure-retry"
-    policy = batch.get("approval_policy", _approval_policy(config))
+    policy = (
+        "manual_all"
+        if batch.get("manual_recovery")
+        else batch.get("approval_policy", _approval_policy(config))
+    )
     if policy == approvals.AUTO_POLICY:
         if "auto_stop" in batch:
             raise CoordinatorError(
@@ -354,7 +380,12 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         if candidate is None:
             candidate = _current_developer_candidate(repo, root, batch)
-        snapshot = candidate or batch["base_commit"]
+        snapshot = candidate or batch.get("branch_start_commit") or batch["base_commit"]
+        from harness.orchestration.workflow import preserved_progress
+
+        progress = preserved_progress.pending(batch)
+        if progress is not None:
+            preserved_progress.require_current(repo, root, batch, progress)
         package = _latest_context_package(root, batch)
         package_pointer: JsonObject = {}
         if package is not None:
@@ -367,12 +398,19 @@ def preflight_dispatch(args: argparse.Namespace) -> JsonObject:
                     repo, root, batch, context_package_id=package["context_package_id"]
                 ),
             }
-        checks = _dispatch_verification_commands(batch, args.role, args.purpose)
+        checks = _dispatch_verification_commands(
+            batch,
+            args.role,
+            args.purpose,
+            next_action=batch.get("next_action"),
+            context_package=package,
+        )
         state = {
             "repo": str(repo),
             "config": config,
             "branch": batch["branch"],
             "worktree": batch["worktree"],
+            "worker_worktree": getattr(args, "worktree", None) or batch["worktree"],
             "zone": batch.get("zone"),
             "allowed_paths": batch.get("allowed_paths"),
             "base_sha": batch["base_commit"],
@@ -405,7 +443,7 @@ def _newest_decided_dispatch(batch: JsonObject) -> JsonObject | None:
     return next(
         (
             item
-            for item in reversed(batch.get("dispatches", []))
+            for item in reversed(active_dispatches(batch))
             if isinstance(item.get("decision"), dict)
         ),
         None,
@@ -485,7 +523,7 @@ def _reject_active_duplicate(root: Path, batch: JsonObject, key: str) -> None:
     The key names no batch, so another batch at the same base would collide with it by accident.
     Repeating the work of an unfinished batch is refused at batch creation (ticket, branch and
     worktree), which is what lets independent batches run in parallel."""
-    for entry in batch.get("dispatches", []):
+    for entry in active_dispatches(batch):
         if _settled(entry):
             continue
         if (
@@ -539,13 +577,23 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="the dispatch record was modified after its brief integrity hash was recorded -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-        if entry.get("state") != "approved":
+        runtime_stopped = (
+            bool(getattr(args, "runtime_stopped", False)) and not policy_retry
+        )
+        cancellable = (
+            {"approved", "dispatched", "checkpointed", "rate_limited"}
+            if runtime_stopped
+            else {"approved"}
+        )
+        if entry.get("state") not in cancellable:
             raise CoordinatorError(
                 "only an approved, unsent dispatch may be cancelled",
                 remedy="only cancel a dispatch that is approved and not yet sent",
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        if status.get("state") != "approved":
+        if status.get("state") not in (
+            cancellable | {"working"} if runtime_stopped else cancellable
+        ):
             raise CoordinatorError(
                 "only an approved, unsent dispatch may be cancelled",
                 remedy="only cancel a dispatch that is approved and not yet sent",
@@ -563,9 +611,12 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
         moment = utils._now()
         entry["state"] = "cancelled"
         entry["cancellation"] = {**approval, "cancelled_at": moment, "reason": reason}
+        if runtime_stopped:
+            entry["cancellation"]["runtime_stopped"] = True
         if readiness is not None:
             entry["cancellation"]["infrastructure_readiness"] = readiness
-        batch["state"] = "awaiting-approval"
+        if batch["state"] != "paused":
+            batch["state"] = "awaiting-approval"
         batch.setdefault("coordinator_decisions", []).append(
             {
                 "dispatch_id": dispatch["dispatch_id"],
@@ -595,6 +646,20 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                     "state": "cancelled",
                     "updated_at": moment,
                     "cancellation": entry["cancellation"],
+                    **(
+                        {
+                            k: status[k]
+                            for k in (
+                                "worktree_attestation",
+                                "model_self_report",
+                                "worker_worktree",
+                                "worker_snapshot_commit",
+                            )
+                            if k in status
+                        }
+                        if runtime_stopped
+                        else {}
+                    ),
                     **(
                         {"infrastructure_failure": status["infrastructure_failure"]}
                         if policy_retry
@@ -717,7 +782,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             )
         pending_report = any(
             item.get("state") == "reported" and "decision" not in item
-            for item in batch.get("dispatches", [])
+            for item in active_dispatches(batch)
         )
         if pending_report:
             raise CoordinatorError(
@@ -737,6 +802,27 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             )
         role_name = args.role
         purpose = args.purpose
+        rewind_writer = bool(
+            batch.get("rewind_writer_pending")
+            and role_name in {"developer", "conflict-resolver"}
+            and purpose == "work"
+            and not batch.get("environmental_restart")
+        )
+        from harness.orchestration.workflow import preserved_progress
+
+        progress = preserved_progress.pending(batch) if rewind_writer else None
+        if progress is not None:
+            preserved_progress.require_current(repo, root, batch, progress)
+        if rewind_writer:
+            from harness.orchestration.workflow.decisions import (
+                _developer_retry_budget_exhausted,
+            )
+
+            if _developer_retry_budget_exhausted(config, batch):
+                raise CoordinatorError(
+                    "developer retry budget is exhausted after rewind",
+                    remedy="finish or abandon this bounded batch, or explicitly adjust retry_policy before a new human approval",
+                )
         next_action = batch.get("next_action")
         required = {
             None: {("architect", "work"), ("developer", "work")},
@@ -826,6 +912,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     "publish must use the latest accepted developer candidate",
                     remedy="publish must use the latest accepted developer candidate_commit",
                 )
+            conditions.require_closed(batch)
             _accepted_qa_for_candidate(root, batch, candidate)
         elif purpose != "work":
             raise CoordinatorError(
@@ -907,13 +994,12 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 accepted_review = any(
                     item.get("role") == "code-review"
                     and item.get("state") == "reported"
-                    and item.get("decision", {}).get("decision")
-                    in {"accept", "override-warning"}
+                    and item.get("decision", {}).get("decision") in ACCEPTED_DECISIONS
                     and _load_dispatch(root, item["dispatch_id"]).get(
                         "candidate_commit"
                     )
                     == candidate
-                    for item in batch.get("dispatches", [])
+                    for item in active_dispatches(batch)
                 )
                 if not accepted_review:
                     raise CoordinatorError(
@@ -954,11 +1040,26 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         snapshot_commit = candidate or batch["base_commit"]
         if role_name == resolver_state.RESOLVER_ROLE:
             # The resolver starts where the conflicting candidate is, never at the target.
-            snapshot_commit = batch["resolver"]["candidate_sha"]
+            snapshot_commit = (
+                _current_developer_candidate(repo, root, batch)
+                or batch["resolver"]["candidate_sha"]
+            )
+            latest = _newest_decided_dispatch(batch)
+            if (
+                latest is not None
+                and latest.get("role") == resolver_state.RESOLVER_ROLE
+            ):
+                prior = next(
+                    e
+                    for e in active_dispatches(batch)
+                    if e["dispatch_id"] == latest["dispatch_id"]
+                )
+                snapshot_commit = _pending_report(root, batch, prior)["commit_sha"]
         if role_name in {"architect", "developer", "verification", "code-review"}:
             snapshot_commit = (
                 candidate
                 or _current_developer_candidate(repo, root, batch)
+                or batch.get("branch_start_commit")
                 or batch["base_commit"]
             )
             context_package = _persist_context_package(
@@ -1043,7 +1144,13 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                             ),
                         )
         dispatch_id = f"dispatch-{uuid.uuid4()}"
-        dispatch_commands = _dispatch_verification_commands(batch, role_name, purpose)
+        dispatch_commands = _dispatch_verification_commands(
+            batch,
+            role_name,
+            purpose,
+            next_action=next_action,
+            context_package=context_package,
+        )
         carried = delta_review.with_closure_items(
             carried_items.brief_section(root, batch, role_name, purpose),
             root,
@@ -1082,6 +1189,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             transition = operational_guards.bind_transition(
                 transition, {"runtime_images": runtime_images}
             )
+        if batch.get("recovery_events"):
+            transition["recovery_event_sha256"] = batch["recovery_events"][-1][
+                "record_sha256"
+            ]
         orchestration_policy = _orchestration_policy(config)
         transition[infrastructure_retry.TRANSITION_FIELD] = (
             operational_guards.policy_digest(
@@ -1233,8 +1344,14 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]
             )
+        if progress is not None:
+            brief["preserved_progress"] = progress
         if policy_source is not None:
             infrastructure_retry.require_same_contract(policy_source, brief)
+        if batch.get("environmental_restart"):
+            from harness.orchestration.workflow.recovery import require_restart_contract
+
+            require_restart_contract(root, batch, brief)
         _reject_sensitive(brief, "dispatch brief")
         # The immutable dispatch file is itself the approved brief.  Keeping the brief at the
         # top level lets any runtime-neutral adapter consume exactly the reviewed contract.
@@ -1282,6 +1399,18 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             )
         if required_role and role_name == required_role:
             batch.pop("required_next_role", None)
+        if rewind_writer:
+            batch.setdefault("coordinator_decisions", []).append(
+                {
+                    "decision": "rewind-developer",
+                    "dispatch_id": dispatch_id,
+                    **approval,
+                    "note": "new code attempt after human rewind",
+                    "next_role": "developer",
+                }
+            )
+            batch.pop("rewind_writer_pending", None)
+        batch.pop("environmental_restart", None)
         batch["state"] = "active"
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))

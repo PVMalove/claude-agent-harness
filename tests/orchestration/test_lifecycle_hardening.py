@@ -30,12 +30,16 @@ def _live_batch(root: Path) -> None:
         root / "batches/batch-0001.json",
         {
             "batch_id": "batch-0001",
+            "state": "active",
             "dispatches": [{"dispatch_id": _LIVE}],
             "checkpoints": [{"checkpoint_id": "checkpoint-0001", "dispatch_id": _LIVE}],
         },
     )
     for directory in ("dispatches", "dispatch-status", "reports"):
-        _write(root / directory / f"{_LIVE}.json", {"dispatch_id": _LIVE})
+        _write(
+            root / directory / f"{_LIVE}.json",
+            {"dispatch_id": _LIVE, "state": "working"},
+        )
     _write(root / "checkpoints/checkpoint-0001.json", {"dispatch_id": _LIVE})
 
 
@@ -44,7 +48,10 @@ def test_clean_keeps_the_checkpoints_of_a_referenced_dispatch(tmp_path: Path) ->
     _live_batch(root)
     # A checkpoint written before its batch pointer, and one of an orphaned dispatch.
     _write(root / "checkpoints/checkpoint-0002.json", {"dispatch_id": _LIVE})
-    _write(root / f"dispatches/{_ORPHAN}.json", {"dispatch_id": _ORPHAN})
+    _write(
+        root / f"dispatches/{_ORPHAN}.json",
+        {"dispatch_id": _ORPHAN, "state": "proposed"},
+    )
     _write(root / "checkpoints/checkpoint-0003.json", {"dispatch_id": _ORPHAN})
 
     result = ledger.clean()
@@ -64,7 +71,13 @@ def test_clean_keeps_the_checkpoints_of_a_referenced_dispatch(tmp_path: Path) ->
     [
         pytest.param("{not json", "batch record is not valid JSON", id="unreadable"),
         pytest.param(
-            json.dumps({"batch_id": "batch-0002", "dispatches": "dispatch-0002"}),
+            json.dumps(
+                {
+                    "batch_id": "batch-0002",
+                    "state": "active",
+                    "dispatches": "dispatch-0002",
+                }
+            ),
             "batch dispatches are invalid",
             id="dispatches-not-a-list",
         ),
@@ -76,7 +89,10 @@ def test_clean_refuses_to_delete_while_a_batch_cannot_name_its_evidence(
     ledger, root = _generation(tmp_path)
     _live_batch(root)
     (root / "batches/batch-0002.json").write_text(batch_text, encoding="utf-8")
-    _write(root / f"dispatches/{_ORPHAN}.json", {"dispatch_id": _ORPHAN})
+    _write(
+        root / f"dispatches/{_ORPHAN}.json",
+        {"dispatch_id": _ORPHAN, "state": "proposed"},
+    )
     before = sorted(path.relative_to(root) for path in root.rglob("*.json"))
 
     with pytest.raises(LedgerError) as caught:

@@ -28,7 +28,7 @@ does not repeat its narrative.
 Propose the commit plan in `output` as ordered entries `{id, summary, expected_paths, covers}`, one
 entry per independently reviewable commit, where `covers` lists the Definition of Done item numbers
 (counted from one) the entry implements and every item is covered at least once. The coordinator's
-default plan is one entry per item. When the proposed plan differs from it, say so in `risks`: the
+default plan is one entry per item. When the proposed plan differs from it, set `risks.status: present` and say so in `risks.details`: the
 report then waits for a manual accept, where the operator can pin the plan with
 `batch decide --decision accept --commit-plan-file`. Under `approval_policy: auto`, the policy
 pins the plan through `batch auto-decide --commit-plan-file` if every `expected_paths` entry lies

@@ -81,6 +81,16 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
         encoding="utf-8",
     )
 
+    def option(arguments, flag):
+        """Значение, следующее за флагом в аргументах CLI координатора."""
+        return arguments[arguments.index(flag) + 1]
+
+    def state_dir(arguments):
+        """Каталог состояния из `--state-dir` или состояние проекта по умолчанию."""
+        if "--state-dir" in arguments:
+            return Path(option(arguments, "--state-dir"))
+        return orchestration_project / ".harness/orchestration/state"
+
     def coordinator_run(*arguments, env=None):
         """Выполнить команду координатора с автоматическим вычислением transition digest при необходимости."""
         coordinator_env = dict(os.environ, FAKE_ADAPTER_LOG=str(fake_adapter_log))
@@ -121,6 +131,169 @@ print(json.dumps({"accepted": True, "dispatch_id": brief["dispatch_id"]}))
                 env=coordinator_env,
                 check=False,
             )
+
+        # Historical fixtures synthesize commits in the coordinator checkout and share one
+        # otherwise unused worker tree. Bind that fixture tree explicitly at each handoff.
+        # Tests that provide --worktree exercise their own runtime path without this preparation.
+        if "batch" in arguments and "create" in arguments and "--worktree" in arguments:
+            fixture_tree = Path(option(arguments, "--worktree"))
+            if fixture_tree.name == "shared-worktree" and fixture_tree.is_dir():
+                head = run_step(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=orchestration_project,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                run_step(
+                    ["git", "checkout", "--detach", head],
+                    cwd=fixture_tree,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+        if (
+            "dispatch" in arguments
+            and "send" in arguments
+            and "--worktree" not in arguments
+        ):
+            state = state_dir(arguments)
+            identity = option(arguments, "--dispatch")
+            brief = json.loads(
+                (
+                    lifecycle_records(state) / "dispatches" / f"{identity}.json"
+                ).read_text(encoding="utf-8")
+            )
+            selected = (
+                Path(option(arguments, "--checkout"))
+                if "--checkout" in arguments
+                else Path(brief["worktree"])
+            )
+            if selected.name == "shared-worktree":
+                startup = (
+                    brief.get("snapshot_commit")
+                    or brief.get("candidate_commit")
+                    or brief["base_commit"]
+                )
+                run_step(
+                    ["git", "checkout", "--detach", startup],
+                    cwd=selected,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                if brief["role"] in {"architect", "developer", "conflict-resolver"}:
+                    run_step(
+                        [
+                            "git",
+                            "checkout",
+                            "--ignore-other-worktrees",
+                            brief["branch"],
+                        ],
+                        cwd=selected,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+                arguments.extend(["--worktree", str(selected)])
+                try:
+                    return run_once(arguments)
+                finally:
+                    run_step(
+                        ["git", "checkout", "--detach", startup],
+                        cwd=selected,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+
+        # Legacy clean-room scenarios simulate a worker separately from the coordinator.
+        # Supply that worker's selected checkout and attach writers to their actual issue branch
+        # for startup proof; explicit --worktree scenarios keep their own negative/positive paths.
+        if (
+            "dispatch" in arguments
+            and "self-report" in arguments
+            and "--worktree" not in arguments
+        ):
+            state = state_dir(arguments)
+            identity = option(arguments, "--dispatch")
+            records = lifecycle_records(state)
+            brief = json.loads(
+                (records / "dispatches" / f"{identity}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            status = json.loads(
+                (records / "dispatch-status" / f"{identity}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            selected = Path(status.get("worker_worktree") or brief["worktree"])
+            arguments.extend(["--worktree", str(selected)])
+            if selected.name == "shared-worktree" and brief["role"] in {
+                "architect",
+                "developer",
+                "conflict-resolver",
+            }:
+                run_step(
+                    ["git", "checkout", "--ignore-other-worktrees", brief["branch"]],
+                    cwd=selected,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+                try:
+                    return run_once(arguments)
+                finally:
+                    run_step(
+                        ["git", "checkout", "--detach"],
+                        cwd=selected,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    )
+
+        if (
+            "dispatch" in arguments
+            and "create" in arguments
+            and "--role" in arguments
+            and option(arguments, "--role") == "developer"
+            and "--candidate-commit" not in arguments
+            and (
+                "--purpose" not in arguments or option(arguments, "--purpose") == "work"
+            )
+        ):
+            state = state_dir(arguments)
+            batch_id = option(arguments, "--batch")
+            batch = json.loads(
+                (lifecycle_records(state) / "batches" / f"{batch_id}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            if batch.get("next_action") == "developer":
+                known = run_step(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=orchestration_project,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+                if known != batch.get("branch_start_commit", batch["base_commit"]):
+                    # These legacy fixtures prepared code before requesting their initial writer.
+                    # The operator approves that existing progress as the explicit startup anchor.
+                    arguments.extend(["--candidate-commit", known])
+                    # All progress was synthesized on main; fast-forward the fixture's worker
+                    # branch to that same existing commit before selecting its startup anchor.
+                    run_step(
+                        ["git", "merge-base", "--is-ancestor", batch["branch"], known],
+                        cwd=orchestration_project,
+                        check=True,
+                    )
+                    run_step(
+                        ["git", "update-ref", f"refs/heads/{batch['branch']}", known],
+                        cwd=orchestration_project,
+                        check=True,
+                    )
 
         # An explicit approval is bound to the transition it was shown: mirror the operator, who runs
         # `dispatch propose` with the same arguments and approves the digest it prints.

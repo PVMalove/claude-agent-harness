@@ -62,7 +62,7 @@ _Avoid_: шаблонные артефакты, foundation-файлы.
 заменять или добавлять скиллы.
 _Avoid_: пакет, набор скиллов.
 
-В текущем составе `pvmalove-suite` 11 скиллов переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
+В текущем составе `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 **Vendor-скилл**:
 Скилл из байт-в-байт snapshot закреплённого upstream-источника в `skills/vendor/`, связанный с
@@ -91,7 +91,8 @@ _Avoid_: рассинхронизация, устаревание.
 **Проектный конфиг** (`.harness/project.json`):
 Источник проектных значений для `qa-gate`, `pr-composer`, `code-review`, `to-guide` и branch
 hooks: `language`, `base_branch`, `branch_pattern` и `qa_gate_commands`; необязательны `$schema`,
-`story_points`, `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
+`story_points`, `test_paths` (тестовые пути, единственная зона записи тест-автора; без поля
+тест-автор выключен) и `shell` (какой шелл `qa-gate` использует для `qa_gate_commands` — `bash` по
 умолчанию или `powershell` для native-Windows checkout) и `tracker` (явный трекер проекта:
 `type`, `host`, `project`). Форма описана в
 `harness/project/project.schema.json`, а `harness health` применяет тот же строгий контракт и
@@ -262,10 +263,11 @@ role manifests, config contract, lifecycle, handoff и optional runtime adapter 
 _Avoid_: неявное включение orchestration, изменение базовой capability.
 
 **Batch lifecycle**:
-Coordinator-owned последовательность `planned → awaiting-approval ↔ active → completed | blocked |
-failed`. Batch хранит ticket, issue-ветку, worktree и историю evidence; он содержит несколько
+Coordinator-owned последовательность `planned → awaiting-approval ↔ active`; `paused`, `blocked`
+и `failed` допускают ручное восстановление, `completed` и `abandoned` терминальны. Batch хранит ticket, issue-ветку, worktree и историю evidence; он содержит несколько
 последовательных dispatch с отдельными immutable brief и terminal outcome. Повторная попытка — новый
-dispatch с новым immutable brief, а не возврат состояния назад.
+dispatch с новым immutable brief. Rewind выбирает предыдущий gate через sealed audit event,
+сохраняет Git history и исключает зависимое старое evidence. После recovery действует manual_all.
 _Avoid_: self-transition воркера, повторное использование старого dispatch.
 
 **Worker session**:
@@ -436,6 +438,16 @@ Project-owned выбор в assignment plan роли — исполнять её
 in-process субагент текущей сессии. Оба варианта подчиняются одному brief/report контракту и обязаны
 проходить model self-report.
 _Avoid_: жёсткая привязка роли к одному транспортному механизму.
+
+**Тест-автор** (test author):
+In-session субагент developer, не роль оркестрации: пока `test-author-preflight.sh` возвращает `ok`,
+developer вызывает его перед каждым шагом реализации и передаёт требование, seam, публичные сигнатуры
+и fixtures. Автор пишет один тест следующего шага цикла Red→Green→Refactor только в тестовых путях
+проекта, сам запускает его и коротко возвращает `status` (`red`, `needs_skeleton`, `contract_gap`),
+идентификатор теста и санитизированное доказательство Red. Production-код, включая скелет под тест,
+пишет developer; границы и seams берутся из architect brief (в `/fast-implement` — из заранее
+согласованных seams). Не имеет manifest, dispatch, brief и report и не меняет ledger.
+_Avoid_: QA, write role, независимый reviewer, роль оркестрации.
 
 **Discovery Context**:
 Собранный агентом и выверенный человеком (explicit opt-in) список релевантных путей файлов, передаваемый от Эпика к тикетам для исключения слепого поиска при разработке. В момент `/grilling` сохраняется в `docs/tasks/issue-<N-или-slug>-<slug>/artifacts/` (постоянный локальный архив задач); `/to-spec` дополнительно вписывает тот же список в текст эпика под «## Relevant Files (Discovery Context)».

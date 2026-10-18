@@ -13,12 +13,13 @@
 | [ADR](./adr/) | Девять действующих архитектурных контрактов по доменам. |
 | [Диаграммы](./diagrams/README.md) | Archify JSON, интерактивные HTML и PNG. |
 | [Справочник харнесса](./harness-guide.md) | Установка, команды CLI, `health`, `console`, skills и hooks. |
+| [Настройка в консоли](./console-configuration.md) | Выбор целевого проекта, мастер JSON, версии, откат и необязательные CLI-подсказки. |
 | [Backend-оркестрация](./backend-orchestration.md) | Конфиг, coordinator, роли и lifecycle batch. |
 | [Technical English](../harness/docs/technical-english.md) | Общий контракт английской координации агентов, доставляемый в каждую установку. |
 | [Technical Russian](./technical-russian.md) | Правила технического русского языка и формат Keep a Changelog. |
-| [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards и pr-composer. |
+| [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards, pr-composer и test-author. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
-| [Hooks](./hooks/) | Русские описания двенадцати проектных hooks. |
+| [Hooks](./hooks/) | Русские описания проектных hooks и вспомогательных скриптов, включая `run-test.sh`, `test-author-guard.py` и `test-author-preflight.sh`. |
 | [Runtime discovery](./runtime-discovery.md) | Обнаружение skills в Claude Code и Codex. |
 
 [releases.md](./agents/releases.md) описывает порядок выпуска версии, а также проверку приватных

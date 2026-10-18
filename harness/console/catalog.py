@@ -30,6 +30,7 @@ class Reversibility(Enum):
     TERMINAL_COORDINATOR_ACTION = "terminal-coordinator-action"
     EXTERNAL_CHANGE = "external-change"
     OVERWRITES_MANAGED_FILES = "overwrites-managed-files"
+    DOWNLOADS_FILES = "downloads-files"
 
 
 # Why an irreversible class needs a confirmation - shown on the confirmation screen.
@@ -43,6 +44,9 @@ CONFIRMATION_REASONS = {
     ),
     Reversibility.OVERWRITES_MANAGED_FILES: (
         "Команда перезаписывает файлы харнесса в проекте (управляемые или seed) — незакоммиченные правки в них пропадут."
+    ),
+    Reversibility.DOWNLOADS_FILES: (
+        "Команда скачивает файлы из сети (PyPI, нужны доступ и время) и заменяет локальный bundle парсеров проекта."
     ),
 }
 
@@ -98,6 +102,30 @@ class CatalogEntry:
     def cli_line(self, repo: Path, values: Mapping[str, str] | None = None) -> str:
         """Возвращает экранированную строковую команду CLI для отображения в интерфейсе."""
         return shlex.join(self.cli_argv(repo, values))
+
+
+def seed_update_entry(paths: Sequence[str]) -> CatalogEntry:
+    """`harness update` that overwrites only the chosen seed files (`--force-seed-file` per path)."""
+    flags = tuple(part for path in paths for part in ("--force-seed-file", path))
+    return CatalogEntry(
+        "update-seed-selected",
+        "Обновить харнесс с перезаписью выбранных seed-файлов",
+        ("harness", "update", "{repo}", *flags),
+        Reversibility.OVERWRITES_MANAGED_FILES,
+        "harness/bin/harness.py:cmd_update",
+    )
+
+
+def parsers_install_entry(languages: Sequence[str]) -> CatalogEntry:
+    """`harness parsers install` for the chosen languages (`--language` per language)."""
+    flags = tuple(part for key in languages for part in ("--language", key))
+    return CatalogEntry(
+        "parsers-install",
+        "Установить парсеры для выбранных языков",
+        ("harness", "parsers", "install", "{repo}", *flags),
+        Reversibility.DOWNLOADS_FILES,
+        "harness/bin/harness.py:cmd_parsers",
+    )
 
 
 def process_argv(
@@ -329,5 +357,30 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         Reversibility.DELETES_LOCAL_DATA,
         f"{_COORDINATOR}:reset_ledger",
         typed_confirmation="RESET",
+    ),
+)
+
+# The Repo Map section's own commands; they are not listed in the Harness menu.
+MEMORY_COMMANDS: tuple[CatalogEntry, ...] = (
+    CatalogEntry(
+        "memory-build",
+        "Инициализировать память проекта",
+        ("harness", "memory", "build", "{repo}"),
+        Reversibility.REVERSIBLE,
+        f"{_HARNESS_CLI}:cmd_memory",
+    ),
+    CatalogEntry(
+        "memory-sync",
+        "Синхронизировать память проекта",
+        ("harness", "memory", "sync", "{repo}"),
+        Reversibility.REVERSIBLE,
+        f"{_HARNESS_CLI}:cmd_memory",
+    ),
+    CatalogEntry(
+        "memory-rebuild",
+        "Пересобрать память проекта с нуля",
+        ("harness", "memory", "rebuild", "{repo}"),
+        Reversibility.REVERSIBLE,
+        f"{_HARNESS_CLI}:cmd_memory",
     ),
 )

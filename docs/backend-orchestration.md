@@ -537,10 +537,22 @@ estimate. Побайтно идентичные файлы (например, з
 `context_package_policy.section_index_min_tokens` (по умолчанию 20000). `sections` перечисляет
 заголовки уровней 1–3 (вне fenced code) с `start_line`/`end_line`; оценка учитывает только это
 оглавление, а роль читает лишь нужные ей диапазоны строк. Файл без заголовков учитывается целиком.
+
+Python-файл при том же пороге входит как индекс символов. Он состоит из верхнеуровневых функций,
+классов и методов классов; вложенное в функции и методы не перечисляется. Остальной код файла
+покрывают указатели `module header` (до первого определения) и `module code` (между определениями,
+после последнего и блоки вроде `if TYPE_CHECKING:`), поэтому индекс ничего не скрывает. Скрытые
+`repo_map_policy.redact_symbols` символы в заголовках остаются маркером `[REDACTED-SYMBOL]`. Индекс
+применяется, только если он дешевле файла. Файл без определений, с синтаксической ошибкой или другого
+формата учитывается целиком. Если пакет не помещается в лимит, самые тяжёлые стартовые файлы, для
+которых можно построить индекс, заменяются индексом по одному, пока пакет не уложится в лимит.
+Добавленный файл так не сократить: его текст уже лежит в diff, а связанные тесты и ADR остаются в
+пакете целиком.
+
 Для Python AST извлекает сигнатуры прямых локальных зависимостей, при этом текущий
 Discovery-контракт ограничивает разворачивание одним уровнем. Неподдержанный формат получает первые
-30 строк как deterministic fallback. При превышении token limit сборка завершается ошибкой и не
-обрезает пакет молча. Legacy `--max-package-size-bytes` можно задать как дополнительную диагностику,
+30 строк как deterministic fallback. Если и после замены файлов индексами пакет не помещается
+в token limit, сборка завершается ошибкой и не обрезает пакет молча. Legacy `--max-package-size-bytes` можно задать как дополнительную диагностику,
 но он не заменяет token limit.
 
 Запись package immutable, versioned и hash-проверяема. Она shared внутри batch. Один и тот же
@@ -591,7 +603,9 @@ finding или failed QA снова проходит оценку риска.
 ## 4. Coordinator CLI и lifecycle
 
 Runtime-neutral режим не имеет команды «запустить всех». Coordinator CLI ведёт записи по
-`planned → awaiting-approval ↔ active → completed | blocked | failed`. При `manual_all` каждый
+`planned → awaiting-approval ↔ active → completed`, с восстановимыми состояниями `paused`,
+`blocked`, `failed` и окончательным отказом `abandoned`. После ручного восстановления применяется
+эффективная `manual_all`. При `manual_all` каждый
 report оставляет dispatch в `reported` до решения человека. При `low_risk` coordinator
 автоматически принимает чистый завершённый report batch, если scope batch целиком лежит в
 `low_risk_paths`. Решение он записывает в ledger. Blockers, failed checks, раскрытые risks, risk
@@ -692,6 +706,21 @@ QA, publish и рискованные переходы остаются ручн
    python .harness/orchestration/coordinator.py --repo . report submit \
      --file developer-report.json
    ```
+   В `checks_run[*].result` канонические значения — `pass`, `fail` и `not_run`; только architect
+   может использовать `not_run_architect_read_only` для совместимости со старыми brief.
+   Architect work без verification gate сохраняет пустой `checks_run`.
+   `pass` и `passed` равнозначны; старое `not-run` равнозначно `not_run`. Новые отчёты
+   сохраняются с каноническими значениями; старые immutable report читаются без перезаписи.
+   Неизвестные результаты отклоняются с `remedy` до записи canonical report. Исправьте
+   staging-файл по evidence и повторите отправку для того же dispatch: `pass` означает
+   успешную команду, `fail` — неуспешную, `not_run` — незапущенную. Автоматическое принятие
+   одинаково учитывает `pass` и `passed`.
+   Допустимость результата как evidence не означает автоматического принятия отчёта.
+   Перед решением coordinator снова проверяет report, поэтому старый записанный отчёт
+   с неизвестным результатом также получит отказ. Immutable report не редактируют;
+   для уже записанного отчёта или остановленного batch оператор отдельно выбирает
+   существующий маршрут восстановления. После `resume-stop` политика `auto` не возвращается.
+
    До следующего dispatch coordinator записывает отдельное решение. При `manual_all` или нечистом
    report человек принимает report, override-ит warning либо требует retry. При `low_risk` и чистом
    report coordinator сам записывает `accept` с rationale
@@ -1090,6 +1119,15 @@ Developer переносит коммиты над старой базой ро�
 принятого rebase-отчёта, как и его `tooling-retry`, считает от target и `changed_files`, и коммиты
 `carried_item_closure`. Если tip уйдёт ещё раз, review и QA проверяют закреплённый candidate, а ветку
 обновляет `integration refresh` при подготовке PR (ADR 0014).
+
+Batch, созданный на ветке с коммитами более раннего batch того же тикета (его `branch_start_commit`
+строго потомок `integration_base_commit`), считает свои изменения от `branch_start_commit`. От него
+считаются `changed_files` и `commit_map` отчётов developer и publish, их `scope_warnings`,
+checkpoint и `risk assess` (`--base-commit`, `review_scope`). Замещающий batch считает от
+`integration_base_commit`; так же считает batch, чей старт не потомок этой базы (после принятого
+rebase и у resolver-batch). Бриф и Context Package (`--base-commit`) остаются на
+`integration_base_commit`. Правило не отличает принятые коммиты от непроверенных: коммиты
+оставленного (`abandon`) batch новый batch не ревьюит.
 
 Delta-review после fix-forward (#625) — тоже не новый переход и не новое решение. Coordinator сам
 выбирает объём следующего code-review в `dispatch propose` и `dispatch create --role code-review`
@@ -1500,23 +1538,38 @@ python .harness/orchestration/coordinator.py --repo . batch abandon \
   --reason 'воркер умер до model self-report, решение недостижимо'
 ```
 
-Она требует явного approval и непустой причины, переводит batch в `failed`, помечает все незакрытые
+Она требует явного approval и непустой причины, переводит batch в `abandoned`, сохраняет `last_accepted`, помечает все незакрытые
 dispatch как `abandoned` и записывает решение рядом с остальными. **Она ничего не удаляет**: immutable
 brief, отчёты и QA-артефакты остаются на месте. Повторно применить её к уже терминальному batch
 нельзя.
 
-Если старт dispatch завершился блокировкой инфраструктуры или watchdog отметил отправленный dispatch
-как `stale`, продолжайте тот же batch после устранения причины:
+При подтверждённом сбое запуска продолжайте тот же batch после устранения причины:
 
 ```bash
-python .harness/orchestration/coordinator.py --repo . batch resume \
-  --batch <batch-id> --reason 'причина устранена'
+python .harness/orchestration/coordinator.py --repo . batch resume-stop \
+  --batch <batch-id> --approved-by 'имя оператора' --approved-at <текущее-время-UTC> \
+  --note 'исправлен каталог запуска воркера'
 ```
 
-Команда сохраняет принятые отчёты и `next_action` в ledger, помечает только сорванный dispatch как
-`abandoned` и переводит batch в `awaiting-approval`. Следующий `dispatch create` использует ту же
-принятую архитектуру и создаёт новый brief для прерванной роли. Для решения `block` или закрытого
-через `batch abandon` batch этот путь недоступен.
+Команда сохраняет принятые отчёты, исходный stop и `next_action`, помечает сорванный dispatch как
+`abandoned` и переводит batch в `awaiting-approval`. Следующий `dispatch create` требует нового
+approval и сохраняет контракт прерванной роли. Подробные ограничения описаны в разделе
+«Ручное восстановление и повтор этапа». Для неизвестной причины или возврата к прежнему gate используется
+`batch rewind`. `completed` и `abandoned` окончательны.
+
+Перед отправкой `dispatch send` сверяет флаги `--adapter-arg` с `dispatch --help` adapter и
+отклоняет неподдерживаемый флаг до передачи brief: dispatch остаётся одобренным и неотправленным.
+Если `--help` не отвечает, результат попадает в `adapter_preflight` как `limitation`.
+`dispatch runtime-probe --dispatch <id> --runtime-command <runtime> --runtime-arg=app-server`
+проверяет app-server runtime без worker: `model/list`, поля `thread/start` и один `turn/start` на
+ephemeral read-only thread без инструментов. Ошибка capacity, rate-limit или недоступности после
+`thread/start` даёт классифицированный сбой, а не READY. Probe ничего не пишет в ledger и не
+заменяет model self-report.
+
+Watchdog `stale` не доказывает завершение процесса. Сначала остановите воркера через его runtime,
+затем запишите `dispatch cancel --runtime-stopped` с человеческим approval и выполните rewind.
+Совместимая команда `batch resume` применяется только к прежнему ручному пути без auto/recovery.
+Для stale она также требует `--runtime-stopped`, `--approved-by` и `--approved-at`.
 
 Для незавершённого initial developer закрепите сохранённый HEAD через `--candidate-commit` при
 следующих `dispatch preflight`, `dispatch propose` и утверждённом `dispatch create`. Это startup
@@ -1557,7 +1610,7 @@ python .harness/orchestration/coordinator.py --repo . batch not-required \
   --reason 'pinned snapshot already satisfies every definition-of-done item'
 ```
 
-Команда оставляет audit evidence, отменяет незакрытые dispatch, переводит batch в `not-required` и
+Команда оставляет audit evidence, отменяет незакрытые dispatch, переводит batch в `completed` с `completion_kind: no-implementation` и
 возвращает рекомендацию закрыть связанный issue с меткой `resolution::wontfix`. Обычный write-role
 report по-прежнему обязан содержать реальный commit и exact changed files.
 
@@ -1638,7 +1691,8 @@ python .harness/orchestration/coordinator.py --repo . dispatch status \
 ```
 
 `dispatch status` показывает для каждого dispatch роль, транспорт, `resolved_model`, результат
-self-report, время последнего heartbeat, `silent_seconds` и признак `stale`. Это обобщение
+self-report, оценку `startup` (состояние worker, классификация сбоя, неизвестные), время
+последнего heartbeat, `silent_seconds` и признак `stale`. Это обобщение
 QA-lease-expiry на любой dispatch, а не только на clean-room QA lane. Stale — блокер, который
 coordinator выносит человеку, а сам по таймауту состояние не меняет.
 
@@ -1657,9 +1711,11 @@ coordinator выносит человеку, а сам по таймауту с�
 ### Занятый ledger, `report complete` и `ledger release-lock`
 
 Каждая команда coordinator-а берёт эксклюзивный lock ledger-а (`.coordinator.lock` в каталоге
-state). Lock записывает владельца — `pid`, `host` и `acquired_at`. Держит lock тот, кто первым
-эксклюзивно создал эту запись. Процесс получает отказ и не пишет в чужой lock, если его ещё пустой
-каталог lock успели снять и занять снова. Пока lock держит другая операция, команда записи
+state). Lock записывает владельца — `pid`, `host` и `acquired_at`. На платформе с `/proc` запись
+дополняют `pid_namespace` (ссылка `/proc/self/ns/pid`) и `boot_id`, а также `operation` — команда
+coordinator-а, которая взяла lock. Старые записи без этих полей читаются как раньше. Держит lock
+тот, кто первым эксклюзивно создал эту запись. Процесс получает отказ и не пишет в чужой lock,
+если его ещё пустой каталог lock успели снять и занять снова. Пока lock держит другая операция, команда записи
 завершается ошибкой `ledger is locked by another operation`. Её remedy предлагает повторить
 команду и называет `ledger release-lock`, а не ручное удаление.
 
@@ -1678,6 +1734,19 @@ lock. У остальных команд занятый lock остаётся о
 останавливается на шаге, который не смог прочитать состояние. Она ничего не пишет и в remedy
 называет себя для повтора.
 
+Состояние lock показывает команда только для чтения. Она не берёт lock и поэтому работает, когда
+ledger занят:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger lock-status
+```
+
+Ответ — `{"locked": false}` или объект с полями `acquired_at`, `held_seconds`, `owner`,
+`operation`, `verdict` (вердикт из таблицы ниже), `stale_after_seconds`, `remaining_seconds` (сколько
+осталось до снятия по таймауту, не меньше нуля) и `release_available` (снимет ли lock обычный
+`release-lock` прямо сейчас). Те же сведения показывает панель «Lock ledger» в разделе оркестрации
+консоли Harness; время удержания и остаток обновляются на живом экране.
+
 Lock, который остаётся занятым, снимает только команда с проверкой владельца:
 
 ```bash
@@ -1688,8 +1757,10 @@ python .harness/orchestration/coordinator.py --repo . ledger release-lock
 
 | Владелец lock | Вердикт |
 | --- | --- |
-| Процесс владельца жив (на этом host) | отказ `owner-alive` — при любом возрасте lock |
+| Процесс владельца жив (на этом host, в том же PID-пространстве и загрузке) | отказ `owner-alive` — при любом возрасте lock |
 | Владелец на другом host | отказ `owner-on-another-host`: запустите команду на том host |
+| Владелец из другого PID-пространства или другой загрузки, lock младше `LEDGER_LOCK_STALE_SECONDS` | отказ `owner-in-other-environment`: pid воркера из sandbox (`--unshare-pid`) указывает на чужой процесс, поэтому его не проверить |
+| Владелец из другого PID-пространства или другой загрузки, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
 | Процесс владельца завершился (на этом host) | снимается, `owner-dead` |
 | Нет читаемой записи владельца, lock младше `LEDGER_LOCK_STALE_SECONDS` (3600 с) | отказ `owner-unknown-recent`; remedy называет, через сколько секунд lock можно снять |
 | Нет читаемой записи владельца, lock старше `LEDGER_LOCK_STALE_SECONDS` | снимается, `owner-unknown-stale` |
@@ -1718,6 +1789,23 @@ lock при этом не трогается. Объект `lock` описыва
 снимает сама при выходе процесса. Второй параллельный запуск получает отказ
 `another ledger release-lock is releasing the ledger lock` и повторяется после первого. Удалять lock
 или другие файлы state вручную нельзя.
+
+Если lock оставил остановленный воркер, а его pid совпал с живым процессом (старая запись без
+`pid_namespace`, вердикт `owner-alive`), или ждать таймаута нельзя, оператор снимает lock
+принудительно:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger release-lock --force \
+  --approved-by "<оператор>" --approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --reason "<почему владелец не завершит операцию>"
+```
+
+Без `--approved-by`, `--approved-at` или `--reason` команда отказывает; одобрение `policy:...`
+отвергается, а при `human_approval_gate: tty` его нужно подтвердить на терминале. Ни одна политика,
+включая `auto`, эту команду не запускает. Перед снятием команда пишет неизменяемую запись аудита в
+`lock-audit/` каталога state: кто и когда одобрил, причину, вердикт проверки и прежнее состояние
+lock. `ledger validate` проверяет целостность этих записей. В консоли то же действие — команда
+«Снять lock ledger» с подтверждением.
 
 ### Отчётность и мониторинг токенов: `dispatch telemetry`
 
@@ -1862,7 +1950,7 @@ Report и артефакт с подготовкой несут `qa_stages`. Н�
 exit code и санитизированная диагностика упавшей команды. Также они несут `failed_stage` и
 `code_checks_started` (`started`, `not_started` или `unknown`). Записи сверяются с неизменяемым
 артефактом: команды и exit codes должны совпасть с его блоками. Если подготовка упала, команды gate
-в `checks_run` записываются как `not-run`. Это не выдуманная упавшая проверка кода.
+в `checks_run` записываются как `not_run`. Это не выдуманная упавшая проверка кода.
 
 Причину провала подготовки подтверждают независимые факты: ни exit code, ни ключевое слово в логе
 не решают в одиночку, а сама стадия подготовки инфраструктурную причину не доказывает. Сигнатуры
@@ -2339,6 +2427,29 @@ python .harness/orchestration/advisory.py classify-risk --text "data migration f
 
 ## 5. Необязательный внешний adapter
 
+Capability `backend-orchestration` поставляет два стандартных адаптера:
+`.harness/adapters/claude_worker.py` для Claude Code и `.harness/adapters/codex_worker.py` для Codex.
+Их устанавливают `harness init`/`adopt`, а обычный `harness update <repo>` восстанавливает
+отсутствующие файлы и обновляет управляемые версии. В настройках консоли доступны состояния,
+просмотр плана и явное подтверждение; текущий состав capability сохраняется.
+
+Для уже одобренного dispatch с выбранным `external` используйте адаптер назначенного runtime:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/claude_worker.py
+```
+
+Для Codex замените путь адаптера на `/path/to/project/.harness/adapters/codex_worker.py`.
+Coordinator запускает `.py` через свой Python в checkout worker. Параметры модели и effort
+берутся из immutable brief, lifecycle-промпт передаётся через stdin. Claude ограничивает
+дополнительный доступ каталогом входящих отчётов и использует нативный `allowed_tools`;
+Codex передаёт этот список в промпте, а sandbox выбирает по `access`: `read-only` или
+`workspace-write`. Это не нативный фильтр инструментов Codex.
+Оба адаптера отклоняют `qa`, `purpose: publish`, другой transport и отсутствующий `allowed_tools`.
+Ранний выход worker, даже с кодом `0`, возвращает ошибку запуска и конец лога.
+Для проверки команды без модели есть `dispatch --dry-run`, для тестового executable —
+`--claude-bin`/`--codex-bin`, для строк developer-retry — `--extra-prompt-file`.
+
 Для `transport: "external"` проект передаёт `--adapter <path>` в `dispatch send`. Это transport-only
 граница. Coordinator передаёт этому исполняемому файлу одобренный immutable brief через `--repo` и
 `--brief`.
@@ -2363,3 +2474,88 @@ approval для dispatch, review и QA для одного SHA, локально
 только для транспорта. Превращение `/implement` в coordinator-driven конвейер по умолчанию, model
 self-report, dispatch watchdog, per-role transport и zero-config дефолты зафиксированы в
 [ADR 0005](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0005-implement-pipeline.md).
+
+## Ручное восстановление и повтор этапа
+
+`batch auto-report` только читает состояние. Обнаруженная причина находится в `observed_stop`.
+Чтобы записать остановку, явно вызовите `batch auto-decide`: batch перейдёт в `paused`, даже если
+воркер не успел отправить report. Повторный вызов в paused не изменит ledger.
+
+```bash
+python .harness/orchestration/coordinator.py --repo . ledger validate
+python .harness/orchestration/coordinator.py --repo . batch resume-stop \
+  --batch <id> --approved-by '<оператор>' --approved-at '<текущий UTC>' --note 'worker checkout fixed'
+python .harness/orchestration/coordinator.py --repo . batch rewind \
+  --batch <id> --to code-review --approved-by '<оператор>' --approved-at '<текущий UTC>' --note 'repeat review'
+```
+
+`resume-stop` подходит для подтверждённого worktree/model mismatch или отказа ОС запустить adapter,
+но перезапускает только worker с известным исходом: `absent`, `reported`, `rejected-at-startup`
+или `stopped`. Для отклонённого self-report контракт прежний: одобрение человека выводит dispatch из
+обращения, а ledger отклоняет его поздние записи. Если `dispatch status` показывает `live` или
+`unknown`, команда отказывает и ничего не меняет: остановите worker через его runtime и повторите
+её с `--runtime-stopped`. Отсутствующий self-report `resume-stop` не подтверждает: остановите worker
+и запишите `dispatch cancel --runtime-stopped`. Если структурного доказательства нет, осторожная текстовая эвристика ищет инфраструктурную причину
+(rate limit, timeout, сеть, падение runtime, ресурсы, недоступный сервис) в `blockers` blocked
+report и в ошибке runtime. Признак проблемы с тестами, линтером, типами, конфликтом, scope или
+требованиями перевешивает; неизвестный текст остаётся неизвестным. Совпадение записывается в
+событие как `classification` с `method: heuristic`; оно лишь предлагает причину, а решает
+человеческий approval. Он сохраняет роль, scope, candidate и fix-forward findings. Повтор получает новый dispatch ID,
+context и approval. Операционная попытка не расходует второй developer retry. При паузе из-за
+бюджета или неизвестной причины можно вернуть pending report для ручного решения. Когда бюджет
+инфраструктурных повторов исчерпан, `resume-stop` отказывает, а batch остаётся в состоянии остановки
+до решения человека: ждать, исправить запуск, изменить attention policy, выполнить `rewind` или
+отдельно решить `batch abandon`; счётчики не сбрасываются. Грязные файлы, неизвестный SHA, failed
+checks и новые code findings требуют обычного маршрута исправления.
+
+После восстановления действует `manual_all`, включая продолжение после 429. Исходные `auto_stop`
+и `auto_report` остаются историей. Новый отчёт показывает текущий прогресс и `historical_report`.
+`blocked` и `failed` удерживают ticket/branch/worktree; повторный batch до их закрытия запрещён.
+Оба abandon-пути записывают `abandoned` и `last_accepted`. Старый `failed` можно supersede только
+при доказанном человеческом abandon; обычный failed не является отказом от работы.
+
+Rewind выбирает достигнутую стадию `architect`, `developer`, `code-review`, `qa` или `publish`.
+`verification` требует зарегистрированного candidate, `resolve-conflict` — resolver boundary.
+Старые зависимые approvals/reports/risk/QA исключаются из активной цепочки, но не удаляются.
+HEAD и commit objects остаются на месте. После возврата к architect нужен новый принятый план;
+после возврата к writer новая попытка расходует developer retry budget. Ни один счётчик не
+обнуляется. До первого accept сохраняется требование `batch approve`.
+
+Если report стадии `blocked` только из-за сбоя инфраструктуры, а работа по report выглядит
+завершённой (например, коммиты developer соответствуют плану, но передача на review упала),
+человек может принять стадию условно:
+
+```bash
+python .harness/orchestration/coordinator.py --repo . batch decide --batch <id> \
+  --decision accept-conditional --infrastructure-failure --note '<проверенная причина>' \
+  --approved-by '<оператор>' --approved-at '<текущий UTC>'
+```
+
+Решение записывается как `accept-conditional`, пайплайн идёт дальше, как после `accept`, а стадия
+остаётся открытым условием batch. Условие независимо закрывает безусловный `accept` более
+позднего gate: code-review или qa для architect, developer и verification; qa для code-review и
+qa. Пока условие открыто, publish и завершение отказывают. Условный qa не считается зелёным QA,
+поэтому publish всё равно требует реального QA. Условный publish принимается, только если remote
+branch уже указывает на candidate. Report должен быть `blocked` без failed checks, остальные
+проверки обычного `accept` (план коммитов, scope, DoD) сохраняются. Rewind снимает условия
+отменённых dispatch. Если стадию можно просто перезапустить, предпочтительнее `resume-stop`.
+
+Живой worker нужно сначала остановить средствами runtime. Затем оператор записывает
+`dispatch cancel --runtime-stopped` с approved_by/approved_at/reason. Timeout не доказывает остановку.
+После этого можно выполнить rewind. Старый dispatch больше не принимает heartbeat/report/checkpoint.
+
+Для старого pinned batch новые recovery-команды используют установленный runtime. Событие с
+человеческим approval связывает исходный pin с новым control runtime и сохраняет его snapshot.
+Исходный immutable plan и старые brief/report не меняются. `ledger validate` ничего не исправляет.
+
+Перед handoff передайте один абсолютный `--worktree` в preflight и send. Для writer путь должен
+совпадать с issue-worktree, branch и startup SHA. Self-report проверяет фактический каталог даже
+при одинаковом SHA двух checkout. Runtime должен уметь выбрать существующий каталог; одного
+`isolation: worktree` недостаточно. Coordinator остаётся в main checkout.
+
+Если writer-сессия завершилась до первого checkpoint, оператор может выполнить
+`dispatch resume --trigger startup-failure --runtime-stopped` с новым approval и `--note`.
+Файл `--file` содержит ровно `dispatch_id`, `definition_of_done`, `dependencies`, `write_paths`,
+`prohibited_changes` из brief. Чистый worktree должен оставаться на известном startup SHA.
+Команда записывает отдельное startup evidence, расходует continuation budget и требует новой
+self-report/heartbeat. Изменённый scope, неизвестные коммиты или paused batch исключают этот путь.

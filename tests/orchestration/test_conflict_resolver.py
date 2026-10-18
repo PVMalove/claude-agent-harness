@@ -355,6 +355,32 @@ class ResolveRouteTests(ResolverFixture):
 
 
 class ResolutionFlowTests(ResolverFixture):
+    def test_rewind_resolver_keeps_resolved_progress_and_pair(self) -> None:
+        tip = self.land()
+        created = self.resolve()
+        brief = self.approved_resolver_dispatch(created)["brief"]
+        self.start(brief)
+        resolved = self.resolve_in_worktree(tip)
+        self.submit(brief, self.report(brief, resolved))
+        self.fx._decide(created["batch_id"], "accept")
+        events_before = self.events()
+        coordinator.rewind_batch(
+            self.branch.args(
+                batch=created["batch_id"],
+                to="resolve-conflict",
+                note="repeat resolver evidence",
+                **self.fx._approval(),
+            )
+        )
+        self.assertEqual(_git(self.worktree, "rev-parse", "HEAD"), resolved)
+        renewed = self.fx._dispatch(created["batch_id"], "conflict-resolver")["brief"]
+        self.assertEqual(renewed["snapshot_commit"], resolved)
+        for key in ("candidate_sha", "target_sha", "sides"):
+            self.assertEqual(renewed["resolver"][key], brief["resolver"][key])
+        self.assertEqual(self.events(), events_before)
+        self.start(renewed)
+        coordinator.validate_ledger(self.branch.args())
+
     def link(self, candidate: str, target: str, kind: str) -> None:
         coordinator.integration_link_evidence(
             self.branch.args(
@@ -542,9 +568,14 @@ class ContinuationTests(ResolverFixture):
                     ),
                     "remaining_definition_of_done": brief["definition_of_done"],
                     "passing_checks": [],
-                    "risks": "the sides contradict each other",
-                    "blockers": "option keep-target drops the ticket value; "
-                    "option keep-ticket drops the upstream value",
+                    "risks": {
+                        "status": "present",
+                        "details": "the sides contradict each other",
+                    },
+                    "blockers": {
+                        "status": "present",
+                        "details": "option keep-target drops the ticket value; option keep-ticket drops the upstream value",
+                    },
                     "context_package_id": "not applicable — no context package registered",
                 }
             ),
@@ -556,7 +587,10 @@ class ContinuationTests(ResolverFixture):
         document = {
             "dispatch_id": brief["dispatch_id"],
             "remaining_definition_of_done": brief["definition_of_done"],
-            "risks": "the sides contradict each other",
+            "risks": {
+                "status": "present",
+                "details": "the sides contradict each other",
+            },
             "dependencies": brief["dependencies"],
             **override,
         }
@@ -628,7 +662,9 @@ class ContinuationTests(ResolverFixture):
         # The resumed session finishes with the decision named in its report.
         coordinator.self_report_dispatch(
             self.branch.args(
-                dispatch=brief["dispatch_id"], model="sonnet", worktree=None
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
             )
         )
         resolved = self.resolve_in_worktree(tip)
@@ -681,7 +717,9 @@ class ContinuationTests(ResolverFixture):
         self.resume(brief, termination_reason="rate_limit", trigger=None, file=None)
         coordinator.self_report_dispatch(
             self.branch.args(
-                dispatch=brief["dispatch_id"], model="sonnet", worktree=None
+                dispatch=brief["dispatch_id"],
+                model="sonnet",
+                worktree=str(self.worktree),
             )
         )
         resolved = self.resolve_in_worktree(tip)
@@ -1104,6 +1142,13 @@ class CauseRoutingTests(ResolverFixture):
             self.report(brief, unresolved, outcome="blocked", cause="task-defect"),
         )
         self.fx._decide(created["batch_id"], "fail")
+        coordinator.abandon_batch(
+            self.fx._args(
+                batch=created["batch_id"],
+                reason="operator closes failed resolver",
+                **self.fx._approval(),
+            )
+        )
         self.land(content="VALUE = 'three'\n")
         with self.assertRaises(CoordinatorError) as raised:
             self.resolve()

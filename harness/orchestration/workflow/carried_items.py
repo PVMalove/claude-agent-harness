@@ -24,7 +24,6 @@ import argparse
 import hashlib
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import cast
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import operational_guards
@@ -32,6 +31,7 @@ from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import _reject_sensitive
 from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
     CARRIED_ITEM_ACCOUNTING_FIELDS,
     CARRIED_ITEM_CLOSED_FIELDS,
     CARRIED_ITEM_FIELDS,
@@ -62,6 +62,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _state_root,
 )
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow.history import (
@@ -236,7 +237,7 @@ def attach(
 def _settled_item_ids(root: Path, batch: JsonObject) -> set[str]:
     """Items a code-review brief carried and whose review was accepted or warning-overridden."""
     settled: set[str] = set()
-    for entry in batch.get("dispatches", []):
+    for entry in active_dispatches(batch):
         if entry.get("role") != "code-review" or not _accepted(entry):
             continue
         section = _load_dispatch(root, entry["dispatch_id"]).get("carried_items") or {}
@@ -425,10 +426,7 @@ def _incomplete_brief_items(
 
 def _accepted(entry: JsonObject) -> bool:
     decision = entry.get("decision")
-    return isinstance(decision, dict) and decision.get("decision") in {
-        "accept",
-        "override-warning",
-    }
+    return isinstance(decision, dict) and decision.get("decision") in ACCEPTED_DECISIONS
 
 
 def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[JsonObject]:
@@ -440,7 +438,7 @@ def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[Json
     """
     settled = {
         item["item_id"]
-        for entry in batch.get("dispatches", [])
+        for entry in active_dispatches(batch)
         if entry.get("role") == role and _accepted(entry)
         for item in (
             _load_dispatch(root, entry["dispatch_id"]).get("carried_items") or {}
@@ -448,7 +446,7 @@ def open_incomplete_items(root: Path, batch: JsonObject, role: str) -> list[Json
     }
     return [
         item
-        for entry in batch.get("dispatches", [])
+        for entry in active_dispatches(batch)
         if _accepted(entry) and _hands_incomplete_items(entry)
         for item in _incomplete_brief_items(root, batch, entry)
         if item["source"]["target_role"] == role and item["item_id"] not in settled
@@ -887,7 +885,7 @@ def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
     dispatch may follow it (``batch resume`` abandons a stale or blocked one, which never reports): a created code-review dispatch (or a qa dispatch a policy chain created) already
     holds the brief the findings would have to be in.
     """
-    entries = batch.get("dispatches", [])
+    entries = active_dispatches(batch)
     if any(
         item.get("state") == "reported" and "decision" not in item for item in entries
     ):
@@ -922,7 +920,7 @@ def _carry_over_target(root: Path, batch: JsonObject) -> JsonObject:
             f"batch carry-over requires a batch awaiting approval, not {batch.get('state')!r}",
             remedy="carry findings over only while the batch awaits its next dispatch",
         )
-    return cast(JsonObject, entries[position])
+    return entries[position]
 
 
 def carry_over_routing(candidate: str, item_ids: list[str]) -> JsonObject:

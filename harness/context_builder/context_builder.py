@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -61,8 +62,8 @@ class StartingFile:
 
     path: str
     reason: str
-    # Non-empty only for a large Markdown file seeded as an index: the role reads only the line
-    # ranges it needs, and the package charges the index instead of the whole file.
+    # Non-empty only for a large Markdown or Python file seeded as an index: the role reads only the
+    # line ranges it needs, and the package charges the index instead of the whole file.
     sections: list[SectionPointer] = field(default_factory=list)
 
 
@@ -557,6 +558,96 @@ def _markdown_sections(text: str) -> list[SectionPointer]:
     ]
 
 
+_PythonDefinition = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+_PYTHON_DEFINITION_KEYWORDS: dict[type[ast.AST], str] = {
+    ast.ClassDef: "class",
+    ast.AsyncFunctionDef: "async def",
+    ast.FunctionDef: "def",
+}
+# The redaction marker is not a valid identifier: parse it as one, and show the marker again in headings.
+_REDACTED_SYMBOL_PLACEHOLDER = "REDACTED_SYMBOL"
+
+
+def _definition_pointer(node: _PythonDefinition, level: int) -> SectionPointer:
+    """Построить указатель на определение: диапазон начинается с первого декоратора."""
+    name: str = node.name.replace(_REDACTED_SYMBOL_PLACEHOLDER, _REDACTED_SYMBOL_MARKER)
+    return SectionPointer(
+        heading=f"{_PYTHON_DEFINITION_KEYWORDS[type(node)]} {name}",
+        level=level,
+        start_line=min([node.lineno, *(item.lineno for item in node.decorator_list)]),
+        end_line=cast(int, node.end_lineno),
+    )
+
+
+def _module_code_pointer(
+    lines: list[str], covered: int, until: int
+) -> SectionPointer | None:
+    """Указатель на код вне определений между строками `covered` и `until`, если там есть код."""
+    if not any(line.strip() for line in lines[covered:until]):
+        return None
+    return SectionPointer(
+        heading="module header" if covered == 0 else "module code",
+        level=1,
+        start_line=covered + 1,
+        end_line=until,
+    )
+
+
+def _python_sections(text: str) -> list[SectionPointer]:
+    """Извлечь индекс Python-файла: код вне определений, функции, классы и методы классов с диапазонами строк.
+
+    Указатели `module header` (до первого определения) и `module code` (между определениями, после
+    последнего и блоки вроде `if TYPE_CHECKING:`) покрывают остальной код файла, поэтому индекс не
+    скрывает ничего. Вложенное в функции и методы не перечисляется. Маркер скрытого символа
+    разбирается как идентификатор. Синтаксическая ошибка, пустой файл или файл без определений дают
+    пустой список: вызывающий код оставляет такой файл целиком.
+    """
+    try:
+        tree: ast.Module = ast.parse(
+            text.replace(_REDACTED_SYMBOL_MARKER, _REDACTED_SYMBOL_PLACEHOLDER)
+        )
+    except (SyntaxError, ValueError):
+        return []
+    lines: list[str] = text.splitlines()
+    sections: list[SectionPointer] = []
+    covered: int = 0
+    for node in tree.body:
+        if not isinstance(node, _PythonDefinition):
+            continue
+        pointer: SectionPointer = _definition_pointer(node, 1)
+        gap = _module_code_pointer(lines, covered, pointer.start_line - 1)
+        sections.extend([gap] if gap else [])
+        sections.append(pointer)
+        covered = pointer.end_line
+        if isinstance(node, ast.ClassDef):
+            sections.extend(
+                _definition_pointer(child, 2)
+                for child in node.body
+                if isinstance(child, _PythonDefinition)
+            )
+    if not sections:
+        return []
+    tail = _module_code_pointer(lines, covered, len(lines))
+    return [*sections, *([tail] if tail else [])]
+
+
+def _file_sections(path: str, text: str) -> list[SectionPointer]:
+    """Построить индекс разделов файла по расширению: Markdown или Python, иначе пустой список."""
+    if path.endswith(".md"):
+        return _markdown_sections(text)
+    if path.endswith(".py"):
+        sections = _python_sections(text)
+        # An index dearer than the file (e.g. thousands of one-line functions) saves nothing.
+        if estimate_tokens(_sections_payload(sections)) < estimate_tokens(text):
+            return sections
+    return []
+
+
+def _sections_payload(sections: list[SectionPointer]) -> str:
+    """Сериализовать индекс разделов так, как он попадает в полезную нагрузку пакета."""
+    return json.dumps([asdict(section) for section in sections], ensure_ascii=False)
+
+
 def _keywords_for(paths: list[str]) -> set[str]:
     """Сформировать множество ключевых слов из путей файлов для ранжирования прецедентов."""
     keywords: set[str] = set()
@@ -754,19 +845,88 @@ def build_context_package(
         original = first_by_hash.setdefault(file_hashes[path], path)
         if original != path:
             mirror_of[path] = original
-    # A large Markdown document (e.g. an agent guide) is seeded as a section index, so the role reads
-    # only the sections the task needs instead of the whole file.
+    # A large Markdown document (e.g. an agent guide) or Python module is seeded as a section index,
+    # so the role reads only the sections the task needs instead of the whole file.
     sections_by_path: dict[str, list[SectionPointer]] = {}
+
+    file_tokens: dict[str, int] = {
+        path: estimate_tokens(content) for path, content in contents.items()
+    }
+
+    def seed_section_index(path: str, *, min_tokens: int) -> None:
+        """Заменить содержимое файла индексом, если файл не зеркало, не меньше порога и индекс дешевле."""
+        if path in mirror_of or file_tokens[path] < min_tokens:
+            return
+        sections = _file_sections(path, contents[path])
+        if sections:
+            sections_by_path[path] = sections
+
     if section_index_min_tokens is not None:
         for path in starting_paths:
-            if (
-                path.endswith(".md")
-                and path not in mirror_of
-                and estimate_tokens(contents[path]) >= section_index_min_tokens
-            ):
-                sections = _markdown_sections(contents[path])
-                if sections:
-                    sections_by_path[path] = sections
+            seed_section_index(path, min_tokens=section_index_min_tokens)
+
+    # An added file's unified diff already contains 100% of its content as `+` lines, so counting
+    # `contents[path]` again for the token/size estimate would double-count the exact same bytes
+    # without adding information (unlike a modified file, where the diff is only hunks and
+    # `contents[path]` genuinely adds the rest of the file).
+    added_paths: set[str] = {path for path, status in changed if status == "added"}
+    static_parts = [
+        diff,
+        json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
+        json.dumps(
+            [asdict(card) for card in precedent_cards],
+            ensure_ascii=False,
+            sort_keys=True,
+        ),
+    ]
+
+    def render_payload(section: dict[str, object]) -> str:
+        return "\n".join(
+            [
+                json.dumps(
+                    {
+                        "goal": goal,
+                        "definition_of_done": definition_of_done or [],
+                        "memory": section,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+                *static_parts,
+                *[
+                    _sections_payload(sections_by_path[path])
+                    if path in sections_by_path
+                    else contents[path]
+                    for path in sorted(contents)
+                    if path not in added_paths and path not in mirror_of
+                ],
+            ]
+        )
+
+    def within_budget(payload: str) -> bool:
+        return (
+            max_package_tokens is None or estimate_tokens(payload) <= max_package_tokens
+        ) and (
+            max_package_size_bytes is None
+            or len(payload.encode("utf-8")) <= max_package_size_bytes
+        )
+
+    # Code navigation is mandatory; memory can only use the budget it leaves available.
+    frozen_memory = {**memory, "pointers": []} if memory else {}
+    # A package over budget degrades before it fails: the heaviest starting files that still carry
+    # their full content become section indexes, one by one, until the payload fits.
+    if section_index_min_tokens is not None:
+        for path in sorted(
+            (
+                path
+                for path in starting_paths
+                if path not in sections_by_path and path not in added_paths
+            ),
+            key=lambda path: -file_tokens[path],
+        ):
+            if within_budget(render_payload(frozen_memory)):
+                break
+            seed_section_index(path, min_tokens=0)
     starting_files = [
         replace(
             item,
@@ -784,49 +944,6 @@ def build_context_package(
         for item in starting_files
     ]
 
-    # An added file's unified diff already contains 100% of its content as `+` lines, so counting
-    # `contents[path]` again for the token/size estimate would double-count the exact same bytes
-    # without adding information (unlike a modified file, where the diff is only hunks and
-    # `contents[path]` genuinely adds the rest of the file).
-    added_paths: set[str] = {path for path, status in changed if status == "added"}
-    core_parts = [
-        diff,
-        json.dumps(symbol_graph, ensure_ascii=False, sort_keys=True),
-        json.dumps(
-            [asdict(card) for card in precedent_cards],
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        *[
-            json.dumps(
-                [asdict(section) for section in sections_by_path[path]],
-                ensure_ascii=False,
-            )
-            if path in sections_by_path
-            else contents[path]
-            for path in sorted(contents)
-            if path not in added_paths and path not in mirror_of
-        ],
-    ]
-
-    def render_payload(section: dict[str, object]) -> str:
-        return "\n".join(
-            [
-                json.dumps(
-                    {
-                        "goal": goal,
-                        "definition_of_done": definition_of_done or [],
-                        "memory": section,
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                ),
-                *core_parts,
-            ]
-        )
-
-    # Code navigation is mandatory; memory can only use the budget it leaves available.
-    frozen_memory = {**memory, "pointers": []} if memory else {}
     if memory:
 
         def memory_fits(pointers: list[dict[str, object]]) -> bool:
@@ -836,14 +953,7 @@ def build_context_package(
                 > memory_max_tokens
             ):
                 return False
-            payload = render_payload(section)
-            return (
-                max_package_tokens is None
-                or estimate_tokens(payload) <= max_package_tokens
-            ) and (
-                max_package_size_bytes is None
-                or len(payload.encode("utf-8")) <= max_package_size_bytes
-            )
+            return within_budget(render_payload(section))
 
         frozen_memory["pointers"] = select_pointers(
             cast(list[dict[str, object]], memory.get("pointers", [])),

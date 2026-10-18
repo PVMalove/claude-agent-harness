@@ -32,6 +32,7 @@ from harness.orchestration.core.config import (
     _roles_dir,
 )
 from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
     ATTENTION_EVENT_KINDS,
     ATTENTION_STATE_FIELDS,
     AUTO_DECISION_FIELDS,
@@ -63,6 +64,8 @@ from harness.orchestration.core.constants import (
     PRE_APPROVAL_LEGACY_PLAN_FIELDS,
     PRE_SCOPE_PLAN_FIELDS,
     RECOVERY_ROUTES,
+    RecoveryRoute,
+    RetryReason,
     RISK_ASSESSMENT_FIELDS,
 )
 from harness.orchestration.core.git_utils import (
@@ -90,6 +93,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_risk,
     _records_root,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches, active_risks
 from harness.orchestration.workflow.approval import AUTO_APPROVER
 
 
@@ -173,12 +177,12 @@ def _risk_for_candidate(
 ) -> JsonObject | None:
     matches = [
         item
-        for item in batch.get("risk_assessments", [])
+        for item in active_risks(batch)
         if item.get("candidate_commit") == candidate
     ]
     if not matches:
         return None
-    risk = _load_risk(root, matches[-1].get("risk_assessment_id"))
+    risk = _load_risk(root, matches[-1]["risk_assessment_id"])
     _validate_risk(root, batch, risk)
     return risk
 
@@ -464,10 +468,11 @@ def _context_package_freshness(
 
 def _latest_developer_candidate(repo: Path, root: Path, batch: JsonObject) -> str:
     candidates: list[str] = []
-    for item in batch.get("dispatches", []):
-        if item.get("state") != "reported" or item.get("decision", {}).get(
-            "decision"
-        ) not in {"accept", "override-warning"}:
+    for item in active_dispatches(batch):
+        if (
+            item.get("state") != "reported"
+            or item.get("decision", {}).get("decision") not in ACCEPTED_DECISIONS
+        ):
             continue
         # Legacy dispatch ledger entries predate the explicit ``purpose`` field.
         # They are developer work dispatches unless they explicitly identify another
@@ -523,7 +528,7 @@ def _retry_handoff(
     the Context Package ID. No chat history and no logs of failed attempts reach the retry."""
     if batch.get("next_action") != "developer-retry":
         return None
-    entries = batch.get("dispatches", [])
+    entries = active_dispatches(batch)
     retried = _last_decided_entry(batch)
     if retried is None or retried["decision"].get("decision") != "retry":
         return None
@@ -575,7 +580,9 @@ def _current_developer_candidate(
     try:
         return _latest_developer_candidate(repo, root, batch)
     except CoordinatorError:
-        return _superseding_start_commit(batch)
+        from harness.orchestration.ledger.recovery_chain import writer_start
+
+        return writer_start(batch) or _superseding_start_commit(batch)
 
 
 def _superseding_start_commit(batch: JsonObject) -> str | None:
@@ -589,12 +596,22 @@ def _superseding_start_commit(batch: JsonObject) -> str | None:
 def _latest_registered_verification_candidate(repo: Path, batch: JsonObject) -> str:
     """Return the append-only candidate awaiting its read-only verification dispatch."""
     registrations = batch.get("candidate_registrations", [])
+    excluded = {
+        item
+        for event in batch.get("recovery_events", [])
+        for item in event["evidence"].get("superseded_candidate_registrations", [])
+    }
     if not isinstance(registrations, list):
         raise CoordinatorError(
             "candidate registrations are malformed",
             remedy="repair the coordinator ledger before creating another dispatch",
         )
     for registration in reversed(registrations):
+        if (
+            isinstance(registration, dict)
+            and registration.get("source_dispatch_id") in excluded
+        ):
+            continue
         if not isinstance(registration, dict):
             continue
         candidate = registration.get("candidate_commit")
@@ -610,14 +627,20 @@ def _accepted_architect(batch: JsonObject) -> bool:
     """Whether the batch has an accepted architect: its own, or the one a superseding batch
     carried by reference from the abandoned batch with the same definition of done (issue #506)."""
     link = batch.get("supersedes")
-    if isinstance(link, dict) and isinstance(link.get("architect"), dict):
+    from harness.orchestration.ledger.recovery_chain import carried_architect_active
+
+    if (
+        carried_architect_active(batch)
+        and isinstance(link, dict)
+        and isinstance(link.get("architect"), dict)
+    ):
         return True
     return any(
         item.get("role") == "architect"
         and item.get("state") == "reported"
         and isinstance(item.get("decision"), dict)
-        and item["decision"].get("decision") in {"accept", "override-warning"}
-        for item in batch.get("dispatches", [])
+        and item["decision"].get("decision") in ACCEPTED_DECISIONS
+        for item in active_dispatches(batch)
     )
 
 
@@ -625,12 +648,12 @@ def _accepted_qa_for_candidate(
     root: Path, batch: JsonObject, candidate: str
 ) -> JsonObject:
     """Return the accepted green QA report pinned to exactly ``candidate``."""
-    for entry in reversed(batch.get("dispatches", [])):
+    for entry in reversed(active_dispatches(batch)):
         if entry.get("role") != "qa" or entry.get("state") != "reported":
             continue
         if entry.get("decision", {}).get("decision") != "accept":
             continue
-        dispatch = _load_dispatch(root, entry.get("dispatch_id"))
+        dispatch = _load_dispatch(root, entry["dispatch_id"])
         if dispatch.get("candidate_commit") != candidate:
             continue
         report = _pending_report(root, batch, entry)
@@ -670,20 +693,20 @@ def _last_decided_entry(batch: JsonObject) -> JsonObject | None:
     return next(
         (
             item
-            for item in reversed(batch.get("dispatches", []))
+            for item in reversed(active_dispatches(batch))
             if isinstance(item.get("decision"), dict)
         ),
         None,
     )
 
 
-def _require_route(value: object, *, recorded: bool = False) -> str:
+def _require_route(value: object, *, recorded: bool = False) -> RecoveryRoute:
     """Return ``value`` when it is one of ``RECOVERY_ROUTES``; refuse anything else.
 
     ``recorded`` marks a route read back from a batch record rather than one about to be written.
     """
     if isinstance(value, str) and value in RECOVERY_ROUTES:
-        return value
+        return RecoveryRoute(value)
     allowed = ", ".join(RECOVERY_ROUTES)
     if recorded:
         raise CoordinatorError(
@@ -710,6 +733,14 @@ def _validate_operational_batch_fields(batch: JsonObject) -> None:
         routing = decision.get("routing") if isinstance(decision, dict) else None
         if isinstance(routing, dict) and "route" in routing:
             _require_route(routing["route"], recorded=True)
+        if isinstance(routing, dict) and routing.get("reason_category") is not None:
+            category = routing["reason_category"]
+            if not isinstance(category, str) or category not in RetryReason:
+                raise CoordinatorError(
+                    f"batch routing record carries an unknown retry reason category {category!r}",
+                    remedy=f"restore the recorded category from: {', '.join(RetryReason)} -- "
+                    + INTERNAL_INVARIANT_REMEDY,
+                )
     for entry in batch.get("context_pressure", []):
         if not isinstance(entry, dict) or set(entry) != CONTEXT_PRESSURE_FIELDS:
             raise CoordinatorError(
@@ -915,6 +946,12 @@ def _validate_auto_records(batch: JsonObject) -> None:
 
 
 def _validate_batch_integrity(root: Path, batch: JsonObject) -> None:
+    from harness.orchestration.workflow.recovery_events import validate_events
+
+    validate_events(root, batch)
+    from harness.orchestration.workflow import startup
+
+    startup.validate(root, batch)
     _validate_operational_batch_fields(batch)
     plan = _read_object(
         _records_root(root)
@@ -1099,6 +1136,14 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
         operational_guards.validate_binding(dispatch, batch.get("batch_id"))
     except operational_guards.GuardError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    recovery_digest = dispatch["transition"].get("recovery_event_sha256")
+    if recovery_digest is not None and not any(
+        e["record_sha256"] == recovery_digest for e in batch.get("recovery_events", [])
+    ):
+        raise CoordinatorError(
+            "dispatch recovery binding has no audited event",
+            remedy="create a fresh approved dispatch after a recorded recovery event",
+        )
     policy = dispatch["orchestration_policy"]
     if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
         "approval_ttl_seconds",
@@ -1232,13 +1277,16 @@ def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
     _validate_harness_runtime_snapshot(repo, batch)
+    from harness.orchestration.workflow import preserved_progress
+
+    preserved_progress.validate_dispatch(batch, dispatch)
     _reject_sensitive(dispatch, "dispatch record")
     try:
         runtime_access.validate_binding(dispatch)
     except runtime_access.AccessError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
     # Briefs are immutable. A record created before worker attestation was introduced keeps its
-    # historical shape and is treated as an explicit legacy opt-out instead of being rewritten.
+    # historical shape; mandatory writer/review startup proof is enforced by the report handler.
     pre_summary_fields = DISPATCH_FIELDS - {"context_package_summary"}
     legacy_fields = DISPATCH_FIELDS - {
         "context_package_summary",
@@ -1279,6 +1327,7 @@ def _validate_dispatch(
         for fields in set(accepted)
         if "runtime_access" in fields
     }
+    accepted |= {fields | {"preserved_progress"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
@@ -1419,7 +1468,7 @@ def _validate_dispatch(
                 + INTERNAL_INVARIANT_REMEDY,
             )
     accepted_commands = accepted_verification_commands(
-        batch, dispatch["role"], dispatch["purpose"]
+        batch, dispatch["role"], dispatch["purpose"], brief=dispatch
     )
     if dispatch["verification_commands"] not in accepted_commands:
         raise CoordinatorError(

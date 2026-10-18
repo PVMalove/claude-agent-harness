@@ -95,8 +95,8 @@ def run(ctx: SimpleNamespace) -> None:
                     "evidence": "1 passed",
                 }
             ],
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
             "next_coordinator_action": approved_action,
             "report_language": "ru",
         }
@@ -163,8 +163,8 @@ def run(ctx: SimpleNamespace) -> None:
                 "changed_files": [],
                 "remaining_definition_of_done": [],
                 "passing_checks": [],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": "not applicable — no context package registered",
             },
             indent=2,
@@ -265,6 +265,12 @@ def run(ctx: SimpleNamespace) -> None:
     checkpoint_first_sha = capture(
         ["git", "-C", str(orchestration_project), "rev-parse", "HEAD"]
     ).strip()
+    # The worker's issue branch is what the shared worktree attaches to for startup proof.
+    run_step(
+        ["git", "branch", "-f", "feature/issue-139-checkpoint", checkpoint_first_sha],
+        cwd=orchestration_project,
+        check=True,
+    )
 
     bad_context_package_file = staged_payload("checkpoint-bad-context-package.json")
     bad_context_package_file.write_text(
@@ -281,8 +287,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none yet",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "none yet"},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": "context-package-does-not-exist",
             },
             indent=2,
@@ -320,8 +326,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none yet",
-                "blockers": "none",
+                "risks": {"status": "present", "details": "none yet"},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": checkpoint_context_package_id,
             },
             indent=2,
@@ -499,8 +505,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "next_coordinator_action": "accept",
                 "report_language": "ru",
             },
@@ -524,21 +530,20 @@ def run(ctx: SimpleNamespace) -> None:
             "coordinator accepted a completion report before the resumed session's fresh self-report"
         )
 
-    if (
-        coordinator_run(
-            "--state-dir",
-            str(checkpoint_state),
-            "dispatch",
-            "self-report",
-            "--dispatch",
-            checkpoint_dev_id,
-            "--model",
-            "project-developer-model",
-        ).returncode
-        != 0
-    ):
+    resumed_self_report = coordinator_run(
+        "--state-dir",
+        str(checkpoint_state),
+        "dispatch",
+        "self-report",
+        "--dispatch",
+        checkpoint_dev_id,
+        "--model",
+        "project-developer-model",
+    )
+    if resumed_self_report.returncode != 0:
         sys.exit(
-            "coordinator rejected the resumed worker session's fresh model self-report"
+            "coordinator rejected the resumed worker session's fresh model self-report: "
+            + resumed_self_report.stderr
         )
     if (
         coordinator_run(
@@ -552,6 +557,11 @@ def run(ctx: SimpleNamespace) -> None:
         != 0
     ):
         sys.exit("coordinator rejected the resumed worker session's heartbeat")
+    run_step(
+        ["git", "branch", "-f", "feature/issue-139-checkpoint", checkpoint_second_sha],
+        cwd=orchestration_project,
+        check=True,
+    )
 
     checkpoint_two_file = staged_payload("checkpoint-session-two.json")
     checkpoint_two_file.write_text(
@@ -571,8 +581,8 @@ def run(ctx: SimpleNamespace) -> None:
                         "evidence": "1 passed",
                     }
                 ],
-                "risks": "none",
-                "blockers": "none",
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
                 "context_package_id": checkpoint_context_package_id,
             },
             indent=2,
@@ -600,7 +610,7 @@ def run(ctx: SimpleNamespace) -> None:
     facts_unchanged = {
         "dispatch_id": checkpoint_dev_id,
         "remaining_definition_of_done": [],
-        "risks": "none",
+        "risks": {"status": "none", "details": ""},
         "dependencies": ["none"],
     }
     facts_unchanged_file = staged_payload("continuation-facts-unchanged.json")
@@ -610,7 +620,13 @@ def run(ctx: SimpleNamespace) -> None:
     facts_risks_drifted_file = staged_payload("continuation-facts-risks-drifted.json")
     facts_risks_drifted_file.write_text(
         json.dumps(
-            {**facts_unchanged, "risks": "scope grew since the checkpoint"},
+            {
+                **facts_unchanged,
+                "risks": {
+                    "status": "present",
+                    "details": "scope grew since the checkpoint",
+                },
+            },
             indent=2,
         )
         + "\n",

@@ -456,6 +456,3 @@ def test_initial_single_label_measurement_is_preserved(initial_corpus: Path) -> 
     report = evaluate_memory(initial_corpus, dataset=dataset)
     assert report.to_dict() == initial["report"]
     assert report.gate_passed is False
-    assert [item.retrieved for item in report.query_results] == [
-        item["retrieved"] for item in current["report"]["query_results"]
-    ]

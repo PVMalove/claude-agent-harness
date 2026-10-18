@@ -20,7 +20,11 @@ import pytest
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config
-from harness.orchestration.core.constants import AUTO_REPORT_FIELDS, AUTO_STOP_REASONS
+from harness.orchestration.core.constants import (
+    AUTO_REPORT_FIELDS,
+    AUTO_RETRY_SEVERITIES,
+    AUTO_STOP_REASONS,
+)
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.operational_guards import ATTENTION_REASONS
 from harness.orchestration.workflow import (
@@ -146,6 +150,18 @@ class AutoConfigGateTests(unittest.TestCase):
             encoding="utf-8",
         )
         return repo
+
+    def test_auto_retry_min_severity_defaults_to_info_and_batch_can_override(
+        self,
+    ) -> None:
+        self.assertEqual(config._auto_retry_min_severity({}), "info")
+        self.assertEqual(
+            config._auto_retry_min_severity(
+                {"auto_retry_min_severity": "info"},
+                {"auto_retry_min_severity": "warning"},
+            ),
+            "warning",
+        )
 
     def test_approval_policy_refuses_auto_under_a_tty_gate(self) -> None:
         with self.assertRaises(CoordinatorError) as refused:
@@ -482,8 +498,8 @@ def _clean(role: str, **overrides: object) -> JsonObject:
     report: JsonObject = {
         "role": role,
         "outcome": "completed",
-        "blockers": "none",
-        "risks": "none",
+        "blockers": {"status": "none", "details": ""},
+        "risks": {"status": "none", "details": ""},
         "checks_run": [{"command": "pytest", "result": "pass", "evidence": "ok"}],
     }
     report.update(overrides)
@@ -495,8 +511,8 @@ def _axes(severity: str, findings: list[JsonObject]) -> JsonObject:
         axis: {
             "severity": severity,
             "findings": findings,
-            "risks": "none",
-            "blockers": "none",
+            "risks": {"status": "none", "details": ""},
+            "blockers": {"status": "none", "details": ""},
         }
         for axis in ("standards", "spec")
     }
@@ -515,6 +531,7 @@ class AutoDecisionTableTests(unittest.TestCase):
         scope: list[str] | None = None,
         bypass: bool = False,
         pressure: bool = False,
+        auto_retry_min_severity: str = "info",
     ) -> auto_policy.Choice:
         return auto_policy.category(
             stage,
@@ -524,15 +541,28 @@ class AutoDecisionTableTests(unittest.TestCase):
             block_bypass=bypass,
             candidate_moved=False,
             pressure_recorded=pressure,
+            auto_retry_min_severity=auto_retry_min_severity,
         )
 
     def test_a_clean_report_with_risks_is_accepted_and_its_risks_recorded(self) -> None:
-        report = _clean("architect", risks="the ledger schema grows", checks_run=[])
+        report = _clean(
+            "architect",
+            risks={"status": "present", "details": "the ledger schema grows"},
+            checks_run=[],
+        )
         choice = self._category("architect", report)
         self.assertEqual((choice.decision, choice.carry_incomplete), ("accept", False))
         self.assertEqual(
             auto_policy.accepted_risks({}, {}, report),
-            [{"source": "report", "risks": "the ledger schema grows"}],
+            [
+                {
+                    "source": "report",
+                    "risks": {
+                        "status": "present",
+                        "details": "the ledger schema grows",
+                    },
+                }
+            ],
         )
 
     def test_incomplete_items_of_later_roles_are_carried_with_the_accept(self) -> None:
@@ -555,6 +585,102 @@ class AutoDecisionTableTests(unittest.TestCase):
             "code-review", _clean("code-review", review=_axes("warning", [finding]))
         )
         self.assertEqual((choice.decision, choice.reason_category), ("retry", None))
+
+    def test_info_review_findings_are_accepted_when_threshold_is_warning(self) -> None:
+        findings = [
+            {"severity": "info", "summary": f"context {n}", "evidence": "reviewed"}
+            for n in range(4)
+        ]
+        review = {
+            "recommendation": "accept",
+            "standards": {
+                "severity": "clean",
+                "findings": findings[:2],
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
+            },
+            "spec": {
+                "severity": "clean",
+                "findings": findings[2:],
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
+            },
+        }
+        choice = self._category(
+            "code-review",
+            _clean("code-review", review=review),
+            auto_retry_min_severity="warning",
+        )
+        self.assertEqual(choice.decision, "accept")
+
+    def test_warning_review_finding_retries_at_warning_threshold(self) -> None:
+        finding = {"severity": "warning", "summary": "risk", "evidence": "reviewed"}
+        review = {
+            "recommendation": "accept",
+            "standards": {
+                "severity": "warning",
+                "findings": [finding],
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
+            },
+            "spec": {
+                "severity": "clean",
+                "findings": [],
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
+            },
+        }
+        choice = self._category(
+            "code-review",
+            _clean("code-review", review=review),
+            auto_retry_min_severity="warning",
+        )
+        self.assertEqual(choice.decision, "retry")
+
+    def test_default_info_threshold_keeps_retrying_info_findings(self) -> None:
+        finding = {"severity": "info", "summary": "context", "evidence": "reviewed"}
+        review = {
+            "standards": {
+                "severity": "clean",
+                "findings": [finding],
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
+            },
+            "spec": {
+                "severity": "clean",
+                "findings": [],
+                "risks": {"status": "none", "details": ""},
+                "blockers": {"status": "none", "details": ""},
+            },
+        }
+        choice = self._category("code-review", _clean("code-review", review=review))
+        self.assertEqual(choice.decision, "retry")
+
+    def test_explicit_reviewer_retry_is_actionable_at_every_threshold(self) -> None:
+        review = {"recommendation": "retry", **_axes("clean", [])}
+        report = _clean("code-review", review=review)
+        for threshold in AUTO_RETRY_SEVERITIES:
+            with self.subTest(threshold=threshold):
+                choice = self._category(
+                    "code-review", report, auto_retry_min_severity=threshold
+                )
+                self.assertEqual(choice.decision, "retry")
+                evidence = decisions._retry_evidence(report, False)
+                assert evidence is not None
+                self.assertEqual(evidence[0], "code")
+
+    def test_warning_axis_prevents_plain_accept_even_above_warning_threshold(
+        self,
+    ) -> None:
+        review = {"recommendation": "accept", **_axes("warning", [])}
+        for threshold in ("error", "blocker"):
+            with self.subTest(threshold=threshold):
+                choice = self._category(
+                    "code-review",
+                    _clean("code-review", review=review),
+                    auto_retry_min_severity=threshold,
+                )
+                self.assertEqual(choice.decision, "retry")
 
     def test_a_block_bypass_reruns_a_read_only_stage_and_retries_a_writer(self) -> None:
         for stage, expected in (
@@ -588,7 +714,11 @@ class AutoDecisionTableTests(unittest.TestCase):
                 )
 
     def test_recorded_context_pressure_names_its_category(self) -> None:
-        blocked = _clean("developer", outcome="blocked", blockers="context is full")
+        blocked = _clean(
+            "developer",
+            outcome="blocked",
+            blockers={"status": "present", "details": "context is full"},
+        )
         self.assertEqual(
             self._category("developer", blocked, pressure=True).reason_category,
             "context-pressure",
@@ -825,7 +955,10 @@ class AutoReportBuildTests(unittest.TestCase):
             }
         )
         batch["auto_decisions"][2]["evidence"]["accepted_risks"] = [
-            {"source": "report", "risks": "the schema grows"}
+            {
+                "source": "report",
+                "risks": {"status": "present", "details": "the schema grows"},
+            }
         ]
         batch.update(fields)
         return batch
@@ -856,7 +989,7 @@ class AutoReportBuildTests(unittest.TestCase):
                 {
                     "dispatch_id": "dispatch-1",
                     "source": "report",
-                    "risks": "the schema grows",
+                    "risks": {"status": "present", "details": "the schema grows"},
                 }
             ],
         )
@@ -967,7 +1100,10 @@ def test_every_attention_reason_has_a_listed_stop() -> None:
 @pytest.mark.parametrize("axis", ["standards", "spec"])
 def test_a_review_axis_that_names_blockers_is_not_accepted(axis: str) -> None:
     review = _axes("clean", [])
-    review[axis]["blockers"] = "the migration cannot be rolled back"
+    review[axis]["blockers"] = {
+        "status": "present",
+        "details": "the migration cannot be rolled back",
+    }
     report = _clean("code-review", review=review)
 
     obstacles = auto_policy.accept_obstacles(
@@ -979,6 +1115,39 @@ def test_a_review_axis_that_names_blockers_is_not_accepted(axis: str) -> None:
     )
 
     assert obstacles == ["a review axis names blockers"]
+
+
+@pytest.mark.parametrize(
+    ("role", "result", "accepted"),
+    [
+        ("developer", "pass", True),
+        ("developer", "fail", False),
+        ("developer", "not_run", False),
+        ("developer", "not-run", False),
+        ("developer", "passed", False),
+        ("developer", "not_run_architect_read_only", False),
+        ("architect", "not_run_architect_read_only", False),
+        ("code-review", "not_run_architect_read_only", False),
+    ],
+)
+def test_auto_accept_paths_agree_on_check_success(
+    role: str, result: str, accepted: bool
+) -> None:
+    report = _clean(
+        role,
+        changed_files=[],
+        checks_run=[{"command": "pytest", "result": result, "evidence": "ok"}],
+    )
+    brief = {"role": role, "purpose": "work", "write_paths": ["**"]}
+    policy = decisions._auto_accept_policy(
+        {"approval_policy": "auto"}, {"approval_policy": "auto"}, brief, report
+    )
+    obstacles = auto_policy.accept_obstacles(
+        role, report, brief, scope_warnings=[], block_bypass=False
+    )
+
+    assert policy == ("auto" if accepted else None)
+    assert obstacles == ([] if accepted else [f"a check did not pass ({result})"])
 
 
 def test_a_clean_review_without_blockers_is_still_accepted() -> None:

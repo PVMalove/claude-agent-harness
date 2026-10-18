@@ -508,6 +508,7 @@ class QaLaneRunTests(QaLaneTestCase):
         super().setUp()
         self.dispatch: JsonObject = {
             "dispatch_id": DISPATCH_ID,
+            "state": "approved",
             "batch_id": BATCH_ID,
             "ticket": "225",
             "role": "qa",
@@ -882,7 +883,8 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertEqual(persisted[0]["outcome"], "failed")
         self.assertEqual(
-            persisted[0]["blockers"], "new approved developer retry required"
+            persisted[0]["blockers"],
+            {"status": "present", "details": "new approved developer retry required"},
         )
 
     # ---- preparation and gate stages (issue #618) ----
@@ -1018,7 +1020,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertEqual(report["outcome"], "blocked")
         checks = cast("list[dict[str, str]]", report["checks_run"])
-        self.assertEqual([c["result"] for c in checks], ["not-run", "not-run"])
+        self.assertEqual([c["result"] for c in checks], ["not_run", "not_run"])
         self.assertEqual([c["command"] for c in checks], self.GATE)
         self.assertIn("code was not verified", str(report["output"]))
         self.assertIn("no developer retry", str(report["blockers"]))
@@ -1093,7 +1095,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
         self.assertEqual(report["outcome"], "failed")
         checks = cast("list[dict[str, str]]", report["checks_run"])
-        self.assertEqual([c["result"] for c in checks], ["fail", "not-run"])
+        self.assertEqual([c["result"] for c in checks], ["fail", "not_run"])
 
     def test_stages_that_disagree_with_the_artifact_release_the_lane(self) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)

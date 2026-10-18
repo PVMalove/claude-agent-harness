@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,7 @@ from harness.memory import (
     sync as memory_sync,
 )
 from harness.storage import storage_path
+from harness.runtime_adapters import adapter_problem, is_adapter
 from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
@@ -71,6 +73,7 @@ from harness.health.project_files import (
     JSON_READ_ERRORS,
     LOCK_REL,
     REGISTRY_REL,
+    TEST_PATH_PATTERN,
     TRACKER_FIELDS,
     TRACKER_HOST_PATTERN,
     TRACKER_HOST_RULE,
@@ -87,6 +90,7 @@ from harness.health.project_files import (
     project_skill_files,
     public_skill_names,
     skill_inventory,
+    test_runner_problems,
     tracker_field_problems,
 )
 from harness.health.project_tracker import resolve_project_tracker
@@ -98,6 +102,12 @@ HARNESS_CLI = (sys.executable, str(Path(__file__).resolve()))
 DEFAULT_CAPABILITY = "project-foundation"
 # Bound of each local git probe (`rev-parse`); git that does not answer counts as unavailable.
 GIT_TIMEOUT_SECONDS = 10
+# argparse errors of the --test-* flags; like the tracker rules, they never quote the value.
+TEST_PATH_RULE = "must be a relative glob without '..' segments"
+TEST_RUNNER_COMMAND_RULE = (
+    "must split into non-empty arguments with exactly one {test_id} argument, "
+    "not the first"
+)
 
 
 def write_registry(repo: Path) -> None:
@@ -399,6 +409,16 @@ def ensure_links(
 def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]:
     """Записать снимок файлов возможностей, сформировать harness.lock и обновить реестр."""
     files = package_files(selected)
+    previous_hashes = (load_lock(repo) or {}).get("files") or {}
+    for relative in files:
+        if is_adapter(relative):
+            problem = adapter_problem(
+                repo, relative, previous_hashes.get(relative), force=force
+            )
+            if problem:
+                fail(
+                    f"adapter conflict: {relative}: {problem}; preserve or move the local file before retrying"
+                )
     skills_root = repo / ".harness/skills"
     skills_root.mkdir(parents=True, exist_ok=True)
 
@@ -406,6 +426,12 @@ def write_snapshot(repo: Path, selected: list[str], *, force: bool) -> list[str]
         lock = load_lock(repo) or {}
         for relative in lock.get("files") or {}:
             path = repo / relative
+            if (
+                is_adapter(relative)
+                and relative not in files
+                and adapter_problem(repo, relative, previous_hashes.get(relative))
+            ):
+                continue
             if path.is_file():
                 path.unlink()
 
@@ -537,7 +563,9 @@ def snapshot_diff(repo: Path, override: list[str] | None = None) -> JsonObject:
         package_hash = digest(data)
         disk_hash = file_digest(repo / relative)
         old_hash = previous.get(relative)
-        if old_hash is None:
+        if is_adapter(relative) and adapter_problem(repo, relative, old_hash):
+            conflict.append(relative)
+        elif old_hash is None:
             added.append(relative)
         elif disk_hash is None:
             missing.append(relative)
@@ -599,6 +627,8 @@ PVMALOVE_CAPABILITY = "pvmalove-suite"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
+config_versions/
+config-versions/
 """
 
 
@@ -686,6 +716,87 @@ def _seed_tracker_field(repo: Path, args: argparse.Namespace) -> str:
     return '\n  "tracker": ' + json.dumps(field, ensure_ascii=False) + ","
 
 
+def _seed_test_fields(args: argparse.Namespace) -> str:
+    """Собрать записи `test_paths` и `test_runner` нового project.json для шаблона; "" — флагов нет.
+
+    Поля пишутся только по флагам --test-path и --test-runner-command: без `test_paths` тест-автор
+    выключен, а значения зависят от раскладки и стека проекта (docs/hooks/run-test.md).
+    """
+    fields = ""
+    paths = list(dict.fromkeys(getattr(args, "test_path", None) or []))
+    if paths:
+        fields += '\n  "test_paths": ' + json.dumps(paths, ensure_ascii=False) + ","
+    command = getattr(args, "test_runner_command", None)
+    if command:
+        runner = {"command": command}
+        build = getattr(args, "test_build_command", None)
+        if build:
+            runner["build"] = {
+                "command": build,
+                "artifact_paths": args.test_artifact_path,
+            }
+        engine = getattr(args, "test_database_engine", None)
+        if engine:
+            runner["database"] = {
+                "engine": engine,
+                "test_ids": args.test_database_test_id,
+                "command": args.test_database_command,
+                "ready_command": args.test_database_ready_command,
+            }
+        fields += '\n  "test_runner": ' + json.dumps(runner, ensure_ascii=False) + ","
+    return fields
+
+
+def _test_runner_command(value: str) -> list[str]:
+    """argparse-тип --test-runner-command: argv без шелла по правилам `test_runner`; ошибка не
+    цитирует значение."""
+    try:
+        command = shlex.split(value)
+    except ValueError:
+        command = []
+    if not command or test_runner_problems({"command": command}):
+        raise argparse.ArgumentTypeError(TEST_RUNNER_COMMAND_RULE)
+    return command
+
+
+def _preparation_command(value: str) -> list[str]:
+    try:
+        command = shlex.split(value)
+    except ValueError:
+        command = []
+    if not command or any(
+        not part or "{test_id}" in part or "\x00" in part for part in command
+    ):
+        raise argparse.ArgumentTypeError("must be non-empty argv without {test_id}")
+    return command
+
+
+def _validate_test_options(
+    args: argparse.Namespace, root: argparse.ArgumentParser
+) -> None:
+    groups = (
+        ("test_build_command", "test_artifact_path"),
+        (
+            "test_database_engine",
+            "test_database_test_id",
+            "test_database_command",
+            "test_database_ready_command",
+        ),
+    )
+    for group in groups:
+        present = [bool(getattr(args, name, None)) for name in group]
+        if any(present) and (
+            not all(present) or not getattr(args, "test_runner_command", None)
+        ):
+            root.error(
+                "incomplete --test-build/--test-database option group or missing --test-runner-command"
+            )
+    if getattr(args, "test_runner_command", None):
+        fields = json.loads("{" + _seed_test_fields(args).rstrip(",") + "}")
+        if test_runner_problems(fields["test_runner"]):
+            root.error("invalid --test-build/--test-database settings")
+
+
 def _matching_arg(pattern: str, rule: str) -> Callable[[str], str]:
     """Создать argparse-тип, принимающий значение по `pattern`; ошибка не цитирует значение."""
 
@@ -718,6 +829,44 @@ def _copy_if_absent(
     return str(target)
 
 
+def seed_template_files(repo: Path, *, orchestration_enabled: bool) -> dict[str, bytes]:
+    """Seed-файлы, которые `update` может перезаписать: путь от корня проекта -> эталон из шаблона."""
+    files: dict[str, bytes] = {}
+    for folder, target, suffixes in SEED_FOLDERS:
+        for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
+            if source.is_file() and source.suffix in suffixes:
+                files[f"{target}/{source.name}"] = source.read_bytes()
+    scratch = storage_path(repo, "scratch", ".gitignore")
+    files[scratch.relative_to(repo).as_posix()] = (
+        PROJECT_TEMPLATE_DIR / "scratch/.gitignore"
+    ).read_bytes()
+    files[".harness/.gitignore"] = HARNESS_RUNTIME_GITIGNORE.encode("utf-8")
+    files[".claude/settings.local.json"] = (
+        PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl"
+    ).read_bytes()
+    files[".harness/project.schema.json"] = (
+        PROJECT_TEMPLATE_DIR / "project.schema.json"
+    ).read_bytes()
+    if orchestration_enabled:
+        files[".harness/orchestration.json"] = (
+            PACKAGE / "orchestration.example.json"
+        ).read_bytes()
+    return files
+
+
+def seed_differing(repo: Path) -> list[str]:
+    """Существующие seed-файлы проекта, которые отличаются от шаблона."""
+    templates = seed_template_files(
+        repo, orchestration_enabled=(repo / ".harness/orchestration.json").exists()
+    )
+    differing: list[str] = []
+    for relative, content in templates.items():
+        path = repo / relative
+        if path.is_file() and path.read_bytes() != content:
+            differing.append(relative)
+    return sorted(differing)
+
+
 def scaffold_pvmalove_extras(
     repo: Path, args: argparse.Namespace, *, orchestration_enabled: bool = False
 ) -> list[str]:
@@ -727,6 +876,19 @@ def scaffold_pvmalove_extras(
     force_seed = getattr(args, "force_seed_files", False) or getattr(
         args, "force", False
     )
+    selected_seed = set(getattr(args, "force_seed_file", None) or [])
+    unknown = selected_seed - set(
+        seed_template_files(repo, orchestration_enabled=orchestration_enabled)
+    )
+    if unknown:
+        fail(
+            "--force-seed-file: not a seed file of this project: "
+            + ", ".join(sorted(unknown))
+        )
+
+    def forced(target: Path) -> bool:
+        """Перезаписывать ли файл: все seed-файлы разом или только выбранные по пути."""
+        return force_seed or target.relative_to(repo).as_posix() in selected_seed
 
     for folder, target, suffixes in SEED_FOLDERS:
         for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
@@ -736,7 +898,7 @@ def scaffold_pvmalove_extras(
                 source,
                 repo / target / source.name,
                 executable=folder == "hooks",
-                force=force_seed,
+                force=forced(repo / target / source.name),
                 differing=differing,
             )
             if result:
@@ -745,14 +907,14 @@ def scaffold_pvmalove_extras(
     scratch_gitignore_result = _copy_if_absent(
         PROJECT_TEMPLATE_DIR / "scratch/.gitignore",
         storage_path(repo, "scratch", ".gitignore"),
-        force=force_seed,
+        force=forced(storage_path(repo, "scratch", ".gitignore")),
         differing=differing,
     )
     if scratch_gitignore_result:
         written.append(scratch_gitignore_result)
 
     harness_gitignore = repo / ".harness/.gitignore"
-    if not harness_gitignore.exists() or force_seed:
+    if not harness_gitignore.exists() or forced(harness_gitignore):
         harness_gitignore.parent.mkdir(parents=True, exist_ok=True)
         harness_gitignore.write_text(
             HARNESS_RUNTIME_GITIGNORE, encoding="utf-8", newline="\n"
@@ -775,10 +937,10 @@ def scaffold_pvmalove_extras(
     template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(
         encoding="utf-8"
     )
-    if settings.exists() and not force_seed:
+    if settings.exists() and not forced(settings):
         if settings.read_text(encoding="utf-8") != template_text:
             differing.append(settings)
-    if not settings.exists() or force_seed:
+    if not settings.exists() or forced(settings):
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(template_text, encoding="utf-8", newline="\n")
         written.append(str(settings))
@@ -817,6 +979,7 @@ def scaffold_pvmalove_extras(
                     break
                 commands.append(line)
         tracker_field = _seed_tracker_field(repo, args)
+        test_fields = _seed_test_fields(args)
         template = (PROJECT_TEMPLATE_DIR / "project.json.tmpl").read_text(
             encoding="utf-8"
         )
@@ -828,6 +991,7 @@ def scaffold_pvmalove_extras(
                 "BRANCH_PATTERN": branch_pattern,
                 "QA_GATE_COMMANDS": json.dumps(commands, ensure_ascii=False),
                 "TRACKER_FIELD": tracker_field,
+                "TEST_FIELDS": test_fields,
             },
         )
         project_json.parent.mkdir(parents=True, exist_ok=True)
@@ -837,7 +1001,7 @@ def scaffold_pvmalove_extras(
     schema_result = _copy_if_absent(
         PROJECT_TEMPLATE_DIR / "project.schema.json",
         repo / ".harness/project.schema.json",
-        force=force_seed,
+        force=forced(repo / ".harness/project.schema.json"),
         differing=differing,
     )
     if schema_result:
@@ -850,7 +1014,7 @@ def scaffold_pvmalove_extras(
         orchestration_result = _copy_if_absent(
             PACKAGE / "orchestration.example.json",
             repo / ".harness/orchestration.json",
-            force=force_seed,
+            force=forced(repo / ".harness/orchestration.json"),
             differing=differing,
         )
         if orchestration_result:
@@ -860,6 +1024,9 @@ def scaffold_pvmalove_extras(
         print("\n[WARNING] Следующие сидируемые файлы отличаются от шаблонов upstream:")
         for path in differing:
             print(f"  - {path.relative_to(repo)}")
+            print(
+                f"    После просмотра: --force-seed-file {path.relative_to(repo).as_posix()}"
+            )
         print(
             "Используйте --force-seed-files, чтобы перезаписать их (внимание: локальные изменения будут потеряны).\n"
         )
@@ -945,9 +1112,13 @@ def cmd_diff(args: argparse.Namespace) -> int:
     proposals = propose_contract_links(repo, PROJECT_TEMPLATE_DIR)
     if args.json:
         result["seed_link_proposals"] = proposals
+        result["seed_differing"] = seed_differing(repo)
         print(json.dumps(result, indent=2, ensure_ascii=False))
     else:
         print_diff(result)
+        for relative in seed_differing(repo):
+            print(f"  seed_differing: {relative}")
+            print(f"    После просмотра: --force-seed-file {relative}")
         print_contract_proposals(proposals)
     return 0 if result["state"] == "clean" else 1
 
@@ -992,8 +1163,25 @@ def cmd_update(args: argparse.Namespace) -> int:
         fail(f"project harness is missing; use 'harness init {repo}'")
     selected = selected_capabilities(args.capability or lock.get("capabilities"))
     result = snapshot_diff(repo, selected)
-    blocked = result.get("local_changed", []) + result.get("conflict", [])
+    current_files = package_files(selected)
+    blocked = [
+        relative
+        for relative in result.get("local_changed", []) + result.get("conflict", [])
+        if not (is_adapter(relative) and relative not in current_files)
+    ]
     force_managed = args.force or args.force_managed_files
+    for relative in current_files:
+        if is_adapter(relative):
+            problem = adapter_problem(
+                repo,
+                relative,
+                (lock.get("files") or {}).get(relative),
+                force=force_managed,
+            )
+            if problem:
+                fail(
+                    f"adapter conflict: {relative}: {problem}; preserve or move the local file before retrying"
+                )
     if blocked and not force_managed:
         print_diff(result)
         print("\n[ВНИМАНИЕ] Обнаружены изменённые стандартные скиллы (дрейф):")
@@ -1013,6 +1201,11 @@ def cmd_update(args: argparse.Namespace) -> int:
     current = set(package_files(selected).keys())
     for relative in sorted(previous - current):
         path = repo / relative
+        if is_adapter(relative) and adapter_problem(
+            repo, relative, (lock.get("files") or {}).get(relative)
+        ):
+            print(f"preserved adapter: {relative}")
+            continue
         if path.is_file():
             path.unlink()
 
@@ -1172,6 +1365,30 @@ def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
         default=None,
         help="pvmalove-suite: full tracker project path with subgroups (default: from origin)",
     )
+    sub.add_argument(
+        "--test-path",
+        action="append",
+        type=_matching_arg(TEST_PATH_PATTERN, TEST_PATH_RULE),
+        default=None,
+        help="pvmalove-suite: repeatable test_paths glob, the test author's write zone (default: none)",
+    )
+    sub.add_argument(
+        "--test-runner-command",
+        type=_test_runner_command,
+        default=None,
+        help="pvmalove-suite: test_runner command, split without a shell; one argument is "
+        "{test_id} (default: none)",
+    )
+
+    for flag in (
+        "--test-build-command",
+        "--test-database-command",
+        "--test-database-ready-command",
+    ):
+        sub.add_argument(flag, type=_preparation_command, default=None)
+    for flag in ("--test-artifact-path", "--test-database-test-id"):
+        sub.add_argument(flag, action="append", default=None)
+    sub.add_argument("--test-database-engine", default=None)
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
@@ -1249,6 +1466,57 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_parsers(args: argparse.Namespace) -> int:
+    """Show or install the Repo Map parsers (tree-sitter grammars) of the project's languages."""
+    from harness.repo_map.bundle_fetch import install_languages, parser_status
+    from harness.repo_map.bundle_pins import LANGUAGES
+
+    repo = Path(args.repo).expanduser().resolve()
+    labels = {language.key: language.label for language in LANGUAGES}
+    if args.parsers_operation == "status":
+        status = parser_status(repo)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "registry": str(status.registry),
+                        "pair": status.pair,
+                        "source": status.source,
+                        "ready": status.ready,
+                        "problem": status.problem,
+                        "grammars": list(status.grammars),
+                        "languages": list(status.languages),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            print(f"Registry: {status.registry}")
+            print(f"Pair: {status.pair or '-'}")
+            print(
+                "State: "
+                + ("ready (tier full)" if status.ready else str(status.problem))
+            )
+            print(
+                "Languages: " + (", ".join(labels[k] for k in status.languages) or "-")
+            )
+        return 0
+    result = install_languages(
+        repo, args.language, progress=lambda line: print(line, flush=True)
+    )
+    print("Languages: " + ", ".join(labels[key] for key in result.languages))
+    print(f"Pair: {result.pair}\nRegistry: {result.registry}")
+    if not result.ready:
+        print(
+            f"Bundle is built, but tier full is not ready yet: {result.problem}",
+            file=sys.stderr,
+        )
+        return 1
+    print("Tier full is ready")
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     """Сконфигурировать парсер аргументов командной строки CLI harness."""
     root = argparse.ArgumentParser(prog="harness")
@@ -1316,6 +1584,13 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="overwrite seed files even if present",
     )
+    update.add_argument(
+        "--force-seed-file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="overwrite only this seed file (path from the project root); repeatable",
+    )
     _add_pvmalove_args(update)
     update.set_defaults(func=cmd_update)
 
@@ -1340,6 +1615,27 @@ def parser() -> argparse.ArgumentParser:
             memory_command.add_argument("--max-noise", type=float, default=0.7)
             memory_command.add_argument("--json", action="store_true")
         memory_command.set_defaults(func=cmd_memory)
+
+    parsers = commands.add_parser(
+        "parsers", help="Repo Map parsers (tree-sitter grammars) for project languages"
+    )
+    parsers_commands = parsers.add_subparsers(dest="parsers_operation", required=True)
+    parsers_status = parsers_commands.add_parser("status")
+    parsers_status.add_argument("repo")
+    parsers_status.add_argument("--json", action="store_true")
+    parsers_install = parsers_commands.add_parser(
+        "install",
+        help="download the pinned wheels of the chosen languages (network) and build the bundle",
+    )
+    parsers_install.add_argument("repo")
+    parsers_install.add_argument(
+        "--language",
+        action="append",
+        required=True,
+        help="python, typescript, javascript, go, java or csharp; repeatable",
+    )
+    for operation_parser in (parsers_status, parsers_install):
+        operation_parser.set_defaults(func=cmd_parsers)
 
     health = commands.add_parser("health")
     health.add_argument("repo")
@@ -1376,7 +1672,9 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     """Основная точка входа CLI harness."""
-    args = parser().parse_args()
+    root = parser()
+    args = root.parse_args()
+    _validate_test_options(args, root)
     try:
         exit_code: int = args.func(args)
         return exit_code

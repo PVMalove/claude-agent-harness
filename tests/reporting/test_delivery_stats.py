@@ -76,6 +76,7 @@ class OrchestrationMetricsLenientReadTests(unittest.TestCase):
             generation / "dispatches" / "dispatch-dev-1.json",
             {
                 "dispatch_id": "dispatch-dev-1",
+                "state": "reported",
                 "write_paths": ["harness/**"],
             },
         )
@@ -84,6 +85,7 @@ class OrchestrationMetricsLenientReadTests(unittest.TestCase):
             self.cr_record_path,
             {
                 "dispatch_id": "dispatch-cr-1",
+                "state": "working",
                 "review_scope": [
                     "harness/orchestration/ledger.py",
                     "outside/scope/file.py",
@@ -277,6 +279,7 @@ class OrchestrationMetricsIncompatibleLedgerModuleTests(unittest.TestCase):
             generation / "batches" / f"{batch_id}.json",
             {
                 "batch_id": batch_id,
+                "state": "active",
                 "branch": "feature/issue-197-lenient-read-api",
                 "dispatches": [
                     {"dispatch_id": "dispatch-dev-2", "role": "developer"},
@@ -292,6 +295,7 @@ class OrchestrationMetricsIncompatibleLedgerModuleTests(unittest.TestCase):
             generation / "dispatches" / "dispatch-dev-2.json",
             {
                 "dispatch_id": "dispatch-dev-2",
+                "state": "reported",
                 "write_paths": ["harness/**"],
             },
         )

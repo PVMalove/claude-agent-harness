@@ -55,6 +55,17 @@ def test_build_relaunch_argv_forwards_extra_argv() -> None:
     assert argv[-2:] == ["--foo", "bar"]
 
 
+def test_restart_console_reexecutes_current_python_for_selected_project() -> None:
+    repo = Path("/tmp/selected project")
+    with mock.patch("os.execv", side_effect=OSError("exec failed")) as execv:
+        with pytest.raises(OSError, match="exec failed"):
+            launcher.restart_console(repo)
+    execv.assert_called_once_with(
+        sys.executable,
+        [sys.executable, str(launcher.BIN_HARNESS_PATH), "console", str(repo)],
+    )
+
+
 def test_run_console_already_relaunched_runs_the_injected_app_runner() -> None:
     """Proves the "already relaunched" branch never needs `find_uv`/`runner` and dispatches to
     `app_runner` - injected here instead of monkeypatching `sys.modules["harness.console.app"]`,

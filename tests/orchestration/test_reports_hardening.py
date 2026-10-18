@@ -119,8 +119,8 @@ def test_checkpoint_after_the_integration_base_moved_lists_only_the_ticket_files
         "changed_files": ["ticket.py"],
         "remaining_definition_of_done": ["Ship the parser"],
         "passing_checks": [],
-        "risks": "none",
-        "blockers": "none",
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
         "context_package_id": CHECKPOINT_NO_CONTEXT_PACKAGE,
     }
 
@@ -138,8 +138,8 @@ def test_checkpoint_after_the_integration_base_moved_lists_only_the_ticket_files
 DISPATCH = {"dispatch_id": "dispatch-1", "dependencies": ["none"]}
 CHECKPOINT = {
     "remaining_definition_of_done": ["Ship the parser"],
-    "risks": "none",
-    "blockers": "waiting for review",
+    "risks": {"status": "none", "details": ""},
+    "blockers": {"status": "present", "details": "waiting for review"},
 }
 
 
@@ -147,7 +147,7 @@ def _facts(tmp_path: Path, **changes: object) -> argparse.Namespace:
     facts = {
         "dispatch_id": "dispatch-1",
         "remaining_definition_of_done": ["Ship the parser"],
-        "risks": "none",
+        "risks": {"status": "none", "details": ""},
         "dependencies": ["none"],
         **changes,
     }
@@ -166,7 +166,7 @@ def test_unchanged_facts_continue_whatever_the_checkpoint_blockers_say(
     "changes",
     [
         {"remaining_definition_of_done": ["Ship the parser", "Ship the docs"]},
-        {"risks": "the parser may drop input"},
+        {"risks": {"status": "present", "details": "the parser may drop input"}},
         {"dependencies": ["issue-1"]},
     ],
 )

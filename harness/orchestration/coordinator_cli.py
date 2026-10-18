@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import types
 
+from harness.orchestration.core.constants import AUTO_RETRY_SEVERITIES
+
 
 def _common(parser: argparse.ArgumentParser) -> None:
     """Добавить общие аргументы командной строки (--repo, --state-dir) к парсеру."""
@@ -36,6 +38,11 @@ def build_parser(
     ledger_commands = ledger.add_subparsers(dest="ledger_command", required=True)
     for name, handler, help_text in (
         (
+            "validate",
+            handlers.validate_ledger,
+            "Read-only validation of generation, audit and batch evidence",
+        ),
+        (
             "status",
             handlers.ledger_status,
             "Report the selected lifecycle-ledger generation",
@@ -51,14 +58,36 @@ def build_parser(
             "Safely remove orphaned dispatch evidence to fix migration errors",
         ),
         (
-            "release-lock",
-            handlers.release_ledger_lock,
-            "Release a stuck ledger lock after checking its owner; a live owner is refused",
+            "lock-status",
+            handlers.ledger_lock_status,
+            "Read-only: show the ledger lock, its owner, age and release verdict without taking it",
         ),
     ):
         command = ledger_commands.add_parser(name, help=help_text)
         _common(command)
         command.set_defaults(handler=handler)
+    release_lock = ledger_commands.add_parser(
+        "release-lock",
+        help="Release a stuck ledger lock after checking its owner; a live owner is refused "
+        "unless an operator forces the release",
+    )
+    _common(release_lock)
+    release_lock.add_argument(
+        "--force",
+        action="store_true",
+        help="release the lock whatever the owner verdict; requires --approved-by, "
+        "--approved-at and --reason and writes an audit record",
+    )
+    release_lock.add_argument(
+        "--approved-by", help="the operator who approves a forced release"
+    )
+    release_lock.add_argument(
+        "--approved-at", help="the time of that approval (ISO 8601)"
+    )
+    release_lock.add_argument(
+        "--reason", help="why the lock owner cannot finish (forced release only)"
+    )
+    release_lock.set_defaults(handler=handlers.release_ledger_lock)
     ledger_reset = ledger_commands.add_parser(
         "reset", help="Select an empty generation (requires --confirm RESET)"
     )
@@ -90,6 +119,11 @@ def build_parser(
     )
     create.add_argument(
         "--goal", help="approved local ticket goal frozen in the immutable batch plan"
+    )
+    create.add_argument(
+        "--auto-retry-min-severity",
+        choices=AUTO_RETRY_SEVERITIES,
+        help="minimum review finding severity that triggers an automatic retry; defaults to project policy or info",
     )
     create.add_argument("--definition-of-done", action="append", required=True)
     create.add_argument("--prohibited-change", action="append", required=True)
@@ -170,7 +204,60 @@ def build_parser(
     _common(batch_resume)
     batch_resume.add_argument("--batch", required=True)
     batch_resume.add_argument("--reason", required=True)
+    batch_resume.add_argument("--runtime-stopped", action="store_true")
+    batch_resume.add_argument("--approved-by")
+    batch_resume.add_argument("--approved-at")
     batch_resume.set_defaults(handler=handlers.resume_batch)
+    resume_stop = batch_commands.add_parser(
+        "resume-stop",
+        help="resume a recorded stop with human approval; next dispatch still needs a fresh approval",
+    )
+    _common(resume_stop)
+    resume_stop.add_argument("--batch", required=True)
+    resume_stop.add_argument("--approved-by", required=True)
+    resume_stop.add_argument("--approved-at", required=True)
+    resume_stop.add_argument("--note", required=True)
+    resume_stop.add_argument(
+        "--runtime-stopped",
+        action="store_true",
+        help="operator confirms the worker whose self-report was refused, or whose outcome is "
+        "unknown, has actually stopped; silence or a timeout is insufficient",
+    )
+    resume_stop.set_defaults(
+        handler=handlers.resume_stopped_batch, installed_runtime_only=True
+    )
+    rewind = batch_commands.add_parser(
+        "rewind", help="select an earlier gate without changing Git history"
+    )
+    _common(rewind)
+    rewind.add_argument("--batch", required=True)
+    rewind.add_argument(
+        "--to",
+        required=True,
+        choices=[
+            "architect",
+            "developer",
+            "code-review",
+            "qa",
+            "publish",
+            "verification",
+            "resolve-conflict",
+        ],
+    )
+    rewind.add_argument("--approved-by", required=True)
+    rewind.add_argument("--approved-at", required=True)
+    rewind.add_argument("--note", required=True)
+    rewind.add_argument(
+        "--preserved-commit",
+        help="explicitly preserve the full HEAD SHA of the latest writer cancelled with --runtime-stopped",
+    )
+    rewind.add_argument(
+        "--preserved-file",
+        action="append",
+        default=[],
+        help="confirm one pending repository-relative writer path; repeat for every dirty file",
+    )
+    rewind.set_defaults(handler=handlers.rewind_batch, installed_runtime_only=True)
     batch_restore_runtime = batch_commands.add_parser(
         "restore-runtime",
         help="store the pinned runtime snapshot a batch needs after the installed runtime changed",
@@ -205,6 +292,12 @@ def build_parser(
     decide.add_argument("--approved-by", required=True)
     decide.add_argument("--approved-at", required=True)
     decide.add_argument("--note", default="none")
+    decide.add_argument(
+        "--infrastructure-failure",
+        action="store_true",
+        help="with --decision accept-conditional: the operator attests that an infrastructure "
+        "failure, not the work, blocked the report; the stage stays an open condition",
+    )
     decide.add_argument(
         "--reason", help="required for abandon: why the batch is abandoned"
     )
@@ -438,6 +531,9 @@ def build_parser(
         "--purpose", choices=sorted(defaults.DISPATCH_PURPOSES), default="work"
     )
     preflight.add_argument("--candidate-commit")
+    preflight.add_argument(
+        "--worktree", help="selected worker checkout, independent of coordinator --repo"
+    )
     preflight.set_defaults(handler=handlers.preflight_dispatch)
     dispatch_propose = dispatch_commands.add_parser(
         "propose",
@@ -495,6 +591,10 @@ def build_parser(
     _common(dispatch_send)
     dispatch_send.add_argument("--dispatch", required=True)
     dispatch_send.add_argument(
+        "--worktree",
+        help="selected worker checkout; writers use the canonical issue-worktree",
+    )
+    dispatch_send.add_argument(
         "--adapter", help="runtime adapter; required for the external transport only"
     )
     dispatch_send.add_argument("--adapter-arg", action="append")
@@ -509,6 +609,11 @@ def build_parser(
     dispatch_cancel.add_argument("--dispatch", required=True)
     dispatch_cancel.add_argument("--approved-by", required=True)
     dispatch_cancel.add_argument("--approved-at", required=True)
+    dispatch_cancel.add_argument(
+        "--runtime-stopped",
+        action="store_true",
+        help="operator confirms the already sent runtime worker has actually stopped; timeout is insufficient",
+    )
     dispatch_cancel.add_argument(
         "--reason",
         required=True,
@@ -542,7 +647,7 @@ def build_parser(
     )
     dispatch_heartbeat.set_defaults(handler=handlers.heartbeat_dispatch)
     dispatch_rate_limited = dispatch_commands.add_parser(
-        "rate-limited", help="record a checkpointed provider 429 and retry window"
+        "rate-limited", help="record provider 429 at a checkpoint or proven startup SHA"
     )
     _common(dispatch_rate_limited)
     dispatch_rate_limited.add_argument("--dispatch", required=True)
@@ -598,7 +703,7 @@ def build_parser(
     )
     dispatch_resume.add_argument(
         "--trigger",
-        choices=sorted(defaults.PLANNED_TRIGGER_KINDS),
+        choices=sorted(defaults.PLANNED_TRIGGER_KINDS | {"startup-failure"}),
         help="planned-trigger kind; required unless --termination-reason is a recognized rate limit",
     )
     dispatch_resume.add_argument(
@@ -613,7 +718,33 @@ def build_parser(
     dispatch_resume.add_argument("--approved-by")
     dispatch_resume.add_argument("--approved-at")
     dispatch_resume.add_argument("--note")
+    dispatch_resume.add_argument(
+        "--runtime-stopped",
+        action="store_true",
+        help="operator confirms the old startup session stopped; required for --trigger startup-failure",
+    )
     dispatch_resume.set_defaults(handler=handlers.resume_dispatch)
+    dispatch_runtime_probe = dispatch_commands.add_parser(
+        "runtime-probe",
+        help="read-only app-server READY probe against a dispatch's brief; starts no worker",
+    )
+    _common(dispatch_runtime_probe)
+    dispatch_runtime_probe.add_argument("--dispatch", required=True)
+    dispatch_runtime_probe.add_argument(
+        "--runtime-command", required=True, help="the runtime executable to probe"
+    )
+    dispatch_runtime_probe.add_argument(
+        "--runtime-arg",
+        action="append",
+        help="one argument that starts its app-server on stdio; repeat as needed",
+    )
+    dispatch_runtime_probe.add_argument(
+        "--worktree", help="worker checkout to probe; defaults to the brief's worktree"
+    )
+    dispatch_runtime_probe.add_argument(
+        "--timeout", type=int, help="seconds for the whole probe; defaults to 120"
+    )
+    dispatch_runtime_probe.set_defaults(handler=handlers.probe_dispatch_runtime)
     dispatch_status_command = dispatch_commands.add_parser("status")
     _common(dispatch_status_command)
     dispatch_status_command.add_argument("--dispatch")

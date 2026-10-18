@@ -104,12 +104,15 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `qa_project_file_checks` | список строк | `[]` | Офлайн-проверки файлов проекта (например, согласованность lock-файла). QA запускает их только после упавшей `qa_preparation`. Упавшая проверка подтверждает дефект проекта. Без проб и проверок QA не подтверждает инфраструктурную причину. |
 | `developer_verification_commands` | список строк | = `verification_commands` | Быстрые проверки developer. Без поля developer гоняет полный gate, а `harness health` предупреждает. |
 | `review_verification_commands` | список строк | = `verification_commands` | Проверки code-review. |
+| `verification_profiles` | список `{paths, developer, review}` | нет | Проверки по области batch. При `batch create` берётся первый профиль, чьи `paths` покрывают все `--allowed-path`; его `developer` и `review` замораживаются в batch вместо двух полей выше. Частичное покрытие или отсутствие ключа — общие списки. Clean-room QA всегда выполняет `verification_commands`. |
+| `retry_verification` | `{lint, test_command}` | нет | Проверки developer-retry: команды `lint` и одна команда `test_command` по `related_tests` Context Package (в пределах `max_related_tests`). Первый developer-dispatch, code-review и QA не меняются. Без связанных тестов или без ключа retry выполняет обычные команды developer. Значение замораживается в batch при `batch create`. |
 | `test_path_patterns` | список glob | `tests/**`, `**/tests/**`, `**/test_*.py`, `**/*_test.py` | Какие пути считаются тестами (delta-review при изменении только тестов). |
 | `approval_policy` | `manual_all` \| `milestone` \| `low_risk` \| `auto` | `manual_all` | Какие report политика принимает без человека (см. ниже). |
+| `auto_retry_min_severity` | `info` \| `warning` \| `error` \| `blocker` | `info` | Порог review findings для автоматического retry. Фиксируется при создании batch; CLI `batch create --auto-retry-min-severity` может переопределить проектное значение. `info` сохраняет прежнее поведение. |
 | `low_risk_paths` | список glob | — | Пути в форме `dir/**`, `**` или точного файла (без `./`, `//`, `..`; сравнение по сегментам). При `low_risk` политика автоматически принимает чистые report внутри этих путей, если весь `--allowed-path` batch лежит в них. Без списка ничто не считается низкорисковым. |
 | `human_approval_gate` | `trusted` \| `tty` | `trusted` | `trusted` — approval через `--approved-by/--approved-at`; `tty` — только интерактивное подтверждение в терминале. |
 | `approval_ttl_seconds` | целое ≥ 1 | без срока | Срок жизни `--approved-at`. Coordinator отклоняет более старое approval и approval, датированное будущим. |
-| `worker_attestation_required` | логическое | `false` | Воркер до работы подтверждает фактический worktree, ветку и SHA. Пример включает `true`. |
+| `worker_attestation_required` | логическое | `false` | Включает проверку фактического worktree и SHA для остальных ролей. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review startup-attestation обязательна при любом значении. Пример включает `true` для всех ролей. |
 | `communication_policy` | объект | `en` / `ru` | `agent_to_agent_language` всегда `en`, `coordinator_report_language` всегда `ru`. |
 | `tool_policy` | объект | по режиму роли | Рабочий набор инструментов роли в brief (см. ниже). |
 | `access_policy` | объект | — | Доступ ролей и операций `qa`/`git`/`publish` к сети и файловой системе (см. «Доступ QA, Git и publish»). Компонент `container` задаёт образы встроенного исполнителя `docker`. Opt-in: любой `access_policy` блокирует `dispatch send`, пока проект не выбрал реализацию `extensions.runtime_access` (встроенный `docker` или свою `module:factory`). Поэтому пример его не содержит. |
@@ -156,7 +159,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 
 При создании batch coordinator фиксирует в нём политику, и её смена на уже созданные batch не
 влияет. Исключение — `auto`: эта политика согласует шаги, только пока конфиг проекта и план batch
-выбирают `auto` и в batch нет `auto_stop`. В остальных случаях каждый шаг такого batch согласует
+выбирают `auto`, в batch нет `auto_stop` и не было ручного восстановления. В остальных случаях каждый шаг такого batch согласует
 человек.
 
 ### `tool_policy`
@@ -180,7 +183,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `symbol_graph_depth` | 2 | Глубина import-графа для каждого автоматического пакета. |
 | `max_related_tests` | 25 | Предохранитель: больше связанных тестов — ошибка сборки пакета. |
 | `min_starting_files` / `max_starting_files` | 5 / 10 | Число стартовых файлов при ручной регистрации пакета. |
-| `section_index_min_tokens` | 20000 | С какого размера Markdown попадает в пакет оглавлением, а не целиком. |
+| `section_index_min_tokens` | 20000 | С какого размера Markdown- или Python-файл попадает в пакет оглавлением или индексом символов, а не целиком. |
 
 ### `adaptive_continuation_policy`
 
@@ -286,6 +289,10 @@ coordinator проверяет план на своём процессе: реж
    - `verification_commands` — полный gate clean-room QA;
    - `developer_verification_commands` и `review_verification_commands` — быстрые task-scoped
      проверки для developer и code-review;
+   - `verification_profiles` — необязательные проверки по области batch, например для
+     `harness/console/**` и `tests/console/**` только `make lint` и тесты консоли;
+   - `retry_verification` — необязательные быстрые проверки developer-retry: lint и тесты,
+     связанные с изменёнными файлами; полный набор остаётся за QA;
    - `qa_preparation` — установка зависимостей перед gate;
    - `qa_environment_probes` и `qa_project_file_checks` — независимые проба окружения и офлайн-проверка
      файлов проекта. Только вместе они позволяют coordinator подтвердить инфраструктурную причину
@@ -309,3 +316,29 @@ python .harness/orchestration/coordinator.py --repo . batch list --open
 
 Полный список подкоманд — `python .harness/orchestration/coordinator.py --help`. Те же команды
 для оператора доступны в разделе Orchestration `harness console`.
+
+## Восстановление остановленного batch
+
+`batch auto-report` читает evidence и показывает `observed_stop`; команда ничего не записывает.
+`batch auto-decide` явно записывает остановку как `paused`, в том числе без report. Повтор команды
+не создаёт новую остановку. `blocked` и `failed` сохраняют работу и допускают ручное восстановление.
+Терминальные состояния — `completed`, `abandoned` и старое `not-required`.
+
+- `batch resume-stop --batch <id> --approved-by <оператор> --approved-at <UTC> --note <причина> [--runtime-stopped]`
+  готовит повтор того же этапа после доказанного сбоя запуска. Каждый следующий шаг требует
+  человеческого approval; исходный `auto_stop` остаётся историей. Если `dispatch status` показывает
+  `live` или `unknown`, команда отказывает: остановите worker через runtime и передайте
+  `--runtime-stopped`.
+- `batch rewind --batch <id> --to code-review --approved-by <оператор> --approved-at <UTC> --note <причина>`
+  возвращает к достигнутому этапу. Git history не меняется. Старые зависимые risk/review/QA
+  перестают разрешать продолжение. Новая работа developer расходует оставшийся retry budget.
+- `dispatch cancel --dispatch <id> --runtime-stopped --approved-by <оператор> --approved-at <UTC> --reason <причина>`
+  записывает подтверждение, что оператор остановил runtime. Timeout такого подтверждения не даёт.
+- `ledger validate` проверяет поколение, audit и evidence без исправления или миграции ledger.
+- `dispatch runtime-probe --dispatch <id> --runtime-command <runtime> [--runtime-arg <аргумент>]`
+  запускает read-only READY probe app-server на brief dispatch без worker и без записи в ledger.
+
+Новые recovery-команды работают на установленном runtime. Ручное событие связывает старый pin с
+новым control runtime; plan и прежние brief/report не переписываются. Ранний 429 writer-а сохраняет
+известный чистый startup SHA отдельным evidence без фиктивного checkpoint. После recovery даже
+429 требует человеческого approval. Подробный контракт: [Operator recovery](playbook.md#operator-recovery).

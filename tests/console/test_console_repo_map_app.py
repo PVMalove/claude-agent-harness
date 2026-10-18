@@ -18,6 +18,7 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import Input, ListView, Static, Tree
 
+from tests.console._pilot_wait import wait_until
 from tests.console._console_repo_map_fixture import (
     HUB,
     build_repo_map_fixture,
@@ -100,7 +101,7 @@ def test_dashboard_repo_map_section_opens_the_repo_map_screen(tmp_path: Path) ->
             menu.focus()
             menu.index = SECTIONS.index("Repo Map")
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, RepoMapScreen))
             return isinstance(app.screen, RepoMapScreen)
 
     assert asyncio.run(scenario())
@@ -201,7 +202,7 @@ def test_build_without_cache_warns_and_cancel_runs_nothing(tmp_path: Path) -> No
             await pilot.pause()
             status = _static_text(app, "#repo-map-status")
             await pilot.click("#build-map")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, BuildConfirmScreen))
             is_confirm = isinstance(app.screen, BuildConfirmScreen)
             warning = _static_text(app, "#build-warning")
             await pilot.click("#cancel-build")
@@ -225,7 +226,7 @@ def test_confirmed_build_runs_the_cli_and_shows_the_map(tmp_path: Path) -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.click("#build-map")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, BuildConfirmScreen))
             await pilot.click("#confirm-build")
             await _settle(pilot)
             return (
@@ -251,7 +252,7 @@ def test_failed_build_reports_why(tmp_path: Path) -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.click("#build-map")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, BuildConfirmScreen))
             await pilot.click("#confirm-build")
             await _settle(pilot)
             return _static_text(app, "#repo-map-status")
@@ -325,7 +326,7 @@ def test_a_build_that_raises_reports_why_instead_of_building_forever(
         async with app.run_test() as pilot:
             await pilot.pause()
             await pilot.click("#build-map")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, BuildConfirmScreen))
             await pilot.click("#confirm-build")
             await _settle(pilot)
             return _static_text(app, "#repo-map-status")

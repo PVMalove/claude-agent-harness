@@ -156,6 +156,14 @@ def test_accepted_qa_of_the_same_sha_on_a_clean_tree_opens_the_pr(
     assert argv[argv.index("--candidate-commit") + 1] == project.head
 
 
+@pytest.mark.parametrize("result", ["pass", "passed"])
+def test_accepted_success_spellings_allow_publication(
+    project: Project, result: str
+) -> None:
+    project.accepted(checks=[{"command": QA, "result": result}])
+    assert project.require().returncode == 0
+
+
 @pytest.mark.parametrize(
     "reply",
     [

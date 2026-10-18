@@ -120,6 +120,7 @@ class TransitionDigestTests(unittest.TestCase):
         self.assertEqual(
             guards.OPTIONAL_TRANSITION_FIELDS,
             (
+                "recovery_event_sha256",
                 "carried_items_sha256",
                 "rebase_target_sha",
                 "delta_review_sha256",

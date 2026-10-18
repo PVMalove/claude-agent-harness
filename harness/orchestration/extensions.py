@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Protocol, cast
 
 from ..errors import HarnessError
+from .core.constants import RetryReason
 
 EXTENSION_KINDS = (
     "transport_health",
@@ -94,8 +95,20 @@ class ClassificationFacts:
 class ReasonHint:
     """Предлагаемая классификатором категория причины повтора. Координатор применяет к ней свои защитные правила маршрутизации."""
 
-    category: str
+    category: RetryReason
     basis: str
+
+    def __post_init__(self) -> None:
+        if isinstance(self.category, str):
+            try:
+                object.__setattr__(self, "category", RetryReason(self.category))
+                return
+            except ValueError:
+                pass
+        raise ExtensionError(
+            f"the retry reason classifier proposed an unknown category {self.category!r}",
+            remedy=f"fix the classifier to return one of: {', '.join(RetryReason)}",
+        )
 
 
 @dataclass(frozen=True)

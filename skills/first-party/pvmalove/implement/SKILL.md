@@ -11,6 +11,9 @@ disable-model-invocation: true
 Language contract: agents communicate with each other and write free-text protocol/state evidence in
 English. Every completion report addressed to this coordinator is in Russian and includes
 `"report_language": "ru"`; preserve commands, paths, IDs, and quoted evidence verbatim.
+Machine-read report values stay exact English enums: `outcome: completed | blocked | failed`,
+check `result: pass | fail | not_run`, and `blockers.status` / `risks.status: none | present`.
+Each blockers/risks field is a status/details object; translate only its description.
 This binds the text this session writes, not only the text it reads: translate the ticket into
 English before it reaches a batch or a worker prompt. `definition_of_done` and `prohibited_changes`
 are rejected outright when they carry Cyrillic, and a worker prompt carrying the untranslated
@@ -33,10 +36,14 @@ beginning another.
 If another batch holds the same unfinished ticket, branch or worktree, or the `concurrency_budget`
 is exhausted, inspect `batch list --open`, the conflicting dispatch,
 and its decision packet. Tell the developer which batch is blocking and how to finish it normally.
-If its worker can no longer produce a report, show a copyable `batch abandon` command with the
-actual batch ID, the verified operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`,
-and a reason grounded in the observed failure. Present this as an operator action requiring their
-explicit approval; never supply `--approved-by` as though they already approved, or execute the
+If its worker can no longer produce a report, first run `batch auto-report`,
+`batch decision-packet`, `dispatch status` and `ledger validate`, and quote the dispatch's
+`startup` assessment: worker state, classification and unknowns. Explain which of waiting, launch
+repair, human-approved `batch resume-stop`, `batch rewind` and cancelling an unsent dispatch
+applies, and why the others do not. Offer `batch abandon` only after that, as a separate explicit
+human choice for the whole batch: show a copyable command with the actual batch ID, the verified
+operator name, `--approved-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"`, and a reason grounded in the
+observed failure. Never supply `--approved-by` as though they already approved, or execute the
 command for them without that approval. `ledger clean` only removes orphaned evidence, and
 `ledger reset` does not clear an active batch.
 
@@ -112,14 +119,46 @@ both independent Standards/Spec review and serialized clean-room QA gates. Befor
 write-role (`developer`) worker, verify that these mandatory gates are recorded in the batch's
 `required_gates`; halt early if missing rather than sending a worker into a risk-gate omission.
 
-For each handoff, run `dispatch preflight`, show `batch decision-packet`, then create an approved
-immutable brief. Pass the brief's `report_staging_path` to the worker verbatim; a role that has to
-guess where its report belongs writes it outside the project. The coordinator never writes feature code or repairs state by hand. A report is
-evidence, not permission to advance. Architect precedes developer; accepted candidate proceeds
-through the required review/QA/publish gates. A write-role worker stopped early before making changes
-returns a truthful `outcome: blocked` report bound to the verified checkout commit with empty
-`changed_files` and unrun checks; the coordinator decision packet returns an explicit recovery route
-(`retry`, `block`, `abandon`) without registering a candidate or weakening `completed` report validation.
+For each handoff, choose the worker checkout and pass its absolute path as `--worktree` to
+`dispatch preflight`. Show `batch decision-packet`, then create an approved immutable brief. Pass
+the same explicit `--worktree` to `dispatch send`; code-review also keeps `--checkout`. Preflight
+and send verify the selected path, branch and startup SHA. Start the worker in exactly
+`send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify that
+mechanism before launch: `isolation: worktree` alone does not prove attachment to an existing
+worktree. If the runtime cannot select that checkout, report a blocker. The coordinator stays in the
+main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the
+brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
+belongs writes it outside the project.
+
+**Claude Code runtime.** The Agent tool cannot select an existing checkout: a subagent starts in the
+main checkout, and `EnterWorktree` refuses it there. Two paths exist; state which one the batch uses.
+- `external` (strict): set the worker roles' `transport` to `external` in `.harness/orchestration.json`
+  and send with `--adapter <main-repo>/.harness/adapters/claude_worker.py` (absolute path).
+  `dispatch send` runs the adapter in `send.worker_worktree`, and it starts a detached headless
+  `claude -p` there on the brief's model, effort and `allowed_tools`, so the worker's CWD is the
+  issue worktree. The adapter builds the prompt; for a retry, put the retry lines in a file inside the
+  repository and pass `--adapter-arg=--extra-prompt-file=<path>`. A permission layer may refuse
+  launching an agent from the coordinator session; that refusal is a stop, so show the developer the
+  exact `dispatch send` command to run in their own terminal, then continue with `dispatch wait`.
+- `in-process` (weaker evidence): the subagent's CWD is the main checkout, so the template's CWD check
+  would stop it. Replace that check in its prompt: probe `git -C <worker_worktree>` for the top-level,
+  branch and HEAD, run every command with `git -C` or `cd <worker_worktree> &&`, and use absolute
+  paths for every file. Its self-report then proves the checkout it works in, not its CWD; say so in
+  the final report.
+
+`dispatch send` checks the adapter's flags against its `dispatch --help` before the handoff and
+refuses an unsupported one: fix the `--adapter-arg` values and send the same approved dispatch
+again. Show any `limitation` in the send result's `adapter_preflight`. To diagnose an app-server
+runtime without a worker, run `dispatch runtime-probe`; its result is evidence, and the worker's
+model self-report stays mandatory.
+
+The coordinator never writes feature code or repairs state by hand. A report is evidence, not
+permission to advance. Architect precedes developer; accepted candidate proceeds through the
+required review/QA/publish gates. A write-role worker stopped early before making changes returns a
+truthful `outcome: blocked` report bound to the verified checkout commit with empty `changed_files`
+and unrun checks; the coordinator decision packet returns an explicit recovery route (`retry`,
+`block`, or a human-selected `abandon`) without registering a candidate or weakening `completed`
+report validation.
 
 Before every write-role dispatch, the immutable brief carries an ordered commit plan. Each entry
 names one independently reviewable logical change, its expected files and the DoD items it covers;
@@ -147,7 +186,9 @@ operator's terminal for transitions that still require human approval. When choo
 route for `retry` or `abandon`, show the decision packet's `route_preview` (with the
 `--reason-category` or `--retry-role` you intend to pass to `batch decide`) and follow the
 Recovery route table in `.harness/orchestration/playbook.md` (situation → route → who approves →
-evidence).
+evidence). Report each startup failure under its own classification (unsupported flag, missing
+or refused self-report, capacity, rate-limit, service-unavailable) together with its recovery
+route.
 
 Under `approval_policy: auto`, the coordinator takes every path decision by policy and records it
 as `policy:auto`; follow "Automatic path" in `.harness/orchestration/playbook.md`. Do not write
@@ -157,9 +198,23 @@ as `policy:auto`; follow "Automatic path" in `.harness/orchestration/playbook.md
 `batch auto-decide --batch <id>`. Pass `--commit-plan-file` with the architect's plan copied
 exactly, `--findings-file` for coordinator findings on a developer report, `--bug-ticket` after
 you file or reuse the tool's bug ticket through the tracker CLI, and `--block-bypass --note` when a
-role worked around a block. Pass nothing else, and never choose the decision yourself. After any
-refused command, and after a `stopped` outcome, run `batch auto-report --batch <id>`. A stop is
-final for the batch: show the report, and every later step needs the operator's explicit approval.
+role worked around a block. Pass nothing else, and never choose the decision yourself. After a refused command, run `batch auto-report --batch <id>` to observe evidence. This read-only
+command does not record a stop. If it shows `observed_stop`, run `batch auto-decide --batch <id>`
+to record the pause, even without a pending report, then show `batch auto-report` again.
+The automatic path ends permanently at that pause. Inspect `batch decision-packet`, `dispatch status`
+and `ledger validate` before you propose waiting, launch repair, human-approved `batch resume-stop`,
+or `batch rewind --to <gate>` to repeat an earlier gate. An exhausted infrastructure budget keeps
+the batch paused for that human choice.
+Use the playbook's "Operator recovery" procedure. The original stop stays historical; all later
+approvals, including recognized 429 continuations, follow `manual_all`. Honor an approval already
+explicitly given in this session for the concrete operation; never invent one.
+
+When a stage's report is `blocked` only by an infrastructure failure although its work looks
+complete (a developer's commits match the plan, for example), a human may decide
+`batch decide --decision accept-conditional --infrastructure-failure --note <cause>`. The pipeline
+advances as after `accept`, but the stage stays an open condition that a later code-review or qa
+accept must independently close; publish refuses while one is open. Never choose it yourself, and
+prefer `resume-stop` when the stage can simply be restarted.
 
 A worker that works around a hook or tool block (another command form, tool, script file, `eval`,
 interpreter or a split command) breaks the protocol: never accept or warning-override that report,
@@ -198,7 +253,10 @@ exception to that budget.
 
 Run `dispatch wait` between send and report. `stale`, model/worktree mismatch, changed harness
 snapshot, and a failed deterministic gate are blockers for the coordinator, not prompts for broad
-LLM recovery. In-process and external transports preserve the same brief and evidence contract.
+LLM recovery. Silence or a timeout does not prove that a worker stopped. `batch resume-stop`
+refuses a worker whose `startup` state is `live` or `unknown`: stop it through its runtime and
+repeat the command with `--runtime-stopped`. In-process and external transports preserve the same
+brief and evidence contract.
 
 A busy ledger (`ledger is locked by another operation`, or `ledger_busy` from `dispatch status`) is
 transient: repeat `dispatch wait` or `dispatch status`. When a relayed `report submit` result
@@ -207,6 +265,10 @@ its `command` (`report complete --dispatch <dispatch-id>`) yourself and repeat i
 fails; it is idempotent. When the failed step needs a human, follow its remedy instead. Never remove
 the ledger lock or any state file by hand; a lock that stays held goes to
 `coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
+`ledger lock-status` shows the holder and the time left until a timeout release without taking the
+lock. For the lock of a stopped sandboxed worker, show the operator a copyable
+`ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>`; it is
+their action, never yours, under every `approval_policy`.
 
 ## Worker prompt
 
@@ -222,8 +284,12 @@ You are the <role> worker for dispatch <dispatch_id>.
 Brief: <brief path from dispatch send>
 Report staging path: <report_staging_path from dispatch send, verbatim>
 Coordinator CLI: <coordinator CLI>
+Expected worker checkout: <worker_worktree from dispatch send, canonical absolute path>
+Expected startup SHA: <worker_snapshot_commit from dispatch send>
 Before task work, run git rev-parse --show-toplevel, git branch --show-current and git rev-parse HEAD
-in your runtime's current directory. Confirm your actually active model and the probed Git top-level:
+in your runtime's current directory. Compare the top-level path and HEAD with the expected values
+above, and the branch with the brief. Stop on any mismatch; do not reset Git history or claim
+another checkout as your actual directory. Confirm your active model and the probed Git top-level:
 <coordinator CLI> dispatch self-report --dispatch <dispatch_id> --model "<actual active model>" --worktree "<probed Git top-level>"
 Proceed only after a successful self-report; escalate a mismatch or unavailable model identity.
 Immediately after self-report and at least every <heartbeat.every_seconds> seconds while working, run:
@@ -233,7 +299,13 @@ related_tests. For a starting file with non-empty sections, read only the start_
 ranges the task needs.
 Work within the brief; escalate a blocker for anything the brief and the package leave out.
 Before your final reply, write the completion report JSON to the exact report staging path using
-the common and role-specific report contract, with report_language: ru, then run:
+the common and role-specific report contract, with report_language: ru.
+Use exact English enums: outcome = completed | blocked | failed; checks_run[].result = pass | fail | not_run.
+Set blockers and risks (also in every review axis) to {"status": "none", "details": ""} when absent,
+or {"status": "present", "details": "<Russian description>"} when present. A none status requires empty
+details; present requires a non-empty description. Put other explanations in output. Strings, translated
+statuses, passed and not-run are invalid; no aliases or old report formats are accepted.
+Then run:
 <coordinator CLI> report submit --file "<report_staging_path>"
 Completion means the report is recorded in the ledger. Include the submit result in your final reply.
 If submission fails before recording, return the command and error as a blocker; keep the report file.

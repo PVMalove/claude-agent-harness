@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "harness project config",
-  "description": "Project-specific values pvmalove-suite's qa-gate, pr-composer, code-review, to-guide, and the check-branch-name.sh/check-worktree-branch-name.sh hooks read. Written once by 'harness init'/'adopt'/'update' when pvmalove-suite is selected (harness/bin/harness.py, scaffold_pvmalove_extras) and safe to hand-edit afterward - see docs/adr/0003 and CONTEXT.md (\"Проектный конфиг\"). This schema is editor-facing only (autocomplete/validation); 'harness health' enforces the same rules by hand, since this repo has no jsonschema dependency to load this file at runtime.",
+  "description": "Project-specific values pvmalove-suite's qa-gate, pr-composer, code-review, to-guide, and branch hooks read. Created by 'harness init'/'adopt'/'update' and editable afterward. Editors and the console wizard validate this schema; 'harness health' applies the shared project validator. The console also calls that validator for business rules; no jsonschema runtime dependency is required.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -31,6 +31,7 @@
     "branch_pattern": {
       "type": "string",
       "minLength": 1,
+      "format": "regex",
       "description": "Regex a new branch name must match, enforced by check-branch-name.sh/check-worktree-branch-name.sh. If this file is missing entirely, the hooks fall back to their own built-in default (^feature/issue-[0-9]+-.+) instead of blocking every branch name - that fallback does not apply if this field is merely empty."
     },
     "qa_gate_commands": {
@@ -52,12 +53,18 @@
     "tracker": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type"],
+      "required": [
+        "type"
+      ],
       "description": "Optional explicit project tracker (docs/adr/0011): when present and valid it is the single source of the tracker for 'harness health'; without it the tracker is derived from the 'origin' URL and health warns with a ready-to-paste snippet. Example: {\"type\": \"gitlab\", \"host\": \"gitlab.example.test:4443\", \"project\": \"group/sub/project\"}. Certificate, proxy and credential settings belong in the tracker CLI's own personal configuration, never in this file.",
       "properties": {
         "type": {
           "type": "string",
-          "enum": ["github", "gitlab", "local"],
+          "enum": [
+            "github",
+            "gitlab",
+            "local"
+          ],
           "description": "Tracker kind: 'github', 'gitlab' (including self-hosted) or 'local' (markdown tracker, no online checks)."
         },
         "host": {
@@ -74,12 +81,18 @@
       "if": {
         "properties": {
           "type": {
-            "enum": ["github", "gitlab"]
+            "enum": [
+              "github",
+              "gitlab"
+            ]
           }
         }
       },
       "then": {
-        "required": ["host", "project"]
+        "required": [
+          "host",
+          "project"
+        ]
       }
     },
     "ci_required_checks": {
@@ -90,6 +103,122 @@
         "minLength": 1
       },
       "description": "Optional names of the CI checks that must all pass on a pull request's combined result before 'integration collect-ci' accepts CI evidence in place of a repeat of full local QA. Empty or absent means CI evidence is not configured and the local QA fallback applies."
+    },
+    "test_paths": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!(?:.*[/\\\\])?\\.\\.(?:[/\\\\]|$)).+$"
+      },
+      "description": "Optional test paths: relative globs without '..' segments that are the only write zone of the test author; without this field the test author is off. The isolated test runner (.claude/hooks/run-test.sh, docs/hooks/run-test.md) mounts only '<directory>/**' entries writable and refuses every other form."
+    },
+    "test_runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ],
+      "description": "Optional command of the isolated test runner (.claude/hooks/run-test.sh). Together with test_paths it is required for test-author activation; without it the runner refuses to run a test.",
+      "properties": {
+        "command": {
+          "type": "array",
+          "minItems": 2,
+          "items": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "not": {
+                "const": "{test_id}"
+              }
+            }
+          ],
+          "additionalItems": {
+            "type": "string",
+            "minLength": 1
+          },
+          "contains": {
+            "const": "{test_id}"
+          },
+          "description": "Argument vector run without a shell, e.g. [\"python3\", \"-m\", \"unittest\", \"{test_id}\"]. Exactly one element is '{test_id}' and it is not the first; the runner replaces it with the selected test id as one argument. 'harness health' also rejects a second '{test_id}' element, which this draft-07 schema cannot express."
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command",
+            "artifact_paths"
+          ],
+          "properties": {
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?![\\s\\S]*\\{test_id\\})(?![\\s\\S]*\\u0000)[\\s\\S]+$"
+              }
+            },
+            "artifact_paths": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/*?\\[\\]{}\\\\\\x00-\\x1f]+(?:/[^/*?\\[\\]{}\\\\\\x00-\\x1f]+)*/\\*\\*$(?![\\s\\S])"
+              }
+            }
+          },
+          "description": "Optional protected build; empty artifact targets use fresh run-owned backing directories."
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine",
+            "test_ids",
+            "command",
+            "ready_command"
+          ],
+          "properties": {
+            "engine": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]{0,63}$(?![\\s\\S])"
+            },
+            "test_ids": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?!\\s*$)(?![\\s\\S]*\\u0000)[\\s\\S]+$"
+              }
+            },
+            "command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?![\\s\\S]*\\{test_id\\})(?![\\s\\S]*\\u0000)[\\s\\S]+$"
+              }
+            },
+            "ready_command": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(?![\\s\\S]*\\{test_id\\})(?![\\s\\S]*\\u0000)[\\s\\S]+$"
+              }
+            }
+          },
+          "description": "Optional private instance of the production engine, only for matching fnmatchcase test IDs; foreground server and bounded readiness commands."
+        }
+      }
     },
     "story_points": {
       "type": "object",

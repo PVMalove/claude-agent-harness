@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
+from harness.orchestration.core.constants import ACCEPTED_DECISIONS
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
     _changed_files_between,
@@ -186,7 +187,7 @@ def _pre_chain_copies(
 
 
 def _accepted(entry: JsonObject) -> bool:
-    return entry["decision"].get("decision") in {"accept", "override-warning"}
+    return entry["decision"].get("decision") in ACCEPTED_DECISIONS
 
 
 def _developer_work(root: Path, entry: JsonObject) -> JsonObject | None:

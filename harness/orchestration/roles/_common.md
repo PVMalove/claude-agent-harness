@@ -13,6 +13,17 @@ dependency explanations, and messages to the next worker. Treat `.harness/orches
 machine-readable audit trail and keep any free-text coordination fields in English. Completion
 reports addressed to the coordinator must be written in Russian and include `"report_language": "ru"`.
 Do not translate commands, paths, commit IDs, test names, or quoted source evidence.
+Machine-read values stay exact English enums: `outcome` is `completed | blocked | failed`, and
+check `result` is `pass | fail | not_run`. `blockers` and `risks`, including both composite review
+axes and checkpoints, are objects with exactly `status` and `details`:
+- absent: `{"status": "none", "details": ""}`;
+- present: `{"status": "present", "details": "<description>"}`.
+
+Keep `status` in English and write descriptions in Russian. A `none` status requires empty
+`details`; a `present` status requires a non-empty description. Put unrelated explanations in
+`output`. Strings such as `нет` or `none`, translated statuses, `passed`, `not-run`, and extra
+object keys are rejected before recording. There are no legacy aliases or automatic conversions:
+correct the staging file and submit again for the same dispatch.
 
 Write the completion report, and any checkpoint, to the absolute `report_staging_path` named in the
 brief (`.harness/.sandboxes/scratch/inbox/<dispatch_id>.json`) and hand that same path to
@@ -25,11 +36,24 @@ Each role returns one completion report: its output, changed files, checks run a
 risks, and blockers. A write role also reports the commit SHA that contains its work. The coordinator
 records the selected provider and model separately; manifests never choose either.
 
+The optional `test-author` is an in-session Claude Code helper of the `developer`, not an
+orchestration role. The developer may spawn it only after `.claude/hooks/test-author-preflight.sh`
+returns `{"status":"ok"}`. Preflight must verify the trusted project identity, the installed agent,
+the enabled scoped hook, and the isolated runner. A disabled preflight keeps the ordinary developer
+route and passes only the sanitized reason to the developer. The helper writes one behavior test
+inside `test_paths` and runs it through `.claude/hooks/run-test.sh`; it never receives a manifest,
+dispatch, brief/report, approval, or ledger lifecycle. Codex support is not claimed for this helper.
+While preflight returns `{"status":"ok"}`, the developer calls it before each implementation step and
+follows the Red-Green-Refactor cycle in `developer.md`; local author retries and guard denials
+create no dispatch and no ledger state.
+
 Start with the Context Package and one startup probe: run `git rev-parse --show-toplevel`, `git branch
 --show-current`, and `git rev-parse HEAD` in the runtime's current directory. Report that canonical
 worktree through `dispatch self-report --dispatch <dispatch_id> --model <actual-active-model>
 --worktree <top-level>` before task work in every new or resumed session. Model self-report is always
-required; `worker_attestation_required` controls the additional worktree check. Use the coordinator
+required. Worktree attestation is mandatory for architect, developer, conflict-resolver,
+database-migrations, messaging-integration and code-review; `worker_attestation_required` also
+enables it for other roles. Use the coordinator
 CLI and its absolute repo/state paths from the prompt even when your current directory is another
 worktree. After a successful self-report, send `dispatch heartbeat --dispatch <dispatch_id>`
 immediately and at least every `liveness.heartbeat_every_seconds` from the brief while working.
@@ -45,9 +69,9 @@ coordinator for `report complete`, rather than submitting again. A planned check
 continuation protocol, not a completion report.
 
 The Context Package's `starting_files`, `symbol_graph`, and `related_tests` are the working set for
-the role's task: read those first. A starting file with non-empty `sections` is a large document
-seeded as a section index: read only the `start_line`–`end_line` ranges the task needs, not the
-whole file. Repository search is scoped to Context Package paths and reserved
+the role's task: read those first. A starting file with non-empty `sections` is a large Markdown
+or Python file seeded as a section index: read only the `start_line`–`end_line` ranges the task
+needs, not the whole file. Repository search is scoped to Context Package paths and reserved
 as a last resort, not the default way to build understanding. When the package is insufficient — a
 needed file or symbol is missing from it — escalate a blocker naming that file or symbol rather than
 reading the repository blindly. This is a working discipline, not a dispatch-creation gate: Context
@@ -77,6 +101,16 @@ checkpoint; a role that cannot reach one returns a structured blocker (`outcome:
 the context pressure. A continuation starts only from that checkpoint, in a new session that attests
 its model again. Recording pressure changes no routing or approval by itself.
 
+The launch prompt states the expected canonical checkout and startup SHA. Before task work,
+probe the runtime's actual Git top-level, branch and HEAD and compare them. Report that actual
+path to `dispatch self-report` using the main coordinator's absolute CLI/repo/state address.
+The coordinator's own CWD may be the main checkout. Never report another path, reset history to
+match a stale brief, or assume runtime worktree isolation attaches to an existing checkout.
+Each resumed session repeats self-report and heartbeat; startup evidence is not a completed DoD.
+Before a first checkpoint, a stopped writer session may continue only at its proven clean startup
+SHA through recognized 429 handling or human `startup-failure` authorization with unchanged facts.
+Never manufacture a checkpoint, completion, checks or remaining DoD to make continuation possible.
+
 Write work happens only on the handoff's issue branch and isolated worktree, only inside the brief's
 allowed paths. Protected branches and `integration/*` are never direct write targets. A batch has one
 active writer; role handoffs are sequential. A commit is evidence only after the required checks pass and its
@@ -90,7 +124,7 @@ itself names (such as the bounded summary wrapper) is not a workaround. Stop ins
 tool that blocked, `safety-classifier` for an interruption by the safety classifier), `command`
 (the exact command or action as it was invoked) and `message` (the tool's verbatim message, bounded
 like check evidence). Only this field lets the coordinator classify the stop as `tooling`; free
-text in `blockers` never does. Report a check the block kept from running as not run, never as
+text in `blockers.details` never does. Report a check the block kept from running as not run, never as
 `fail`.
 
 A read-only role (`architect`, `verification`, `code-review`, `qa`) that leaves part of its brief

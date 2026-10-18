@@ -19,14 +19,19 @@ import socket
 import sys
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..core.constants import BatchState, DispatchState
+from ..core.utils import sealed
+from .recovery_chain import event_audit, terminal
 
 LEDGER_VERSION = 3
 SUPPORTED_LEDGER_VERSIONS = (1, 2, 3)
@@ -36,6 +41,38 @@ LOCK_DIRECTORY = ".coordinator.lock"
 LOCK_OWNER = "owner.json"
 # The operating-system file lock that lets one release at a time judge and remove the ledger lock.
 LOCK_RELEASE_GUARD = ".coordinator.lock.release"
+# Append-only, integrity-checked records of human-approved forced lock releases. The lock belongs
+# to the state root rather than to a generation, so its audit lives beside it.
+LOCK_AUDIT_DIRECTORY = "lock-audit"
+PID_NAMESPACE_LINK = Path("/proc/self/ns/pid")
+BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
+# The coordinator command that takes the lock, recorded in the owner record when it is known.
+_LOCK_OPERATION: ContextVar[str | None] = ContextVar(
+    "ledger_lock_operation", default=None
+)
+
+
+def set_lock_operation(operation: str | None) -> None:
+    """Name the coordinator operation every later lock of this process records as its owner."""
+    _LOCK_OPERATION.set(operation)
+
+
+def lock_environment() -> dict[str, str]:
+    """The PID namespace and boot of this process, as far as the platform reveals them.
+
+    A pid identifies a process only inside one PID namespace of one boot: a worker sandboxed with
+    ``--unshare-pid`` records a pid that names another process, or a kernel thread, outside its
+    sandbox. Both values are absent where the platform has no ``/proc``."""
+    environment: dict[str, str] = {}
+    with contextlib.suppress(OSError):
+        environment["pid_namespace"] = os.readlink(PID_NAMESPACE_LINK)
+    with contextlib.suppress(OSError):
+        boot_id = BOOT_ID_FILE.read_text(encoding="utf-8").strip()
+        if boot_id:
+            environment["boot_id"] = boot_id
+    return environment
+
+
 RECORD_DIRECTORIES = (
     "batches",
     "plans",
@@ -65,12 +102,41 @@ class LedgerLockBusy(LedgerError):
     """Another operation holds the ledger lock."""
 
 
+def _parse_state[T: StrEnum](value: object, vocabulary: type[T]) -> T:
+    if isinstance(value, str):
+        try:
+            return vocabulary(value)
+        except ValueError:
+            pass
+    raise LedgerError(
+        f"invalid {vocabulary.__name__} value {value!r}",
+        remedy=f"use an exact English state from: {', '.join(vocabulary)}; restore the coordinator's recorded state before continuing",
+    )
+
+
+def _validate_record_state(directory: str, value: JsonObject) -> None:
+    if directory == "batches":
+        _parse_state(value.get("state"), BatchState)
+        entries = value.get("dispatches", [])
+        for entry in entries if isinstance(entries, list) else []:
+            if isinstance(entry, dict) and "state" in entry:
+                _parse_state(entry["state"], DispatchState)
+    elif directory in {"dispatches", "dispatch-status"}:
+        _parse_state(value.get("state"), DispatchState)
+
+
+LOCK_BUSY_REMEDY = (
+    "repeat the command once the other operation finishes; 'coordinator.py ledger lock-status' "
+    "shows the holder, its age and when a timeout release becomes available. If the lock stays "
+    "held, run 'coordinator.py ledger release-lock', which releases it only when its owner process "
+    "is gone; for the lock of a stopped sandboxed worker, an operator can run 'coordinator.py "
+    "ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>'"
+)
+
+
 def _lock_busy() -> LedgerLockBusy:
     return LedgerLockBusy(
-        "ledger is locked by another operation",
-        remedy="repeat the command once the other operation finishes; if the lock stays held, "
-        "run 'coordinator.py ledger release-lock', which releases it only when its owner process "
-        "is gone",
+        "ledger is locked by another operation", remedy=LOCK_BUSY_REMEDY
     )
 
 
@@ -99,10 +165,14 @@ class BatchRecord:
     directory: ClassVar[str] = "batches"
 
     batch_id: str
-    state: str
+    state: BatchState
     dispatches: list[JsonValue]
     coordinator_approval: JsonObject | None
     extra: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _parse_state(self.state, BatchState))
+        _validate_record_state(self.directory, self.to_dict())
 
     @property
     def record_id(self) -> str:
@@ -123,7 +193,7 @@ class BatchRecord:
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
             batch_id=cast(str, data.get("batch_id")),
-            state=cast(str, data.get("state")),
+            state=_parse_state(data.get("state"), BatchState),
             dispatches=cast(list[JsonValue], data.get("dispatches")),
             coordinator_approval=cast(
                 JsonObject | None, data.get("coordinator_approval")
@@ -163,9 +233,12 @@ class DispatchRecord:
 
     dispatch_id: str
     batch_id: str
-    state: str
+    state: DispatchState
     coordinator_approval: JsonObject | None
     extra: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _parse_state(self.state, DispatchState))
 
     @property
     def record_id(self) -> str:
@@ -187,7 +260,7 @@ class DispatchRecord:
         return cls(
             dispatch_id=cast(str, data.get("dispatch_id")),
             batch_id=cast(str, data.get("batch_id")),
-            state=cast(str, data.get("state")),
+            state=_parse_state(data.get("state"), DispatchState),
             coordinator_approval=cast(
                 JsonObject | None, data.get("coordinator_approval")
             ),
@@ -202,8 +275,11 @@ class DispatchStatusRecord:
     directory: ClassVar[str] = "dispatch-status"
 
     dispatch_id: str
-    state: str
+    state: DispatchState
     extra: JsonObject = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state", _parse_state(self.state, DispatchState))
 
     @property
     def record_id(self) -> str:
@@ -218,7 +294,7 @@ class DispatchStatusRecord:
         extra = {key: value for key, value in data.items() if key not in known}
         return cls(
             dispatch_id=cast(str, data.get("dispatch_id")),
-            state=cast(str, data.get("state")),
+            state=_parse_state(data.get("state"), DispatchState),
             extra=extra,
         )
 
@@ -552,7 +628,9 @@ def _read(path: Path, label: str) -> JsonObject:
         )
     # json.loads is a dynamic boundary; after confirming the top-level object, JSON itself
     # guarantees string object keys and recursive JSON-compatible values.
-    return cast(JsonObject, value)
+    record = cast(JsonObject, value)
+    _validate_record_state(path.parent.name, record)
+    return record
 
 
 def _digest(path: Path) -> str:
@@ -605,17 +683,18 @@ class LifecycleLedger:
         owner = lock_dir / LOCK_OWNER
         created = False
         try:
+            record: JsonObject = {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "acquired_at": _now(),
+                **lock_environment(),
+            }
+            operation = _LOCK_OPERATION.get()
+            if operation:
+                record["operation"] = operation
             with owner.open("x", encoding="utf-8") as stream:
                 created = True
-                stream.write(
-                    json.dumps(
-                        {
-                            "pid": os.getpid(),
-                            "host": socket.gethostname(),
-                            "acquired_at": _now(),
-                        }
-                    )
-                )
+                stream.write(json.dumps(record))
         except (FileExistsError, FileNotFoundError) as exc:
             raise _lock_busy() from exc
         except OSError as exc:
@@ -695,7 +774,12 @@ class LifecycleLedger:
             finally:
                 _guard_byte(handle, acquire=False)
 
-    def break_lock(self, observed: JsonObject) -> None:
+    def break_lock(
+        self,
+        observed: JsonObject,
+        *,
+        before_release: Callable[[JsonObject], None] | None = None,
+    ) -> None:
         """Remove the lock ``lock_state()`` returned as ``observed``, and only that lock.
 
         The caller decides whether the lock may go; this only guarantees it removes the lock it
@@ -703,7 +787,9 @@ class LifecycleLedger:
         one, and nothing else can change it before it goes: a holder only creates an owner record
         where none exists and removes only its own, and the observed owner was judged gone.  An
         unreadable record goes only when it was observed unreadable; a lock observed without a
-        record goes by rmdir, which never removes a record created since."""
+        record goes by rmdir, which never removes a record created since.  ``before_release``
+        runs under the same guard once the lock is confirmed and before it goes; when it raises,
+        the lock stays."""
         lock_dir = self.root / LOCK_DIRECTORY
         owner = lock_dir / LOCK_OWNER
         changed = LedgerError(
@@ -717,12 +803,48 @@ class LifecycleLedger:
                 for key in ("owner", "owner_record", "acquired_at")
             ):
                 raise changed
+            if before_release is not None:
+                before_release(current)
             try:
                 if current["owner_record"] != "absent":
                     owner.unlink()
                 lock_dir.rmdir()
             except OSError as exc:
                 raise changed from exc
+
+    def force_break_lock(self, observed: JsonObject, decision: JsonObject) -> str:
+        """Remove the observed lock whatever its owner, after auditing the human ``decision``.
+
+        The audit record (who, when, why, the verdict and the lock as it was) is written under the
+        release guard before the lock goes, so a lock never disappears without one.  Returns the
+        audit id."""
+        audit_id = f"audit-{uuid.uuid4()}"
+
+        def audit(current: JsonObject) -> None:
+            record: JsonObject = {
+                "audit_id": audit_id,
+                "at": _now(),
+                "action": "ledger-lock-force-release",
+                "details": {**decision, "lock": current},
+            }
+            record["record_sha256"] = hashlib.sha256(
+                _canonical(record).encode("utf-8")
+            ).hexdigest()
+            directory = self.root / LOCK_AUDIT_DIRECTORY
+            try:
+                directory.mkdir(exist_ok=True)
+                with (directory / f"{audit_id}.json").open(
+                    "x", encoding="utf-8"
+                ) as out:
+                    out.write(_canonical(record))
+            except OSError as exc:
+                raise LedgerError(
+                    f"forced ledger lock release could not be audited: {exc.strerror}",
+                    remedy=f"make {directory} writable, then repeat the forced release",
+                ) from exc
+
+        self.break_lock(observed, before_release=audit)
+        return audit_id
 
     @property
     def pointer_path(self) -> Path:
@@ -866,6 +988,28 @@ class LifecycleLedger:
             "audit_records": len(list((root / "audit").glob("*.json"))),
         }
 
+    def validate(self) -> JsonObject:
+        """Validate the selected generation without ensure, migration or pointer writes."""
+        pointer = self.pointer()
+        root = (
+            self.root
+            if pointer is None
+            else self.root / GENERATIONS / self._pointer_generation(pointer)
+        )
+        version = pointer["version"] if pointer else 0
+        if pointer and version == LEDGER_VERSION:
+            self._validate_generation(root)
+        elif pointer or self._legacy_records_present():
+            self._validate_legacy(root)
+            self._validate_audit(root / "audit")
+        self._validate_audit(self.root / LOCK_AUDIT_DIRECTORY)
+        return {
+            "valid": True,
+            "version": version,
+            "generation": pointer["generation"] if pointer else None,
+            "batches": [p.stem for p in sorted((root / "batches").glob("*.json"))],
+        }
+
     def upgrade_source_batches(self) -> list[JsonObject]:
         """The batches of the older-schema generation ``migrate`` would upgrade; empty when no
         schema upgrade is pending."""
@@ -937,7 +1081,13 @@ class LifecycleLedger:
         active = []
         for path in (current / "batches").glob("*.json"):
             batch = _read(path, "batch record")
-            if batch.get("state") == "active":
+            if batch.get("state") in {
+                "active",
+                "awaiting-approval",
+                "paused",
+                "blocked",
+                "failed",
+            } and not terminal(batch):
                 active.append(batch.get("batch_id", path.stem))
         if active:
             raise LedgerError(
@@ -1053,6 +1203,8 @@ class LifecycleLedger:
     def write_immutable(
         self, path: Path, value: JsonObject, *, artifact: bool = False
     ) -> None:
+        if not artifact:
+            _validate_record_state(path.parent.name, value)
         generation, relative = self._selected_path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1098,6 +1250,7 @@ class LifecycleLedger:
         ``decision`` is the coordinator decision this transition records; it is stored in the same
         audit event, under the same checksum, so the decision and its transition cannot diverge.
         """
+        _validate_record_state(path.parent.name, value)
         generation, relative = self._selected_path(path)
         if not path.is_file():
             raise LedgerError(
@@ -1108,6 +1261,15 @@ class LifecycleLedger:
         transition: JsonObject = {"path": relative, "before_sha256": _digest(path)}
         if relative.startswith("batches/"):
             self._validate_batch_transition(generation, before, value)
+            events = cast(list[JsonObject], value.get("recovery_events", []))
+            if len(events) > len(
+                cast(list[JsonObject], before.get("recovery_events", []))
+            ):
+                if decision != event_audit(events[-1]):
+                    raise LedgerError(
+                        "recovery event requires its matching audit decision",
+                        remedy="use the recovery command to bind approval and transition in one audit record",
+                    )
             transition.update({"from": before.get("state"), "to": value.get("state")})
         self._atomic_write(path, value)
         transition["sha256"] = _digest(path)
@@ -1175,50 +1337,140 @@ class LifecycleLedger:
     def _validate_batch_transition(
         self, generation: Path, before: JsonObject, after: JsonObject
     ) -> None:
-        previous = before.get("state")
-        target = after.get("state")
-        allowed = {
-            "planned": {
-                "planned",
-                "awaiting-approval",
-                "blocked",
-                "failed",
-                "not-required",
-            },
-            "awaiting-approval": {
-                "awaiting-approval",
-                "active",
-                "completed",
-                "blocked",
-                "failed",
-                "not-required",
-                "abandoned",
-            },
-            "active": {
-                "active",
-                "awaiting-approval",
-                "blocked",
-                "failed",
-                "not-required",
-            },
-            "blocked": {"blocked", "awaiting-approval", "failed"},
-            "failed": {"failed"},
-            "completed": {"completed", "failed"},
-            "not-required": {"not-required"},
-            "abandoned": {"abandoned"},
-        }
+        previous = _parse_state(before.get("state"), BatchState)
+        target = _parse_state(after.get("state"), BatchState)
+        old_events = before.get("recovery_events", [])
+        new_events = after.get("recovery_events", [])
         if (
-            not isinstance(previous, str)
-            or not isinstance(target, str)
-            or previous not in allowed
-            or target not in allowed[previous]
+            not isinstance(old_events, list)
+            or not isinstance(new_events, list)
+            or new_events[: len(old_events)] != old_events
+            or len(new_events) > len(old_events) + 1
         ):
-            allowed_targets = (
-                sorted(allowed.get(previous, ())) if isinstance(previous, str) else []
-            )
             raise LedgerError(
-                f"ledger rejects batch transition {previous!r} -> {target!r}",
-                remedy=f"transition through one of the allowed states for {previous!r}: {allowed_targets}",
+                "recovery events are append-only",
+                remedy="use one audited recovery command; never replace or remove historical evidence",
+            )
+        added = new_events[len(old_events) :]
+        recovery = added[-1] if added else None
+        if recovery is not None:
+            if (
+                not isinstance(recovery, dict)
+                or recovery.get("sequence") != len(new_events)
+                or recovery.get("before_state") != previous
+                or recovery.get("state") != target
+                or recovery.get("next_action") != after.get("next_action")
+            ):
+                raise LedgerError(
+                    "recovery event does not bind this transition",
+                    remedy="record the actual before/after state and next gate through the coordinator",
+                )
+            if recovery != sealed(
+                {k: v for k, v in recovery.items() if k != "record_sha256"}
+            ):
+                raise LedgerError(
+                    "recovery event checksum mismatch",
+                    remedy="use the coordinator to create a sealed event",
+                )
+        if before.get("auto_stop") and before["auto_stop"] != after.get("auto_stop"):
+            raise LedgerError(
+                "historical auto stop is immutable",
+                remedy="append a recovery event; preserve the original stop",
+            )
+        if before.get("manual_recovery") and not after.get("manual_recovery"):
+            raise LedgerError(
+                "recovered batches remain manual",
+                remedy="keep manual_all after recovery",
+            )
+        if (
+            after.get("manual_recovery")
+            and not before.get("manual_recovery")
+            and (not recovery or recovery.get("kind") not in {"resume-stop", "rewind"})
+        ):
+            raise LedgerError(
+                "manual recovery requires a fresh recovery event",
+                remedy="use batch resume-stop or rewind",
+            )
+        old_startup = before.get("startup_evidence", [])
+        new_startup = after.get("startup_evidence", [])
+        if (
+            not isinstance(old_startup, list)
+            or not isinstance(new_startup, list)
+            or new_startup[: len(old_startup)] != old_startup
+        ):
+            raise LedgerError(
+                "startup evidence is append-only",
+                remedy="preserve original startup proof",
+            )
+        allowed = {
+            BatchState.PLANNED: {
+                BatchState.PLANNED,
+                BatchState.AWAITING_APPROVAL,
+                BatchState.BLOCKED,
+                BatchState.FAILED,
+                BatchState.NOT_REQUIRED,
+                BatchState.ABANDONED,
+            },
+            BatchState.AWAITING_APPROVAL: {
+                BatchState.AWAITING_APPROVAL,
+                BatchState.ACTIVE,
+                BatchState.COMPLETED,
+                BatchState.BLOCKED,
+                BatchState.FAILED,
+                BatchState.NOT_REQUIRED,
+                BatchState.ABANDONED,
+            },
+            BatchState.ACTIVE: {
+                BatchState.ACTIVE,
+                BatchState.AWAITING_APPROVAL,
+                BatchState.BLOCKED,
+                BatchState.FAILED,
+                BatchState.NOT_REQUIRED,
+                BatchState.ABANDONED,
+            },
+            BatchState.BLOCKED: {
+                BatchState.BLOCKED,
+                BatchState.AWAITING_APPROVAL,
+                BatchState.FAILED,
+                BatchState.ABANDONED,
+            },
+            BatchState.FAILED: {BatchState.FAILED, BatchState.ABANDONED},
+            BatchState.COMPLETED: {BatchState.COMPLETED},
+            BatchState.NOT_REQUIRED: {BatchState.NOT_REQUIRED},
+            BatchState.ABANDONED: {BatchState.ABANDONED},
+        }
+        for state in (
+            BatchState.PLANNED,
+            BatchState.AWAITING_APPROVAL,
+            BatchState.ACTIVE,
+            BatchState.BLOCKED,
+            BatchState.FAILED,
+        ):
+            allowed[state].add(BatchState.PAUSED)
+        allowed[BatchState.PAUSED] = {
+            BatchState.PAUSED,
+            BatchState.AWAITING_APPROVAL,
+            BatchState.PLANNED,
+            BatchState.ABANDONED,
+        }
+        allowed[BatchState.FAILED].update(
+            {BatchState.AWAITING_APPROVAL, BatchState.PLANNED}
+        )
+        allowed[BatchState.ACTIVE].add(BatchState.PLANNED)
+        allowed[BatchState.BLOCKED].add(BatchState.PLANNED)
+        for state in (
+            BatchState.PLANNED,
+            BatchState.ACTIVE,
+            BatchState.BLOCKED,
+            BatchState.FAILED,
+            BatchState.PAUSED,
+        ):
+            allowed[state].add(BatchState.COMPLETED)
+        if target not in allowed[previous]:
+            allowed_targets = sorted(allowed[previous])
+            raise LedgerError(
+                f"ledger rejects batch transition {previous.value!r} -> {target.value!r}",
+                remedy=f"transition through one of the allowed states for {previous.value!r}: {[state.value for state in allowed_targets]}",
             )
         if previous == "planned" and target == "awaiting-approval":
             approval = after.get("coordinator_approval")
@@ -1230,7 +1482,54 @@ class LifecycleLedger:
                     "ledger requires recorded coordinator approval before a batch awaits dispatch",
                     remedy="set coordinator_approval.approved_by and .approved_at before moving the batch to awaiting-approval",
                 )
-        if previous == "blocked" and target == "awaiting-approval":
+        if target == "abandoned" and previous != "abandoned":
+            refusal = after.get("abandoned")
+            if (
+                not isinstance(refusal, dict)
+                or not all(
+                    isinstance(item := refusal.get(key), str) and item.strip()
+                    for key in ("approved_by", "approved_at", "reason")
+                )
+                or not isinstance(refusal.get("approved_by"), str)
+                or cast(str, refusal["approved_by"]).startswith("policy:")
+            ):
+                raise LedgerError(
+                    "abandon requires recorded human refusal",
+                    remedy="record approved_by, approved_at and reason through batch abandon",
+                )
+        if (
+            target == "paused"
+            and previous != "paused"
+            and (not recovery or recovery.get("kind") != "pause")
+        ):
+            raise LedgerError(
+                "pause requires a recorded stop event",
+                remedy="use batch auto-decide to record the policy stop",
+            )
+        recovery_transition = (
+            previous in {"paused", "failed", "blocked"}
+            and target in {"planned", "awaiting-approval"}
+        ) or (previous == "active" and target == "planned")
+        human_event = (
+            recovery
+            and recovery.get("kind") in {"resume-stop", "rewind"}
+            and isinstance(recovery.get("approved_by"), str)
+            and not cast(str, recovery["approved_by"]).startswith("policy:")
+        )
+        if (
+            recovery_transition
+            and not human_event
+            and not (
+                previous == "blocked"
+                and target == "awaiting-approval"
+                and not new_events
+            )
+        ):
+            raise LedgerError(
+                "recovery transition requires a fresh human event",
+                remedy="use batch resume-stop or rewind with human approval",
+            )
+        if previous == "blocked" and target == "awaiting-approval" and not human_event:
             before_entries = before.get("dispatches")
             after_entries = after.get("dispatches")
             decisions = after.get("coordinator_decisions")

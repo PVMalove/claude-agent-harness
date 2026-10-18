@@ -25,7 +25,11 @@ from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
     _state_root,
 )
-from harness.orchestration.ledger.lifecycle import LifecycleLedger
+from harness.orchestration.ledger.lifecycle import (
+    LEDGER_VERSION,
+    LifecycleLedger,
+    lock_environment,
+)
 
 
 def ledger_status(args: argparse.Namespace) -> JsonObject:
@@ -35,6 +39,27 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         return ledger.status()
+
+
+def validate_ledger(args: argparse.Namespace) -> JsonObject:
+    """Read-only generation, audit, record graph and batch-contract validation."""
+    from harness.orchestration.workflow.history import _validate_batch_integrity
+    from harness.orchestration.core.utils import _read_object
+
+    root = _state_root(args, _repo(args))
+    ledger = LifecycleLedger(root)
+    if not root.exists():
+        return ledger.validate()
+    with _ledger_lock(ledger), _ledger_errors():
+        result = ledger.validate()
+        if result["version"] == LEDGER_VERSION:
+            records = ledger.records_root()
+            for batch_id in cast(list[str], result["batches"]):
+                _validate_batch_integrity(
+                    root,
+                    _read_object(records / "batches" / f"{batch_id}.json", "batch"),
+                )
+        return result
 
 
 def migrate_ledger(args: argparse.Namespace) -> JsonObject:
@@ -83,50 +108,145 @@ def clean_ledger(args: argparse.Namespace) -> JsonObject:
         return ledger.clean()
 
 
+ENVIRONMENT_FIELDS = ("pid_namespace", "boot_id")
+
+
+def _other_environment(owner: JsonObject, environment: JsonObject | None) -> bool:
+    """Whether the owner recorded a PID namespace or boot that differs from this process's.
+
+    Only a value both sides know is compared: a legacy record without these fields, or a
+    platform without ``/proc``, keeps the pid check."""
+    if not environment:
+        return False
+    return any(
+        isinstance(owner.get(key), str)
+        and isinstance(environment.get(key), str)
+        and owner[key] != environment[key]
+        for key in ENVIRONMENT_FIELDS
+    )
+
+
 def _release_verdict(
     state: JsonObject,
     *,
     host: str,
     pid_active: Callable[[int], bool],
     stale_after: int,
+    environment: JsonObject | None = None,
 ) -> tuple[bool, str]:
     """Whether ``ledger release-lock`` may release the lock ``state`` describes, and why.
 
-    A recorded owner is judged by its process: only a process on this host can be checked, and a
-    live one is never released whatever the lock's age.  A lock without a usable owner record is
-    released only once it is ``stale_after`` seconds old."""
+    A recorded owner is judged by its process: only a process on this host and in this PID
+    namespace and boot can be checked, and a live one is never released whatever the lock's age.
+    An owner from another environment cannot be checked by its pid, so it is released like a lock
+    without a usable owner record: only once it is ``stale_after`` seconds old."""
     owner = state.get("owner")
     pid = owner.get("pid") if isinstance(owner, dict) else None
     owner_host = owner.get("host") if isinstance(owner, dict) else None
+    held = cast(int, state["held_seconds"])
     if (
-        isinstance(pid, int)
+        isinstance(owner, dict)
+        and isinstance(pid, int)
         and not isinstance(pid, bool)
         and pid > 0
         and isinstance(owner_host, str)
     ):
         if owner_host != host:
             return False, "owner-on-another-host"
+        if _other_environment(owner, environment):
+            if held >= stale_after:
+                return True, "owner-unknown-stale"
+            return False, "owner-in-other-environment"
         if pid_active(pid):
             return False, "owner-alive"
         return True, "owner-dead"
-    if state["held_seconds"] >= stale_after:
+    if held >= stale_after:
         return True, "owner-unknown-stale"
     return False, "owner-unknown-recent"
 
 
+def _judge(state: JsonObject) -> tuple[bool, str]:
+    """The verdict of this process on ``state``: its host, PID namespace and boot."""
+    return _release_verdict(
+        state,
+        host=socket.gethostname(),
+        pid_active=_pid_active,
+        stale_after=LEDGER_LOCK_STALE_SECONDS,
+        environment=cast(JsonObject, lock_environment()),
+    )
+
+
+def ledger_lock_status(args: argparse.Namespace) -> JsonObject:
+    """Show the ledger lock without taking it, so it works while the ledger is busy.
+
+    ``remaining_seconds`` counts down to the timeout release of an owner that cannot be checked;
+    ``release_available`` says whether a plain ``ledger release-lock`` would release it now."""
+    ledger = LifecycleLedger(_state_root(args, _repo(args)))
+    state = ledger.lock_state()
+    if state is None:
+        return {"locked": False}
+    releasable, verdict = _judge(state)
+    owner = state.get("owner")
+    held = cast(int, state["held_seconds"])
+    return {
+        "locked": True,
+        "path": state["path"],
+        "acquired_at": state["acquired_at"],
+        "held_seconds": held,
+        "stale_after_seconds": LEDGER_LOCK_STALE_SECONDS,
+        "remaining_seconds": max(0, LEDGER_LOCK_STALE_SECONDS - held),
+        "owner": owner,
+        "owner_record": state["owner_record"],
+        "operation": owner.get("operation") if isinstance(owner, dict) else None,
+        "environment": lock_environment(),
+        "verdict": verdict,
+        "release_available": releasable,
+    }
+
+
+def _force_release(
+    args: argparse.Namespace, ledger: LifecycleLedger, state: JsonObject
+) -> JsonObject:
+    """Release the lock whatever its owner, behind a human approval, a reason and an audit.
+
+    No policy reaches this path: ``approval_policy: auto`` never supplies ``--approved-by``, and a
+    ``policy:`` approver is refused like everywhere else."""
+    from harness.orchestration.workflow import approval as approvals
+
+    reason = getattr(args, "reason", None)
+    if not isinstance(reason, str) or not reason.strip():
+        raise CoordinatorError(
+            "a forced ledger lock release requires a reason",
+            remedy="pass --reason naming why the owner cannot finish, for example the worker "
+            "sandbox that was stopped",
+        )
+    approval = approvals._approval(args)
+    _, verdict = _judge(state)
+    with _ledger_errors():
+        audit_id = ledger.force_break_lock(
+            state, {**approval, "reason": reason.strip(), "verdict": verdict}
+        )
+    return {
+        "released": True,
+        "reason": "forced",
+        "verdict": verdict,
+        "audit_id": audit_id,
+        "lock": state,
+    }
+
+
 def release_ledger_lock(args: argparse.Namespace) -> JsonObject:
-    """Release a ledger lock only after checking its owner; a live owner is always refused."""
+    """Release a ledger lock only after checking its owner; a live owner is always refused.
+
+    ``--force`` releases it whatever the verdict, behind a human approval and an audit record."""
     repo = _repo(args)
     ledger = LifecycleLedger(_state_root(args, repo))
     state = ledger.lock_state()
     if state is None:
         return {"released": False, "lock": None}
-    release, reason = _release_verdict(
-        state,
-        host=socket.gethostname(),
-        pid_active=_pid_active,
-        stale_after=LEDGER_LOCK_STALE_SECONDS,
-    )
+    if getattr(args, "force", False):
+        return _force_release(args, ledger, state)
+    release, reason = _judge(state)
     if not release:
         owner = state["owner"]
         holder = (
@@ -135,14 +255,25 @@ def release_ledger_lock(args: argparse.Namespace) -> JsonObject:
             else "an unrecorded owner"
         )
         remaining = LEDGER_LOCK_STALE_SECONDS - cast(int, state["held_seconds"])
+        forced = (
+            "; an operator can release it now with 'coordinator.py ledger release-lock --force "
+            "--approved-by <operator> --approved-at <time> --reason <why>'"
+        )
         remedy = {
             "owner-alive": "let the owner process finish its ledger operation and repeat the "
-            "command that met the lock; a lock whose owner process is alive is never released",
+            "command that met the lock; a lock whose owner process is alive is never released. "
+            "If the recorded pid belongs to a stopped sandboxed worker and names an unrelated "
+            "process here, an operator can release the lock with 'coordinator.py ledger "
+            "release-lock --force --approved-by <operator> --approved-at <time> --reason <why>'",
             "owner-on-another-host": "run 'coordinator.py ledger release-lock' on the owner's "
-            "host, where its process can be checked",
+            "host, where its process can be checked" + forced,
+            "owner-in-other-environment": "repeat 'coordinator.py ledger release-lock' in "
+            f"{remaining} seconds; an owner from another PID namespace or boot cannot be checked "
+            f"by its pid and is released once the lock has been held for "
+            f"{LEDGER_LOCK_STALE_SECONDS} seconds" + forced,
             "owner-unknown-recent": "repeat 'coordinator.py ledger release-lock' in "
             f"{remaining} seconds; a lock without a readable owner record is released only once "
-            f"it has been held for {LEDGER_LOCK_STALE_SECONDS} seconds",
+            f"it has been held for {LEDGER_LOCK_STALE_SECONDS} seconds" + forced,
         }[reason]
         raise CoordinatorError(
             f"ledger lock is not released ({reason}): held by {holder} for "

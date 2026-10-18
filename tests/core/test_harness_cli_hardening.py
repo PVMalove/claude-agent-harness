@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -107,3 +108,115 @@ def test_foundation_only_projects_get_no_capability_extras(tmp_path: Path) -> No
         harness_cli.seed_capability_extras(tmp_path, args, ["project-foundation"]) == []
     )
     assert not any(tmp_path.iterdir())
+
+
+def test_preparation_command_validation() -> None:
+    assert harness_cli._preparation_command("pytest -v") == ["pytest", "-v"]
+    with pytest.raises(
+        argparse.ArgumentTypeError, match="must be non-empty argv without {test_id}"
+    ):
+        harness_cli._preparation_command("pytest '{unclosed")
+    with pytest.raises(
+        argparse.ArgumentTypeError, match="must be non-empty argv without {test_id}"
+    ):
+        harness_cli._preparation_command("")
+    with pytest.raises(
+        argparse.ArgumentTypeError, match="must be non-empty argv without {test_id}"
+    ):
+        harness_cli._preparation_command("pytest {test_id}")
+    with pytest.raises(
+        argparse.ArgumentTypeError, match="must be non-empty argv without {test_id}"
+    ):
+        harness_cli._preparation_command("pytest \x00")
+
+
+def test_seed_test_fields_build_and_database() -> None:
+    args = argparse.Namespace(
+        test_runner_command=["pytest", "{test_id}"],
+        test_build_command=["make", "build"],
+        test_artifact_path=["build/**"],
+        test_database_engine="postgresql",
+        test_database_test_id=["tests/db/**"],
+        test_database_command=["postgres"],
+        test_database_ready_command=["pg_isready"],
+    )
+    raw = harness_cli._seed_test_fields(args)
+    fields = json.loads("{" + raw.rstrip(",") + "}")
+    assert fields["test_runner"]["build"]["command"] == ["make", "build"]
+    assert fields["test_runner"]["build"]["artifact_paths"] == ["build/**"]
+    assert fields["test_runner"]["database"]["engine"] == "postgresql"
+    assert fields["test_runner"]["database"]["test_ids"] == ["tests/db/**"]
+    assert fields["test_runner"]["database"]["command"] == ["postgres"]
+    assert fields["test_runner"]["database"]["ready_command"] == ["pg_isready"]
+
+    # Without build and database
+    plain_args = argparse.Namespace(
+        test_runner_command=["pytest", "{test_id}"],
+        test_build_command=None,
+        test_database_engine=None,
+    )
+    plain_raw = harness_cli._seed_test_fields(plain_args)
+    assert "build" not in plain_raw
+    assert "database" not in plain_raw
+
+
+def test_validate_test_options() -> None:
+    parser = harness_cli.parser()
+    valid_args = argparse.Namespace(
+        test_runner_command=["pytest", "{test_id}"],
+        test_build_command=["make", "build"],
+        test_artifact_path=["build/**"],
+        test_database_engine="postgresql",
+        test_database_test_id=["tests/db/**"],
+        test_database_command=["postgres"],
+        test_database_ready_command=["pg_isready"],
+    )
+    harness_cli._validate_test_options(valid_args, parser)
+
+    # Missing test_runner_command with build command
+    no_runner = argparse.Namespace(
+        test_runner_command=None,
+        test_build_command=["make"],
+        test_artifact_path=["build/**"],
+        test_database_engine=None,
+        test_database_test_id=None,
+        test_database_command=None,
+        test_database_ready_command=None,
+    )
+    with pytest.raises(SystemExit):
+        harness_cli._validate_test_options(no_runner, parser)
+
+    # Incomplete group
+    incomplete = argparse.Namespace(
+        test_runner_command=["pytest", "{test_id}"],
+        test_build_command=["make"],
+        test_artifact_path=None,
+        test_database_engine=None,
+        test_database_test_id=None,
+        test_database_command=None,
+        test_database_ready_command=None,
+    )
+    with pytest.raises(SystemExit):
+        harness_cli._validate_test_options(incomplete, parser)
+
+    # Invalid test_runner problem (absolute path in artifact_paths)
+    invalid = argparse.Namespace(
+        test_runner_command=["pytest", "{test_id}"],
+        test_build_command=["make"],
+        test_artifact_path=["/absolute/**"],
+        test_database_engine=None,
+        test_database_test_id=None,
+        test_database_command=None,
+        test_database_ready_command=None,
+    )
+    with pytest.raises(SystemExit):
+        harness_cli._validate_test_options(invalid, parser)
+
+
+def test_main_help(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    monkeypatch.setattr(sys, "argv", ["harness", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        harness_cli.main()
+    assert exc.value.code == 0
+    assert "harness" in capsys.readouterr().out
+

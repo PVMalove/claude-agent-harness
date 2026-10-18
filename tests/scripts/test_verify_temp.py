@@ -196,16 +196,59 @@ class PytestCommandTest(unittest.TestCase):
     def test_windows_configuration(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="win32", cpu_count=8)
         self.assertIn("-n", cmd)
-        self.assertEqual(cmd[cmd.index("-n") + 1], "2")
+        self.assertEqual(cmd[cmd.index("-n") + 1], "8")
         self.assertIn("--ignore=tests/memory/test_eval.py", cmd)
         self.assertIn("--ignore=tests/memory/test_vector_probe.py", cmd)
+        self.assertNotIn("--ignore=tests/orchestration/test_coordinator.py", cmd)
+
+    def test_windows_platform_subset_skips_the_slow_neutral_files(self) -> None:
+        cmd = verify.pytest_command(
+            Path("/tmp/run"), platform="win32", cpu_count=8, platform_subset=True
+        )
+        self.assertIn("--ignore=tests/orchestration/test_coordinator.py", cmd)
+
+    def test_posix_ignores_the_platform_subset_flag(self) -> None:
+        cmd = verify.pytest_command(
+            Path("/tmp/run"), platform="linux", cpu_count=8, platform_subset=True
+        )
+        self.assertFalse([arg for arg in cmd if arg.startswith("--ignore=")])
 
     def test_posix_configuration(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=8)
         self.assertIn("-n", cmd)
-        self.assertEqual(cmd[cmd.index("-n") + 1], "4")
+        self.assertEqual(cmd[cmd.index("-n") + 1], "8")
         self.assertNotIn("--ignore=tests/memory/test_eval.py", cmd)
+
+    def test_workers_are_capped_at_eight(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=16)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "8")
+
+    def test_fewer_cpus_than_the_cap_use_every_cpu(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=6)
+        self.assertEqual(cmd[cmd.index("-n") + 1], "6")
         self.assertNotIn("--ignore=tests/memory/test_vector_probe.py", cmd)
+
+    def test_default_run_has_no_cache_no_stop_and_no_report(self) -> None:
+        cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=8)
+        self.assertEqual(cmd[cmd.index("-p") + 1], "no:cacheprovider")
+        for absent in ("-x", "--ff"):
+            self.assertNotIn(absent, cmd)
+        self.assertFalse([a for a in cmd if a.startswith("--junitxml")])
+
+    def test_fail_fast_failed_first_and_junit_options(self) -> None:
+        cmd = verify.pytest_command(
+            Path("/tmp/run"),
+            platform="linux",
+            cpu_count=8,
+            fail_fast=True,
+            failed_first=Path("/tmp/cache"),
+            junit_xml=Path("/tmp/out/junit.xml"),
+        )
+        self.assertIn("-x", cmd)
+        self.assertIn("--ff", cmd)
+        self.assertIn(f"cache_dir={Path('/tmp/cache')}", cmd)
+        self.assertNotIn("no:cacheprovider", cmd)
+        self.assertIn(f"--junitxml={Path('/tmp/out/junit.xml')}", cmd)
 
     def test_single_cpu_fallback(self) -> None:
         cmd = verify.pytest_command(Path("/tmp/run"), platform="linux", cpu_count=1)

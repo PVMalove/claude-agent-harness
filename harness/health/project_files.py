@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import NoReturn
 from urllib.parse import urlsplit
 
+from harness.configuration import read_config_file
+
 from .model import JsonObject
 
 # --- Paths and constants ------------------------------------
@@ -47,6 +49,8 @@ PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {
     "memory_policy",
     "tracker",
     "ci_required_checks",
+    "test_paths",
+    "test_runner",
 }
 STORY_POINTS_REQUIRED_FIELDS = (
     "scale",
@@ -74,6 +78,15 @@ TRACKER_PROJECT_RULE = (
     "must be the full project path with subgroups (group/sub/project), "
     "without a leading or trailing slash"
 )
+# The optional `test_paths` and `test_runner` fields (docs/hooks/run-test.md and
+# docs/agents/test-author.md): both settings are required for test-author activation. A `test_paths`
+# glob is relative - no leading slash or backslash, no drive letter - and has no `..` segment.
+# `project.schema.json` repeats the pattern verbatim; tests keep the two in step.
+TEST_PATH_PATTERN = r"^(?![/\\])(?![A-Za-z]:)(?!(?:.*[/\\])?\.\.(?:[/\\]|$)).+$"
+TEST_RUNNER_FIELDS = ("command", "build", "database")
+ARTIFACT_PATH_PATTERN = "^(?![/\\\\])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/*?\\[\\]{}\\\\\\x00-\\x1f]+(?:/[^/*?\\[\\]{}\\\\\\x00-\\x1f]+)*/\\*\\*$(?![\\s\\S])"
+# The one `test_runner.command` element the runner replaces with the selected test id.
+TEST_ID_PLACEHOLDER = "{test_id}"
 # Bound of the `git ls-files` skill inventory.
 GIT_TIMEOUT_SECONDS = 30
 # A JSON file cannot be opened, decoded or parsed (too deep nesting included).
@@ -305,7 +318,9 @@ def validate_overlay_locks(repo: Path, lock: JsonObject, problems: list[str]) ->
             )
         source = data.get("source")
         if not isinstance(source, dict):
-            problems.append(f"missing overlay source: {lock_path.relative_to(repo).as_posix()}")
+            problems.append(
+                f"missing overlay source: {lock_path.relative_to(repo).as_posix()}"
+            )
         elif source.get("type") != "project-local":
             remote = source.get("remote")
             revision = source.get("revision")
@@ -571,20 +586,129 @@ def ci_required_checks_problems(value: object) -> list[str]:
     return []
 
 
+def test_paths_problems(value: object) -> list[str]:
+    """Problems of the `test_paths` value: a non-empty list of unique relative globs without `..`
+    segments.  Globs are shown by position, never echoed."""
+    prefix = ".harness/project.json test_paths"
+    if not isinstance(value, list) or not value:
+        return [f"{prefix} must be a non-empty list of glob strings"]
+    problems = [
+        f"{prefix}[{index}] must be a relative glob without '..' segments"
+        for index, item in enumerate(value)
+        if not (isinstance(item, str) and re.fullmatch(TEST_PATH_PATTERN, item))
+    ]
+    if not problems and len(set(value)) != len(value):
+        problems.append(f"{prefix} must not contain duplicate globs")
+    return problems
+
+
+def test_runner_problems(value: object) -> list[str]:
+    """Problems of the `test_runner` value: `{"command": argv}`, where argv holds non-empty strings
+    and exactly one `{test_id}` element that is not the first.  Arguments are shown by position,
+    never echoed."""
+    prefix = ".harness/project.json test_runner"
+    if not isinstance(value, dict):
+        return [f"{prefix} must be an object with a command list"]
+    problems: list[str] = []
+    extra = sorted(str(key) for key in set(value) - set(TEST_RUNNER_FIELDS))
+    if extra:
+        problems.append(f"{prefix} has unknown field(s): {', '.join(extra)}")
+    for field, required in (
+        ("build", {"command", "artifact_paths"}),
+        ("database", {"engine", "test_ids", "command", "ready_command"}),
+    ):
+        if field not in value:
+            continue
+        settings = value[field]
+        label = f"{prefix}.{field}"
+        if not isinstance(settings, dict) or set(settings) != required:
+            problems.append(
+                f"{label} must contain exactly: {', '.join(sorted(required))}"
+            )
+            continue
+        for name in (
+            ("command", "ready_command") if field == "database" else ("command",)
+        ):
+            argv = settings[name]
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or not all(
+                    isinstance(part, str)
+                    and part
+                    and "\x00" not in part
+                    and TEST_ID_PLACEHOLDER not in part
+                    for part in argv
+                )
+            ):
+                problems.append(
+                    f"{label}.{name} must be non-empty argv without '{{test_id}}'"
+                )
+        name = "artifact_paths" if field == "build" else "test_ids"
+        items = settings[name]
+        if (
+            not isinstance(items, list)
+            or not items
+            or not all(
+                isinstance(item, str)
+                and item.strip()
+                and "\x00" not in item
+                and (field != "build" or re.fullmatch(ARTIFACT_PATH_PATTERN, item))
+                for item in items
+            )
+        ):
+            problems.append(f"{label}.{name} must be a non-empty list of valid strings")
+        elif len(set(items)) != len(items):
+            problems.append(f"{label}.{name} must be unique")
+        if field == "database" and not (
+            isinstance(settings["engine"], str)
+            and re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", settings["engine"])
+        ):
+            problems.append(f"{label}.engine must be an engine identifier")
+    if "command" not in value:
+        problems.append(f"{prefix} missing required field(s): command")
+        return problems
+    command = value["command"]
+    if not isinstance(command, list) or not command:
+        problems.append(f"{prefix}.command must be a non-empty list of strings")
+        return problems
+    problems.extend(
+        f"{prefix}.command[{index}] must be a non-empty string"
+        for index, item in enumerate(command)
+        if not (isinstance(item, str) and item)
+    )
+    if command.count(TEST_ID_PLACEHOLDER) != 1:
+        problems.append(
+            f"{prefix}.command must contain exactly one '{TEST_ID_PLACEHOLDER}' element"
+        )
+    elif command[0] == TEST_ID_PLACEHOLDER:
+        problems.append(
+            f"{prefix}.command[0] must be the program, not '{TEST_ID_PLACEHOLDER}'"
+        )
+    return problems
+
+
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
-    Структура вручную синхронизируется с `harness/project/project.schema.json`: эта схема предназначена
-    только для редактора, в рантайме нет зависимости `jsonschema`, поэтому соответствие поддерживается синхронно.
+    Структура синхронизируется с `harness/project/project.schema.json`: редактор и мастер консоли
+    проверяют эту схему (`harness/configuration_schema.py`, без зависимости `jsonschema`), а здесь
+    применяются те же правила и бизнес-правила; изменения вносятся в обе части сразу.
     """
     path = repo / ".harness/project.json"
-    if not path.is_file():
-        return
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = read_config_file(path)
+        if raw is None:
+            return
+        data = json.loads(raw)
     except JSON_READ_ERRORS as exc:
         problems.append(f".harness/project.json is not valid JSON: {exc}")
         return
+    validate_project_data(data, problems)
+
+
+def validate_project_data(data: object, problems: list[str]) -> None:
+    """Validate an in-memory draft using the same contract as the health check."""
     if not isinstance(data, dict):
         problems.append(".harness/project.json must contain a JSON object")
         return
@@ -615,6 +739,14 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
     for field in ("base_branch", "branch_pattern"):
         if field in data and (not isinstance(data[field], str) or not data[field]):
             problems.append(f".harness/project.json {field} must be a non-empty string")
+    pattern = data.get("branch_pattern")
+    if isinstance(pattern, str) and pattern:
+        try:
+            re.compile(pattern)
+        except re.error:
+            problems.append(
+                ".harness/project.json branch_pattern must be a valid regex"
+            )
     if "qa_gate_commands" in data:
         commands = data["qa_gate_commands"]
         if not isinstance(commands, list) or not all(
@@ -631,6 +763,10 @@ def validate_project_json(repo: Path, problems: list[str]) -> None:
         problems.extend(tracker_field_problems(data["tracker"]))
     if "ci_required_checks" in data:
         problems.extend(ci_required_checks_problems(data["ci_required_checks"]))
+    if "test_paths" in data:
+        problems.extend(test_paths_problems(data["test_paths"]))
+    if "test_runner" in data:
+        problems.extend(test_runner_problems(data["test_runner"]))
     if "story_points" in data:
         story_points = data["story_points"]
         if not isinstance(story_points, dict):
@@ -701,7 +837,7 @@ def verification_routing_health(repo: Path) -> list[str]:
     """
     config_path = repo / ORCHESTRATION_CONFIG_REL
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config = json.loads(read_config_file(config_path) or b"{}")
     except JSON_READ_ERRORS:
         return []
     if (

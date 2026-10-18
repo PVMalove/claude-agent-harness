@@ -48,13 +48,22 @@ On GitLab, every `glab` command names the project with `-R <project-url>`; `<pro
 
 ### Phase 2: Coding
 
-1. Use `/tdd` where possible, at pre-agreed seams.
-2. Run typechecking regularly, single test files regularly, and the full test suite once at the end.
-3. Ask the developer: “Провести code review?” Stop for their answer.
+1. **Agree the seams before the first test.** Name the requirement and the public seam where its behavior is observed, with the public signatures and existing fixtures. When the ticket or spec already names them, restate them and ask the developer to confirm; otherwise propose them. Stop for the developer's answer. Never invent a seam and never write a test before the developer has agreed it.
+2. Use `/tdd` at those seams. Run `.claude/hooks/test-author-preflight.sh` once before the first test. Exactly `{"status":"ok"}` selects the test-author cycle below. Any other answer (`disabled`, a missing or failing hook, unavailable isolation, no `test_paths` or `test_runner`) selects the ordinary `/tdd` route in this session: tell the developer the sanitized `reason` (or that the hook failed) in one line, do not start an unprotected author, and do not re-run preflight hoping for another answer. Neither route adds a coordinator, architect or QA step.
+3. **Test-author cycle.** It is the same cycle as the full route (`Red-Green-Refactor with the optional test author` in the orchestration `developer.md`, and the tdd skill), and you play the developer. For each implementation step, in order:
+    - **Handoff:** call the `test-author` with the requirement, the agreed seam, the public signatures, the existing fixtures and one scenario. Never pass a proposed algorithm or implementation snippet as the basis of an expectation.
+    - **Reply:** it answers in compact English with `status` (`red`, `needs_skeleton` or `contract_gap`), the requirement, the inputs, the source of the expectation, the test id and, for `red`, the sanitized runner JSON plus the failed assertion, the expectation and the actual result from the run's `log.txt`.
+    - **Verify the expectation** against the requirement and its stated source before any implementation. An expectation derived from the implementation, or one the requirement does not support, goes back to the author as a failed call. An accepted expectation is never weakened to reach Green; only a justified contract change (the requirement or the agreed seam changed with the developer) allows correcting it, with a new author call and a new verification.
+    - **Statuses:** `red` continues. `needs_skeleton`: write only types and signatures with no logic, then rerun the author on the same scenario. `contract_gap`: clarify the requirement or seam with the developer, never guess it.
+    - **Not a behavioral Red:** a compile or import error, a fixture error, and an environment or runner refusal are never Red, whatever `status` says. A test that is Green immediately does not count as a cycle. Each is a failed author call.
+    - **Green, then Refactor:** after a confirmed behavioral Red, write the minimal implementation that passes the unchanged test and run it by its test id; refactor only on Green, re-run the test, then request the next test.
+    - **Attempt limit:** after three consecutive failed author calls on one test, stop the local retries and report the blocker to the developer. A guard denial counts as one failed call, and the denied call is never rephrased. Local retries create no dispatch and no ledger state.
+4. Run typechecking regularly, single test files regularly, and the full test suite once at the end.
+5. Ask the developer: “Провести code review?” Stop for their answer.
     - **Yes:** run `/code-review`. It launches the Standards and Spec subagents through the coding application's manually configured mechanism, waits for both reports, and returns its separate `## Standards` and `## Spec` report to this primary session. Address any requested changes, then repeat the relevant tests before continuing.
     - **No:** record that the developer declined review and continue.
-4. Ask the developer for explicit permission to commit and push. Stop for their answer.
-5. After approval, verify that the current branch still matches `branch_pattern` and is neither `base_branch` nor `integration/*`; commit the completed work with a Semantic Commit Message and push it to the current issue branch. Report the commit and push result to the developer.
+6. Ask the developer for explicit permission to commit and push. Stop for their answer.
+7. After approval, verify that the current branch still matches `branch_pattern` and is neither `base_branch` nor `integration/*`; commit the completed work with a Semantic Commit Message and push it to the current issue branch. Report the commit and push result to the developer.
 
 ### Phase 3: PR & Wrap-up
 

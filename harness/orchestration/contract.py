@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeGuard, cast
 
+from harness.configuration import read_config_file
+
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .core.constants import (
+    AUTO_RETRY_SEVERITIES,
     DEFAULT_CONTEXT_PACKAGE_POLICY,
     DEFAULT_CONTINUATION_POLICY,
     DEFAULT_EXECUTION_POLICY,
@@ -53,6 +57,8 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "backend_zones",
     "developer_verification_commands",
     "review_verification_commands",
+    "verification_profiles",
+    "retry_verification",
     "qa_preparation",
     "qa_environment_probes",
     "qa_project_file_checks",
@@ -76,6 +82,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "extensions",
     "access_policy",
     "infrastructure_retry_policy",
+    "auto_retry_min_severity",
 }
 # The working set a brief records for a role when the project states no `tool_policy`. It is the
 # role's own set, not a deny-list: global runtime tools stay available whatever a brief records.
@@ -230,6 +237,121 @@ def paths_inside(paths: list[str], boundaries: list[str]) -> bool:
     """Whether every path stays inside at least one boundary pattern."""
     return all(
         any(_inside(path, boundary) for boundary in boundaries) for path in paths
+    )
+
+
+VERIFICATION_PROFILE_FIELDS = ("paths", "developer", "review")
+
+
+def verification_profile_problems(value: object) -> list[str]:
+    """Problems of the optional ``verification_profiles`` list; none when the key is absent.
+
+    A profile maps a batch scope (``paths``) to its developer and review commands. Its paths use
+    the canonical form ``paths_inside`` compares, so a profile that cannot match is rejected here.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        return [
+            "orchestration verification_profiles must be a list of {paths, developer, review} objects when provided"
+        ]
+    problems: list[str] = []
+    for index, profile in enumerate(value):
+        label = f"orchestration verification_profiles[{index}]"
+        if not isinstance(profile, dict):
+            problems.append(
+                f"{label} must be an object with paths, developer and review"
+            )
+            continue
+        extra = sorted(set(profile) - set(VERIFICATION_PROFILE_FIELDS))
+        if extra:
+            problems.append(f"{label} has unknown field(s): {', '.join(extra)}")
+        paths = profile.get("paths")
+        if not (
+            string_list(paths)
+            and paths
+            and all(is_clean_path_pattern(path) for path in paths)
+        ):
+            problems.append(
+                f"{label}.paths must be a non-empty list of repo-relative paths or globs without a leading '/', a backslash, or a '.', '..' or empty segment"
+            )
+        for key in ("developer", "review"):
+            if not string_list(profile.get(key)):
+                problems.append(f"{label}.{key} must be a list of command strings")
+    return problems
+
+
+def verification_profile_for(
+    config: Mapping[str, object], allowed_paths: list[str]
+) -> Mapping[str, object] | None:
+    """The first profile whose paths cover every allowed path of a batch, or none."""
+    profiles = config.get("verification_profiles")
+    if not isinstance(profiles, list):
+        return None
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        paths = profile.get("paths")
+        if string_list(paths) and paths and paths_inside(allowed_paths, paths):
+            return profile
+    return None
+
+
+RETRY_VERIFICATION_FIELDS = ("lint", "test_command")
+
+
+def retry_verification_problems(value: object) -> list[str]:
+    """Problems of the optional ``retry_verification`` object; none when the key is absent."""
+    if value is None:
+        return []
+    if not isinstance(value, dict):
+        return [
+            "orchestration retry_verification must be an object with lint and test_command when provided"
+        ]
+    problems: list[str] = []
+    extra = sorted(set(value) - set(RETRY_VERIFICATION_FIELDS))
+    if extra:
+        problems.append(
+            f"orchestration retry_verification has unknown field(s): {', '.join(extra)}"
+        )
+    if not string_list(value.get("lint")):
+        problems.append(
+            "orchestration retry_verification.lint must be a list of command strings"
+        )
+    if not non_empty(value.get("test_command")):
+        problems.append(
+            "orchestration retry_verification.test_command must be a non-empty command string"
+        )
+    return problems
+
+
+def retry_verification_commands(
+    policy: object, related_tests: object
+) -> list[str] | None:
+    """Checks of a developer-retry brief: the lint commands, then one test command over the tests.
+
+    None without a valid policy or without related tests: the retry then keeps the batch's
+    developer commands, because a retry that runs no test would prove nothing.
+    """
+    if (
+        not isinstance(policy, dict)
+        or not string_list(related_tests)
+        or not related_tests
+    ):
+        return None
+    lint, test_command = policy.get("lint"), policy.get("test_command")
+    if not string_list(lint) or not non_empty(test_command):
+        return None
+    tests = " ".join(shlex.quote(path) for path in related_tests)
+    return [*lint, f"{test_command} {tests}"]
+
+
+def is_developer_retry(brief: Mapping[str, object]) -> bool:
+    """Whether a dispatch brief is a developer-retry: its digest-bound transition says so."""
+    transition = brief.get("transition")
+    return (
+        isinstance(transition, dict)
+        and transition.get("next_action") == "developer-retry"
     )
 
 
@@ -563,7 +685,7 @@ def validate_brief_policy(
                 remedy=INTERNAL_INVARIANT_REMEDY,
             )
     accepted_commands = accepted_verification_commands(
-        config, str(brief.get("role")), str(brief.get("purpose"))
+        config, str(brief.get("role")), str(brief.get("purpose")), brief=brief
     )
     if brief["verification_commands"] not in accepted_commands:
         raise ContractError(
@@ -689,18 +811,48 @@ def role_verification_commands(
     return fallback
 
 
+PROFILE_ROLE_FIELDS = {"developer": "developer", "code-review": "review"}
+
+
 def accepted_verification_commands(
-    source: Mapping[str, object], role: str, purpose: str
+    source: Mapping[str, object],
+    role: str,
+    purpose: str,
+    *,
+    brief: Mapping[str, object] | None = None,
 ) -> list[object]:
     """Вернуть допустимые списки проверок для уже записанного brief роли.
 
     Brief architect, созданный до исключения роли из полного gate, ещё несёт полный
     ``verification_commands``; такие записи остаются валидными, чтобы незавершённые batch
     продолжались без ручной правки ledger.
+
+    Конфиг с ``verification_profiles`` допускает и списки профилей: batch замораживает
+    список профиля своей области. Brief developer-retry допускает команды ``retry_verification``
+    источника над ``related_tests`` своего Context Package; замороженный batch несёт этот ключ,
+    только если он был задан при ``batch create``.
     """
     accepted = [role_verification_commands(source, role, purpose)]
-    if purpose == "work" and role in NO_GATE_WORK_ROLES:
+    if purpose != "work":
+        return accepted
+    if role in NO_GATE_WORK_ROLES:
         accepted.append(source.get("verification_commands"))
+    profiles = source.get("verification_profiles")
+    field = PROFILE_ROLE_FIELDS.get(role)
+    if field is not None and isinstance(profiles, list):
+        accepted.extend(
+            profile[field]
+            for profile in profiles
+            if isinstance(profile, dict) and string_list(profile.get(field))
+        )
+    if role == "developer" and brief is not None and is_developer_retry(brief):
+        summary = brief.get("context_package_summary")
+        retry = retry_verification_commands(
+            source.get("retry_verification"),
+            summary.get("related_tests") if isinstance(summary, dict) else None,
+        )
+        if retry is not None:
+            accepted.append(retry)
     return accepted
 
 
@@ -1051,14 +1203,23 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
 def health_problems(config_path: Path, roles_root: Path) -> list[str]:
     """Вернуть диагностические замечания к здоровью конфигурации без изменения состояния проекта."""
     problems: list[str] = []
-    if not config_path.is_file():
-        return problems
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+        raw = read_config_file(config_path)
+        if raw is None:
+            return problems
+        config = json.loads(raw)
     except (OSError, ValueError) as exc:
         return [f"{config_path.as_posix()} is not valid JSON: {exc}"]
     if not isinstance(config, dict):
         return [f"{config_path.as_posix()} must contain a JSON object"]
+    return configuration_problems(config, roles_root, config_path.as_posix())
+
+
+def configuration_problems(
+    config: JsonObject, roles_root: Path, location: str = ".harness/orchestration.json"
+) -> list[str]:
+    """Validate a draft without writing it to the active project config."""
+    problems: list[str] = []
     reject_error: ContractError | None = None
     try:
         reject_sensitive(config, "project orchestration config")
@@ -1082,14 +1243,10 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         }
     missing = [field for field in CONFIG_REQUIRED_FIELDS if field not in config]
     if missing:
-        problems.append(
-            f"{config_path.as_posix()} missing required field(s): {', '.join(missing)}"
-        )
+        problems.append(f"{location} missing required field(s): {', '.join(missing)}")
     extra = sorted(set(config) - CONFIG_ALLOWED_FIELDS)
     if extra:
-        problems.append(
-            f"{config_path.as_posix()} has unknown field(s): {', '.join(extra)}"
-        )
+        problems.append(f"{location} has unknown field(s): {', '.join(extra)}")
     roles: dict[str, JsonObject] = {}
     if not roles_root.is_dir():
         problems.append("missing .harness/orchestration/roles")
@@ -1373,6 +1530,8 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         problems.append(
             "orchestration review_verification_commands must be a list of strings when provided"
         )
+    problems.extend(verification_profile_problems(config.get("verification_profiles")))
+    problems.extend(retry_verification_problems(config.get("retry_verification")))
     for qa_key in ("qa_preparation", "qa_environment_probes", "qa_project_file_checks"):
         qa_commands = config.get(qa_key)
         if qa_commands is not None and not string_list(qa_commands):
@@ -1494,4 +1653,12 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
             booleans={"require_estimates"},
         )
     )
+    auto_retry_severity = config.get("auto_retry_min_severity")
+    if (
+        auto_retry_severity is not None
+        and auto_retry_severity not in AUTO_RETRY_SEVERITIES
+    ):
+        problems.append(
+            "orchestration auto_retry_min_severity must be info, warning, error or blocker"
+        )
     return problems

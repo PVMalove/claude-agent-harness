@@ -16,20 +16,6 @@
         "infrastructure_retry_policy"
       ],
       "properties": {
-    "infrastructure_retry_policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "enabled"
-      ],
-      "properties": {
-        "enabled": {
-          "type": "boolean",
-          "default": false
-        }
-      },
-      "description": "Явное разрешение ограниченных инфраструктурных повторов в утверждённых границах; не выдаёт native права. Бюджет: attention_policy.max_infrastructure_retries."
-    },
         "provider_profiles": {
           "maxProperties": 0
         },
@@ -78,6 +64,20 @@
     }
   ],
   "properties": {
+    "infrastructure_retry_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "description": "Явное разрешение ограниченных инфраструктурных повторов в утверждённых границах; не выдаёт native права. Бюджет: attention_policy.max_infrastructure_retries."
+    },
     "access_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -196,6 +196,51 @@
       },
       "description": "Цель: быстрая проверка при ревью. За что отвечает: команды, которые code-review запускает на candidate commit. Варианты: массив строк (может быть пустым); если не задан, используются полные verification_commands."
     },
+    "verification_profiles": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["paths", "developer", "review"],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1},
+            "description": "Пути или glob-шаблоны области профиля относительно корня репозитория (например, 'harness/console/**')."
+          },
+          "developer": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "Команды проверки developer для batch этой области."
+          },
+          "review": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "description": "Команды проверки code-review для batch этой области."
+          }
+        }
+      },
+      "description": "Цель: фокусные проверки по области batch. За что отвечает: при batch create выбирается первый профиль, чьи paths покрывают все allowed_paths batch; его developer и review замораживаются в batch вместо developer_verification_commands и review_verification_commands. Варианты: массив объектов {paths, developer, review}; если ни один профиль не покрывает batch целиком или ключ не задан, используются общие списки. Clean-room QA всегда выполняет verification_commands."
+    },
+    "retry_verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lint", "test_command"],
+      "properties": {
+        "lint": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Команды lint, с которых начинается brief developer-retry (например, ['make lint'])."
+        },
+        "test_command": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Команда тестов, к которой добавляются пути related_tests Context Package (например, 'pytest -q -n 8')."
+        }
+      },
+      "description": "Цель: быстрые проверки developer-retry. За что отвечает: brief developer-retry получает команды lint и одну команду тестов по related_tests своего Context Package (в пределах context_package_policy.max_related_tests); первый developer-dispatch, code-review и clean-room QA не меняются. Варианты: объект {lint, test_command}; если ключ не задан или связанных тестов нет, retry выполняет обычные команды developer batch. Значение замораживается в batch при batch create."
+    },
     "test_path_patterns": {
       "type": "array",
       "items": {
@@ -207,7 +252,7 @@
     "approval_policy": {
       "enum": ["manual_all", "milestone", "low_risk", "auto"],
       "default": "manual_all",
-      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для батчей, чей allowed_paths целиком лежит в low_risk_paths), 'auto' (автоматический путь от batch approve до принятого publish: координатор сам согласует batch, каждый dispatch, включая publish, риск-триггеры, bypass-rerun и rebase target, плановое продолжение и решения batch auto-decide; каждое решение пишется как policy:auto с обоснованием и evidence в batch.auto_decisions; закрытый список остановок (budget-exhausted, integrity-failure, no-automatic-route) пишется в batch.auto_stop, после остановки каждый шаг снова согласует человек; итоговый отчёт пишется в batch.auto_report и выводится командой batch auto-report; PR открывает только человек, auto-merge запрещён; требует human_approval_gate 'trusted' и worker_attestation_required true)."
+      "description": "Цель: контроль безопасности изменений. За что отвечает: политика человеческого согласования шагов оркестрации. Варианты: 'manual_all' (ручной аппрув на КАЖДЫЙ шаг, по умолчанию), 'milestone' (ручной аппрув только на ключевых вехах: QA, публикации, рисках), 'low_risk' (авто-продолжение для батчей, чей allowed_paths целиком лежит в low_risk_paths), 'auto' (автоматический путь от batch approve до принятого publish: координатор сам согласует batch, каждый dispatch, включая publish, риск-триггеры, bypass-rerun и rebase target, плановое продолжение и решения batch auto-decide; каждое решение пишется как policy:auto с обоснованием и evidence в batch.auto_decisions; закрытый список остановок (budget-exhausted, integrity-failure, no-automatic-route) фиксируется явной командой batch auto-decide в batch.auto_stop и переводит batch в paused; batch auto-report только читает состояние; человеческие resume-stop и rewind записывают событие, сохраняют историю и включают manual_all для последующих шагов, включая 429; исторический итоговый отчёт сохраняется в batch.auto_report; PR открывает только человек, auto-merge запрещён; требует human_approval_gate 'trusted' и worker_attestation_required true)."
     },
     "human_approval_gate": {
       "enum": ["trusted", "tty"],
@@ -228,7 +273,7 @@
     "worker_attestation_required": {
       "type": "boolean",
       "default": false,
-      "description": "Цель: гарантия целостности рабочего окружения. За что отвечает: требование от воркеров аттестации (подтверждения корректности Git-worktree, ветки и коммита) перед отправкой отчёта. Варианты: true (включено), false (выключено, по умолчанию)."
+      "description": "Цель: гарантия целостности рабочего окружения. За что отвечает: требование от воркеров аттестации (подтверждения корректности Git-worktree, ветки и коммита) перед отправкой отчёта. Для architect, developer, conflict-resolver, database-migrations, messaging-integration и code-review аттестация обязательна независимо от настройки. Варианты: true (проверка для всех ролей), false (проверка только для перечисленных ролей, по умолчанию)."
     },
     "communication_policy": {
       "type": "object",
@@ -318,7 +363,7 @@
         },
         "min_starting_files": {"type": "integer", "minimum": 1, "default": 5, "description": "Минимальное количество стартовых файлов при ручной регистрации Context Package."},
         "max_starting_files": {"type": "integer", "minimum": 1, "default": 10, "description": "Максимальное количество стартовых файлов в Context Package."},
-        "section_index_min_tokens": {"type": "integer", "minimum": 1, "default": 20000, "description": "Порог оценки токенов, начиная с которого Markdown-файл попадает в Context Package как оглавление разделов с диапазонами строк, а не целиком (целое число, по умолчанию 20000)."}
+        "section_index_min_tokens": {"type": "integer", "minimum": 1, "default": 20000, "description": "Порог оценки токенов, начиная с которого Markdown- или Python-файл попадает в Context Package как индекс разделов или символов с диапазонами строк, а не целиком (целое число, по умолчанию 20000)."}
       }
     },
     "repo_map_policy": {
@@ -371,6 +416,11 @@
         "max_developer_retries": {"type": "integer", "minimum": 0, "default": 1, "description": "Максимальное количество повторных попыток разработчика на исправление замечаний (целое число >= 0, по умолчанию 1)."}
       }
     },
+    "auto_retry_min_severity": {
+      "enum": ["info", "warning", "error", "blocker"],
+      "default": "info",
+      "description": "Цель: не тратить повторы разработчика на замечания низкой серьёзности. За что отвечает: минимальная серьёзность review finding, при которой auto_policy отправляет отчёт на повтор; значение фиксируется в плане batch. Варианты: 'info' (повтор на любое замечание, по умолчанию), 'warning', 'error', 'blocker'."
+    },
     "execution_policy": {
       "type": "object",
       "additionalProperties": false,
@@ -402,7 +452,7 @@
       "type": "object",
       "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier", "runtime_access"]},
       "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
-      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и native-доступа worker-а. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'. Для 'runtime_access' встроено имя 'docker' — контейнерный исполнитель; он требует access_policy.defaults.container."
+      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и подтверждения доступа среды запуска. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'. Для 'runtime_access' встроено имя 'docker' — контейнерный исполнитель; он требует access_policy.defaults.container."
     },
     "preflight_policy": {
       "type": "object",
@@ -614,7 +664,7 @@
           "description": "Список используемых профилей провайдеров из provider_profiles."
         },
         "model": {"type": "string", "minLength": 1, "description": "Имя используемой модели LLM. Варианты: 'claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-6.1-sol', 'gpt-6-luna' и др."},
-        "effort": {"type": "string", "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'low', 'medium', 'high', 'xhigh', 'max'."}
+        "effort": {"type": "string", "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"], "minLength": 1, "description": "Уровень усилий рассуждения (reasoning effort). Варианты: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'."}
       }
     },
     "toolList": {

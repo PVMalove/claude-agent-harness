@@ -240,7 +240,8 @@ def register_context_package(args: argparse.Namespace) -> JsonObject:
                 "a context package requires a batch awaiting coordinator approval",
                 remedy="move the batch to awaiting coordinator approval before registering a context package",
             )
-        # The base the package is built on (`_persist_context_package`), as in a risk assessment.
+        # The base the package is built on (`_persist_context_package`): the pinned integration base,
+        # unlike a risk assessment, which measures from the batch's own start (`rebase.batch_base`).
         base = batch.get("integration_base_commit") or batch.get("base_commit")
         if args.base_commit:
             requested_base = _candidate_commit(repo, args.base_commit)

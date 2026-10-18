@@ -17,8 +17,15 @@ from pathlib import Path
 from typing import cast
 
 from harness.orchestration.core import utils
-from harness.orchestration.core.config import _continuation_policy, _reject_sensitive
+from harness.orchestration.core.config import (
+    _auto_retry_min_severity,
+    _continuation_policy,
+    _reject_sensitive,
+)
+from harness.orchestration.core.check_results import check_counts_as_success
+from harness.orchestration.core.report_evidence import evidence_is_none
 from harness.orchestration.core.constants import (
+    AUTO_RETRY_SEVERITY_RANKS,
     AUTO_STOP_REASONS,
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
@@ -163,6 +170,7 @@ def accept_obstacles(
     *,
     scope_warnings: list[str],
     block_bypass: bool,
+    auto_retry_min_severity: str = "info",
 ) -> list[str]:
     """Why the policy cannot accept this report; none means it accepts (no I/O).
 
@@ -173,14 +181,11 @@ def accept_obstacles(
     obstacles = []
     if report.get("outcome") != "completed":
         obstacles.append(f"outcome is {report.get('outcome')}")
-    if str(report.get("blockers", "")).strip().lower() != "none":
+    if not evidence_is_none(report.get("blockers")):
         obstacles.append("the report names blockers")
     for check in report.get("checks_run", []):
         result = check.get("result") if isinstance(check, dict) else None
-        if result != "pass" and not (
-            report.get("role") == "architect"
-            and result == "not_run_architect_read_only"
-        ):
+        if not check_counts_as_success(result):
             obstacles.append(f"a check did not pass ({result})")
             break
     if plan_rules.not_covered(report):
@@ -190,18 +195,37 @@ def accept_obstacles(
     if scope_warnings:
         obstacles.append("files changed outside the approved scope")
     review = report.get("review")
+    if isinstance(review, dict):
+        ranks = AUTO_RETRY_SEVERITY_RANKS
+        threshold = ranks[auto_retry_min_severity]
+        actionable = False
+        for axis in ("standards", "spec"):
+            evidence = review.get(axis)
+            if not isinstance(evidence, dict):
+                continue
+            axis_severity = evidence.get("severity")
+            if axis_severity in {"warning", "blocker"}:
+                # Plain accept must pass the same warning/blocker guard as batch decide,
+                # even when the configured finding threshold is higher.
+                obstacles.append("a review axis has warning/blocker severity")
+            if any(
+                isinstance(finding, dict)
+                and ranks.get(str(finding.get("severity")), -1) >= threshold
+                for finding in evidence.get("findings", [])
+            ):
+                actionable = True
+        if actionable:
+            obstacles.append(
+                f"the review has findings at or above the {auto_retry_min_severity} retry threshold"
+            )
+        if review.get("recommendation") == "retry" or (
+            auto_retry_min_severity != "info"
+            and review.get("recommendation") != "accept"
+        ):
+            obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(
         isinstance(review.get(axis), dict)
-        and (
-            review[axis].get("findings")
-            or review[axis].get("severity") in {"warning", "blocker"}
-        )
-        for axis in ("standards", "spec")
-    ):
-        obstacles.append("the review has findings or a warning/blocker severity")
-    if isinstance(review, dict) and any(
-        isinstance(review.get(axis), dict)
-        and str(review[axis].get("blockers", "none")).strip().lower() != "none"
+        and not evidence_is_none(review[axis].get("blockers"))
         for axis in ("standards", "spec")
     ):
         # A clean severity does not hide blockers an axis names (as for the policy auto-accept).
@@ -222,6 +246,7 @@ def category(
     block_bypass: bool,
     candidate_moved: bool,
     pressure_recorded: bool,
+    auto_retry_min_severity: str = "info",
 ) -> Choice:
     """The first half of the auto decision table (no I/O)."""
     obstacles = accept_obstacles(
@@ -230,6 +255,7 @@ def category(
         dispatch,
         scope_warnings=scope_warnings,
         block_bypass=block_bypass,
+        auto_retry_min_severity=auto_retry_min_severity,
     )
     if not obstacles:
         # Incomplete items left here all target later roles: their briefs carry them.
@@ -361,6 +387,18 @@ def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
         except CoordinatorError:
             continue
         model = status.get("model_self_report")
+        failure = status.get("runtime_failure", {})
+        if (
+            failure.get("kind") == "runtime-unavailable"
+            and failure.get("worker_started") is False
+        ):
+            stops.append(
+                Stop(
+                    "integrity-failure",
+                    "runtime-unavailable",
+                    {"dispatch_id": entry["dispatch_id"], "runtime_failure": failure},
+                )
+            )
         if isinstance(model, dict) and model.get("match") is False:
             stops.append(
                 Stop(
@@ -505,7 +543,7 @@ def record_stop(
     human. Only the in-memory batch changes; the caller writes it."""
     from harness.orchestration.workflow import auto_report
 
-    batch["auto_stop"] = approvals.sealed(
+    stop_record = approvals.sealed(
         {
             "category": stop.category,
             "reason": stop.reason,
@@ -514,6 +552,11 @@ def record_stop(
             "evidence": stop.evidence,
         }
     )
+    if "auto_stop" not in batch:
+        batch["auto_stop"] = stop_record
+    from harness.orchestration.workflow import recovery_events
+
+    recovery_events.pause(root, batch, stop_record, moment)
     auto_report.record(repo, root, config, batch, moment)
     return cast(JsonObject, batch["auto_stop"])
 
@@ -533,7 +576,13 @@ def persist_stop(
         repo, root, config, batch, stop, detected_by=detected_by, moment=utils._now()
     )
     _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
+    from harness.orchestration.ledger.recovery_chain import event_audit
+
+    _replace_record(
+        ledger,
+        BatchRecord.from_dict(batch),
+        decision=event_audit(batch["recovery_events"][-1]),
+    )
     return batch
 
 
@@ -591,7 +640,7 @@ def resolve(
             "project that still chooses it",
             remedy="decide the report with batch decide and --approved-by",
         )
-    if "auto_stop" in batch:
+    if "auto_stop" in batch or batch.get("manual_recovery"):
         raise CoordinatorError(
             "the automatic path of this batch stopped, so a human decides every later step",
             remedy="show batch auto-report to a human; decide with batch decide and --approved-by",
@@ -627,6 +676,7 @@ def resolve(
             and item.get("level") == "critical"
             for item in batch.get("context_pressure", [])
         ),
+        auto_retry_min_severity=_auto_retry_min_severity(config, batch),
     )
     fields: JsonObject = {
         "decision": choice.decision,
@@ -698,7 +748,7 @@ def accepted_risks(
     """The risks an accept takes on: the report's own, its triggers, the candidate's matched
     triggers and the review axes' risks (no I/O)."""
     risks: list[JsonObject] = []
-    if str(report.get("risks", "none")).strip().lower() != "none":
+    if not evidence_is_none(report.get("risks")):
         risks.append({"source": "report", "risks": report["risks"]})
     if report.get("risk_triggers"):
         risks.append({"source": "risk_triggers", "triggers": report["risk_triggers"]})
@@ -716,10 +766,7 @@ def accepted_risks(
     review = report.get("review")
     for axis in ("standards", "spec"):
         evidence = review.get(axis) if isinstance(review, dict) else None
-        if (
-            isinstance(evidence, dict)
-            and str(evidence.get("risks", "none")).strip().lower() != "none"
-        ):
+        if isinstance(evidence, dict) and not evidence_is_none(evidence.get("risks")):
             risks.append({"source": f"review-{axis}", "risks": evidence["risks"]})
     return risks
 

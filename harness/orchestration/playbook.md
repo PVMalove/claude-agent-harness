@@ -27,16 +27,26 @@ blocker, but it cannot transition its own batch or silently widen its brief. The
 `coordinator.py` implements this contract's lifecycle and keeps its local state under
 the gitignored `.harness/orchestration/state/` directory.
 
+`BatchState` and `DispatchState` define separate, closed English vocabularies. The ledger and
+coordinator validate states on read and before writing either a record or its audit event. Unknown
+values, translations, whitespace and case variants are refused. The enum checks the vocabulary;
+the transition table and approval guards still determine whether a transition is allowed.
+
 | State | Coordinator action and entry condition | Allowed next state |
 | --- | --- | --- |
-| `planned` | Ticket, explicit allowed paths, issue branch/worktree, DoD, prohibitions, and verification commands are drafted. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
-| `awaiting-approval` | The coordinator is waiting for the next explicit human decision: first the role dispatch, and later acceptance of a report. | `active`, `blocked`, `completed`, `failed`, `not-required`, `abandoned` |
-| `active` | An approved dispatch has been handed to the runtime adapter; the role is executing only within its immutable brief. | `awaiting-approval`, `blocked`, `failed`, `not-required` |
-| `completed` | All required role reports, commit proof, verification evidence, and risk gates are accepted. | terminal |
-| `blocked` | An external dependency, missing authority, an exhausted concurrency budget, or unavailable proof prevents safe continuation. | `awaiting-approval` only through `batch resume --reason` for a startup-blocked or stale batch (a human `block` decision is never resumable); `failed` |
-| `not-required` | `batch not-required` recorded, with approval and evidence, that the pinned snapshot already satisfies every DoD item. | terminal |
-| `failed` | The dispatch attempted work but could not produce an acceptable result. | terminal |
-| `abandoned` | A human explicitly gave up on the batch after a completion report, with a recorded reason. | terminal |
+| `planned` | Immutable scope drafted; initial planning approval is still required. | `awaiting-approval`, `blocked`, `failed`, `paused`, `completed` (no implementation), `abandoned`; rewind preserves `planned` |
+| `awaiting-approval` | A fresh dispatch or a report decision awaits approval. | `active`, `blocked`, `failed`, `paused`, `completed`, `abandoned` |
+| `active` | An approved dispatch is executing its immutable contract. | `awaiting-approval`, `blocked`, `failed`, `paused`, `completed` (no implementation), `abandoned`; human rewind |
+| `paused` | An explicit `batch auto-decide` recorded a stop. Observation alone never pauses. | Human `resume-stop` or `rewind`, or `abandoned` |
+| `blocked` | A dependency, authority or proof is missing. It retains its work. | Human recovery, `failed`, `paused`, `abandoned`, `completed` (no implementation) |
+| `failed` | Work could not produce an acceptable result. It remains recoverable. | Human recovery, `paused`, `abandoned`, `completed` (no implementation) |
+| `completed` | Accepted publish, or explicit `batch not-required` with `completion_kind: no-implementation`. | terminal |
+| `abandoned` | Explicit human refusal with reason and `last_accepted`, through either abandon entry point. | terminal |
+| `not-required` | Legacy no-implementation terminal record; new commands write `completed`. | terminal |
+
+A legacy `failed` record with an explicit human `abandoned` decision is also terminal. It can be
+superseded without rewriting the source; an arbitrary failed batch cannot. Recoverable blocked,
+failed and paused batches retain their ticket, branch, worktree and concurrency slot.
 
 `reported` is a terminal outcome for one role dispatch but remains pending coordinator decision. The
 batch returns to `awaiting-approval` until the coordinator accepts, retries, blocks, fails, abandons,
@@ -77,7 +87,7 @@ In this table and the Recovery route table, an operational reason is one of thes
 **QA preparation failures.** When the project declares `qa_preparation`, the QA report carries `qa_stages`
 (per-stage command, result, exit code, sanitised diagnostics, `failed_stage`, `code_checks_started`
 and, for a failed preparation, a `diagnosis`). A failed preparation stops the run before any gate
-command: the gate commands are recorded as `not-run`, never as failed checks. Only after that failure
+command: the gate commands are recorded as `not_run`, never as failed checks. Only after that failure
 the runner runs the project's `qa_environment_probes` and `qa_project_file_checks` in the same
 checkout, as independent facts recorded as `environment-probe` and `project-file-check` stages.
 Neither an exit code nor a log keyword decides a category alone, and the preparation stage alone
@@ -128,6 +138,15 @@ accept of its report, or of a later retry whose candidate sits on that target, p
 `integration_base_commit` to the target. A fetch
 error refuses the retry with a remedy; a `tooling-retry` and a candidate that already contains the
 tip propose no target.
+
+A batch created on an issue branch that already holds commits of an earlier batch of the ticket
+(its `branch_start_commit` is a strict descendant of `integration_base_commit`) measures its own
+changes from `branch_start_commit`: the `changed_files` and `commit_map` of its developer and publish
+reports, their `scope_warnings`, a checkpoint and `risk assess` (`--base-commit`, `review_scope`).
+A superseding batch measures from `integration_base_commit`, as does a batch whose start is not a
+descendant of it (after an accepted rebase, or a resolver batch). A brief and a Context Package
+(`--base-commit`) stay on `integration_base_commit`. The rule does not tell accepted commits from
+unreviewed ones: commits an abandoned batch left on the branch are not reviewed by the new batch.
 
 `tooling` means a hook, the safety classifier or the ledger blocked a legitimate role action. The
 coordinator assigns it only from a `blocked` report's structured `tooling_blocker` (`tool`, exact
@@ -202,15 +221,17 @@ allows a developer retry, it takes `retry` or `abandon`; once that budget is exh
 refused and the blocker takes `block`, `fail` or `abandon`, after which the work is split or
 re-planned in a new batch. A `tooling-retry` neither spends this budget nor is refused by it.
 
-`abandon` is a decision on a completion report, alongside `accept`, `override-warning`, `retry`,
-`block` and `fail`. It needs explicit approval and a non-empty
+`abandon` is a decision on a completion report, alongside `accept`, `accept-conditional`,
+`override-warning`, `retry`, `block` and `fail`. It needs explicit approval and a non-empty
 `--reason`, moves the batch to the terminal `abandoned` state and marks unfinished dispatches
 `abandoned`. It keeps the worktree, candidate, briefs, reports, Context Packages and audit records,
 closes no issue and opens no PR. It removes only leftovers that are not evidence: the staged
 copies of reports in the agent inbox and the QA queue entries of dispatches that will never run.
 The batch records `abandoned.last_accepted` (the newest accepted stage and candidate), so a fresh
 batch can be created on the same branch and candidate. It is never a fallback for `block`, `fail`
-or `retry`.
+or `retry`, and it is never inferred from silence, a missing self-report or a capacity error.
+An approved but unsent dispatch has its own cancel path; cancelling that brief is not abandoning the
+whole batch.
 
 After a forced abandon, `batch create --supersedes <batch>` with `--approved-by` and
 `--approved-at` (a human; a `policy:` approver is refused) plans a superseding batch for the same
@@ -241,6 +262,11 @@ not recorded by `batch decide`: `report submit` names it in its `completion` obj
 chain after a recorded report stops, and the coordinator completes that chain with
 `report complete --dispatch <dispatch-id>`. `supersede` is not recorded by `batch decide` either:
 `batch create --supersedes` records it once in the new batch's own `coordinator_decisions`.
+
+`RecoveryRoute` supplies `RECOVERY_ROUTES`, and `RetryReason` supplies the reason categories.
+Classifier hints and explicit categories are parsed before routing; recorded categories and routes
+are validated on read. `unknown` is an explicit reason, never a fallback for an invalid literal.
+These enums preserve the routing guards, candidate binding and retry budgets in this table.
 `carry-over` is recorded by an `accept` or
 `override-warning` with `--findings-file` and by `batch carry-over`; its routing record names the
 `carried_item_ids` and is never applied to `next_action`, which moves through risk assessment as on
@@ -268,6 +294,9 @@ that stage. The coordinator chooses a route by this table:
 | A read-only report lists `incomplete_items` and none carries `tooling_blocker`, with no finding or warning/blocker severity, no open carried item, no failed check and an unchanged candidate | `narrowed-retry` | A human decides `batch decide --decision retry --narrowed`; the new dispatch of the same stage on the same SHA is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` of the retried report, the `carried_item_ids` the new brief carries, and the unchanged `candidate_commit` (none for an architect) |
 | A read-only report lists `incomplete_items` and at least one carries `tooling_blocker` (for example, the safety classifier interrupted the role on that item), with the same absence of structured evidence | `tooling-retry` | A human decides `batch decide --decision retry --narrowed` after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage on the same SHA is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, each item's `tooling_blocker`, the `carried_item_ids` and the unchanged `candidate_commit` |
 | `batch decide --decision abandon` on any completion report | `abandon` | A human only, with a non-empty `--reason`; never a policy | Dispatch ID, `report_sha256` and `abandoned.last_accepted` |
+| A proven worktree/model/adapter startup failure resumes in the same batch, with a new same-contract dispatch | `environmental-restart` | Human `batch resume-stop`; fresh human dispatch approval; bounded infrastructure attempts and `manual_all` afterward | Sealed recovery event, immutable source dispatch/snapshot/digest, clean checkout proof, retired dispatch IDs; unchanged handoff and developer counter |
+| A stage report is `blocked` by an infrastructure failure although the work looks complete (commits match the plan) | `accept-conditional` | Human `batch decide --decision accept-conditional --infrastructure-failure` with a note; a later code-review or qa independently covers it | Decision with `routing.route`, the stage and candidate, and an open condition closed by the covering accept; publish refused while open; unchanged developer counter |
+| A human selects a reached earlier gate, or resumes the pending report boundary of a no-route pause | `rewind` | Human `batch rewind --to` or `resume-stop`; fresh approvals; no budget reset and a new writing attempt spends developer retry budget | Sealed event binds before/after state, target, preserved writer SHA, superseded evidence and human approval; unchanged Git history |
 | After a forced abandon (a dead end), the work resumes in a new batch for the same ticket and issue branch from the abandoned batch's `abandoned.last_accepted` record: `batch create --supersedes <batch>` | `supersede` | A human only, with `--approved-by` and `--approved-at` on `batch create`; a `policy:` approver is refused. The new batch still needs `batch approve`, its dispatches are approved under `approval_policy`, and a first developer-retry that carries a rebase target always needs an explicit approval except under `auto`; no `retry_policy.max_developer_retries` is spent | The superseded batch ID and its `abandoned.last_accepted`; for the same Definition of Done, the carried architect reference (`dispatch_id`, `report`, `report_sha256`, `commit_plan_sha256`); the `start_commit` and the `rebase_target_commit`. No risk, review, QA or operator decision evidence is copied |
 | `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
 | Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
@@ -379,11 +408,22 @@ the inputs that need judgement:
 | `--bug-ticket <ticket>` | A `tooling-retry`. Before the command, the session creates or reuses a bug ticket for the blocking tool through the tracker CLI. Without it, the command refuses and records nothing. |
 | `--block-bypass --note <text>` | The role worked around a hook or tool block. The note names the violation. |
 
+Review reports may include `review.recommendation: accept|retry`. The project setting
+`auto_retry_min_severity` defaults to `info` and is frozen into each batch; a human can override it
+for one batch with `batch create --auto-retry-min-severity warning` (or `error` / `blocker`). At
+the `warning` threshold, lower-severity findings remain in the original report and ledger, while an
+`accept` recommendation with passed checks and no warning/blocker axis permits auto-accept. A finding at or
+above the threshold, a reviewer `retry` recommendation, a failed required check, or any warning/blocker axis
+still routes to retry. The default `info` threshold retries on info findings as before.
+Warning/blocker axes always prevent plain accept, including at the `error` and `blocker`
+thresholds. `error` is a threshold between warning and blocker; the report contract uses
+`info`, `warning` and `blocker` findings.
+
 The decision table:
 
 1. A conflict-resolver report is outside the automatic path: the command refuses, and a human
    decides the report.
-2. The policy accepts a clean report: `outcome: completed`, `blockers: none`, every check passes,
+2. The policy accepts a clean report: `outcome: completed`, `blockers.status: none`, every check passes,
    no `not_covered` item, no carried gap, no scope warning, no review finding or warning/blocker
    severity, no review axis that names blockers, no incomplete item for the reporting role, and no
    `--block-bypass`. The record lists
@@ -397,7 +437,7 @@ The decision table:
    blocked report with a critical `context_pressure` record gets `context-pressure`. Otherwise the
    structured report data decides. The route is the `route_preview` of `batch decision-packet`.
 
-The policy never chooses `override-warning`, `block`, `fail` or `abandon`.
+The policy never chooses `override-warning`, `accept-conditional`, `block`, `fail` or `abandon`.
 
 ### Stops
 
@@ -420,8 +460,10 @@ detect them in this order: integrity, budget, route.
 
 The coordinator records the stop once as the hashed `batch.auto_stop` (`category`, `reason`,
 `detected_at`, `detected_by`, `evidence`). A stop records no decision and weakens no validation.
-After a stop, every later step of the batch needs `--approved-by`, the chain accepts no report by
-policy, and the batch never returns to `auto`.
+`batch auto-decide` records a `paused` transition and a sealed recovery event even when no report
+exists. Repeating it while paused is idempotent. `batch auto-report` only observes and renders.
+After human recovery, effective approval policy is `manual_all`: no report chain, infrastructure
+shortcut or recognized 429 grants policy approval. The original `auto_stop` remains immutable.
 
 ### Final report
 
@@ -430,13 +472,162 @@ the publish report, or with the stop. The report lists every `policy:auto` decis
 reason and evidence, the accepted risks, the carried findings and their state, the retries and the
 spent budget, the Definition of Done coverage per commit plan, the review and QA results, the
 `candidate_commit`, and the stop when there is one. `batch auto-report --batch <id>` renders the
-recorded report. Without a recorded report, it records a stop that the ledger shows, or renders the
-live report with `recorded: false`. After any refused command under `auto`, the session runs
-`batch auto-report`.
+recorded report. Without a recorded report, it renders live evidence with `recorded: false` and a separate
+`observed_stop`. It never changes state or audit. After recovery it also exposes `historical_report`
+while reporting current progress; that old sealed stop is not the current outcome. After a refusal,
+observe with `batch auto-report`, then explicitly record a detected stop with `batch auto-decide`.
 
 No policy opens or merges a pull request. The coordinator shows the final report to the human
 and may propose `/to-pull-requests`. A pull request needs an explicit human confirmation, and
 auto-merge is forbidden.
+
+## Operator recovery
+
+Inspect `batch auto-report`, `batch decision-packet`, `dispatch status` and `ledger validate` before
+you recommend any recovery or abandon. These commands are read-only. For each dispatch,
+`dispatch status` reports a `startup` assessment: `worker_state`, `classification`,
+`restart_allowed` and `unknowns`. The worker states are `absent` (the adapter could not start the
+runtime), `reported` (the worker returned its final report), `rejected-at-startup` (the
+coordinator refused its self-report, so the process may still run), `stopped` (the operator
+confirmed the stop), `live` and `unknown`. Silence, a timeout or a stop acknowledgement never
+proves that a worker stopped. Capacity, rate-limit and service-unavailable are separate
+classifications.
+`ledger validate` is read-only: it validates the generation, checksums, audit, graph and current
+batch contracts; it never repairs, migrates or resets a ledger. A legacy generation receives its
+version's graph/audit validation; mutations require the normal explicit migration.
+
+Use current UTC for a concrete human decision:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch resume-stop \
+  --batch <id> --approved-by <operator> --approved-at <UTC> --note "worker directory fixed"
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch rewind \
+  --batch <id> --to code-review --approved-by <operator> --approved-at <UTC> --note "repeat independent review"
+```
+
+`resume-stop` restarts only a worker whose outcome is known: `absent`, `reported`,
+`rejected-at-startup` or `stopped`. For a refused self-report the existing contract holds: the
+human approval retires that dispatch and the ledger rejects its late writes. When `dispatch
+status` shows `live` or `unknown`, `resume-stop` refuses and changes nothing: stop the worker
+through its runtime and repeat the command with `--runtime-stopped`. A missing self-report is not
+a failure `resume-stop` confirms; stop the worker and record `dispatch cancel --runtime-stopped`
+(below). `resume-stop` accepts a structured worktree/model mismatch or a classified startup
+failure. Without structured evidence, a conservative text heuristic may name an infrastructure cause (capacity,
+rate limit, timeout, network, runtime crash, resources, service-unavailable or service outage) in
+the blocked report's `blockers` or the runtime error. Any sign of a test, lint, type, conflict,
+scope or requirements problem wins, and unknown text stays unknown. The sealed event records the
+match as `classification` with `method: heuristic`; it only proposes the cause and the human
+approval still decides. No report, or a blocked report with no changed files, failed checks or
+review findings, is eligible. Branch, known SHA and tracked/untracked cleanliness must match.
+The old dispatch is retired; the next dispatch has a new ID, context and transition digest under a
+fresh human approval. Role, purpose, scope, candidate and fix-forward handoff remain fixed. It
+spends an infrastructure attempt, not another developer retry. Repeating the same recovery before
+its next dispatch is created changes nothing. A budget/no-route pause with a pending report can
+resume that report boundary for a human decision; this does not invent a retry or accept its work.
+Unknown failures, drift or dirty files need an ordinary decision or human rewind. When the
+infrastructure budget is exhausted, `resume-stop` refuses and the batch stays in its stop state for
+a human choice: wait, repair the launch, adjust the attention policy, rewind, or a separate
+abandon decision. Recovery never resets the counters.
+
+`dispatch send` checks each `--adapter-arg` option against the adapter's `dispatch --help` before
+the handoff. It refuses an unsupported option and leaves the dispatch approved and unsent. A help
+call that fails or times out is a `limitation` in the send result's `adapter_preflight`, not a
+capability claim. To diagnose an app-server runtime without a worker, run:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> dispatch runtime-probe \
+  --dispatch <id> --runtime-command <runtime> --runtime-arg=app-server
+```
+
+The probe sends `initialize`, `model/list`, `thread/start` and one `turn/start` on an ephemeral
+read-only thread without tools. It is `ready` only when the brief's model is listed, the
+`thread/start` model, `cwd` and reasoning effort match the brief, and the turn completes. A
+capacity, rate-limit or service error after `thread/start` is a classified failure, not READY.
+The probe writes nothing to the ledger, starts no worker and never replaces the worker's model
+self-report.
+
+`rewind --to architect|developer|code-review|qa|publish` selects a reached gate. `verification`
+requires an active registered candidate; `resolve-conflict` requires a resolver boundary. It cannot
+skip forward or reopen completed/abandoned work. Before the first accepted gate, it preserves the
+initial `batch approve` requirement. Superseded dispatches, candidate registrations, risk, review
+and QA remain historical and cannot authorize new work. A superseded architect plan is retained
+in the recovery event; a new architect must be accepted before coding. Git HEAD and commit objects
+stay unchanged. Known current writer progress supplies the new startup SHA. A new code attempt
+spends the remaining developer retry budget when its dispatch is created; rewind never resets
+continuation, rate-limit, resolver or attention counters.
+
+If the stopped writer made commits or left pending files without submitting a report or
+checkpoint, use the explicit preservation route. First inspect its registered issue worktree,
+full HEAD SHA, branch, and tracked/untracked changes. Stop the actual worker and record
+`dispatch cancel --runtime-stopped` with human approval. Then obtain human approval to continue
+that exact unfinished checkout and name every pending path:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> batch rewind \
+  --batch <id> --to developer --preserved-commit <full-HEAD-SHA> \
+  --preserved-file <pending-path-1> --preserved-file <pending-path-2> \
+  --approved-by <operator> --approved-at <UTC> --note "continue inspected unfinished work"
+```
+
+Omit `--preserved-file` for a clean checkout. A resolver uses `--to resolve-conflict` with its
+registered resolver boundary. Preservation requires the latest dispatch to be a cancelled work
+writer with a recorded runtime stop. HEAD must descend from its immutable startup snapshot;
+committed changes and every pending path must fit its write scope. A missing or extra path,
+foreign checkout/branch, symlink, live worker or forward gate is refused without changing files
+or ledger. Ordinary rewind still requires known progress and a clean checkout.
+
+The sealed recovery event records the source dispatch, original snapshot, preserved HEAD,
+checkout proof, file content/mode hashes and staged/unstaged diff hashes. The next writer brief
+carries `preserved_progress`, bound through the recovery event in its fresh transition digest.
+Preflight, proposal, brief creation, send and initial self-report recheck that checkout. If it
+changed, inspect it and make a new recovery decision; preserve the old evidence. Once startup
+succeeds the worker can continue editing, and historical ledger validation retains the handoff
+as evidence rather than treating it as a live file lock. Preservation neither accepts a report
+nor bypasses review/QA; fresh human dispatch approval and the existing retry budgets still apply.
+
+`batch decide --decision accept-conditional --infrastructure-failure --note <cause>` lets the
+pipeline move past a stage whose report is `blocked` by an infrastructure failure while the work
+itself looks complete: a developer report whose commits match the plan, for example, when the
+handoff to review failed. A human attests the cause; a policy never does. The report must be
+`blocked` and carry no failed check, and every other check of an ordinary `accept` still applies
+(commit plan, scope, definition of done, carried items). The decision is recorded as
+`accept-conditional` and leaves an open condition on the batch; the pipeline advances exactly as
+after `accept`. An unconditional `accept` of a later gate independently covers it: code-review or
+qa for architect, developer and verification; qa for code-review and qa. Publish and completion
+refuse while a condition is open. A conditional qa never counts as green QA evidence, so publish
+still needs a real QA run. A conditional publish needs the remote branch to already point at the
+candidate, which closes its condition at once. A rewind retires the conditions of superseded
+dispatches. Prefer `resume-stop` when the failed stage can simply be restarted.
+
+A timeout does not prove that a worker stopped. Stop it through the runtime first, then record:
+
+```bash
+python <main-repo>/.harness/orchestration/coordinator.py --repo <main-repo> dispatch cancel \
+  --dispatch <id> --runtime-stopped --approved-by <operator> --approved-at <UTC> --reason "runtime stopped"
+```
+
+Cancel without `--runtime-stopped` still accepts only approved unsent work. Retired dispatches
+reject late worker writes. Recovery never silently resolves unrelated attention or runs a worker.
+
+New recovery commands run on the installed runtime, even for an old pinned batch. When needed,
+the human recovery event binds the original runtime hash to the installed control-plane hash and
+stores its verified snapshot. Later commands follow that audited epoch. Immutable plan, brief and
+report hashes retain their original values; missing or invalid audit prevents this upgrade.
+
+An early recognized 429 can preserve a writer's clean immutable startup SHA before a checkpoint.
+The coordinator records separate startup evidence binding SHA, brief, scope, DoD and dependencies.
+It creates no checkpoint and invents no checks or remaining DoD. Unknown progress needs a real
+checkpoint or newly scoped dispatch. Retry windows and both continuation budgets still apply;
+each resumed session must self-report its actual model and selected checkout and send heartbeat.
+Read-only work and publish retain their separate new-dispatch/QA/publish contracts.
+
+If a writer session exits before its first checkpoint, the operator may use
+`dispatch resume --trigger startup-failure --runtime-stopped` with human approval and a note.
+`--file` must restate exactly `dispatch_id`, `definition_of_done`, `dependencies`, `write_paths`
+and `prohibited_changes` from its immutable brief. The clean checkout must remain at its known
+startup SHA. This spends continuation budget, records separate startup evidence, and requires
+new self-report/heartbeat. It cannot bypass a paused batch or changed progress. After a resume
+awaiting its first self-report, repeating the command is refused without spending another attempt.
 
 ## Developer-retry handoff
 
@@ -534,6 +725,10 @@ retry` and by `dispatch wait`. While it is set no next dispatch is created; noth
 the candidate is not touched. `batch attention resolve` (approval and note required) acknowledges the
 open findings, so the same occurrence is not raised again.
 
+For a stale dispatch, `recommended_human_action` names the read-only evidence commands and the
+choices: keep waiting, or stop the runtime and record `dispatch cancel --runtime-stopped` before
+`batch resume-stop` or `batch rewind`. `batch abandon` remains a separate human decision.
+
 ## Pluggable operational interfaces
 
 The core keeps lifecycle transitions, the ledger, routing, approval validation, the
@@ -568,12 +763,20 @@ only after the literal confirmation, and refuses while any batch is `active`; pr
 remain immutable audit history.
 
 Every coordinator command holds the exclusive ledger lock, which records its owner (`pid`, `host`,
-`acquired_at`). A busy lock fails a write command with a remedy to repeat it; `dispatch wait` and
-`dispatch status` keep polling instead (`dispatch status` answers `ledger_busy`). A lock that stays
-held is released only by `coordinator.py --repo . ledger release-lock`, which refuses a lock whose
-owner process is alive or runs on another host, releases a dead owner's lock, releases a lock
-without an owner record only once it is stale, and never releases a lock whose owner record cannot
-be read; concurrent releases are serialised. Nobody removes the lock or any state file by hand.
+`acquired_at`, and where the platform has `/proc` its `pid_namespace` and `boot_id`, plus the
+coordinator `operation` when known). A busy lock fails a write command with a remedy to repeat it;
+`dispatch wait` and `dispatch status` keep polling instead (`dispatch status` answers
+`ledger_busy`). `coordinator.py --repo . ledger lock-status` shows the lock without taking it: its
+owner, `held_seconds`, `remaining_seconds` until the timeout release, the verdict and whether a
+release is available now. A lock that stays held is released only by
+`coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive or
+runs on another host, releases a dead owner's lock, and releases only once it is stale a lock
+without an owner record or an owner from another PID namespace or boot (`owner-in-other-environment`:
+a sandboxed worker's pid names another process outside its sandbox); concurrent releases are
+serialised. Only a human operator may run `ledger release-lock --force --approved-by
+--approved-at --reason`: it releases the lock whatever the verdict and writes an integrity-checked
+record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. Nobody
+removes the lock or any state file by hand.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
@@ -590,8 +793,10 @@ either.
 
 A dispatched role is not assumed to be alive because it was sent. Its first action after receiving
 its brief is a model self-report: it names the model it is actually running, and the coordinator
-compares that against `resolved_model` in the immutable brief. When the project enables
-`worker_attestation_required`, that same first action proves the canonical Git top-level, branch and
+compares that against `resolved_model` in the immutable brief. A runtime probe never fills a
+missing self-report. For architect, developer,
+conflict-resolver, database-migrations, messaging-integration and code-review, and for other roles
+when the project enables `worker_attestation_required`, that same first action proves the canonical Git top-level, branch and
 pinned candidate from the runtime's actual CWD. A model or worktree mismatch blocks the dispatch
 immediately, and its completion report is refused; the recovery is a new dispatch, never an edited
 brief. While it works, the role emits a heartbeat, and the coordinator watches for a silence longer
@@ -607,6 +812,48 @@ same completion report comes back. For an in-process handoff, `dispatch send` re
 does not create an independent runtime: the coordinator launches that subagent immediately as its
 next action, before any unrelated discovery.
 
+The `backend-orchestration` capability installs standalone stdlib adapters at
+`.harness/adapters/claude_worker.py` and `.harness/adapters/codex_worker.py` through `harness init`
+or `harness adopt`. If that capability is already selected, use the ordinary managed lifecycle:
+
+```bash
+python /path/to/agent-harness/harness/bin/harness.py diff /path/to/project
+python /path/to/agent-harness/harness/bin/harness.py update /path/to/project
+```
+
+For an approved `external` dispatch, choose the adapter for its assigned runtime. Use the main
+repository path for both the coordinator and adapter; send selects the worker checkout as CWD:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/claude_worker.py
+```
+
+For a Codex dispatch, use:
+
+```bash
+python /path/to/project/.harness/orchestration/coordinator.py --repo /path/to/project dispatch send --dispatch <dispatch-id> --adapter /path/to/project/.harness/adapters/codex_worker.py
+```
+
+Python adapters are invoked through the coordinator's Python interpreter, so executable mode is
+not required. Both expose `dispatch --help`, `--repo`, `--brief`, `--dry-run` and
+`--extra-prompt-file`; binary overrides are `--claude-bin` and `--codex-bin`. A retry prompt file
+can be passed with `--adapter-arg=--extra-prompt-file --adapter-arg=/absolute/path/to/retry.txt`.
+
+Adapters pass the lifecycle prompt through stdin and return after detached startup. An early
+exit, including exit zero, is a launch failure with a bounded log tail. They reject `qa`,
+`purpose: publish`, a transport other than `external`, and absent or empty `allowed_tools`.
+Claude uses the brief's model, effort and native tool allowlist; its only additional directory is
+the incoming reports directory. Codex uses `codex exec` with the brief's model and effort,
+`read-only` for read-only roles and `workspace-write` for writers. Its prompt carries the tool
+allowlist; this is not a native Codex tool filter. Neither adapter grants `danger-full-access`.
+The worker still must self-report, send heartbeats and submit its report. An adapter does not
+accept reports or select the next role. QA and publish keep their coordinator boundaries.
+
+Managed updates refresh unchanged adapters. Unknown targets and symlinks are protected; local
+regular managed edits require an explicit force option. Capability removal and uninstall retain
+modified and unknown adapters. Console settings show missing/current/outdated status and require
+a fresh preview and explicit confirmation; they preserve capability selection and never enable force.
+
 When the project authors `access_policy`, the resolved access plan is pinned in the brief and bound
 to the approval digest. `dispatch send` blocks the handoff, with a reason and a concrete preparation
 action, when the selected `runtime_access` implementation cannot prove and natively apply the plan
@@ -615,8 +862,8 @@ something to work around: do not edit the brief or the config to make the check 
 
 An `approved` dispatch that has not yet been sent may be cancelled with recorded approval and reason.
 The brief remains immutable evidence, its batch returns to `awaiting-approval`, and the coordinator
-creates a new approved brief only after the corrected assignment is reviewed. `batch abandon` is for
-a dispatch that cannot report, not for an unsent configuration mistake.
+creates a new approved brief only after the corrected assignment is reviewed. Unsent cancellation
+is distinct from `batch abandon`, which requires a separate explicit human decision for the batch.
 
 When the pinned snapshot already satisfies every Definition of Done, use `batch not-required` with
 explicit approval and evidence instead of manufacturing a write-role commit. It terminally records
@@ -712,6 +959,19 @@ A minimal brief can be rendered as:
 Each dispatched role returns one completion report. The coordinator accepts the batch only after
 the report is complete and its evidence is independently sufficient for the role's contract.
 
+Report prose is Russian (`report_language: ru`); machine-read values stay exact English enums.
+`outcome` is `completed | blocked | failed`. `blockers` and `risks`, including each composite
+review axis, are objects with exactly `status` and `details`. For absent evidence write
+`{"status": "none", "details": ""}`; for present evidence write
+`{"status": "present", "details": "<Russian description>"}`. The same objects are required in
+checkpoints and continuation risks. A `none` status requires empty details; `present` requires
+non-empty details. Put other explanations in `output`. Policies read only the structured status;
+they never infer the absence of a blocker from its Russian description. `report submit` rejects
+string fields, translated statuses and malformed objects before writing ledger evidence, and
+returns the allowed format as its remedy. Correct the staging file and resubmit for the same
+dispatch; this refusal preserves the active approval policy. Old report shapes are not accepted
+and immutable evidence is never rewritten.
+
 The report must include:
 
 - dispatch ID, ticket, role, and outcome (`completed`, `blocked`, or `failed`);
@@ -721,8 +981,8 @@ The report must include:
 - the exact `changed files`, or an explicit `none` for read-only work;
 - a `checks run` list with every exact command, result, and relevant evidence; “done” is not a
   check result;
-- residual `risks`, including unverified edge cases and deferred decisions;
-- `blockers`, or an explicit `none`;
+- structured `risks`, with `status: present` and details for unverified edge cases and deferred decisions;
+- structured `blockers`, with `status: none` and empty details when absent;
 - the next coordinator action, including the required independent gate when applicable;
 - for a developer brief with a `commit_plan`: a `commit_map` of `{commit_sha, plan_entry_id}` pairs
   covering every created commit. An initial or rebase report may map one commit to several entries
@@ -776,7 +1036,7 @@ The report must include:
   `diagnostics` on a failed one; `stage` is `preparation`, `environment-probe`, `project-file-check`
   or `gate`), `failed_stage` (`preparation`, `gate` or `null`), `code_checks_started` (`started`,
   `not_started` or `unknown`) and, for a failed preparation, a `diagnosis` (`category`, `signals`,
-  `basis`). A gate command the run never reached has the `checks_run` result `not-run`; it is
+  `basis`). A gate command the run never reached has the `checks_run` result `not_run`; it is
   neither a pass nor a failed code check. A project that does not declare `qa_preparation` keeps the
   earlier report shape without `qa_stages`;
 - for a role a tool blocked: `outcome: blocked` and `tooling_blocker`, exactly the non-empty strings
@@ -804,6 +1064,15 @@ For the high-risk triggers in the `code-review` manifest, Standards and Spec are
 read-only reports. They must both be present before the coordinator accepts the batch; one combined
 rating cannot replace either report.
 
+Each `checks_run` entry uses the exact enum `pass | fail | not_run` as its `result`.
+`passed`, `not-run`, translated spellings, and `not_run_architect_read_only` are invalid.
+An architect work brief with no verification commands reports `checks_run: []`.
+Neither `fail` nor `not_run` proves a successful check. Submission rejects invalid values with a
+remedy before recording; correct the staging file and submit it again for the same dispatch.
+Reports are validated again before a decision, so old non-canonical evidence is also refused.
+Do not rewrite immutable evidence; recover an already recorded report or stopped batch through
+the coordinator's existing human-approved recovery workflow.
+
 Use this shape so missing proof is visible:
 
 ```markdown
@@ -814,9 +1083,9 @@ Use this shape so missing proof is visible:
 - Commit SHA: <sha|not applicable — read-only role>
 - Changed files: <exact paths|none>
 - Checks run:
-  - `<exact command>` — <pass|fail>, <evidence>
-- Risks: <residual risks|none>
-- Blockers: <blockers|none>
+  - `<exact command>` — <pass|fail|not_run>, <evidence>
+- Risks: <status: none|present; details: empty|residual risks>
+- Blockers: <status: none|present; details: empty|blocker description>
 - Next coordinator action: <accept, block, fail, or create a new dispatch>
 - Lessons (optional, не подтверждено человеком): <historical observations, no extra weight>
 - Used memory (optional, weak signal, not a gate): <used hit identifiers>
@@ -874,6 +1143,11 @@ quality gate lane position. After each handoff, the incoming role receives the p
 evidence but still receives its own immutable brief.
 
 ## Integration accounting
+
+`IntegrationCheckResult` defines the exact `passed / failed` results of an aggregate pair check.
+It is distinct from the command-check enum `ReportCheckResult` (`pass / fail / not_run`): CI and
+local-QA producers map their accepted or completed run explicitly to the integration enum. Both
+linked input and stored results are validated; aliases, translations and whitespace are refused.
 
 A `completed` batch is history and is never reopened or rewritten. After an accepted publish the
 coordinator records the link a later integration step needs in a separate immutable Integration
