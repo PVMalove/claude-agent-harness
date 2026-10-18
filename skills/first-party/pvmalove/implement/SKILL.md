@@ -265,6 +265,10 @@ its `command` (`report complete --dispatch <dispatch-id>`) yourself and repeat i
 fails; it is idempotent. When the failed step needs a human, follow its remedy instead. Never remove
 the ledger lock or any state file by hand; a lock that stays held goes to
 `coordinator.py --repo . ledger release-lock`, which refuses a lock whose owner process is alive.
+`ledger lock-status` shows the holder and the time left until a timeout release without taking the
+lock. For the lock of a stopped sandboxed worker, show the operator a copyable
+`ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>`; it is
+their action, never yours, under every `approval_policy`.
 
 ## External launch and observation
 

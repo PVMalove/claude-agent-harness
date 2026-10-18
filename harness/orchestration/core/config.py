@@ -33,6 +33,7 @@ from harness.orchestration.contract import (
     reject_sensitive,
     resolve_assignment,
     resolve_runtime_name,
+    verification_profile_for,
 )
 from harness.orchestration.core.constants import (
     AUTO_RETRY_SEVERITIES,
@@ -390,6 +391,31 @@ def _review_verification_commands(config: JsonObject) -> list[str]:
     if commands is None:
         return _verification_commands(config)
     return _strings(commands, "review_verification_commands", allow_empty=True)
+
+
+def _batch_verification_commands(
+    config: JsonObject, allowed_paths: list[str]
+) -> tuple[list[str], list[str]]:
+    """Developer and review commands a new batch freezes.
+
+    The first ``verification_profiles`` entry whose paths cover every allowed path wins; a batch
+    that no profile covers whole keeps the general developer and review lists.
+    """
+    profile = verification_profile_for(config, allowed_paths)
+    if profile is None:
+        return _developer_verification_commands(config), _review_verification_commands(
+            config
+        )
+    return (
+        _strings(
+            profile.get("developer"),
+            "verification_profiles.developer",
+            allow_empty=True,
+        ),
+        _strings(
+            profile.get("review"), "verification_profiles.review", allow_empty=True
+        ),
+    )
 
 
 def _qa_preparation_commands(

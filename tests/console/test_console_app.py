@@ -61,7 +61,12 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
         app = DashboardHost()
         async with app.run_test(size=size) as pilot:
             await app.push_screen(screen)
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: bool(screen.query("#dashboard-check"))
+                and bool(screen.query("#dashboard-sections"))
+                and len(list(screen.query("#section-menu > ListItem"))) == 10,
+            )
             checks = screen.query_one("#dashboard-check")
             for button in checks.query(Button):
                 assert checks.region.contains_region(button.region)
@@ -142,12 +147,12 @@ def test_dashboard_update_opens_the_update_screen_without_running_a_command(
                 await pilot.press("2")
             else:
                 await pilot.click("#update-harness")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, UpdateHarnessScreen))
             assert isinstance(app.screen, UpdateHarnessScreen)
             assert app.screen.repo == tmp_path
             assert not calls
             await pilot.press("escape")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, DashboardScreen))
             assert isinstance(app.screen, DashboardScreen)
             assert not calls
 
@@ -163,7 +168,7 @@ def test_dashboard_menu_opens_a_section_by_its_number(
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.press("4")
-            await pilot.pause()
+            await wait_until(pilot, lambda: type(app.screen).__name__ == "HarnessScreen")
             return type(app.screen).__name__
 
     assert asyncio.run(scenario()) == "HarnessScreen"
@@ -229,7 +234,7 @@ def test_configuration_menu_opens_from_keyboard_and_mouse(
                 await pilot.press("enter")
             else:
                 assert await pilot.click(item.query_one(Static))
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, ConfigurationScreen))
             assert isinstance(app.screen, ConfigurationScreen)
 
     asyncio.run(scenario())
@@ -251,7 +256,7 @@ def test_selecting_harness_pushes_the_harness_screen(tmp_path: Path) -> None:
             assert app.focused is menu
             menu.index = SECTIONS.index("Harness")
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, HarnessScreen))
             return isinstance(app.screen, HarnessScreen)
 
     assert asyncio.run(scenario())
@@ -277,7 +282,7 @@ def test_selecting_orchestration_pushes_the_orchestration_screen(
             assert app.focused is menu
             menu.index = SECTIONS.index("Orchestration")
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, OrchestrationScreen))
             return isinstance(app.screen, OrchestrationScreen)
 
     assert asyncio.run(scenario())
@@ -476,12 +481,12 @@ def test_help_opens_from_the_menu_and_from_f1(tmp_path: Path) -> None:
             assert app.focused is menu
             menu.index = SECTIONS.index("Help")
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
             from_menu = isinstance(app.screen, HelpScreen)
             await pilot.press("escape")
-            await pilot.pause()
+            await wait_until(pilot, lambda: not isinstance(app.screen, HelpScreen))
             await pilot.press("f1")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
             from_f1 = isinstance(app.screen, HelpScreen)
         return from_menu, from_f1
 
@@ -1122,8 +1127,11 @@ def test_switching_the_project_shows_its_head_commit_in_the_banner(
             await pilot.pause()
             before = str(app.screen.query_one("#brand-info", Static).content)
             app.activate_project(second)
-            await pilot.pause()
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: f"commit {second_head}"
+                in str(app.screen.query_one("#brand-info", Static).content),
+            )
             return before, str(app.screen.query_one("#brand-info", Static).content)
 
     before, after = asyncio.run(scenario())
@@ -1147,7 +1155,11 @@ def test_dashboard_checks_live_in_the_attention_frame_and_have_no_diagnostics_bu
         app = App[None]()
         async with app.run_test(size=(120, 48)) as pilot:
             await app.push_screen(screen)
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: bool(screen.query("#dashboard-check"))
+                and len(screen.query_one("#dashboard-check").query(Button)) == 2,
+            )
             return [b.id for b in screen.query_one("#dashboard-check").query(Button)]
 
     assert asyncio.run(scenario()) == ["dashboard-offline", "dashboard-online"]

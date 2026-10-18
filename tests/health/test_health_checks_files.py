@@ -302,6 +302,7 @@ def test_rendered_project_template_passes_the_validator(
             "BRANCH_PATTERN": "^feature/issue-[0-9]+-.+",
             "QA_GATE_COMMANDS": json.dumps(["echo test"]),
             "TRACKER_FIELD": tracker_field,
+            "TEST_FIELDS": "",
         }
     )
     project_json = tmp_path / ".harness" / "project.json"
@@ -335,6 +336,62 @@ def test_check_orchestration_config_fails_without_schema_file(tmp_path: Path) ->
 
     assert result.id == "files.orchestration_config"
     assert result.status == "fail"
+
+
+_SHIPPED_HARNESS = Path(__file__).resolve().parents[2] / "harness"
+
+
+def _example_orchestration_config() -> dict[str, object]:
+    """Поставляемый пример конфига оркестрации."""
+    data: dict[str, object] = json.loads(
+        (_SHIPPED_HARNESS / "orchestration.example.json").read_text(encoding="utf-8")
+    )
+    return data
+
+
+def _orchestration_repo(tmp_path: Path, config: dict[str, object]) -> Path:
+    """Репозиторий с установленной схемой, ролями и заданным конфигом оркестрации."""
+    shipped = _SHIPPED_HARNESS / "orchestration"
+    installed = tmp_path / ".harness" / "orchestration"
+    (installed / "roles").mkdir(parents=True)
+    (installed / "orchestration.schema.json").write_bytes(
+        (shipped / "orchestration.schema.json").read_bytes()
+    )
+    for role in (shipped / "roles").glob("*.md"):
+        (installed / "roles" / role.name).write_bytes(role.read_bytes())
+    (tmp_path / ".harness" / "orchestration.json").write_text(
+        json.dumps(config), encoding="utf-8"
+    )
+    return tmp_path
+
+
+def test_check_orchestration_config_names_an_invalid_verification_profile(
+    tmp_path: Path,
+) -> None:
+    """Невалидный профиль проверок даёт fail с именем ключа verification_profiles."""
+    repo = _orchestration_repo(
+        tmp_path,
+        {
+            **_example_orchestration_config(),
+            "verification_profiles": [{"paths": [], "developer": []}],
+        },
+    )
+
+    result = checks.check_orchestration_config(_context(repo, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "fail"
+    assert "verification_profiles[0]" in result.message
+
+
+def test_check_orchestration_config_accepts_the_example_profiles(
+    tmp_path: Path,
+) -> None:
+    """Пример конфига с профилем проверок проходит health."""
+    repo = _orchestration_repo(tmp_path, _example_orchestration_config())
+
+    result = checks.check_orchestration_config(_context(repo, lock=_ORCHESTRATION_LOCK))
+
+    assert result.status == "ok", result.message
 
 
 def test_check_skill_snapshot_skipped_without_lock(tmp_path: Path) -> None:

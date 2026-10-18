@@ -1494,7 +1494,7 @@ def _validate_dispatch(
                 + INTERNAL_INVARIANT_REMEDY,
             )
     accepted_commands = accepted_verification_commands(
-        batch, dispatch["role"], dispatch["purpose"]
+        batch, dispatch["role"], dispatch["purpose"], brief=dispatch
     )
     if dispatch["verification_commands"] not in accepted_commands:
         raise CoordinatorError(

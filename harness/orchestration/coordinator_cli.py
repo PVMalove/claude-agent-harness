@@ -58,14 +58,36 @@ def build_parser(
             "Safely remove orphaned dispatch evidence to fix migration errors",
         ),
         (
-            "release-lock",
-            handlers.release_ledger_lock,
-            "Release a stuck ledger lock after checking its owner; a live owner is refused",
+            "lock-status",
+            handlers.ledger_lock_status,
+            "Read-only: show the ledger lock, its owner, age and release verdict without taking it",
         ),
     ):
         command = ledger_commands.add_parser(name, help=help_text)
         _common(command)
         command.set_defaults(handler=handler)
+    release_lock = ledger_commands.add_parser(
+        "release-lock",
+        help="Release a stuck ledger lock after checking its owner; a live owner is refused "
+        "unless an operator forces the release",
+    )
+    _common(release_lock)
+    release_lock.add_argument(
+        "--force",
+        action="store_true",
+        help="release the lock whatever the owner verdict; requires --approved-by, "
+        "--approved-at and --reason and writes an audit record",
+    )
+    release_lock.add_argument(
+        "--approved-by", help="the operator who approves a forced release"
+    )
+    release_lock.add_argument(
+        "--approved-at", help="the time of that approval (ISO 8601)"
+    )
+    release_lock.add_argument(
+        "--reason", help="why the lock owner cannot finish (forced release only)"
+    )
+    release_lock.set_defaults(handler=handlers.release_ledger_lock)
     ledger_reset = ledger_commands.add_parser(
         "reset", help="Select an empty generation (requires --confirm RESET)"
     )

@@ -88,7 +88,11 @@ from harness.orchestration.workflow.reports import _validate_report as _validate
 from harness.orchestration.infrastructure_retry import (
     retry_infrastructure_dispatch as retry_infrastructure_dispatch,
 )
+from harness.orchestration.ledger.lifecycle import set_lock_operation
 from harness.orchestration.ledger.ledger_admin import clean_ledger as clean_ledger
+from harness.orchestration.ledger.ledger_admin import (
+    ledger_lock_status as ledger_lock_status,
+)
 from harness.orchestration.ledger.ledger_admin import ledger_status as ledger_status
 from harness.orchestration.ledger.ledger_admin import validate_ledger as validate_ledger
 from harness.orchestration.ledger.ledger_admin import migrate_ledger as migrate_ledger
@@ -216,6 +220,10 @@ def main() -> int:
         except (AttributeError, OSError):
             pass
     args: argparse.Namespace = parser().parse_args()
+    # The lock owner record names the command, so `ledger lock-status` can say what holds it.
+    command = getattr(args, "command", None)
+    subcommand = getattr(args, f"{command}_command", None) if command else None
+    set_lock_operation(" ".join(str(part) for part in (command, subcommand) if part))
     try:
         pinned = pinned_runtime_command(args)
         if pinned is not None:

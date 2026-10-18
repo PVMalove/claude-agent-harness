@@ -16,6 +16,7 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import Button, Input, ListView, Select, Static
 
+from tests.console._pilot_wait import wait_until
 from tests.console._console_ledger_fixture import QA_LOG_SHA256, build_reports_fixture
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
@@ -50,14 +51,10 @@ def _static_text(app: App[None], selector: str) -> str:
     return str(app.screen.query_one(selector, Static).content)
 
 
-async def _until(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
+async def _until(pilot: Pilot[None], condition: Callable[[], object]) -> None:
     """Pause until `condition` holds: filtering rebuilds the report list asynchronously, and one
     pause is not always enough on a slow runner."""
-    for _ in range(50):
-        if condition():
-            return
-        await pilot.pause(0.05)
-    assert condition()
+    await wait_until(pilot, condition)
 
 
 def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> None:
@@ -81,7 +78,7 @@ def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> N
             menu.focus()
             menu.index = SECTIONS.index("Reports")
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_until(pilot, lambda: isinstance(app.screen, ReportsScreen))
             return isinstance(app.screen, ReportsScreen)
 
     assert asyncio.run(scenario())
@@ -151,10 +148,14 @@ def test_current_stage_opens_timeline_and_refresh_preserves_filters_sort_and_sel
             listing.focus()
             listing.index = 0
             await pilot.press("enter")
-            await _until(pilot, lambda: isinstance(app.screen, BatchTimelineScreen))
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
             assert "отчёт ещё не получен" in _static_text(app, "#batch-timeline")
             await pilot.press("escape")
-            await pilot.pause()
+            await _until(pilot, lambda: isinstance(app.screen, ReportsScreen))
             app.screen.query_one("#filter-state", Input).value = ""
             app.screen.query_one("#filter-role", Input).value = "developer"
             app.screen.query_one("#sort-field", Select).value = "ticket"
@@ -187,12 +188,20 @@ def test_current_stage_opens_timeline_and_refresh_preserves_filters_sort_and_sel
             assert app.screen.query_one("#sort-field", Select).value == "ticket"
             listing.focus()
             await pilot.press("enter")
-            await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, ReportScreen)
+                and bool(app.screen.query("#section-output")),
+            )
             assert _static_text(app, "#section-output") == "Обновлено"
             await pilot.press("escape")
-            await pilot.pause()
+            await _until(pilot, lambda: isinstance(app.screen, ReportsScreen))
             app.screen.query_one("#filter-completion", Select).value = "open"
-            await _until(pilot, lambda: not _report_names(app))
+            await _until(
+                pilot,
+                lambda: not _report_names(app)
+                and bool(app.screen.query("#reports-empty")),
+            )
             assert "Ничего не найдено" in _static_text(app, "#reports-empty")
 
     asyncio.run(scenario())
@@ -236,7 +245,11 @@ def test_batch_rows_and_timeline_show_start_and_time_to_pr_in_a_narrow_window(
             listing.focus()
             listing.index = 0
             await pilot.press("enter")
-            await _until(pilot, lambda: isinstance(app.screen, BatchTimelineScreen))
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
             text = _static_text(app, "#batch-timeline")
             assert "Начало: 12.10.2026 10:00 UTC" in text
             assert "blocked · до PR: 2 ч 14 мин" in text
@@ -296,7 +309,12 @@ def test_report_text_is_rendered_literally_not_as_markup(tmp_path: Path) -> None
             report_list.focus()
             report_list.index = 0
             await pilot.press("enter")
-            await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, ReportScreen)
+                and bool(app.screen.query("#section-output"))
+                and bool(app.screen.query("#section-review")),
+            )
             return _static_text(app, "#section-output"), _static_text(
                 app, "#section-review"
             )
@@ -316,9 +334,13 @@ def test_report_screen_opens_its_batch_timeline(tmp_path: Path) -> None:
             report_list.focus()
             report_list.index = 1  # dispatch-qa
             await pilot.press("enter")
-            await pilot.pause()
+            await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
             await pilot.press("b")
-            await pilot.pause()
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
             return isinstance(app.screen, BatchTimelineScreen), _static_text(
                 app, "#batch-timeline"
             )
@@ -346,7 +368,11 @@ def test_batch_list_opens_a_blocked_batch_timeline(tmp_path: Path) -> None:
             batch_list.focus()
             batch_list.index = 0
             await pilot.press("enter")
-            await pilot.pause()
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, BatchTimelineScreen)
+                and bool(app.screen.query("#batch-timeline")),
+            )
             return _static_text(app, "#batch-timeline")
 
     text = asyncio.run(scenario())
@@ -371,7 +397,7 @@ async def _open_report(app: App[None], pilot: Pilot[None], index: int) -> None:
     report_list.focus()
     report_list.index = index
     await pilot.press("enter")
-    await pilot.pause()
+    await _until(pilot, lambda: isinstance(app.screen, ReportScreen))
 
 
 def test_qa_report_shows_its_gate_log_tail_and_attempts(tmp_path: Path) -> None:
@@ -381,6 +407,7 @@ def test_qa_report_shows_its_gate_log_tail_and_attempts(tmp_path: Path) -> None:
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             await _open_report(app, pilot, 1)  # dispatch-qa
+            await _until(pilot, lambda: bool(app.screen.query("#section-qa-log")))
             return _static_text(app, "#section-qa-log")
 
     text = asyncio.run(scenario())
@@ -397,7 +424,11 @@ def test_qa_logs_screen_lists_every_log_and_attempt(tmp_path: Path) -> None:
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             await pilot.press("f3")
-            await pilot.pause()
+            await _until(
+                pilot,
+                lambda: isinstance(app.screen, QaLogsScreen)
+                and bool(app.screen.query("#qa-logs")),
+            )
             return isinstance(app.screen, QaLogsScreen), _static_text(app, "#qa-logs")
 
     is_qa_logs, text = asyncio.run(scenario())
@@ -416,6 +447,7 @@ def test_report_export_writes_markdown_into_the_ticket_folder(tmp_path: Path) ->
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
             await _open_report(app, pilot, 1)  # dispatch-qa
+            await _until(pilot, lambda: bool(app.screen.query("#export")))
             await pilot.press("e")
             await pilot.pause()
 
@@ -440,8 +472,7 @@ def test_timeline_export_writes_markdown_table(tmp_path: Path) -> None:
             batch_list.focus()
             batch_list.index = 1  # batch-flow
             await pilot.press("enter")
-            await pilot.pause()
-            assert isinstance(app.screen, BatchTimelineScreen)
+            await _until(pilot, lambda: isinstance(app.screen, BatchTimelineScreen))
             await pilot.press("e")
             await pilot.pause()
 
