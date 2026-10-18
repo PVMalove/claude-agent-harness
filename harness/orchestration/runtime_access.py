@@ -18,7 +18,7 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.storage import storage_root
 
-from . import extensions
+from . import container_executor, extensions
 from .contract import access_policy_problems
 from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES, CONTAINER_ENGINES
 from .core.utils import JsonObject
@@ -157,6 +157,18 @@ def validate_plan(plan: object) -> None:
         raise AccessError("runtime access plan digest mismatch", remedy=remedy)
 
 
+def _pins_images(plan: JsonObject, role: object, purpose: object) -> bool:
+    """A docker plan of a dispatch that ``dispatch send`` hands off pins its image digests.
+
+    QA and publish are coordinator operations that never go through send, so they pin none.
+    """
+    return (
+        plan["runtime_extension"] == container_executor.EXTENSION_NAME
+        and "container" in plan
+        and dispatch_operation(str(role), str(purpose)) is None
+    )
+
+
 def validate_binding(brief: Mapping[str, object]) -> None:
     """A historical brief has neither field; a new one binds the entire canonical plan."""
     transition = brief.get("transition")
@@ -165,7 +177,11 @@ def validate_binding(brief: Mapping[str, object]) -> None:
         if isinstance(transition, dict)
         else None
     )
-    if "runtime_access" not in brief and bound is None:
+    if (
+        "runtime_access" not in brief
+        and bound is None
+        and "runtime_images" not in brief
+    ):
         return
     validate_plan(brief.get("runtime_access"))
     plan = cast(JsonObject, brief["runtime_access"])
@@ -173,6 +189,18 @@ def validate_binding(brief: Mapping[str, object]) -> None:
         raise AccessError(
             "runtime access plan is not bound to its approval transition",
             remedy="propose and approve a new dispatch for this access plan",
+        )
+    if _pins_images(plan, brief.get("role"), brief.get("purpose")) != (
+        "runtime_images" in brief
+    ) or (
+        "runtime_images" in brief
+        and not container_executor.valid_pins(
+            brief["runtime_images"], plan["container"]
+        )
+    ):
+        raise AccessError(
+            "runtime images are not pinned exactly for the brief's container plan",
+            remedy="propose and approve a new dispatch so that it pins the current images",
         )
     if plan["requirements"]:
         checkout = [
@@ -454,6 +482,26 @@ def verify_plan(
     return summary, observation
 
 
+def pin_images(
+    plan: JsonObject, transport: str, role: str, purpose: str
+) -> JsonObject | None:
+    """Observe and pin the image digests a docker dispatch runs; ``None`` for any other plan.
+
+    The approval binds them through the transition digest, never through ``plan_digest``: the
+    plan stays a function of the config, while a rebuilt image changes under the same tag.
+    """
+    if not _pins_images(plan, role, purpose):
+        return None
+    verification, observation = verify_plan(plan, transport)
+    if verification["status"] != "verified" or not isinstance(
+        observation, container_executor.ContainerObservation
+    ):
+        raise AccessError(
+            str(verification["reason"]), remedy=str(verification["remedy"] or _REMEDY)
+        )
+    return container_executor.pins(observation)
+
+
 def _observation_problem(
     plan: JsonObject,
     transport: str,
@@ -532,6 +580,8 @@ def apply_plan(
     # A project-supplied provider may fail in any way; the send must fail closed.
     try:
         applied = provider.apply(brief, observation)
+    except extensions.RuntimeAccessBlocked as exc:
+        raise AccessError(exc.message, remedy=exc.remedy) from exc
     except Exception as exc:
         raise AccessError(
             "native runtime could not apply the approved worker access", remedy=_REMEDY

@@ -16,11 +16,12 @@ import os
 import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import cast
 
+from ..errors import INTERNAL_INVARIANT_REMEDY
 from . import extensions
 from .core.utils import JsonObject
 
@@ -36,6 +37,13 @@ SUPPORTED_MODES = ("inherit", "sandbox")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 # A comma, quote or line break would let a root inject options into its ``--mount`` value.
 _UNSAFE_PATH = re.compile(r'[,"\n\r]')
+
+# An approval binds the pinned digests, so a rebuilt image needs a new propose, never the old one.
+CHANGED_IMAGE_REMEDY = (
+    "restore the image with the pinned digest, or rebuild or pull the image, cancel this "
+    "dispatch (dispatch cancel) and repeat dispatch propose: an approval is never reused "
+    "for another image"
+)
 
 _Block = Callable[[str, str], None]
 
@@ -73,6 +81,27 @@ class ContainerObservation(extensions.RuntimeAccessObservation):
     worker_image_id: str | None = None
     proxy_image: str | None = None
     proxy_image_id: str | None = None
+
+
+def pins(observation: ContainerObservation) -> JsonObject:
+    """The brief's ``runtime_images``: the image ids observed now, the only images a send runs."""
+    return {"worker": observation.worker_image_id, "proxy": observation.proxy_image_id}
+
+
+def valid_pins(images: object, container: Mapping[str, object]) -> bool:
+    """Whether ``images`` pins exactly the images the plan's container component names."""
+    return (
+        isinstance(images, dict)
+        and set(images) == {"worker", "proxy"}
+        and isinstance(images["worker"], str)
+        and _IMAGE_ID.fullmatch(images["worker"]) is not None
+        and (
+            isinstance(images["proxy"], str)
+            and _IMAGE_ID.fullmatch(images["proxy"]) is not None
+            if "proxy_image" in container
+            else images["proxy"] is None
+        )
+    )
 
 
 def _overlaps_home(path: str) -> bool:
@@ -236,3 +265,35 @@ class DockerExecutor:
             proxy_image=proxy_image,
             proxy_image_id=proxy_id,
         )
+
+    def apply(
+        self,
+        brief: Mapping[str, object],
+        observation: extensions.RuntimeAccessObservation,
+    ) -> ContainerObservation:
+        """Confirm that the images observed now are the digests the approval pinned."""
+        if not isinstance(observation, ContainerObservation):
+            raise extensions.RuntimeAccessBlocked(
+                "the docker executor cannot apply another provider's evidence",
+                remedy=INTERNAL_INVARIANT_REMEDY,
+                facts={"provider": type(observation).__name__},
+            )
+        pinned = brief.get("runtime_images")
+        before = pinned if isinstance(pinned, dict) else {}
+        current = pins(observation)
+        changed = [
+            f"image {tag} changed after dispatch propose: pinned {before.get(key)}, "
+            f"now {current[key]}"
+            for key, tag in (
+                ("worker", observation.worker_image),
+                ("proxy", observation.proxy_image),
+            )
+            if before.get(key) != current[key]
+        ]
+        if changed:
+            raise extensions.RuntimeAccessBlocked(
+                "; ".join(changed),
+                remedy=CHANGED_IMAGE_REMEDY,
+                facts={"pinned": pinned, "current": current},
+            )
+        return replace(observation, applied=True)

@@ -328,7 +328,7 @@ def _bind_dispatch_approval(
     if supplied.strip() != digest:
         raise CoordinatorError(
             f"approval digest does not match the proposed transition: approved {supplied.strip()}, proposed {digest}",
-            remedy="a changed scope, candidate, role, verification command, reason category or Context Package needs a new approval: run 'dispatch propose' again and approve its digest",
+            remedy="a changed scope, candidate, role, verification command, reason category, Context Package or pinned runtime image needs a new approval: run 'dispatch propose' again and approve its digest",
         )
     return {**_approval(args, digest), "transition_digest": digest}
 
@@ -1073,6 +1073,15 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"
         ]
+        # A docker plan pins the image digests observed now, beside the plan and outside its
+        # digest; propose and create each observe, so an image changed in between is refused.
+        runtime_images = runtime_access.pin_images(
+            access_plan, transport, role_name, purpose
+        )
+        if runtime_images is not None:
+            transition = operational_guards.bind_transition(
+                transition, {"runtime_images": runtime_images}
+            )
         orchestration_policy = _orchestration_policy(config)
         transition[infrastructure_retry.TRANSITION_FIELD] = (
             operational_guards.policy_digest(
@@ -1127,6 +1136,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     proposal["context_package_quality_warning"] = warning
             if delta_scope is not None:
                 proposal["delta_review_scope"] = delta_scope
+            if runtime_images is not None:
+                proposal["runtime_images"] = runtime_images
             return proposal
         if approval_mode is None:
             # Only a proposal skips the approval mode, and a proposal returned above.
@@ -1216,6 +1227,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "rebase_target_commit": transition.get("rebase_target_sha"),
             "runtime_access": access_plan,
         }
+        if runtime_images is not None:
+            brief["runtime_images"] = runtime_images
         if role_name == resolver_state.RESOLVER_ROLE:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]

@@ -15,14 +15,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from unittest import mock
 
-from harness.orchestration import container_executor, coordinator, runtime_access
-from harness.orchestration.core.utils import JsonObject
+from harness.orchestration import (
+    container_executor,
+    coordinator,
+    operational_guards,
+    runtime_access,
+)
+from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from tests.orchestration import test_coordinator as coordinator_tests
 
 WORKER_TAG = "harness-worker:local"
 PROXY_TAG = "harness-proxy:local"
 WORKER_ID = "sha256:" + "a" * 64
 PROXY_ID = "sha256:" + "b" * 64
+REBUILT_ID = "sha256:" + "c" * 64
 DAEMON_ID = "5c5e2d3f-docker-daemon"
 CONTAINER_ID = "0123456789abcdef" * 4
 ROOTFUL_INFO: JsonObject = {
@@ -333,6 +339,136 @@ class DockerPreflightTests(DockerFixture):
         self.assertEqual(len(reasons), 3, reasons)
         self.assertEqual(verification["reason"], "; ".join(reasons))
         self.assertIsNone(verification["environment"]["worker_image_id"])
+
+
+class DockerApprovalTests(DockerFixture):
+    """Propose pins the image digests; approval and send never reuse them for another image."""
+
+    def send(self, dispatch_id: str) -> JsonObject:
+        sent: JsonObject = coordinator.send_dispatch(
+            self.fx._args(
+                dispatch=dispatch_id,
+                adapter=str(self.adapter),
+                adapter_arg=None,
+                checkout=None,
+            )
+        )
+        return sent
+
+    def state(self, dispatch_id: str) -> str:
+        status = coordinator.dispatch_status(
+            self.fx._args(dispatch=dispatch_id, batch=None, stale_after=None)
+        )
+        return str(status["dispatches"][0]["state"])
+
+    def test_propose_pins_the_digests_outside_the_plan_and_approval_binds_them(
+        self,
+    ) -> None:
+        first = self.fx._propose(self.batch_id, "architect")
+        self.engine.images[WORKER_TAG] = REBUILT_ID
+        second = self.fx._propose(self.batch_id, "architect")
+
+        self.assertEqual(first["runtime_images"], {"worker": WORKER_ID, "proxy": None})
+        self.assertEqual(
+            first["transition"]["runtime_images_sha256"],
+            operational_guards.runtime_images_digest(first["runtime_images"]),
+        )
+        self.assertNotIn("runtime_images", first["runtime_access"])
+        self.assertEqual(
+            first["runtime_access"]["plan_digest"],
+            second["runtime_access"]["plan_digest"],
+        )
+        self.assertNotEqual(first["transition_digest"], second["transition_digest"])
+        with self.assertRaises(CoordinatorError) as refused:
+            self.fx._dispatch(
+                self.batch_id, "architect", digest=first["transition_digest"]
+            )
+        self.assertIn("approval digest does not match", refused.exception.message)
+        self.assertIn("pinned runtime image", refused.exception.remedy)
+
+        brief = self.fx._dispatch(
+            self.batch_id, "architect", digest=second["transition_digest"]
+        )["brief"]
+
+        self.assertEqual(brief["runtime_images"], {"worker": REBUILT_ID, "proxy": None})
+        self.assertEqual(brief["transition"], second["transition"])
+        self.assert_no_container_was_created()
+
+    def test_a_proxy_image_is_pinned_when_the_container_names_one(self) -> None:
+        self.configure(container={"worker_image": WORKER_TAG, "proxy_image": PROXY_TAG})
+
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+
+        self.assertEqual(
+            brief["runtime_images"], {"worker": WORKER_ID, "proxy": PROXY_ID}
+        )
+
+    def test_propose_refuses_an_environment_it_cannot_pin(self) -> None:
+        self.engine.images = {}
+
+        with self.assertRaises(runtime_access.AccessError) as refused:
+            self.fx._propose(self.batch_id, "architect")
+
+        self.assertIn(f"image {WORKER_TAG} is not present", refused.exception.message)
+        self.assertIn(f"build or pull {WORKER_TAG}", refused.exception.remedy)
+
+    def test_an_image_changed_or_missing_after_approval_is_refused(self) -> None:
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        self.engine.images[WORKER_TAG] = REBUILT_ID
+
+        with self.assertRaises(runtime_access.AccessError) as changed:
+            runtime_access.apply_plan(brief, "external")
+
+        self.assertEqual(
+            changed.exception.message,
+            f"image {WORKER_TAG} changed after dispatch propose: pinned {WORKER_ID}, "
+            f"now {REBUILT_ID}",
+        )
+        self.assertEqual(
+            changed.exception.remedy, container_executor.CHANGED_IMAGE_REMEDY
+        )
+        self.assertIn("repeat dispatch propose", changed.exception.remedy)
+        self.assertEqual(self.state(brief["dispatch_id"]), "approved")
+
+        del self.engine.images[WORKER_TAG]
+        with self.assertRaises(runtime_access.AccessError) as missing:
+            self.send(brief["dispatch_id"])
+
+        self.assertIn(f"image {WORKER_TAG} is not present", missing.exception.message)
+        self.assertIn("repeat dispatch preflight and propose", missing.exception.remedy)
+        self.assertEqual(self.state(brief["dispatch_id"]), "approved")
+        self.assert_no_container_was_created()
+
+    def test_only_a_docker_send_brief_carries_exactly_its_pinned_images(self) -> None:
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        runtime_access.validate_binding(brief)
+        unpinned = {
+            key: value for key, value in brief.items() if key != "runtime_images"
+        }
+        tampered: list[JsonObject] = [
+            unpinned,
+            {**brief, "runtime_images": {"worker": WORKER_ID, "proxy": PROXY_ID}},
+            {**brief, "runtime_images": {"worker": WORKER_TAG, "proxy": None}},
+            {**brief, "runtime_images": {"worker": WORKER_ID}},
+            {**brief, "purpose": "publish"},
+        ]
+        for invalid in tampered:
+            with (
+                self.subTest(invalid=invalid.get("runtime_images")),
+                self.assertRaises(runtime_access.AccessError) as refused,
+            ):
+                runtime_access.validate_binding(invalid)
+            self.assertIn("not pinned exactly", refused.exception.message)
+        legacy = {
+            key: value
+            for key, value in unpinned.items()
+            if key not in ("runtime_access", "transition")
+        }
+        runtime_access.validate_binding(legacy)
+        with self.assertRaises(runtime_access.AccessError):
+            runtime_access.validate_binding(
+                {**legacy, "runtime_images": brief["runtime_images"]}
+            )
 
 
 def _plan(repo: Path, config: JsonObject) -> JsonObject:
