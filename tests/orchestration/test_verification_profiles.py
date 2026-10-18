@@ -80,6 +80,41 @@ class VerificationProfileContractTests(unittest.TestCase):
                 )
                 self.assertNotEqual(problems, [])
 
+    def test_brief_validation_accepts_only_the_profile_of_the_batch_scope(
+        self,
+    ) -> None:
+        orchestration = {
+            "paths": ["harness/orchestration/**"],
+            "developer": ["make lint", "pytest -q tests/orchestration"],
+            "review": ["make lint"],
+        }
+        config = {
+            "verification_commands": ["make verify"],
+            "developer_verification_commands": ["make full"],
+            "verification_profiles": [CONSOLE, orchestration],
+        }
+
+        console_scope = contract.accepted_verification_commands(
+            config, "developer", "work", allowed_paths=["harness/console/**"]
+        )
+        no_scope = contract.accepted_verification_commands(config, "developer", "work")
+        review = contract.accepted_verification_commands(
+            config, "code-review", "work", allowed_paths=["harness/console/**"]
+        )
+
+        self.assertIn(CONSOLE["developer"], console_scope)
+        self.assertNotIn(orchestration["developer"], console_scope)
+        self.assertEqual(no_scope, [["make full"]])
+        self.assertIn(CONSOLE["review"], review)
+
+    def test_an_empty_scope_never_selects_a_profile(self) -> None:
+        config = {"verification_profiles": [CONSOLE]}
+
+        self.assertIsNone(contract.verification_profile_for(config, []))
+        self.assertEqual(
+            contract.verification_profile_for(config, ["harness/console/**"]), CONSOLE
+        )
+
     def test_the_schema_rejects_the_same_invalid_profiles(self) -> None:
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         node = schema["properties"]["verification_profiles"]
