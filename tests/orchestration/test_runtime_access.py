@@ -591,6 +591,92 @@ def test_a_tampered_container_plan_is_refused(tmp_path: Path) -> None:
             runtime_access.validate_plan(tampered)
 
 
+def test_the_environment_component_is_replaced_whole_and_resolves_names_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    secret = "synthetic-secret-7f3a"
+    monkeypatch.setenv("LLM_API_KEY", secret)
+    config = {
+        "access_policy": {
+            "defaults": {
+                "mode": "sandbox",
+                "environment": ["LLM_API_KEY", "HTTPS_PROXY"],
+            },
+            "roles": {"developer": {"environment": ["NPM_TOKEN"]}},
+            "operations": {"qa": {"environment": []}},
+        },
+        "extensions": {"runtime_access": "docker"},
+    }
+
+    architect = runtime_access.resolve_plan(
+        repo, repo, config, "architect", "read-only"
+    )
+    developer = runtime_access.resolve_plan(repo, repo, config, "developer", "write")
+    qa = runtime_access.resolve_plan(
+        repo, repo, config, "developer", "read-only", operation="qa"
+    )
+
+    assert (architect["environment"], architect["sources"]["environment"]) == (
+        ["HTTPS_PROXY", "LLM_API_KEY"],
+        "defaults",
+    )
+    assert (developer["environment"], developer["sources"]["environment"]) == (
+        ["NPM_TOKEN"],
+        "roles.developer",
+    )
+    assert (qa["environment"], qa["sources"]["environment"]) == ([], "operations.qa")
+    for plan in (architect, developer, qa):
+        runtime_access.validate_plan(plan)
+        assert secret not in json.dumps(plan)
+
+
+def test_a_tampered_environment_plan_is_refused(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    plan = runtime_access.resolve_plan(
+        repo,
+        repo,
+        {
+            "access_policy": {
+                "defaults": {"mode": "sandbox", "environment": ["A_KEY", "B_KEY"]}
+            }
+        },
+        "developer",
+        "write",
+    )
+    runtime_access.validate_plan(plan)
+
+    def changed(edit: Callable[[JsonObject], object]) -> JsonObject:
+        copy: JsonObject = json.loads(json.dumps(plan))
+        edit(copy)
+        return _redigest(copy)
+
+    legacy: JsonObject = {
+        "mode": "inherit",
+        "network": {"hosts": []},
+        "filesystem": [],
+        "sources": {
+            key: "legacy" for key in ("mode", "network", "filesystem", "environment")
+        },
+        "requirements": [],
+        "runtime_extension": "none",
+        "environment": ["A_KEY"],
+    }
+    tampered = [
+        changed(lambda p: p["sources"].pop("environment")),
+        changed(lambda p: p.pop("environment")),
+        changed(lambda p: p.update(environment=["B_KEY", "A_KEY"])),
+        changed(lambda p: p.update(environment=["A_KEY", "A_KEY"])),
+        changed(lambda p: p.update(environment=["A_KEY=value"])),
+        changed(lambda p: p.update(environment="A_KEY")),
+        _redigest(legacy),
+    ]
+
+    for invalid in tampered:
+        with pytest.raises(runtime_access.AccessError):
+            runtime_access.validate_plan(invalid)
+
+
 def test_the_built_in_docker_name_selects_the_shipped_executor_and_cannot_be_taken() -> (
     None
 ):
