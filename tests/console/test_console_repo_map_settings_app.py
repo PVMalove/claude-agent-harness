@@ -79,6 +79,7 @@ async def _open(app: App[None], pilot: Pilot[None]) -> None:
 
 
 async def _settle(pilot: Pilot[None]) -> None:
+    await pilot.pause()
     await pilot.app.workers.wait_for_complete()
     await pilot.pause()
     await pilot.pause()
@@ -329,6 +330,10 @@ def test_the_diagnostics_tab_runs_the_checks_when_it_opens(tmp_path: Path) -> No
                 "#repo-map-tabs", TabbedContent
             ).active = "tab-diagnostics"
             await _settle(pilot)
+            for _ in range(50):
+                if _text(app, "#map-checks") != "Проверяю…":
+                    break
+                await _settle(pilot)
             text = _text(app, "#map-checks")
             assert "Python: парсер установлен" in text
             assert "Go: парсер не установлен" in text

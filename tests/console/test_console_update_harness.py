@@ -98,8 +98,11 @@ def test_the_screen_shows_every_frame_and_the_drift_counters(tmp_path: Path) -> 
     async def scenario() -> tuple[list[str], str, int]:
         app = _host(_screen(tmp_path, _Runner()))
         async with app.run_test(size=(120, 60)) as pilot:
-            await pilot.pause()
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: bool(app.screen.query(".frame"))
+                and bool(app.screen.query("#diff-files")),
+            )
             screen = app.screen
             frames = [
                 str(frame.border_title).strip()
@@ -236,9 +239,13 @@ def test_the_diff_block_shows_the_diff_of_the_highlighted_file(tmp_path: Path) -
     async def scenario() -> tuple[str, str]:
         app = _host(_screen(tmp_path, _Runner()))
         async with app.run_test(size=(120, 60)) as pilot:
-            await pilot.pause()
             await app.workers.wait_for_complete()
-            await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: bool(app.screen.query("#diff-files"))
+                and app.screen.query_one("#diff-files", ListView).highlighted_child is not None
+                and bool(app.screen.query("#diff-view")),
+            )
             listing = app.screen.query_one("#diff-files", ListView)
             first = listing.highlighted_child
             assert first is not None and first.name

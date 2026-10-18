@@ -751,6 +751,10 @@ async def _open_step(
     from textual.widgets import Select
 
     index = next(i for i, s in enumerate(screen.steps) if s.path == path)
+    await wait_until(
+        pilot,
+        lambda: bool(screen.query("#step-jump SelectCurrent #label")),
+    )
     screen.query_one("#step-jump", Select).value = index
     await wait_until(
         pilot,
@@ -867,7 +871,8 @@ def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
             # Invalid JSON rebuilds the text page; the previous editor is not readiness.
             await wait_until(
                 pilot,
-                lambda: any(
+                lambda: len(screen.query("#field-value")) == 1
+                and any(
                     editor is not area and editor.text == "{broken JSON"
                     for editor in screen.query("#field-value").results(TextArea)
                 ),
@@ -878,6 +883,7 @@ def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
             area = screen.query_one("#field-value", TextArea)
             assert area.text == "{broken JSON"
             area.load_text('["pytest"]')
+            await wait_until(pilot, lambda: area.text == '["pytest"]')
             screen.query_one("#mode-menu", RadioButton).value = True
             await wait_until(pilot, lambda: bool(screen.query("#menu-items")))
             assert draft.documents["project.json"]["qa_gate_commands"] == ["pytest"]

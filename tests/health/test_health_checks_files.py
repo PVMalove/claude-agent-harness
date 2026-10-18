@@ -302,6 +302,7 @@ def test_rendered_project_template_passes_the_validator(
             "BRANCH_PATTERN": "^feature/issue-[0-9]+-.+",
             "QA_GATE_COMMANDS": json.dumps(["echo test"]),
             "TRACKER_FIELD": tracker_field,
+            "TEST_FIELDS": "",
         }
     )
     project_json = tmp_path / ".harness" / "project.json"
