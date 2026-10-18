@@ -20,7 +20,7 @@ from harness.storage import storage_root
 
 from . import extensions
 from .contract import access_policy_problems
-from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES
+from .core.constants import ACCESS_OPERATIONS, ACCESS_RESOURCES, CONTAINER_ENGINES
 from .core.utils import JsonObject
 
 # Local Git plumbing only; a slow disk or a huge repository is the worst expected case.
@@ -65,12 +65,19 @@ def validate_plan(plan: object) -> None:
         "runtime_extension",
         "plan_digest",
     }
-    if not isinstance(plan, dict) or set(plan) != fields:
+    # A plan carries the container component only when its policy authored one (issue #704).
+    if not isinstance(plan, dict) or set(plan) - {"container"} != fields:
         raise AccessError("runtime access plan schema mismatch", remedy=remedy)
-    components = {key: plan[key] for key in ("mode", "network")}
+    components = {
+        key: plan[key] for key in ("mode", "network", "container") if key in plan
+    }
     if access_policy_problems({"defaults": components}, set()):
         raise AccessError(
-            "runtime access plan has invalid mode or network", remedy=remedy
+            "runtime access plan has invalid mode, network or container", remedy=remedy
+        )
+    if "container" in plan and "engine" not in plan["container"]:
+        raise AccessError(
+            "runtime access container does not name its engine", remedy=remedy
         )
     hosts = plan["network"]["hosts"]
     if hosts != sorted(set(host.lower() for host in hosts)):
@@ -78,7 +85,13 @@ def validate_plan(plan: object) -> None:
     sources = plan["sources"]
     if (
         not isinstance(sources, dict)
-        or set(sources) != {"mode", "network", "filesystem"}
+        or set(sources)
+        != {
+            "mode",
+            "network",
+            "filesystem",
+            *(("container",) if "container" in plan else ()),
+        }
         or any(
             not isinstance(value, str)
             or not value
@@ -126,6 +139,7 @@ def validate_plan(plan: object) -> None:
             or plan["filesystem"]
             or plan["requirements"]
             or plan["runtime_extension"] != "none"
+            or "container" in plan
         ):
             raise AccessError(
                 "legacy runtime access must preserve empty inherit", remedy=remedy
@@ -253,6 +267,9 @@ def resolve_plan(
         "filesystem": [],
     }
     sources: JsonObject = {key: "default" for key in selected}
+    # The container component has no default: a plan carries it only when a layer authors it, so
+    # every plan without one keeps its historical shape and digest.
+    container: JsonObject | None = None
     layers = [("defaults", policy.get("defaults", {}))]
     for section, name in (
         ("roles", None if operation else role),
@@ -271,6 +288,9 @@ def resolve_plan(
             if key in layer:
                 selected[key] = layer[key]
                 sources[key] = label
+        if "container" in layer:
+            container = layer["container"]
+            sources["container"] = label
     try:
         result = subprocess.run(
             ["git", "-C", str(worktree), "rev-parse", "--git-common-dir"],
@@ -357,6 +377,16 @@ def resolve_plan(
         "requirements": requirements,
         "runtime_extension": extension,
     }
+    if container is not None:
+        # Tags and the engine come from the config alone; nothing here probes an engine or image.
+        plan["container"] = {
+            "engine": container.get("engine", CONTAINER_ENGINES[0]),
+            **{
+                key: container[key]
+                for key in ("worker_image", "proxy_image")
+                if key in container
+            },
+        }
     plan["plan_digest"] = _digest(plan)
     return plan
 
