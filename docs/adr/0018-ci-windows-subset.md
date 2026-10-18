@@ -1,5 +1,13 @@
 # Набор проверок CI на Windows в pull request
 
+**Статус: Windows-проверки сняты с CI (#753).** Задания `verify-windows (tests)` и
+`verify-windows (clean-room)` удалены из `verify.yml`, `windows-latest` убран из матрицы
+`memory-vector-probe.yml`. Пункты ниже про Windows-задания, подмножество в pull request, полный
+прогон на `master`, Git на Windows и имена обязательных проверок больше не действуют и сохранены
+как история решения. Остальное (Linux, diff-coverage, быстрая обратная связь, сводка и дашборд)
+действует. Ключ `--platform-subset` и список `WINDOWS_PR_IGNORED_TESTS` в `scripts/verify.py`
+остаются для локального запуска.
+
 ## Контекст системы
 
 Прогон `make verify` на `windows-latest` с полным набором из ~2 700 тестов занимает больше
