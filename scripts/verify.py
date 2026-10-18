@@ -214,7 +214,7 @@ def pytest_command(
     `fail_fast` останавливает прогон на первом падении, `failed_first` хранит кэш pytest в
     указанном каталоге и запускает прежде упавшие тесты первыми, `junit_xml` пишет отчёт для сводки CI."""
     effective_cpus = os.cpu_count() or 1 if cpu_count is None else cpu_count
-    workers = min(4, effective_cpus)
+    workers = min(8, effective_cpus)
     args = [sys.executable, "-m", "pytest"]
     if failed_first is None:
         args.extend(["-p", "no:cacheprovider"])
