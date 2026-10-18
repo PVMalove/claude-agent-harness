@@ -5,9 +5,10 @@ from __future__ import annotations
 
 from rich.segment import Segment
 from rich.style import Style
+from textual.binding import Binding
 from textual.content import Content
 from textual.strip import Strip
-from textual.widgets import Checkbox, RadioButton, SelectionList
+from textual.widgets import Checkbox, ListView, RadioButton, SelectionList
 from textual.widgets.option_list import OptionDoesNotExist
 
 from . import brand
@@ -67,3 +68,13 @@ class CheckList(SelectionList[str]):
             meta=dict(segments[1].style.meta) if segments[1].style else None,
         )
         return Strip([Segment(f" {glyph} ", style), *segments[3:]])
+
+
+class OpenableList(ListView):
+    """A `ListView` whose keys the footer names: `↑↓ Выбор` and `Enter Открыть`. The keys are the
+    list's own; only their footer hints are new."""
+
+    BINDINGS = [
+        Binding("down", "cursor_down", "Выбор", key_display="↑↓"),
+        Binding("enter", "select_cursor", "Открыть"),
+    ]

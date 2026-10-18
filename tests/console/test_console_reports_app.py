@@ -21,7 +21,7 @@ from tests.console._console_ledger_fixture import QA_LOG_SHA256, build_reports_f
 from harness.console.app import HarnessConsoleApp
 from harness.console.data import DashboardData
 from harness.console.screens.dashboard import DashboardScreen
-from harness.console.shell import SECTIONS
+from harness.console.shell import SECTIONS, ConsoleShell, Fold, SectionCard
 from harness.console.screens.reports import (
     BatchTimelineScreen,
     QaLogsScreen,
@@ -173,7 +173,7 @@ def test_current_stage_opens_timeline_and_refresh_preserves_filters_sort_and_sel
             )
             refresh = app.screen.query_one("#refresh-reports", Button)
             assert refresh.region.height == 1
-            assert refresh.region.width <= 5
+            assert str(refresh.label) == "r Обновить"
             await pilot.click("#refresh-reports")
             await app.workers.wait_for_complete()
             await _until(pilot, lambda: not refresh.disabled)
@@ -238,10 +238,13 @@ def test_batch_rows_and_timeline_show_start_and_time_to_pr_in_a_narrow_window(
             listing = app.screen.query_one("#batch-list", ListView)
             first = str(listing.children[0].query_one(Static).content)
             assert "12.10.2026 10:00 UTC" in first
-            assert "blocked · до PR: 2 ч 14 мин" in first
+            assert "⚠ заблокирован · до PR: 2 ч 14 мин" in first
             refresh = app.screen.query_one("#refresh-reports", Button)
             assert refresh.region.height == 1
             assert refresh.region.right <= 60
+            # The narrow terminal folds the batches (the mockup's `▸ Батчи`); open them to use the list.
+            app.screen.query_one("#batch-fold", Fold).collapsed = False
+            await pilot.pause()
             listing.focus()
             listing.index = 0
             await pilot.press("enter")
@@ -388,7 +391,7 @@ def test_reports_screen_without_a_ledger_says_so(tmp_path: Path) -> None:
             return _static_text(app, "#reports-status"), _report_names(app)
 
     status, names = asyncio.run(scenario())
-    assert status == "леджер оркестрации не найден или не инициализирован"
+    assert status == "✖ леджер оркестрации не найден или не инициализирован"
     assert names == []
 
 
@@ -485,3 +488,211 @@ def test_timeline_export_writes_markdown_table(tmp_path: Path) -> None:
     assert text.startswith("# Хронология батча batch-flow\n")
     assert "- **Маршрут:** developer → code-review → qa" in text
     assert "| Время | Тип | Роль | Событие |" in text
+
+
+def _footer_keys(app: App[None]) -> dict[str, str]:
+    """What the footer shows now: key (as displayed) -> description."""
+    shown = {}
+    for key, active in app.screen.active_bindings.items():
+        binding = active.binding
+        if binding.show and binding.description:
+            shown[binding.key_display or key] = binding.description
+    return shown
+
+
+def test_reports_screen_stands_on_the_shared_frame(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[bool, str, str, list[str], str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            crumbs = [
+                str(crumb.content)
+                for crumb in screen.query(".crumb-link, .crumb-current").results(Static)
+            ]
+            assert isinstance(screen, ConsoleShell)
+            return (
+                True,
+                screen.SECTION or "",
+                screen.CRUMBS,
+                crumbs,
+                _static_text(app, "#reports-project"),
+            )
+
+    shell, section, path, crumbs, project = asyncio.run(scenario())
+    assert shell and section == "Reports" and path == "Главная › Отчёты"
+    assert crumbs == ["Главная", "Отчёты"]
+    assert project == f"Проект: {tmp_path.name}"
+
+
+def test_reports_blocks_follow_the_mockup_order_with_their_actions(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[list[str], list[str], str, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await pilot.pause()
+            page = app.screen.query_one("#reports-page")
+            order = [
+                widget.id or ""
+                for widget in page.query(
+                    "#reports-title, #report-filter-fold, #report-panel, #batch-fold"
+                )
+            ]
+            cards = [
+                str(card.border_title).strip() for card in app.screen.query(SectionCard)
+            ]
+            refresh = app.screen.query_one("#refresh-reports", Button)
+            qa = app.screen.query_one("#open-qa-logs", Button)
+            return order, cards, str(refresh.label), str(qa.label)
+
+    order, cards, refresh, qa = asyncio.run(scenario())
+    assert order == [
+        "reports-title",
+        "report-filter-fold",
+        "report-panel",
+        "batch-fold",
+    ]
+    assert cards == ["СТАДИИ И ОТЧЁТЫ  4"]
+    assert (refresh, qa) == ("r Обновить", "F3 QA-логи")
+
+
+def test_reports_footer_names_the_list_keys_and_narrows_to_the_mockup_set(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[dict[str, str], dict[str, str]]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen.focused, ListView)
+            wide = _footer_keys(app)
+            await pilot.resize_terminal(80, 24)
+            await pilot.pause()
+            return wide, _footer_keys(app)
+
+    wide, narrow = asyncio.run(scenario())
+    assert wide == {
+        "escape": "Назад",
+        "↑↓": "Выбор",
+        "enter": "Открыть",
+        "r": "Обновить",
+        "F3": "QA-логи",
+    }
+    assert set(narrow) == {"escape", "enter", "F3"}
+
+
+def test_narrow_terminal_folds_filters_and_batches_and_shortens_the_buttons(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[tuple[bool, bool, str, str, str], tuple[bool, bool]]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            filters = app.screen.query_one("#report-filter-fold", Fold)
+            batches = app.screen.query_one("#batch-fold", Fold)
+            first = str(
+                app.screen.query_one("#report-list", ListView)
+                .children[0]
+                .query_one(Static)
+                .content
+            )
+            narrow = (
+                filters.collapsed,
+                batches.collapsed,
+                str(app.screen.query_one("#refresh-reports", Button).label),
+                str(app.screen.query_one("#open-qa-logs", Button).label),
+                first,
+            )
+            await pilot.resize_terminal(160, 52)
+            await pilot.pause()
+            return narrow, (filters.collapsed, batches.collapsed)
+
+    narrow, wide = asyncio.run(scenario())
+    assert narrow[:4] == (True, True, "↻", "QA")
+    assert "⚠ отчёт · заблокировано" in narrow[4]
+    assert wide == (False, False)  # a wide terminal opens them again
+
+
+def test_status_rows_wrap_instead_of_being_cut_and_name_the_role(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[list[int], list[str]]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(40, 40)) as pilot:
+            await pilot.pause()
+            listing = app.screen.query_one("#report-list", ListView)
+            rows = [item.query_one(Static) for item in listing.children]
+            widths = [row.region.right for row in rows]
+            texts = [str(row.content) for row in rows]
+            assert all(row.size.height >= 2 for row in rows)
+            return widths, texts
+
+    widths, texts = asyncio.run(scenario())
+    assert all(right <= 40 for right in widths)
+    assert all("[" in text and "]" in text for text in texts)  # the role badge
+    assert any("⚠ отчёт · заблокировано" in text.replace("\n", " ") for text in texts)
+
+
+def test_role_badge_takes_its_colour_from_the_brand_palette(tmp_path: Path) -> None:
+    from harness.console import brand
+    from harness.console.screens.reports import _report_label
+
+    build_reports_fixture(tmp_path)
+    from harness.console.reports import load_ledger_view
+
+    entry = next(
+        stage
+        for stage in load_ledger_view(tmp_path).stages
+        if stage.role == "developer"
+    )
+    label = _report_label(entry)
+    badge = next(
+        span
+        for span in label.spans
+        if label.plain[span.start : span.end] == "[developer]"
+    )
+    assert brand.ROLE_COLORS["developer"] in str(badge.style)
+
+
+def test_language_switch_translates_labels_footer_and_rows(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[str, str, dict[str, str], str, str, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await pilot.pause()
+            app.language = "en"  # type: ignore[attr-defined]
+            app.screen.translate_now()  # type: ignore[attr-defined]
+            await pilot.pause()
+            first = str(
+                app.screen.query_one("#report-list", ListView)
+                .children[0]
+                .query_one(Static)
+                .content
+            )
+            return (
+                str(app.screen.query_one("#refresh-reports", Button).label),
+                str(app.screen.query_one("#reports-title", Static).content),
+                _footer_keys(app),
+                first,
+                _static_text(app, "#reports-project"),
+                _static_text(app, "#reports-status"),
+            )
+
+    refresh, title, footer, first, project, status = asyncio.run(scenario())
+    assert refresh == "r Update"
+    assert title == "Reports"
+    assert footer["↑↓"] == "Select" and footer["enter"] == "Open"
+    assert "report received" in first
+    assert project.startswith("Project: ")
+    assert status == "reports: 4 of 4"
