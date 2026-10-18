@@ -36,6 +36,8 @@ MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
 # An image reference becomes one argv element of the engine: no spaces, and never a leading '-'
 # that the engine would read as an option.
 CONTAINER_IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
+# A variable name only, never ``NAME=value``: the engine reads the value from its own environment.
+ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Without a container default the built-in executor would leave a role plan without an image.
 DOCKER_CONTAINER_PROBLEM = (
     "orchestration extensions.runtime_access 'docker' requires "
@@ -1121,6 +1123,7 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
             "network",
             "filesystem",
             "container",
+            "environment",
         }:
             errors.append(f"{label} must be an access component object with known keys")
             return
@@ -1145,6 +1148,20 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
                     f"{label}.container must name a worker_image, an optional proxy_image as "
                     "image references without spaces or a leading '-', and an optional engine "
                     "docker or podman"
+                )
+        if "environment" in item:
+            names = item["environment"]
+            if (
+                not isinstance(names, list)
+                or any(
+                    not isinstance(name, str)
+                    or ENVIRONMENT_NAME.fullmatch(name) is None
+                    for name in names
+                )
+                or len(set(names)) != len(names)
+            ):
+                errors.append(
+                    f"{label}.environment must list unique variable names, never values"
                 )
         if "network" in item:
             network = item["network"]

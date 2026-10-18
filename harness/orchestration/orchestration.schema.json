@@ -511,6 +511,15 @@
             }
           }
         },
+        "environment": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "description": "Имена переменных окружения хоста, которые контейнерный исполнитель передаёт worker-у как '--env NAME' без значения. Значения остаются в окружении хоста и не попадают в конфиг, brief, digest, argv и evidence. Отсутствующая на хосте переменная даёт блокер до запуска. Override роли или операции заменяет список целиком."
+        },
         "network": {
           "type": "object",
           "additionalProperties": false,

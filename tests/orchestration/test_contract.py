@@ -1071,6 +1071,102 @@ class ContainerComponentContractTests(unittest.TestCase):
         self.assertEqual(policy["properties"]["defaults"], {"required": ["container"]})
 
 
+class EnvironmentComponentContractTests(unittest.TestCase):
+    """The validator, the schema and health give one verdict on environment names (issue #705)."""
+
+    VALID: tuple[list[str], ...] = (
+        [],
+        ["LLM_API_KEY"],
+        ["_TOKEN", "HTTPS_PROXY", "a1"],
+    )
+    INVALID_NAMES = ("", "1TOKEN", "LLM-KEY", "KEY=value", "A B", "KEY\nNEXT")
+    INVALID: tuple[object, ...] = (
+        None,
+        "LLM_API_KEY",
+        # Python's ``$`` matches before a final line break; the validator must not.
+        ["KEY\n"],
+        {"names": ["LLM_API_KEY"]},
+        {"LLM_API_KEY": "secret"},
+        [1],
+        ["KEY", "KEY"],
+        *([name] for name in INVALID_NAMES),
+    )
+
+    def test_defaults_roles_and_operations_accept_the_same_names(self) -> None:
+        for environment in self.VALID:
+            policy = {
+                "defaults": {"mode": "sandbox", "environment": environment},
+                "roles": {"developer": {"environment": environment}},
+                "operations": {"qa": {"environment": environment}},
+            }
+            with self.subTest(environment=environment):
+                self.assertEqual(
+                    contract.access_policy_problems(policy, {"developer"}), []
+                )
+
+    def test_anything_but_unique_variable_names_is_refused_in_every_layer(
+        self,
+    ) -> None:
+        for environment in self.INVALID:
+            for policy in (
+                {"defaults": {"environment": environment}},
+                {"roles": {"developer": {"environment": environment}}},
+                {"operations": {"git": {"environment": environment}}},
+            ):
+                with self.subTest(policy=policy):
+                    problems = contract.access_policy_problems(policy, {"developer"})
+                    self.assertEqual(len(problems), 1)
+                    self.assertIn(
+                        ".environment must list unique variable names", problems[0]
+                    )
+
+    def test_the_schema_states_the_validator_contract(self) -> None:
+        import re
+
+        component = _schema()["definitions"]["accessComponent"]["properties"][
+            "environment"
+        ]
+        self.assertEqual(component["type"], "array")
+        self.assertIs(component["uniqueItems"], True)
+        self.assertEqual(component["items"]["type"], "string")
+        pattern = component["items"]["pattern"]
+        self.assertEqual(pattern, f"^{contract.ENVIRONMENT_NAME.pattern}$")
+        for name in self.INVALID_NAMES:
+            with self.subTest(name=name):
+                self.assertIsNone(re.search(pattern, name))
+        for environment in self.VALID:
+            for name in environment:
+                self.assertIsNotNone(re.search(pattern, name))
+
+    def test_health_reports_an_invalid_environment_component(self) -> None:
+        value = "synthetic-secret-3c8e"
+        cases: tuple[tuple[object, int], ...] = (
+            (["LLM_API_KEY"], 0),
+            ([f"KEY={value}"], 1),
+        )
+        for environment, count in cases:
+            with (
+                self.subTest(environment=environment),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                path = Path(directory) / "orchestration.json"
+                path.write_text(
+                    json.dumps(
+                        {"access_policy": {"defaults": {"environment": environment}}}
+                    ),
+                    encoding="utf-8",
+                )
+
+                problems = contract.health_problems(
+                    path, ROOT / "harness/orchestration/roles"
+                )
+
+                self.assertEqual(len(problems), count, problems)
+                for problem in problems:
+                    self.assertIn("access_policy.defaults.environment", problem)
+                    self.assertNotIn(value, problem)
+
+
 class AccessOnlyConfigTests(unittest.TestCase):
     def test_access_only_configuration_validates_without_assignment_fields(
         self,
