@@ -55,9 +55,9 @@ class HarnessEnvironmentContractTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/verify.yml").read_text(encoding="utf-8")
         self.assertNotRegex(workflow, r"(?<!uv )\bpip install|-m pip\b")
         self.assertNotIn("run: python scripts/verify.py", workflow)
-        self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 3)
-        self.assertEqual(workflow.count("run: make bootstrap"), 3)
-        self.assertEqual(workflow.count("make verify"), 1)
+        self.assertEqual(workflow.count("uses: astral-sh/setup-uv@"), 4)
+        self.assertEqual(workflow.count("run: make bootstrap"), 4)
+        self.assertEqual(workflow.count("make verify"), 2)
 
 
 class ContractErrorInvariantTests(unittest.TestCase):

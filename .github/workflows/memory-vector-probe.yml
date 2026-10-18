@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        os: [ubuntu-latest] # windows-latest switched off (#753); add it back to re-enable
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     defaults:
