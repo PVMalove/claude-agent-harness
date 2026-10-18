@@ -591,6 +591,63 @@ def test_a_tampered_container_plan_is_refused(tmp_path: Path) -> None:
             runtime_access.validate_plan(tampered)
 
 
+def test_the_built_in_docker_name_selects_the_shipped_executor_and_cannot_be_taken() -> (
+    None
+):
+    from harness.orchestration import container_executor
+
+    provider = extensions.runtime_access("docker")
+
+    assert isinstance(provider, container_executor.DockerExecutor)
+    assert extensions.runtime_access("docker") is provider
+    with pytest.raises(extensions.ExtensionError, match="invalid extension name"):
+        extensions.register("runtime_access", "docker", provider)
+
+
+def test_a_provider_blocker_reaches_preflight_and_send_with_its_remedy_and_facts(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    class Blocking:
+        def observe(self, plan: JsonObject, transport: str) -> None:
+            raise extensions.RuntimeAccessBlocked(
+                "the worker engine is gone",
+                remedy="start the worker engine",
+                facts={"engine": "test", "blockers": ["gone"]},
+            )
+
+    extensions.register("runtime_access", "test-blocking", Blocking())
+    try:
+        plan = runtime_access.resolve_plan(
+            repo,
+            repo,
+            {
+                "access_policy": {"defaults": {"mode": "sandbox"}},
+                "extensions": {"runtime_access": "test-blocking"},
+            },
+            "developer",
+            "write",
+        )
+        summary, observation = runtime_access.verify_plan(plan, "external")
+        with pytest.raises(runtime_access.AccessError) as refused:
+            runtime_access.apply_plan({"runtime_access": plan}, "external")
+    finally:
+        extensions.unregister("runtime_access", "test-blocking")
+
+    assert observation is None
+    assert (summary["status"], summary["reason"], summary["remedy"]) == (
+        "unverified",
+        "the worker engine is gone",
+        "start the worker engine",
+    )
+    assert summary["environment"] == {"engine": "test", "blockers": ["gone"]}
+    assert (refused.value.message, refused.value.remedy) == (
+        "the worker engine is gone",
+        "start the worker engine",
+    )
+
+
 @pytest.mark.parametrize("policy", ["not an object", {"defaults": "not an object"}])
 def test_a_policy_shape_the_validator_missed_is_an_internal_invariant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy: object

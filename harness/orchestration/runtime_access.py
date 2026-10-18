@@ -418,14 +418,22 @@ def verify_plan(
     provider = extensions.runtime_access(plan["runtime_extension"])
     # The inert extension uses the telemetry observe signature and is never a permission proof.
     observation = None
+    blocked: extensions.RuntimeAccessBlocked | None = None
     if plan["runtime_extension"] != "none":
         try:
             observation = provider.observe(plan, transport)
+        except extensions.RuntimeAccessBlocked as exc:
+            # A provider that names its blocker hands the human its own remedy and facts.
+            blocked = exc
         except (
             Exception
         ):  # A failing provider is unverified evidence, never a crash of preflight.
             observation = None
-    reason = _observation_problem(plan, transport, observation)
+    reason = (
+        blocked.message
+        if blocked is not None
+        else _observation_problem(plan, transport, observation)
+    )
     summary: JsonObject = {
         "status": "unverified" if reason else "verified",
         "reason": reason,
@@ -435,8 +443,12 @@ def verify_plan(
         },
         "verified": [] if reason else ["mode", "network", "filesystem"],
         "unverified": ["mode", "network", "filesystem"] if reason else [],
-        "remedy": _REMEDY if reason else None,
+        "remedy": (blocked.remedy if blocked is not None else _REMEDY)
+        if reason
+        else None,
     }
+    if blocked is not None:
+        summary["environment"] = blocked.facts
     if observation is not None:
         summary["evidence"] = asdict(observation)
     return summary, observation
@@ -507,7 +519,9 @@ def apply_plan(
     if verification["status"] == "legacy-inherit":
         return verification
     if verification["status"] != "verified" or observation is None:
-        raise AccessError(str(verification["reason"]), remedy=_REMEDY)
+        raise AccessError(
+            str(verification["reason"]), remedy=str(verification["remedy"] or _REMEDY)
+        )
     provider = extensions.runtime_access(plan["runtime_extension"])
     launch = getattr(provider, "handoff", None) if handoff else None
     if handoff and not callable(launch):
