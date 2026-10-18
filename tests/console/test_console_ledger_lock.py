@@ -154,10 +154,23 @@ class _Ticking:
 
     def __init__(self) -> None:
         self.held = 200
+        self.served: list[int] = []
 
     def __call__(self, _repo: Path) -> JsonObject:
         self.held += 1
+        self.served.append(self.held)
         return _status(held_seconds=self.held, remaining_seconds=STALE - self.held)
+
+    def held_shown_in(self, text: str) -> int:
+        """The age a panel text shows, among the ages this loader served."""
+        shown = [
+            held
+            for held in self.served
+            if f"Держится: {ledger_lock.duration(held)} · до снятия по таймауту: "
+            f"{ledger_lock.duration(STALE - held)}" in text
+        ]
+        assert shown, text
+        return shown[-1]
 
 
 @pytest.mark.parametrize("size", [(64, 30), (160, 50)], ids=["narrow", "wide"])
@@ -183,12 +196,9 @@ def test_the_lock_panel_counts_on_the_live_screen(
 
     first, later = asyncio.run(scenario())
     assert "Lock ledger занят: report submit" in first
-    assert "Держится: 3 мин" in first
-    assert "до снятия по таймауту" in first
-    assert later != first
-    assert (
-        f"до снятия по таймауту: {ledger_lock.duration(STALE - ticking.held)}" in later
-    )
+    # The timer may read the lock again after a snapshot, so each text is matched against the
+    # ages the loader actually served rather than its latest one.
+    assert ticking.held_shown_in(later) > ticking.held_shown_in(first)
 
 
 @pytest.mark.parametrize("size", [(64, 40), (160, 50)], ids=["narrow", "wide"])
