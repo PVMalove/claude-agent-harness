@@ -7,6 +7,7 @@ container-engine command boundary, is replaced by a scripted engine that records
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import subprocess
@@ -636,18 +637,27 @@ class DockerHandoffTests(DockerFixture):
             ("start", "exec format error", "docker start failed: exec format error"),
             ("start", OSError("daemon gone"), "docker start failed: daemon gone"),
         )
-        for kind, failure, message in cases:
-            with self.subTest(kind=kind, failure=failure):
+        removals: tuple[tuple[BaseException | str | None, str], ...] = (
+            (None, f"container {name} was removed"),
+            ("conflict", f"removing container {name} failed: conflict"),
+            (OSError("rm gone"), f"removing container {name} failed: rm gone"),
+        )
+        for (kind, failure, message), (removal, cleanup) in itertools.product(
+            cases, removals
+        ):
+            with self.subTest(kind=kind, failure=failure, removal=removal):
                 self.engine.reset()
-                self.engine.failures = {kind: failure, "rm": "no such container"}
+                self.engine.failures = {kind: failure}
+                if removal is not None:
+                    self.engine.failures["rm"] = removal
 
                 with self.assertRaises(runtime_access.AccessError) as refused:
                     self.send(brief["dispatch_id"])
 
                 self.assertIn(message, refused.exception.message)
-                self.assertIn(
-                    f"container {name} was removed", refused.exception.message
-                )
+                self.assertIn(cleanup, refused.exception.message)
+                if removal is not None:
+                    self.assertNotIn("was removed", refused.exception.message)
                 self.assertIn("send the dispatch again", refused.exception.remedy)
                 self.assertEqual(
                     self.engine.calls[-1], ["docker", "rm", "--force", name]

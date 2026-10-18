@@ -199,10 +199,15 @@ def _launch(name: str, argv: list[str]) -> str:
         failure = f"docker create returned no container id: {output!r}"
     else:
         failure = f"docker create failed: {output}"
-    # Removal is best effort: its own result never changes the refusal below.
-    _engine(["docker", "rm", "--force", name])
+    # Removal is best effort: its result only changes the evidence, never the refusal.
+    removed, detail = _engine(["docker", "rm", "--force", name])
+    cleanup = (
+        f"container {name} was removed"
+        if removed
+        else f"removing container {name} failed: {detail}"
+    )
     raise extensions.RuntimeAccessBlocked(
-        f"{failure}; container {name} was removed",
+        f"{failure}; {cleanup}",
         remedy="fix the engine error, for example a missing plan root or an adapter outside "
         "the plan's mounts, and send the dispatch again: it stays approved",
         facts={"container": name},
