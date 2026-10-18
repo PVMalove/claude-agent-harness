@@ -9,6 +9,7 @@ release any lock with ``release-lock --force`` behind an explicit human approval
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import socket
@@ -259,6 +260,8 @@ class LedgerLockCommandTests(unittest.TestCase):
             actions["ledger-lock-force-release-failed"]["details"]["release_audit_id"],
             actions["ledger-lock-force-release"]["audit_id"],
         )
+        # The strict audit check accepts the failure record beside the release it names.
+        lifecycle.LifecycleLedger._validate_lock_audit(self.state_dir / "lock-audit")
 
     def test_ledger_validate_passes_after_a_forced_release_and_guards_its_audit(
         self,
@@ -276,6 +279,30 @@ class LedgerLockCommandTests(unittest.TestCase):
         audit.write_text(json.dumps(record), encoding="utf-8")
         with self.assertRaises(CoordinatorError):
             coordinator.validate_ledger(self._args())
+
+    def test_the_lock_audit_beside_a_generation_holds_only_forced_releases(
+        self,
+    ) -> None:
+        with self.ledger.lock():
+            self.ledger.ensure()
+        self._orphan()
+        self._force()
+
+        result = coordinator.validate_ledger(self._args())
+
+        self.assertIsNotNone(result["generation"])
+        audit = next((self.state_dir / "lock-audit").glob("*.json"))
+        record = json.loads(audit.read_text(encoding="utf-8"))
+        del record["record_sha256"]
+        record["action"] = "transition"
+        record["record_sha256"] = hashlib.sha256(
+            lifecycle._canonical(record).encode("utf-8")
+        ).hexdigest()
+        audit.write_text(lifecycle._canonical(record), encoding="utf-8")
+        with self.assertRaises(CoordinatorError) as refused:
+            coordinator.validate_ledger(self._args())
+
+        self.assertIn("not a forced lock release record", refused.exception.message)
 
     def test_a_busy_ledger_points_at_lock_status_and_the_forced_release(
         self,

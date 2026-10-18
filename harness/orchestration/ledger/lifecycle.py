@@ -46,6 +46,13 @@ LOCK_RELEASE_GUARD = ".coordinator.lock.release"
 # Append-only, integrity-checked records of human-approved forced lock releases. The lock belongs
 # to the state root rather than to a generation, so its audit lives beside it.
 LOCK_AUDIT_DIRECTORY = "lock-audit"
+# The actions of a lock-audit record: a forced release, and a failure to remove the lock after it
+# was audited.  These records sit at the state root, outside every generation, so the generation
+# audit vocabulary (`AUDIT_ACTIONS`), the migration and its quarantine never apply to them;
+# `validate()` checks them against these actions instead.
+LOCK_AUDIT_ACTION = "ledger-lock-force-release"
+LOCK_AUDIT_FAILED_ACTION = "ledger-lock-force-release-failed"
+LOCK_AUDIT_ACTIONS = (LOCK_AUDIT_ACTION, LOCK_AUDIT_FAILED_ACTION)
 PID_NAMESPACE_LINK = Path("/proc/self/ns/pid")
 BOOT_ID_FILE = Path("/proc/sys/kernel/random/boot_id")
 # The coordinator command that takes the lock, recorded in the owner record when it is known.
@@ -1181,7 +1188,7 @@ class LifecycleLedger:
             nonlocal audited
             self._write_lock_audit(
                 audit_id,
-                "ledger-lock-force-release",
+                LOCK_AUDIT_ACTION,
                 {**decision, "lock": current},
             )
             audited = True
@@ -1192,7 +1199,7 @@ class LifecycleLedger:
             if audited:
                 self._write_lock_audit(
                     f"audit-{uuid.uuid4()}",
-                    "ledger-lock-force-release-failed",
+                    LOCK_AUDIT_FAILED_ACTION,
                     {"release_audit_id": audit_id, "error": exc.message},
                 )
             raise
@@ -1378,7 +1385,7 @@ class LifecycleLedger:
         elif pointer or self._legacy_records_present():
             self._validate_legacy(root)
             self._validate_audit(root / "audit")
-        self._validate_audit(self.root / LOCK_AUDIT_DIRECTORY)
+        self._validate_lock_audit(self.root / LOCK_AUDIT_DIRECTORY)
         return {
             "valid": True,
             "version": version,
@@ -2476,4 +2483,21 @@ class LifecycleLedger:
                     f"{refusal[0]}",
                     remedy=f"read {path.name} with {LEDGER_INSPECT}: the ledger never writes "
                     f"such an event and rewrites none -- {INTERNAL_INVARIANT_REMEDY}",
+                )
+
+    @staticmethod
+    def _validate_lock_audit(root: Path) -> None:
+        """Verify each forced-release record of the state root's ``lock-audit/``: its checksum,
+        its action, its details object and the audit id its file is named after."""
+        for path in sorted(root.glob("*.json")):
+            record = verified_audit(path)
+            if (
+                record.get("action") not in LOCK_AUDIT_ACTIONS
+                or record.get("audit_id") != path.stem
+                or not isinstance(record.get("details"), dict)
+            ):
+                raise LedgerError(
+                    f"ledger lock audit record {path.name} is not a forced lock release record",
+                    remedy=f"only 'coordinator.py ledger release-lock --force' writes {path.name}"
+                    f" and nothing rewrites it -- {INTERNAL_INVARIANT_REMEDY}",
                 )

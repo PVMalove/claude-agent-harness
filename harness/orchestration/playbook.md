@@ -929,7 +929,10 @@ without an owner record or an owner from another PID namespace or boot (`owner-i
 a sandboxed worker's pid names another process outside its sandbox); concurrent releases are
 serialised. Only a human operator may run `ledger release-lock --force --approved-by
 --approved-at --reason`: it releases the lock whatever the verdict and writes an integrity-checked
-record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. Nobody
+record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. That
+directory sits beside the generations, so no migration or quarantine moves it, and `ledger
+validate` checks each record's checksum and its action: `ledger-lock-force-release`, or
+`ledger-lock-force-release-failed` when the lock could not be removed after it was audited. Nobody
 removes the lock or any state file by hand.
 
 A command stopped by an invalid current config, a busy ledger or an unreadable ledger prints one
