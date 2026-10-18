@@ -15,6 +15,11 @@ from harness.console.export import render_markdown
 from harness.console.reports import (
     QA_LOG_TAIL_LINES,
     REPORT_SECTIONS,
+    BatchSummary,
+    ReportEntry,
+    StageEntry,
+    batch_status,
+    stage_status,
     filter_reports,
     load_ledger_view,
     qa_log_text,
@@ -412,3 +417,51 @@ def test_timeline_document_is_a_table_of_events(tmp_path: Path) -> None:
         in text
     )
     assert text.count("\n| 20") == len(timeline.events)
+
+
+def _stage(state: str, outcome: str | None) -> StageEntry:
+    report = (
+        ReportEntry("dispatch-x", "batch-x", "#1", "developer", outcome, "", {})
+        if outcome is not None
+        else None
+    )
+    return StageEntry("dispatch-x", "batch-x", "#1", "developer", state, "", report)
+
+
+def test_stage_status_is_a_symbol_and_a_label_for_every_known_outcome() -> None:
+    cases = {
+        ("reported", "completed"): "✔ отчёт получен · завершено",
+        ("reported", "blocked"): "⚠ отчёт получен · заблокировано",
+        ("reported", "failed"): "✖ отчёт получен · ошибка",
+        ("working", None): "⚠ в работе · отчёта ещё нет",
+    }
+    for (state, outcome), shown in cases.items():
+        assert stage_status(_stage(state, outcome)).render("ru") == shown
+
+
+def test_stage_status_is_shorter_on_a_narrow_terminal_and_follows_the_language() -> (
+    None
+):
+    entry = _stage("reported", "completed")
+    assert stage_status(entry, narrow=True).render("ru") == "✔ отчёт · завершено"
+    assert stage_status(entry).render("en") == "✔ report received · completed"
+
+
+def test_stage_status_shows_an_unknown_ledger_value_as_it_is() -> None:
+    assert (
+        stage_status(_stage("reported", "weird")).render("ru")
+        == "⚠ отчёт получен · weird"
+    )
+    assert (
+        stage_status(_stage("queued", None)).render("ru") == "⚠ queued · отчёта ещё нет"
+    )
+
+
+def test_batch_status_names_the_state_with_a_symbol_and_keeps_an_unknown_one() -> None:
+    def batch(state: str) -> BatchSummary:
+        return BatchSummary("batch-x", "#1", state, "")
+
+    assert batch_status(batch("completed")).render("ru") == "✔ завершён"
+    assert batch_status(batch("blocked")).render("ru") == "⚠ заблокирован"
+    assert batch_status(batch("active")).render("en") == "▶ in progress"
+    assert batch_status(batch("mystery")).render("ru") == "⚠ mystery"

@@ -27,6 +27,7 @@ from ..orchestration.core.report_evidence import evidence_is_none
 from ..orchestration.ledger.lifecycle import JsonObject, JsonValue, LifecycleLedger
 from .export import MarkdownDocument, MarkdownSection
 from .json_fields import strings, text
+from .status import Status
 
 REPORT_SECTIONS = ("Output", "Checks", "Risks", "Blockers", "Next action")
 QA_LOG_TAIL_LINES = 15
@@ -285,6 +286,47 @@ def batch_timing_text(batch: BatchSummary, *, language: str = "ru") -> str:
     return ("to PR: " if language == "en" else "до PR: ") + (
         " ".join(parts) if parts else f"{seconds} {units[3]}"
     )
+
+
+# Outcome of a completion report -> its status kind and Russian/English label.
+_OUTCOMES = {
+    "completed": ("accepted", "завершено", "completed"),
+    "blocked": ("warning", "заблокировано", "blocked"),
+    "failed": ("error", "ошибка", "failed"),
+}
+# State of a batch -> its status kind and Russian/English label.
+_BATCH_STATES = {
+    "planned": ("not_started", "запланирован", "planned"),
+    "awaiting-approval": ("not_started", "ждёт подтверждения", "awaiting approval"),
+    "active": ("running", "в работе", "in progress"),
+    "blocked": ("warning", "заблокирован", "blocked"),
+    "completed": ("accepted", "завершён", "completed"),
+    "failed": ("error", "провален", "failed"),
+    "not-required": ("not_started", "не требуется", "not required"),
+    "abandoned": ("paused", "отменён", "abandoned"),
+}
+
+
+def stage_status(entry: StageEntry, *, narrow: bool = False) -> Status:
+    """A stage row's status, a symbol and a label: `✔ отчёт получен · завершено`, or
+    `⚠ в работе · отчёта ещё нет` while no report is recorded. A value the console does not know is
+    shown as the ledger wrote it. A narrow terminal drops `получен`."""
+    if entry.report is None:
+        known = {"working": ("в работе", "in progress")}.get(entry.state)
+        ru, en = known or (entry.state, entry.state)
+        return Status("warning", f"{ru} · отчёта ещё нет", f"{en} · no report yet")
+    outcome = entry.report.outcome
+    kind, ru, en = _OUTCOMES.get(outcome, ("warning", outcome, outcome))
+    word_ru, word_en = (
+        ("отчёт", "report") if narrow else ("отчёт получен", "report received")
+    )
+    return Status(kind, f"{word_ru} · {ru}", f"{word_en} · {en}")
+
+
+def batch_status(batch: BatchSummary) -> Status:
+    """A batch row's status, a symbol and a label; an unknown state is shown as recorded."""
+    kind, ru, en = _BATCH_STATES.get(batch.state, ("warning", batch.state, batch.state))
+    return Status(kind, ru, en)
 
 
 def _load_stages(view: LedgerView, root: Path) -> None:

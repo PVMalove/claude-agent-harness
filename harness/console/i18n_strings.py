@@ -675,3 +675,19 @@ EN.update(
 )
 EN.update(EN_COMMANDS)
 EN["Отчёты"] = "Reports"
+
+# Reports and Repo Map screens on the shared frame (#723).
+EN.update(
+    {
+        "r Обновить": "r Update",
+        "F3 QA-логи": "F3 QA logs",
+        "Выбор": "Select",
+        "Открыть": "Open",
+        "Фильтры": "Filters",
+        "Батчи": "Batches",
+        "Стадии, completion reports и хронология batch из ledger.": "Stages, completion reports and the batch timeline from the ledger.",
+        "Enter — открыть отчёт": "Enter — open the report",
+        "Enter — хронология": "Enter — timeline",
+    }
+)
+EN_PHRASES.update({"хронология": "timeline"})
