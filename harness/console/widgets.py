@@ -1,12 +1,16 @@
 """Console widgets that restyle Textual's: checkboxes and tick lists drawn as ☑ / ☐, so a ticked
-and an unticked item differ by shape and not only by colour."""
+and an unticked item differ by shape and not only by colour; and a page container a screen can
+rebuild without recomposing its frame."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from rich.segment import Segment
 from rich.style import Style
+from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.strip import Strip
 from textual.widgets import Checkbox, ListView, RadioButton, SelectionList
@@ -86,3 +90,21 @@ class ScrollingView(VerticalScroll):
     only their footer hint is new."""
 
     BINDINGS = [Binding("down", "scroll_down", "Прокрутка", key_display="↑↓")]
+
+
+class ComposedPage(Vertical):
+    """The page of a screen on the shared frame: its children come from `build`, and `recompose()`
+    rebuilds only them, so the frame (menu, breadcrumbs, footer) keeps its state and focus ring."""
+
+    def __init__(
+        self,
+        build: Callable[[], ComposeResult],
+        *,
+        id: str | None = None,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(id=id, classes=classes)
+        self._build = build
+
+    def compose(self) -> ComposeResult:
+        yield from self._build()

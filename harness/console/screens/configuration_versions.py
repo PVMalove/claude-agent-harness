@@ -5,32 +5,37 @@ from __future__ import annotations
 from pathlib import Path
 
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Button, Footer, Select, Static
+from textual.containers import Horizontal, VerticalScroll
+from textual.widgets import Button, Select, Static
 
 from harness.configuration import Bundle, read_config_bundle
 from harness.configuration_store import ConfigurationStore, ConfigurationVersion
 from .commands import call_from_worker
-from .. import brand
-from ..chrome import TopBar
-from ..translate import Translated
+from .. import brand, i18n
+from ..crumbs import Crumb
+from ..shell import SHELL_CSS, ConsoleShell, SectionCard
 from ..logtext import colorize_diff
 from ..configuration import bundle_diff
+from ..widgets import ComposedPage
 from .configuration import ConfirmConfiguration
 
 
-class ConfigurationVersionsScreen(Translated, Screen[None]):
-    BINDINGS = [Binding("escape", "close", "Назад")]
-    DEFAULT_CSS = """
+class ConfigurationVersionsScreen(ConsoleShell):
+    """Saved configuration versions on the shared frame: choose one, read its diff, restore it."""
+
+    SECTION = "Configuration"
+    CRUMBS = "Главная › Настройка › Версии"
+    NARROW_FOOTER_KEYS = ("escape", "f2")
+    # A view inside the Configuration section: a crumb returns to the wizard below, not here.
+    IS_SECTION_ROOT = False
+    CSS = SHELL_CSS + brand.shell_css("""
+    ConfigurationVersionsScreen #versions-page { width: 100%; height: 1fr; padding: 0 2; }
     ConfigurationVersionsScreen #versions-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
-    ConfigurationVersionsScreen Vertical.frame { height: auto; overflow: hidden hidden; }
     ConfigurationVersionsScreen .actions { height: auto; }
     ConfigurationVersionsScreen Static { height: auto; }
     ConfigurationVersionsScreen #version-status { color: $text-muted; }
     ConfigurationVersionsScreen #version-diff-scroll { height: auto; max-height: 24; }
-    """
+    """)
 
     def __init__(self, repo: Path) -> None:
         super().__init__()
@@ -42,21 +47,24 @@ class ConfigurationVersionsScreen(Translated, Screen[None]):
         self.busy = False
         self.versions: dict[str, ConfigurationVersion] = {}
 
-    def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Настройка › Версии")
+    def compose_strip(self) -> ComposeResult:
+        yield Static("Проект: " + self.repo.name, id="versions-project", markup=False)
+
+    def compose_content(self) -> ComposeResult:
+        yield ComposedPage(self._build_page, id="versions-page")
+
+    def _build_page(self) -> ComposeResult:
         versions = self.store.versions()
         self.versions = {v.id: v for v in versions}
         with VerticalScroll(id="versions-scroll"):
-            with Vertical(id="versions-storage", classes="frame") as storage:
-                storage.border_title = brand.frame_title("Хранилище")
+            with SectionCard(title="Хранилище", id="versions-storage"):
                 # Plain text: a path with spaces or square brackets must not be read as markup.
                 yield Static(
                     f"Проект: {self.repo}\nВерсии: {self.store.root}",
                     id="versions-path",
                     markup=False,
                 )
-            with Vertical(id="versions-list", classes="frame") as listing:
-                listing.border_title = brand.frame_title("Версии")
+            with SectionCard(title="Версии", id="versions-list"):
                 if not versions:
                     yield Static(
                         "Сохранённых версий нет. Сохраните текущую конфигурацию "
@@ -71,19 +79,21 @@ class ConfigurationVersionsScreen(Translated, Screen[None]):
                     disabled=not versions,
                     id="configuration-version",
                 )
-            with Vertical(id="versions-changes", classes="frame") as changes:
-                changes.border_title = brand.frame_title("Различия")
+            with SectionCard(title="Различия", id="versions-changes"):
                 yield Static(
                     "Выберите версию; удалённые в ней файлы будут удалены и при откате.",
                     id="version-diff",
                     markup=False,
                 )
-        with Vertical(id="versions-actions", classes="frame") as actions:
-            actions.border_title = brand.frame_title("Действия")
+        with SectionCard(title="Действия", id="versions-actions"):
             yield Static("", id="version-status", markup=False)
             with Horizontal(classes="actions"):
                 yield Button("Восстановить версию", id="restore-version", disabled=True)
-        yield Footer()
+
+    async def _rebuild_page(self) -> None:
+        """Rebuild the page below the frame; the menu, breadcrumbs and footer stay as they are."""
+        await self.query_one("#versions-page", ComposedPage).recompose()
+        self.translate_now()
 
     def on_select_changed(self, event: Select.Changed) -> None:
         if (
@@ -158,14 +168,29 @@ class ConfigurationVersionsScreen(Translated, Screen[None]):
 
     async def _finished(self, message: str) -> None:
         self.busy = False
-        await self.recompose()
+        await self._rebuild_page()
         self.query_one("#version-status", Static).update(message)
 
-    def action_close(self) -> None:
+    # Esc, a number key, the menu and a breadcrumb all wait for a running restore.
+    def _waiting(self) -> bool:
         if self.busy:
-            self.notify("Дождитесь окончания отката", severity="warning")
-        else:
-            self.app.pop_screen()
+            language = getattr(self.app, "language", "ru")
+            self.notify(
+                i18n.tr(language, "Дождитесь окончания отката"), severity="warning"
+            )
+        return self.busy
+
+    async def action_back(self) -> None:
+        if not self._waiting():
+            await super().action_back()
+
+    async def open_section(self, index: int) -> None:
+        if not self._waiting():
+            await super().open_section(index)
+
+    async def navigate_crumb(self, crumb: Crumb) -> None:
+        if not self._waiting():
+            await super().navigate_crumb(crumb)
 
     def on_unmount(self) -> None:
         self.workers.cancel_node(self)

@@ -8,18 +8,17 @@ import json
 from enum import StrEnum
 from pathlib import Path
 from threading import Event
-from typing import Callable, cast
+from typing import Awaitable, Callable, cast
 
 from rich.json import JSON
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
     Checkbox,
-    Footer,
     Input,
     Label,
     ListItem,
@@ -33,11 +32,12 @@ from textual.widgets import (
 
 from harness.configuration import read_config_bundle
 from harness.configuration_store import ConfigurationStore, StaleConfiguration
-from .. import brand
-from ..chrome import TopBar
+from .. import brand, i18n
+from ..crumbs import Crumb
+from ..shell import SHELL_CSS, ConsoleShell, SectionCard
 from ..translate import Translated
 from ..logtext import colorize_diff
-from ..widgets import CheckBox, RoundRadioButton
+from ..widgets import CheckBox, ComposedPage, RoundRadioButton
 from ..advisor import PROVIDERS, Advice, AdvisorUnavailable, advise, availability
 from ..configuration import (
     ConfigurationDraft,
@@ -119,16 +119,18 @@ class ConfirmConfiguration(Translated, ModalScreen[bool]):
         self.dismiss(False)
 
 
-class ConfigurationScreen(Translated, Screen[None]):
-    BINDINGS = [Binding("escape", "cancel", "Назад")]
-    DEFAULT_CSS = """
+class ConfigurationScreen(ConsoleShell):
+    """The configuration wizard on the shared console frame; the page below the frame is rebuilt
+    on every phase change, the frame itself (menu, breadcrumbs, footer) stays."""
+
+    SECTION = "Configuration"
+    CRUMBS = "Главная › Настройка конфигурации"
+    NARROW_FOOTER_KEYS = ("escape", "enter", "f2")
+    CSS = SHELL_CSS + brand.shell_css("""
+    ConfigurationScreen #configuration-page { width: 100%; height: 1fr; padding: 0 2; }
     ConfigurationScreen #configuration-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
-    ConfigurationScreen.-choose #configuration-scroll { height: auto; }
-    ConfigurationScreen #configuration-project { color: $text-muted; }
     ConfigurationScreen .store-path { color: $text-muted; }
     ConfigurationScreen .configuration-choice { height: auto; }
-    ConfigurationScreen Vertical.frame { height: auto; overflow: hidden hidden; }
-    ConfigurationScreen #configuration-actions { height: auto; }
     ConfigurationScreen .actions { height: auto; }
     ConfigurationScreen Static { height: auto; }
     ConfigurationScreen RadioSet { height: auto; }
@@ -158,7 +160,7 @@ class ConfigurationScreen(Translated, Screen[None]):
     ConfigurationScreen .row-warn { color: $warning; }
     ConfigurationScreen .row-muted { color: $text-muted; }
     ConfigurationScreen #config-error { color: $error; }
-    """
+    """)
 
     def __init__(
         self, repo: Path, focus: tuple[str, tuple[str, ...]] | None = None
@@ -202,30 +204,31 @@ class ConfigurationScreen(Translated, Screen[None]):
             "preview-adapters": self._preview_adapters,
         }
 
-    def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Настройка")
-        # The start screen hugs its content; the long step and review forms fill the screen so
+    def compose_strip(self) -> ComposeResult:
+        yield Static(
+            "Проект: " + self.repo.name, id="configuration-project", markup=False
+        )
+        yield Static(
+            "Изменения применяются только после просмотра и подтверждения",
+            classes="wide-only",
+        )
+
+    def compose_content(self) -> ComposeResult:
+        yield ComposedPage(self._build_page, id="configuration-page")
+
+    def _build_page(self) -> ComposeResult:
+        # The start page hugs its content; the long step and review forms fill the page so
         # their action row stays at the bottom.
         self.set_class(self.phase is Phase.CHOOSE, "-choose")
         with VerticalScroll(id="configuration-scroll"):
-            with Vertical(id="configuration-target", classes="frame") as target:
-                target.border_title = brand.frame_title("Цель")
-                yield Static(
-                    "Проект: " + brand.display_path(self.repo)
-                    if self.phase is Phase.CHOOSE
-                    else "Цель: " + str(self.repo),
-                    id="configuration-project",
-                    markup=False,
-                )
             if self.phase is Phase.CHOOSE:
                 yield from self._compose_choose()
             elif self.phase is Phase.EDITING:
                 yield from self._compose_field()
             else:
                 yield from self._compose_review()
-        with Vertical(id="configuration-actions", classes="frame") as actions:
-            actions.border_title = brand.frame_title("Действия")
-            # The start screen has no actions: this frame appears there only with a message.
+        with SectionCard(title="Действия", id="configuration-actions") as actions:
+            # The start screen has no actions: this card appears there only with a message.
             actions.display = self.phase is not Phase.CHOOSE or bool(self.message)
             error = Static(self.message, id="config-error", markup=False)
             error.display = bool(self.message)
@@ -252,10 +255,23 @@ class ConfigurationScreen(Translated, Screen[None]):
                             "Загрузить внешние изменения", id="reload-external"
                         )
                     yield Button("Версии и откат", id="open-versions")
-        yield Footer()
+
+    async def _rebuild_page(self) -> None:
+        """Rebuild the page below the frame: the menu, breadcrumbs and footer stay as they are."""
+        page = self.query_one("#configuration-page", ComposedPage)
+        await page.recompose()
+        self.translate_now()
+        self.call_after_refresh(self._focus_page)
+
+    def _focus_page(self) -> None:
+        page = self.query_one("#configuration-page", ComposedPage)
+        for widget in self.focus_chain:
+            if page in widget.ancestors:
+                widget.focus()
+                return
 
     def _set_message(self, text: str) -> None:
-        """Show a message in the actions frame, which the start screen otherwise hides."""
+        """Show a message in the actions card, which the start screen otherwise hides."""
         error = self.query_one("#config-error", Static)
         error.update(text)
         error.display = bool(text)
@@ -264,20 +280,22 @@ class ConfigurationScreen(Translated, Screen[None]):
         )
 
     def _compose_choose(self) -> ComposeResult:
-        with Vertical(
-            id="configuration-editing", classes="frame configuration-choice"
-        ) as editing:
-            editing.border_title = brand.frame_title("Редактирование конфигурации")
+        with SectionCard(
+            title="Редактирование конфигурации",
+            id="configuration-editing",
+            classes="configuration-choice",
+        ):
             yield Static("Выберите, какие файлы настроить.")
             with Horizontal(classes="actions"):
                 yield Button("project.json", id="configure-project")
                 yield Button("orchestration.json", id="configure-orchestration")
                 yield Button("Both files", id="configure-both")
             yield Static("Изменения применяются после просмотра и подтверждения.")
-        with Vertical(
-            id="configuration-versions", classes="frame configuration-choice"
-        ) as versions:
-            versions.border_title = brand.frame_title("Сохранённые версии")
+        with SectionCard(
+            title="Сохранённые версии",
+            id="configuration-versions",
+            classes="configuration-choice",
+        ):
             yield Static("Сохранить текущий набор без редактирования.")
             yield Static(
                 "Хранилище: " + str(ConfigurationStore(self.repo).root),
@@ -291,8 +309,11 @@ class ConfigurationScreen(Translated, Screen[None]):
             with Horizontal(classes="actions"):
                 yield Button("Save version", id="save-current-version")
                 yield Button("Versions / restore", id="open-versions")
-        with Vertical(classes="frame configuration-choice") as adapters:
-            adapters.border_title = brand.frame_title("Адаптеры runtime")
+        with SectionCard(
+            title="Адаптеры runtime",
+            id="configuration-adapters",
+            classes="configuration-choice",
+        ):
             try:
                 preview = preview_runtime_adapters(self.repo)
             except (ValueError, OSError) as exc:
@@ -344,8 +365,7 @@ class ConfigurationScreen(Translated, Screen[None]):
         field = self.steps[self.index]
         groups = list(dict.fromkeys((step.file, step.path[0]) for step in self.steps))
         group = groups.index((field.file, field.path[0])) + 1
-        with Vertical(id="configuration-step", classes="frame") as step:
-            step.border_title = brand.frame_title("Шаг")
+        with SectionCard(title="Шаг", id="configuration-step"):
             yield Static(
                 f"Группа {group} / {len(groups)}: {field.path[0]}\nШаг {self.index + 1} / {len(self.steps)}: {field.file} → {'.'.join(field.path)}",
                 markup=False,
@@ -359,11 +379,9 @@ class ConfigurationScreen(Translated, Screen[None]):
                 allow_blank=False,
                 id="step-jump",
             )
-        with Vertical(id="configuration-field", classes="frame") as parameter:
-            parameter.border_title = brand.frame_title("Параметр")
+        with SectionCard(title="Параметр", id="configuration-field"):
             yield from self._compose_parameter(field)
-        with Vertical(id="configuration-advisor", classes="frame") as advisor:
-            advisor.border_title = brand.frame_title("ИИ-подсказки")
+        with SectionCard(title="ИИ-подсказки", id="configuration-advisor") as advisor:
             advisor.display = not (
                 field.is_section
                 or field.is_map
@@ -540,7 +558,7 @@ class ConfigurationScreen(Translated, Screen[None]):
     async def _set_mode(self, text: bool) -> None:
         if self._save_field():
             self.text_mode = text
-            await self.recompose()
+            await self._rebuild_page()
 
     def _selected_menu_name(self) -> str | None:
         menu = (
@@ -567,7 +585,7 @@ class ConfigurationScreen(Translated, Screen[None]):
             return
         self.index = index
         self._set_page()
-        await self.recompose()
+        await self._rebuild_page()
 
     async def _menu_remove(self) -> None:
         assert self.draft is not None
@@ -585,7 +603,7 @@ class ConfigurationScreen(Translated, Screen[None]):
         self._set_message("")
         self._refresh_steps(field)
         self._set_page()
-        await self.recompose()
+        await self._rebuild_page()
 
     async def _menu_add(self) -> None:
         assert self.draft is not None
@@ -632,7 +650,7 @@ class ConfigurationScreen(Translated, Screen[None]):
                 self.index,
             )
         self._set_page()
-        await self.recompose()
+        await self._rebuild_page()
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == "menu-items" and self.steps[self.index].is_map:
@@ -687,8 +705,7 @@ class ConfigurationScreen(Translated, Screen[None]):
     def _compose_review(self) -> ComposeResult:
         assert self.draft is not None
         problems = self.draft.problems()
-        with Vertical(id="configuration-check", classes="frame") as check:
-            check.border_title = brand.frame_title("Проверка")
+        with SectionCard(title="Проверка", id="configuration-check"):
             yield Static(
                 "\n".join(problems)
                 if problems
@@ -709,22 +726,19 @@ class ConfigurationScreen(Translated, Screen[None]):
                     prompt="Перейти к шагу с ошибкой",
                     id="problem-jump",
                 )
-        with Vertical(id="configuration-changes", classes="frame") as changes:
-            changes.border_title = brand.frame_title("Различия")
+        with SectionCard(title="Различия", id="configuration-changes"):
             yield Static(
                 colorize_diff(self.draft.diff() or "Изменений нет"),
                 id="configuration-diff",
                 markup=False,
             )
-        with Vertical(id="configuration-json", classes="frame") as documents:
-            documents.border_title = brand.frame_title("Итоговые файлы")
+        with SectionCard(title="Итоговые файлы", id="configuration-json"):
             for name, data in self.draft.documents.items():
                 yield Static(
                     name + "\n" + json.dumps(data, ensure_ascii=False, indent=2),
                     markup=False,
                 )
-        with Vertical(id="configuration-version", classes="frame") as version:
-            version.border_title = brand.frame_title("Версия")
+        with SectionCard(title="Версия", id="configuration-version"):
             yield Static(
                 "Хранилище: " + str(ConfigurationStore(self.repo).root),
                 id="configuration-store-path",
@@ -764,7 +778,7 @@ class ConfigurationScreen(Translated, Screen[None]):
             self._set_page()
         except (ValueError, OSError) as exc:
             self.message = str(exc)
-        await self.recompose()
+        await self._rebuild_page()
         if self.phase is Phase.EDITING and not self.provider_status:
             # Availability is probed without a model request; the result labels the options.
             self._check_advisor(announce=False)
@@ -830,7 +844,7 @@ class ConfigurationScreen(Translated, Screen[None]):
                 if self.text_mode != text:
                     # Invalid JSON keeps the editor and its selected mode intact.
                     pending = self.query_one("#field-value", TextArea).text
-                    await self.recompose()
+                    await self._rebuild_page()
                     self.query_one("#field-value", TextArea).load_text(pending)
                 self.query_one("#configuration-mode", RadioSet).focus()
             return
@@ -878,14 +892,19 @@ class ConfigurationScreen(Translated, Screen[None]):
                 self.phase = Phase.EDITING
             self._refresh_steps(destination)
             self._set_page()
-            await self.recompose()
+            await self._rebuild_page()
         elif event.select.id == "step-jump":
             cast(Select[int], event.select).value = self.index
 
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
+    # The shell's own handler (the menu toggle) stays; this one is async, so it overrides by name.
+    async def on_button_pressed(  # type: ignore[override]
+        self, event: Button.Pressed
+    ) -> None:
         if self.busy:
             return
         key = event.button.id or ""
+        if key not in _TARGETS and key not in self._actions:
+            return
         if self.advisor_pending and key != "ask-advisor":
             self.advisor_cancel.set()
             self.advisor_pending = False
@@ -908,13 +927,13 @@ class ConfigurationScreen(Translated, Screen[None]):
         else:
             self.index = max(0, min(len(self.steps) - 1, self.index + step))
         self._set_page()
-        await self.recompose()
+        await self._rebuild_page()
 
     async def _next_choice_page(self) -> None:
         if self._save_field():
             pages = self.steps[self.index].pages
             self.choice_page = (self.choice_page + 1) % pages
-            await self.recompose()
+            await self._rebuild_page()
 
     def _fill_field(self, value: object) -> None:
         """Put a suggested value into the editor widgets; the draft changes on Next/Review."""
@@ -1025,7 +1044,7 @@ class ConfigurationScreen(Translated, Screen[None]):
                 if conflicts
                 else ""
             )
-        await self.recompose()
+        await self._rebuild_page()
 
     def _operation(self, run: Callable[[], str], reload: bool = False) -> None:
         self.busy = True
@@ -1052,13 +1071,13 @@ class ConfigurationScreen(Translated, Screen[None]):
         self.stale = stale or (self.stale and not reload)
         self._set_message(message)
         if stale:
-            await self.recompose()
+            await self._rebuild_page()
         elif reload:
             if self.draft is not None:
                 self.draft = ConfigurationDraft.load(
                     self.repo, tuple(self.draft.documents)
                 )
-            await self.recompose()
+            await self._rebuild_page()
             self._set_message(message)
 
     def _selected_provider(self) -> str | None:
@@ -1144,24 +1163,51 @@ class ConfigurationScreen(Translated, Screen[None]):
         self.query_one("#advisor-output", Static).update(message)
         self.query_one("#use-advisor", Button).disabled = advice is None
 
-    def action_cancel(self) -> None:
+    # Every way out of the wizard - Esc, a number key, the menu, a breadcrumb - goes through one
+    # guard: it waits for a running write and asks before an unapplied draft is dropped.
+    async def action_back(self) -> None:
+        await self._leave(None)
+
+    async def open_section(self, index: int) -> None:
+        await self._leave(lambda: ConsoleShell.open_section(self, index))
+
+    async def navigate_crumb(self, crumb: Crumb) -> None:
+        await self._leave(lambda: ConsoleShell.navigate_crumb(self, crumb))
+
+    async def _leave(self, then: Callable[[], Awaitable[None]] | None) -> None:
+        """Leave the wizard: `then` is the way the shell would go on (None: close the wizard)."""
         self.advisor_cancel.set()
         if self.busy:
-            self.notify("Дождитесь окончания записи", severity="warning")
+            self.notify(
+                i18n.tr(self._language(), "Дождитесь окончания записи"),
+                severity="warning",
+            )
             return
         if self.draft is not None and self.draft.changed():
             self.app.push_screen(
                 ConfirmConfiguration(
                     "Закрыть мастер и отбросить неприменённый черновик?"
                 ),
-                self._discard,
+                lambda yes: self._discard(yes, then),
             )
+        elif then is None:
+            self.dismiss(None)
         else:
-            self.dismiss(None)
+            await then()
 
-    def _discard(self, yes: bool | None) -> None:
-        if yes:
-            self.dismiss(None)
+    def _discard(
+        self, yes: bool | None, then: Callable[[], Awaitable[None]] | None
+    ) -> None:
+        if not yes:
+            return
+        # The wizard closes first (its push callback runs); the opener then finds the screens
+        # that stay, from the app's loop.
+        self.dismiss(None)
+        if then is not None:
+            self.app.call_later(then)
+
+    def _language(self) -> str:
+        return getattr(self.app, "language", "ru")
 
     def on_unmount(self) -> None:
         self.advisor_cancel.set()

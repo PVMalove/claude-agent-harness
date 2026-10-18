@@ -1086,9 +1086,21 @@ def test_a_shell_screen_is_dismissed_with_its_own_result_type(tmp_path: Path) ->
 
 
 def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> None:
-    """The Home, Open project, Diagnostics, Harness, Reports and Repo Map screens take colours, the
-    top bar and the navigation from the shell: their sources hold none of their own."""
+    """The Home, Open project, Diagnostics, Harness, Reports, Repo Map and Configuration screens
+    take colours, the top bar and the navigation from the shell: their sources hold none of their
+    own, and the Configuration screens bind no Esc themselves (the shell's `action_back` is the
+    only Esc binding)."""
     import re
+
+    from harness.console.screens.configuration import ConfigurationScreen
+    from harness.console.screens.configuration_versions import (
+        ConfigurationVersionsScreen,
+    )
+
+    for screen_class in (ConfigurationScreen, ConfigurationVersionsScreen):
+        assert issubclass(screen_class, ConsoleShell)
+        own = screen_class.__dict__.get("BINDINGS", [])
+        assert not [b for b in own if getattr(b, "key", b[0]) == "escape"], screen_class
 
     screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
     names = (
@@ -1100,6 +1112,8 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
         "reports",
         "repo_map",
         "repo_map_settings",
+        "configuration",
+        "configuration_versions",
     )
     for name in names:
         source = (screens / f"{name}.py").read_text(encoding="utf-8")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 from textual.app import App
 
@@ -54,7 +55,7 @@ def _host(repo: Path) -> App[None]:
     return Host()
 
 
-def test_versions_screen_groups_its_content_in_frames_and_names_the_storage_path(
+def test_versions_screen_groups_its_content_in_cards_and_names_the_storage_path(
     tmp_path: Path,
 ) -> None:
     from textual.widgets import Static
@@ -67,18 +68,20 @@ def test_versions_screen_groups_its_content_in_frames_and_names_the_storage_path
         async with app.run_test(size=(120, 48)) as pilot:
             await wait_until(
                 pilot,
-                lambda: bool(app.screen.query(".frame"))
+                lambda: bool(app.screen.query(".section-card"))
                 and bool(app.screen.query("#versions-path"))
                 and bool(app.screen.query("#version-diff")),
             )
             screen = app.screen
-            frames = [str(f.border_title).strip() for f in screen.query(".frame")]
+            frames = [
+                str(f.border_title).strip() for f in screen.query(".section-card")
+            ]
             path = str(screen.query_one("#versions-path", Static).content)
             diff = str(screen.query_one("#version-diff", Static).content)
             return frames, path, diff
 
     frames, path, diff = asyncio.run(scenario())
-    assert frames == ["Хранилище", "Версии", "Различия", "Действия"]
+    assert frames == ["ХРАНИЛИЩЕ", "ВЕРСИИ", "РАЗЛИЧИЯ", "ДЕЙСТВИЯ"]
     assert str(ConfigurationStore(tmp_path).root) in path
     assert path.endswith("config_versions")
     assert diff.startswith("Изменений нет")
@@ -135,3 +138,34 @@ def test_the_save_messages_name_the_storage(tmp_path: Path) -> None:
     message = screen._save_current("Русский")
     assert message.startswith("Текущая конфигурация сохранена как версия: ")
     assert f"Хранилище: {ConfigurationStore(tmp_path).root}" in message
+
+
+def test_versions_stand_on_the_shared_frame_and_wait_for_a_running_restore(
+    tmp_path: Path,
+) -> None:
+    from harness.console.chrome import TopBar, WorkspaceHeader
+    from harness.console.shell import ConsoleShell
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = _host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#restore-version")))
+            screen = cast(ConfigurationVersionsScreen, app.screen)
+            assert isinstance(screen, ConsoleShell)
+            assert screen.SECTION == "Configuration" and not screen.IS_SECTION_ROOT
+            assert [type(bar) for bar in screen.query(TopBar)] == [WorkspaceHeader]
+            notes: list[str] = []
+            screen.notify = lambda message, **_: notes.append(message)  # type: ignore[method-assign]
+            screen.busy = True
+            for key in ("escape", "9"):
+                await pilot.press(key)
+                await pilot.pause()
+                assert app.screen is screen
+            await screen.navigate_crumb(screen.crumbs()[0])
+            assert app.screen is screen
+            assert notes == ["Дождитесь окончания отката"] * 3
+            screen.busy = False
+
+    asyncio.run(scenario())
