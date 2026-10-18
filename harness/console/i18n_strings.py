@@ -688,6 +688,66 @@ EN.update(
         "Стадии, completion reports и хронология batch из ledger.": "Stages, completion reports and the batch timeline from the ledger.",
         "Enter — открыть отчёт": "Enter — open the report",
         "Enter — хронология": "Enter — timeline",
+        "b Хронология batch": "b Batch timeline",
+        "e Экспорт в Markdown": "e Export to Markdown",
+        "файлы": "files",
+        "До PR": "To PR",
+        "Начало": "Started",
+        "События": "Events",
+        "Попытки qa-lane": "qa-lane attempts",
+        "Попытки qa-lane и каждый прогон QA-gate, новые сверху.": "qa-lane attempts and every QA gate run, newest first.",
+        "QA-логов в ledger нет": "No QA logs in the ledger",
+        "дата неизвестна": "date unknown",
+        "неизвестно": "unknown",
+        "время ?": "time ?",
     }
 )
-EN_PHRASES.update({"хронология": "timeline"})
+EN_PHRASES.update(
+    {
+        "хронология": "timeline",
+        "маршрут:": "route:",
+        "от старых к новым": "oldest first",
+        "неудачных попыток:": "failed attempts:",
+        "неудачных": "failed",
+        "прогонов:": "runs:",
+        "диспатчей ещё не было": "no dispatches yet",
+    }
+)
+EN_PREFIXES["Прогон "] = "Run "
+EN.update(
+    {
+        "b Собрать карту": "b Build map",
+        "b Собрать": "b Build",
+        "e MD": "e MD",
+        "j JSON": "j JSON",
+        "j Экспорт в JSON": "j Export to JSON",
+        "Свод": "Sum.",
+        "Диагн.": "Diag.",
+        "Настр.": "Sett.",
+        "Markdown": "Markdown",
+        "Данные карты из кэша; сеть не используется": "Map data comes from the cache; the network is not used",
+        "Установка и сборка запускают команду из формы подтверждения": "Install and build run the command from the confirmation form",
+        "дерево · ←→ раскрыть": "tree · ←→ expand",
+        "по входящей степени": "by incoming degree",
+        "Provenance парсера": "Parser provenance",
+        "выберите файл": "select a file",
+        "связей нет": "no links",
+        "исходящие": "outgoing",
+        "входящие": "incoming",
+        "Деградация": "Degradation",
+        "Токенов (оценка)": "Tokens (estimate)",
+        "Источник": "Source",
+        "Рёбер": "Edges",
+        "Файлов": "Files",
+        "последнее действие": "last action",
+    }
+)
+EN_PHRASES.update(
+    {
+        "политика:": "policy:",
+        "входящих": "incoming",
+        "исходящих": "outgoing",
+        "диагностик нет": "no diagnostics",
+        "найдено файлов": "files found",
+    }
+)

@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 pytest.importorskip("textual")
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Button, ListItem, ListView, Static
 
@@ -1085,13 +1085,22 @@ def test_a_shell_screen_is_dismissed_with_its_own_result_type(tmp_path: Path) ->
     assert results == ["chosen"]
 
 
-def test_the_four_screens_carry_no_local_colours_top_bar_or_number_keys() -> None:
-    """The Home, Open project, Diagnostics and Harness screens take colours, the top bar and the
-    navigation from the shell: their sources hold none of their own."""
+def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> None:
+    """The Home, Open project, Diagnostics, Harness, Reports and Repo Map screens take colours, the
+    top bar and the navigation from the shell: their sources hold none of their own."""
     import re
 
     screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
-    names = ("dashboard", "harness", "diagnostics", "project_setup", "commands")
+    names = (
+        "dashboard",
+        "harness",
+        "diagnostics",
+        "project_setup",
+        "commands",
+        "reports",
+        "repo_map",
+        "repo_map_settings",
+    )
     for name in names:
         source = (screens / f"{name}.py").read_text(encoding="utf-8")
         assert not re.search(r"#[0-9A-Fa-f]{6}\b", source), f"{name}: a hex colour"
@@ -1099,3 +1108,99 @@ def test_the_four_screens_carry_no_local_colours_top_bar_or_number_keys() -> Non
         if name != "commands":
             # `CommandMenuScreen.compose` is the one left-over of the old frame (no screen uses it).
             assert "TopBar(" not in source, f"{name}: a top bar of its own"
+
+
+def test_reports_and_repo_map_leave_back_and_breakpoints_to_the_shell() -> None:
+    """Esc and the narrow layout belong to the shell: these screens add neither a back key nor
+    breakpoints of their own (the build confirmation is a modal, with its own cancel)."""
+    screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
+    for name, modals in (("reports", 0), ("repo_map", 1), ("repo_map_settings", 0)):
+        source = (screens / f"{name}.py").read_text(encoding="utf-8")
+        assert source.count('Binding("escape"') == modals, f"{name}: an Esc binding"
+        assert "HORIZONTAL_BREAKPOINTS" not in source, f"{name}: breakpoints of its own"
+        assert "app.pop_screen" not in source, f"{name}: a back action of its own"
+
+
+def test_reports_and_repo_map_show_no_demo_data_from_the_mockups() -> None:
+    """The mockups' sample values (ids, commits, paths, counts) are not in the screens' sources."""
+    screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
+    demo = (
+        "85abd57e",
+        "generation-1e1684b3",
+        "698fa45a",
+        "555837f4",
+        "issue-721-console-design-system",
+        "cp312-linux_x86_64",
+        "legacy_gen.py",
+        "PVMalove",
+        "tree-sitter",
+    )
+    for name in ("reports", "repo_map", "repo_map_settings"):
+        source = (screens / f"{name}.py").read_text(encoding="utf-8")
+        for value in demo:
+            assert value not in source, f"{name}: the mockup's sample {value!r}"
+
+
+def test_the_mockup_legend_functions_are_not_on_the_reports_screens(
+    tmp_path: Path,
+) -> None:
+    """The section table of contents, the event-type filter and “Сбросить” are the mockup's own
+    suggestions, left for a follow-up ticket: no screen of Reports has them."""
+    from textual.widgets import Input, Select
+
+    from harness.console.screens.reports import (
+        BatchTimelineScreen,
+        QaLogsScreen,
+        ReportScreen,
+        ReportsScreen,
+    )
+    from tests.console._console_ledger_fixture import build_reports_fixture
+
+    build_reports_fixture(tmp_path)
+    from harness.console.reports import load_ledger_view
+
+    view = load_ledger_view(tmp_path)
+    entry = view.reports[0]
+    timeline = view.timeline(entry.batch_id)
+    assert timeline is not None
+    forbidden = ("Сбросить", "Reset", "Разделы", "Оглавление", "Типы событий")
+
+    async def scenario() -> dict[str, tuple[str, int, int, int]]:
+        found: dict[str, tuple[str, int, int, int]] = {}
+        for name, make in (
+            ("list", lambda: ReportsScreen(tmp_path)),
+            ("report", lambda: ReportScreen(entry, view, tmp_path)),
+            ("timeline", lambda: BatchTimelineScreen(timeline, tmp_path)),
+            ("qa", lambda: QaLogsScreen(view)),
+        ):
+            screen = make()
+
+            class Host(App[None]):
+                def on_mount(self) -> None:
+                    self.push_screen(screen)
+
+            app = Host()
+            async with app.run_test(size=(160, 52)) as pilot:
+                await pilot.pause()
+                text = "\n".join(
+                    [str(w.content) for w in app.screen.query(Static)]
+                    + [str(b.label) for b in app.screen.query(Button)]
+                    + [str(c.border_title) for c in app.screen.query(SectionCard)]
+                )
+                found[name] = (
+                    text,
+                    len(app.screen.query(Input)),
+                    len(app.screen.query(Select)),
+                    len(app.screen.query(Button)),
+                )
+        return found
+
+    found = asyncio.run(scenario())
+    for name, (text, _, _, _) in found.items():
+        for word in forbidden:
+            assert word not in text, f"{name}: {word!r}"
+    # Only the list has filters (five texts, three choices); the other screens have none.
+    assert found["list"][1:3] == (5, 3)
+    assert found["report"][1:3] == (0, 0)
+    assert found["timeline"][1:3] == (0, 0)
+    assert found["qa"][1:3] == (0, 0)

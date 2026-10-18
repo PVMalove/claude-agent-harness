@@ -26,6 +26,7 @@ from ..storage import storage_path
 from .export import MarkdownDocument, MarkdownSection
 from .json_fields import strings, text
 from .runner import CommandRunner
+from .status import Status
 
 REPO_MAP_SCRIPT_REL = Path(".harness") / "repo_map" / "repo_map.py"
 _PACKAGE_SCRIPT = Path(__file__).resolve().parents[1] / "repo_map" / "repo_map.py"
@@ -344,6 +345,56 @@ def diagnostics_text(view: RepoMapView) -> str:
     if not view.diagnostics:
         return "диагностик нет"
     return "\n".join(f"{item.code}: {item.path}" for item in view.diagnostics)
+
+
+def summary_fields(view: RepoMapView) -> list[tuple[str, str]]:
+    """The summary as label/value fields, with the labels of the mockup."""
+    return [
+        ("tier", f"{view.tier} (parser: {view.parser})"),
+        ("Деградация", view.degradation_reason),
+        ("commit", view.commit),
+        ("Файлов", str(len(view.files))),
+        ("Рёбер", str(len(view.edges))),
+        ("Токенов (оценка)", str(view.estimated_tokens)),
+        ("Источник", view.origin),
+    ]
+
+
+_PARSER_KINDS = {
+    "ok": "accepted",
+    "too_large": "warning",
+    "syntax_error": "error",
+    "invalid_encoding": "error",
+}
+
+
+def file_status(item: MapFile) -> Status | None:
+    """A file's parser status as a symbol and the parser's own word; None in tier=minimal. A
+    status the console does not know is a warning, shown as recorded."""
+    if item.parser_status is None:
+        return None
+    word = item.parser_status
+    return Status(_PARSER_KINDS.get(word, "warning"), word, word)
+
+
+def relation_counts(view: RepoMapView, path: str) -> tuple[int, int]:
+    """How many distinct files point at `path` and how many it points at (incoming, outgoing)."""
+    groups = relations(view, path)
+
+    def distinct(direction: str) -> int:
+        return len(
+            {p for group in groups if group.direction == direction for p in group.paths}
+        )
+
+    return distinct("входящие"), distinct("исходящие")
+
+
+def diagnostic_rows(view: RepoMapView) -> list[tuple[Status, str, str]]:
+    """Each diagnostic as a warning status (symbol and code), its code and its path."""
+    return [
+        (Status("warning", item.code, item.code), item.code, item.path)
+        for item in view.diagnostics
+    ]
 
 
 def file_label(item: MapFile) -> str:

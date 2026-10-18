@@ -51,6 +51,15 @@ def _static_text(app: App[None], selector: str) -> str:
     return str(app.screen.query_one(selector, Static).content)
 
 
+def _screen_text(app: App[None], selector: str) -> str:
+    """All the text the widgets under `selector` show (a Static, or the Statics inside a container)."""
+    root = app.screen.query_one(selector)
+    parts = [str(widget.content) for widget in root.query(Static)]
+    if isinstance(root, Static):
+        parts.append(str(root.content))
+    return "\n".join(parts)
+
+
 async def _until(pilot: Pilot[None], condition: Callable[[], object]) -> None:
     """Pause until `condition` holds: filtering rebuilds the report list asynchronously, and one
     pause is not always enough on a slow runner."""
@@ -151,9 +160,9 @@ def test_current_stage_opens_timeline_and_refresh_preserves_filters_sort_and_sel
             await _until(
                 pilot,
                 lambda: isinstance(app.screen, BatchTimelineScreen)
-                and bool(app.screen.query("#batch-timeline")),
+                and bool(app.screen.query("#timeline-notice")),
             )
-            assert "отчёт ещё не получен" in _static_text(app, "#batch-timeline")
+            assert "отчёт ещё не получен" in _static_text(app, "#timeline-notice")
             await pilot.press("escape")
             await _until(pilot, lambda: isinstance(app.screen, ReportsScreen))
             app.screen.query_one("#filter-state", Input).value = ""
@@ -253,9 +262,10 @@ def test_batch_rows_and_timeline_show_start_and_time_to_pr_in_a_narrow_window(
                 lambda: isinstance(app.screen, BatchTimelineScreen)
                 and bool(app.screen.query("#batch-timeline")),
             )
-            text = _static_text(app, "#batch-timeline")
-            assert "Начало: 12.10.2026 10:00 UTC" in text
-            assert "blocked · до PR: 2 ч 14 мин" in text
+            text = _screen_text(app, "#batch-timeline")
+            assert "12.10.2026 10:00 UTC" in text
+            assert "⚠ заблокирован" in text
+            assert "2 ч 14 мин" in text
 
     asyncio.run(scenario())
 
@@ -281,8 +291,7 @@ def test_report_screen_shows_sections_wrapped_to_the_screen_width(
                 ),
             )
             titles = [
-                str(widget.content)
-                for widget in app.screen.query(".section-title").results(Static)
+                str(card.border_title).strip() for card in app.screen.query(SectionCard)
             ]
             output = app.screen.query_one("#section-output", Static)
             return (
@@ -294,10 +303,10 @@ def test_report_screen_shows_sections_wrapped_to_the_screen_width(
             )
 
     titles, height, width, screen_width, blockers = asyncio.run(scenario())
-    assert titles == ["Output", "Checks", "Risks", "Blockers", "Next action"]
+    assert titles == ["OUTPUT", "CHECKS", "RISKS", "BLOCKERS", "NEXT ACTION"]
     assert width <= screen_width
     assert height > 1  # the long Output wraps instead of running off-screen
-    assert blockers == "none"
+    assert blockers == "✔ нет"
 
 
 def test_report_text_is_rendered_literally_not_as_markup(tmp_path: Path) -> None:
@@ -344,17 +353,20 @@ def test_report_screen_opens_its_batch_timeline(tmp_path: Path) -> None:
                 lambda: isinstance(app.screen, BatchTimelineScreen)
                 and bool(app.screen.query("#batch-timeline")),
             )
-            return isinstance(app.screen, BatchTimelineScreen), _static_text(
+            return isinstance(app.screen, BatchTimelineScreen), _screen_text(
                 app, "#batch-timeline"
             )
 
     is_timeline, text = asyncio.run(scenario())
     assert is_timeline
-    assert "#101 · batch-flow · состояние: completed" in text
+    assert "#101 · batch-flow" in text
+    assert "✔ завершён" in text
     assert "маршрут: developer → code-review → qa" in text
-    assert "[decision] решение coordinator: accept → code-review" in text
-    assert "[risk] оценка риска: schema; нужен review" in text
-    assert "[state] состояние: awaiting-approval → completed" in text
+    assert "решение coordinator: accept → code-review" in text
+    assert "оценка риска: schema; нужен review" in text
+    assert "состояние: awaiting-approval → completed" in text
+    kinds = {line.split()[2] for line in text.splitlines() if line[:2] == "20"}
+    assert {"state", "dispatch", "report", "decision", "risk"} <= kinds
 
 
 def test_batch_list_opens_a_blocked_batch_timeline(tmp_path: Path) -> None:
@@ -376,12 +388,12 @@ def test_batch_list_opens_a_blocked_batch_timeline(tmp_path: Path) -> None:
                 lambda: isinstance(app.screen, BatchTimelineScreen)
                 and bool(app.screen.query("#batch-timeline")),
             )
-            return _static_text(app, "#batch-timeline")
+            return _screen_text(app, "#batch-timeline")
 
     text = asyncio.run(scenario())
     assert "маршрут: developer" in text
-    assert "[report] отчёт developer: blocked" in text
-    assert "[decision] решение coordinator: block" in text
+    assert "report" in text and "отчёт developer: blocked" in text
+    assert "решение coordinator: block" in text
 
 
 def test_reports_screen_without_a_ledger_says_so(tmp_path: Path) -> None:
@@ -432,7 +444,7 @@ def test_qa_logs_screen_lists_every_log_and_attempt(tmp_path: Path) -> None:
                 lambda: isinstance(app.screen, QaLogsScreen)
                 and bool(app.screen.query("#qa-logs")),
             )
-            return isinstance(app.screen, QaLogsScreen), _static_text(app, "#qa-logs")
+            return isinstance(app.screen, QaLogsScreen), _screen_text(app, "#qa-logs")
 
     is_qa_logs, text = asyncio.run(scenario())
     assert is_qa_logs
@@ -696,3 +708,262 @@ def test_language_switch_translates_labels_footer_and_rows(tmp_path: Path) -> No
     assert "report received" in first
     assert project.startswith("Project: ")
     assert status == "reports: 4 of 4"
+
+
+async def _open_screen(
+    app: App[None], pilot: Pilot[None], list_id: str, index: int, kind: type
+) -> None:
+    listing = app.screen.query_one(list_id, ListView)
+    listing.focus()
+    listing.index = index
+    await pilot.press("enter")
+    await _until(pilot, lambda: isinstance(app.screen, kind))
+    await pilot.pause()
+
+
+def test_detail_screens_stand_on_the_shared_frame_inside_the_reports_section(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> list[tuple[str, str, bool, list[str]]]:
+        app = _ReportsHost(tmp_path)
+        seen: list[tuple[str, str, bool, list[str]]] = []
+        async with app.run_test(size=(160, 52)) as pilot:
+            await _open_screen(app, pilot, "#report-list", 1, ReportScreen)
+            await pilot.press("b")
+            await _until(pilot, lambda: isinstance(app.screen, BatchTimelineScreen))
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("f3")
+            await _until(pilot, lambda: isinstance(app.screen, QaLogsScreen))
+            for kind in (ReportScreen, BatchTimelineScreen, QaLogsScreen):
+                assert issubclass(kind, ConsoleShell)
+                seen.append((kind.SECTION or "", kind.CRUMBS, kind.IS_SECTION_ROOT, []))
+            seen[-1][3].extend(
+                str(crumb.content)
+                for crumb in app.screen.query(".crumb-link, .crumb-current").results(
+                    Static
+                )
+            )
+        return seen
+
+    seen = asyncio.run(scenario())
+    assert [(item[0], item[1], item[2]) for item in seen] == [
+        ("Reports", "Главная › Отчёты › Отчёт", False),
+        ("Reports", "Главная › Отчёты › Хронология", False),
+        ("Reports", "Главная › Отчёты › QA-логи", False),
+    ]
+    assert seen[-1][3] == ["Главная", "Отчёты", "QA-логи"]
+
+
+def test_report_screen_header_fields_checks_and_footer(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[str, str, list[str], str, dict[str, str], str, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await pilot.pause()
+            await _open_screen(
+                app, pilot, "#report-list", 1, ReportScreen
+            )  # dispatch-qa
+            screen = app.screen
+            return (
+                _static_text(app, "#report-header"),
+                _screen_text(app, "#report-fields"),
+                [
+                    str(button.label)
+                    for button in screen.query("Button").results(Button)
+                    if button.id in {"open-timeline", "export"}
+                ],
+                _static_text(app, "#section-checks"),
+                _footer_keys(app),
+                _static_text(app, "#section-risks"),
+                _static_text(app, "#section-next-action"),
+            )
+
+    header, fields, buttons, checks, footer, risks, next_action = asyncio.run(
+        scenario()
+    )
+    assert header.startswith("#101 · qa · ✔ completed · 20")
+    assert header.endswith("UTC")
+    for label in ("dispatch", "batch", "commit", "файлы"):
+        assert label in fields
+    assert "harness/console/reports.py" in fields
+    assert buttons == ["b Хронология batch", "e Экспорт в Markdown"]
+    assert checks == "✔ pass  make test — 412 passed"
+    assert risks == "✔ нет"
+    assert next_action.startswith("решить судьбу отчёта")
+    assert footer == {
+        "escape": "Назад",
+        "↑↓": "Прокрутка",
+        "b": "Хронология",
+        "e": "Экспорт",
+    }
+
+
+def test_a_long_dispatch_id_stays_whole_by_wrapping_in_a_narrow_report(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from harness.console.reports import load_ledger_view
+
+    build_reports_fixture(tmp_path)
+    view = load_ledger_view(tmp_path)
+    entry = view.reports[0]
+    long_id = "dispatch-" + "0123456789abcdef-" * 6 + "end"
+    entry = replace(entry, dispatch_id=long_id)
+
+    class Host(App[None]):
+        CSS = HarnessConsoleApp.CSS
+
+        def on_mount(self) -> None:
+            self.push_screen(ReportScreen(entry, view, tmp_path))
+
+    async def scenario() -> tuple[str, int, int]:
+        app = Host()
+        async with app.run_test(size=(60, 40)) as pilot:
+            await pilot.pause()
+            await pilot.pause()
+            cell = app.screen.query(".field").first(Static)
+            return str(cell.content), cell.region.right, app.screen.size.width
+
+    content, right, width = asyncio.run(scenario())
+    assert long_id.replace("-", "") in content.replace("\n", "").replace("-", "")
+    assert right <= width
+
+
+def test_timeline_screen_shows_the_notice_facts_route_and_events_card(
+    tmp_path: Path,
+) -> None:
+    from harness.orchestration.core.constants import STATE_REL
+    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+    from tests.console._console_ledger_fixture import _Batch
+
+    build_reports_fixture(tmp_path)
+    ledger = LifecycleLedger(tmp_path / STATE_REL)
+    batch = _Batch(ledger, "batch-live", "#303")
+    batch.save("awaiting-approval")
+    batch.dispatch("dispatch-live", "developer")
+    ledger.write_immutable(
+        batch.root / "dispatch-status/dispatch-live.json",
+        {"dispatch_id": "dispatch-live", "state": "working"},
+    )
+
+    async def scenario() -> tuple[str, str, list[str], str, dict[str, str]]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            app.screen.query_one("#filter-state", Input).value = "working"
+            await _until(pilot, lambda: _report_names(app) == ["dispatch-live"])
+            await _open_screen(app, pilot, "#report-list", 0, BatchTimelineScreen)
+            return (
+                _static_text(app, "#timeline-notice"),
+                _screen_text(app, "#timeline-fields"),
+                [
+                    str(card.border_title).strip()
+                    for card in app.screen.query(SectionCard)
+                ],
+                _static_text(app, "#timeline-route"),
+                _footer_keys(app),
+            )
+
+    notice, fields, cards, route, footer = asyncio.run(scenario())
+    assert notice == "⚠ dispatch-live · working: отчёт ещё не получен"
+    for label in ("Состояние", "До PR", "Начало", "PR"):
+        assert label in fields
+    assert len(cards) == 1
+    assert cards[0].startswith("СОБЫТИЯ  ") and cards[0].endswith("от старых к новым")
+    assert route == "маршрут: developer"
+    assert footer == {"escape": "Назад", "↑↓": "Прокрутка", "e": "Экспорт"}
+
+
+def test_qa_logs_screen_has_an_attempts_card_and_a_card_per_run(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[list[str], str, dict[str, str], str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await pilot.press("f3")
+            await _until(pilot, lambda: isinstance(app.screen, QaLogsScreen))
+            await pilot.pause()
+            return (
+                [
+                    str(card.border_title).strip()
+                    for card in app.screen.query(SectionCard)
+                ],
+                _screen_text(app, "#qa-logs"),
+                _footer_keys(app),
+                _static_text(app, "#qa-summary"),
+            )
+
+    cards, text, footer, summary = asyncio.run(scenario())
+    assert cards[0] == "ПОПЫТКИ QA-LANE  1 неудачных"
+    assert cards[1].startswith("ПРОГОН ")
+    assert "✔ passed" in text
+    assert "команд 2, с ошибкой 0" in text
+    assert "хвост лога (последние " in text
+    assert footer == {"escape": "Назад", "↑↓": "Прокрутка"}
+    assert summary == "прогонов: 1 · неудачных попыток: 1"
+
+
+def test_detail_screens_follow_the_console_language(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[str, str, dict[str, str], str, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await _open_screen(
+                app, pilot, "#report-list", 0, ReportScreen
+            )  # dispatch-stuck
+            app.language = "en"  # type: ignore[attr-defined]
+            app.screen.translate_now()  # type: ignore[attr-defined]
+            await pilot.pause()
+            report = (
+                _static_text(app, "#section-blockers"),
+                [
+                    str(b.label)
+                    for b in app.screen.query("Button").results(Button)
+                    if b.id == "export"
+                ][0],
+                _footer_keys(app),
+            )
+            await pilot.press("b")
+            await _until(pilot, lambda: isinstance(app.screen, BatchTimelineScreen))
+            await pilot.pause()
+            fields = _screen_text(app, "#timeline-fields")
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            await pilot.press("f3")
+            await _until(pilot, lambda: isinstance(app.screen, QaLogsScreen))
+            await pilot.pause()
+            return (*report, fields, _static_text(app, "#qa-summary"))
+
+    blockers, export, footer, fields, summary = asyncio.run(scenario())
+    assert blockers.startswith("⚠ present")
+    assert export == "e Export to Markdown"
+    assert footer["b"] == "Timeline" and footer["e"] == "Export"
+    assert "Started" in fields and "Status" in fields
+    assert summary == "runs: 1 · failed attempts: 1"
+
+
+def test_a_narrow_terminal_opens_the_list_page_at_its_heading(tmp_path: Path) -> None:
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[int, str]:
+        app = _ReportsHost(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            for _ in range(4):
+                await pilot.pause()
+            page = app.screen.query_one("#reports-page")
+            return int(page.scroll_y), type(app.screen.focused).__name__
+
+    scroll, focused = asyncio.run(scenario())
+    # The list has the focus (its keys are in the footer), and the page is not scrolled past the
+    # heading and the buttons to show it.
+    assert focused == "OpenableList"
+    assert scroll == 0

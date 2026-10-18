@@ -16,18 +16,17 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Button, Footer, Input, ListItem, ListView, Select, Static
+from textual.widgets import Button, Input, ListItem, ListView, Select, Static
 
-from ..chrome import TopBar
-from ..shell import SHELL_CSS, ConsoleShell, Fold, SectionCard
+from ..shell import SHELL_CSS, ConsoleShell, FieldGrid, Fold, SectionCard, WrappedValue
 from ..status import Status
-from ..translate import Translated, translate_bindings
-from ..widgets import OpenableList
+from ..translate import translate_bindings
+from ..widgets import OpenableList, ScrollingView
 from .. import reports as console_reports
 from ..reports import BatchTimeline, LedgerView, ReportEntry, StageEntry
 from .. import brand
 from .. import i18n
+from ..json_fields import strings, text
 from ..pr_timings import load_reports_view
 from .export import EXPORT_BINDING_KEY, export_document
 from .commands import call_from_worker
@@ -187,6 +186,12 @@ class ReportsScreen(ConsoleShell):
         )
         if self._initial_timings and any(batch.branch for batch in self.view.batches):
             self.action_refresh()
+
+    def on_screen_resume(self) -> None:
+        # The list takes focus on arrival; the page still opens at its top, with the heading.
+        self.call_after_refresh(
+            self.query_one("#reports-page", VerticalScroll).scroll_home, animate=False
+        )
 
     def compose_strip(self) -> ComposeResult:
         yield Static(f"Проект: {self.repo.name}", id="reports-project", markup=False)
@@ -509,20 +514,69 @@ class ReportsScreen(ConsoleShell):
         self.app.push_screen(QaLogsScreen(self.view))
 
 
-class ReportScreen(Translated, Screen[None]):
+_DETAIL_CSS = brand.shell_css("""
+.report-detail .report-page { height: 1fr; padding: 0 2; }
+.report-detail .page-head { height: auto; margin-bottom: 1; }
+.report-detail .page-heading { width: 1fr; height: auto; }
+.report-detail .page-title { height: 1; text-style: bold; }
+.report-detail .page-subtitle { height: auto; color: $text-muted; }
+.report-detail .page-actions { width: auto; height: 1; }
+.report-detail .page-actions Button { margin-left: 1; }
+.report-detail .field-grid { margin-bottom: 1; }
+.report-detail .section-card { margin-bottom: 1; }
+.report-detail .section-body, .report-detail .timeline-event { height: auto; }
+.report-detail .notice { height: auto; margin-bottom: 1; }
+.report-detail.-narrow .page-head { layout: vertical; }
+.report-detail.-narrow .page-actions { margin-top: 1; }
+.report-detail.-narrow .page-actions Button:first-child { margin-left: 0; }
+""")
+_KIND_COLOURS = {
+    "state": brand.ROLE_COLORS["verification"],
+    "dispatch": brand.PALETTE["primary"],
+    "report": brand.PALETTE["success"],
+    "decision": brand.PALETTE["warning"],
+    "risk": brand.PALETTE["error"],
+}
+
+
+def _status_text(status: Status | None, body: str, language: str) -> Text:
+    """A line of a report: the status (symbol and label) in its colour, then the text."""
+    line = Text()
+    if status is not None:
+        line.append(status.render(language), style=status.color)
+        if body:
+            line.append("  ")
+    line.append(body)
+    return line
+
+
+def _lines_text(lines: list[console_reports.ReportLine], language: str) -> Text:
+    """Several report lines as one `Text`; never markup, the lines are untrusted role output."""
+    return Text("\n").join(
+        _status_text(status, i18n.tr_text(language, body) if status else body, language)
+        for status, body in lines
+    )
+
+
+def _utc_text(value: str) -> str:
+    """A recorded time as `2026-10-16 12:59 UTC`; `?` when it is missing or unreadable."""
+    moment = console_reports.timestamp(value)
+    return moment.strftime("%Y-%m-%d %H:%M UTC") if moment else "?"
+
+
+class ReportScreen(ConsoleShell):
     """One completion report, section by section; every section wraps to the screen width."""
 
+    DEFAULT_CLASSES = "shell report-detail"
+    CRUMBS = "Главная › Отчёты › Отчёт"
+    SECTION = "Reports"
+    IS_SECTION_ROOT = False
+    AUTO_FOCUS = "#report-body"
+    CSS = SHELL_CSS + _DETAIL_CSS
     BINDINGS = [
-        Binding("escape", "app.pop_screen", "Назад"),
-        Binding("b", "open_timeline", "Хронология батча"),
-        Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
+        Binding("b", "open_timeline", "Хронология"),
+        Binding(EXPORT_BINDING_KEY, "export", "Экспорт"),
     ]
-    DEFAULT_CSS = """
-    ReportScreen #report-body { height: 1fr; }
-    ReportScreen .section-title { margin-top: 1; text-style: bold; color: $primary; }
-    ReportScreen .section-body { padding-left: 2; }
-    ReportScreen .actions { height: auto; }
-    """
 
     def __init__(self, entry: ReportEntry, view: LedgerView, repo: Path) -> None:
         super().__init__()
@@ -530,36 +584,84 @@ class ReportScreen(Translated, Screen[None]):
         self.view = view
         self.repo = repo
 
-    def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Отчёты › Отчёт")
-        with VerticalScroll(id="report-body", classes="frame") as frame:
-            frame.border_title = brand.frame_title("Отчёт")
-            yield Static(
-                console_reports.report_header(self.entry),
-                id="report-header",
-                markup=False,
-            )
-            for title, body in console_reports.report_sections(self.entry.report):
-                yield Static(title, classes="section-title", markup=False)
-                yield Static(
-                    body or "—",
-                    id=_section_id(title),
-                    classes="section-body",
-                    markup=False,
-                )
+    def _language(self) -> str:
+        return getattr(self.app, "language", "ru")
+
+    def _subtitle(self) -> Text:
+        entry = self.entry
+        language = self._language()
+        status = console_reports.outcome_status(entry.outcome)
+        line = Text(f"{entry.ticket} · {entry.role} · ")
+        line.append(status.render(language), style=status.color)
+        when = (
+            _utc_text(entry.reported_at)
+            if entry.reported_at
+            else i18n.tr(language, "дата неизвестна")
+        )
+        line.append(f" · {when}")
+        return line
+
+    def _fields(self) -> list[tuple[str, str]]:
+        entry = self.entry
+        files = ", ".join(strings(entry.report.get("changed_files")))
+        return [
+            ("dispatch", entry.dispatch_id),
+            ("batch", entry.batch_id or "?"),
+            ("commit", text(entry.report.get("commit_sha"), "—")),
+            ("файлы", files or "—"),
+        ]
+
+    def compose_strip(self) -> ComposeResult:
+        yield WrappedValue(self.entry.dispatch_id)
+
+    def compose_content(self) -> ComposeResult:
+        language = self._language()
+        with ScrollingView(id="report-body", classes="report-page"):
+            with Horizontal(classes="page-head"):
+                with Vertical(classes="page-heading"):
+                    yield Static("Отчёт", classes="page-title")
+                    yield Static(
+                        self._subtitle(),
+                        id="report-header",
+                        classes="page-subtitle no-i18n",
+                        markup=False,
+                    )
+                with Horizontal(classes="page-actions"):
+                    yield Button("b Хронология batch", id="open-timeline", compact=True)
+                    yield Button("e Экспорт в Markdown", id="export", compact=True)
+            yield FieldGrid(self._fields(), id="report-fields")
+            for title, lines in console_reports.report_section_lines(self.entry.report):
+                with SectionCard(title=title, id="card-" + _section_id(title)):
+                    yield Static(
+                        _lines_text(lines, language),
+                        id=_section_id(title),
+                        classes="section-body no-i18n",
+                        markup=False,
+                    )
             qa_log = console_reports.qa_log_text(self.view, self.entry.dispatch_id)
             if qa_log:
-                yield Static("QA log", classes="section-title")
-                yield Static(
-                    qa_log, id="section-qa-log", classes="section-body", markup=False
-                )
-        with Horizontal(classes="actions frame") as actions:
-            actions.border_title = brand.frame_title("Действия")
-            yield Button("Хронология батча", id="open-timeline")
-            yield Button("Экспорт в Markdown", id="export")
-        yield Footer()
+                with SectionCard(title="QA log", id="card-section-qa-log"):
+                    yield Static(
+                        qa_log,
+                        id="section-qa-log",
+                        classes="section-body no-i18n",
+                        markup=False,
+                    )
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        language = self._language()
+        self.query_one("#report-header", Static).update(self._subtitle())
+        sections = dict(console_reports.report_section_lines(self.entry.report))
+        for title, lines in sections.items():
+            self.query_one(f"#{_section_id(title)}", Static).update(
+                _lines_text(lines, language)
+            )
+        for scroll in self.query(ScrollingView):
+            translate_bindings(scroll, language)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        super().on_button_pressed(event)
         if event.button.id == "open-timeline":
             self.action_open_timeline()
         elif event.button.id == "export":
@@ -578,26 +680,16 @@ class ReportScreen(Translated, Screen[None]):
         self.app.push_screen(BatchTimelineScreen(timeline, self.repo))
 
 
-def _render_timeline(timeline: BatchTimeline, language: str = "ru") -> str:
-    batch = timeline.batch
-    lines = [
-        f"{batch.ticket} · {batch.batch_id} · состояние: {batch.state} · {console_reports.batch_timing_text(batch, language=language)}",
-        f"Начало: {console_reports.batch_start_text(batch)}",
-        f"PR: {batch.pr_url or 'неизвестно'}",
-        f"маршрут: {console_reports.role_flow_text(timeline)}",
-        "",
-    ]
-    for event in timeline.events:
-        when = event.at[:19].replace("T", " ") if event.at else "время ?"
-        lines.append(f"{when}  [{event.kind}] {event.text}")
-    return i18n.tr_text(language, "\n".join(lines))
+class BatchTimelineScreen(ConsoleShell):
+    """The chronology of one batch: its facts, the route of roles and the events in time order."""
 
-
-class BatchTimelineScreen(Translated, Screen[None]):
-    BINDINGS = [
-        Binding("escape", "app.pop_screen", "Назад"),
-        Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
-    ]
+    DEFAULT_CLASSES = "shell report-detail"
+    CRUMBS = "Главная › Отчёты › Хронология"
+    SECTION = "Reports"
+    IS_SECTION_ROOT = False
+    AUTO_FOCUS = "#batch-timeline"
+    CSS = SHELL_CSS + _DETAIL_CSS
+    BINDINGS = [Binding(EXPORT_BINDING_KEY, "export", "Экспорт")]
 
     def __init__(
         self, timeline: BatchTimeline, repo: Path, *, notice: str = ""
@@ -607,29 +699,101 @@ class BatchTimelineScreen(Translated, Screen[None]):
         self.repo = repo
         self.notice = notice
 
-    def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Отчёты › Хронология")
-        timeline = VerticalScroll(
-            Static(
-                (self.notice + "\n\n" if self.notice else "")
-                + _render_timeline(self.timeline),
-                id="batch-timeline",
-                markup=False,
-                classes="no-i18n",
+    def _language(self) -> str:
+        return getattr(self.app, "language", "ru")
+
+    def _fields(self) -> list[tuple[str, str]]:
+        batch = self.timeline.batch
+        language = self._language()
+        timing = console_reports.batch_timing_text(batch, language=language)
+        return [
+            ("Состояние", console_reports.batch_status(batch).render(language)),
+            ("До PR", timing.removeprefix("до PR: ").removeprefix("to PR: ")),
+            (
+                "Начало",
+                i18n.tr_text(language, console_reports.batch_start_text(batch)),
             ),
-            classes="frame",
+            ("PR", batch.pr_url or i18n.tr(language, "неизвестно")),
+        ]
+
+    def _route(self) -> str:
+        language = self._language()
+        return i18n.tr_text(
+            language, f"маршрут: {console_reports.role_flow_text(self.timeline)}"
         )
-        timeline.border_title = brand.frame_title("Хронология batch")
-        yield timeline
-        yield Footer()
+
+    def _event_row(self, event: console_reports.TimelineEvent) -> Text:
+        language = self._language()
+        when = event.at[:16].replace("T", " ") if event.at else "?"
+        row = Text(f"{when}  ")
+        colour = _KIND_COLOURS.get(event.kind, brand.PALETTE["muted"])
+        row.append(f"{event.kind:<9}", style=f"bold {colour}")
+        row.append(f" {i18n.tr_text(language, event.text)}")
+        return row
+
+    def _notice_text(self) -> Text:
+        return Text(
+            f"{brand.STATUS_ICONS['warn']} {i18n.tr_text(self._language(), self.notice)}",
+            style=brand.STATUS_COLORS["warn"],
+        )
+
+    def compose_strip(self) -> ComposeResult:
+        yield WrappedValue(self.timeline.batch.batch_id)
+
+    def compose_content(self) -> ComposeResult:
+        batch = self.timeline.batch
+        with ScrollingView(id="batch-timeline", classes="report-page"):
+            with Horizontal(classes="page-head"):
+                with Vertical(classes="page-heading"):
+                    yield Static("Хронология batch", classes="page-title")
+                    yield Static(
+                        f"{batch.ticket} · {batch.batch_id}",
+                        id="timeline-header",
+                        classes="page-subtitle no-i18n",
+                        markup=False,
+                    )
+                with Horizontal(classes="page-actions"):
+                    yield Button("e Экспорт в Markdown", id="export", compact=True)
+            if self.notice:
+                yield Static(
+                    self._notice_text(),
+                    id="timeline-notice",
+                    classes="notice no-i18n",
+                    markup=False,
+                )
+            yield FieldGrid(self._fields(), id="timeline-fields")
+            yield Static(
+                self._route(), id="timeline-route", classes="no-i18n", markup=False
+            )
+            with SectionCard(
+                title="События",
+                note=f"{len(self.timeline.events)} · от старых к новым",
+                id="timeline-events",
+            ):
+                for event in self.timeline.events:
+                    yield Static(
+                        self._event_row(event),
+                        classes="timeline-event no-i18n",
+                        markup=False,
+                    )
 
     def sync_language(self) -> None:
-        language = getattr(self.app, "language", "ru")
-        notice = i18n.tr_text(language, self.notice)
-        self.query_one("#batch-timeline", Static).update(
-            (notice + "\n\n" if notice else "")
-            + _render_timeline(self.timeline, language)
-        )
+        ConsoleShell.sync_language(self)
+        self.query_one("#timeline-fields", FieldGrid).set_fields(self._fields())
+        self.query_one("#timeline-route", Static).update(self._route())
+        if self.notice:
+            self.query_one("#timeline-notice", Static).update(self._notice_text())
+        for row, event in zip(
+            self.query(".timeline-event").results(Static), self.timeline.events
+        ):
+            row.update(self._event_row(event))
+        for scroll in self.query(ScrollingView):
+            translate_bindings(scroll, self._language())
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        super().on_button_pressed(event)
+        if event.button.id == "export":
+            self.action_export()
 
     def action_export(self) -> None:
         export_document(
@@ -637,31 +801,140 @@ class BatchTimelineScreen(Translated, Screen[None]):
         )
 
 
-def _render_qa_logs(view: LedgerView) -> str:
-    if view.unavailable:
-        return view.unavailable
-    parts = [console_reports.qa_attempts_text(view.qa_attempts)]
-    parts.extend(console_reports.qa_run_text(run) for run in view.qa_runs)
-    if not view.qa_runs:
-        parts.append("QA-логов в ledger нет")
-    return "\n\n".join(parts)
-
-
-class QaLogsScreen(Translated, Screen[None]):
+class QaLogsScreen(ConsoleShell):
     """Every QA gate log in the generation (newest first) and every failed qa-lane attempt."""
 
-    BINDINGS = [Binding("escape", "app.pop_screen", "Назад")]
+    DEFAULT_CLASSES = "shell report-detail"
+    CRUMBS = "Главная › Отчёты › QA-логи"
+    SECTION = "Reports"
+    IS_SECTION_ROOT = False
+    AUTO_FOCUS = "#qa-logs"
+    CSS = SHELL_CSS + _DETAIL_CSS
 
     def __init__(self, view: LedgerView) -> None:
         super().__init__()
         self.view = view
 
-    def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Отчёты › QA-логи")
-        logs = VerticalScroll(
-            Static(_render_qa_logs(self.view), id="qa-logs", markup=False),
-            classes="frame",
+    def _language(self) -> str:
+        return getattr(self.app, "language", "ru")
+
+    def _strip_text(self) -> str:
+        view = self.view
+        if view.unavailable:
+            return view.unavailable
+        return i18n.tr_text(
+            self._language(),
+            f"прогонов: {len(view.qa_runs)} · неудачных попыток: {len(view.qa_attempts)}",
         )
-        logs.border_title = brand.frame_title("QA-логи")
-        yield logs
-        yield Footer()
+
+    def _attempts(self) -> Text:
+        attempts = self.view.qa_attempts
+        language = self._language()
+        if not attempts:
+            return _status_text(
+                Status("accepted", "неудачных попыток нет", "no failed attempts"),
+                "",
+                language,
+            )
+        unknown = "time ?" if language == "en" else "время ?"
+        return Text("\n").join(
+            Text(
+                f"{brand.STATUS_ICONS['warn']} {attempt.failed_at or unknown} · "
+                f"{attempt.dispatch_id} · {attempt.stage}: {attempt.message}",
+                style=brand.STATUS_COLORS["warn"],
+            )
+            for attempt in attempts
+        )
+
+    def _run_text(self, run: console_reports.QaRun) -> Text:
+        en = self._language() == "en"
+        verdict = console_reports.qa_run_status(run)
+        failed = [(command, code) for command, code in run.commands if code != 0]
+        dispatch = run.dispatch_id or ("no report" if en else "без отчёта")
+        outcome = ("report: " if en else "отчёт: ") + run.outcome
+        counts = (
+            f"{len(run.commands)} commands, {len(failed)} failed"
+            if en
+            else f"команд {len(run.commands)}, с ошибкой {len(failed)}"
+        )
+        if failed:
+            counts += (
+                " ("
+                + ", ".join(f"{command}: exit {code}" for command, code in failed)
+                + ")"
+            )
+        tail = (
+            f"log tail (last {len(run.tail)} of {run.total_lines} lines):"
+            if en
+            else f"хвост лога (последние {len(run.tail)} из {run.total_lines} строк):"
+        )
+        text = Text()
+        text.append(verdict.render(self._language()), style=f"bold {verdict.color}")
+        text.append(f"  {run.artifact}\n")
+        text.append(f"{dispatch} · {run.ticket} · {outcome}\n{counts}\n{tail}\n")
+        text.append(
+            "\n".join(f"  {line}" for line in run.tail), style=brand.PALETTE["muted"]
+        )
+        return text
+
+    def compose_strip(self) -> ComposeResult:
+        yield Static(
+            self._strip_text(), id="qa-summary", classes="no-i18n", markup=False
+        )
+
+    def compose_content(self) -> ComposeResult:
+        view = self.view
+        with ScrollingView(id="qa-logs", classes="report-page"):
+            with Vertical(classes="page-head"):
+                yield Static("QA-логи", classes="page-title")
+                yield Static(
+                    "Попытки qa-lane и каждый прогон QA-gate, новые сверху.",
+                    classes="page-subtitle",
+                )
+            if view.unavailable:
+                yield Static(
+                    Text(
+                        f"{brand.STATUS_ICONS['fail']} {view.unavailable}",
+                        style=brand.STATUS_COLORS["fail"],
+                    ),
+                    id="qa-unavailable",
+                    classes="no-i18n",
+                    markup=False,
+                )
+                return
+            with SectionCard(
+                title="Попытки qa-lane",
+                note=f"{len(view.qa_attempts)} неудачных",
+                id="qa-attempts",
+            ):
+                yield Static(
+                    self._attempts(),
+                    id="qa-attempts-list",
+                    classes="no-i18n",
+                    markup=False,
+                )
+            for index, run in enumerate(view.qa_runs):
+                with SectionCard(
+                    title=f"Прогон {Path(run.artifact).stem[:8]}…",
+                    note=run.logged_at or "время ?",
+                    id=f"qa-run-{index}",
+                ):
+                    yield Static(
+                        self._run_text(run),
+                        classes="section-body qa-run no-i18n",
+                        markup=False,
+                    )
+            if not view.qa_runs:
+                yield Static("QA-логов в ledger нет", id="qa-no-runs")
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        self.query_one("#qa-summary", Static).update(self._strip_text())
+        if not self.view.unavailable:
+            self.query_one("#qa-attempts-list", Static).update(self._attempts())
+            for body, run in zip(
+                self.query(".qa-run").results(Static), self.view.qa_runs
+            ):
+                body.update(self._run_text(run))
+        for scroll in self.query(ScrollingView):
+            translate_bindings(scroll, self._language())

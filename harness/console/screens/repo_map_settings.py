@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, RadioButton, RadioSet, SelectionList, Static
@@ -28,7 +29,9 @@ from ..catalog import (
 )
 from ..logtext import colorize_log
 from ..runner import CommandRunner, capturing_runner
-from ..widgets import CheckList
+from ..shell import SectionCard
+from ..status import Status
+from ..widgets import CheckList, RoundRadioButton
 from .commands import call_from_worker, render_result
 from .harness import CommandFormScreen
 
@@ -48,16 +51,24 @@ _REASONS = {
 }
 
 
+def _marked(kind: str, text: str) -> Text:
+    """`text` behind the symbol of a status kind, in its colour: a state is never colour alone."""
+    status = Status(kind, text, text)
+    return Text.assemble((status.symbol + " ", status.color), text)
+
+
 class RepoMapSettings(Vertical):
-    """Frames of the tier, the language parsers and the project memory, with their actions."""
+    """Cards of the tier, the language parsers, the project memory and the last result, with their
+    actions: two by two on a wide terminal, one column on a narrow one."""
 
     DEFAULT_CSS = """
     RepoMapSettings { width: 100%; height: 1fr; }
     RepoMapSettings #settings-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
-    RepoMapSettings .frame { height: auto; }
-    RepoMapSettings Vertical.frame { overflow: hidden hidden; }
+    RepoMapSettings .settings-row { height: auto; }
+    RepoMapSettings .settings-row > SectionCard { width: 1fr; margin: 0 1 1 0; }
     RepoMapSettings Static { height: auto; }
     RepoMapSettings .actions { height: auto; }
+    RepoMapSettings .actions Button { margin-right: 1; }
     RepoMapSettings RadioSet { height: auto; }
     RepoMapSettings SelectionList { height: auto; max-height: 8; }
     RepoMapSettings .hint { color: $text-muted; }
@@ -88,35 +99,47 @@ class RepoMapSettings(Vertical):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="settings-scroll"):
-            with Vertical(id="tier-frame", classes="frame") as tier:
-                tier.border_title = brand.frame_title("Режим карты")
-                yield Static("", id="tier-status", classes="no-i18n", markup=False)
-                with RadioSet(id="tier-choice"):
-                    for key, label in _TIER_CHOICES:
-                        yield RadioButton(label, id=f"tier-{key}")
-                with Horizontal(classes="actions"):
-                    yield Button("Применить режим", id="tier-apply", compact=True)
-                    yield Button("Настроить парсер", id="parser-settings", compact=True)
-            with Vertical(id="parsers-frame", classes="frame") as parsers:
-                parsers.border_title = brand.frame_title("Парсеры языков")
-                yield Static("", id="parser-status", classes="no-i18n", markup=False)
-                yield CheckList(id="parser-languages")
-                with Horizontal(classes="actions"):
-                    yield Button(
-                        "Установить выбранные", id="parser-install", compact=True
+            with Horizontal(classes="settings-row"):
+                with SectionCard(title="Режим карты", id="tier-frame"):
+                    yield Static("", id="tier-status", classes="no-i18n", markup=False)
+                    with RadioSet(id="tier-choice"):
+                        for key, label in _TIER_CHOICES:
+                            yield RoundRadioButton(label, id=f"tier-{key}")
+                    with Horizontal(classes="actions"):
+                        yield Button("Применить режим", id="tier-apply", compact=True)
+                        yield Button(
+                            "Настроить парсер", id="parser-settings", compact=True
+                        )
+                with SectionCard(title="Парсеры языков", id="parsers-frame"):
+                    yield Static(
+                        "", id="parser-status", classes="no-i18n", markup=False
                     )
-                    yield Button("Проверить заново", id="parser-refresh", compact=True)
-            with Vertical(id="memory-frame", classes="frame") as memory:
-                memory.border_title = brand.frame_title("Память проекта")
-                yield Static("", id="memory-status", classes="no-i18n", markup=False)
-                with Horizontal(classes="actions"):
-                    yield Button("Инициализировать", id="memory-init", compact=True)
-                    yield Button("Синхронизировать", id="memory-sync", compact=True)
-                    yield Button("Пересобрать", id="memory-rebuild", compact=True)
-                    yield Button("Настроить память", id="memory-settings", compact=True)
-            with VerticalScroll(id="settings-output-scroll", classes="frame") as out:
-                out.border_title = brand.frame_title("Результат")
-                yield Static("", id="settings-output", classes="no-i18n")
+                    yield CheckList(id="parser-languages")
+                    with Horizontal(classes="actions"):
+                        yield Button(
+                            "Установить выбранные", id="parser-install", compact=True
+                        )
+                        yield Button(
+                            "Проверить заново", id="parser-refresh", compact=True
+                        )
+            with Horizontal(classes="settings-row"):
+                with SectionCard(title="Память проекта", id="memory-frame"):
+                    yield Static(
+                        "", id="memory-status", classes="no-i18n", markup=False
+                    )
+                    with Horizontal(classes="actions"):
+                        yield Button("Инициализировать", id="memory-init", compact=True)
+                        yield Button("Синхронизировать", id="memory-sync", compact=True)
+                    with Horizontal(classes="actions"):
+                        yield Button("Пересобрать", id="memory-rebuild", compact=True)
+                        yield Button(
+                            "Настроить память", id="memory-settings", compact=True
+                        )
+                with SectionCard(
+                    title="Результат", note="последнее действие", id="result-frame"
+                ):
+                    with VerticalScroll(id="settings-output-scroll"):
+                        yield Static("", id="settings-output", classes="no-i18n")
 
     def on_mount(self) -> None:
         self.reload()
@@ -162,12 +185,14 @@ class RepoMapSettings(Vertical):
         """Show the current state in the current language."""
         t = self.t
         tier = repo_map_settings.tier_setting(self.repo)
-        text = t("В политике проекта: ") + tier.tier
+        text = Text(t("В политике проекта: ") + tier.tier)
         effective = self._effective_note(tier.tier)
         if effective:
-            text += "\n" + effective
+            text.append("\n")
+            text.append_text(_marked("warning", effective))
         if tier.reason:
-            text += "\n" + t(tier.reason)
+            text.append("\n")
+            text.append_text(_marked("not_started", t(tier.reason)))
         self.query_one("#tier-status", Static).update(text)
         choice = self.query_one("#tier-choice", RadioSet)
         if tier.tier != self._policy_tier:
@@ -194,17 +219,26 @@ class RepoMapSettings(Vertical):
         t = self.t
         status = self.parsers
         if status is None:
-            line = t("Состояние парсеров не прочитано")
+            line = _marked("not_started", t("Состояние парсеров не прочитано"))
             installed: set[str] = set()
         else:
             installed = set(status.languages)
             line = (
-                t("Bundle готов, режим full доступен")
+                _marked("accepted", t("Bundle готов, режим full доступен"))
                 if status.ready
-                else t("Bundle не готов: ")
-                + t(_REASONS.get(str(status.problem), str(status.problem)))
-            ) + (f"\n{t('Пара')}: {status.pair}" if status.pair else "")
-            line += f"\n{t('Каталог')}: {status.registry}"
+                else _marked(
+                    "warning",
+                    t("Bundle не готов: ")
+                    + t(_REASONS.get(str(status.problem), str(status.problem))),
+                )
+            )
+            if status.pair:
+                line.append(
+                    f"\n{t('Пара')}: {status.pair}", style=brand.PALETTE["muted"]
+                )
+            line.append(
+                f"\n{t('Каталог')}: {status.registry}", style=brand.PALETTE["muted"]
+            )
         self.query_one("#parser-status", Static).update(line)
         options = self.query_one("#parser-languages", SelectionList)
         self._installed = installed
@@ -232,26 +266,23 @@ class RepoMapSettings(Vertical):
         t = self.t
         status = repo_map_settings.memory_status(self.repo)
         if status.problem:
-            text = t("Память недоступна: ") + status.problem
+            line = _marked("error", t("Память недоступна: ") + status.problem)
         else:
             index = (
                 f"{status.indexed} " + t("документов")
                 if status.indexed is not None
                 else t("не построен")
             )
-            state = (
-                t("включена")
-                if status.active
-                else (
-                    t("включена, но не читает источники: ") + t(status.inactive)
-                    if status.inactive
-                    else t("выключена")
-                )
-            )
-            text = (
-                state
-                + (
-                    " · " + t("источники") + ": " + ", ".join(status.source_types)
+            if status.active:
+                kind, state = "accepted", t("включена")
+            elif status.inactive:
+                kind = "warning"
+                state = t("включена, но не читает источники: ") + t(status.inactive)
+            else:
+                kind, state = "not_started", t("выключена")
+            rest = (
+                (
+                    (" · " + t("источники") + ": " + ", ".join(status.source_types))
                     if status.source_types
                     else ""
                 )
@@ -260,7 +291,9 @@ class RepoMapSettings(Vertical):
                 + ": "
                 + index
             )
-        self.query_one("#memory-status", Static).update(t("Память: ") + text)
+            line = Text(t("Память: "))
+            line.append_text(_marked(kind, state + rest))
+        self.query_one("#memory-status", Static).update(line)
         for identifier in ("memory-init", "memory-sync", "memory-rebuild"):
             self.query_one(f"#{identifier}", Button).disabled = self.busy
 
