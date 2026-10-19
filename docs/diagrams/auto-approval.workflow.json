@@ -505,7 +505,7 @@
       "items": [
         "1. integrity-failure: stale, model-mismatch, worktree-mismatch, harness-snapshot-changed, deterministic-gate-failed, ledger-validation-failed",
         "2. budget-exhausted: лимиты retry_policy, continuation_policy и attention_policy; tooling-retry-repeated",
-        "3. no-automatic-route: unknown-reason, abandon-dead-end, supersede-dead-end",
+        "3. no-automatic-route: unknown-reason, abandon-dead-end, supersede-dead-end, qa-environment-failure",
         "Координатор пишет остановку один раз в batch.auto_stop вместе с итоговым отчётом",
         "ledger-validation-failed команда только выводит: ledger недостоверен"
       ]
