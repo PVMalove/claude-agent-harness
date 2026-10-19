@@ -126,7 +126,11 @@ and send verify the selected path, branch and startup SHA. Start the worker in e
 `send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify that
 mechanism before launch: `isolation: worktree` alone does not prove attachment to an existing
 worktree. If the runtime cannot select that checkout, report a blocker. The coordinator stays in the
-main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the
+main checkout. Never `cd` into a worktree from the coordinator session, not even as
+`cd <worktree> && …`: the shell's working directory persists between commands, so one `cd` moves the
+whole session. Read worktree files by absolute path: `git -C <abs worktree> …`, `rg <pattern> <abs
+worktree path>`, and the file tools with absolute paths. If the session moved anyway, `cd` back to
+the main checkout before the next command. A selected path is intent; self-report proves the worker's actual CWD. Pass the
 brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
 belongs writes it outside the project.
 

@@ -616,7 +616,12 @@ AUTO_STOP_REASONS = {
         "deterministic-gate-failed",
         "ledger-validation-failed",
     ),
-    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+    "no-automatic-route": (
+        "unknown-reason",
+        "abandon-dead-end",
+        "supersede-dead-end",
+        "qa-environment-failure",
+    ),
 }
 AUTO_STOP_FIELDS = frozenset(
     {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}

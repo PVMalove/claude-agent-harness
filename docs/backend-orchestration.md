@@ -1432,7 +1432,7 @@ python .harness/orchestration/coordinator.py --repo . batch auto-decide --batch 
 | --- | --- |
 | `integrity-failure` | `stale`, `model-mismatch`, `worktree-mismatch`, `harness-snapshot-changed`, `deterministic-gate-failed`, `ledger-validation-failed` |
 | `budget-exhausted` | `retry_policy.max_developer_retries`, `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes`, `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` |
-| `no-automatic-route` | `unknown-reason`, `abandon-dead-end`, `supersede-dead-end` |
+| `no-automatic-route` | `unknown-reason`, `abandon-dead-end`, `supersede-dead-end`, `qa-environment-failure` |
 
 `batch auto-decide` и `batch auto-report` находят остановку в порядке: целостность, бюджет, маршрут.
 Coordinator пишет остановку один раз в `batch.auto_stop` вместе с итоговым отчётом.
