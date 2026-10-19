@@ -1151,7 +1151,8 @@ def test_private_database_lifecycle_and_result_channel(sandboxed: Path) -> None:
     selected = """import os,sys
 from pathlib import Path
 from typing import Sequence, cast
-assert os.environ['HARNESS_TEST_DATABASE_DIR'].startswith('/tmp/harness-db-')
+assert os.environ['TMPDIR'] == SANDBOX_TMP
+assert os.environ['HARNESS_TEST_DATABASE_DIR'].startswith(os.environ['TMPDIR'] + '/harness-db-')
 assert os.path.isdir(os.environ['HARNESS_TEST_DATABASE_SOCKET_DIR'])
 try:
     open('/proc/%d/fd/1' % os.getppid(), 'w')
@@ -1162,7 +1163,7 @@ else:
 print('{"database":"unavailable"}')
 Path(os.environ['HARNESS_TEST_REPORT_DIR']+'/dbdir').write_text(os.environ['HARNESS_TEST_DATABASE_DIR'])
 sys.exit(3)
-"""
+""".replace("SANDBOX_TMP", repr(runner.SANDBOX_TMP))
     _fake_database_settings(sandboxed, FAKE_DATABASE, selected)
     first = runner.run_test(sandboxed, "sql.constraint")
     assert (first.result, first.reason, first.exit_code) == ("failed", "test_failed", 3)

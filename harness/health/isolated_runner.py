@@ -45,9 +45,12 @@ ZONE_SUFFIX = "/**"
 GLOB_CHARACTERS = frozenset("*?[]{}\\")
 # Top-level directories that hold the repository, the harness and runtime configuration.
 PROTECTED_TOP_LEVEL = frozenset({".git", ".harness", ".claude", ".agents", ".codex"})
+# The sandbox's private tmpfs; HOME and TMPDIR of the test point here, so temporary data (the
+# database directory too) never reaches the host, whatever the host's /tmp allows.
+SANDBOX_TMP = "/tmp"
 # The sandbox replaces these with its own /tmp, /run, /dev and /proc: a checkout below them is
 # invisible.
-MASKED_ROOTS = ("/tmp", "/run", "/dev", "/proc")
+MASKED_ROOTS = (SANDBOX_TMP, "/run", "/dev", "/proc")
 # Host service sockets live in /run (/var/run links there): the D-Bus buses and the systemd user
 # manager in /run/user/<uid>, container engines. A read-only bind does not stop connect(), and such
 # a service starts processes outside the sandbox, so the sandbox mounts an empty tmpfs over /run
@@ -367,7 +370,7 @@ def sandbox_argv(
         "--proc",
         "/proc",
         "--tmpfs",
-        "/tmp",
+        SANDBOX_TMP,
         "--tmpfs",
         "/run",
     ]
@@ -407,8 +410,8 @@ def sandbox_environment(
     """The test's whole environment: allowlisted locale and PATH plus the run's own locations."""
     env = {name: environ[name] for name in ENV_ALLOWLIST if name in environ}
     env.update(
-        HOME="/tmp",
-        TMPDIR="/tmp",
+        HOME=SANDBOX_TMP,
+        TMPDIR=SANDBOX_TMP,
         XDG_CACHE_HOME=str(cache),
         PYTHONPYCACHEPREFIX=str(cache / "pycache"),
         HARNESS_TEST_CACHE_DIR=str(cache),
