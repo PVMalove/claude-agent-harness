@@ -18,6 +18,7 @@ from typing import NotRequired, TypedDict
 
 from harness.orchestration import container_executor
 from harness.orchestration.core.constants import TERMINAL_DISPATCH_STATES
+from harness.orchestration.ledger.lifecycle import DispatchStatusRecord, LifecycleLedger
 from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
 from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
 from harness.storage import LEGACY_STORAGE_DIRS, sandboxes_root, storage_root
@@ -209,26 +210,21 @@ def _dispatch_statuses(root: Path) -> dict[str, dict[str, object]] | None:
     state = root / "orchestration" / "state"
     if not state.exists():
         return {}
-    pointer = state / "ledger.json"
-    try:
-        if pointer.exists():
-            generation = json.loads(pointer.read_text(encoding="utf-8"))["generation"]
-            if not isinstance(generation, str) or not re.fullmatch(
-                r"generation-[A-Za-z0-9-]+", generation
-            ):
-                return None
-            base = state / "generations" / generation
-            if not base.is_dir():
-                return None
-        else:
-            base = state
-        statuses: dict[str, dict[str, object]] = {}
-        for record in sorted((base / "dispatch-status").glob("dispatch-*.json")):
-            status = json.loads(record.read_text(encoding="utf-8"))
-            statuses[status["dispatch_id"]] = status
-        return statuses
-    except (OSError, ValueError, KeyError, TypeError):
+    base = LifecycleLedger(state).records_root_lenient()
+    if base is None:
         return None
+    statuses: dict[str, dict[str, object]] = {}
+    try:
+        for record in sorted(
+            (base / DispatchStatusRecord.directory).glob("dispatch-*.json")
+        ):
+            status = LifecycleLedger.read_record_lenient(record)
+            if status is None:
+                return None
+            statuses[status["dispatch_id"]] = status
+    except (OSError, KeyError, TypeError):
+        return None
+    return statuses
 
 
 def _docker_selected(root: Path) -> bool:
