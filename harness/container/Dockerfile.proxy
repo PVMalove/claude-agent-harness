@@ -1,0 +1,14 @@
+# Egress proxy sidecar of the docker executor (issue #706).
+#
+# The harness never builds, pulls or publishes this image. Build it yourself from the installed
+# payload, then name the tag in access_policy container.proxy_image and repeat dispatch propose:
+#
+#   docker build -f .harness/container/Dockerfile.proxy -t harness-proxy:local .harness/container
+#
+# The executor starts the image from its pinned digest as the host user, read-only, without
+# capabilities, and passes the plan hosts in HARNESS_EGRESS_ALLOWED_HOSTS.
+FROM python:3.12-slim
+COPY egress_proxy.py /opt/harness/egress_proxy.py
+USER 65534:65534
+EXPOSE 3128
+ENTRYPOINT ["python", "-u", "/opt/harness/egress_proxy.py"]
