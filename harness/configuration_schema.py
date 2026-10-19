@@ -109,8 +109,13 @@ def _check(
             {json.dumps(v, sort_keys=True, allow_nan=False) for v in value}
         ) != len(value):
             problems.append(path + ": повторяющиеся элементы")
+        items = node.get("items", True)
+        extra = node.get("additionalItems", True)
         for index, item in enumerate(value):
-            problems.extend(check(item, node.get("items", True), f"{path}[{index}]"))
+            child = items
+            if isinstance(items, list):  # draft-07 tuple form
+                child = items[index] if index < len(items) else extra
+            problems.extend(check(item, child, f"{path}[{index}]"))
     elif isinstance(value, str):
         if len(value) < node.get("minLength", 0) or len(value) > node.get(
             "maxLength", len(value)
