@@ -1800,12 +1800,54 @@ class InspectWorkerTests(unittest.TestCase):
             (gone, "missing"),
             (subprocess.CompletedProcess([], 1, "", "daemon is down"), "unknown"),
             (OSError("docker vanished"), "unknown"),
+            # The CLI itself is missing: its text says "No such file", but no engine answered.
+            (
+                FileNotFoundError(2, "No such file or directory", "docker"),
+                "unknown",
+            ),
             (subprocess.TimeoutExpired("docker", 30), "unknown"),
             (_done([], "not json"), "unknown"),
             (_done([], json.dumps({"State": {}})), "unknown"),
         ):
             with self.subTest(str(answer)):
                 self.assertEqual(self.inspect(answer)["state"], expected)
+
+    def test_a_missing_engine_cli_does_not_count_as_a_removed_object(self) -> None:
+        objects = [
+            {
+                "kind": "container",
+                "id": CONTAINER_ID,
+                "name": "harness-d",
+                "dispatch": "d",
+                "role": "worker",
+                "state": "exited",
+            }
+        ]
+        for answer, bucket in (
+            (FileNotFoundError(2, "No such file or directory", "docker"), "failed"),
+            (
+                subprocess.CompletedProcess([], 1, "", "Error: No such container: x"),
+                "missing",
+            ),
+        ):
+
+            def engine(
+                argv: Sequence[str],
+                answer: subprocess.CompletedProcess[str] | BaseException = answer,
+            ) -> subprocess.CompletedProcess[str]:
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer
+
+            with (
+                self.subTest(bucket),
+                mock.patch.object(container_executor, "run_engine", engine),
+            ):
+                removal = container_executor.remove_objects(objects)
+            self.assertEqual(
+                {name: bool(removal[name]) for name in ("failed", "missing")},
+                {"failed": bucket == "failed", "missing": bucket == "missing"},
+            )
 
 
 if __name__ == "__main__":

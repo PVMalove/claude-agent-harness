@@ -95,16 +95,23 @@ def run_engine(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _engine(argv: Sequence[str]) -> tuple[bool, str]:
-    """Whether one engine command succeeded, with its output or the failure detail."""
+def _ask(argv: Sequence[str]) -> tuple[bool, str, bool]:
+    """Run one engine command: whether it succeeded, its output or failure detail, and whether the
+    engine answered at all. A CLI that could not start or did not answer in time never answered."""
     try:
         result = run_engine(argv)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, str(exc)
+        return False, str(exc), False
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
-        return False, detail or f"exit code {result.returncode}"
-    return True, result.stdout.strip()
+        return False, detail or f"exit code {result.returncode}", True
+    return True, result.stdout.strip(), True
+
+
+def _engine(argv: Sequence[str]) -> tuple[bool, str]:
+    """Whether one engine command succeeded, with its output or the failure detail."""
+    ok, detail, _ = _ask(argv)
+    return ok, detail
 
 
 @dataclass(frozen=True)
@@ -421,9 +428,13 @@ _RUNNING_STATUSES = frozenset({"running", "paused", "restarting"})
 _STOPPED_STATUSES = frozenset({"exited", "dead"})
 
 
-def _gone(detail: str) -> bool:
-    """Whether an engine failure says the object does not exist, as opposed to any other failure."""
-    return any(text in detail.lower() for text in _NO_SUCH)
+def _gone(detail: str, answered: bool) -> bool:
+    """Whether the engine itself said the object does not exist, as opposed to any other failure.
+
+    A failure to run the engine CLI (``No such file or directory: 'docker'``) is not an answer, so
+    its text never counts, however it is worded.
+    """
+    return answered and any(text in detail.lower() for text in _NO_SUCH)
 
 
 def inspect_worker(launch_id: str) -> JsonObject:
@@ -441,11 +452,11 @@ def inspect_worker(launch_id: str) -> JsonObject:
         "oom_killed": None,
         "labels": None,
     }
-    ok, output = _engine(
+    ok, output, answered = _ask(
         ["docker", "container", "inspect", "--format", "{{json .}}", launch_id]
     )
     if not ok:
-        return {**result, "state": "missing" if _gone(output) else "unknown"}
+        return {**result, "state": "missing" if _gone(output, answered) else "unknown"}
     try:
         info = json.loads(output)
         engine_state = info["State"]
@@ -573,10 +584,10 @@ _ROLE_ORDER = {"worker": 0, "proxy": 1, "network": 2}
 
 def _remove(argv: list[str], result: JsonObject, label: str) -> bool:
     """Run one removal; an object that is already gone counts as removed. Whether it is now gone."""
-    ok, detail = _engine(argv)
+    ok, detail, answered = _ask(argv)
     if ok:
         result["removed"].append(label)
-    elif _gone(detail):
+    elif _gone(detail, answered):
         result["missing"].append(label)
     else:
         result["failed"].append({"object": label, "reason": detail})
