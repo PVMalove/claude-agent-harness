@@ -631,6 +631,33 @@ def test_esc_the_menu_and_the_home_crumb_wait_while_the_update_runs(
     assert closed == [None]
 
 
+def test_the_home_key_and_the_home_crumb_close_the_screen_through_its_callback(
+    tmp_path: Path,
+) -> None:
+    """Leaving to Home any way runs the opener's callback (it refreshes Home), as Esc does."""
+    from harness.console.screens.dashboard import DashboardScreen
+
+    async def scenario() -> list[list[object]]:
+        results: list[list[object]] = []
+        for leave in ("key", "crumb"):
+            closed: list[object] = []
+            app = HarnessConsoleApp(tmp_path)
+            async with app.run_test(size=(120, 40)) as pilot:
+                screen = _screen(tmp_path, _Runner())
+                await app.push_screen(screen, closed.append)
+                await _ready(pilot, app)
+                if leave == "key":
+                    await pilot.press("0")
+                else:
+                    await screen.navigate_crumb(screen.crumbs()[0])
+                await wait_until(pilot, lambda: isinstance(app.screen, DashboardScreen))
+                await pilot.pause()
+                results.append(closed)
+        return results
+
+    assert asyncio.run(scenario()) == [[None], [None]]
+
+
 def test_drift_and_not_installed_states_are_a_symbol_and_a_text(tmp_path: Path) -> None:
     async def scenario() -> dict[str, str]:
         seen: dict[str, str] = {}
