@@ -829,3 +829,13 @@ EN.update(
         "⚠ доступно обновление": "⚠ update available",
     }
 )
+# Open project: status lines of the path check.
+EN.update(
+    {
+        "Проверяется путь…": "Checking the path…",
+        "Выберите каталог проекта": "Choose a project directory",
+        "Каталог проекта не существует": "The project directory does not exist",
+        "Git недоступен или не отвечает": "Git is unavailable or not responding",
+        "Путь изменился; проверьте его ещё раз": "The path changed; check it again",
+    }
+)

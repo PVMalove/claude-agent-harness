@@ -506,3 +506,131 @@ def test_styled_log_ignores_foreign_lines_that_only_look_like_a_report_total() -
 
     text = "Итого: 3 файла\n- элемент списка"
     assert styled_log(text).plain == text
+
+
+# -- Esc through the shell's `action_back`, symbols on status lines, narrow terminal ----------
+
+
+def test_open_project_has_no_escape_binding_of_its_own() -> None:
+    from textual.binding import Binding
+
+    own = ProjectSetupScreen.__dict__.get("BINDINGS", [])
+    keys = [b.key if isinstance(b, Binding) else b[0] for b in own]
+    assert "escape" not in keys
+    assert not hasattr(ProjectSetupScreen, "action_cancel")
+
+
+def test_escape_waits_while_an_operation_runs_and_then_dismisses_with_none(
+    tmp_path: Path,
+) -> None:
+    results: list[object] = []
+
+    async def scenario() -> tuple[list[str], bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = ProjectSetupScreen(tmp_path, command_runner=lambda *a, **k: None)  # type: ignore[arg-type]
+            await app.push_screen(screen, results.append)
+            await wait_until(pilot, lambda: app.screen is screen)
+            notes: list[str] = []
+            screen.notify = lambda message, **_: notes.append(message)  # type: ignore[method-assign]
+            screen.query_one("#project-path", Input).blur()
+            screen._set_busy(True)
+            await pilot.press("escape")
+            await pilot.pause()
+            stayed = app.screen is screen and results == []
+            screen._set_busy(False)
+            await pilot.press("escape")
+            await wait_until(pilot, lambda: app.screen is not screen)
+            return notes, stayed
+
+    notes, stayed = asyncio.run(scenario())
+    assert stayed and notes == ["Дождитесь окончания операции"]
+    assert results == [None]
+
+
+def test_status_lines_start_with_a_symbol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from harness.console.project_target import inspect_target
+
+    project = tmp_path / "backend"
+    project.mkdir()
+    subprocess.run(["git", "init", "-q", str(project)], check=True)
+    gate = threading.Event()
+    real = inspect_target
+
+    def slow(value: str) -> object:
+        gate.wait(30)
+        return real(value)
+
+    monkeypatch.setattr("harness.console.screens.project_setup.inspect_target", slow)
+
+    async def scenario() -> dict[str, str]:
+        seen: dict[str, str] = {}
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await pilot.press("p")
+            await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
+            screen = app.screen
+            assert isinstance(screen, ProjectSetupScreen)
+            status = screen.query_one("#target-status", Static)
+            output = screen.query_one("#setup-output", Static)
+            screen.query_one("#project-path", Input).value = str(project)
+            await press(pilot, "#inspect-project")
+            seen["inspecting"] = str(status.content)
+            gate.set()
+            await app.workers.wait_for_complete()
+            await wait_until(
+                pilot, lambda: not screen.busy and "✔" in str(status.content)
+            )
+            seen["inspected"] = str(status.content)
+            await app.workers.wait_for_complete()
+            await wait_until(pilot, lambda: not screen.busy)
+            screen._run(lambda: "готово")
+            seen["running"] = str(output.content)
+            await app.workers.wait_for_complete()
+            await wait_until(pilot, lambda: not screen.busy)
+            screen.query_one("#project-path", Input).value = str(tmp_path / "missing")
+            await press(pilot, "#inspect-project")
+            await wait_until(pilot, lambda: str(status.content).startswith("✖"))
+            seen["failed"] = str(status.content)
+            app.action_toggle_language()
+            await wait_until(pilot, lambda: str(status.content) != seen["failed"])
+            seen["failed en"] = str(status.content)
+        return seen
+
+    seen = asyncio.run(scenario())
+    assert seen["inspecting"] == "▶ Проверяется путь…"
+    assert seen["inspected"].splitlines()[0] == "✔ " + str(project.resolve())
+    assert seen["running"] == "▶ Выполняется…"
+    assert seen["failed"] == "✖ Каталог проекта не существует"
+    assert seen["failed en"] == "✖ The project directory does not exist"
+
+
+@pytest.mark.parametrize("size", [(80, 24), (160, 52)])
+def test_focus_starts_in_the_path_and_a_long_path_never_widens_the_page(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from tests.console.test_console_layout import layout_problems
+
+    long_repo = tmp_path / ("very-long-project-name-" * 5).rstrip("-")
+    long_repo.mkdir()
+
+    async def scenario() -> tuple[str | None, str | None, list[str]]:
+        app = HarnessConsoleApp(long_repo)
+        async with app.run_test(size=size) as pilot:
+            screen = ProjectSetupScreen(long_repo, command_runner=lambda *a, **k: None)  # type: ignore[arg-type]
+            await app.push_screen(screen)
+            await wait_until(pilot, lambda: screen.focused is not None)
+            await pilot.pause()
+            first = screen.focused.id if screen.focused else None
+            await pilot.press("tab")
+            await pilot.pause()
+            second = screen.focused.id if screen.focused else None
+            return first, second, layout_problems(screen)  # type: ignore[arg-type]
+
+    first, second, problems = asyncio.run(scenario())
+    assert first == "project-path" and second == "browse-project"
+    assert problems == []
