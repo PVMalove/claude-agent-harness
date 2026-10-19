@@ -308,3 +308,39 @@ def test_restore_says_why_it_is_off_and_goes_on_with_a_version_chosen(
     empty, tooltip = asyncio.run(scenario())
     assert empty == "«Восстановить версию»: сохранённых версий нет"
     assert tooltip == "сохранённых версий нет"
+
+
+def test_the_versions_diff_masks_a_secret_stored_in_the_active_file(
+    tmp_path: Path,
+) -> None:
+    import json
+
+    from textual.widgets import Select
+
+    from harness.configuration import SECRET_MASK
+    from harness.configuration_store import json_bytes
+
+    installed_project(tmp_path)
+    saved = ConfigurationStore(tmp_path).save(read_config_bundle(tmp_path), "Чистая")
+    path = tmp_path / ".harness/project.json"
+    data = json.loads(path.read_bytes())
+    data["language"] = "en"
+    data["tracker"] = {"type": "local", "token": "S3CRET"}
+    data["qa_gate_commands"] = ["pytest --token=S3CRET"]
+    path.write_bytes(json_bytes(data))
+
+    async def scenario(language: str, size: tuple[int, int]) -> str:
+        app = _host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#restore-version")))
+            app.screen.query_one("#configuration-version", Select).value = saved.id
+            await wait_until(
+                pilot, lambda: "language" in str(app.screen.query_one("#version-diff").render())
+            )
+            return str(app.screen.query_one("#version-diff").render())
+
+    for language in ("ru", "en"):
+        for size in ((120, 48), (80, 24)):
+            diff = asyncio.run(scenario(language, size))
+            assert "S3CRET" not in diff and SECRET_MASK in diff

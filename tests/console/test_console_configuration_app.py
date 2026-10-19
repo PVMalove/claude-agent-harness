@@ -1402,3 +1402,196 @@ def test_long_names_wrap_and_never_widen_the_page_at_80x24(tmp_path: Path) -> No
             return problems + layout_problems(cast(Screen[None], screen))
 
     assert asyncio.run(scenario()) == []
+
+
+_SECRET = "S3CRET"
+_SIZES = ((120, 48), (80, 24))
+
+
+def _secret_project(repo: Path) -> None:
+    """A project whose stored files already hold secrets in a string, a list and an unknown key."""
+    from harness.configuration_store import json_bytes
+
+    installed_project(repo)
+    path = repo / ".harness/project.json"
+    data = json.loads(path.read_bytes())
+    data["base_branch"] = f"https://user:{_SECRET}@example.test/x"
+    data["qa_gate_commands"] = [f"pytest --token={_SECRET}", "ruff check"]
+    data["tracker"] = {
+        "type": "local",
+        "project": f"token={_SECRET}",
+        "token": _SECRET,
+    }
+    path.write_bytes(json_bytes(data))
+
+
+def _ui_text(screen: Screen[None]) -> str:
+    """Everything a person can read or edit on `screen`."""
+    from rich.json import JSON
+    from textual.widgets import Input
+
+    parts = []
+    for widget in screen.query(Static):
+        content = widget.content
+        parts.append(
+            content.text.plain if isinstance(content, JSON) else str(content)
+        )
+    parts += [widget.text for widget in screen.query(TextArea)]
+    parts += [widget.value for widget in screen.query(Input)]
+    parts += [str(widget.label) for widget in screen.query(Button)]
+    return "\n".join(parts)
+
+
+def test_a_stored_secret_is_masked_in_the_field_editor_and_the_draft_stays_intact(
+    tmp_path: Path,
+) -> None:
+    from harness.configuration import SECRET_MASK
+
+    _secret_project(tmp_path)
+    stored = json.loads((tmp_path / ".harness/project.json").read_bytes())
+    warning = {
+        "ru": "⚠ Секрет скрыт",
+        "en": "⚠ A secret is hidden",
+    }
+
+    async def scenario(language: str, size: tuple[int, int]) -> None:
+        app = Host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            assert screen.draft is not None
+            draft = screen.draft
+            await _open_step(pilot, screen, ("base_branch",), "#field-value")
+            editor = screen.query_one("#field-value", TextArea)
+            assert editor.text == SECRET_MASK
+            assert _SECRET not in _ui_text(screen)
+            assert warning[language] in _ui_text(screen)
+            # A block's overview rows mask a stored child value too.
+            await _open_step(pilot, screen, ("tracker",), ".section-rows")
+            assert f'project = "{SECRET_MASK}"' in _ui_text(screen)
+            assert _SECRET not in _ui_text(screen)
+            await _open_step(pilot, screen, ("base_branch",), "#field-value")
+            editor = screen.query_one("#field-value", TextArea)
+            # Accepting the recommendation (the stored value) shows the mask, not the secret.
+            await press(pilot, "#use-recommendation")
+            assert editor.text == SECRET_MASK and _SECRET not in _ui_text(screen)
+            # Next and Back through the masked step leave the draft exactly as stored.
+            index = screen.index
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            await press(pilot, "#previous-step")
+            await wait_until(pilot, lambda: screen.index == index)
+            assert draft.documents["project.json"] == stored
+            # A mask literal never replaces a real value: the step refuses and stays.
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            screen.query_one("#field-value", TextArea).load_text(SECRET_MASK + "/x")
+            await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: "••••••" in str(screen.query_one("#config-error").render()),
+            )
+            assert screen.index == index
+            assert draft.documents["project.json"] == stored
+            # A real edit that drops the mask is written as any edit.
+            screen.query_one("#field-value", TextArea).load_text("main")
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            assert draft.documents["project.json"]["base_branch"] == "main"
+
+    for language in ("ru", "en"):
+        for size in _SIZES:
+            asyncio.run(scenario(language, size))
+
+
+def test_a_stored_secret_in_a_list_is_masked_in_the_menu_and_the_json_text(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Label, ListView
+
+    from harness.configuration import SECRET_MASK
+
+    _secret_project(tmp_path)
+    stored = json.loads((tmp_path / ".harness/project.json").read_bytes())
+
+    async def scenario(language: str, size: tuple[int, int]) -> None:
+        app = Host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            assert screen.draft is not None
+            draft = screen.draft
+            await _open_step(pilot, screen, ("qa_gate_commands",), "#menu-items")
+            rows = [
+                str(label.content)
+                for label in screen.query("#menu-items Label").results(Label)
+            ]
+            assert rows[0] == f'"{SECRET_MASK}"' and _SECRET not in _ui_text(screen)
+            assert screen.query_one("#menu-items", ListView)
+            await screen._set_mode(True)
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            editor = screen.query_one("#field-value", TextArea)
+            assert json.loads(editor.text) == [SECRET_MASK, "ruff check"]
+            assert _SECRET not in _ui_text(screen)
+            index = screen.index
+            # Unedited text writes nothing; an edit that keeps the mask is refused.
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            assert draft.documents["project.json"] == stored
+            await press(pilot, "#previous-step")
+            await wait_until(pilot, lambda: screen.index == index)
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            screen.query_one("#field-value", TextArea).load_text(
+                json.dumps([SECRET_MASK, "other"], ensure_ascii=False)
+            )
+            await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: "••••••" in str(screen.query_one("#config-error").render()),
+            )
+            assert screen.index == index and draft.documents["project.json"] == stored
+            # Removing the masked entry writes the change.
+            screen.query_one("#field-value", TextArea).load_text('["ruff check"]')
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            assert draft.documents["project.json"]["qa_gate_commands"] == [
+                "ruff check"
+            ]
+            assert draft.changed()
+
+    for language in ("ru", "en"):
+        for size in _SIZES:
+            asyncio.run(scenario(language, size))
+
+
+def test_the_review_page_masks_stored_secrets_and_the_draft_keeps_them(
+    tmp_path: Path,
+) -> None:
+    from harness.configuration import SECRET_MASK
+
+    _secret_project(tmp_path)
+
+    async def scenario(language: str, size: tuple[int, int]) -> None:
+        app = Host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            assert screen.draft is not None
+            screen.draft.set_value("project.json", ("language",), "en")
+            await press(pilot, "#review-config")
+            await wait_until(pilot, lambda: bool(screen.query("#configuration-diff")))
+            text = _ui_text(screen)
+            assert _SECRET not in text and SECRET_MASK in text
+            # Display only: the draft still holds the real data for apply and the checks.
+            encoded = screen.draft.encoded()["project.json"]
+            assert encoded is not None and _SECRET in encoded.decode()
+            assert _SECRET not in "\n".join(screen.draft.problems())
+
+    for language in ("ru", "en"):
+        for size in _SIZES:
+            asyncio.run(scenario(language, size))

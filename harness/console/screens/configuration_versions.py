@@ -131,7 +131,13 @@ class ConfigurationVersionsScreen(ConsoleShell):
         try:
             self.expected = read_config_bundle(self.repo)
             self.candidate = self.store.load(self.selected)
-            diff = bundle_diff(self.expected, self.candidate, "active", "version")
+            diff = bundle_diff(
+                self.expected,
+                self.candidate,
+                "active",
+                "version",
+                getattr(self.app, "language", "ru"),
+            )
             self.query_one("#version-diff", Static).update(
                 colorize_diff(
                     (diff or "Изменений нет") + self._compatibility_note(self.selected)

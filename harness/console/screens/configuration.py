@@ -31,7 +31,7 @@ from textual.widgets import (
     TextArea,
 )
 
-from harness.configuration import read_config_bundle
+from harness.configuration import SECRET_MASK, mask_secrets, read_config_bundle
 from harness.configuration_store import ConfigurationStore, StaleConfiguration
 from harness.runtime_adapters import AdapterStatus
 from .. import brand, i18n
@@ -110,6 +110,18 @@ def _short(value: object, limit: int = 48) -> str:
     else:
         text = json.dumps(value, ensure_ascii=False)
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _value_text(field: ConfigurationStep, value: object) -> str:
+    """The editor text of `value` for `field`: a string as it is, anything else as JSON; secrets show
+    the mask. The draft never takes this text back unless the user edits it."""
+    shown = mask_secrets(value, field.path[-1])
+    text = (
+        shown
+        if isinstance(shown, str) and field.kind == "string" and not field.choices
+        else json.dumps(shown, ensure_ascii=False, indent=2)
+    )
+    return str(text or "")
 
 
 class ConfirmConfiguration(Translated, ModalScreen[bool]):
@@ -548,20 +560,21 @@ class ConfigurationScreen(ConsoleShell):
                 yield from self._compose_menu(field)
                 return
         recommendation, why = field.recommendation(self.draft)
+        shown = mask_secrets(recommendation, field.path[-1])
         if isinstance(recommendation, (dict, list)) and recommendation:
             if recommendation != field.value(self.draft):
                 # A whole object is unreadable on one line; show it as indented JSON.
                 yield Static("Рекомендация (★):", classes="recommendation-title")
                 with VerticalScroll(classes="recommendation-json"):
                     yield Static(
-                        JSON.from_data(recommendation, indent=2, ensure_ascii=False),
+                        JSON.from_data(shown, indent=2, ensure_ascii=False),
                         classes="no-i18n",
                     )
             yield Static("Почему: " + why, markup=False)
         else:
             yield Static(
                 "Рекомендация (★): "
-                + json.dumps(recommendation, ensure_ascii=False)
+                + json.dumps(shown, ensure_ascii=False)
                 + "\nПочему: "
                 + why,
                 markup=False,
@@ -582,13 +595,6 @@ class ConfigurationScreen(ConsoleShell):
         else:
             if field.choices:
                 yield from self._compose_choices(field, value, recommendation)
-            text = (
-                value
-                if isinstance(value, str)
-                and field.kind == "string"
-                and not field.choices
-                else json.dumps(value, ensure_ascii=False, indent=2)
-            )
             yield Static(
                 "Введите значение"
                 if field.kind == "string" and not field.choices
@@ -596,7 +602,15 @@ class ConfigurationScreen(ConsoleShell):
                 if field.is_map
                 else "Значение в JSON; объект/список можно редактировать целиком"
             )
-            yield TextArea(str(text or ""), id="field-value", soft_wrap=True)
+            yield TextArea(self._editor_text(field), id="field-value", soft_wrap=True)
+            if self._is_masked(field):
+                yield Static(
+                    "⚠ Секрет скрыт («"
+                    + SECRET_MASK
+                    + "»). Секреты нельзя хранить в конфигурации: удалите или замените скрытые части; без правок значение не изменится.",
+                    classes="hint",
+                    markup=False,
+                )
         with Horizontal(classes="actions"):
             yield Button("Принять рекомендацию", id="use-recommendation")
 
@@ -629,7 +643,12 @@ class ConfigurationScreen(ConsoleShell):
         rows = []
         for name in field.child_names:
             if name in current:
-                rows.append((f"✓ {name} = {_short(current[name])}", "row-ok"))
+                rows.append(
+                    (
+                        f"✓ {name} = {_short(mask_secrets(current[name], name))}",
+                        "row-ok",
+                    )
+                )
             elif name in required:
                 rows.append((f"! {name} — не задан (обязательный)", "row-warn"))
             else:
@@ -658,13 +677,16 @@ class ConfigurationScreen(ConsoleShell):
         if field.is_map:
             entries = value if isinstance(value, dict) else {}
             rows = [
-                (str(name), f"{name}  {_short(item)}") for name, item in entries.items()
+                (str(name), f"{name}  {_short(mask_secrets(item, str(name)))}")
+                for name, item in entries.items()
             ]
             yield Static("Записи:", classes="recommendation-title")
             empty = "Записей пока нет"
         else:
             items = value if isinstance(value, list) else []
-            rows = [(str(i), _short(item)) for i, item in enumerate(items)]
+            rows = [
+                (str(i), _short(mask_secrets(item))) for i, item in enumerate(items)
+            ]
             yield Static("Элементы:", classes="recommendation-title")
             empty = "Список пока пуст"
         if rows:
@@ -896,14 +918,16 @@ class ConfigurationScreen(ConsoleShell):
                 )
         with SectionCard(title="Различия", id="configuration-changes"):
             yield Static(
-                colorize_diff(self.draft.diff() or "Изменений нет"),
+                colorize_diff(self.draft.diff(self._language()) or "Изменений нет"),
                 id="configuration-diff",
                 markup=False,
             )
         with SectionCard(title="Итоговые файлы", id="configuration-json"):
             for name, data in self.draft.documents.items():
                 yield Static(
-                    name + "\n" + json.dumps(data, ensure_ascii=False, indent=2),
+                    name
+                    + "\n"
+                    + json.dumps(mask_secrets(data), ensure_ascii=False, indent=2),
                     markup=False,
                 )
         with SectionCard(title="Версия", id="configuration-version"):
@@ -998,6 +1022,16 @@ class ConfigurationScreen(ConsoleShell):
             max(candidates, key=lambda item: len(item[1].path))[0] if candidates else 0
         )
 
+    def _editor_text(self, field: ConfigurationStep) -> str:
+        assert self.draft is not None
+        return _value_text(field, field.value(self.draft))
+
+    def _is_masked(self, field: ConfigurationStep) -> bool:
+        """Whether the editor shows `field` through the secret mask (a boolean carries no secret)."""
+        assert self.draft is not None
+        value = field.value(self.draft)
+        return field.kind != "boolean" and mask_secrets(value, field.path[-1]) != value
+
     def _save_field(self) -> bool:
         if self.phase is not Phase.EDITING or self.draft is None:
             return True
@@ -1014,11 +1048,23 @@ class ConfigurationScreen(ConsoleShell):
                         field.file, field.path, [] if field.kind == "array" else {}
                     )
             elif self.query_one("#include-field", Checkbox).value:
-                value = (
-                    self.query_one("#field-boolean", Checkbox).value
-                    if field.kind == "boolean"
-                    else field.parse(self.query_one("#field-value", TextArea).text)
-                )
+                value: object
+                if field.kind == "boolean":
+                    value = self.query_one("#field-boolean", Checkbox).value
+                else:
+                    text = self.query_one("#field-value", TextArea).text
+                    if self._is_masked(field):
+                        if text == self._editor_text(field):
+                            # Untouched: the real value stays in the draft.
+                            self._remember("")
+                            return True
+                        if SECRET_MASK in text:
+                            raise ValueError(
+                                "Замените или удалите скрытое значение «"
+                                + SECRET_MASK
+                                + "»"
+                            )
+                    value = field.parse(text)
                 field.validate(value)
                 self.draft.set_value(field.file, field.path, value)
             elif field.present(self.draft):
@@ -1135,12 +1181,7 @@ class ConfigurationScreen(ConsoleShell):
         if field.kind == "boolean":
             self.query_one("#field-boolean", Checkbox).value = bool(value)
             return
-        text = (
-            value
-            if field.kind == "string" and not field.choices
-            else json.dumps(value, ensure_ascii=False, indent=2)
-        )
-        self.query_one("#field-value", TextArea).load_text(str(text))
+        self.query_one("#field-value", TextArea).load_text(_value_text(field, value))
         if field.kind == "array" and isinstance(value, list):
             # Programmatic ticks must not feed partial selections back into the JSON.
             with self.prevent(Checkbox.Changed):

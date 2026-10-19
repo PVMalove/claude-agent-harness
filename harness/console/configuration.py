@@ -9,11 +9,18 @@ from dataclasses import dataclass
 from harness.runtime_adapters import AdapterStatus
 from pathlib import Path
 
-from harness.configuration import parse_object, read_config_bundle, reject_secrets
+from harness.configuration import (
+    mask_secrets,
+    parse_object,
+    read_config_bundle,
+    reject_secrets,
+)
 from harness.configuration_schema import PACKAGE
 from harness.configuration_store import json_bytes
 from harness.health.project_files import validate_project_data
 from harness.json_types import JsonObject
+
+from . import i18n
 
 CONFIG_NAMES = ("project.json", "orchestration.json")
 
@@ -74,16 +81,48 @@ def _changed_paths(
     return [] if old == new else [prefix]
 
 
+_UNPARSED = "содержимое скрыто: файл не разобран как JSON"
+_ONLY_HIDDEN = "изменены только скрытые значения или форматирование"
+
+
+def _masked_bundle(
+    bundle: dict[str, bytes | None], language: str
+) -> dict[str, bytes | None]:
+    """The files as the UI may show them: a file without secrets keeps its raw bytes, one with
+    secrets is shown through `mask_secrets`, one that is not a JSON object is replaced by a line
+    (a key secret cannot be found in unparsed text)."""
+    masked: dict[str, bytes | None] = {}
+    for name, raw in bundle.items():
+        if raw is None:
+            masked[name] = None
+            continue
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (ValueError, RecursionError):
+            parsed = None
+        if not isinstance(parsed, dict):
+            masked[name] = (i18n.tr(language, _UNPARSED) + "\n").encode()
+        elif mask_secrets(parsed) == parsed:
+            masked[name] = raw
+        else:
+            masked[name] = json_bytes(mask_secrets(parsed))  # type: ignore[arg-type]
+    return masked
+
+
 def bundle_diff(
     before: dict[str, bytes | None],
     after: dict[str, bytes | None],
     old_label: str,
     new_label: str,
+    language: str = "ru",
 ) -> str:
-    """Unified diff of two configuration sets; a deleted file is announced explicitly."""
+    """Unified diff of two configuration sets; a deleted file is announced explicitly. Secret values
+    never appear in it: both sets are masked first (see `_masked_bundle`)."""
+    shown_before = _masked_bundle(before, language)
+    shown_after = _masked_bundle(after, language)
     lines: list[str] = []
-    for name, raw in after.items():
-        old = (before[name] or b"").decode("utf-8").splitlines(keepends=True)
+    for name, raw in shown_after.items():
+        old = (shown_before[name] or b"").decode("utf-8").splitlines(keepends=True)
         new = (raw or b"").decode("utf-8").splitlines(keepends=True)
         lines.extend(
             difflib.unified_diff(
@@ -92,6 +131,8 @@ def bundle_diff(
         )
         if raw is None and before[name] is not None:
             lines.append(f"Удалить {name}\n")
+        if before[name] != after[name] and old == new:
+            lines.append(f"{name}: {i18n.tr(language, _ONLY_HIDDEN)}\n")
     return "".join(lines)
 
 
@@ -209,9 +250,9 @@ class ConfigurationDraft:
     def encoded(self) -> dict[str, bytes | None]:
         return {name: json_bytes(data) for name, data in self.documents.items()}
 
-    def diff(self) -> str:
+    def diff(self, language: str = "ru") -> str:
         """Unified diff of the saved files against this draft; empty when unchanged."""
-        return bundle_diff(self.original, self.encoded(), "текущий", "новый")
+        return bundle_diff(self.original, self.encoded(), "текущий", "новый", language)
 
 
 # The words of an update plan, one per `harness diff --json` field: a symbol and a word, never a
