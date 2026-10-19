@@ -1066,6 +1066,48 @@ def test_a_number_key_and_the_home_crumb_with_a_changed_draft_ask_first(
     asyncio.run(scenario())
 
 
+def test_the_home_key_and_the_home_crumb_refresh_home_like_esc(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import ListView
+
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.shell import SECTIONS, CrumbLink
+
+    installed_project(tmp_path)
+
+    async def scenario() -> list[int]:
+        counts: list[int] = []
+        for leave in ("escape", "0", "crumb"):
+            app = _dashboard_host(tmp_path)
+            async with app.run_test(size=(120, 48)) as pilot:
+                dashboard = cast(DashboardScreen, app.screen)
+                refreshes: list[bool] = []
+                dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
+                    online
+                )
+                await wait_until(pilot, lambda: bool(app.screen.query("#section-menu")))
+                app.screen.query_one("#section-menu", ListView).index = SECTIONS.index(
+                    "Configuration"
+                )
+                await pilot.press("enter")
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ConfigurationScreen)
+                )
+                screen = app.screen
+                if leave == "crumb":
+                    await wait_until(pilot, lambda: bool(screen.query(CrumbLink)))
+                    screen.query(CrumbLink).first().action_select()
+                else:
+                    await pilot.press(leave)
+                await wait_until(pilot, lambda: app.screen is dashboard)
+                await pilot.pause()
+                counts.append(len(refreshes))
+        return counts
+
+    assert asyncio.run(scenario()) == [1, 1, 1]
+
+
 def test_confirming_the_discard_closes_the_wizard_and_then_opens_the_section(
     tmp_path: Path,
 ) -> None:

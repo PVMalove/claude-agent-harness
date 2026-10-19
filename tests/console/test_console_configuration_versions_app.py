@@ -171,6 +171,58 @@ def test_versions_stand_on_the_shared_frame_and_wait_for_a_running_restore(
     asyncio.run(scenario())
 
 
+def test_the_home_key_and_the_home_crumb_ask_before_a_changed_wizard_draft_is_dropped(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.shell import CrumbLink
+    from tests.console.test_console_configuration_app import (
+        _change_draft,
+        _dashboard_host,
+        _open_wizard_from_home,
+    )
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        for leave in ("0", "crumb"):
+            app = _dashboard_host(tmp_path)
+            async with app.run_test(size=(120, 48)) as pilot:
+                dashboard = cast(DashboardScreen, app.screen)
+                wizard = await _open_wizard_from_home(app, pilot)
+                _change_draft(wizard)
+                wizard._open_versions()
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ConfigurationVersionsScreen)
+                )
+                versions = app.screen
+                for attempt in ("cancel", "confirm"):
+                    if leave == "crumb":
+                        await wait_until(pilot, lambda: bool(versions.query(CrumbLink)))
+                        versions.query(CrumbLink).first().action_select()
+                    else:
+                        await pilot.press("0")
+                    await wait_until(
+                        pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                    )
+                    assert wizard in app.screen_stack
+                    await press(pilot, f"#{attempt}")
+                    if attempt == "cancel":
+                        await wait_until(pilot, lambda: app.screen is wizard)
+                        assert wizard.draft is not None and wizard.draft.changed()
+                        wizard._open_versions()
+                        await wait_until(
+                            pilot,
+                            lambda: isinstance(app.screen, ConfigurationVersionsScreen),
+                        )
+                        versions = app.screen
+                await wait_until(pilot, lambda: app.screen is dashboard)
+                assert wizard not in app.screen_stack
+
+    asyncio.run(scenario())
+
+
 def test_restore_says_why_it_is_off_and_goes_on_with_a_version_chosen(
     tmp_path: Path,
 ) -> None:

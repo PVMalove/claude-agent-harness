@@ -13,11 +13,11 @@ from harness.configuration_store import ConfigurationStore, ConfigurationVersion
 from .commands import call_from_worker
 from .. import brand, i18n
 from ..crumbs import Crumb
-from ..shell import SHELL_CSS, ConsoleShell, SectionCard
+from ..shell import HOME_SECTION, SECTIONS, SHELL_CSS, ConsoleShell, SectionCard
 from ..logtext import colorize_diff
 from ..configuration import bundle_diff
 from ..widgets import ComposedPage, ReasonNote
-from .configuration import ConfirmConfiguration
+from .configuration import ConfigurationScreen, ConfirmConfiguration
 
 
 class ConfigurationVersionsScreen(ConsoleShell):
@@ -215,8 +215,26 @@ class ConfigurationVersionsScreen(ConsoleShell):
             await super().action_back()
 
     async def open_section(self, index: int) -> None:
-        if not self._waiting():
+        if self._waiting():
+            return
+        wizard = self._wizard_below()
+        if wizard is not None and SECTIONS[index] == HOME_SECTION:
+            # The wizard below guards its unapplied draft and closes itself into Home; the shell's
+            # pop to Home would drop both.
+            self.dismiss(None)
+            self.app.call_later(wizard.open_section, index)
+        else:
             await super().open_section(index)
+
+    def _wizard_below(self) -> ConfigurationScreen | None:
+        stack = self.app.screen_stack
+        if (
+            len(stack) > 1
+            and stack[-1] is self
+            and isinstance(stack[-2], ConfigurationScreen)
+        ):
+            return stack[-2]
+        return None
 
     async def navigate_crumb(self, crumb: Crumb) -> None:
         if not self._waiting():

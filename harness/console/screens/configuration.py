@@ -63,6 +63,7 @@ from ..configuration_steps import (
     steps_for,
 )
 from .commands import call_from_worker
+from .home_exit import closes_into_home
 
 _PROVIDER_KEYS = tuple(PROVIDERS)
 _NO_ADVISOR = "Без ИИ — обычные подсказки"
@@ -1371,7 +1372,11 @@ class ConfigurationScreen(ConsoleShell):
         await self._leave(None)
 
     async def open_section(self, index: int) -> None:
-        await self._leave(lambda: ConsoleShell.open_section(self, index))
+        # To Home the wizard closes itself, so the push callback that refreshes Home runs.
+        if closes_into_home(self, index):
+            await self._leave(None)
+        else:
+            await self._leave(lambda: ConsoleShell.open_section(self, index))
 
     async def navigate_crumb(self, crumb: Crumb) -> None:
         await self._leave(lambda: ConsoleShell.navigate_crumb(self, crumb))
