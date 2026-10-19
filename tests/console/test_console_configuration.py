@@ -146,3 +146,27 @@ def test_bundle_diff_says_when_only_hidden_values_changed_and_hides_unparsed_fil
     assert "file is not valid JSON" in bundle_diff(
         broken, fixed, "old", "new", language="en"
     )
+
+
+def test_bundle_diff_masks_a_secret_under_an_overridden_duplicate_key() -> None:
+    from harness.console.configuration import bundle_diff
+
+    duplicate = b'{"url": "https://user:pass@host", "url": "https://host"}\n'
+    nested = b'{"a": {"token": "HUNTER2", "token": "x"}, "b": 1}\n'
+    clean = b'{"url": "https://host"}\n'
+    for raw, secret in ((duplicate, "user:pass"), (nested, "HUNTER2")):
+        old = {"project.json": raw, "orchestration.json": None}
+        new = {"project.json": clean, "orchestration.json": None}
+        for diff in (
+            bundle_diff(old, new, "old", "new"),
+            bundle_diff(new, old, "old", "new"),
+        ):
+            assert secret not in diff
+    plain = b'{"url": "https://host", "url": "https://other"}\n'
+    shown = bundle_diff(
+        {"project.json": plain, "orchestration.json": None},
+        {"project.json": clean, "orchestration.json": None},
+        "old",
+        "new",
+    )
+    assert '-{"url": "https://host", "url": "https://other"}' in shown

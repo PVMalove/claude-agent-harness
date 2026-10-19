@@ -89,20 +89,34 @@ def _masked_bundle(
     bundle: dict[str, bytes | None], language: str
 ) -> dict[str, bytes | None]:
     """The files as the UI may show them: a file without secrets keeps its raw bytes, one with
-    secrets is shown through `mask_secrets`, one that is not a JSON object is replaced by a line
-    (a key secret cannot be found in unparsed text)."""
+    secrets (also under an overridden duplicate key) is shown through `mask_secrets`, one that is
+    not a JSON object is replaced by a line (a key secret cannot be found in unparsed text)."""
     masked: dict[str, bytes | None] = {}
     for name, raw in bundle.items():
         if raw is None:
             masked[name] = None
             continue
+        shadowed: list[tuple[str, object]] = []
+
+        def keep_last(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            # json.loads keeps only the last of duplicate keys; the shadowed values are still
+            # in the raw bytes, so they are checked too.
+            seen: dict[str, object] = {}
+            for key, item in pairs:
+                if key in seen:
+                    shadowed.append((key, seen[key]))
+                seen[key] = item
+            return seen
+
         try:
-            parsed = json.loads(raw.decode("utf-8"))
+            parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=keep_last)
         except (ValueError, RecursionError):
             parsed = None
         if not isinstance(parsed, dict):
             masked[name] = (i18n.tr(language, _UNPARSED) + "\n").encode()
-        elif mask_secrets(parsed) == parsed:
+        elif mask_secrets(parsed) == parsed and all(
+            mask_secrets(item, key) == item for key, item in shadowed
+        ):
             masked[name] = raw
         else:
             masked[name] = json_bytes(mask_secrets(parsed))  # type: ignore[arg-type]
