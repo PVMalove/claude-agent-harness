@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **[Egress-proxy для `network.hosts`]:** Контейнерный исполнитель `docker` принимает непустой `network.hosts`: для каждого dispatch он создаёт сеть `--internal` и отдельный sidecar из закреплённого digest образа `container.proxy_image`, а worker получает только эту сеть и переменные `HTTP_PROXY`/`HTTPS_PROXY` (в том числе строчные). Прокси пропускает HTTP и `CONNECT` только к хостам плана на портах 80 и 443, один раз резолвит имя и отказывает для loopback, link-local, unspecified, multicast и IP-литералов; остальное получает 403. Имя хоста LLM API нужно указать явно, а протоколы кроме HTTP(S), включая ssh git, не поддерживаются. При пустом списке хостов worker по-прежнему запускается с `--network none` без sidecar. Код прокси и `Dockerfile.proxy` поставляются в `.harness/container/` как часть `backend-orchestration` с контролем дрейфа; харнесс образы не собирает и не скачивает. Сеть, sidecar и worker получают метки `harness.dispatch`, `harness.repository`, `harness.plan_digest`, а сбой на любой ступени запуска удаляет все созданные объекты в обратном порядке (#706).
+
 ## [1.5.1] - 2026-10-18
 
 ### Added
