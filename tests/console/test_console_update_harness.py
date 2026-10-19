@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import subprocess
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ from rich.text import Text
 from textual.app import App
 from textual.screen import Screen
 from textual.widgets import Button, ListView, RadioButton, SelectionList, Static
+from textual.worker import WorkerCancelled
 
 from tests.console._pilot_wait import crumb_text, press, wait_until
 from harness.console import stats as console_stats
@@ -111,7 +113,11 @@ async def _ready(
     screen = app.screen
     assert isinstance(screen, UpdateHarnessScreen)
     if loaded:
-        await app.workers.wait_for_complete()
+        # An exclusive worker restarted by a second list highlight cancels the first one: that is
+        # the screen's normal behaviour, so a cancelled worker is not a failure of the wait.
+        for worker in list(app.workers):
+            with contextlib.suppress(WorkerCancelled):
+                await worker.wait()
         await wait_until(pilot, lambda: screen._payload_ready)  # type: ignore[arg-type]
         await pilot.pause()  # type: ignore[attr-defined]
     return screen
