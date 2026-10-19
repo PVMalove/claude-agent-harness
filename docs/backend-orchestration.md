@@ -505,9 +505,11 @@ Docker и Podman не поддерживаются. Worker видит `shared_st
 `harness.repository` с брифом: чужой объект с тем же id считается `unknown` и не трогается. Ответ
 виден в поле `worker` каждой записи `dispatch status`:
 
-- `state` — `running`, `exited`, `missing` (движок не знает такого контейнера) или `unknown` (движок
-  недоступен или ответ не доказывает остановку); `exit_code` и `finished_at` заполнены для `exited`;
-- `source` — `engine` (ответ получен сейчас) или `ledger` (показано сохранённое доказательство);
+- `state` — `running`, `exited`, `missing` (движок ответил, что не знает такого контейнера) или
+  `unknown` (движок недоступен, CLI не запустился или не ответил вовремя, либо ответ не доказывает
+  остановку); `exit_code` и `finished_at` заполнены для `exited`;
+- `source` — `engine` (ответ получен сейчас), `ledger` (показано сохранённое доказательство) или
+  `not_observed` (в этом чтении движок не опрашивался, см. ниже);
 - `teardown` — итог удаления ресурсов или `null`.
 
 Остановку доказывают только `exited` и `missing`. Тишина — отсутствие heartbeat или report — её не
@@ -516,9 +518,12 @@ Docker и Podman не поддерживаются. Worker видит `shared_st
 `oom_killed`, `observed_at`) и позже не перезаписывается. Новых состояний dispatch не появляется.
 Live dispatch, чей worker завершился без report, получает `stale: true` сразу, не дожидаясь порога
 тишины. `dispatch wait` возвращает событие `stale` с полем `worker`, а `attention check` поднимает
-уже существующее `stale-dispatch` с exit code в тексте и рекомендацией
-`dispatch cancel --runtime-stopped`. `dispatch cancel --runtime-stopped` сохраняет квитанцию и
-`worker_exit` в записи статуса.
+уже существующее `stale-dispatch` с exit code в тексте. Контейнер не пишет в ledger, поэтому обычно
+он завершается раньше, чем report записан: если подготовленный report лежит в `report_staging_path`,
+`dispatch wait` возвращает его путь в поле `staged_report`, а рекомендация сначала предлагает
+`report submit --file <путь>`, и только для непригодного report — `dispatch cancel
+--runtime-stopped`. Без подготовленного report рекомендуется `dispatch cancel --runtime-stopped`.
+`dispatch cancel --runtime-stopped` сохраняет квитанцию и `worker_exit` в записи статуса.
 
 Когда dispatch становится `reported`, `cancelled`, `abandoned` или `failed`, а `worker_exit` уже
 записан, следующее чтение удаляет ресурсы, созданные для него: worker обычным `docker rm`, sidecar
@@ -532,7 +537,10 @@ Live dispatch, чей worker завершился без report, получае�
 
 `dispatch status` поэтому больше не только чтение: для незавершённого docker-dispatch он дописывает
 доказательство и освобождает ресурсы завершённого dispatch, но не меняет состояние жизненного
-цикла. Вызовы движка выполняются под lock ledger и ограничены `ENGINE_TIMEOUT_SECONDS`.
+цикла. Вызовы движка выполняются под lock ledger, каждый ограничен `ENGINE_TIMEOUT_SECONDS`.
+Чтение без `--dispatch` опрашивает движок не более чем о `MAX_ENGINE_READS` (4) dispatch; остальные
+показываются с `source: not_observed` и `state: unknown` и ничего не записывают. Чтобы наблюдать
+конкретный dispatch, назовите его через `--dispatch`: именованный dispatch опрашивается всегда.
 
 `harness cleanup <repo>` ищет в движке оставшиеся контейнеры и сети только этого репозитория (по
 метке `harness.repository`; метка проверяется по самому объекту, а не по фильтру движка) и работает
@@ -541,7 +549,9 @@ Live dispatch, чей worker завершился без report, получае�
 `extensions.runtime_access: "docker"`, и одинаков для `soft` и `hard`. Cleanup пропускает:
 не остановленный worker (с подсказкой `docker stop <имя>`), открытый в ledger dispatch, терминальный
 dispatch без записанного `worker_exit` (сначала `dispatch status`), недоступный движок и нечитаемый
-ledger. Dispatch, которого нет в ledger, и dispatch с `worker_exit` считаются сиротами. Cleanup не
+ledger. Сиротами считаются ресурсы dispatch, которого нет в ledger, и ресурсы терминального
+dispatch с записанным `worker_exit`; открытый dispatch пропускается, даже если у него уже есть
+`worker_exit`. Cleanup не
 пишет в ledger и не стирает сохранённое доказательство, повторный запуск после успеха ничего не
 делает.
 
