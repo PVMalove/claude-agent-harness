@@ -99,6 +99,8 @@ class FakeEngine:
         # The engine's containers and networks by id: created and started by the calls that make
         # them, so a test scripts a worker's exit instead of the answers.
         self.objects: dict[str, JsonObject] = {}
+        # An engine whose ``--filter label=`` narrows nothing: a caller must check labels itself.
+        self.ignore_label_filters = False
         # Called with the argv of every ``rm`` before the engine acts on it.
         self.on_remove: Callable[[list[str]], None] | None = None
 
@@ -117,6 +119,14 @@ class FakeEngine:
             "status": status,
             "exit_code": 0,
         }
+
+    def removals(self) -> list[list[str]]:
+        """Every removal the executor asked for, in order."""
+        return [
+            call
+            for call in self.calls
+            if call[1] == "rm" or call[1:3] == ["network", "rm"]
+        ]
 
     def exit_worker(self, dispatch_id: str, exit_code: int = 0) -> None:
         """The worker's process ends: the container stays, exited with ``exit_code``."""
@@ -258,7 +268,7 @@ class FakeEngine:
         wanted = [
             command[i + 1].removeprefix("label=").split("=", 1)
             for i, part in enumerate(command)
-            if part == "--filter"
+            if part == "--filter" and not self.ignore_label_filters
         ]
         return _done(
             command,
