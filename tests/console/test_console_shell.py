@@ -1086,9 +1086,30 @@ def test_a_shell_screen_is_dismissed_with_its_own_result_type(tmp_path: Path) ->
 
 
 def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> None:
-    """The Home, Open project, Diagnostics, Harness, Reports and Repo Map screens take colours, the
-    top bar and the navigation from the shell: their sources hold none of their own."""
+    """The Home, Open project, Diagnostics, Harness, Reports, Repo Map and Configuration screens
+    take colours, the top bar and the navigation from the shell: their sources hold none of their
+    own, and the Configuration screens bind no Esc themselves (the shell's `action_back` is the
+    only Esc binding)."""
     import re
+
+    from harness.console.screens.configuration import ConfigurationScreen
+    from harness.console.screens.configuration_versions import (
+        ConfigurationVersionsScreen,
+    )
+
+    from harness.console.screens.project_setup import ProjectSetupScreen
+    from harness.console.screens.update_harness import UpdateHarnessScreen
+
+    for screen_class in (
+        ConfigurationScreen,
+        ConfigurationVersionsScreen,
+        UpdateHarnessScreen,
+        ProjectSetupScreen,
+    ):
+        assert issubclass(screen_class, ConsoleShell)
+        own = screen_class.__dict__.get("BINDINGS", [])
+        keys = [b.key if isinstance(b, Binding) else b[0] for b in own]
+        assert "escape" not in keys, screen_class
 
     screens = Path(__file__).resolve().parents[2] / "harness" / "console" / "screens"
     names = (
@@ -1100,6 +1121,9 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
         "reports",
         "repo_map",
         "repo_map_settings",
+        "configuration",
+        "configuration_versions",
+        "update_harness",
     )
     for name in names:
         source = (screens / f"{name}.py").read_text(encoding="utf-8")
@@ -1108,6 +1132,11 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
         if name != "commands":
             # `CommandMenuScreen.compose` is the one left-over of the old frame (no screen uses it).
             assert "TopBar(" not in source, f"{name}: a top bar of its own"
+        # `configuration` is left out: its confirmation modal binds its own Esc (a modal has no frame).
+        if name in ("configuration_versions", "update_harness", "project_setup"):
+            assert not re.search(
+                r"Binding\(\s*[\"']escape", source
+            ), f"{name}: its own Esc binding"
 
 
 def test_reports_and_repo_map_leave_back_and_breakpoints_to_the_shell() -> None:

@@ -98,6 +98,28 @@ def reject_secrets(value: object) -> None:
         raise ValueError("Секреты нельзя сохранять в конфигурации и версиях")
 
 
+SECRET_MASK = "••••••"
+
+
+def mask_secrets(value: object, key: str | None = None) -> object:
+    """A display copy of `value`: every value under a secret key and every string with secret text
+    becomes SECRET_MASK. It recognizes exactly what reject_secrets refuses; never store its result."""
+    if key is not None and _SECRET_KEY.search(key):
+        return SECRET_MASK
+    if isinstance(value, dict):
+        return {
+            name: SECRET_MASK
+            if not isinstance(name, str)
+            else mask_secrets(item, name)
+            for name, item in value.items()
+        }
+    if isinstance(value, list):
+        return [mask_secrets(item) for item in value]
+    if isinstance(value, str) and _SECRET_TEXT.search(value):
+        return SECRET_MASK
+    return value
+
+
 def decode_bundle(value: object) -> Bundle:
     if not isinstance(value, dict) or set(value) != set(NAMES):
         raise ValueError("Неполный набор файлов версии")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-from typing import cast
+from typing import TYPE_CHECKING, cast
 import json
 from pathlib import Path
 from threading import Event
@@ -12,6 +12,7 @@ from threading import Event
 import pytest
 
 from textual.app import App
+from textual.screen import Screen
 from textual.pilot import Pilot
 from textual.widgets import Button, RadioButton, RadioSet, Static, TextArea
 
@@ -21,7 +22,10 @@ from harness.console.configuration_steps import ConfigurationStep
 from harness.console.advisor import Advice, AdvisorUnavailable
 from harness.console.screens.configuration import ConfigurationScreen
 
-from tests.console._pilot_wait import press, wait_until
+if TYPE_CHECKING:
+    from harness.console.app import HarnessConsoleApp
+
+from tests.console._pilot_wait import crumb_text, press, wait_until
 
 
 def installed_project(repo: Path) -> bytes:
@@ -316,7 +320,7 @@ def test_back_keeps_answers_and_missing_capability_is_explained(
         async with app.run_test(size=(120, 48)) as pilot:
             await pilot.click("#configure-orchestration")
             await pilot.pause()
-            error = str(app.screen.query_one("#config-error", Static).render())
+            error = str(app.screen.query_one("#config-error", Static).content)
             assert "backend-orchestration" in error
             await pilot.click("#configure-project")
             await pilot.pause()
@@ -558,7 +562,7 @@ def test_errors_link_to_steps_and_cli_status_is_shown_without_a_request(
     asyncio.run(scenario())
 
 
-def test_every_phase_keeps_its_content_in_frames(tmp_path: Path) -> None:
+def test_every_phase_keeps_its_content_in_cards(tmp_path: Path) -> None:
     from textual.widgets import Static
 
     installed_project(tmp_path)
@@ -572,7 +576,7 @@ def test_every_phase_keeps_its_content_in_frames(tmp_path: Path) -> None:
             def titles() -> list[str]:
                 return [
                     str(frame.border_title).strip()
-                    for frame in app.screen.query(".frame")
+                    for frame in app.screen.query(".section-card")
                     if frame.border_title and frame.display
                 ]
 
@@ -589,19 +593,17 @@ def test_every_phase_keeps_its_content_in_frames(tmp_path: Path) -> None:
 
     phases = asyncio.run(scenario())
     assert phases["choose"] == [
-        "Цель",
-        "Редактирование конфигурации",
-        "Сохранённые версии",
-        "Адаптеры runtime",
+        "РЕДАКТИРОВАНИЕ КОНФИГУРАЦИИ",
+        "СОХРАНЁННЫЕ ВЕРСИИ",
+        "АДАПТЕРЫ RUNTIME  внешний транспорт оркестрации (transport: external)",
     ]
-    assert phases["editing"] == ["Цель", "Шаг", "Параметр", "ИИ-подсказки", "Действия"]
+    assert phases["editing"] == ["ШАГ", "ПАРАМЕТР", "ИИ-ПОДСКАЗКИ", "ДЕЙСТВИЯ"]
     assert phases["review"] == [
-        "Цель",
-        "Проверка",
-        "Различия",
-        "Итоговые файлы",
-        "Версия",
-        "Действия",
+        "ПРОВЕРКА",
+        "РАЗЛИЧИЯ",
+        "ИТОГОВЫЕ ФАЙЛЫ",
+        "ВЕРСИЯ",
+        "ДЕЙСТВИЯ",
     ]
 
 
@@ -621,7 +623,7 @@ def test_a_message_appears_in_the_actions_frame_and_hides_again(tmp_path: Path) 
             shown = frame.display
             assert (
                 str(app.screen.query_one("#config-error", Static).content)
-                == "Ошибка поля"
+                == "✖ Ошибка поля"
             )
             cast(ConfigurationScreen, app.screen)._set_message("")
             await pilot.pause()
@@ -897,3 +899,699 @@ def test_the_menu_and_the_json_text_edit_the_same_list(tmp_path: Path) -> None:
             )
 
     asyncio.run(scenario())
+
+
+def _dashboard_host(repo: Path) -> App[None]:
+    from harness.console.data import DashboardData
+    from harness.console.screens.dashboard import DashboardScreen
+
+    def collect(repo: Path, *, online: bool = False) -> DashboardData:
+        return DashboardData(
+            ok=5,
+            warn=0,
+            fail=0,
+            skipped=0,
+            repo_map_tier="minimal",
+            harness_version="test",
+            drift_state="clean",
+            active_batches=None,
+        )
+
+    class DashboardHost(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(DashboardScreen(repo, collect_dashboard=collect))
+
+    return DashboardHost()
+
+
+async def _open_wizard_from_home(
+    app: App[None], pilot: Pilot[None]
+) -> ConfigurationScreen:
+    from textual.widgets import ListView
+
+    from harness.console.shell import SECTIONS
+
+    await wait_until(pilot, lambda: bool(app.screen.query("#section-menu")))
+    app.screen.query_one("#section-menu", ListView).index = SECTIONS.index(
+        "Configuration"
+    )
+    await pilot.press("enter")
+    await wait_until(pilot, lambda: isinstance(app.screen, ConfigurationScreen))
+    screen = cast(ConfigurationScreen, app.screen)
+    await press(pilot, "#configure-project")
+    await wait_until(
+        pilot, lambda: screen.draft is not None and bool(screen.query("#step-jump"))
+    )
+    return screen
+
+
+def _change_draft(screen: ConfigurationScreen) -> None:
+    assert screen.draft is not None
+    screen.draft.set_value("project.json", ("language",), "en")
+    assert screen.draft.changed()
+
+
+def test_configuration_stands_on_the_shared_frame(tmp_path: Path) -> None:
+    from harness.console.chrome import TopBar, WorkspaceHeader
+    from harness.console.shell import Breadcrumbs, ConsoleShell
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(
+                pilot, lambda: bool(app.screen.query("#configuration-project"))
+            )
+            screen = app.screen
+            assert isinstance(screen, ConsoleShell)
+            assert screen.SECTION == "Configuration"
+            assert [type(bar) for bar in screen.query(TopBar)] == [WorkspaceHeader]
+            assert str(screen.query_one("#configuration-project", Static).content) == (
+                "Проект: " + tmp_path.name
+            )
+            await wait_until(
+                pilot, lambda: bool(screen.query_one(Breadcrumbs).query(Static))
+            )
+            assert "Настройка конфигурации" in crumb_text(screen.query_one(Breadcrumbs))
+
+    asyncio.run(scenario())
+
+
+def test_a_phase_change_keeps_the_menu_and_puts_focus_in_the_page(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import ListView
+
+    from harness.console.shell import SECTIONS
+    from harness.console.widgets import ComposedPage
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(
+                pilot, lambda: bool(app.screen.query("#configure-project"))
+            )
+            screen = cast(ConfigurationScreen, app.screen)
+            menu = screen.query_one("#shell-sections", ListView)
+            assert menu.index == SECTIONS.index("Configuration")
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(screen.query("#step-jump")))
+            await wait_until(pilot, lambda: screen.focused is not None)
+            assert screen.query_one("#shell-sections", ListView) is menu
+            assert menu.index == SECTIONS.index("Configuration")
+            page = screen.query_one("#configuration-page", ComposedPage)
+            assert screen.focused is not None and page in screen.focused.ancestors
+            await press(pilot, "#review-config")
+            await wait_until(
+                pilot, lambda: bool(screen.query("#configuration-changes"))
+            )
+            assert screen.query_one("#shell-sections", ListView) is menu
+            assert menu.index == SECTIONS.index("Configuration")
+
+    asyncio.run(scenario())
+
+
+def test_esc_with_a_changed_draft_asks_and_cancel_keeps_the_draft(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = _dashboard_host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_wizard_from_home(app, pilot)
+            _change_draft(screen)
+            await pilot.press("escape")
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+            )
+            await press(pilot, "#cancel")
+            await wait_until(pilot, lambda: app.screen is screen)
+            assert screen.draft is not None and screen.draft.changed()
+
+    asyncio.run(scenario())
+
+
+def test_a_number_key_and_the_home_crumb_with_a_changed_draft_ask_first(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.shell import CrumbLink
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = _dashboard_host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_wizard_from_home(app, pilot)
+            _change_draft(screen)
+            await pilot.press("9")
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+            )
+            await press(pilot, "#cancel")
+            await wait_until(pilot, lambda: app.screen is screen)
+            await wait_until(pilot, lambda: bool(screen.query(CrumbLink)))
+            screen.query(CrumbLink).first().action_select()
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+            )
+            await press(pilot, "#cancel")
+            await wait_until(pilot, lambda: app.screen is screen)
+            assert screen.draft is not None and screen.draft.changed()
+
+    asyncio.run(scenario())
+
+
+def test_the_home_key_and_the_home_crumb_refresh_home_like_esc(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import ListView
+
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.shell import SECTIONS, CrumbLink
+
+    installed_project(tmp_path)
+
+    async def scenario() -> list[int]:
+        counts: list[int] = []
+        for leave in ("escape", "0", "crumb"):
+            app = _dashboard_host(tmp_path)
+            async with app.run_test(size=(120, 48)) as pilot:
+                dashboard = cast(DashboardScreen, app.screen)
+                refreshes: list[bool] = []
+                dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
+                    online
+                )
+                await wait_until(pilot, lambda: bool(app.screen.query("#section-menu")))
+                app.screen.query_one("#section-menu", ListView).index = SECTIONS.index(
+                    "Configuration"
+                )
+                await pilot.press("enter")
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ConfigurationScreen)
+                )
+                screen = app.screen
+                if leave == "crumb":
+                    await wait_until(pilot, lambda: bool(screen.query(CrumbLink)))
+                    screen.query(CrumbLink).first().action_select()
+                else:
+                    await pilot.press(leave)
+                await wait_until(pilot, lambda: app.screen is dashboard)
+                await pilot.pause()
+                counts.append(len(refreshes))
+        return counts
+
+    assert asyncio.run(scenario()) == [1, 1, 1]
+
+
+def test_confirming_the_discard_on_the_way_home_asks_exactly_once(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.shell import CrumbLink
+
+    installed_project(tmp_path)
+
+    async def scenario() -> dict[str, tuple[int, str]]:
+        outcome: dict[str, tuple[int, str]] = {}
+        for leave in ("crumb", "0", "escape"):
+            app = _dashboard_host(tmp_path)
+            async with app.run_test(size=(120, 48)) as pilot:
+                screen = await _open_wizard_from_home(app, pilot)
+                _change_draft(screen)
+                if leave == "crumb":
+                    await wait_until(pilot, lambda: bool(screen.query(CrumbLink)))
+                    screen.query(CrumbLink).first().action_select()
+                else:
+                    await pilot.press(leave)
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                )
+                await press(pilot, "#confirm")
+                for _ in range(20):
+                    await pilot.pause(0.05)
+                confirmations = sum(
+                    isinstance(s, ConfirmConfiguration) for s in app.screen_stack
+                )
+                outcome[leave] = (confirmations, type(app.screen).__name__)
+        return outcome
+
+    assert asyncio.run(scenario()) == {
+        leave: (0, "DashboardScreen") for leave in ("crumb", "0", "escape")
+    }
+
+
+def test_confirming_the_discard_closes_the_wizard_and_then_opens_the_section(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.screens.help import HelpScreen
+
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = _dashboard_host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_wizard_from_home(app, pilot)
+            _change_draft(screen)
+            await pilot.press("9")
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+            )
+            await press(pilot, "#confirm")
+            await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
+            assert screen not in app.screen_stack
+            assert isinstance(app.screen_stack[-2], DashboardScreen)
+
+    asyncio.run(scenario())
+
+
+def test_a_number_key_closes_the_wizard_and_opens_the_section_over_a_refreshed_home(
+    tmp_path: Path,
+) -> None:
+    """Any way out of Configuration closes it as Esc does: Home refreshes once, the section sits on Home."""
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.configuration_store import json_bytes
+    from harness.console.screens.help import HelpScreen
+    from harness.console.shell import SECTIONS
+    from textual.widgets import ListView
+
+    installed_project(tmp_path)
+    # The wizard compares the files with their canonical encoding: store them that way, so an
+    # untouched draft is not "changed".
+    project = tmp_path / ".harness/project.json"
+    project.write_bytes(json_bytes(json.loads(project.read_bytes())))
+
+    async def scenario() -> dict[tuple[str, tuple[int, int], str], tuple[list[str], int]]:
+        outcome: dict[tuple[str, tuple[int, int], str], tuple[list[str], int]] = {}
+        for language in ("ru", "en"):
+            for size in ((120, 48), (80, 24)):
+                for place in ("start", "wizard", "changed"):
+                    app = _dashboard_host(tmp_path)
+                    app.language = language  # type: ignore[attr-defined]
+                    async with app.run_test(size=size) as pilot:
+                        dashboard = cast(DashboardScreen, app.screen)
+                        refreshes: list[bool] = []
+                        dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
+                            online
+                        )
+                        if place == "start":
+                            await wait_until(
+                                pilot, lambda: bool(app.screen.query("#section-menu"))
+                            )
+                            app.screen.query_one(
+                                "#section-menu", ListView
+                            ).index = SECTIONS.index("Configuration")
+                            await pilot.press("enter")
+                            await wait_until(
+                                pilot, lambda: isinstance(app.screen, ConfigurationScreen)
+                            )
+                        else:
+                            wizard = await _open_wizard_from_home(app, pilot)
+                            if place == "changed":
+                                _change_draft(wizard)
+                        await pilot.press("9")
+                        if place == "changed":
+                            await wait_until(
+                                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                            )
+                            await press(pilot, "#confirm")
+                        await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
+                        for _ in range(10):
+                            await pilot.pause(0.05)
+                        outcome[(language, size, place)] = (
+                            [type(s).__name__ for s in app.screen_stack],
+                            len(refreshes),
+                        )
+        return outcome
+
+    for stack, refreshed in asyncio.run(scenario()).values():
+        assert stack[-2:] == ["DashboardScreen", "HelpScreen"]
+        assert "ConfigurationScreen" not in stack
+        assert refreshed == 1
+
+
+def test_a_running_write_keeps_the_wizard_open_for_every_way_out(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> None:
+        app = _dashboard_host(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_wizard_from_home(app, pilot)
+            notes: list[str] = []
+            screen.notify = lambda message, **_: notes.append(message)  # type: ignore[method-assign]
+            screen.busy = True
+            for key in ("escape", "9"):
+                await pilot.press(key)
+                await pilot.pause()
+                assert app.screen is screen
+            await screen.navigate_crumb(screen.crumbs()[0])
+            assert app.screen is screen
+            assert notes == ["Дождитесь окончания записи"] * 3
+            screen.busy = False
+
+    asyncio.run(scenario())
+
+
+def _console_app(repo: Path) -> "HarnessConsoleApp":
+    from harness.console.app import HarnessConsoleApp
+
+    return HarnessConsoleApp(repo)
+
+
+def test_start_page_footer_names_tab_and_enter_and_narrow_keeps_three_keys(
+    tmp_path: Path,
+) -> None:
+    async def keys(size: tuple[int, int]) -> dict[str, str]:
+        app = _console_app(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await app.push_screen(ConfigurationScreen(tmp_path))
+            await wait_until(pilot, lambda: app.screen.focused is not None)
+            await pilot.pause()
+            return {
+                key: str(active.binding.description)
+                for key, active in app.screen.active_bindings.items()
+                if active.binding.show
+            }
+
+    wide = asyncio.run(keys((160, 52)))
+    assert wide["tab"] == "Фокус" and wide["enter"] == "Выбрать"
+    assert {"escape", "f1", "f2"} <= set(wide)
+    narrow = asyncio.run(keys((80, 24)))
+    assert {"escape", "enter", "f2"} <= set(narrow)
+    assert "tab" not in narrow and "f1" not in narrow
+
+
+def test_narrow_buttons_take_the_short_labels_and_wide_ones_the_long(
+    tmp_path: Path,
+) -> None:
+    async def labels(size: tuple[int, int]) -> list[str]:
+        app = Host(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#configure-both")))
+            await pilot.pause()
+            return [
+                str(app.screen.query_one(f"#{name}", Button).label)
+                for name in ("configure-both", "open-versions")
+            ]
+
+    assert asyncio.run(labels((160, 52))) == ["Оба файла", "Версии / восстановить"]
+    assert asyncio.run(labels((80, 24))) == ["Оба", "Версии"]
+
+
+def test_the_previous_step_button_says_why_it_is_off_and_english_follows(
+    tmp_path: Path,
+) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> tuple[str, str, str]:
+        app = _console_app(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await app.push_screen(ConfigurationScreen(tmp_path))
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#actions-reason")))
+            note = app.screen.query_one("#actions-reason", Static)
+            await wait_until(pilot, lambda: str(note.content) != "")
+            ru = str(note.content)
+            tooltip = str(app.screen.query_one("#previous-step", Button).tooltip)
+            app.action_toggle_language()
+            await wait_until(pilot, lambda: str(note.content) != ru)
+            return ru, tooltip, str(note.content)
+
+    ru, tooltip, en = asyncio.run(scenario())
+    assert ru == "«Предыдущий шаг»: это первый шаг"
+    assert tooltip == "это первый шаг"
+    assert en == "«Previous step»: this is the first step"
+
+
+def test_review_explains_every_disabled_action(tmp_path: Path) -> None:
+    installed_project(tmp_path)
+
+    async def scenario() -> str:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            await press(pilot, "#review-config")
+            await wait_until(pilot, lambda: bool(screen.query("#apply-config")))
+            assert screen.draft is not None
+            screen.draft.set_value("project.json", ("language",), "xx")
+            await screen._rebuild_page()
+            note = screen.query_one("#actions-reason", Static)
+            await wait_until(pilot, lambda: str(note.content) != "")
+            assert screen.query_one("#apply-config", Button).disabled
+            assert screen.query_one("#save-version", Button).disabled
+            return str(note.content)
+
+    shown = asyncio.run(scenario())
+    assert "«Применить»: в черновике есть ошибки" in shown
+    assert "«Сохранить версию»: в черновике есть ошибки" in shown
+
+
+def test_every_message_is_a_symbol_and_a_text(tmp_path: Path) -> None:
+    async def scenario() -> list[str]:
+        app = Host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#config-error")))
+            screen = cast(ConfigurationScreen, app.screen)
+            shown = []
+            for text, kind in (
+                ("Выполняется…", "running"),
+                ("Конфигурация применена.", "accepted"),
+                ("Ошибка поля", "error"),
+            ):
+                screen._set_message(text, kind)
+                await pilot.pause()
+                shown.append(str(screen.query_one("#config-error", Static).content))
+            return shown
+
+    assert asyncio.run(scenario()) == [
+        "▶ Выполняется…",
+        "✔ Конфигурация применена.",
+        "✖ Ошибка поля",
+    ]
+
+
+def test_long_names_wrap_and_never_widen_the_page_at_80x24(tmp_path: Path) -> None:
+    repo = tmp_path / ("very-long-project-name-" * 5).rstrip("-")
+    repo.mkdir()
+    installed_project(repo)
+
+    async def scenario() -> list[str]:
+        from tests.console.test_console_layout import layout_problems
+
+        app = Host(repo)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#configure-both")))
+            await pilot.pause()
+            screen = app.screen
+            assert screen.query_one("#configuration-project", Static).region.width <= 80
+            problems = layout_problems(cast(Screen[None], screen))
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(screen.query("#step-jump")))
+            await pilot.pause()
+            return problems + layout_problems(cast(Screen[None], screen))
+
+    assert asyncio.run(scenario()) == []
+
+
+_SECRET = "S3CRET"
+_SIZES = ((120, 48), (80, 24))
+
+
+def _secret_project(repo: Path) -> None:
+    """A project whose stored files already hold secrets in a string, a list and an unknown key."""
+    from harness.configuration_store import json_bytes
+
+    installed_project(repo)
+    path = repo / ".harness/project.json"
+    data = json.loads(path.read_bytes())
+    data["base_branch"] = f"https://user:{_SECRET}@example.test/x"
+    data["qa_gate_commands"] = [f"pytest --token={_SECRET}", "ruff check"]
+    data["tracker"] = {
+        "type": "local",
+        "project": f"token={_SECRET}",
+        "token": _SECRET,
+    }
+    path.write_bytes(json_bytes(data))
+
+
+def _ui_text(screen: Screen[None]) -> str:
+    """Everything a person can read or edit on `screen`."""
+    from rich.json import JSON
+    from textual.widgets import Input
+
+    parts = []
+    for widget in screen.query(Static):
+        content = widget.content
+        parts.append(
+            content.text.plain if isinstance(content, JSON) else str(content)
+        )
+    parts += [widget.text for widget in screen.query(TextArea)]
+    parts += [widget.value for widget in screen.query(Input)]
+    parts += [str(widget.label) for widget in screen.query(Button)]
+    return "\n".join(parts)
+
+
+def test_a_stored_secret_is_masked_in_the_field_editor_and_the_draft_stays_intact(
+    tmp_path: Path,
+) -> None:
+    from harness.configuration import SECRET_MASK
+
+    _secret_project(tmp_path)
+    stored = json.loads((tmp_path / ".harness/project.json").read_bytes())
+    warning = {
+        "ru": "⚠ Секрет скрыт",
+        "en": "⚠ A secret is hidden",
+    }
+
+    async def scenario(language: str, size: tuple[int, int]) -> None:
+        app = Host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            assert screen.draft is not None
+            draft = screen.draft
+            await _open_step(pilot, screen, ("base_branch",), "#field-value")
+            editor = screen.query_one("#field-value", TextArea)
+            assert editor.text == SECRET_MASK
+            assert _SECRET not in _ui_text(screen)
+            assert warning[language] in _ui_text(screen)
+            # A block's overview rows mask a stored child value too.
+            await _open_step(pilot, screen, ("tracker",), ".section-rows")
+            assert f'project = "{SECRET_MASK}"' in _ui_text(screen)
+            assert _SECRET not in _ui_text(screen)
+            await _open_step(pilot, screen, ("base_branch",), "#field-value")
+            editor = screen.query_one("#field-value", TextArea)
+            # Accepting the recommendation (the stored value) shows the mask, not the secret.
+            await press(pilot, "#use-recommendation")
+            assert editor.text == SECRET_MASK and _SECRET not in _ui_text(screen)
+            # Next and Back through the masked step leave the draft exactly as stored.
+            index = screen.index
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            await press(pilot, "#previous-step")
+            await wait_until(pilot, lambda: screen.index == index)
+            assert draft.documents["project.json"] == stored
+            # A mask literal never replaces a real value: the step refuses and stays.
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            screen.query_one("#field-value", TextArea).load_text(SECRET_MASK + "/x")
+            await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: "••••••" in str(screen.query_one("#config-error").render()),
+            )
+            assert screen.index == index
+            assert draft.documents["project.json"] == stored
+            # A real edit that drops the mask is written as any edit.
+            screen.query_one("#field-value", TextArea).load_text("main")
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            assert draft.documents["project.json"]["base_branch"] == "main"
+
+    for language in ("ru", "en"):
+        for size in _SIZES:
+            asyncio.run(scenario(language, size))
+
+
+def test_a_stored_secret_in_a_list_is_masked_in_the_menu_and_the_json_text(
+    tmp_path: Path,
+) -> None:
+    from textual.widgets import Label, ListView
+
+    from harness.configuration import SECRET_MASK
+
+    _secret_project(tmp_path)
+    stored = json.loads((tmp_path / ".harness/project.json").read_bytes())
+
+    async def scenario(language: str, size: tuple[int, int]) -> None:
+        app = Host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            assert screen.draft is not None
+            draft = screen.draft
+            await _open_step(pilot, screen, ("qa_gate_commands",), "#menu-items")
+            rows = [
+                str(label.content)
+                for label in screen.query("#menu-items Label").results(Label)
+            ]
+            assert rows[0] == f'"{SECRET_MASK}"' and _SECRET not in _ui_text(screen)
+            assert screen.query_one("#menu-items", ListView)
+            await screen._set_mode(True)
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            editor = screen.query_one("#field-value", TextArea)
+            assert json.loads(editor.text) == [SECRET_MASK, "ruff check"]
+            assert _SECRET not in _ui_text(screen)
+            index = screen.index
+            # Unedited text writes nothing; an edit that keeps the mask is refused.
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            assert draft.documents["project.json"] == stored
+            await press(pilot, "#previous-step")
+            await wait_until(pilot, lambda: screen.index == index)
+            await wait_until(pilot, lambda: bool(screen.query("#field-value")))
+            screen.query_one("#field-value", TextArea).load_text(
+                json.dumps([SECRET_MASK, "other"], ensure_ascii=False)
+            )
+            await press(pilot, "#next-step")
+            await wait_until(
+                pilot,
+                lambda: "••••••" in str(screen.query_one("#config-error").render()),
+            )
+            assert screen.index == index and draft.documents["project.json"] == stored
+            # Removing the masked entry writes the change.
+            screen.query_one("#field-value", TextArea).load_text('["ruff check"]')
+            await press(pilot, "#next-step")
+            await wait_until(pilot, lambda: screen.index == index + 1)
+            assert draft.documents["project.json"]["qa_gate_commands"] == [
+                "ruff check"
+            ]
+            assert draft.changed()
+
+    for language in ("ru", "en"):
+        for size in _SIZES:
+            asyncio.run(scenario(language, size))
+
+
+def test_the_review_page_masks_stored_secrets_and_the_draft_keeps_them(
+    tmp_path: Path,
+) -> None:
+    from harness.configuration import SECRET_MASK
+
+    _secret_project(tmp_path)
+
+    async def scenario(language: str, size: tuple[int, int]) -> None:
+        app = Host(tmp_path)
+        app.language = language  # type: ignore[attr-defined]
+        async with app.run_test(size=size) as pilot:
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(app.screen.query("#step-jump")))
+            screen = cast(ConfigurationScreen, app.screen)
+            assert screen.draft is not None
+            screen.draft.set_value("project.json", ("language",), "en")
+            await press(pilot, "#review-config")
+            await wait_until(pilot, lambda: bool(screen.query("#configuration-diff")))
+            text = _ui_text(screen)
+            assert _SECRET not in text and SECRET_MASK in text
+            # Display only: the draft still holds the real data for apply and the checks.
+            encoded = screen.draft.encoded()["project.json"]
+            assert encoded is not None and _SECRET in encoded.decode()
+            assert _SECRET not in "\n".join(screen.draft.problems())
+
+    for language in ("ru", "en"):
+        for size in _SIZES:
+            asyncio.run(scenario(language, size))

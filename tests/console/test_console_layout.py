@@ -427,3 +427,100 @@ def test_open_project_layout(
             return layout_problems(screen, PROJECT_SETUP_TITLES)
 
     assert asyncio.run(scenario()) == []
+
+
+CONFIGURATION_TITLES = (".breadcrumbs", "#configuration-title")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_configuration_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    """The start page, a parameter step and the review page of the wizard stay inside the screen."""
+    from harness.console.screens.configuration import ConfigurationScreen
+    from tests.console._pilot_wait import press, wait_until
+    from tests.console.test_console_configuration_app import installed_project
+
+    installed_project(tmp_path)
+
+    async def scenario() -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = cast(
+                ConfigurationScreen,
+                await _open(app, pilot, ConfigurationScreen(tmp_path), language),
+            )
+            found["start"] = layout_problems(screen, CONFIGURATION_TITLES)
+            await press(pilot, "#configure-project")
+            await wait_until(pilot, lambda: bool(screen.query("#step-jump")))
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            found["editing"] = layout_problems(screen, CONFIGURATION_TITLES)
+            await press(pilot, "#review-config")
+            await wait_until(pilot, lambda: bool(screen.query("#configuration-changes")))
+            await pilot.pause()
+            found["review"] = layout_problems(screen, CONFIGURATION_TITLES)
+        return found
+
+    assert asyncio.run(scenario()) == {"start": [], "editing": [], "review": []}
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_configuration_versions_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.configuration import read_config_bundle
+    from harness.configuration_store import ConfigurationStore
+    from harness.console.screens.configuration_versions import (
+        ConfigurationVersionsScreen,
+    )
+    from tests.console.test_console_configuration_app import installed_project
+
+    installed_project(tmp_path)
+    ConfigurationStore(tmp_path).save(read_config_bundle(tmp_path), "Русский")
+
+    async def scenario() -> list[str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(
+                app, pilot, ConfigurationVersionsScreen(tmp_path), language
+            )
+            return layout_problems(screen, (".breadcrumbs",))
+
+    assert asyncio.run(scenario()) == []
+
+
+UPDATE_HARNESS_TITLES = (".breadcrumbs", "#update-title")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_update_harness_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    """The main page, the seed mode and every fold opened stay inside the screen."""
+    from textual.widgets import RadioButton
+
+    from harness.console.shell import Fold
+    from tests.console.test_console_update_harness import _Runner, _screen
+
+    async def scenario() -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot, _screen(tmp_path, _Runner()), language)
+            found["main"] = layout_problems(screen, UPDATE_HARNESS_TITLES)
+            screen.query_one("#update-mode").query(RadioButton)[2].value = True
+            await pilot.pause()
+            found["seed"] = layout_problems(screen, UPDATE_HARNESS_TITLES)
+            for fold in screen.query(Fold):
+                fold.collapsed = False
+            await pilot.pause()
+            await pilot.pause()
+            found["open"] = layout_problems(screen, UPDATE_HARNESS_TITLES)
+        return found
+
+    assert asyncio.run(scenario()) == {"main": [], "seed": [], "open": []}

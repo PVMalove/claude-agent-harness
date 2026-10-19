@@ -6,8 +6,8 @@ import shlex
 from pathlib import Path
 from typing import Callable, Iterable
 
+from rich.text import Text
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
     Button,
@@ -19,8 +19,8 @@ from textual.widgets import (
 )
 
 from .. import brand, i18n
-from ..logtext import colorize_log
 from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
+from ..status import Status
 from .. import data
 from ...health.model import Report
 from ..catalog import process_argv
@@ -103,8 +103,6 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     SECTION = "Open project"
     NARROW_FOOTER_KEYS = ("escape", "f1", "f2")
     AUTO_FOCUS = "#project-path"
-    # Esc and the footer's "Назад" cancel through `action_cancel`, which waits for a running operation.
-    BINDINGS = [Binding("escape", "cancel", "Назад")]
     CSS = SHELL_CSS + brand.shell_css("""
     ProjectSetupScreen #setup-scroll { width: 100%; height: 1fr; overflow-x: hidden; padding: 0 2; }
     ProjectSetupScreen #setup-columns { width: 100%; height: auto; layout: vertical; }
@@ -131,6 +129,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         self.stage = 0
         self.options = capability_options()
         self._capability_value = ""
+        # What `#target-status` shows as a status: (kind, text); None while it shows the hint.
+        self._target_status: tuple[str, str] | None = None
 
     def _set_busy(self, value: bool) -> None:
         self.busy = value
@@ -162,6 +162,27 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     def sync_language(self) -> None:
         ConsoleShell.sync_language(self)
         self._set_stage(self.stage)
+        if self._target_status is not None:
+            self._show_target(*self._target_status)
+
+    def _show_target(self, kind: str, text: str) -> None:
+        """The target line as a status: its symbol and colour on the first line, the facts below."""
+        self._target_status = (kind, text)
+        language = getattr(self.app, "language", "ru")
+        first, _, rest = i18n.tr_text(language, text).partition("\n")
+        status = Status(kind, first, first)
+        shown = Text(status.render(language), style=status.color)
+        if rest:
+            shown.append("\n" + rest)
+        self.query_one("#target-status", Static).update(shown)
+
+    def _show_running(self, text: str) -> None:
+        """The output block while a command runs: a running symbol and the text."""
+        language = getattr(self.app, "language", "ru")
+        status = Status("running", text, i18n.tr_text("en", text))
+        self.query_one("#setup-output", Static).update(
+            Text(status.render(language), style=status.color)
+        )
 
     def compose_strip(self) -> ComposeResult:
         yield WrappedValue(str(self.repo))
@@ -412,7 +433,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     def _inspect(self, value: str) -> None:
         self._set_busy(True)
-        self.query_one("#target-status", Static).update("Проверяется путь…")
+        self._show_target("running", "Проверяется путь…")
 
         def work() -> None:
             try:
@@ -427,9 +448,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     def _install(self, target: ProjectTarget, capability: str) -> None:
         self._set_busy(True)
-        self.query_one("#setup-output", Static).update(
-            colorize_log("Устанавливается Harness…")
-        )
+        self._show_running("Устанавливается Harness…")
         entry = installation_entry(target, capability)
         argv = entry.cli_argv(target.repo)
         self._capability_value = capability
@@ -459,7 +478,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     def _failed(self, message: str) -> None:
         self._set_busy(False)
-        self.query_one("#target-status", Static).update(message)
+        self._show_target("error", message)
 
     def _inspected(self, target: ProjectTarget) -> None:
         # A changed path invalidates a result returned by an earlier inspection.
@@ -479,7 +498,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             + "\nУстановлено: "
             + (", ".join(target.capabilities) or "нет")
         )
-        self.query_one("#target-status", Static).update(text)
+        self._show_target("accepted", text)
         for name in _AFTER_INSPECT:
             self.query_one("#" + name, Button).disabled = False
         if first:
@@ -495,7 +514,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     def _run(self, run: Callable[[], str], *, refresh: bool = False) -> None:
         self._set_busy(True)
-        self.query_one("#setup-output", Static).update(colorize_log("Выполняется…"))
+        self._show_running("Выполняется…")
 
         def work() -> None:
             try:
@@ -526,7 +545,9 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         if not self._wait_for_operation():
             await super().open_section(index)
 
-    def action_cancel(self) -> None:
+    async def action_back(self) -> None:
+        # Not `ConsoleShell.action_back` (`pop_screen`): it would drop the push callback, which
+        # receives None when the screen is closed without a choice.
         if not self._wait_for_operation():
             self.dismiss(None)
 

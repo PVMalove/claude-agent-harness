@@ -295,6 +295,14 @@ EN: dict[str, str] = {
     "Выберите версию; удалённые в ней файлы будут удалены и при откате.": "Select a version; files absent from it are removed on restore.",
     "Выберите, какие файлы настроить.": "Choose which files to configure.",
     "Изменения применяются после просмотра и подтверждения.": "Changes are applied after review and confirmation.",
+    "Изменения применяются только после просмотра и подтверждения": "Changes are applied only after review and confirmation",
+    "Дождитесь окончания записи": "Wait for the write to finish",
+    "содержимое скрыто: файл не разобран как JSON": "contents hidden: the file is not valid JSON",
+    "изменены только скрытые значения или форматирование": "only hidden values or formatting changed",
+    "⚠ Секрет скрыт («••••••»). Секреты нельзя хранить в конфигурации: удалите или замените скрытые части; без правок значение не изменится.": "⚠ A secret is hidden («••••••»). Secrets must not be kept in the configuration: remove or replace the hidden parts; the value stays as it is unless you edit it.",
+    "Замените или удалите скрытое значение «••••••»": "Replace or remove the hidden value «••••••»",
+    "Дождитесь окончания отката": "Wait for the restore to finish",
+    "Закрыть мастер и отбросить неприменённый черновик?": "Close the wizard and discard the unapplied draft?",
     "Сохранить текущий набор без редактирования.": "Save the current set without editing.",
     "Введите значение": "Enter a value",
     "Значение в JSON; объект/список можно редактировать целиком": "A JSON value; an object or list can be edited as a whole",
@@ -749,5 +757,89 @@ EN_PHRASES.update(
         "исходящих": "outgoing",
         "диагностик нет": "no diagnostics",
         "найдено файлов": "files found",
+    }
+)
+# Configuration screens: the adapter plan, the reasons an action is unavailable, narrow labels.
+EN.update(
+    {
+        "Файлы project.json и orchestration.json, сохранённые версии и адаптеры runtime.": "The project.json and orchestration.json files, saved versions and runtime adapters.",
+        "Оба": "Both",
+        "Версии / восстановить": "Versions / restore",
+        "Просмотр обновления": "Preview update",
+        "Фокус": "Focus",
+        "Выбрать": "Select",
+        "внешний транспорт оркестрации (transport: external)": "external orchestration transport (transport: external)",
+        "Установка и обновление требуют просмотра и подтверждения. Консоль не включает force и не меняет transport.": "Installing and updating require review and confirmation. The console does not enable force and does not change the transport.",
+        "актуален": "up to date",
+        "требует обновления": "needs an update",
+        "не установлен": "not installed",
+    }
+)
+EN_PHRASES.update(
+    {
+        "Возможности:": "Capabilities:",
+        "Обновятся управляемые файлы харнесса:": "Managed harness files will be updated:",
+        "Seed-файлы сохраняются:": "Seed files are preserved:",
+        "✔ обновится": "✔ will update",
+        "✔ добавится": "✔ will be added",
+        "⚠ восстановится": "⚠ will be restored",
+        "⚠ ваши правки": "⚠ your edits",
+        "✖ конфликт": "✖ conflict",
+        "⚠ удалится": "⚠ will be removed",
+        "⚠ Capability backend-orchestration не выбрана": "⚠ Capability backend-orchestration is not selected",
+        "Выберите состав явно в CLI:": "Choose the set explicitly in the CLI:",
+        "⚠ Сначала устраните локальные изменения и коллизии": "⚠ Resolve local changes and collisions first",
+        "Принудительное обновление не включено.": "Forced updates are disabled.",
+        "это первый шаг": "this is the first step",
+        "в черновике есть ошибки: исправьте их на шагах": "the draft has errors: fix them on the steps",
+        "файлы изменены снаружи: сначала загрузите внешние изменения": "the files changed outside: load the external changes first",
+        "записей пока нет": "no entries yet",
+        "список пока пуст": "the list is empty",
+        "сначала получите совет: «Спросить ИИ»": "get advice first: “Ask AI”",
+        "откат выполняется": "a restore is running",
+        "сохранённых версий нет": "there are no saved versions",
+        "версию нельзя применить как есть": "the version cannot be applied as it is",
+        "версия не выбрана": "no version is selected",
+    }
+)
+# Update Harness on the shared frame: the plan warning, mode consequences, reasons and states.
+EN.update(
+    {
+        "Обновить Harness": "Update Harness",
+        "Сначала показываем, что изменится в управляемых файлах. Запуск — только после вашего подтверждения.": "First we show what changes in the managed files. A run starts only after your confirmation.",
+        "Команда обновления — та же, что в CLI: harness update": "The update command is the same as in the CLI: harness update",
+        "из harness diff": "from harness diff",
+        "Обычное": "Normal",
+        "Выберите файл в списке слева.": "Select a file in the list on the left.",
+        "Локальные правки сохраняются. Остановится на конфликтах.": "Local changes are kept. It stops on conflicts.",
+        "⚠ Заменит и конфликтные файлы версией пакета: ваши правки в них пропадут.": "⚠ Also replaces conflicting files with the package version: your edits in them are lost.",
+        "Только отмеченные seed-файлы; остальное не меняется.": "Only the ticked seed files; nothing else changes.",
+        "Обычное обновление остановится:": "A normal update will stop:",
+        "Остановится:": "Will stop:",
+        "Смените режим или разберите файл.": "Change the mode or resolve the file.",
+        "Выберите режим с перезаписью или разберите файл вручную (см. diff ниже).": "Choose an overwrite mode or resolve the file by hand (see the diff below).",
+        "Harness не установлен": "Harness is not installed",
+        "обновление выполняется": "an update is running",
+        "Отметьте хотя бы один файл": "Tick at least one file",
+        "Дождитесь окончания обновления": "Wait for the update to finish",
+        "Не удалось проверить дрейф": "Could not check drift",
+        "Нажмите «Проверить заново». Если повторяется — «Диагностика» (3).": "Press “Check again”. If it repeats, open “Diagnostics” (3).",
+        "Счётчики и список файлов появятся после проверки.": "Counters and the file list appear after the check.",
+        "ваши правки сохранятся": "your edits are kept",
+        "Состав": "Set",
+        "Управляемых файлов": "Managed files",
+        "нет": "none",
+        "✔ актуальна": "✔ up to date",
+        "⚠ доступно обновление": "⚠ update available",
+    }
+)
+# Open project: status lines of the path check.
+EN.update(
+    {
+        "Проверяется путь…": "Checking the path…",
+        "Выберите каталог проекта": "Choose a project directory",
+        "Каталог проекта не существует": "The project directory does not exist",
+        "Git недоступен или не отвечает": "Git is unavailable or not responding",
+        "Путь изменился; проверьте его ещё раз": "The path changed; check it again",
     }
 )
