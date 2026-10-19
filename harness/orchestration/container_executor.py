@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import cast
+from typing import NoReturn, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY
 from . import extensions
@@ -197,31 +197,71 @@ def create_argv(
     return argv
 
 
+class _Launch:
+    """A staged launch: it records every engine object it attempts and removes them all on failure.
+
+    An object is recorded before its creating command runs, because a command that failed may
+    still have left it behind.
+    """
+
+    def __init__(self) -> None:
+        self._objects: list[tuple[str, str]] = []
+
+    def run(
+        self,
+        label: str,
+        argv: list[str],
+        *,
+        creates: tuple[str, str] | None = None,
+        container_id: bool = False,
+    ) -> str:
+        """Run one stage and return its output; a failed stage rolls back the whole launch."""
+        if creates is not None:
+            self._objects.append(creates)
+        ok, output = _engine(argv)
+        if not ok:
+            self._fail(f"{label} failed: {output}")
+        if container_id and not _CONTAINER_ID.fullmatch(output):
+            self._fail(f"{label} returned no container id: {output!r}")
+        return output
+
+    def _fail(self, failure: str) -> NoReturn:
+        # Removal is best effort, newest object first: its results only change the evidence,
+        # never the refusal.
+        results = []
+        for kind, name in reversed(self._objects):
+            removed, detail = _engine(
+                ["docker", "rm", "--force", name]
+                if kind == "container"
+                else ["docker", "network", "rm", name]
+            )
+            results.append(
+                f"{kind} {name} was removed"
+                if removed
+                else f"removing {kind} {name} failed: {detail}"
+            )
+        facts: JsonObject = {
+            "objects": [f"{kind} {name}" for kind, name in self._objects]
+        }
+        containers = [name for kind, name in self._objects if kind == "container"]
+        if containers:
+            facts["container"] = containers[-1]
+        raise extensions.RuntimeAccessBlocked(
+            "; ".join([failure, *results]),
+            remedy="fix the engine error, for example a missing plan root or an adapter outside "
+            "the plan's mounts, and send the dispatch again: it stays approved",
+            facts=facts,
+        )
+
+
 def _launch(name: str, argv: list[str]) -> str:
     """Create and start the container detached; any failure removes what it created."""
-    ok, output = _engine(argv)
-    if ok and _CONTAINER_ID.fullmatch(output):
-        started, detail = _engine(["docker", "start", output])
-        if started:
-            return output
-        failure = f"docker start failed: {detail}"
-    elif ok:
-        failure = f"docker create returned no container id: {output!r}"
-    else:
-        failure = f"docker create failed: {output}"
-    # Removal is best effort: its result only changes the evidence, never the refusal.
-    removed, detail = _engine(["docker", "rm", "--force", name])
-    cleanup = (
-        f"container {name} was removed"
-        if removed
-        else f"removing container {name} failed: {detail}"
+    launch = _Launch()
+    container_id = launch.run(
+        "docker create", argv, creates=("container", name), container_id=True
     )
-    raise extensions.RuntimeAccessBlocked(
-        f"{failure}; {cleanup}",
-        remedy="fix the engine error, for example a missing plan root or an adapter outside "
-        "the plan's mounts, and send the dispatch again: it stays approved",
-        facts={"container": name},
-    )
+    launch.run("docker start", ["docker", "start", container_id])
+    return container_id
 
 
 def _overlaps_home(path: str) -> bool:

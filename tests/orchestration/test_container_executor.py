@@ -36,6 +36,7 @@ PROXY_ID = "sha256:" + "b" * 64
 REBUILT_ID = "sha256:" + "c" * 64
 DAEMON_ID = "5c5e2d3f-docker-daemon"
 CONTAINER_ID = "0123456789abcdef" * 4
+NETWORK_ID = "fedcba9876543210" * 4
 ROOTFUL_INFO: JsonObject = {
     "ID": DAEMON_ID,
     "ServerVersion": "29.9.0",
@@ -59,7 +60,8 @@ class FakeEngine:
         self.calls: list[list[str]] = []
         self.info: object = ROOTFUL_INFO
         self.images: dict[str, str] = {WORKER_TAG: WORKER_ID, PROXY_TAG: PROXY_ID}
-        # A command kind (info, inspect, create, start, rm) that raises or exits non-zero.
+        # A command kind (info, inspect, create, start, rm, network-create, network-connect,
+        # network-rm) that raises or exits non-zero.
         self.failures: dict[str, BaseException | str] = {}
 
     def kinds(self) -> list[str]:
@@ -67,7 +69,12 @@ class FakeEngine:
 
     @staticmethod
     def _kind(argv: list[str]) -> str:
-        return argv[2] if argv[1] == "image" else argv[1]
+        """The command kind: ``inspect`` for images, ``network-<verb>`` for networks."""
+        if argv[1] == "image":
+            return argv[2]
+        if argv[1] == "network":
+            return f"network-{argv[2]}"
+        return argv[1]
 
     def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         command = list(argv)
@@ -90,7 +97,9 @@ class FakeEngine:
             return _done(command, image + "\n")
         if kind == "create":
             return _done(command, CONTAINER_ID + "\n")
-        if kind in ("start", "rm"):
+        if kind == "network-create":
+            return _done(command, NETWORK_ID + "\n")
+        if kind in ("start", "rm", "network-connect", "network-rm"):
             return _done(command, command[-1] + "\n")
         raise AssertionError(f"unexpected engine command {command}")
 
