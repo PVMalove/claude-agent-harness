@@ -6,7 +6,7 @@ import asyncio
 import subprocess
 import threading
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 import re
 
@@ -656,6 +656,47 @@ def test_the_home_key_and_the_home_crumb_close_the_screen_through_its_callback(
         return results
 
     assert asyncio.run(scenario()) == [[None], [None]]
+
+
+def test_a_number_key_closes_the_screen_and_opens_the_section_over_a_refreshed_home(
+    tmp_path: Path,
+) -> None:
+    """Another section leaves Home refreshed when it becomes visible again, as after Esc."""
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.screens.help import HelpScreen
+
+    async def scenario() -> dict[tuple[str, tuple[int, int]], tuple[list[str], int]]:
+        outcome: dict[tuple[str, tuple[int, int]], tuple[list[str], int]] = {}
+        for language in ("ru", "en"):
+            for size in ((120, 40), (80, 24)):
+                app = HarnessConsoleApp(tmp_path)
+                async with app.run_test(size=size) as pilot:
+                    if language == "en":
+                        app.action_toggle_language()
+                    dashboard = cast(DashboardScreen, app.screen)
+                    refreshes: list[bool] = []
+                    dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
+                        online
+                    )
+                    screen = _screen(tmp_path, _Runner())
+                    await app.push_screen(
+                        screen, lambda _result: dashboard._refresh_dashboard()
+                    )
+                    await _ready(pilot, app)
+                    await pilot.press("9")
+                    await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
+                    for _ in range(10):
+                        await pilot.pause(0.05)
+                    outcome[(language, size)] = (
+                        [type(s).__name__ for s in app.screen_stack],
+                        len(refreshes),
+                    )
+        return outcome
+
+    for stack, refreshed in asyncio.run(scenario()).values():
+        assert stack[-2:] == ["DashboardScreen", "HelpScreen"]
+        assert "UpdateHarnessScreen" not in stack
+        assert refreshed == 1
 
 
 def test_drift_and_not_installed_states_are_a_symbol_and_a_text(tmp_path: Path) -> None:

@@ -41,7 +41,7 @@ from ..runner import CommandRunner, capturing_runner
 from ..widgets import CheckList, ReasonNote, RoundRadioButton
 from .commands import call_from_worker, render_result, short_repo
 from .harness import CommandFormScreen
-from .home_exit import closes_into_home
+from .home_exit import leave_for_section
 
 SEED_MODE = "update-seed-selected"
 # (key, radio label): the three ways `harness update` can run. The last one overwrites only the
@@ -841,9 +841,9 @@ class UpdateHarnessScreen(ConsoleShell):
             self.notify("Обновление завершилось с ошибкой", severity="error")
         self._reload()
 
-    # Esc, a number key, the menu and the breadcrumbs wait for a running update. Esc and every way
-    # to Home close the screen with `dismiss(None)`, which runs the push callback that refreshes
-    # Home (the shell's `pop_screen` would drop it); another section opens on top of this screen.
+    # Esc, a number key, the menu and the breadcrumbs wait for a running update. Every way out
+    # closes the screen with `dismiss(None)`, which runs the push callback that refreshes Home (the
+    # shell's `pop_screen` would drop it); another section then opens from the app's loop.
     def _waits_for_update(self) -> bool:
         if self.busy:
             self.notify(
@@ -854,15 +854,11 @@ class UpdateHarnessScreen(ConsoleShell):
 
     async def action_back(self) -> None:
         if not self._waits_for_update():
-            self.dismiss(None)
+            leave_for_section(self, None)
 
     async def open_section(self, index: int) -> None:
-        if self._waits_for_update():
-            return
-        if closes_into_home(self, index):
-            self.dismiss(None)
-        else:
-            await super().open_section(index)
+        if not self._waits_for_update():
+            leave_for_section(self, index)
 
     async def navigate_crumb(self, crumb: Crumb) -> None:
         if not self._waits_for_update():

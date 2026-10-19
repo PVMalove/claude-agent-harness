@@ -13,7 +13,7 @@ from harness.configuration_store import ConfigurationStore, ConfigurationVersion
 from .commands import call_from_worker
 from .. import brand, i18n
 from ..crumbs import Crumb
-from ..shell import HOME_SECTION, SECTIONS, SHELL_CSS, ConsoleShell, SectionCard
+from ..shell import SHELL_CSS, ConsoleShell, SectionCard
 from ..logtext import colorize_diff
 from ..configuration import bundle_diff
 from ..widgets import ComposedPage, ReasonNote
@@ -218,11 +218,10 @@ class ConfigurationVersionsScreen(ConsoleShell):
         if self._waiting():
             return
         wizard = self._wizard_below()
-        if wizard is not None and SECTIONS[index] == HOME_SECTION:
-            # The wizard below guards its unapplied draft and closes itself into Home; the shell's
-            # pop to Home would drop both.
-            self.dismiss(None)
-            self.app.call_later(wizard.open_section, index)
+        if wizard is not None:
+            # The wizard below guards its unapplied draft while this screen is still on top (Cancel
+            # leaves the user here), then closes both and opens the section.
+            wizard.leave(index, above=self)
         else:
             await super().open_section(index)
 

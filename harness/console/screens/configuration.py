@@ -8,7 +8,7 @@ import json
 from enum import StrEnum
 from pathlib import Path
 from threading import Event
-from typing import Awaitable, Callable, cast
+from typing import Callable, cast
 
 from rich.json import JSON
 from rich.text import Text
@@ -16,7 +16,7 @@ from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
     Checkbox,
@@ -62,7 +62,7 @@ from ..configuration_steps import (
     steps_for,
 )
 from .commands import call_from_worker
-from .home_exit import closes_into_home
+from .home_exit import leave_for_section
 
 _PROVIDER_KEYS = tuple(PROVIDERS)
 _NO_ADVISOR = "Без ИИ — обычные подсказки"
@@ -1365,21 +1365,19 @@ class ConfigurationScreen(ConsoleShell):
         self.query_one("#use-advisor", Button).disabled = advice is None
         self._refresh_notes()
 
-    # Every way out of the wizard - Esc, a number key, the menu, a breadcrumb - goes through one
-    # guard: it waits for a running write and asks before an unapplied draft is dropped. A
-    # breadcrumb needs no guard of its own: the shell sends it to open_section, which has it.
+    # Every way out of the wizard - Esc, a number key, the menu, a breadcrumb, also from the
+    # versions screen above it - goes through one guard: it waits for a running write and asks
+    # before an unapplied draft is dropped. A breadcrumb needs no guard of its own: the shell sends
+    # it to open_section, which has it.
     async def action_back(self) -> None:
-        await self._leave(None)
+        self.leave(None)
 
     async def open_section(self, index: int) -> None:
-        # To Home the wizard closes itself, so the push callback that refreshes Home runs.
-        if closes_into_home(self, index):
-            await self._leave(None)
-        else:
-            await self._leave(lambda: ConsoleShell.open_section(self, index))
+        self.leave(index)
 
-    async def _leave(self, then: Callable[[], Awaitable[None]] | None) -> None:
-        """Leave the wizard: `then` is the way the shell would go on (None: close the wizard)."""
+    def leave(self, index: int | None, above: Screen[None] | None = None) -> None:
+        """Every way out of the wizard, also from the versions screen `above` it: wait for a running
+        write, ask once before an unapplied draft is dropped, then close and open section `index`."""
         self.advisor_cancel.set()
         if self.busy:
             self.notify(
@@ -1392,23 +1390,18 @@ class ConfigurationScreen(ConsoleShell):
                 ConfirmConfiguration(
                     "Закрыть мастер и отбросить неприменённый черновик?"
                 ),
-                lambda yes: self._discard(yes, then),
+                lambda yes: self._close(index, above) if yes else None,
             )
-        elif then is None:
-            self.dismiss(None)
         else:
-            await then()
+            self._close(index, above)
 
-    def _discard(
-        self, yes: bool | None, then: Callable[[], Awaitable[None]] | None
-    ) -> None:
-        if not yes:
+    def _close(self, index: int | None, above: Screen[None] | None) -> None:
+        if above is not None:
+            # Only the active screen can be dismissed: the versions screen goes first.
+            above.dismiss(None)
+            self.app.call_later(self._close, index, None)
             return
-        # The wizard closes first (its push callback runs); the opener then finds the screens
-        # that stay, from the app's loop.
-        self.dismiss(None)
-        if then is not None:
-            self.app.call_later(then)
+        leave_for_section(self, index)
 
     def _language(self) -> str:
         return getattr(self.app, "language", "ru")

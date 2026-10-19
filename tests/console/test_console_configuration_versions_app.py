@@ -171,7 +171,7 @@ def test_versions_stand_on_the_shared_frame_and_wait_for_a_running_restore(
     asyncio.run(scenario())
 
 
-def test_the_home_key_and_the_home_crumb_ask_before_a_changed_wizard_draft_is_dropped(
+def test_the_home_key_and_the_home_crumb_ask_before_a_changed_wizard_draft_is_dropped_and_cancel_keeps_versions(
     tmp_path: Path,
 ) -> None:
     from harness.console.screens.configuration import ConfirmConfiguration
@@ -209,18 +209,83 @@ def test_the_home_key_and_the_home_crumb_ask_before_a_changed_wizard_draft_is_dr
                     assert wizard in app.screen_stack
                     await press(pilot, f"#{attempt}")
                     if attempt == "cancel":
-                        await wait_until(pilot, lambda: app.screen is wizard)
+                        # Cancel keeps the user where they were: on the versions screen.
+                        await wait_until(pilot, lambda: app.screen is versions)
                         assert wizard.draft is not None and wizard.draft.changed()
+                        assert app.screen_stack[-2] is wizard
+                await wait_until(pilot, lambda: app.screen is dashboard)
+                assert wizard not in app.screen_stack
+
+    asyncio.run(scenario())
+
+
+def test_a_section_from_the_versions_screen_closes_both_and_refreshes_home_once(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.console.screens.help import HelpScreen
+    from tests.console.test_console_configuration_app import (
+        _change_draft,
+        _dashboard_host,
+        _open_wizard_from_home,
+    )
+    from harness.configuration_store import json_bytes
+    import json
+
+    installed_project(tmp_path)
+    project = tmp_path / ".harness/project.json"
+    project.write_bytes(json_bytes(json.loads(project.read_bytes())))
+
+    async def scenario() -> dict[tuple[str, tuple[int, int], bool], tuple[list[str], int, int]]:
+        outcome: dict[tuple[str, tuple[int, int], bool], tuple[list[str], int, int]] = {}
+        for language in ("ru", "en"):
+            for size in ((120, 48), (80, 24)):
+                for changed in (False, True):
+                    app = _dashboard_host(tmp_path)
+                    app.language = language  # type: ignore[attr-defined]
+                    async with app.run_test(size=size) as pilot:
+                        dashboard = cast(DashboardScreen, app.screen)
+                        refreshes: list[bool] = []
+                        dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
+                            online
+                        )
+                        wizard = await _open_wizard_from_home(app, pilot)
+                        if changed:
+                            _change_draft(wizard)
                         wizard._open_versions()
                         await wait_until(
                             pilot,
                             lambda: isinstance(app.screen, ConfigurationVersionsScreen),
                         )
-                        versions = app.screen
-                await wait_until(pilot, lambda: app.screen is dashboard)
-                assert wizard not in app.screen_stack
+                        await pilot.press("9")
+                        confirmations = 0
+                        if changed:
+                            await wait_until(
+                                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                            )
+                            confirmations = sum(
+                                isinstance(s, ConfirmConfiguration) for s in app.screen_stack
+                            )
+                            await press(pilot, "#confirm")
+                        await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
+                        for _ in range(10):
+                            await pilot.pause(0.05)
+                        outcome[(language, size, changed)] = (
+                            [type(s).__name__ for s in app.screen_stack],
+                            len(refreshes),
+                            confirmations,
+                        )
+        return outcome
 
-    asyncio.run(scenario())
+    for (_, _, changed), (stack, refreshed, confirmations) in asyncio.run(
+        scenario()
+    ).items():
+        assert stack[-2:] == ["DashboardScreen", "HelpScreen"]
+        assert "ConfigurationScreen" not in stack
+        assert "ConfigurationVersionsScreen" not in stack
+        assert refreshed == 1
+        assert confirmations == (1 if changed else 0)
 
 
 def test_restore_says_why_it_is_off_and_goes_on_with_a_version_chosen(

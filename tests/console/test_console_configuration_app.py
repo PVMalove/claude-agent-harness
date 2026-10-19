@@ -1171,6 +1171,72 @@ def test_confirming_the_discard_closes_the_wizard_and_then_opens_the_section(
     asyncio.run(scenario())
 
 
+def test_a_number_key_closes_the_wizard_and_opens_the_section_over_a_refreshed_home(
+    tmp_path: Path,
+) -> None:
+    """Any way out of Configuration closes it as Esc does: Home refreshes once, the section sits on Home."""
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.screens.dashboard import DashboardScreen
+    from harness.configuration_store import json_bytes
+    from harness.console.screens.help import HelpScreen
+    from harness.console.shell import SECTIONS
+    from textual.widgets import ListView
+
+    installed_project(tmp_path)
+    # The wizard compares the files with their canonical encoding: store them that way, so an
+    # untouched draft is not "changed".
+    project = tmp_path / ".harness/project.json"
+    project.write_bytes(json_bytes(json.loads(project.read_bytes())))
+
+    async def scenario() -> dict[tuple[str, tuple[int, int], str], tuple[list[str], int]]:
+        outcome: dict[tuple[str, tuple[int, int], str], tuple[list[str], int]] = {}
+        for language in ("ru", "en"):
+            for size in ((120, 48), (80, 24)):
+                for place in ("start", "wizard", "changed"):
+                    app = _dashboard_host(tmp_path)
+                    app.language = language  # type: ignore[attr-defined]
+                    async with app.run_test(size=size) as pilot:
+                        dashboard = cast(DashboardScreen, app.screen)
+                        refreshes: list[bool] = []
+                        dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
+                            online
+                        )
+                        if place == "start":
+                            await wait_until(
+                                pilot, lambda: bool(app.screen.query("#section-menu"))
+                            )
+                            app.screen.query_one(
+                                "#section-menu", ListView
+                            ).index = SECTIONS.index("Configuration")
+                            await pilot.press("enter")
+                            await wait_until(
+                                pilot, lambda: isinstance(app.screen, ConfigurationScreen)
+                            )
+                        else:
+                            wizard = await _open_wizard_from_home(app, pilot)
+                            if place == "changed":
+                                _change_draft(wizard)
+                        await pilot.press("9")
+                        if place == "changed":
+                            await wait_until(
+                                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                            )
+                            await press(pilot, "#confirm")
+                        await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
+                        for _ in range(10):
+                            await pilot.pause(0.05)
+                        outcome[(language, size, place)] = (
+                            [type(s).__name__ for s in app.screen_stack],
+                            len(refreshes),
+                        )
+        return outcome
+
+    for stack, refreshed in asyncio.run(scenario()).values():
+        assert stack[-2:] == ["DashboardScreen", "HelpScreen"]
+        assert "ConfigurationScreen" not in stack
+        assert refreshed == 1
+
+
 def test_a_running_write_keeps_the_wizard_open_for_every_way_out(
     tmp_path: Path,
 ) -> None:
