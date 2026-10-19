@@ -423,7 +423,13 @@ def _launch(
     return container_id
 
 
-_NO_SUCH = ("no such", "not found")
+# The engine's own wording for an object it does not know (docker and podman): "No such container:
+# x", "No such network: x", "network x not found". A bare "no such" is not enough: a daemon that
+# cannot be reached says "... connect: no such file or directory".
+_NO_SUCH = re.compile(
+    r"\bno such (?:container|network|object)\b|\b(?:container|network) \S+ not found\b",
+    re.IGNORECASE,
+)
 _RUNNING_STATUSES = frozenset({"running", "paused", "restarting"})
 _STOPPED_STATUSES = frozenset({"exited", "dead"})
 
@@ -432,9 +438,10 @@ def _gone(detail: str, answered: bool) -> bool:
     """Whether the engine itself said the object does not exist, as opposed to any other failure.
 
     A failure to run the engine CLI (``No such file or directory: 'docker'``) is not an answer, so
-    its text never counts, however it is worded.
+    its text never counts, however it is worded. Neither is the CLI's failure to reach the daemon:
+    its text may say "no such file or directory" for the socket, but it names no missing object.
     """
-    return answered and any(text in detail.lower() for text in _NO_SUCH)
+    return answered and _NO_SUCH.search(detail) is not None
 
 
 def inspect_worker(launch_id: str) -> JsonObject:

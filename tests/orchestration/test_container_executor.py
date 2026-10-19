@@ -43,6 +43,15 @@ PODMAN_PROXY_BARE = "b" * 64
 CONTAINER_ID = "0123456789abcdef" * 4
 PROXY_CONTAINER_ID = "89abcdef01234567" * 4
 NETWORK_ID = "fedcba9876543210" * 4
+# What the docker CLI prints when the daemon socket is missing: it names no missing object.
+DAEMON_UNREACHABLE = subprocess.CompletedProcess(
+    [],
+    1,
+    "",
+    "failed to connect to the docker API at unix:///nonexistent/docker.sock; check if the path is "
+    "correct and if the daemon is running: dial unix /nonexistent/docker.sock: connect: no such "
+    "file or directory",
+)
 ROOTFUL_INFO: JsonObject = {
     "ID": DAEMON_ID,
     "ServerVersion": "29.9.0",
@@ -1799,6 +1808,8 @@ class InspectWorkerTests(unittest.TestCase):
         for answer, expected in (
             (gone, "missing"),
             (subprocess.CompletedProcess([], 1, "", "daemon is down"), "unknown"),
+            # The CLI answered, but only that it cannot reach the daemon: no object is named.
+            (DAEMON_UNREACHABLE, "unknown"),
             (OSError("docker vanished"), "unknown"),
             # The CLI itself is missing: its text says "No such file", but no engine answered.
             (
@@ -1825,8 +1836,13 @@ class InspectWorkerTests(unittest.TestCase):
         ]
         for answer, bucket in (
             (FileNotFoundError(2, "No such file or directory", "docker"), "failed"),
+            (DAEMON_UNREACHABLE, "failed"),
             (
                 subprocess.CompletedProcess([], 1, "", "Error: No such container: x"),
+                "missing",
+            ),
+            (
+                subprocess.CompletedProcess([], 1, "", "Error: network x not found"),
                 "missing",
             ),
         ):
