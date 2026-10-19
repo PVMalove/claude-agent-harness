@@ -36,6 +36,7 @@ PROXY_ID = "sha256:" + "b" * 64
 REBUILT_ID = "sha256:" + "c" * 64
 DAEMON_ID = "5c5e2d3f-docker-daemon"
 CONTAINER_ID = "0123456789abcdef" * 4
+PROXY_CONTAINER_ID = "89abcdef01234567" * 4
 NETWORK_ID = "fedcba9876543210" * 4
 ROOTFUL_INFO: JsonObject = {
     "ID": DAEMON_ID,
@@ -61,7 +62,7 @@ class FakeEngine:
         self.info: object = ROOTFUL_INFO
         self.images: dict[str, str] = {WORKER_TAG: WORKER_ID, PROXY_TAG: PROXY_ID}
         # A command kind (info, inspect, create, start, rm, network-create, network-connect,
-        # network-rm) that raises or exits non-zero.
+        # network-rm), or ``kind:object``, that raises or exits non-zero.
         self.failures: dict[str, BaseException | str] = {}
 
     def kinds(self) -> list[str]:
@@ -76,12 +77,19 @@ class FakeEngine:
             return f"network-{argv[2]}"
         return argv[1]
 
+    @staticmethod
+    def _target(argv: list[str], kind: str) -> str:
+        """The object a command names: its ``--name`` for a create, otherwise its last argument."""
+        return argv[argv.index("--name") + 1] if kind == "create" else argv[-1]
+
     def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         command = list(argv)
         self.calls.append(command)
         assert command[0] == "docker", command
         kind = self._kind(command)
-        failure = self.failures.get(kind)
+        # ``kind:target`` fails one object only, for example the proxy but not the worker.
+        failure = self.failures.get(f"{kind}:{self._target(command, kind)}")
+        failure = self.failures.get(kind) if failure is None else failure
         if isinstance(failure, BaseException):
             raise failure
         if failure is not None:
@@ -96,7 +104,10 @@ class FakeEngine:
                 )
             return _done(command, image + "\n")
         if kind == "create":
-            return _done(command, CONTAINER_ID + "\n")
+            proxy = self._target(command, kind).endswith("-proxy")
+            return _done(
+                command, (PROXY_CONTAINER_ID if proxy else CONTAINER_ID) + "\n"
+            )
         if kind == "network-create":
             return _done(command, NETWORK_ID + "\n")
         if kind in ("start", "rm", "network-connect", "network-rm"):
@@ -201,6 +212,80 @@ class DockerFixture(unittest.TestCase):
     def assert_no_container_was_created(self) -> None:
         kinds = set(self.engine.kinds())
         self.assertFalse(kinds & {"create", "start", *FORBIDDEN}, self.engine.calls)
+
+    def expected_create(
+        self,
+        brief: JsonObject,
+        brief_path: str,
+        network: str = "none",
+        proxy_env: Sequence[str] = (),
+    ) -> list[str]:
+        plan = brief["runtime_access"]
+        root = {item["resource"]: item["path"] for item in plan["requirements"]}
+        self.assertEqual(
+            {
+                item["access"]
+                for item in plan["requirements"]
+                if item["resource"] != "artifacts"
+            },
+            {"read"},
+        )
+        dispatch_id = brief["dispatch_id"]
+        return [
+            "docker",
+            "create",
+            "--pull",
+            "never",
+            "--name",
+            f"harness-{dispatch_id}",
+            "--network",
+            network,
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--tmpfs",
+            "/harness-home:rw,exec,nosuid,nodev,mode=1777",
+            "--env",
+            "HOME=/harness-home",
+            "--env",
+            "GIT_CONFIG_COUNT=1",
+            "--env",
+            "GIT_CONFIG_KEY_0=safe.directory",
+            "--env",
+            "GIT_CONFIG_VALUE_0=*",
+            "--env",
+            "HARNESS_EXECUTOR=docker",
+            *[part for entry in proxy_env for part in ("--env", entry)],
+            "--label",
+            f"harness.dispatch={dispatch_id}",
+            "--label",
+            f"harness.repository={root['git_common']}",
+            "--label",
+            f"harness.plan_digest={plan['plan_digest']}",
+            "--workdir",
+            root["checkout"],
+            # Parents first: the worktree, Git metadata, storage, then its nested scratch.
+            "--mount",
+            f"type=bind,source={root['checkout']},target={root['checkout']},readonly",
+            "--mount",
+            f"type=bind,source={root['git_common']},target={root['git_common']},readonly",
+            "--mount",
+            f"type=bind,source={root['shared_storage']},"
+            f"target={root['shared_storage']},readonly",
+            "--mount",
+            f"type=bind,source={root['artifacts']},target={root['artifacts']}",
+            "--entrypoint",
+            str(self.adapter.resolve()),
+            WORKER_ID,
+            "dispatch",
+            "--repo",
+            str(self.repo.resolve()),
+            "--brief",
+            brief_path,
+        ]
 
 
 class DockerPreflightTests(DockerFixture):
@@ -492,73 +577,6 @@ class DockerApprovalTests(DockerFixture):
 class DockerHandoffTests(DockerFixture):
     """Send starts the worker detached in its own container and records the linked receipt."""
 
-    def expected_create(self, brief: JsonObject, brief_path: str) -> list[str]:
-        plan = brief["runtime_access"]
-        root = {item["resource"]: item["path"] for item in plan["requirements"]}
-        self.assertEqual(
-            {
-                item["access"]
-                for item in plan["requirements"]
-                if item["resource"] != "artifacts"
-            },
-            {"read"},
-        )
-        dispatch_id = brief["dispatch_id"]
-        return [
-            "docker",
-            "create",
-            "--pull",
-            "never",
-            "--name",
-            f"harness-{dispatch_id}",
-            "--network",
-            "none",
-            "--user",
-            f"{os.getuid()}:{os.getgid()}",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--tmpfs",
-            "/harness-home:rw,exec,nosuid,nodev,mode=1777",
-            "--env",
-            "HOME=/harness-home",
-            "--env",
-            "GIT_CONFIG_COUNT=1",
-            "--env",
-            "GIT_CONFIG_KEY_0=safe.directory",
-            "--env",
-            "GIT_CONFIG_VALUE_0=*",
-            "--env",
-            "HARNESS_EXECUTOR=docker",
-            "--label",
-            f"harness.dispatch={dispatch_id}",
-            "--label",
-            f"harness.repository={root['git_common']}",
-            "--label",
-            f"harness.plan_digest={plan['plan_digest']}",
-            "--workdir",
-            root["checkout"],
-            # Parents first: the worktree, Git metadata, storage, then its nested scratch.
-            "--mount",
-            f"type=bind,source={root['checkout']},target={root['checkout']},readonly",
-            "--mount",
-            f"type=bind,source={root['git_common']},target={root['git_common']},readonly",
-            "--mount",
-            f"type=bind,source={root['shared_storage']},"
-            f"target={root['shared_storage']},readonly",
-            "--mount",
-            f"type=bind,source={root['artifacts']},target={root['artifacts']}",
-            "--entrypoint",
-            str(self.adapter.resolve()),
-            WORKER_ID,
-            "dispatch",
-            "--repo",
-            str(self.repo.resolve()),
-            "--brief",
-            brief_path,
-        ]
-
     def test_send_starts_the_worker_detached_with_exactly_the_plan_mounts(self) -> None:
         brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
         self.engine.reset()
@@ -705,6 +723,323 @@ class DockerHandoffTests(DockerFixture):
 
         for method in ("observe", "apply", "handoff"):
             self.assertTrue(callable(getattr(provider, method, None)), method)
+
+
+PROXY_URL_ENV = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+)
+BYPASS_ENV = ("NO_PROXY", "no_proxy")
+HOSTS = ["api.example.com", "files.example.org"]
+
+
+class DockerEgressTests(DockerFixture):
+    """A non-empty network.hosts runs the worker behind a per-dispatch egress-proxy sidecar (#706)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.configure(
+            container={"worker_image": WORKER_TAG, "proxy_image": PROXY_TAG},
+            network={"hosts": HOSTS},
+        )
+
+    def approved(self) -> JsonObject:
+        brief: JsonObject = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        self.engine.reset()
+        return brief
+
+    def labels(self, brief: JsonObject) -> list[str]:
+        plan = brief["runtime_access"]
+        root = {item["resource"]: item["path"] for item in plan["requirements"]}
+        return [
+            part
+            for entry in (
+                f"harness.dispatch={brief['dispatch_id']}",
+                f"harness.repository={root['git_common']}",
+                f"harness.plan_digest={plan['plan_digest']}",
+            )
+            for part in ("--label", entry)
+        ]
+
+    def topology(self, brief: JsonObject, sent: JsonObject) -> list[list[str]]:
+        """Every engine call a send makes, in order, with the exact argv."""
+        dispatch_id = brief["dispatch_id"]
+        network = f"harness-{dispatch_id}-net"
+        proxy = f"harness-{dispatch_id}-proxy"
+        url = f"http://{proxy}:3128"
+        proxy_env = [f"{name}={url}" for name in PROXY_URL_ENV] + [
+            f"{name}=localhost,127.0.0.1,::1" for name in BYPASS_ENV
+        ]
+        return [
+            ["docker", "info", "--format", "{{json .}}"],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", WORKER_TAG],
+            ["docker", "image", "inspect", "--format", "{{.Id}}", PROXY_TAG],
+            ["docker", "network", "create", "--internal", *self.labels(brief), network],
+            [
+                "docker",
+                "create",
+                "--pull",
+                "never",
+                "--name",
+                proxy,
+                "--network",
+                network,
+                "--user",
+                f"{os.getuid()}:{os.getgid()}",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--read-only",
+                "--env",
+                f"HARNESS_EGRESS_ALLOWED_HOSTS={','.join(HOSTS)}",
+                *self.labels(brief),
+                PROXY_ID,
+            ],
+            ["docker", "network", "connect", "bridge", PROXY_CONTAINER_ID],
+            ["docker", "start", PROXY_CONTAINER_ID],
+            self.expected_create(brief, sent["brief"], network, proxy_env),
+            ["docker", "start", CONTAINER_ID],
+        ]
+
+    def test_preflight_verifies_the_hosts_and_the_proxy_image(self) -> None:
+        verification = self.preflight()
+
+        self.assertEqual(verification["status"], "verified", verification)
+        evidence = verification["evidence"]
+        self.assertEqual(list(evidence["hosts"]), HOSTS)
+        self.assertEqual(
+            (evidence["proxy_image"], evidence["proxy_image_id"]), (PROXY_TAG, PROXY_ID)
+        )
+
+    def test_hosts_without_a_proxy_image_are_blocked_with_the_remedy(self) -> None:
+        self.configure(network={"hosts": HOSTS})
+
+        verification = self.preflight()
+
+        self.assertEqual(verification["status"], "unverified")
+        self.assertIn("need an egress proxy", verification["reason"])
+        self.assertIn("container.proxy_image", verification["remedy"])
+        self.assertIn("Dockerfile.proxy", verification["remedy"])
+        self.assert_no_container_was_created()
+
+    def test_the_proxy_environment_names_are_reserved_only_with_hosts(self) -> None:
+        os_names = {name: "x" for name in (*PROXY_URL_ENV, *BYPASS_ENV)}
+        with mock.patch.dict(os.environ, os_names):
+            for name in (*PROXY_URL_ENV, *BYPASS_ENV):
+                with self.subTest(name=name, hosts=True):
+                    self.configure(
+                        container={
+                            "worker_image": WORKER_TAG,
+                            "proxy_image": PROXY_TAG,
+                        },
+                        network={"hosts": HOSTS},
+                        environment=[name],
+                    )
+
+                    verification = self.preflight()
+
+                    self.assertEqual(verification["status"], "unverified")
+                    self.assertIn(name, verification["reason"])
+                    self.assertIn("environment", verification["remedy"])
+                with self.subTest(name=name, hosts=False):
+                    self.configure(
+                        container={
+                            "worker_image": WORKER_TAG,
+                            "proxy_image": PROXY_TAG,
+                        },
+                        environment=[name],
+                    )
+
+                    self.assertEqual(self.preflight()["status"], "verified")
+
+    def test_send_builds_the_internal_network_the_sidecar_and_the_worker_in_order(
+        self,
+    ) -> None:
+        brief = self.approved()
+
+        sent = self.send(brief["dispatch_id"])
+
+        self.assertEqual(self.engine.calls, self.topology(brief, sent))
+        self.assertFalse(set(self.engine.kinds()) & FORBIDDEN)
+        self.assertFalse(self.adapter_ran.exists())
+        status = coordinator.dispatch_status(
+            self.fx._args(dispatch=brief["dispatch_id"], batch=None, stale_after=None)
+        )["dispatches"][0]
+        self.assertEqual(status["state"], "dispatched")
+        evidence = status["runtime_access"]["evidence"]
+        self.assertEqual(evidence["hosts"], HOSTS)
+        self.assertEqual(evidence["launch_id"], CONTAINER_ID)
+        self.assertEqual(evidence["proxy_image_id"], PROXY_ID)
+
+    def test_the_worker_is_on_the_internal_network_only_and_the_sidecar_uses_the_digest(
+        self,
+    ) -> None:
+        brief = self.approved()
+
+        self.send(brief["dispatch_id"])
+
+        worker = next(
+            call
+            for call in self.engine.calls
+            if call[1] == "create" and f"harness-{brief['dispatch_id']}" in call
+        )
+        proxy = next(call for call in self.engine.calls if call[-1] == PROXY_ID)
+        self.assertEqual(worker.count("--network"), 1)
+        self.assertEqual(
+            worker[worker.index("--network") + 1], f"harness-{brief['dispatch_id']}-net"
+        )
+        self.assertNotIn("--publish", worker + proxy)
+        self.assertNotIn(PROXY_TAG, proxy)
+        self.assertNotIn(WORKER_TAG, worker)
+        self.assertEqual(
+            proxy[proxy.index("--network") + 1], worker[worker.index("--network") + 1]
+        )
+
+    def test_an_empty_host_list_keeps_no_network_and_creates_no_sidecar(self) -> None:
+        self.configure(container={"worker_image": WORKER_TAG, "proxy_image": PROXY_TAG})
+        brief = self.approved()
+
+        sent = self.send(brief["dispatch_id"])
+
+        self.assertEqual(
+            self.engine.calls,
+            [
+                ["docker", "info", "--format", "{{json .}}"],
+                ["docker", "image", "inspect", "--format", "{{.Id}}", WORKER_TAG],
+                ["docker", "image", "inspect", "--format", "{{.Id}}", PROXY_TAG],
+                self.expected_create(brief, sent["brief"]),
+                ["docker", "start", CONTAINER_ID],
+            ],
+        )
+        self.assertFalse(any(call[1] == "network" for call in self.engine.calls))
+
+    def test_a_proxy_image_rebuilt_or_removed_after_approval_blocks_the_send(
+        self,
+    ) -> None:
+        brief = self.approved()
+        self.engine.images[PROXY_TAG] = REBUILT_ID
+
+        with self.assertRaises(runtime_access.AccessError) as changed:
+            self.send(brief["dispatch_id"])
+
+        self.assertEqual(
+            changed.exception.message,
+            f"image {PROXY_TAG} changed after dispatch propose: pinned {PROXY_ID}, "
+            f"now {REBUILT_ID}",
+        )
+        self.assertEqual(
+            changed.exception.remedy, container_executor.CHANGED_IMAGE_REMEDY
+        )
+        del self.engine.images[PROXY_TAG]
+        with self.assertRaises(runtime_access.AccessError) as missing:
+            self.send(brief["dispatch_id"])
+
+        self.assertIn(f"image {PROXY_TAG} is not present", missing.exception.message)
+        self.assertIn("repeat dispatch preflight and propose", missing.exception.remedy)
+        self.assertEqual(self.state(brief["dispatch_id"]), "approved")
+        self.assert_no_network_or_container_was_created()
+
+    def assert_no_network_or_container_was_created(self) -> None:
+        self.assertFalse(
+            set(self.engine.kinds()) & {"create", "start", "network-create"},
+            self.engine.calls,
+        )
+
+    def test_a_failure_at_any_stage_removes_every_attempted_object_newest_first(
+        self,
+    ) -> None:
+        brief = self.approved()
+        dispatch_id = brief["dispatch_id"]
+        worker = f"harness-{dispatch_id}"
+        proxy = f"{worker}-proxy"
+        network = f"{worker}-net"
+        remove = {
+            "worker": ["docker", "rm", "--force", worker],
+            "proxy": ["docker", "rm", "--force", proxy],
+            "network": ["docker", "network", "rm", network],
+        }
+        stages: tuple[tuple[str, str, list[str]], ...] = (
+            ("network-create", "docker network create failed", ["network"]),
+            (
+                f"create:{proxy}",
+                "docker create (egress proxy) failed",
+                ["proxy", "network"],
+            ),
+            ("network-connect", "docker network connect failed", ["proxy", "network"]),
+            (
+                f"start:{PROXY_CONTAINER_ID}",
+                "docker start (egress proxy) failed",
+                ["proxy", "network"],
+            ),
+            (
+                f"create:{worker}",
+                "docker create failed",
+                ["worker", "proxy", "network"],
+            ),
+            (
+                f"start:{CONTAINER_ID}",
+                "docker start failed",
+                ["worker", "proxy", "network"],
+            ),
+        )
+        for key, message, removed in stages:
+            with self.subTest(stage=key):
+                self.engine.reset()
+                self.engine.failures = {key: "engine said no"}
+
+                with self.assertRaises(runtime_access.AccessError) as refused:
+                    self.send(dispatch_id)
+
+                self.assertIn(
+                    message.removesuffix(" failed"), refused.exception.message
+                )
+                self.assertIn("engine said no", refused.exception.message)
+                self.assertEqual(
+                    self.engine.calls[-len(removed) :],
+                    [remove[item] for item in removed],
+                )
+                for item in removed:
+                    kind, name = (
+                        ("network", network)
+                        if item == "network"
+                        else ("container", proxy if item == "proxy" else worker)
+                    )
+                    self.assertIn(
+                        f"{kind} {name} was removed", refused.exception.message
+                    )
+                self.assertEqual(self.state(dispatch_id), "approved")
+        self.engine.reset()
+
+        self.send(dispatch_id)
+
+        self.assertEqual(self.state(dispatch_id), "dispatched")
+
+    def test_a_failed_removal_is_named_and_does_not_stop_the_rest(self) -> None:
+        brief = self.approved()
+        dispatch_id = brief["dispatch_id"]
+        worker = f"harness-{dispatch_id}"
+        self.engine.failures = {
+            f"start:{CONTAINER_ID}": "boom",
+            f"rm:{worker}-proxy": "proxy is busy",
+            "network-rm": OSError("daemon gone"),
+        }
+
+        with self.assertRaises(runtime_access.AccessError) as refused:
+            self.send(dispatch_id)
+
+        message = refused.exception.message
+        self.assertIn(f"container {worker} was removed", message)
+        self.assertIn(
+            f"removing container {worker}-proxy failed: proxy is busy", message
+        )
+        self.assertIn(f"removing network {worker}-net failed: daemon gone", message)
+        self.assertEqual(
+            [call[1] for call in self.engine.calls[-3:]], ["rm", "rm", "network"]
+        )
+        self.assertEqual(self.state(dispatch_id), "approved")
 
 
 class DockerEnvironmentTests(DockerFixture):

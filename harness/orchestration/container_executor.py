@@ -1,12 +1,18 @@
 """Built-in ``docker`` runtime_access: an approved external dispatch in its own rootful container.
 
 The executor runs only what the immutable brief approved: the resolved plan's resources at the same
-absolute paths, no network, and the image digests that ``dispatch propose`` pinned. It never builds
-or pulls an image and never approves anything on the human's behalf (ADR 0018). Every engine
-command goes through ``run_engine``; nothing else here starts a process.
+absolute paths, the network the plan names, and the image digests that ``dispatch propose`` pinned.
+It never builds or pulls an image and never approves anything on the human's behalf (ADR 0018).
+Every engine command goes through ``run_engine``; nothing else here starts a process.
 
-Rootful Docker with an empty ``network.hosts`` is the supported scope. Podman, rootless Docker, a
-host allowlist and an in-process transport each raise ``RuntimeAccessBlocked`` with its remedy.
+An empty ``network.hosts`` runs the worker with ``--network none``. A non-empty list runs it on an
+``--internal`` network whose only peer is a per-dispatch egress-proxy sidecar (issue #706): the
+sidecar is attached to the default bridge too and enforces the host allowlist for HTTP(S). The
+sidecar and its network outlive the worker until the terminal teardown of issue #452 removes them
+by their labels.
+
+Rootful Docker is the supported scope. Podman, rootless Docker and an in-process transport each
+raise ``RuntimeAccessBlocked`` with its remedy.
 """
 
 from __future__ import annotations
@@ -43,6 +49,16 @@ FIXED_ENV = (
     EXECUTOR_ENV,
 )
 RESERVED_ENV_NAMES = frozenset(name for name, _ in FIXED_ENV)
+# The egress sidecar listens here; its allowlist reaches it in this variable.
+PROXY_PORT = 3128
+ALLOWED_HOSTS_ENV = "HARNESS_EGRESS_ALLOWED_HOSTS"
+# With a host allowlist the executor points the worker at the sidecar through these names, so a
+# plan may not set them; an offline plan still may.
+PROXY_URL_ENV_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+PROXY_BYPASS_ENV_NAMES = ("NO_PROXY", "no_proxy")
+PROXY_ENV_NAMES = frozenset(PROXY_URL_ENV_NAMES + PROXY_BYPASS_ENV_NAMES)
+# Loopback stays inside the worker's own container, so it never needs the proxy.
+PROXY_BYPASS = "localhost,127.0.0.1,::1"
 # ``inherit`` asks for no particular mode; the container isolates the worker either way.
 SUPPORTED_MODES = ("inherit", "sandbox")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
@@ -121,6 +137,40 @@ def container_name(dispatch_id: str) -> str:
     return f"harness-{dispatch_id}"
 
 
+def proxy_name(dispatch_id: str) -> str:
+    """The name of a dispatch's egress-proxy sidecar, also its DNS name on the internal network."""
+    return f"{container_name(dispatch_id)}-proxy"
+
+
+def network_name(dispatch_id: str) -> str:
+    """The name of a dispatch's internal network."""
+    return f"{container_name(dispatch_id)}-net"
+
+
+def _plan_root(plan: Mapping[str, object], resource: str) -> str:
+    return str(
+        next(
+            i["path"]
+            for i in cast(JsonObject, plan)["requirements"]
+            if i["resource"] == resource
+        )
+    )
+
+
+def _labels(brief: Mapping[str, object]) -> list[str]:
+    """The labels of every object a dispatch creates: a teardown removes them all by filter."""
+    data = cast(JsonObject, brief)
+    plan = data["runtime_access"]
+    argv: list[str] = []
+    for entry in (
+        f"harness.dispatch={data['dispatch_id']}",
+        f"harness.repository={_plan_root(plan, 'git_common')}",
+        f"harness.plan_digest={plan['plan_digest']}",
+    ):
+        argv += ["--label", entry]
+    return argv
+
+
 def mounts(requirements: Sequence[Mapping[str, object]]) -> list[tuple[str, str]]:
     """One bind mount per plan root, read-write when any requirement writes it.
 
@@ -139,19 +189,17 @@ def mounts(requirements: Sequence[Mapping[str, object]]) -> list[tuple[str, str]
 def create_argv(
     brief: Mapping[str, object], command: Sequence[str], user: str
 ) -> list[str]:
-    """The exact ``docker create`` of the approved worker: plan roots only, no network.
+    """The exact ``docker create`` of the approved worker: plan roots only, no direct network.
 
-    A plan's environment names become ``--env NAME`` without a value: the engine reads each
-    value from its own inherited environment, so no value enters the argv.
+    Without hosts the worker has no network. With hosts it joins only the dispatch's internal
+    network and reaches the sidecar by name through the proxy variables. A plan's environment names
+    become ``--env NAME`` without a value: the engine reads each value from its own inherited
+    environment, so no value enters the argv.
     """
     data = cast(JsonObject, brief)
     plan = data["runtime_access"]
     dispatch_id = str(data["dispatch_id"])
-
-    def root(resource: str) -> str:
-        return str(
-            next(i["path"] for i in plan["requirements"] if i["resource"] == resource)
-        )
+    hosts = plan["network"]["hosts"]
 
     argv = [
         "docker",
@@ -162,7 +210,7 @@ def create_argv(
         "--name",
         container_name(dispatch_id),
         "--network",
-        "none",
+        network_name(dispatch_id) if hosts else "none",
         "--user",
         user,
         "--cap-drop",
@@ -174,18 +222,15 @@ def create_argv(
     ]
     for pair in FIXED_ENV:
         argv += ["--env", "=".join(pair)]
+    if hosts:
+        url = f"http://{proxy_name(dispatch_id)}:{PROXY_PORT}"
+        for name in PROXY_URL_ENV_NAMES:
+            argv += ["--env", f"{name}={url}"]
+        for name in PROXY_BYPASS_ENV_NAMES:
+            argv += ["--env", f"{name}={PROXY_BYPASS}"]
     for name in plan.get("environment", []):
         argv += ["--env", name]
-    argv += [
-        "--label",
-        f"harness.dispatch={dispatch_id}",
-        "--label",
-        f"harness.repository={root('git_common')}",
-        "--label",
-        f"harness.plan_digest={plan['plan_digest']}",
-        "--workdir",
-        root("checkout"),
-    ]
+    argv += [*_labels(brief), "--workdir", _plan_root(plan, "checkout")]
     for path, access in mounts(plan["requirements"]):
         argv += [
             "--mount",
@@ -195,6 +240,51 @@ def create_argv(
     # The image is the pinned id, never the tag: a retag after approval cannot change it.
     argv += ["--entrypoint", command[0], data["runtime_images"]["worker"], *command[1:]]
     return argv
+
+
+def network_argv(brief: Mapping[str, object]) -> list[str]:
+    """The ``docker network create`` of the dispatch's internal network: no route out of it."""
+    dispatch_id = str(brief["dispatch_id"])
+    return [
+        "docker",
+        "network",
+        "create",
+        "--internal",
+        *_labels(brief),
+        network_name(dispatch_id),
+    ]
+
+
+def proxy_argv(brief: Mapping[str, object], user: str) -> list[str]:
+    """The ``docker create`` of the egress sidecar from its pinned digest, on the internal network.
+
+    The allowlist is the plan's host list: validated DNS names, so it is not a secret and may
+    appear in the argv. The sidecar needs no capability and writes nothing.
+    """
+    data = cast(JsonObject, brief)
+    plan = data["runtime_access"]
+    dispatch_id = str(data["dispatch_id"])
+    return [
+        "docker",
+        "create",
+        "--pull",
+        "never",
+        "--name",
+        proxy_name(dispatch_id),
+        "--network",
+        network_name(dispatch_id),
+        "--user",
+        user,
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--read-only",
+        "--env",
+        f"{ALLOWED_HOSTS_ENV}={','.join(plan['network']['hosts'])}",
+        *_labels(brief),
+        data["runtime_images"]["proxy"],
+    ]
 
 
 class _Launch:
@@ -254,11 +344,37 @@ class _Launch:
         )
 
 
-def _launch(name: str, argv: list[str]) -> str:
-    """Create and start the container detached; any failure removes what it created."""
+def _launch(brief: Mapping[str, object], command: Sequence[str], user: str) -> str:
+    """Create and start the dispatch's containers detached; any failure removes what it created.
+
+    The sidecar comes first and only when the plan has hosts: its internal network, then the
+    sidecar attached to it, then the default bridge, then its start. The worker is last.
+    """
+    data = cast(JsonObject, brief)
+    dispatch_id = str(data["dispatch_id"])
     launch = _Launch()
+    if data["runtime_access"]["network"]["hosts"]:
+        launch.run(
+            "docker network create",
+            network_argv(brief),
+            creates=("network", network_name(dispatch_id)),
+        )
+        proxy_id = launch.run(
+            "docker create (egress proxy)",
+            proxy_argv(brief, user),
+            creates=("container", proxy_name(dispatch_id)),
+            container_id=True,
+        )
+        launch.run(
+            "docker network connect",
+            ["docker", "network", "connect", "bridge", proxy_id],
+        )
+        launch.run("docker start (egress proxy)", ["docker", "start", proxy_id])
     container_id = launch.run(
-        "docker create", argv, creates=("container", name), container_id=True
+        "docker create",
+        create_argv(brief, command, user),
+        creates=("container", container_name(dispatch_id)),
+        container_id=True,
     )
     launch.run("docker start", ["docker", "start", container_id])
     return container_id
@@ -330,7 +446,8 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
             "set the role's assignment_plans transport to external, then repeat dispatch "
             "preflight and propose",
         )
-    if not data.get("container"):
+    container = data.get("container")
+    if not container:
         block(
             "the access plan has no container component",
             "set access_policy.defaults.container.worker_image, then repeat dispatch "
@@ -343,11 +460,12 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
             "set the access_policy container engine to docker or omit it",
         )
     hosts = data["network"]["hosts"]
-    if hosts:
+    if hosts and not (container and container.get("proxy_image")):
         block(
-            f"network hosts {', '.join(hosts)} need an egress proxy that the docker "
-            "executor does not provide",
-            "set the role's access_policy network.hosts to []",
+            f"network hosts {', '.join(hosts)} need an egress proxy, but the container "
+            "component names no proxy_image",
+            "build the proxy image from .harness/container/Dockerfile.proxy and set the "
+            "role's access_policy container.proxy_image to its tag, or set network.hosts to []",
         )
     if data["mode"] not in SUPPORTED_MODES:
         block(
@@ -355,7 +473,8 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
             "set the role's access_policy mode to sandbox or inherit",
         )
     names = data.get("environment", [])
-    reserved = [name for name in names if name in RESERVED_ENV_NAMES]
+    taken = RESERVED_ENV_NAMES | PROXY_ENV_NAMES if hosts else RESERVED_ENV_NAMES
+    reserved = [name for name in names if name in taken]
     if reserved:
         block(
             f"the docker executor sets these environment names itself: {', '.join(reserved)}",
@@ -384,7 +503,7 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
 
 
 class DockerExecutor:
-    """Run the approved worker in one rootful Docker container without network."""
+    """Run the approved worker in one rootful Docker container, offline or behind its sidecar."""
 
     def observe(
         self, plan: Mapping[str, object], transport: str
@@ -434,7 +553,7 @@ class DockerExecutor:
             launch_id=extensions.LAUNCH_AT_HANDOFF,
             source="native-runtime",
             observed_at=datetime.now(UTC).isoformat(),
-            hosts=(),
+            hosts=tuple(data["network"]["hosts"]),
             filesystem=tuple(
                 (item["path"], item["access"]) for item in data["requirements"]
             ),
@@ -486,8 +605,9 @@ class DockerExecutor:
     ) -> ContainerObservation:
         """Start the approved adapter command detached in the worker's own container.
 
-        The receipt names the real container id as its ``launch_id``. Nothing waits for the
-        worker, and nothing builds, pulls or runs an image attached.
+        With hosts the worker's internal network and egress sidecar come up first. The receipt
+        names the worker's container id as its ``launch_id``. Nothing waits for the worker, and
+        nothing builds, pulls or runs an image attached.
         """
         if not isinstance(observation, ContainerObservation):
             raise extensions.RuntimeAccessBlocked(
@@ -503,10 +623,7 @@ class DockerExecutor:
                 facts={"engine": observation.engine},
             )
         dispatch_id = str(brief["dispatch_id"])
-        container_id = _launch(
-            container_name(dispatch_id),
-            create_argv(brief, command, f"{os.getuid()}:{os.getgid()}"),
-        )
+        container_id = _launch(brief, command, f"{os.getuid()}:{os.getgid()}")
         return replace(
             observation,
             applied=True,
