@@ -1,4 +1,4 @@
-"""Built-in ``docker`` runtime_access: an approved external dispatch in its own rootful container.
+"""Built-in ``docker`` runtime_access: an approved external dispatch in its own container.
 
 The executor runs only what the immutable brief approved: the resolved plan's resources at the same
 absolute paths, the network the plan names, and the image digests that ``dispatch propose`` pinned.
@@ -11,8 +11,12 @@ sidecar is attached to the default bridge too and enforces the host allowlist fo
 sidecar and its network outlive the worker until the terminal teardown of issue #452 removes them
 by their labels.
 
-Rootful Docker is the supported scope. Podman, rootless Docker and an in-process transport each
-raise ``RuntimeAccessBlocked`` with its remedy.
+The engine is Docker or Podman, named by the plan and checked by one read-only ``<engine> info``
+in ``observe``: rootful engines run the worker as the host ``uid:gid``, rootless Podman with
+``--userns=keep-id`` and rootless Docker without a user flag (its container root is the host user),
+so files keep the host owner. An engine that reports SELinux gets ``label=disable``; host files are
+never relabeled. Remote Podman, Docker user namespace remapping, an info answer that does not match
+the engine and an in-process transport each raise ``RuntimeAccessBlocked`` with its remedy.
 """
 
 from __future__ import annotations
@@ -62,6 +66,10 @@ PROXY_BYPASS = "localhost,127.0.0.1,::1"
 # ``inherit`` asks for no particular mode; the container isolates the worker either way.
 SUPPORTED_MODES = ("inherit", "sandbox")
 _IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+# Podman prints an image id without the ``sha256:`` prefix.
+_BARE_IMAGE_ID = re.compile(r"[0-9a-f]{64}")
+# The network a sidecar joins to reach the outside: the engine's default one.
+DEFAULT_NETWORKS = {"docker": "bridge", "podman": "podman"}
 _CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 # A comma, quote or line break would let a root inject options into its ``--mount`` value.
 _UNSAFE_PATH = re.compile(r'[,"\n\r]')
@@ -105,6 +113,7 @@ class ContainerObservation(extensions.RuntimeAccessObservation):
 
     engine: str = EXTENSION_NAME
     engine_mode: str = "not-probed"
+    selinux: bool = False
     worker_image: str | None = None
     worker_image_id: str | None = None
     proxy_image: str | None = None
@@ -186,10 +195,31 @@ def mounts(requirements: Sequence[Mapping[str, object]]) -> list[tuple[str, str]
     )
 
 
+def identity_argv(observation: ContainerObservation, *, worker: bool) -> list[str]:
+    """The options that keep host file ownership for the observed engine mode, then SELinux.
+
+    A rootful engine runs the host ``uid:gid``. Rootless Podman keeps the host id with
+    ``--userns=keep-id``. Rootless Docker maps container root to the host user, so the worker pins
+    ``--user 0:0`` instead of trusting the image's ``USER``; the sidecar keeps its own image user.
+    An engine that reports SELinux gets ``label=disable``; host files are never relabeled.
+    """
+    if observation.engine_mode != "rootless":
+        argv = ["--user", f"{os.getuid()}:{os.getgid()}"]
+    elif observation.engine == "podman":
+        argv = ["--userns=keep-id"]
+    else:
+        argv = ["--user", "0:0"] if worker else []
+    if observation.selinux:
+        argv += ["--security-opt", "label=disable"]
+    return argv
+
+
 def create_argv(
-    brief: Mapping[str, object], command: Sequence[str], user: str
+    brief: Mapping[str, object],
+    command: Sequence[str],
+    observation: ContainerObservation,
 ) -> list[str]:
-    """The exact ``docker create`` of the approved worker: plan roots only, no direct network.
+    """The exact ``<engine> create`` of the approved worker: plan roots only, no direct network.
 
     Without hosts the worker has no network. With hosts it joins only the dispatch's internal
     network and reaches the sidecar by name through the proxy variables. A plan's environment names
@@ -202,7 +232,7 @@ def create_argv(
     hosts = plan["network"]["hosts"]
 
     argv = [
-        "docker",
+        observation.engine,
         "create",
         # The default would pull a missing image; the harness never builds or pulls one.
         "--pull",
@@ -211,8 +241,7 @@ def create_argv(
         container_name(dispatch_id),
         "--network",
         network_name(dispatch_id) if hosts else "none",
-        "--user",
-        user,
+        *identity_argv(observation, worker=True),
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -242,11 +271,11 @@ def create_argv(
     return argv
 
 
-def network_argv(brief: Mapping[str, object]) -> list[str]:
-    """The ``docker network create`` of the dispatch's internal network: no route out of it."""
+def network_argv(brief: Mapping[str, object], engine: str) -> list[str]:
+    """The ``<engine> network create`` of the dispatch's internal network: no route out of it."""
     dispatch_id = str(brief["dispatch_id"])
     return [
-        "docker",
+        engine,
         "network",
         "create",
         "--internal",
@@ -255,8 +284,10 @@ def network_argv(brief: Mapping[str, object]) -> list[str]:
     ]
 
 
-def proxy_argv(brief: Mapping[str, object], user: str) -> list[str]:
-    """The ``docker create`` of the egress sidecar from its pinned digest, on the internal network.
+def proxy_argv(
+    brief: Mapping[str, object], observation: ContainerObservation
+) -> list[str]:
+    """The ``<engine> create`` of the egress sidecar from its pinned digest, on the internal network.
 
     The allowlist is the plan's host list: validated DNS names, so it is not a secret and may
     appear in the argv. The sidecar needs no capability and writes nothing.
@@ -265,7 +296,7 @@ def proxy_argv(brief: Mapping[str, object], user: str) -> list[str]:
     plan = data["runtime_access"]
     dispatch_id = str(data["dispatch_id"])
     return [
-        "docker",
+        observation.engine,
         "create",
         "--pull",
         "never",
@@ -273,8 +304,7 @@ def proxy_argv(brief: Mapping[str, object], user: str) -> list[str]:
         proxy_name(dispatch_id),
         "--network",
         network_name(dispatch_id),
-        "--user",
-        user,
+        *identity_argv(observation, worker=False),
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -294,7 +324,8 @@ class _Launch:
     still have left it behind.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, engine: str) -> None:
+        self._engine = engine
         self._objects: list[tuple[str, str]] = []
 
     def run(
@@ -321,9 +352,9 @@ class _Launch:
         results = []
         for kind, name in reversed(self._objects):
             removed, detail = _engine(
-                ["docker", "rm", "--force", name]
+                [self._engine, "rm", "--force", name]
                 if kind == "container"
-                else ["docker", "network", "rm", name]
+                else [self._engine, "network", "rm", name]
             )
             results.append(
                 f"{kind} {name} was removed"
@@ -344,7 +375,11 @@ class _Launch:
         )
 
 
-def _launch(brief: Mapping[str, object], command: Sequence[str], user: str) -> str:
+def _launch(
+    brief: Mapping[str, object],
+    command: Sequence[str],
+    observation: ContainerObservation,
+) -> str:
     """Create and start the dispatch's containers detached; any failure removes what it created.
 
     The sidecar comes first and only when the plan has hosts: its internal network, then the
@@ -352,31 +387,32 @@ def _launch(brief: Mapping[str, object], command: Sequence[str], user: str) -> s
     """
     data = cast(JsonObject, brief)
     dispatch_id = str(data["dispatch_id"])
-    launch = _Launch()
+    engine = observation.engine
+    launch = _Launch(engine)
     if data["runtime_access"]["network"]["hosts"]:
         launch.run(
-            "docker network create",
-            network_argv(brief),
+            f"{engine} network create",
+            network_argv(brief, engine),
             creates=("network", network_name(dispatch_id)),
         )
         proxy_id = launch.run(
-            "docker create (egress proxy)",
-            proxy_argv(brief, user),
+            f"{engine} create (egress proxy)",
+            proxy_argv(brief, observation),
             creates=("container", proxy_name(dispatch_id)),
             container_id=True,
         )
         launch.run(
-            "docker network connect",
-            ["docker", "network", "connect", "bridge", proxy_id],
+            f"{engine} network connect",
+            [engine, "network", "connect", DEFAULT_NETWORKS[engine], proxy_id],
         )
-        launch.run("docker start (egress proxy)", ["docker", "start", proxy_id])
+        launch.run(f"{engine} start (egress proxy)", [engine, "start", proxy_id])
     container_id = launch.run(
-        "docker create",
-        create_argv(brief, command, user),
+        f"{engine} create",
+        create_argv(brief, command, observation),
         creates=("container", container_name(dispatch_id)),
         container_id=True,
     )
-    launch.run("docker start", ["docker", "start", container_id])
+    launch.run(f"{engine} start", [engine, "start", container_id])
     return container_id
 
 
@@ -386,20 +422,8 @@ def _overlaps_home(path: str) -> bool:
     return root == home or home in root.parents or root in home.parents
 
 
-def _engine_mode(block: _Block) -> tuple[str, str]:
-    """The engine mode and daemon identity from ``docker info``; it only reads engine state."""
-    ok, output = _engine(["docker", "info", "--format", "{{json .}}"])
-    if not ok:
-        block(
-            f"the docker engine is unavailable: {output}",
-            "start the rootful Docker daemon and let the coordinator reach the docker CLI, "
-            "then repeat dispatch preflight",
-        )
-        return "unavailable", ""
-    try:
-        info = json.loads(output)
-    except ValueError:
-        info = None
+def _docker_facts(info: object) -> tuple[str, bool, str] | None:
+    """The mode, SELinux flag and daemon identity in a Docker answer; ``None`` if it is not one."""
     if (
         not isinstance(info, dict)
         or not isinstance(info.get("SecurityOptions"), list)
@@ -408,37 +432,107 @@ def _engine_mode(block: _Block) -> tuple[str, str]:
         or not isinstance(info.get("ID"), str)
         or not info["ID"]
     ):
-        block(
-            "the docker engine mode cannot be determined from docker info",
-            "use a rootful Docker Engine; Podman and docker-compatible shims are not supported",
-        )
-        return "unknown", ""
-    if any(
-        isinstance(option, str) and option.split(",")[0] == "name=rootless"
+        return None
+    options = {
+        option.split(",")[0]
         for option in info["SecurityOptions"]
+        if isinstance(option, str)
+    }
+    mode = (
+        "rootless"
+        if "name=rootless" in options
+        else "userns-remap"
+        if "name=userns" in options
+        else "rootful"
+    )
+    return mode, "name=selinux" in options, f"docker:{info['ID']}"
+
+
+def _podman_facts(info: object) -> tuple[str, bool, str] | None:
+    """The mode, SELinux flag and host identity in a Podman answer; ``None`` if it is not one."""
+    host = info.get("host") if isinstance(info, dict) else None
+    security = host.get("security") if isinstance(host, dict) else None
+    version = info.get("version") if isinstance(info, dict) else None
+    if (
+        not isinstance(host, dict)
+        or not isinstance(host.get("hostname"), str)
+        or not host["hostname"]
+        or not isinstance(security, dict)
+        or not isinstance(security.get("rootless"), bool)
+        or not isinstance(security.get("selinuxEnabled"), bool)
+        or not isinstance(version, dict)
+        or not isinstance(version.get("Version"), str)
+        or not version["Version"]
     ):
+        return None
+    mode = (
+        "remote"
+        if host.get("serviceIsRemote") is True
+        else "rootless"
+        if security["rootless"]
+        else "rootful"
+    )
+    return mode, security["selinuxEnabled"], f"podman:{host['hostname']}"
+
+
+# A mode the executor cannot run, with the blocker it raises before any worker starts.
+_UNSUPPORTED_MODES = {
+    "userns-remap": (
+        "Docker user namespace remapping is not supported by the container executor",
+        "run the coordinator against a Docker daemon without userns-remap, or against rootless "
+        "Docker or Podman",
+    ),
+    "remote": (
+        "remote Podman is not supported by the container executor",
+        "use a local Podman: the plan's mounts are paths of the coordinator's own host",
+    ),
+}
+
+
+def _engine_mode(engine: str, block: _Block) -> tuple[str, bool, str]:
+    """The engine mode, SELinux flag and identity from ``<engine> info``; it only reads state."""
+    ok, output = _engine([engine, "info", "--format", "{{json .}}"])
+    if not ok:
         block(
-            "rootless Docker is not supported by the docker executor",
-            "run the coordinator against a rootful Docker daemon",
+            f"the {engine} engine is unavailable: {output}",
+            f"start the {engine} engine and let the coordinator reach the {engine} CLI, "
+            "then repeat dispatch preflight",
         )
-        return "rootless", f"docker:{info['ID']}"
-    return "rootful", f"docker:{info['ID']}"
+        return "unavailable", False, ""
+    try:
+        info = json.loads(output)
+    except ValueError:
+        info = None
+    facts = _docker_facts(info) if engine == "docker" else _podman_facts(info)
+    if facts is None:
+        block(
+            f"the {engine} engine mode cannot be determined from {engine} info",
+            f"use a matching engine: the {engine} CLI must answer as {engine}; a "
+            "docker-compatible shim or another engine is not supported",
+        )
+        return "unknown", False, ""
+    mode, selinux, environment_id = facts
+    if mode in _UNSUPPORTED_MODES:
+        block(*_UNSUPPORTED_MODES[mode])
+    return mode, selinux, environment_id
 
 
-def _image_id(tag: str, block: _Block) -> str | None:
+def _image_id(engine: str, tag: str, block: _Block) -> str | None:
     """The local image id of ``tag``; a missing image is a blocker, never a build or a pull."""
-    ok, output = _engine(["docker", "image", "inspect", "--format", "{{.Id}}", tag])
+    ok, output = _engine([engine, "image", "inspect", "--format", "{{.Id}}", tag])
+    if ok and _BARE_IMAGE_ID.fullmatch(output):
+        output = f"sha256:{output}"
     if ok and _IMAGE_ID.fullmatch(output):
         return output
     block(
-        f"image {tag} is not present in the docker engine; the harness never builds or "
+        f"image {tag} is not present in the {engine} engine; the harness never builds or "
         "pulls images",
         f"build or pull {tag} yourself, then repeat dispatch preflight and propose",
     )
     return None
 
 
-def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) -> None:
+def _plan_support(data: JsonObject, transport: str, block: _Block) -> None:
     """Block every plan property the executor cannot run; it reads only the plan and the host."""
     if transport != "external":
         block(
@@ -452,12 +546,6 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
             "the access plan has no container component",
             "set access_policy.defaults.container.worker_image, then repeat dispatch "
             "preflight and propose",
-        )
-    elif engine != EXTENSION_NAME:
-        block(
-            f"container engine {engine} is not supported; the docker executor runs "
-            "rootful Docker only",
-            "set the access_policy container engine to docker or omit it",
         )
     hosts = data["network"]["hosts"]
     if hosts and not (container and container.get("proxy_image")):
@@ -503,7 +591,7 @@ def _plan_support(data: JsonObject, transport: str, engine: str, block: _Block) 
 
 
 class DockerExecutor:
-    """Run the approved worker in one rootful Docker container, offline or behind its sidecar."""
+    """Run the approved worker in one Docker or Podman container, offline or behind its sidecar."""
 
     def observe(
         self, plan: Mapping[str, object], transport: str
@@ -519,17 +607,20 @@ class DockerExecutor:
         def block(reason: str, remedy: str) -> None:
             blockers.append({"reason": reason, "remedy": remedy})
 
-        _plan_support(data, transport, engine, block)
-        engine_mode, environment_id = "not-probed", ""
+        _plan_support(data, transport, block)
+        engine_mode, selinux, environment_id = "not-probed", False, ""
         worker_id = proxy_id = None
-        if container and engine == EXTENSION_NAME:
-            engine_mode, environment_id = _engine_mode(block)
+        if container:
+            engine_mode, selinux, environment_id = _engine_mode(engine, block)
             if engine_mode != "unavailable" and worker_image is not None:
-                worker_id = _image_id(worker_image, block)
-                proxy_id = _image_id(proxy_image, block) if proxy_image else None
+                worker_id = _image_id(engine, worker_image, block)
+                proxy_id = (
+                    _image_id(engine, proxy_image, block) if proxy_image else None
+                )
         facts: dict[str, object] = {
             "engine": engine,
             "engine_mode": engine_mode,
+            "selinux": selinux,
             "worker_image": worker_image,
             "worker_image_id": worker_id,
             "proxy_image": proxy_image,
@@ -559,6 +650,7 @@ class DockerExecutor:
             ),
             engine=engine,
             engine_mode=engine_mode,
+            selinux=selinux,
             worker_image=worker_image,
             worker_image_id=worker_id,
             proxy_image=proxy_image,
@@ -623,7 +715,7 @@ class DockerExecutor:
                 facts={"engine": observation.engine},
             )
         dispatch_id = str(brief["dispatch_id"])
-        container_id = _launch(brief, command, f"{os.getuid()}:{os.getgid()}")
+        container_id = _launch(brief, command, observation)
         return replace(
             observation,
             applied=True,
