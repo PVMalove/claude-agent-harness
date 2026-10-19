@@ -544,6 +544,23 @@ def test_a_failing_gate_command_keeps_the_gate_stage_failure(tmp_path: Path) -> 
     assert result.record()["failed_stage"] == "gate"
 
 
+def test_qa_commands_keep_temporary_data_in_the_harness_storage(tmp_path: Path) -> None:
+    repo, head = _committed_repo(tmp_path)
+    seen = tmp_path / "seen"
+    record = "import os,sys; open(sys.argv[1],'w').write(os.environ['TMPDIR']+'|'+os.environ['GIT_CEILING_DIRECTORIES'])"
+    command = [sys.executable, "-c", record, str(seen)]
+    result = run_qa_stages([command], [command], CleanRoomPolicy(repo, head))
+
+    assert result.failed_stage is None
+    directory, ceilings = seen.read_text().split("|")
+    runs = storage_path(repo, "runs", "qa")
+    assert Path(directory).parent == runs
+    assert Path(directory).name.startswith("tmp-")
+    assert directory in ceilings.split(os.pathsep)
+    assert not Path(directory).exists()
+    assert list(runs.iterdir()) == []
+
+
 def test_stage_diagnostics_are_sanitised_and_bounded(tmp_path: Path) -> None:
     result = run_qa_stages(
         [_py("import sys; print('x' * 5000); print('token=visible'); sys.exit(1)")],
