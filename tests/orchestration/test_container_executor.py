@@ -17,6 +17,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest import mock
 
 from harness.orchestration import (
@@ -35,6 +36,10 @@ WORKER_ID = "sha256:" + "a" * 64
 PROXY_ID = "sha256:" + "b" * 64
 REBUILT_ID = "sha256:" + "c" * 64
 DAEMON_ID = "5c5e2d3f-docker-daemon"
+PODMAN_HOST = "podman-host"
+# Podman prints a bare image id; the executor pins ``sha256:<id>`` like Docker does.
+PODMAN_WORKER_BARE = "a" * 64
+PODMAN_PROXY_BARE = "b" * 64
 CONTAINER_ID = "0123456789abcdef" * 4
 PROXY_CONTAINER_ID = "89abcdef01234567" * 4
 NETWORK_ID = "fedcba9876543210" * 4
@@ -43,8 +48,34 @@ ROOTFUL_INFO: JsonObject = {
     "ServerVersion": "29.9.0",
     "SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin"],
 }
+ROOTFUL_IDENTITY = ["--user", f"{os.getuid()}:{os.getgid()}"]
 # Engine commands the executor must never run: it neither builds, pulls nor runs attached.
 FORBIDDEN = {"pull", "build", "run", "buildx", "load", "import"}
+
+
+PODMAN: JsonObject = {"container": {"engine": "podman", "worker_image": WORKER_TAG}}
+
+
+def podman_info(
+    *, rootless: bool = False, selinux: bool = False, remote: bool = False
+) -> JsonObject:
+    """The part of ``podman info`` the executor reads."""
+    return {
+        "host": {
+            "hostname": PODMAN_HOST,
+            "serviceIsRemote": remote,
+            "security": {"rootless": rootless, "selinuxEnabled": selinux},
+        },
+        "version": {"Version": "5.4.0"},
+    }
+
+
+def docker_info(*options: str) -> JsonObject:
+    """``docker info`` with the given extra security options."""
+    return {
+        **ROOTFUL_INFO,
+        "SecurityOptions": [*ROOTFUL_INFO["SecurityOptions"], *options],
+    }
 
 
 def _done(argv: list[str], stdout: str = "") -> subprocess.CompletedProcess[str]:
@@ -59,6 +90,7 @@ class FakeEngine:
 
     def reset(self) -> None:
         self.calls: list[list[str]] = []
+        self.binary = "docker"
         self.info: object = ROOTFUL_INFO
         self.images: dict[str, str] = {WORKER_TAG: WORKER_ID, PROXY_TAG: PROXY_ID}
         # A command kind (info, inspect, create, start, rm, network-create, network-connect,
@@ -85,7 +117,7 @@ class FakeEngine:
     def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         command = list(argv)
         self.calls.append(command)
-        assert command[0] == "docker", command
+        assert command[0] == self.binary, command
         kind = self._kind(command)
         # ``kind:target`` fails one object only, for example the proxy but not the worker.
         failure = self.failures.get(f"{kind}:{self._target(command, kind)}")
@@ -219,6 +251,8 @@ class DockerFixture(unittest.TestCase):
         brief_path: str,
         network: str = "none",
         proxy_env: Sequence[str] = (),
+        engine: str = "docker",
+        identity: Sequence[str] | None = None,
     ) -> list[str]:
         plan = brief["runtime_access"]
         root = {item["resource"]: item["path"] for item in plan["requirements"]}
@@ -232,7 +266,7 @@ class DockerFixture(unittest.TestCase):
         )
         dispatch_id = brief["dispatch_id"]
         return [
-            "docker",
+            engine,
             "create",
             "--pull",
             "never",
@@ -240,8 +274,7 @@ class DockerFixture(unittest.TestCase):
             f"harness-{dispatch_id}",
             "--network",
             network,
-            "--user",
-            f"{os.getuid()}:{os.getgid()}",
+            *(ROOTFUL_IDENTITY if identity is None else identity),
             "--cap-drop",
             "ALL",
             "--security-opt",
@@ -335,10 +368,6 @@ class DockerPreflightTests(DockerFixture):
     def test_every_unsupported_environment_is_an_explicit_blocker_before_any_worker(
         self,
     ) -> None:
-        rootless = {
-            **ROOTFUL_INFO,
-            "SecurityOptions": ["name=seccomp,profile=builtin", "name=rootless"],
-        }
         cases: tuple[tuple[str, JsonObject, JsonObject, str, str, str], ...] = (
             (
                 "in-process transport",
@@ -347,14 +376,6 @@ class DockerPreflightTests(DockerFixture):
                 "only an external dispatch, not in-process",
                 "transport to external",
                 "rootful",
-            ),
-            (
-                "podman engine",
-                {"container": {"engine": "podman", "worker_image": WORKER_TAG}},
-                {},
-                "container engine podman is not supported",
-                "engine to docker",
-                "not-probed",
             ),
             (
                 "network hosts",
@@ -377,7 +398,7 @@ class DockerPreflightTests(DockerFixture):
                 {},
                 {"failures": {"info": FileNotFoundError(2, "No such file", "docker")}},
                 "the docker engine is unavailable",
-                "start the rootful Docker daemon",
+                "start the docker engine",
                 "unavailable",
             ),
             (
@@ -385,7 +406,7 @@ class DockerPreflightTests(DockerFixture):
                 {},
                 {"failures": {"info": "Cannot connect to the Docker daemon"}},
                 "Cannot connect to the Docker daemon",
-                "start the rootful Docker daemon",
+                "start the docker engine",
                 "unavailable",
             ),
             (
@@ -393,23 +414,68 @@ class DockerPreflightTests(DockerFixture):
                 {},
                 {"failures": {"info": subprocess.TimeoutExpired(["docker"], 30)}},
                 "the docker engine is unavailable",
-                "start the rootful Docker daemon",
+                "start the docker engine",
                 "unavailable",
             ),
             (
-                "rootless docker",
+                "docker with user namespace remapping",
                 {},
-                {"info": rootless},
-                "rootless Docker is not supported",
-                "rootful Docker daemon",
-                "rootless",
+                {"info": docker_info("name=userns")},
+                "Docker user namespace remapping is not supported",
+                "without userns-remap",
+                "userns-remap",
+            ),
+            (
+                "podman engine cannot start",
+                PODMAN,
+                {
+                    "binary": "podman",
+                    "failures": {
+                        "info": FileNotFoundError(2, "No such file", "podman")
+                    },
+                },
+                "the podman engine is unavailable",
+                "start the podman engine",
+                "unavailable",
+            ),
+            (
+                "remote podman",
+                PODMAN,
+                {"binary": "podman", "info": podman_info(remote=True)},
+                "remote Podman is not supported",
+                "local Podman",
+                "remote",
+            ),
+            (
+                "podman answers with a docker info",
+                PODMAN,
+                {"binary": "podman", "info": ROOTFUL_INFO},
+                "mode cannot be determined",
+                "matching engine",
+                "unknown",
+            ),
+            (
+                "podman info without the security facts",
+                PODMAN,
+                {"binary": "podman", "info": {"host": {"hostname": "h"}}},
+                "mode cannot be determined",
+                "matching engine",
+                "unknown",
+            ),
+            (
+                "docker answers with a podman info",
+                {},
+                {"info": podman_info()},
+                "mode cannot be determined",
+                "matching engine",
+                "unknown",
             ),
             (
                 "docker-compatible shim",
                 {},
                 {"info": {"host": {"security": {"rootless": True}}}},
                 "mode cannot be determined",
-                "Podman and docker-compatible shims are not supported",
+                "matching engine",
                 "unknown",
             ),
             (
@@ -1158,6 +1224,199 @@ class DockerEnvironmentTests(DockerFixture):
                 self.assertIn(name, verification["reason"])
                 self.assertIn("environment", verification["remedy"])
         self.assert_no_container_was_created()
+
+
+LABEL_DISABLE = ["--security-opt", "label=disable"]
+KEEP_ID = ["--userns=keep-id"]
+# (case, engine, engine response, detected mode, SELinux, identity part of the create argv)
+ENGINE_MATRIX: tuple[tuple[str, str, JsonObject, str, bool, list[str]], ...] = (
+    ("rootful Docker", "docker", ROOTFUL_INFO, "rootful", False, ROOTFUL_IDENTITY),
+    (
+        "rootful Docker with SELinux",
+        "docker",
+        docker_info("name=selinux"),
+        "rootful",
+        True,
+        [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
+    ),
+    ("rootless Docker", "docker", docker_info("name=rootless"), "rootless", False, []),
+    (
+        "rootless Docker with SELinux",
+        "docker",
+        docker_info("name=rootless", "name=selinux"),
+        "rootless",
+        True,
+        LABEL_DISABLE,
+    ),
+    ("rootful Podman", "podman", podman_info(), "rootful", False, ROOTFUL_IDENTITY),
+    (
+        "rootful Podman with SELinux",
+        "podman",
+        podman_info(selinux=True),
+        "rootful",
+        True,
+        [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
+    ),
+    (
+        "rootless Podman",
+        "podman",
+        podman_info(rootless=True),
+        "rootless",
+        False,
+        KEEP_ID,
+    ),
+    (
+        "rootless Podman with SELinux",
+        "podman",
+        podman_info(rootless=True, selinux=True),
+        "rootless",
+        True,
+        [*KEEP_ID, *LABEL_DISABLE],
+    ),
+)
+
+
+if TYPE_CHECKING:
+    _CaseBase = DockerFixture
+else:
+    # A plain mixin is not collected; each generated subclass below is.
+    _CaseBase = object
+
+
+class EngineCase(_CaseBase):
+    """The checks of one engine response; ``case`` is a row of ``ENGINE_MATRIX``."""
+
+    case: tuple[str, str, JsonObject, str, bool, list[str]]
+
+    def use(self, **container: object) -> tuple[str, str, JsonObject]:
+        """Point the fixture at this case's engine and response; return engine, mode, info."""
+        _, engine, info, mode, _, _ = self.case
+        self.configure(
+            container={"engine": engine, "worker_image": WORKER_TAG, **container}
+        )
+        self.engine.reset()
+        self.engine.binary = engine
+        self.engine.info = info
+        if engine == "podman":
+            # Podman prints a bare image id.
+            self.engine.images = {
+                WORKER_TAG: PODMAN_WORKER_BARE,
+                PROXY_TAG: PODMAN_PROXY_BARE,
+            }
+        return engine, mode, info
+
+    def test_preflight_records_the_engine_its_mode_and_selinux(self) -> None:
+        engine, mode, _ = self.use()
+
+        verification = self.preflight()
+
+        self.assertEqual(verification["status"], "verified", verification)
+        evidence = verification["evidence"]
+        self.assertEqual(
+            (
+                evidence["engine"],
+                evidence["engine_mode"],
+                evidence["selinux"],
+                evidence["worker_image_id"],
+            ),
+            (engine, mode, self.case[4], WORKER_ID),
+        )
+        self.assertEqual(
+            self.engine.calls,
+            [
+                [engine, "info", "--format", "{{json .}}"],
+                [engine, "image", "inspect", "--format", "{{.Id}}", WORKER_TAG],
+            ],
+        )
+
+    def test_send_runs_the_argv_that_keeps_the_host_owner(self) -> None:
+        engine, mode, _ = self.use()
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        self.engine.calls.clear()
+
+        sent = self.send(brief["dispatch_id"])
+
+        create = self.expected_create(
+            brief, sent["brief"], engine=engine, identity=self.case[5]
+        )
+        self.assertEqual(
+            self.engine.calls,
+            [
+                [engine, "info", "--format", "{{json .}}"],
+                [engine, "image", "inspect", "--format", "{{.Id}}", WORKER_TAG],
+                create,
+                [engine, "start", CONTAINER_ID],
+            ],
+        )
+        self.assertEqual(brief["runtime_images"], {"worker": WORKER_ID, "proxy": None})
+        self.assertEqual(sent["runtime_access"]["evidence"]["engine_mode"], mode)
+        self.assertFalse(self.adapter_ran.exists())
+        # Neither relabeling of host files nor an image helper is ever needed.
+        for part in create:
+            self.assertFalse(part.endswith((":z", ":Z")), part)
+            self.assertNotIn("gosu", part)
+            self.assertNotIn("relabel", part)
+        self.assertNotIn("--privileged", create)
+
+    def test_the_sidecar_follows_the_engine_network_and_identity(self) -> None:
+        engine, _, _ = self.use(proxy_image=PROXY_TAG)
+        self.configure(
+            container={
+                "engine": engine,
+                "worker_image": WORKER_TAG,
+                "proxy_image": PROXY_TAG,
+            },
+            network={"hosts": ["api.example.com"]},
+        )
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        self.engine.calls.clear()
+
+        self.send(brief["dispatch_id"])
+
+        proxy = next(
+            call
+            for call in self.engine.calls
+            if call[1] == "create" and call[-1] == PROXY_ID
+        )
+        after_network = proxy.index("--network") + 2
+        identity = self.case[5]
+        self.assertEqual(proxy[after_network : after_network + len(identity)], identity)
+        default_network = "podman" if engine == "podman" else "bridge"
+        self.assertIn(
+            [engine, "network", "connect", default_network, PROXY_CONTAINER_ID],
+            self.engine.calls,
+        )
+
+
+def _slug(name: str) -> str:
+    return "".join(part.capitalize() for part in name.replace("-", " ").split())
+
+
+for _case in ENGINE_MATRIX:
+    globals()[f"Engine{_slug(_case[0])}Tests"] = type(
+        f"Engine{_slug(_case[0])}Tests", (EngineCase, DockerFixture), {"case": _case}
+    )
+
+
+class PodmanLaunchTests(DockerFixture):
+    def test_a_failed_podman_launch_is_removed_with_podman(self) -> None:
+        self.configure(container={"engine": "podman", "worker_image": WORKER_TAG})
+        self.engine.reset()
+        self.engine.binary = "podman"
+        self.engine.info = podman_info()
+        self.engine.images = {WORKER_TAG: PODMAN_WORKER_BARE}
+        brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
+        self.engine.calls.clear()
+        self.engine.failures = {"start": "cannot start"}
+
+        with self.assertRaises(runtime_access.AccessError) as refused:
+            self.send(brief["dispatch_id"])
+
+        self.assertIn("podman start failed: cannot start", refused.exception.message)
+        self.assertEqual(
+            self.engine.calls[-1],
+            ["podman", "rm", "--force", f"harness-{brief['dispatch_id']}"],
+        )
 
 
 class HandoffLaunchIdentityTests(unittest.TestCase):
