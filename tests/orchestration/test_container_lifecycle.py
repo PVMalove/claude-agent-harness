@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 from harness.orchestration import coordinator
+from harness.orchestration.workflow import delivery
 from harness.orchestration.core.utils import JsonObject
 from tests.orchestration import test_container_executor as executor_tests
 
@@ -165,6 +167,28 @@ class WorkerLivenessTests(LifecycleFixture):
         )
         # Not a terminal dispatch: nothing is removed.
         self.assertEqual(self.removals(), [])
+
+    def test_an_unfiltered_status_read_asks_the_engine_about_a_bounded_number_of_dispatches(
+        self,
+    ) -> None:
+        self.engine.exit_worker(self.dispatch_id, 3)
+        everything = self.fx._args(dispatch=None, batch=None, stale_after=None)
+
+        with mock.patch.object(delivery, "MAX_ENGINE_READS", 0):
+            [entry] = coordinator.dispatch_status(everything)["dispatches"]
+
+        self.assertEqual(entry["worker"]["state"], "unknown")
+        self.assertEqual(entry["worker"]["source"], "not_observed")
+        self.assertFalse(entry["stale"])
+        self.assertNotIn("worker_exit", self.record())
+        self.assertEqual(self.engine.calls, [])
+
+        # Naming the dispatch always observes it, whatever the bound.
+        with mock.patch.object(delivery, "MAX_ENGINE_READS", 0):
+            named = self.status()
+
+        self.assertEqual(named["worker"]["state"], "exited")
+        self.assertEqual(self.record()["worker_exit"]["exit_code"], 3)
 
     def test_the_first_proof_is_permanent(self) -> None:
         self.engine.exit_worker(self.dispatch_id, 3)

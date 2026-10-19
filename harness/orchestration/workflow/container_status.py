@@ -24,6 +24,10 @@ from harness.orchestration.ledger.lifecycle import DispatchStatusRecord, Lifecyc
 _CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 # The engine answers that prove a worker stopped; ``running`` and ``unknown`` prove nothing.
 STOP_PROOFS = frozenset({"exited", "missing"})
+# One ``dispatch status`` read asks the engine about at most this many dispatches: it holds the
+# ledger lock, and every engine call may take ``ENGINE_TIMEOUT_SECONDS``. ``--dispatch`` always
+# observes the one dispatch it names.
+MAX_ENGINE_READS = 4
 
 
 def _launch_id(status: JsonObject) -> str | None:
@@ -89,15 +93,29 @@ def _teardown(
     _replace_record(ledger, DispatchStatusRecord.from_dict(status))
 
 
+def needs_engine(status: JsonObject) -> bool:
+    """Whether reading this dispatch would reach the engine: a docker receipt whose teardown is not
+    complete."""
+    if _launch_id(status) is None:
+        return False
+    teardown = status.get("worker_teardown")
+    return not (isinstance(teardown, dict) and teardown.get("complete") is True)
+
+
 def reconcile(
-    ledger: LifecycleLedger, dispatch: JsonObject, status: JsonObject
+    ledger: LifecycleLedger,
+    dispatch: JsonObject,
+    status: JsonObject,
+    *,
+    observe: bool = True,
 ) -> JsonObject | None:
     """Bind the engine's answer to the receipt, persist the first proof that the worker stopped
     and, once the dispatch is terminal, release its engine objects.
 
     ``status`` is the dispatch status record and is updated in place when evidence is written.
     The evidence is always persisted before anything is removed. Returns ``None`` for a dispatch
-    without a docker receipt, which never reaches the engine.
+    without a docker receipt, which never reaches the engine. With ``observe=False`` the engine is
+    not asked: the persisted proof is shown, or ``unknown`` with source ``not_observed``.
     """
     launch_id = _launch_id(status)
     if launch_id is None:
@@ -105,6 +123,14 @@ def reconcile(
     teardown = status.get("worker_teardown")
     if isinstance(teardown, dict) and teardown.get("complete") is True:
         return _view(launch_id, status.get("worker_exit"), status)
+    if not observe:
+        if isinstance(status.get("worker_exit"), dict):
+            return _view(launch_id, status["worker_exit"], status)
+        return {
+            **_view(launch_id, None, status),
+            "state": "unknown",
+            "source": "not_observed",
+        }
     if not isinstance(status.get("worker_exit"), dict):
         inspected = container_executor.inspect_worker(launch_id)
         state = inspected["state"]

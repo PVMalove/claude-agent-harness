@@ -73,7 +73,12 @@ from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
 )
-from harness.orchestration.workflow.container_status import STOP_PROOFS, reconcile
+from harness.orchestration.workflow.container_status import (
+    MAX_ENGINE_READS,
+    STOP_PROOFS,
+    needs_engine,
+    reconcile,
+)
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
     _validate_batch_integrity,
@@ -504,7 +509,8 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
 
     For a docker dispatch the view also asks the engine about the receipt's container and records
     the first proof that it stopped. That evidence is the only write; it never changes the
-    lifecycle state."""
+    lifecycle state. Without ``--dispatch`` at most ``MAX_ENGINE_READS`` dispatches reach the
+    engine per read; the rest show ``not_observed``."""
     from harness.orchestration.workflow.startup import assess_startup
 
     repo = _repo(args)
@@ -522,6 +528,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     entries: list[JsonObject] | None = None
+    engine_reads = 0
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
     with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
         entries = []
@@ -550,7 +557,10 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 for item in batch.get("context_pressure", [])
                 if item.get("dispatch_id") == dispatch["dispatch_id"]
             ]
-            worker = reconcile(ledger, dispatch, status)
+            asks_engine = needs_engine(status)
+            observe = bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
+            worker = reconcile(ledger, dispatch, status, observe=observe)
+            engine_reads += asks_engine and observe
             live = status.get("state") in LIVE_DISPATCH_STATES
             silent = _silent_seconds(status) if live else 0
             entries.append(
