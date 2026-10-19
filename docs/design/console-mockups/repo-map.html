@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repo Map — макет</title><link rel="stylesheet" href="console.css"><style>
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tabbar{display:flex;gap:6px;border-bottom:1px solid var(--rule);padding-bottom:0;margin-bottom:2px}
+.tb{padding:7px 16px;border:1px solid transparent;border-bottom:none;border-radius:8px 8px 0 0;color:var(--muted)}
+.tb.on{color:var(--selfg);background:var(--sel);border-color:#6b4a3c}
+.tr1{display:flex;gap:8px;padding:3px 8px;border-radius:5px;font-size:13.5px;white-space:nowrap;border-left:3px solid transparent}
+.tr1 .tg{color:var(--muted)}.tr1 .st{margin-left:auto;font-size:12.5px}
+.tr1.sel{background:var(--row);border-left-color:var(--primary)}
+.tr1.sg{color:#b9b2a7;font-size:12.5px}
+.d1{padding-left:18px}.d2{padding-left:36px}.d3{padding-left:54px}.d4{padding-left:72px}
+.rel{font-size:13px;line-height:1.7}.rel .g{padding:7px 0;border-top:1px solid var(--rule)}.rel .g:first-of-type{border-top:none}
+.rel .h{display:flex;gap:8px;margin-bottom:3px;flex-wrap:wrap}
+.rel .p{color:#c9c2b7;overflow-wrap:anywhere}
+.cl{display:grid;grid-template-columns:24px 1fr;gap:6px;padding:5px 8px;border-radius:6px;font-size:13.5px}
+.cl.lk{opacity:.8}
+.rd{display:grid;grid-template-columns:24px 1fr;gap:6px;padding:7px 10px;border-radius:6px;border-left:3px solid transparent}
+.rd.on{background:var(--row);border-left-color:var(--primary);outline:1px solid var(--edge)}
+.rd small{display:block;color:var(--muted);font-size:12.5px}
+.hubrow{display:grid;grid-template-columns:44px 1fr;gap:10px;padding:4px 0;font-size:13px;border-top:1px solid var(--rule)}
+.hubrow b{text-align:right;color:var(--primary)}
+.modalwrap{background:#0f0e0d;border:1px solid var(--rule);border-radius:10px;padding:24px;display:flex;justify-content:center}
+.modal{width:100%;max-width:560px;border:1px solid var(--primary);border-radius:10px;background:var(--surface);padding:16px 18px;position:relative;display:flex;flex-direction:column;gap:9px}
+.modal .bt{position:absolute;top:-11px;left:16px;background:var(--surface);padding:0 8px;color:var(--primary);font-size:13px}
+.modal .ti{font-weight:700}.modal .wr{color:var(--warn);font-size:13px}
+.row2{display:flex;gap:10px}
+.btn.warnb{background:#7a5a1d;border-color:#b98a2c;color:#fff;font-weight:700}
+</style></head><body>
+<div class="caption"><span><b>7 · Repo Map — вкладка «Файлы» (≈160×52), компактно</b></span><span>Демонстрационные данные. Вкладки, поиск, статусы парсера и формат связей — из экрана.</span></div>
+<div class="app wide dense" style="height:900px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><span class="cur">Repo Map</span></div><div class="strip"><span>Проект: claude-agent-harness · HEAD 85abd57ef012</span><span>Данные карты из кэша; сеть не используется</span></div>
+      <div class="page fill"><div class="hd"><div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h1>Repo Map</h1><div class="sub"><span class="e-ok">✔</span> карта HEAD <b style="color:var(--fg)">85abd57ef012</b> из кэша · full</div></div>
+  <div class="tbtns"><a class="btn xs" href="#"><b style="color:var(--primary)">b</b> Собрать карту</a><a class="btn xs" href="#"><b style="color:var(--primary)">e</b> Экспорт в Markdown</a><a class="btn xs" href="#"><b style="color:var(--primary)">j</b> Экспорт в JSON</a></div></div><div class="tabbar"><span class="tb">Сводка</span><span class="tb on">Файлы</span><span class="tb">Хабы</span><span class="tb">Диагностики</span><span class="tb">Настройки</span></div>
+<div class="panel" style="padding:9px 12px"><div class="fbar" style="display:flex;gap:10px;align-items:center"><span class="inp" style="flex:1;color:var(--muted);border:1px solid var(--edge);border-radius:8px;padding:5px 12px">поиск символа в сигнатурах</span><span style="color:var(--muted);font-size:13px">файлов: 412</span></div></div>
+<div class="cols" style="grid-template-columns:1.25fr 1fr;gap:12px">
+  <div class="panel"><div class="ph"><span class="t">Файлы<span>дерево · ←→ раскрыть</span></span><span style="color:var(--muted);font-size:12.5px">[статус парсера]</span></div><div class="tr1 d0 "><span class="tg">▾</span><span>85abd57ef012 · full</span></div><div class="tr1 d1 "><span class="tg">▾</span><span>harness/</span></div><div class="tr1 d2 "><span class="tg">▾</span><span>console/</span></div><div class="tr1 d3 "><span class="tg">▸</span><span>app.py</span><span class="st e-ok">[ok]</span></div><div class="tr1 d3 sel"><span class="tg">▾</span><span>brand.py</span><span class="st e-ok">[ok]</span></div><div class="tr1 d4  sg"><span class="tg"></span><span>def shorten(text: str, limit: int) -> str</span></div><div class="tr1 d4  sg"><span class="tg"></span><span>def frame_title(title: str) -> str</span></div><div class="tr1 d4  sg"><span class="tg"></span><span>def display_path(repo: Path, home: Path | None = None) -> str</span></div><div class="tr1 d4  sg"><span class="tg"></span><span>def shell_css(css: str) -> str</span></div><div class="tr1 d3 "><span class="tg">▸</span><span>shell.py</span><span class="st e-ok">[ok]</span></div><div class="tr1 d3 "><span class="tg">▸</span><span>status.py</span><span class="st e-ok">[ok]</span></div><div class="tr1 d2 "><span class="tg">▸</span><span>health/</span></div><div class="tr1 d2 "><span class="tg">▸</span><span>orchestration/</span></div><div class="tr1 d1 "><span class="tg">▾</span><span>tests/</span></div><div class="tr1 d2 "><span class="tg">▸</span><span>console/</span></div><div class="tr1 d2 "><span class="tg"></span><span>legacy_gen.py</span><span class="st e-warn">[too_large]</span></div><div class="tr1 d2 "><span class="tg"></span><span>broken.py</span><span class="st e-err">[syntax_error]</span></div></div>
+  <div class="panel"><div class="ph"><span class="t">Связи</span></div>
+    <div class="rel"><div style="font-weight:600;margin-bottom:6px;overflow-wrap:anywhere">harness/console/brand.py</div>
+      <div class="g"><div class="h"><span class="e-ok">входящие</span><span>import</span><span class="e-ok">high</span><span style="color:var(--muted)">· 11</span></div><div class="p">harness/console/chrome.py, harness/console/shell.py, harness/console/status.py, harness/console/app.py, harness/console/screens/dashboard.py, harness/console/screens/harness.py, … ещё 5</div></div>
+      <div class="g"><div class="h"><span style="color:var(--primary)">исходящие</span><span>import</span><span class="e-ok">high</span><span style="color:var(--muted)">· 2</span></div><div class="p">harness/console/i18n.py, harness/health/model.py</div></div>
+      <div class="g"><div class="h"><span style="color:var(--primary)">исходящие</span><span>unique-name-ref</span><span class="e-warn">medium</span><span style="color:var(--muted)">· 1</span></div><div class="p">harness/console/data.py</div></div>
+    </div>
+    <div class="lab" style="margin:8px 0 0;font-size:12.5px">Пути переносятся целиком; «… ещё 5» раскрывается по Enter (предлагаю).</div></div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Tab</b>Вкладки</span><span><b class="k">b</b>Собрать</span><span><b class="k">e</b>Markdown</span><span><b class="k">j</b>JSON</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="caption"><span><b>7а · Repo Map — вкладка «Настройки» (≈160×52)</b></span><span>Режим карты, парсеры языков и память проекта. Запись конфигурации — через проверяемый черновик.</span></div>
+<div class="app wide dense" style="height:940px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><span class="cur">Repo Map</span></div><div class="strip"><span>Проект: claude-agent-harness · политика: orchestration.json → repo_map_policy</span><span>Установка и сборка запускают команду из формы подтверждения</span></div>
+      <div class="page fill"><div class="hd"><div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h1>Repo Map</h1><div class="sub"><span class="e-ok">✔</span> карта HEAD <b style="color:var(--fg)">85abd57ef012</b> из кэша · full</div></div>
+  <div class="tbtns"><a class="btn xs" href="#"><b style="color:var(--primary)">b</b> Собрать карту</a><a class="btn xs" href="#"><b style="color:var(--primary)">e</b> Экспорт в Markdown</a><a class="btn xs" href="#"><b style="color:var(--primary)">j</b> Экспорт в JSON</a></div></div><div class="tabbar"><span class="tb">Сводка</span><span class="tb">Файлы</span><span class="tb">Хабы</span><span class="tb">Диагностики</span><span class="tb on">Настройки</span></div>
+<div class="cols g2 tight" style="gap:12px">
+  <div class="panel al" style="grid-row:1;grid-column:1">
+    <div class="ph"><span class="t">Режим карты</span></div>
+    <div class="lab" style="margin:0 0 6px">В политике проекта: <b style="color:var(--fg)">full</b></div>
+    <div class="rd on"><span>◉</span><div>full<small>сигнатуры и связи (нужен парсер языка)</small></div></div>
+    <div class="rd"><span>○</span><div>minimal<small>только пути файлов, без парсера</small></div></div>
+    <div class="btns"><a class="btn" href="#">Применить режим</a><a class="btn" href="#">Настроить парсер</a></div>
+  </div>
+  <div class="panel al" style="grid-row:1;grid-column:2">
+    <div class="ph"><span class="t">Парсеры языков</span><span class="e-ok" style="font-size:13px">✔ bundle готов, режим full доступен</span></div>
+    <div class="lab" style="margin:0 0 6px;font-size:12.5px">Пара: cp312-linux_x86_64 · Каталог: .harness/.sandboxes/cache/repo_map/parser_bundle/registry</div>
+    <div class="cl lk"><span class="e-ok">☑</span><span>Python — <span class="e-ok">установлен</span> · файлов в проекте: 214 <span style="color:var(--muted)">🔒</span></span></div>
+    <div class="cl"><span>☑</span><span>TypeScript — не установлен · файлов в проекте: 12</span></div>
+    <div class="cl"><span style="color:var(--muted)">☐</span><span style="color:var(--muted)">JavaScript — не установлен</span></div>
+    <div class="cl"><span style="color:var(--muted)">☐</span><span style="color:var(--muted)">Go — не установлен</span></div>
+    <div class="cl"><span style="color:var(--muted)">☐</span><span style="color:var(--muted)">Java — не установлен</span></div>
+    <div class="cl"><span style="color:var(--muted)">☐</span><span style="color:var(--muted)">C# — не установлен</span></div>
+    <div class="btns"><a class="btn" href="#">Установить выбранные</a><a class="btn" href="#">Проверить заново</a></div>
+  </div>
+  <div class="panel al" style="grid-row:2;grid-column:1">
+    <div class="ph"><span class="t">Память проекта</span></div>
+    <div class="lab" style="margin:0 0 6px;color:var(--fg)">Память: <span class="e-ok">✔ включена</span> · источники: adr, glossary · индекс: 18 документов</div>
+    <div class="btns"><a class="btn xs" href="#">Инициализировать</a><a class="btn xs" href="#">Синхронизировать</a><a class="btn xs" href="#">Пересобрать</a><a class="btn xs" href="#">Настроить память</a></div>
+  </div>
+  <div class="panel al" style="grid-row:2;grid-column:2">
+    <div class="ph"><span class="t">Результат<span>последнее действие</span></span></div>
+    <div class="log"><span class="l-m">Действий пока не было</span></div>
+  </div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Tab</b>Вкладки</span><span><b class="k">Enter</b>Выбрать</span><span><b class="k">b</b>Собрать</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Остальные вкладки</b></span><span>Сводка, Хабы, Диагностики — компактно.</span></div>
+<div class="sheet"><div class="two" style="grid-template-columns:1fr 1fr 1fr">
+  <div class="panel" style="background:var(--bg)"><div class="ph"><span class="t">Сводка</span></div>
+    <dl class="kv i" style="grid-template-columns:120px 1fr"><dt>tier</dt><dd>full <span style="color:var(--muted)">(parser: tree-sitter)</span></dd><dt>Деградация</dt><dd>нет</dd><dt>commit</dt><dd>85abd57ef012</dd><dt>Файлов</dt><dd>412</dd><dt>Рёбер</dt><dd>1 860</dd><dt>Токенов (оценка)</dt><dd>38 400</dd><dt>Источник</dt><dd>кэш</dd></dl>
+    <div class="lab" style="margin:8px 0 4px;font-size:12.5px">provenance парсера</div>
+    <div class="digest" style="font-size:12.5px">grammar: python@0.23.4 abi=14 sha256=3f9c…a1<br>grammar: typescript@0.23.2 abi=14 sha256=77de…0b</div></div>
+  <div class="panel" style="background:var(--bg)"><div class="ph"><span class="t">Хабы<span>по входящей степени</span></span></div>
+    <div class="hubrow"><b>37</b><span>harness/console/brand.py</span></div><div class="hubrow"><b>29</b><span>harness/console/i18n.py</span></div><div class="hubrow"><b>24</b><span>harness/orchestration/core/constants.py</span></div><div class="hubrow"><b>19</b><span>harness/health/model.py</span></div><div class="hubrow"><b>12</b><span>harness/console/chrome.py</span></div>
+    <div class="lab" style="margin:8px 0 0;font-size:12.5px">Нет рёбер: «рёбер нет — хабов нет».</div></div>
+  <div class="panel" style="background:var(--bg)"><div class="ph"><span class="t">Диагностики</span><a class="btn xs" href="#">Проверить</a></div>
+    <div class="chk"><span class="e-ok">✔</span><span>HEAD 85abd57ef012</span><span class="d"></span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>Режим в политике проекта: full</span><span class="d"></span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>Bundle парсеров готов: cp312-linux_x86_64</span><span class="d"></span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>Python: парсер установлен, файлов: 214</span><span class="d"></span></div>
+    <div class="chk"><span class="e-warn">⚠</span><span>TypeScript: парсер не установлен, файлы попадут в карту без сигнатур; файлов: 12</span><span class="d"></span></div>
+    <div class="lab" style="margin:8px 0 4px;font-size:12.5px">Диагностики карты</div>
+    <div class="digest" style="font-size:12.5px"><span class="e-warn">too_large</span>: harness/…/legacy_gen.py<br><span class="e-err">syntax_error</span>: tests/…/broken.py</div></div>
+</div></div>
+
+<div class="caption"><span><b>Подтверждение сборки</b></span><span>Текст предупреждения — из кода.</span></div>
+<div class="sheet"><div class="modalwrap"><div class="modal">
+  <span class="bt">Подтверждение</span>
+  <div class="ti">Построить Repo Map для HEAD 85abd57ef012?</div>
+  <div class="wr">Построение карты запускает Repo Map CLI для HEAD. В режиме tier=full CLI может установить offline parser bundle (uv pip install --offline) в .harness/.sandboxes/cache/repo_map/parser_bundle/; сеть не используется. Результат сохраняется в кэш Repo Map.</div>
+  <div class="row2"><a class="btn warnb" href="#">Собрать</a><a class="btn" href="#">Отмена</a></div>
+</div></div></div>
+
+<div class="caption"><span><b>Состояния Repo Map</b></span><span>Тексты — из кода, кроме отмеченных «предлагаю».</span></div>
+<div class="sheet"><div class="states" style="grid-template-columns:230px 1fr 290px">
+  <span class="lab2">HEAD не найден</span><div class="status err"><span>✖</span><div>HEAD не найден: это не Git-репозиторий или в нём нет коммитов<small>Сделайте первый коммит.</small></div></div><span class="res2">«Собрать карту» выключена</span>
+  <span class="lab2">Кэша нет</span><div class="status" style="color:var(--muted)"><span>○</span><div>кэша карты для HEAD 85abd57ef012 нет — «Построить карту» (b)<small>Во вкладках: «карты нет».</small></div></div><span class="res2">Экспорт недоступен без карты</span>
+  <span class="lab2">Идёт сборка</span><div class="status" style="color:var(--warn)"><span>▶</span><div>строится карта HEAD 85abd57ef012…<small>Экран остаётся доступным; сборка в фоне.</small></div></div><span class="res2">Новый запуск заменяет прежний</span>
+  <span class="lab2">Сборка не удалась</span><div class="status err"><span>✖</span><div>карта не построена: &lt;причина&gt; · или «сбой построения: …»<small>Прежняя карта остаётся.</small></div></div><span class="res2">Приложение не закрывается</span>
+  <span class="lab2">Карта построена</span><div class="status ok"><span>✔</span><div>карта HEAD 85abd57ef012 построена<small>Связи сбрасываются: «выберите файл».</small></div></div><span class="res2">Вкладки обновляются</span>
+  <span class="lab2">full, но парсер не готов</span><div class="status warn"><span>⚠</span><div>Фактически карта строится в minimal: парсер не установлен<small>Выберите языки и нажмите «Установить выбранные».</small></div></div><span class="res2">Политика не меняется молча</span>
+  <span class="lab2">Режим неизменяем</span><div class="status" style="color:var(--muted)"><span>○</span><div>Выбор режима и «Настроить парсер» выключены<small>Причина показывается под «В политике проекта».</small></div></div><span class="res2">Например, файл конфигурации недоступен</span>
+</div></div>
+<div class="caption"><span><b>7 · Repo Map — узкий терминал (≈80×24)</b></span><span>Вкладки сокращены; «Связи» — раскрывающийся блок под деревом.</span></div>
+<div class="app narrow dense" style="height:820px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">⎇ feature/issue-721…</div></div>
+  <div class="body"><main><div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Repo Map</span></div><div class="page fill">
+<div class="hd"><h1 style="font-size:18px">Repo Map</h1><span class="e-ok" style="font-size:13px">✔ HEAD 85abd57e · кэш</span></div>
+<div class="tbtns"><a class="btn xs" href="#">b Собрать</a><a class="btn xs" href="#">e MD</a><a class="btn xs" href="#">j JSON</a></div>
+<div class="tabbar"><span class="tb">Свод</span><span class="tb on">Файлы</span><span class="tb">Хабы</span><span class="tb">Диагн.</span><span class="tb">Настр.</span></div>
+<div class="panel" style="padding:8px 10px"><span style="color:var(--muted)">поиск символа в сигнатурах</span> <span style="float:right;color:var(--muted);font-size:13px">412</span></div>
+<div class="panel" style="padding:8px">
+  <div class="tr1 d0"><span class="tg">▾</span><span>85abd57e · full</span></div>
+  <div class="tr1 d1"><span class="tg">▾</span><span>harness/console/</span></div>
+  <div class="tr1 d2 sel"><span class="tg">▾</span><span>brand.py</span><span class="st e-ok">[ok]</span></div>
+  <div class="tr1 d3 sg"><span>def shorten(text, limit) -> str</span></div>
+  <div class="tr1 d3 sg"><span>def shell_css(css) -> str</span></div></div>
+<div class="card fold"><span>▸ Связи brand.py</span><span>11 входящих · 3 исходящих</span></div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Tab</b>Вкладки</span><span><b class="k">b</b>Собрать</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="legend">Из кода: состояние и действия (Собрать b, экспорт e/j); пять вкладок (Сводка, Файлы, Хабы, Диагностики, Настройки); дерево файлов с сигнатурами и статусом парсера (ok, syntax_error, invalid_encoding, too_large), поиск по сигнатурам, связи по направлению, виду и достоверности; хабы по входящей степени; проверка Repo Map; режим карты, парсеры шести языков, память проекта (включена/источники/число документов в индексе); подтверждение сборки. Из #723: каркас, статусы «символ + подпись», фильтры и экспорт как раньше, длинные значения целиком. Моё: «… ещё N» в связях. Пара парсера, версии грамматик, числа, пути и диагностики демонстрационные.</div>
+</body></html>

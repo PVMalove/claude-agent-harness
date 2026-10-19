@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -16,11 +17,9 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
-from textual.widgets import Button, Footer, Static
+from textual.widgets import Button, Static
 
-from ..chrome import TopBar
-from ..translate import Translated
+from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
 from ..logtext import colorize_log
 from .. import brand, i18n
 from .. import data as console_data
@@ -75,9 +74,63 @@ def _translated_report(report: Report, language: str) -> str:
     return "\n".join(lines)
 
 
+_COUNTER = re.compile(r"\b(ok|warn|fail|skipped)=(\d+)")
+_CHECK_MARKERS = {"[OK] ": "ok", "[WARN] ": "warn", "[FAIL] ": "fail"}
+# The totals line in either language (see `render_report` and its translation): the whole counter
+# list is required, so foreign output that merely starts with "Итого:" does not start a report.
+_TOTALS = re.compile(r"(Итого|Total): ok=\d+ warn=\d+ fail=\d+ skipped=\d+")
+
+
+def _icon(status: str, *, muted: bool = False) -> Text:
+    """The status symbol; a zero counter is muted, like its number."""
+    color = brand.PALETTE["muted"] if muted else brand.STATUS_COLORS[status]
+    return Text(f"{brand.STATUS_ICONS[status]} ", style=f"bold {color}")
+
+
+def _summary_line(line: str) -> Text:
+    """The totals line with a status symbol before each counter."""
+    styled = colorize_log(line)
+    shown = Text()
+    position = 0
+    for counter in _COUNTER.finditer(line):
+        shown.append_text(styled[position : counter.start()])
+        shown.append_text(_icon(counter.group(1), muted=counter.group(2) == "0"))
+        position = counter.start()
+    shown.append_text(styled[position:])
+    return shown
+
+
+def _styled_line(line: str, *, in_report: bool) -> Text:
+    for marker, status in _CHECK_MARKERS.items():
+        if line.startswith(marker):
+            return _icon(status) + colorize_log(line)
+    # "- " marks a skipped check only inside a report; elsewhere it is a plain list item.
+    if in_report and line.startswith("- "):
+        return _icon("skipped") + colorize_log(line)
+    return colorize_log(line)
+
+
+def styled_log(text: str) -> Text:
+    """`colorize_log(text)` for a log that may hold a health report: every check status and every
+    counter of the report also gets its symbol (a colour is never the only cue). The text itself is
+    only prefixed on screen; nothing exported or compared changes."""
+    shown = Text()
+    in_report = False
+    for index, line in enumerate(text.split("\n")):
+        if index:
+            shown.append("\n")
+        if _TOTALS.match(line):
+            in_report = True
+            shown.append_text(_summary_line(line))
+        else:
+            shown.append_text(_styled_line(line, in_report=in_report))
+    return shown
+
+
 def _styled_report(report: Report, language: str = "ru") -> Text:
-    """The same text as `render_report`, with statuses, counters and remedies coloured on screen."""
-    return colorize_log(_translated_report(report, language))
+    """The same text as `render_report`, with statuses, counters and remedies coloured on screen
+    and every status and counter also marked by its symbol."""
+    return styled_log(_translated_report(report, language))
 
 
 def health_document(report: Report) -> MarkdownDocument:
@@ -111,21 +164,22 @@ class _ApplyLocalFixes(Protocol):
         ...
 
 
-class DiagnosticsScreen(Translated, Screen[None]):
+class DiagnosticsScreen(ConsoleShell):
     """Экран диагностики состояния репозитория с возможностью запуска онлайн-проверок и применения исправлений."""
 
-    DEFAULT_CSS = """
+    CRUMBS = "Главная › Диагностика"
+    SECTION = "Diagnostics"
+    NARROW_FOOTER_KEYS = ("escape", "e", "f2")
+    AUTO_FOCUS = "#diagnostics-scroll"
+    CSS = SHELL_CSS + brand.shell_css("""
     DiagnosticsScreen #diagnostics-scroll { height: 1fr; }
     DiagnosticsScreen #diagnostics-actions { height: auto; }
     DiagnosticsScreen .action-row { height: auto; }
     DiagnosticsScreen .action-row Button { width: 20; }
     DiagnosticsScreen .action-cli { width: 1fr; padding: 0 0 0 2; color: $text-muted; }
-    """
+    """)
 
-    BINDINGS = [
-        Binding("escape", "app.pop_screen", "Назад"),
-        Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
-    ]
+    BINDINGS = [Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown")]
 
     def __init__(
         self,
@@ -142,14 +196,16 @@ class DiagnosticsScreen(Translated, Screen[None]):
         self._report: Report | None = None
         self._confirming_apply = False
 
-    def compose(self) -> ComposeResult:
+    def compose_strip(self) -> ComposeResult:
+        yield WrappedValue(str(self.repo))
+
+    def compose_content(self) -> ComposeResult:
         """Формирует структуру виджетов экрана диагностики: отчёт и действия в рамках."""
-        yield TopBar("Главная › Диагностика")
         with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
-            report.border_title = brand.frame_title("Health-отчёт")
+            report.border_title = brand.section_title("Health-отчёт")
             yield Static(_RUNNING, id="diagnostics-report", markup=False)
         with Vertical(id="diagnostics-actions", classes="frame") as actions:
-            actions.border_title = brand.frame_title("Действия")
+            actions.border_title = brand.section_title("Действия")
             with Horizontal(classes="action-row"):
                 yield Button("Офлайн", id="offline-checks", compact=True)
                 yield Static(
@@ -176,7 +232,6 @@ class DiagnosticsScreen(Translated, Screen[None]):
                 )
             with Horizontal(classes="action-row"):
                 yield Button("Экспорт", id="export", compact=True)
-        yield Footer()
 
     def on_mount(self) -> None:
         """Запускает первичное построение отчёта проверок при монтировании экрана."""
@@ -221,6 +276,7 @@ class DiagnosticsScreen(Translated, Screen[None]):
 
     def sync_language(self) -> None:
         """Show the finished report in the current language."""
+        ConsoleShell.sync_language(self)
         if self._report is not None:
             self.query_one("#diagnostics-report", Static).update(
                 _styled_report(self._report, getattr(self.app, "language", "ru"))

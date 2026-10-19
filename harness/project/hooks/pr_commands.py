@@ -161,6 +161,24 @@ def parse(command: str) -> Parsed:
     return parsed
 
 
+def computed_analysis_text(command: str) -> str:
+    """Exclude literal stdin data only when the strict shell structure proves it is inert.
+
+    Unknown stdin interpreters, pipelines and command substitutions keep the original text:
+    data in those contexts could become a command or a computed argument.
+    """
+    # Mask only simple variable *values* for this structural check. Command substitutions and
+    # computed heredoc receivers remain opaque; actual analysis still uses the original words.
+    structural = re.sub(r"\$(?:[A-Za-z_]\w*|\{[A-Za-z_]\w*\})", "VARIABLE", command)
+    steps = strict_steps(structural)
+    if steps is None or re.search(r"^[^\n]*\$[^\n]*<<", command, re.MULTILINE):
+        return command
+    if any(link.strip() in {"|", "|&"} for link, _ in steps):
+        return command
+    source, scripts, expanded, broken = _split_heredocs(command.replace("\\\n", ""))
+    return command if broken else "\n".join([source, *scripts, *expanded])
+
+
 def _parse(text: str, out: Parsed, depth: int) -> None:
     """Добавить в `out` simple commands и непрозрачные фрагменты текста `text`."""
     if depth > MAX_DEPTH:

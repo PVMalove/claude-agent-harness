@@ -23,7 +23,7 @@ query's ranked top-5 paths and search status. The evaluation uses raw FTS5 candi
 token-limited interactive search output. Recall is a ticket-level hit rate, not document-level
 recall for a multi-label relevance set. Noise is a macro-average over the returned top-5 window.
 
-Measured FTS5 with the corrected labels: recall@1/@3/@5 **0.95**, noise **0.60**.
+Measured FTS5 with the corrected labels: recall@1/@3/@5 **0.95**, noise **0.61**.
 The default quality gate **passes** its unchanged 0.60 recall@5 floor and 0.70 noise ceiling.
 The reproducibility test checks the complete report and CLI exit code 0 on that real corpus.
 
@@ -40,6 +40,11 @@ source documents for historical reproduction; `baseline_fts5_initial.json` is un
 metrics and hits are unchanged; only the order inside the top-5 window of queries 345, 402 and 422
 differs. `fixtures/initial-corpus.json` now also keeps the original ADR 0005 bytes, so
 `baseline_fts5_initial.json` stays unchanged.
+Version 4 re-evaluates the corpus after #716 changes `CONTEXT.md`, ADR 0003 and ADR 0006, and
+the merged corpus together with the #555 changes. Recall and hits are unchanged; noise rises to
+0.61 because ADR 0008 replaces the expected ADR 0001 in the top-5 window of query 426, and the
+order inside the window of several other queries differs. `fixtures/initial-corpus.json` also
+keeps the original ADR 0006 bytes, so `baseline_fts5_initial.json` stays unchanged.
 Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.
 

@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "engine": "sqlite3 FTS5 bm25, path tie-break",
   "corpus": "Tracked ADRs and CONTEXT.md; excludes task archives and tracker snapshots",
   "k_values": [
@@ -12,13 +12,13 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "315f9903467b695f11d2662824dc47437c225091832026e397d6fd1ff5f70af1",
   "source_hashes": {
-    "CONTEXT.md": "110cff0185484b112812c05b651228580b893a87318835e18aec5df43617fcef",
+    "CONTEXT.md": "d4dff2ccac4b33e2d0b42efb698d65966d5b99c867d7002602675805737d0478",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
-    "docs/adr/0003-orchestration-core.md": "f8d2974549b40a523a4df2b9ca9031bf348b087e62d58043b3e633dda7a914c5",
+    "docs/adr/0003-orchestration-core.md": "b3bd5cbc5bf6342fbf2c2dbfd28aad4614cca8ae18912eb532b6dbde228db50f",
     "docs/adr/0004-role-assignments.md": "3721543a888daea209f74e3ca92ea920074213b0b758cbc6c1497b53ba782bd0",
     "docs/adr/0005-implement-pipeline.md": "21ec43eadc8428a7fe665adfe335cb82b3bef89279ca0f8bb39b5da2a53bb3c9",
-    "docs/adr/0006-scratch-artifacts.md": "99f53f8af2a319af5dd90b9e7ac97ef718f17aa63029545636035be8bab7e14b",
+    "docs/adr/0006-scratch-artifacts.md": "67fea598a768ec5513a0818654e98b7e9c3bc9605161a33d85b2e66ab98c870f",
     "docs/adr/0007-python-quality.md": "866c0aa5cddae54238750e54733e281d0ed8cdd5e4c4336713c82ca4f30a6677",
     "docs/adr/0008-repo-map.md": "a1efc331e1f698c964b04593c8665595e667a0f24acc5a3bc8d0b447ccdc329e",
     "docs/adr/0009-harness-console.md": "3f9877cda4a63259bba0247ec199a24082a11515da63fdc6a826329d9d0fa459",
@@ -32,7 +32,7 @@
       "3": 0.95,
       "5": 0.95
     },
-    "mean_noise_ratio": 0.6,
+    "mean_noise_ratio": 0.61,
     "query_results": [
       {
         "ticket_id": 165,
@@ -63,8 +63,8 @@
           "docs/adr/0008-repo-map.md",
           "docs/adr/0010-project-memory.md",
           "CONTEXT.md",
-          "docs/adr/0009-harness-console.md",
-          "docs/adr/0005-implement-pipeline.md"
+          "docs/adr/0003-orchestration-core.md",
+          "docs/adr/0009-harness-console.md"
         ],
         "expected": [
           "docs/adr/0008-repo-map.md",
@@ -129,8 +129,8 @@
           "CONTEXT.md",
           "docs/adr/0010-project-memory.md",
           "docs/adr/0005-implement-pipeline.md",
-          "docs/adr/0009-harness-console.md",
-          "docs/adr/0006-scratch-artifacts.md"
+          "docs/adr/0006-scratch-artifacts.md",
+          "docs/adr/0009-harness-console.md"
         ],
         "expected": [
           "docs/adr/0007-python-quality.md",
@@ -264,8 +264,8 @@
           "docs/adr/0010-project-memory.md",
           "CONTEXT.md",
           "docs/adr/0009-harness-console.md",
-          "docs/adr/0003-orchestration-core.md",
-          "docs/adr/0005-implement-pipeline.md"
+          "docs/adr/0005-implement-pipeline.md",
+          "docs/adr/0003-orchestration-core.md"
         ],
         "expected": [
           "docs/adr/0010-project-memory.md",
@@ -355,7 +355,7 @@
           "CONTEXT.md",
           "docs/adr/0003-orchestration-core.md",
           "docs/adr/0005-implement-pipeline.md",
-          "docs/adr/0001-portable-capability-delivery.md"
+          "docs/adr/0008-repo-map.md"
         ],
         "expected": [
           "docs/adr/0010-project-memory.md",
@@ -366,7 +366,7 @@
           "3": 1.0,
           "5": 1.0
         },
-        "noise_ratio": 0.6,
+        "noise_ratio": 0.8,
         "search_status": "ok"
       },
       {
@@ -444,7 +444,7 @@
           "docs/adr/0006-scratch-artifacts.md",
           "docs/adr/0010-project-memory.md",
           "docs/adr/0007-python-quality.md",
-          "docs/adr/0001-portable-capability-delivery.md"
+          "docs/adr/0003-orchestration-core.md"
         ],
         "expected": [
           "docs/adr/0006-scratch-artifacts.md",
@@ -464,8 +464,8 @@
         "retrieved": [
           "CONTEXT.md",
           "docs/adr/0002-controlled-delivery.md",
-          "docs/adr/0003-orchestration-core.md",
           "docs/adr/0004-role-assignments.md",
+          "docs/adr/0003-orchestration-core.md",
           "docs/adr/0008-repo-map.md"
         ],
         "expected": [
@@ -482,6 +482,6 @@
     ],
     "gate_passed": true
   },
-  "annotation_revision": "Version 2 corrected source-grounded multi-label annotations; version 3 re-evaluates the updated corpus. Initial single-label measurement remains unchanged in baseline_fts5_initial.json.",
-  "corpus_revision": "Issue #662 updates orchestration lifecycle in CONTEXT.md and ADR 0003. Dataset, engine, windows and thresholds are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
+  "annotation_revision": "Version 2 corrected source-grounded multi-label annotations; versions 3 and 4 re-evaluate updated corpora. Initial single-label measurement remains unchanged in baseline_fts5_initial.json.",
+  "corpus_revision": "Issue #716 updates worker observation/recovery in CONTEXT.md and ADR 0003, and session scratchpad binding in ADR 0006; issue #555 updates the test author in CONTEXT.md and ADR 0005. Re-evaluated the merged source set; dataset, labels, engine, windows and thresholds are unchanged. The initial corpus remains preserved in tests/memory/fixtures/initial-corpus.json."
 }
