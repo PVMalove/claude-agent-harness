@@ -401,13 +401,14 @@ def test_sandbox_argv_is_the_adr_flag_set() -> None:
         [Path("/repo/tests"), Path("/cache")],
         ["python3", "-m", "unittest", "a;b c"],
         9,
+        Path("/run-dir/tmp-1"),
     )
     assert argv == [
         "/usr/bin/bwrap",
         "--ro-bind", "/", "/",
         "--dev", "/dev",
         "--proc", "/proc",
-        "--tmpfs", "/tmp",
+        "--bind", "/run-dir/tmp-1", "/tmp",
         "--tmpfs", "/run",
         "--bind", "/repo/tests", "/repo/tests",
         "--bind", "/cache", "/cache",
@@ -667,8 +668,14 @@ def test_probe_and_test_share_mounts_and_environment(project: Path) -> None:
     probe_argv, test_argv = launcher.calls
     binds = [str(project / "tests"), str(run_dir / "cache"), str(run_dir / "reports")]
     for argv in (probe_argv, test_argv):
-        assert _binds(argv) == binds
+        tmp, *rest = _binds(argv)
+        assert rest == binds
+        # Each launch mounts its own fresh run directory as /tmp and removes it afterwards.
+        assert argv[argv.index(tmp) + 1] == runner.SANDBOX_TMP
+        assert Path(tmp).parent == run_dir and Path(tmp).name.startswith("tmp-")
+        assert not Path(tmp).exists()
         assert argv[argv.index("--chdir") + 1] == str(project)
+    assert _binds(probe_argv)[0] != _binds(test_argv)[0]
     assert test_argv[test_argv.index("--") + 1 :] == [
         sys.executable,
         "-B",
@@ -689,7 +696,9 @@ def test_probe_function(project: Path) -> None:
         )
         is None
     )
-    assert [Path(bind).name for bind in _binds(launcher.calls[0])] == [
+    tmp, *rest = _binds(launcher.calls[0])
+    assert Path(tmp).name.startswith("tmp-")
+    assert [Path(bind).name for bind in rest] == [
         "tests",
         "cache",
         "reports",
@@ -1045,8 +1054,9 @@ def test_preparation_probe_checks_its_artifact_mount(
         binds: Sequence[Path | runner.Mount],
         command: Sequence[str],
         status_fd: int,
+        tmp: Path,
     ) -> list[str]:
-        argv = original(bwrap, repo, binds, command, status_fd)
+        argv = original(bwrap, repo, binds, command, status_fd, tmp)
         target = str(sandboxed / "artifacts")
         if target in argv:
             argv[argv.index(target) - 2] = "--ro-bind"
@@ -1174,6 +1184,27 @@ sys.exit(3)
         for item in (first, second)
     ]
     assert directories[0].read_text() != directories[1].read_text()
+
+
+def test_each_launch_gets_a_fresh_tmp_in_the_run_directory(sandboxed: Path) -> None:
+    marker = f"leak-{os.getpid()}"
+    selected = """import os,sys
+assert os.environ['TMPDIR'] == '/tmp' and os.listdir('/tmp') == []
+open('/tmp/MARKER','w').close()
+"""
+    _write_settings(
+        sandboxed,
+        _settings(
+            ["tests/**"],
+            [sys.executable, "-c", selected.replace("MARKER", marker), "{test_id}"],
+        ),
+    )
+    outcomes = [runner.run_test(sandboxed, "legit") for _ in range(2)]
+    assert [item.result for item in outcomes] == ["passed", "passed"]
+    assert not Path("/tmp", marker).exists()
+    for item in outcomes:
+        run_dir = storage_path(sandboxed, "runs", f"isolated-test-{item.run_id}")
+        assert list(run_dir.glob("tmp-*")) == []
 
 
 def test_database_start_failure_refuses_before_selected_test(sandboxed: Path) -> None:

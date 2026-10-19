@@ -10,7 +10,7 @@
 
 ### Fixed
 
-- **[Временные данные QA и isolated runner]:** Команды `qa run` получают собственный `TMPDIR` в `.harness/.sandboxes/runs/qa/tmp-*`, который удаляется после прогона, а helper базы данных isolated runner создаёт каталог в `TMPDIR` вместо жёстко заданного `/tmp`. Внутри bubblewrap `TMPDIR` по-прежнему указывает на приватный tmpfs. Read-only `/tmp` внешнего sandbox больше не роняет QA (#769).
+- **[Временные данные QA и isolated runner]:** Команды `qa run` получают собственный `TMPDIR` в `.harness/.sandboxes/runs/qa/tmp-*`, который удаляется после прогона, а helper базы данных isolated runner создаёт каталог в `TMPDIR` вместо жёстко заданного `/tmp`. Внутри bubblewrap `/tmp` теперь, как hermetic `/tmp` в Bazel, — свой пустой каталог `.harness/.sandboxes/runs/isolated-test-<id>/tmp-*` на каждый запуск, удаляемый после него, а не tmpfs. Read-only `/tmp` внешнего sandbox больше не роняет QA (#769).
 - **[Падение QA из-за окружения]:** Если QA gate упал по признакам окружения (`Read-only file system` или `Permission denied` на пути вне репозитория) и в выводе нет признаков дефекта кода, `batch auto-decide` не тратит developer-retry, а останавливает автоматический путь с причиной `no-automatic-route`/`qa-environment-failure` и remedy. Настоящее падение теста по-прежнему ведёт к retry (#769).
 
 ## [1.5.1] - 2026-10-18
