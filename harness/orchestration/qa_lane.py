@@ -13,6 +13,7 @@ import hashlib
 import os
 import re
 import socket
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -55,6 +56,7 @@ from .ledger import (
     LedgerRecordVO,
     LifecycleLedger,
 )
+from .ledger.ledger_ops import LedgerBusyError, _ledger_lock
 
 
 class QaWorkflowOps(Protocol):
@@ -146,6 +148,50 @@ def _lock(ledger: LifecycleLedger) -> Iterator[None]:
     """Exclusive ledger lock; a ``LedgerError`` inside it becomes ``CoordinatorError``."""
     with _ledger_errors(), ledger.lock():
         yield
+
+
+# How long a lane release after ``qa run`` waits for a busy ledger, and how often it retries.
+RELEASE_LOCK_WAIT_SECONDS = 30.0
+RELEASE_LOCK_POLL_SECONDS = 0.25
+
+
+@contextmanager
+def _lock_waiting(ledger: LifecycleLedger, dispatch_id: str) -> Iterator[None]:
+    """Exclusive ledger lock for releasing this dispatch's lane, waiting a bounded time for it.
+
+    A release that gave up on the first busy answer would leave the lease and the queue entry
+    held until the lease expires and every later QA run waiting; a lock still busy at the
+    deadline names the lane state left behind."""
+    deadline = time.monotonic() + RELEASE_LOCK_WAIT_SECONDS
+    while True:
+        entered = False
+        try:
+            with _ledger_lock(ledger):
+                entered = True
+                yield
+            return
+        except LedgerBusyError as exc:
+            if entered:
+                raise
+            if time.monotonic() >= deadline:
+                raise _lane_not_released(ledger, dispatch_id) from exc
+            time.sleep(RELEASE_LOCK_POLL_SECONDS)
+
+
+def _lane_not_released(ledger: LifecycleLedger, dispatch_id: str) -> CoordinatorError:
+    lease = _lease(ledger)
+    if lease:
+        kind, identity = _owner(lease)
+        lane = f"the QA lease belongs to {kind} {identity} and expires at {lease['expires_at']}"
+    else:
+        lane = "the QA lane holds no lease"
+    return CoordinatorError(
+        f"QA dispatch {dispatch_id} was not released: the ledger stayed locked for "
+        f"{RELEASE_LOCK_WAIT_SECONDS:g} seconds; {lane}, and the dispatch stays working",
+        remedy="run 'coordinator.py ledger lock-status' to find the operation holding the ledger; "
+        "after the lease expires, 'qa clear-stale-lease' clears the lease and its queue entry "
+        "and returns the dispatch to approved; then run 'qa run' for it again",
+    )
 
 
 def _records_root(ledger: LifecycleLedger) -> Path:
@@ -667,12 +713,13 @@ def _recover_transient_failure(
     root: Path,
     dispatch: JsonObject,
     queue_path: Path,
+    lease: JsonObject,
     failure: HarnessError,
     stage: str,
     ops: QaWorkflowOps,
 ) -> None:
     """Return one QA dispatch to its retryable state after a non-terminal failure."""
-    with _lock(ledger):
+    with _lock_waiting(ledger, dispatch["dispatch_id"]):
         _write_immutable(
             ledger,
             _attempt_path(ledger),
@@ -693,27 +740,68 @@ def _recover_transient_failure(
         # An expired lease may have been cleared and the lane taken by another owner, including a
         # local QA run without a dispatch_id; only this dispatch's own lease is released.
         if current and _owner(current) == ("dispatch", dispatch["dispatch_id"]):
+            if current != lease:
+                # A newer run of this dispatch took the lane after its lease was cleared; that run
+                # owns the lease and the dispatch state.
+                return
             _delete_record(ledger, lease_path, reason="release transient QA lease")
-        batch = ops._load_batch(root, dispatch["batch_id"])
-        entry = next(
-            item
-            for item in batch["dispatches"]
-            if item["dispatch_id"] == dispatch["dispatch_id"]
-        )
-        entry["state"] = "approved"
-        _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
-        _safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(
-            ledger,
-            DispatchStatusRecord.from_dict(
-                {
-                    "dispatch_id": dispatch["dispatch_id"],
-                    "state": "approved",
-                    "updated_at": _now(),
-                }
-            ),
-        )
+        _restore_approved(ledger, root, dispatch, ops)
+
+
+def _restore_approved(
+    ledger: LifecycleLedger, root: Path, dispatch: JsonObject, ops: QaWorkflowOps
+) -> None:
+    """Return a QA dispatch whose run ended without a report to ``approved``. Caller holds the lock."""
+    batch = ops._load_batch(root, dispatch["batch_id"])
+    entry = next(
+        item
+        for item in batch["dispatches"]
+        if item["dispatch_id"] == dispatch["dispatch_id"]
+    )
+    entry["state"] = "approved"
+    _safe_id(batch["batch_id"], "batch")
+    _replace_record(ledger, BatchRecord.from_dict(batch))
+    _safe_id(dispatch["dispatch_id"], "dispatch")
+    _replace_record(
+        ledger,
+        DispatchStatusRecord.from_dict(
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "state": "approved",
+                "updated_at": _now(),
+            }
+        ),
+    )
+
+
+def _running_dispatch(
+    root: Path, ledger: LifecycleLedger, owner: tuple[str, str], ops: QaWorkflowOps
+) -> JsonObject | None:
+    """The cleared lease's dispatch when its run left it running, or ``None``.
+
+    A run that could not release its lane leaves its dispatch ``working`` without a report, and
+    the QA runner refuses it until it is ``approved`` again. Another state, a local QA lease and
+    a dispatch without records are left as they are."""
+    kind, dispatch_id = owner
+    if kind != "dispatch":
+        return None
+    status_path = (
+        _records_root(ledger)
+        / DispatchStatusRecord.directory
+        / f"{_safe_id(dispatch_id, 'dispatch')}.json"
+    )
+    if not status_path.exists():
+        return None
+    dispatch = ops._load_dispatch(root, dispatch_id)
+    entry = _batch_entry(ops._load_batch(root, dispatch["batch_id"]), dispatch_id)
+    status = ops._load_dispatch_status(root, dispatch_id)
+    if (
+        not entry
+        or entry.get("state") != "dispatched"
+        or status.get("state") != "working"
+    ):
+        return None
+    return dispatch
 
 
 def _release_after_failure(
@@ -721,6 +809,7 @@ def _release_after_failure(
     root: Path,
     dispatch: JsonObject,
     queue_path: Path | None,
+    lease: JsonObject,
     exc: BaseException,
     stage: str,
     ops: QaWorkflowOps,
@@ -744,7 +833,9 @@ def _release_after_failure(
             f"QA run was interrupted at {stage}",
             remedy="the QA lane and the dispatch were released; run the QA runner again",
         )
-    _recover_transient_failure(ledger, root, dispatch, queue_path, failure, stage, ops)
+    _recover_transient_failure(
+        ledger, root, dispatch, queue_path, lease, failure, stage, ops
+    )
     if failure is not exc and isinstance(exc, Exception):
         raise failure from exc
 
@@ -849,7 +940,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             held = exc
     if held is not None:
         _release_after_failure(
-            ledger, root, dispatch, queue_path, held, "state-transition", ops
+            ledger, root, dispatch, queue_path, lease, held, "state-transition", ops
         )
         raise held
     if queue_path is None:  # an unqueued run returned above
@@ -890,11 +981,13 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     except GateRunnerError as exc:
         failure = CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
-            ledger, root, dispatch, queue_path, failure, "gate-run", ops
+            ledger, root, dispatch, queue_path, lease, failure, "gate-run", ops
         )
         raise failure from exc
     except BaseException as exc:
-        _release_after_failure(ledger, root, dispatch, queue_path, exc, "gate-run", ops)
+        _release_after_failure(
+            ledger, root, dispatch, queue_path, lease, exc, "gate-run", ops
+        )
         raise
     checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
     try:
@@ -906,12 +999,19 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             remedy="resolve the underlying ledger error reported as its cause and run the QA runner again",
         )
         _recover_transient_failure(
-            ledger, root, dispatch, queue_path, failure, "artifact-persistence", ops
+            ledger,
+            root,
+            dispatch,
+            queue_path,
+            lease,
+            failure,
+            "artifact-persistence",
+            ops,
         )
         raise failure from exc
     except BaseException as exc:
         _release_after_failure(
-            ledger, root, dispatch, queue_path, exc, "artifact-persistence", ops
+            ledger, root, dispatch, queue_path, lease, exc, "artifact-persistence", ops
         )
         raise
     stages = staged.record() if staged is not None else None
@@ -920,12 +1020,26 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             _verify_stages_against_artifact(stages, artifact, checksum)
         except CoordinatorError as exc:
             _recover_transient_failure(
-                ledger, root, dispatch, queue_path, exc, "stage-verification", ops
+                ledger,
+                root,
+                dispatch,
+                queue_path,
+                lease,
+                exc,
+                "stage-verification",
+                ops,
             )
             raise
         except BaseException as exc:
             _release_after_failure(
-                ledger, root, dispatch, queue_path, exc, "stage-verification", ops
+                ledger,
+                root,
+                dispatch,
+                queue_path,
+                lease,
+                exc,
+                "stage-verification",
+                ops,
             )
             raise
     try:
@@ -934,15 +1048,15 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             report_path = _record_report(ledger, root, repo, dispatch, report, ops)
     except CoordinatorError as exc:
         _recover_transient_failure(
-            ledger, root, dispatch, queue_path, exc, "report-persistence", ops
+            ledger, root, dispatch, queue_path, lease, exc, "report-persistence", ops
         )
         raise
     except BaseException as exc:
         _release_after_failure(
-            ledger, root, dispatch, queue_path, exc, "report-persistence", ops
+            ledger, root, dispatch, queue_path, lease, exc, "report-persistence", ops
         )
         raise
-    with _lock(ledger):
+    with _lock_waiting(ledger, dispatch["dispatch_id"]):
         release(ledger, lease)
     return {
         "dispatch_id": dispatch["dispatch_id"],
@@ -992,12 +1106,16 @@ def clear_stale_lease(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObjec
                 "QA lease changed; coordinator must validate the current owner again",
                 remedy="run 'qa status' and pass the current lease's host, pid and expiry as --expected-host, --expected-pid and --expected-expiry",
             )
+        approval = ops._approval(args)
+        running = _running_dispatch(root, ledger, _owner(lease), ops)
+        restored = "approved" if running else None
         recovery = {
             "cleared_dispatch_id": _owner(lease)[1],
             "lease": lease,
-            "approval": ops._approval(args),
+            "approval": approval,
             "reason": args.reason.strip(),
             "cleared_at": _now(),
+            "restored_dispatch_state": restored,
         }
         _write_immutable(
             ledger,
@@ -1015,4 +1133,10 @@ def clear_stale_lease(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObjec
         if owner is not None:
             _delete_record(ledger, owner[0], reason="clear stale QA lease queue entry")
         _delete_record(ledger, _lane_path(ledger), reason="clear stale QA lease")
-    return {"state": "cleared", **_owner_document(*_owner(lease))}
+        if running:
+            _restore_approved(ledger, root, running, ops)
+    return {
+        "state": "cleared",
+        **_owner_document(*_owner(lease)),
+        "restored_dispatch_state": restored,
+    }
