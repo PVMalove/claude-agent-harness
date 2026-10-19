@@ -268,6 +268,26 @@ class WorkerLivenessTests(LifecycleFixture):
         self.assertIn("--runtime-stopped", batch["recommended_human_action"])
         self.assertEqual(self.removals(), [])
 
+    def test_an_exited_worker_with_a_staged_report_points_to_report_submit_first(
+        self,
+    ) -> None:
+        staged = Path(self.brief["report_staging_path"])
+        staged.parent.mkdir(parents=True, exist_ok=True)
+        staged.write_text("{}", encoding="utf-8")
+        self.addCleanup(staged.unlink, missing_ok=True)
+        self.engine.exit_worker(self.dispatch_id, 0)
+
+        event = self.wait()
+
+        self.assertEqual(event["event"], "stale")
+        self.assertEqual(event["staged_report"], str(staged))
+        batch = self.batch()
+        self.assertIn(
+            f"report submit --file {staged}", batch["recommended_human_action"]
+        )
+        self.assertIn("left a staged report", batch["last_safe_action"])
+        self.assertEqual(self.removals(), [])
+
     def test_wait_keeps_waiting_while_the_worker_is_alive(self) -> None:
         event = coordinator.wait_dispatch(
             self.fx._args(

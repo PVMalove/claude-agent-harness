@@ -61,9 +61,30 @@ from harness.orchestration.workflow.history import (
 )
 
 
+def staged_report(dispatch: JsonObject) -> str | None:
+    """The report file a worker staged for this dispatch, if it is on disk.
+
+    A container worker cannot write the ledger, so it normally exits with its report still staged:
+    that report, not a cancel, is what a human should record first."""
+    staged = dispatch.get("report_staging_path")
+    return staged if isinstance(staged, str) and Path(staged).is_file() else None
+
+
 def _stale_dispatch_finding(
-    dispatch_id: str, silent: int, worker_exit: JsonObject | None = None
+    dispatch_id: str,
+    silent: int,
+    worker_exit: JsonObject | None = None,
+    staged: str | None = None,
 ) -> dict[str, str]:
+    if worker_exit and staged:
+        return operational_guards.attention_finding(
+            "stale-dispatch",
+            dispatch_id,
+            last_safe_action=f"dispatch {dispatch_id}: the container worker exited (exit code {worker_exit.get('exit_code')}) and left a staged report at {staged}; nothing was recorded or cancelled",
+            recommended_human_action=f"inspect {staged}, then record it with report submit --file {staged}; "
+            f"only if that report is unusable, inspect {RECOVERY_EVIDENCE_COMMANDS} and record dispatch cancel --runtime-stopped before "
+            "batch resume-stop or batch rewind; then resolve this attention",
+        )
     if worker_exit:
         gone = worker_exit.get("state") == "missing"
         outcome = (
@@ -192,7 +213,10 @@ def _attention_findings(
         ):
             findings.append(
                 _stale_dispatch_finding(
-                    entry["dispatch_id"], _silent_seconds(status), worker_exit
+                    entry["dispatch_id"],
+                    _silent_seconds(status),
+                    worker_exit,
+                    staged_report(dispatch) if worker_exit else None,
                 )
             )
     return findings
@@ -299,7 +323,14 @@ def _flag_stale_dispatch(
     if _apply_attention(
         core_config._config(repo),
         batch,
-        [_stale_dispatch_finding(dispatch["dispatch_id"], silent, worker_exit)],
+        [
+            _stale_dispatch_finding(
+                dispatch["dispatch_id"],
+                silent,
+                worker_exit,
+                staged_report(dispatch) if worker_exit else None,
+            )
+        ],
         utils._now(),
     ):
         _safe_id(batch["batch_id"], "batch")

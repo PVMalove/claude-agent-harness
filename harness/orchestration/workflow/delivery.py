@@ -72,6 +72,7 @@ from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLE
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
+    staged_report,
 )
 from harness.orchestration.workflow.container_status import (
     MAX_ENGINE_READS,
@@ -496,6 +497,11 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
                     "event": "stale",
                     "silent_seconds": _silent_seconds(status),
                     **({"worker": worker} if exited else {}),
+                    **(
+                        {"staged_report": staged}
+                        if exited and (staged := staged_report(dispatch))
+                        else {}
+                    ),
                 }
         remaining = deadline - time.monotonic()
         if remaining <= 0:
