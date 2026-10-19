@@ -221,7 +221,7 @@ def _dispatch_statuses(root: Path) -> dict[str, dict[str, object]] | None:
             status = LifecycleLedger.read_record_lenient(record)
             if status is None:
                 return None
-            statuses[status["dispatch_id"]] = status
+            statuses[str(status["dispatch_id"])] = dict(status)
     except (OSError, KeyError, TypeError):
         return None
     return statuses
