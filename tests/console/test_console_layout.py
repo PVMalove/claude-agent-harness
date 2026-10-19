@@ -491,3 +491,36 @@ def test_configuration_versions_layout(
             return layout_problems(screen, (".breadcrumbs",))
 
     assert asyncio.run(scenario()) == []
+
+
+UPDATE_HARNESS_TITLES = (".breadcrumbs", "#update-title")
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+@pytest.mark.parametrize("size", SIZES)
+def test_update_harness_layout(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    """The main page, the seed mode and every fold opened stay inside the screen."""
+    from textual.widgets import RadioButton
+
+    from harness.console.shell import Fold
+    from tests.console.test_console_update_harness import _Runner, _screen
+
+    async def scenario() -> dict[str, list[str]]:
+        found: dict[str, list[str]] = {}
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot, _screen(tmp_path, _Runner()), language)
+            found["main"] = layout_problems(screen, UPDATE_HARNESS_TITLES)
+            screen.query_one("#update-mode").query(RadioButton)[2].value = True
+            await pilot.pause()
+            found["seed"] = layout_problems(screen, UPDATE_HARNESS_TITLES)
+            for fold in screen.query(Fold):
+                fold.collapsed = False
+            await pilot.pause()
+            await pilot.pause()
+            found["open"] = layout_problems(screen, UPDATE_HARNESS_TITLES)
+        return found
+
+    assert asyncio.run(scenario()) == {"main": [], "seed": [], "open": []}

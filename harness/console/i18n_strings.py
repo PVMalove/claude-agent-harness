@@ -798,3 +798,34 @@ EN_PHRASES.update(
         "версия не выбрана": "no version is selected",
     }
 )
+# Update Harness on the shared frame: the plan warning, mode consequences, reasons and states.
+EN.update(
+    {
+        "Обновить Harness": "Update Harness",
+        "Сначала показываем, что изменится в управляемых файлах. Запуск — только после вашего подтверждения.": "First we show what changes in the managed files. A run starts only after your confirmation.",
+        "Команда обновления — та же, что в CLI: harness update": "The update command is the same as in the CLI: harness update",
+        "из harness diff": "from harness diff",
+        "Обычное": "Normal",
+        "Выберите файл в списке слева.": "Select a file in the list on the left.",
+        "Локальные правки сохраняются. Остановится на конфликтах.": "Local changes are kept. It stops on conflicts.",
+        "⚠ Заменит и конфликтные файлы версией пакета: ваши правки в них пропадут.": "⚠ Also replaces conflicting files with the package version: your edits in them are lost.",
+        "Только отмеченные seed-файлы; остальное не меняется.": "Only the ticked seed files; nothing else changes.",
+        "Обычное обновление остановится:": "A normal update will stop:",
+        "Остановится:": "Will stop:",
+        "Смените режим или разберите файл.": "Change the mode or resolve the file.",
+        "Выберите режим с перезаписью или разберите файл вручную (см. diff ниже).": "Choose an overwrite mode or resolve the file by hand (see the diff below).",
+        "Harness не установлен": "Harness is not installed",
+        "обновление выполняется": "an update is running",
+        "Отметьте хотя бы один файл": "Tick at least one file",
+        "Дождитесь окончания обновления": "Wait for the update to finish",
+        "Не удалось проверить дрейф": "Could not check drift",
+        "Нажмите «Проверить заново». Если повторяется — «Диагностика» (3).": "Press “Check again”. If it repeats, open “Diagnostics” (3).",
+        "Счётчики и список файлов появятся после проверки.": "Counters and the file list appear after the check.",
+        "ваши правки сохранятся": "your edits are kept",
+        "Состав": "Set",
+        "Управляемых файлов": "Managed files",
+        "нет": "none",
+        "✔ актуальна": "✔ up to date",
+        "⚠ доступно обновление": "⚠ update available",
+    }
+)

@@ -1097,7 +1097,13 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
         ConfigurationVersionsScreen,
     )
 
-    for screen_class in (ConfigurationScreen, ConfigurationVersionsScreen):
+    from harness.console.screens.update_harness import UpdateHarnessScreen
+
+    for screen_class in (
+        ConfigurationScreen,
+        ConfigurationVersionsScreen,
+        UpdateHarnessScreen,
+    ):
         assert issubclass(screen_class, ConsoleShell)
         own = screen_class.__dict__.get("BINDINGS", [])
         keys = [b.key if isinstance(b, Binding) else b[0] for b in own]
@@ -1115,6 +1121,7 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
         "repo_map_settings",
         "configuration",
         "configuration_versions",
+        "update_harness",
     )
     for name in names:
         source = (screens / f"{name}.py").read_text(encoding="utf-8")
@@ -1123,6 +1130,11 @@ def test_the_shell_screens_carry_no_local_colours_top_bar_or_number_keys() -> No
         if name != "commands":
             # `CommandMenuScreen.compose` is the one left-over of the old frame (no screen uses it).
             assert "TopBar(" not in source, f"{name}: a top bar of its own"
+        # `configuration` is left out: its confirmation modal binds its own Esc (a modal has no frame).
+        if name in ("configuration_versions", "update_harness"):
+            assert not re.search(
+                r"Binding\(\s*[\"']escape", source
+            ), f"{name}: its own Esc binding"
 
 
 def test_reports_and_repo_map_leave_back_and_breakpoints_to_the_shell() -> None:
