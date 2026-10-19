@@ -195,11 +195,12 @@ def mounts(requirements: Sequence[Mapping[str, object]]) -> list[tuple[str, str]
     )
 
 
-def identity_argv(observation: ContainerObservation) -> list[str]:
+def identity_argv(observation: ContainerObservation, *, worker: bool) -> list[str]:
     """The options that keep host file ownership for the observed engine mode, then SELinux.
 
     A rootful engine runs the host ``uid:gid``. Rootless Podman keeps the host id with
-    ``--userns=keep-id``. Rootless Docker needs no flag: its container root already is the host user.
+    ``--userns=keep-id``. Rootless Docker maps container root to the host user, so the worker pins
+    ``--user 0:0`` instead of trusting the image's ``USER``; the sidecar keeps its own image user.
     An engine that reports SELinux gets ``label=disable``; host files are never relabeled.
     """
     if observation.engine_mode != "rootless":
@@ -207,7 +208,7 @@ def identity_argv(observation: ContainerObservation) -> list[str]:
     elif observation.engine == "podman":
         argv = ["--userns=keep-id"]
     else:
-        argv = []
+        argv = ["--user", "0:0"] if worker else []
     if observation.selinux:
         argv += ["--security-opt", "label=disable"]
     return argv
@@ -240,7 +241,7 @@ def create_argv(
         container_name(dispatch_id),
         "--network",
         network_name(dispatch_id) if hosts else "none",
-        *identity_argv(observation),
+        *identity_argv(observation, worker=True),
         "--cap-drop",
         "ALL",
         "--security-opt",
@@ -303,7 +304,7 @@ def proxy_argv(
         proxy_name(dispatch_id),
         "--network",
         network_name(dispatch_id),
-        *identity_argv(observation),
+        *identity_argv(observation, worker=False),
         "--cap-drop",
         "ALL",
         "--security-opt",

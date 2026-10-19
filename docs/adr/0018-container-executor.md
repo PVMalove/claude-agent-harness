@@ -29,7 +29,9 @@
 - Секреты передаются только по именам переменных из компонента `environment` плана (`-e NAME`);
   значения не попадают в конфиг, brief, argv и слои образа. Auth-файлы не монтируются.
 - Владелец файлов совпадает с пользователем хоста: rootful → `--user uid:gid`, rootless Podman →
-  `--userns=keep-id`, rootless Docker → UID 0 внутри. При SELinux enforcing — `label=disable`, без
+  `--userns=keep-id`, rootless Docker → worker с явным `--user 0:0` (UID 0 внутри отображается на
+  пользователя хоста независимо от `USER` образа; sidecar остаётся без флага пользователя и
+  работает от `USER` своего образа). При SELinux enforcing — `label=disable`, без
   перемаркировки файлов хоста. Движок и режим определяет `observe()` одним запросом
   `<engine> info`; удалённый Podman, Docker с userns-remap и ответ, не совпадающий с выбранным
   движком, блокируют запуск до старта worker-а. `HARNESS_EXECUTOR=docker` и имя расширения `docker`

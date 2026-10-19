@@ -17,7 +17,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import NamedTuple
 from unittest import mock
 
 from harness.orchestration import (
@@ -1228,69 +1228,85 @@ class DockerEnvironmentTests(DockerFixture):
 
 LABEL_DISABLE = ["--security-opt", "label=disable"]
 KEEP_ID = ["--userns=keep-id"]
-# (case, engine, engine response, detected mode, SELinux, identity part of the create argv)
-ENGINE_MATRIX: tuple[tuple[str, str, JsonObject, str, bool, list[str]], ...] = (
-    ("rootful Docker", "docker", ROOTFUL_INFO, "rootful", False, ROOTFUL_IDENTITY),
-    (
-        "rootful Docker with SELinux",
-        "docker",
-        docker_info("name=selinux"),
-        "rootful",
-        True,
-        [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
-    ),
-    ("rootless Docker", "docker", docker_info("name=rootless"), "rootless", False, []),
-    (
-        "rootless Docker with SELinux",
-        "docker",
-        docker_info("name=rootless", "name=selinux"),
-        "rootless",
-        True,
-        LABEL_DISABLE,
-    ),
-    ("rootful Podman", "podman", podman_info(), "rootful", False, ROOTFUL_IDENTITY),
-    (
-        "rootful Podman with SELinux",
-        "podman",
-        podman_info(selinux=True),
-        "rootful",
-        True,
-        [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
-    ),
-    (
-        "rootless Podman",
-        "podman",
-        podman_info(rootless=True),
-        "rootless",
-        False,
-        KEEP_ID,
-    ),
-    (
-        "rootless Podman with SELinux",
-        "podman",
-        podman_info(rootless=True, selinux=True),
-        "rootless",
-        True,
-        [*KEEP_ID, *LABEL_DISABLE],
-    ),
+ROOT_USER = ["--user", "0:0"]
+
+
+class EngineRow(NamedTuple):
+    """One engine response and the identity part of the worker and sidecar create argv."""
+
+    engine: str
+    info: JsonObject
+    mode: str
+    selinux: bool
+    worker_identity: list[str]
+    proxy_identity: list[str]
+
+
+ROOTFUL_DOCKER = EngineRow(
+    "docker", ROOTFUL_INFO, "rootful", False, ROOTFUL_IDENTITY, ROOTFUL_IDENTITY
+)
+ROOTFUL_DOCKER_SELINUX = EngineRow(
+    "docker",
+    docker_info("name=selinux"),
+    "rootful",
+    True,
+    [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
+    [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
+)
+# Rootless Docker pins the worker to UID 0; the sidecar keeps its image user.
+ROOTLESS_DOCKER = EngineRow(
+    "docker", docker_info("name=rootless"), "rootless", False, ROOT_USER, []
+)
+ROOTLESS_DOCKER_SELINUX = EngineRow(
+    "docker",
+    docker_info("name=rootless", "name=selinux"),
+    "rootless",
+    True,
+    [*ROOT_USER, *LABEL_DISABLE],
+    LABEL_DISABLE,
+)
+ROOTFUL_PODMAN = EngineRow(
+    "podman", podman_info(), "rootful", False, ROOTFUL_IDENTITY, ROOTFUL_IDENTITY
+)
+ROOTFUL_PODMAN_SELINUX = EngineRow(
+    "podman",
+    podman_info(selinux=True),
+    "rootful",
+    True,
+    [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
+    [*ROOTFUL_IDENTITY, *LABEL_DISABLE],
+)
+ROOTLESS_PODMAN = EngineRow(
+    "podman", podman_info(rootless=True), "rootless", False, KEEP_ID, KEEP_ID
+)
+ROOTLESS_PODMAN_SELINUX = EngineRow(
+    "podman",
+    podman_info(rootless=True, selinux=True),
+    "rootless",
+    True,
+    [*KEEP_ID, *LABEL_DISABLE],
+    [*KEEP_ID, *LABEL_DISABLE],
 )
 
 
-if TYPE_CHECKING:
-    _CaseBase = DockerFixture
-else:
-    # A plain mixin is not collected; each generated subclass below is.
-    _CaseBase = object
+class EngineMatrixChecks(DockerFixture):
+    """The checks of one engine response; each subclass below sets ``case`` to one row."""
 
+    case: EngineRow | None = None
 
-class EngineCase(_CaseBase):
-    """The checks of one engine response; ``case`` is a row of ``ENGINE_MATRIX``."""
+    def setUp(self) -> None:
+        if self.case is None:
+            self.skipTest("base of the engine matrix; the subclasses set the row")
+        super().setUp()
 
-    case: tuple[str, str, JsonObject, str, bool, list[str]]
+    @property
+    def row(self) -> EngineRow:
+        assert self.case is not None
+        return self.case
 
-    def use(self, **container: object) -> tuple[str, str, JsonObject]:
-        """Point the fixture at this case's engine and response; return engine, mode, info."""
-        _, engine, info, mode, _, _ = self.case
+    def use(self, **container: object) -> tuple[str, str]:
+        """Point the fixture at this case's engine and response; return engine and mode."""
+        engine, info, mode = self.row.engine, self.row.info, self.row.mode
         self.configure(
             container={"engine": engine, "worker_image": WORKER_TAG, **container}
         )
@@ -1303,10 +1319,10 @@ class EngineCase(_CaseBase):
                 WORKER_TAG: PODMAN_WORKER_BARE,
                 PROXY_TAG: PODMAN_PROXY_BARE,
             }
-        return engine, mode, info
+        return engine, mode
 
     def test_preflight_records_the_engine_its_mode_and_selinux(self) -> None:
-        engine, mode, _ = self.use()
+        engine, mode = self.use()
 
         verification = self.preflight()
 
@@ -1319,7 +1335,7 @@ class EngineCase(_CaseBase):
                 evidence["selinux"],
                 evidence["worker_image_id"],
             ),
-            (engine, mode, self.case[4], WORKER_ID),
+            (engine, mode, self.row.selinux, WORKER_ID),
         )
         self.assertEqual(
             self.engine.calls,
@@ -1330,14 +1346,14 @@ class EngineCase(_CaseBase):
         )
 
     def test_send_runs_the_argv_that_keeps_the_host_owner(self) -> None:
-        engine, mode, _ = self.use()
+        engine, mode = self.use()
         brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
         self.engine.calls.clear()
 
         sent = self.send(brief["dispatch_id"])
 
         create = self.expected_create(
-            brief, sent["brief"], engine=engine, identity=self.case[5]
+            brief, sent["brief"], engine=engine, identity=self.row.worker_identity
         )
         self.assertEqual(
             self.engine.calls,
@@ -1359,7 +1375,7 @@ class EngineCase(_CaseBase):
         self.assertNotIn("--privileged", create)
 
     def test_the_sidecar_follows_the_engine_network_and_identity(self) -> None:
-        engine, _, _ = self.use(proxy_image=PROXY_TAG)
+        engine, _ = self.use(proxy_image=PROXY_TAG)
         self.configure(
             container={
                 "engine": engine,
@@ -1379,8 +1395,10 @@ class EngineCase(_CaseBase):
             if call[1] == "create" and call[-1] == PROXY_ID
         )
         after_network = proxy.index("--network") + 2
-        identity = self.case[5]
+        identity = self.row.proxy_identity
         self.assertEqual(proxy[after_network : after_network + len(identity)], identity)
+        # The sidecar never takes the worker's pinned user.
+        self.assertEqual("--user" in proxy, "--user" in identity)
         default_network = "podman" if engine == "podman" else "bridge"
         self.assertIn(
             [engine, "network", "connect", default_network, PROXY_CONTAINER_ID],
@@ -1388,14 +1406,36 @@ class EngineCase(_CaseBase):
         )
 
 
-def _slug(name: str) -> str:
-    return "".join(part.capitalize() for part in name.replace("-", " ").split())
+class RootfulDockerTests(EngineMatrixChecks):
+    case = ROOTFUL_DOCKER
 
 
-for _case in ENGINE_MATRIX:
-    globals()[f"Engine{_slug(_case[0])}Tests"] = type(
-        f"Engine{_slug(_case[0])}Tests", (EngineCase, DockerFixture), {"case": _case}
-    )
+class RootfulDockerSelinuxTests(EngineMatrixChecks):
+    case = ROOTFUL_DOCKER_SELINUX
+
+
+class RootlessDockerTests(EngineMatrixChecks):
+    case = ROOTLESS_DOCKER
+
+
+class RootlessDockerSelinuxTests(EngineMatrixChecks):
+    case = ROOTLESS_DOCKER_SELINUX
+
+
+class RootfulPodmanTests(EngineMatrixChecks):
+    case = ROOTFUL_PODMAN
+
+
+class RootfulPodmanSelinuxTests(EngineMatrixChecks):
+    case = ROOTFUL_PODMAN_SELINUX
+
+
+class RootlessPodmanTests(EngineMatrixChecks):
+    case = ROOTLESS_PODMAN
+
+
+class RootlessPodmanSelinuxTests(EngineMatrixChecks):
+    case = ROOTLESS_PODMAN_SELINUX
 
 
 class PodmanLaunchTests(DockerFixture):
