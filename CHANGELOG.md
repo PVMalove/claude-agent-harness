@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **[QA-lease после занятого ledger]:** `qa run`, который после взятия QA-lease встретил ledger, занятый другой операцией, больше не оставляет lease на час. Освобождение QA-lane ждёт lock до 30 секунд, затем снимает lease и запись очереди своего dispatch и возвращает dispatch в `approved`, так что тот же dispatch сразу запускается снова. Если lock так и не освободился, ошибка называет dispatch, владельца lease и время его истечения, а `qa clear-stale-lease` после истечения lease возвращает такой dispatch в `approved` (поле `restored_dispatch_state` в ответе и записи восстановления). Lease другого владельца и lease нового запуска того же dispatch не снимаются (#776).
+
 ## [1.5.1] - 2026-10-18
 
 ### Added
