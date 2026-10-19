@@ -35,7 +35,6 @@ from harness.configuration import read_config_bundle
 from harness.configuration_store import ConfigurationStore, StaleConfiguration
 from harness.runtime_adapters import AdapterStatus
 from .. import brand, i18n
-from ..crumbs import Crumb
 from ..shell import SHELL_CSS, ConsoleShell, SectionCard, WrappedValue
 from ..status import Status
 from ..translate import Translated
@@ -1367,7 +1366,8 @@ class ConfigurationScreen(ConsoleShell):
         self._refresh_notes()
 
     # Every way out of the wizard - Esc, a number key, the menu, a breadcrumb - goes through one
-    # guard: it waits for a running write and asks before an unapplied draft is dropped.
+    # guard: it waits for a running write and asks before an unapplied draft is dropped. A
+    # breadcrumb needs no guard of its own: the shell sends it to open_section, which has it.
     async def action_back(self) -> None:
         await self._leave(None)
 
@@ -1377,9 +1377,6 @@ class ConfigurationScreen(ConsoleShell):
             await self._leave(None)
         else:
             await self._leave(lambda: ConsoleShell.open_section(self, index))
-
-    async def navigate_crumb(self, crumb: Crumb) -> None:
-        await self._leave(lambda: ConsoleShell.navigate_crumb(self, crumb))
 
     async def _leave(self, then: Callable[[], Awaitable[None]] | None) -> None:
         """Leave the wizard: `then` is the way the shell would go on (None: close the wizard)."""

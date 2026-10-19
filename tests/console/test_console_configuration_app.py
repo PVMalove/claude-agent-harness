@@ -1108,6 +1108,43 @@ def test_the_home_key_and_the_home_crumb_refresh_home_like_esc(
     assert asyncio.run(scenario()) == [1, 1, 1]
 
 
+def test_confirming_the_discard_on_the_way_home_asks_exactly_once(
+    tmp_path: Path,
+) -> None:
+    from harness.console.screens.configuration import ConfirmConfiguration
+    from harness.console.shell import CrumbLink
+
+    installed_project(tmp_path)
+
+    async def scenario() -> dict[str, tuple[int, str]]:
+        outcome: dict[str, tuple[int, str]] = {}
+        for leave in ("crumb", "0", "escape"):
+            app = _dashboard_host(tmp_path)
+            async with app.run_test(size=(120, 48)) as pilot:
+                screen = await _open_wizard_from_home(app, pilot)
+                _change_draft(screen)
+                if leave == "crumb":
+                    await wait_until(pilot, lambda: bool(screen.query(CrumbLink)))
+                    screen.query(CrumbLink).first().action_select()
+                else:
+                    await pilot.press(leave)
+                await wait_until(
+                    pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                )
+                await press(pilot, "#confirm")
+                for _ in range(20):
+                    await pilot.pause(0.05)
+                confirmations = sum(
+                    isinstance(s, ConfirmConfiguration) for s in app.screen_stack
+                )
+                outcome[leave] = (confirmations, type(app.screen).__name__)
+        return outcome
+
+    assert asyncio.run(scenario()) == {
+        leave: (0, "DashboardScreen") for leave in ("crumb", "0", "escape")
+    }
+
+
 def test_confirming_the_discard_closes_the_wizard_and_then_opens_the_section(
     tmp_path: Path,
 ) -> None:
