@@ -156,7 +156,7 @@ def network_name(dispatch_id: str) -> str:
     return f"{container_name(dispatch_id)}-net"
 
 
-def _plan_root(plan: Mapping[str, object], resource: str) -> str:
+def plan_root(plan: Mapping[str, object], resource: str) -> str:
     return str(
         next(
             i["path"]
@@ -173,7 +173,7 @@ def _labels(brief: Mapping[str, object]) -> list[str]:
     argv: list[str] = []
     for entry in (
         f"harness.dispatch={data['dispatch_id']}",
-        f"harness.repository={_plan_root(plan, 'git_common')}",
+        f"harness.repository={plan_root(plan, 'git_common')}",
         f"harness.plan_digest={plan['plan_digest']}",
     ):
         argv += ["--label", entry]
@@ -259,7 +259,7 @@ def create_argv(
             argv += ["--env", f"{name}={PROXY_BYPASS}"]
     for name in plan.get("environment", []):
         argv += ["--env", name]
-    argv += [*_labels(brief), "--workdir", _plan_root(plan, "checkout")]
+    argv += [*_labels(brief), "--workdir", plan_root(plan, "checkout")]
     for path, access in mounts(plan["requirements"]):
         argv += [
             "--mount",
@@ -414,6 +414,60 @@ def _launch(
     )
     launch.run(f"{engine} start", [engine, "start", container_id])
     return container_id
+
+
+_NO_SUCH = ("no such", "not found")
+_RUNNING_STATUSES = frozenset({"running", "paused", "restarting"})
+_STOPPED_STATUSES = frozenset({"exited", "dead"})
+
+
+def _gone(detail: str) -> bool:
+    """Whether an engine failure says the object does not exist, as opposed to any other failure."""
+    return any(text in detail.lower() for text in _NO_SUCH)
+
+
+def inspect_worker(launch_id: str) -> JsonObject:
+    """What the engine says about one worker container: the only proof that it stopped.
+
+    ``state`` is ``running``, ``exited``, ``missing`` (the engine has no such container) or
+    ``unknown`` (an engine failure, an unreadable answer or a state that proves nothing). Only
+    ``exited`` and ``missing`` are stop proofs. The labels are returned so that the caller can bind
+    the answer to the dispatch and repository it expects.
+    """
+    result: JsonObject = {
+        "state": "unknown",
+        "exit_code": None,
+        "finished_at": None,
+        "oom_killed": None,
+        "labels": None,
+    }
+    ok, output = _engine(
+        ["docker", "container", "inspect", "--format", "{{json .}}", launch_id]
+    )
+    if not ok:
+        return {**result, "state": "missing" if _gone(output) else "unknown"}
+    try:
+        info = json.loads(output)
+        engine_state = info["State"]
+        status = engine_state["Status"]
+        labels = info["Config"]["Labels"] or {}
+    except (ValueError, KeyError, TypeError):
+        return result
+    if not isinstance(status, str) or not isinstance(labels, dict):
+        return result
+    result["labels"] = labels
+    if status in _RUNNING_STATUSES:
+        return {**result, "state": "running"}
+    if status in _STOPPED_STATUSES:
+        exit_code = engine_state.get("ExitCode")
+        return {
+            **result,
+            "state": "exited",
+            "exit_code": exit_code if isinstance(exit_code, int) else None,
+            "finished_at": engine_state.get("FinishedAt"),
+            "oom_killed": engine_state.get("OOMKilled"),
+        }
+    return result
 
 
 def _overlaps_home(path: str) -> bool:

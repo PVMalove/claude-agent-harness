@@ -61,7 +61,24 @@ from harness.orchestration.workflow.history import (
 )
 
 
-def _stale_dispatch_finding(dispatch_id: str, silent: int) -> dict[str, str]:
+def _stale_dispatch_finding(
+    dispatch_id: str, silent: int, worker_exit: JsonObject | None = None
+) -> dict[str, str]:
+    if worker_exit:
+        gone = worker_exit.get("state") == "missing"
+        outcome = (
+            "the container engine no longer has its worker container"
+            if gone
+            else f"the container engine reports its worker exited with exit code {worker_exit.get('exit_code')}"
+        )
+        return operational_guards.attention_finding(
+            "stale-dispatch",
+            dispatch_id,
+            last_safe_action=f"dispatch {dispatch_id}: {outcome}; its brief, any report and the recorded exit evidence stay as immutable evidence and nothing was cancelled",
+            recommended_human_action=f"the engine proves the worker stopped; inspect {RECOVERY_EVIDENCE_COMMANDS}, "
+            "then record dispatch cancel --runtime-stopped before "
+            "batch resume-stop or batch rewind; batch abandon is a separate human decision; then resolve this attention",
+        )
     return operational_guards.attention_finding(
         "stale-dispatch",
         dispatch_id,
@@ -165,12 +182,18 @@ def _attention_findings(
         threshold = frozen.get(
             "stale_dispatch_seconds", policy["stale_dispatch_seconds"]
         )
-        if (
-            status.get("state") in LIVE_DISPATCH_STATES
-            and _silent_seconds(status) >= threshold
+        worker_exit = (
+            status["worker_exit"]
+            if isinstance(status.get("worker_exit"), dict)
+            else None
+        )
+        if status.get("state") in LIVE_DISPATCH_STATES and (
+            worker_exit is not None or _silent_seconds(status) >= threshold
         ):
             findings.append(
-                _stale_dispatch_finding(entry["dispatch_id"], _silent_seconds(status))
+                _stale_dispatch_finding(
+                    entry["dispatch_id"], _silent_seconds(status), worker_exit
+                )
             )
     return findings
 
@@ -265,13 +288,18 @@ def _require_no_attention(
 
 
 def _flag_stale_dispatch(
-    ledger: LifecycleLedger, repo: Path, root: Path, dispatch: JsonObject, silent: int
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    silent: int,
+    worker_exit: JsonObject | None = None,
 ) -> None:
     batch = _load_batch(root, dispatch["batch_id"])
     if _apply_attention(
         core_config._config(repo),
         batch,
-        [_stale_dispatch_finding(dispatch["dispatch_id"], silent)],
+        [_stale_dispatch_finding(dispatch["dispatch_id"], silent, worker_exit)],
         utils._now(),
     ):
         _safe_id(batch["batch_id"], "batch")

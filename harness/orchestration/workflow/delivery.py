@@ -73,6 +73,7 @@ from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
 )
+from harness.orchestration.workflow.container_status import STOP_PROOFS, reconcile
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
     _validate_batch_integrity,
@@ -398,6 +399,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     }
 
 
+def _worker_stopped(worker: JsonObject | None) -> bool:
+    """Whether the engine proved the container worker stopped; silence never does."""
+    return worker is not None and worker["state"] in STOP_PROOFS
+
+
 def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     """Wait locally for a significant event; heartbeat updates never reach the coordinator chat."""
     repo = _repo(args)
@@ -437,6 +443,7 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
+            worker = reconcile(ledger, dispatch, status)
             if state == "reported":
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "reported"}
             if state == "rate_limited":
@@ -467,14 +474,23 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
                     "event": "failed",
                     "state": state,
                 }
-            if state in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
+            exited = _worker_stopped(worker)
+            if state in LIVE_DISPATCH_STATES and (
+                exited or _silent_seconds(status) >= threshold
+            ):
                 _flag_stale_dispatch(
-                    ledger, repo, root, dispatch, _silent_seconds(status)
+                    ledger,
+                    repo,
+                    root,
+                    dispatch,
+                    _silent_seconds(status),
+                    status.get("worker_exit") if exited else None,
                 )
                 return {
                     "dispatch_id": dispatch["dispatch_id"],
                     "event": "stale",
                     "silent_seconds": _silent_seconds(status),
+                    **({"worker": worker} if exited else {}),
                 }
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -484,7 +500,11 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
 
 def dispatch_status(args: argparse.Namespace) -> JsonObject:
     """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
-    reason for the coordinator to change state on its own."""
+    reason for the coordinator to change state on its own.
+
+    For a docker dispatch the view also asks the engine about the receipt's container and records
+    the first proof that it stopped. That evidence is the only write; it never changes the
+    lifecycle state."""
     from harness.orchestration.workflow.startup import assess_startup
 
     repo = _repo(args)
@@ -530,6 +550,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 for item in batch.get("context_pressure", [])
                 if item.get("dispatch_id") == dispatch["dispatch_id"]
             ]
+            worker = reconcile(ledger, dispatch, status)
             live = status.get("state") in LIVE_DISPATCH_STATES
             silent = _silent_seconds(status) if live else 0
             entries.append(
@@ -549,7 +570,8 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
                     "silent_seconds": silent,
-                    "stale": live and silent >= threshold,
+                    "worker": worker,
+                    "stale": live and (silent >= threshold or _worker_stopped(worker)),
                     "telemetry": latest_telemetry,
                     "context_pressure": pressure[-1] if pressure else None,
                     "needs_attention": bool(batch.get("needs_attention", False)),

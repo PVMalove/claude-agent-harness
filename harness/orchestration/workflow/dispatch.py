@@ -654,6 +654,10 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                                 "model_self_report",
                                 "worker_worktree",
                                 "worker_snapshot_commit",
+                                # The receipt and the worker's exit evidence outlive the cancel.
+                                "runtime_access",
+                                "worker_exit",
+                                "worker_teardown",
                             )
                             if k in status
                         }

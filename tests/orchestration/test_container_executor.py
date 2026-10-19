@@ -96,6 +96,31 @@ class FakeEngine:
         # A command kind (info, inspect, create, start, rm, network-create, network-connect,
         # network-rm), or ``kind:object``, that raises or exits non-zero.
         self.failures: dict[str, BaseException | str] = {}
+        # The engine's containers and networks by id: created and started by the calls that make
+        # them, so a test scripts a worker's exit instead of the answers.
+        self.objects: dict[str, JsonObject] = {}
+
+    def add_container(
+        self,
+        container_id: str,
+        name: str,
+        labels: dict[str, str],
+        status: str = "running",
+    ) -> None:
+        self.objects[container_id] = {
+            "kind": "container",
+            "id": container_id,
+            "name": name,
+            "labels": labels,
+            "status": status,
+            "exit_code": 0,
+        }
+
+    def exit_worker(self, dispatch_id: str, exit_code: int = 0) -> None:
+        """The worker's process ends: the container stays, exited with ``exit_code``."""
+        for item in self.objects.values():
+            if item["name"] == f"harness-{dispatch_id}":
+                item.update(status="exited", exit_code=exit_code)
 
     def kinds(self) -> list[str]:
         return [self._kind(call) for call in self.calls]
@@ -105,8 +130,8 @@ class FakeEngine:
         """The command kind: ``inspect`` for images, ``network-<verb>`` for networks."""
         if argv[1] == "image":
             return argv[2]
-        if argv[1] == "network":
-            return f"network-{argv[2]}"
+        if argv[1] in ("network", "container"):
+            return f"{argv[1]}-{argv[2]}"
         return argv[1]
 
     @staticmethod
@@ -136,15 +161,74 @@ class FakeEngine:
                 )
             return _done(command, image + "\n")
         if kind == "create":
-            proxy = self._target(command, kind).endswith("-proxy")
-            return _done(
-                command, (PROXY_CONTAINER_ID if proxy else CONTAINER_ID) + "\n"
+            name = self._target(command, kind)
+            container_id = (
+                PROXY_CONTAINER_ID if name.endswith("-proxy") else CONTAINER_ID
             )
+            self.add_container(container_id, name, self._labels(command), "created")
+            return _done(command, container_id + "\n")
         if kind == "network-create":
+            self.objects[NETWORK_ID] = {
+                "kind": "network",
+                "id": NETWORK_ID,
+                "name": command[-1],
+                "labels": self._labels(command),
+            }
             return _done(command, NETWORK_ID + "\n")
-        if kind in ("start", "rm", "network-connect", "network-rm"):
+        if kind == "start":
+            if command[-1] in self.objects:
+                self.objects[command[-1]]["status"] = "running"
+            return _done(command, command[-1] + "\n")
+        if kind == "container-inspect":
+            return self._container_inspect(command)
+        if kind in ("rm", "network-connect", "network-rm"):
             return _done(command, command[-1] + "\n")
         raise AssertionError(f"unexpected engine command {command}")
+
+    @staticmethod
+    def _labels(argv: list[str]) -> dict[str, str]:
+        return dict(
+            argv[i + 1].split("=", 1)
+            for i, part in enumerate(argv)
+            if part == "--label"
+        )
+
+    def _container_inspect(
+        self, command: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        item = next(
+            (
+                obj
+                for obj in self.objects.values()
+                if obj["kind"] == "container"
+                and command[-1] in (obj["id"], obj["name"])
+            ),
+            None,
+        )
+        if item is None:
+            return subprocess.CompletedProcess(
+                command, 1, "", f"Error: No such container: {command[-1]}"
+            )
+        exited = item["status"] == "exited"
+        return _done(
+            command,
+            json.dumps(
+                {
+                    "Id": item["id"],
+                    "Name": "/" + item["name"],
+                    "State": {
+                        "Status": item["status"],
+                        "ExitCode": item["exit_code"] if exited else 0,
+                        "FinishedAt": "2026-10-19T13:30:00Z"
+                        if exited
+                        else "0001-01-01T00:00:00Z",
+                        "OOMKilled": False,
+                    },
+                    "Config": {"Labels": item["labels"]},
+                }
+            )
+            + "\n",
+        )
 
 
 class DockerFixture(unittest.TestCase):
@@ -1596,6 +1680,64 @@ class DockerPlanSupportTests(unittest.TestCase):
 
         self.assertIn("cannot be mounted safely", verification["reason"])
         self.assertIn("without commas", verification["remedy"])
+
+
+class InspectWorkerTests(unittest.TestCase):
+    """The engine's answer about one container reduces to a stop proof or to ``unknown``."""
+
+    def inspect(
+        self, answer: subprocess.CompletedProcess[str] | BaseException
+    ) -> JsonObject:
+        def engine(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        with mock.patch.object(container_executor, "run_engine", engine):
+            return container_executor.inspect_worker(CONTAINER_ID)
+
+    @staticmethod
+    def state(status: str, code: int = 0) -> subprocess.CompletedProcess[str]:
+        return _done(
+            [],
+            json.dumps(
+                {
+                    "State": {"Status": status, "ExitCode": code, "OOMKilled": True},
+                    "Config": {"Labels": {"harness.dispatch": "d"}},
+                }
+            ),
+        )
+
+    def test_engine_statuses_map_to_running_exited_or_unknown(self) -> None:
+        for status, expected in (
+            ("running", "running"),
+            ("paused", "running"),
+            ("restarting", "running"),
+            ("exited", "exited"),
+            ("dead", "exited"),
+            ("created", "unknown"),
+            ("removing", "unknown"),
+        ):
+            with self.subTest(status):
+                inspected = self.inspect(self.state(status, 7))
+                self.assertEqual(inspected["state"], expected)
+                self.assertEqual(inspected["labels"], {"harness.dispatch": "d"})
+                self.assertEqual(
+                    inspected["exit_code"], 7 if expected == "exited" else None
+                )
+
+    def test_only_a_no_such_container_answer_is_missing(self) -> None:
+        gone = subprocess.CompletedProcess([], 1, "", "Error: No such container: x")
+        for answer, expected in (
+            (gone, "missing"),
+            (subprocess.CompletedProcess([], 1, "", "daemon is down"), "unknown"),
+            (OSError("docker vanished"), "unknown"),
+            (subprocess.TimeoutExpired("docker", 30), "unknown"),
+            (_done([], "not json"), "unknown"),
+            (_done([], json.dumps({"State": {}})), "unknown"),
+        ):
+            with self.subTest(str(answer)):
+                self.assertEqual(self.inspect(answer)["state"], expected)
 
 
 if __name__ == "__main__":
