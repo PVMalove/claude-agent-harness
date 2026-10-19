@@ -497,7 +497,7 @@
                 "podman"
               ],
               "default": "docker",
-              "description": "Движок контейнеров. Исполнитель поддерживает только rootful Docker; 'podman' даёт явный блокер."
+              "description": "Движок контейнеров: docker или podman. Режим (rootful или rootless) и SELinux определяет dispatch preflight одним запросом info; удалённый Podman и Docker с userns-remap дают явный блокер до запуска worker-а."
             },
             "worker_image": {
               "type": "string",

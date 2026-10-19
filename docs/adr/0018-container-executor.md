@@ -30,7 +30,10 @@
   значения не попадают в конфиг, brief, argv и слои образа. Auth-файлы не монтируются.
 - Владелец файлов совпадает с пользователем хоста: rootful → `--user uid:gid`, rootless Podman →
   `--userns=keep-id`, rootless Docker → UID 0 внутри. При SELinux enforcing — `label=disable`, без
-  перемаркировки файлов хоста. `safe.directory` и HOME задаются через env и tmpfs, поэтому образ
+  перемаркировки файлов хоста. Движок и режим определяет `observe()` одним запросом
+  `<engine> info`; удалённый Podman, Docker с userns-remap и ответ, не совпадающий с выбранным
+  движком, блокируют запуск до старта worker-а. `HARNESS_EXECUTOR=docker` и имя расширения `docker`
+  не меняются для всех движков. `safe.directory` и HOME задаются через env и tmpfs, поэтому образ
   worker-а может быть любым; поставляемый `Dockerfile.sandbox` — лишь типовая база.
 - Конфиг: `extensions.runtime_access: "docker"` и компоненты `container`/`environment` в
   `access_policy` с теми же overrides ролей и операций. Отдельного CLI-флага нет: доступ
@@ -54,4 +57,5 @@
 - Хост LLM API должен быть явно перечислен в `network.hosts`; ssh-remote через proxy не работает.
 - Тесты идут через публичный путь coordinator с подменённым исполнителем команд движка; smoke с
   настоящим Docker выполняется в CI и исключён из `make verify`. Поддержка Podman и rootless Docker
-  остаётся непроверенной, пока для них нет smoke.
+  проверена только матрицей ответов движка (argv), но не настоящим smoke, и остаётся непроверенной
+  на живом движке.

@@ -26,7 +26,7 @@ brief и report, независимый review и clean-room QA. Capability вы
 | `workflow/fix_forward.py` | История Fix-forward: retry-цепочка, основания диапазонов и происхождение rebased-копий для проверки report и delta-review. |
 | `operational_guards.py` | Чистая привязка transition к brief, дайджест approval и retry key; lifecycle и policy проверяет coordinator. |
 | `runtime_access.py`, `operation_access.py` | План доступа (`access_policy`) и его проверка перед QA, Git и publish. Эти операции выполняет сам coordinator. |
-| `container_executor.py` | Встроенный `runtime_access` `docker`: проверка движка и образов, закрепление их digest и detached-запуск worker в rootful Docker без сети; переменные из `environment` передаёт только по именам. Образы не собирает и не скачивает. |
+| `container_executor.py` | Встроенный `runtime_access` `docker`: проверка движка и образов, закрепление их digest и detached-запуск worker в Docker или Podman (rootful или rootless, режим определяет `observe`) без сети; переменные из `environment` передаёт только по именам. Образы не собирает и не скачивает. |
 | `dispatch_preflight.py`, `runtime_attestation.py` | Проверка worktree, ветки и SHA воркера; защитные проверки перед dispatch. |
 | `advisory.py`, `extensions.py` | Advisory-вызовы и подключаемые extensions (health, классификатор retry, уведомления). |
 | `roles/` | Role manifest'ы: режим (`read-only`/`write`), требуемые capability, risk triggers. |
