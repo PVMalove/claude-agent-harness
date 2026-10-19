@@ -16,6 +16,7 @@ import re
 
 from harness.orchestration import container_executor
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import TERMINAL_DISPATCH_STATES
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.ledger.ledger_ops import _replace_record
 from harness.orchestration.ledger.lifecycle import DispatchStatusRecord, LifecycleLedger
@@ -66,38 +67,61 @@ def _view(
     }
 
 
+def _teardown(
+    ledger: LifecycleLedger, dispatch: JsonObject, status: JsonObject
+) -> None:
+    """Remove the engine objects the dispatch owns, after its exit evidence is persisted.
+
+    An engine that cannot answer changes nothing: the next observation tries again.
+    """
+    objects = container_executor.engine_objects(
+        container_executor.plan_root(dispatch["runtime_access"], "git_common"),
+        dispatch["dispatch_id"],
+    )
+    if objects is None:
+        return
+    removal = container_executor.remove_objects(objects)
+    status["worker_teardown"] = {
+        **removal,
+        "at": utils._now(),
+        "complete": not removal["failed"],
+    }
+    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+
+
 def reconcile(
     ledger: LifecycleLedger, dispatch: JsonObject, status: JsonObject
 ) -> JsonObject | None:
-    """Bind the engine's answer to the receipt and persist the first proof that the worker stopped.
+    """Bind the engine's answer to the receipt, persist the first proof that the worker stopped
+    and, once the dispatch is terminal, release its engine objects.
 
     ``status`` is the dispatch status record and is updated in place when evidence is written.
-    Returns ``None`` for a dispatch without a docker receipt, which never reaches the engine.
+    The evidence is always persisted before anything is removed. Returns ``None`` for a dispatch
+    without a docker receipt, which never reaches the engine.
     """
     launch_id = _launch_id(status)
     if launch_id is None:
         return None
-    persisted = status.get("worker_exit")
-    if isinstance(persisted, dict):
-        return _view(launch_id, persisted, status)
-    inspected = container_executor.inspect_worker(launch_id)
-    state = inspected["state"]
-    if state == "exited" and not _bound(inspected, dispatch):
-        # Another object answers to this id: never act on it.
-        state = "unknown"
-    if state not in STOP_PROOFS:
-        return {
-            **_view(launch_id, None, status),
+    teardown = status.get("worker_teardown")
+    if isinstance(teardown, dict) and teardown.get("complete") is True:
+        return _view(launch_id, status.get("worker_exit"), status)
+    if not isinstance(status.get("worker_exit"), dict):
+        inspected = container_executor.inspect_worker(launch_id)
+        state = inspected["state"]
+        if state == "exited" and not _bound(inspected, dispatch):
+            # Another object answers to this id: never act on it.
+            state = "unknown"
+        if state not in STOP_PROOFS:
+            return {**_view(launch_id, None, status), "state": state}
+        status["worker_exit"] = {
+            "launch_id": launch_id,
             "state": state,
+            "exit_code": inspected["exit_code"],
+            "finished_at": inspected["finished_at"],
+            "oom_killed": inspected["oom_killed"],
+            "observed_at": utils._now(),
         }
-    exit_record: JsonObject = {
-        "launch_id": launch_id,
-        "state": state,
-        "exit_code": inspected["exit_code"],
-        "finished_at": inspected["finished_at"],
-        "oom_killed": inspected["oom_killed"],
-        "observed_at": utils._now(),
-    }
-    status["worker_exit"] = exit_record
-    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
-    return _view(launch_id, exit_record, status)
+        _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+    if status.get("state") in TERMINAL_DISPATCH_STATES:
+        _teardown(ledger, dispatch, status)
+    return _view(launch_id, status["worker_exit"], status)

@@ -13,7 +13,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -99,6 +99,8 @@ class FakeEngine:
         # The engine's containers and networks by id: created and started by the calls that make
         # them, so a test scripts a worker's exit instead of the answers.
         self.objects: dict[str, JsonObject] = {}
+        # Called with the argv of every ``rm`` before the engine acts on it.
+        self.on_remove: Callable[[list[str]], None] | None = None
 
     def add_container(
         self,
@@ -180,8 +182,16 @@ class FakeEngine:
                 self.objects[command[-1]]["status"] = "running"
             return _done(command, command[-1] + "\n")
         if kind == "container-inspect":
-            return self._container_inspect(command)
-        if kind in ("rm", "network-connect", "network-rm"):
+            return self._inspect(command, "container")
+        if kind == "network-inspect":
+            return self._inspect(command, "network")
+        if kind == "ps":
+            return self._listed(command, "container")
+        if kind == "network-ls":
+            return self._listed(command, "network")
+        if kind in ("rm", "network-rm"):
+            return self._remove(command)
+        if kind == "network-connect":
             return _done(command, command[-1] + "\n")
         raise AssertionError(f"unexpected engine command {command}")
 
@@ -193,42 +203,90 @@ class FakeEngine:
             if part == "--label"
         )
 
-    def _container_inspect(
-        self, command: list[str]
-    ) -> subprocess.CompletedProcess[str]:
-        item = next(
+    def _find(self, kind: str, wanted: str) -> JsonObject | None:
+        return next(
             (
                 obj
                 for obj in self.objects.values()
-                if obj["kind"] == "container"
-                and command[-1] in (obj["id"], obj["name"])
+                if obj["kind"] == kind and wanted in (obj["id"], obj["name"])
             ),
             None,
         )
-        if item is None:
-            return subprocess.CompletedProcess(
-                command, 1, "", f"Error: No such container: {command[-1]}"
-            )
+
+    @staticmethod
+    def _describe(item: JsonObject) -> JsonObject:
+        if item["kind"] == "network":
+            return {"Id": item["id"], "Name": item["name"], "Labels": item["labels"]}
         exited = item["status"] == "exited"
+        return {
+            "Id": item["id"],
+            "Name": "/" + item["name"],
+            "State": {
+                "Status": item["status"],
+                "ExitCode": item["exit_code"] if exited else 0,
+                "FinishedAt": "2026-10-19T13:30:00Z"
+                if exited
+                else "0001-01-01T00:00:00Z",
+                "OOMKilled": False,
+            },
+            "Config": {"Labels": item["labels"]},
+        }
+
+    def _inspect(
+        self, command: list[str], kind: str
+    ) -> subprocess.CompletedProcess[str]:
+        """``--format`` answers one object; without it every id answers in one JSON array."""
+        ids = command[command.index("inspect") + 1 :]
+        if "--format" in command:
+            ids = ids[2:]
+        found = [self._find(kind, wanted) for wanted in ids]
+        missing = [wanted for wanted, item in zip(ids, found) if item is None]
+        if missing:
+            return subprocess.CompletedProcess(
+                command, 1, "", f"Error: No such {kind}: {missing[0]}"
+            )
+        described = [self._describe(item) for item in found if item is not None]
         return _done(
             command,
-            json.dumps(
-                {
-                    "Id": item["id"],
-                    "Name": "/" + item["name"],
-                    "State": {
-                        "Status": item["status"],
-                        "ExitCode": item["exit_code"] if exited else 0,
-                        "FinishedAt": "2026-10-19T13:30:00Z"
-                        if exited
-                        else "0001-01-01T00:00:00Z",
-                        "OOMKilled": False,
-                    },
-                    "Config": {"Labels": item["labels"]},
-                }
-            )
-            + "\n",
+            json.dumps(described[0] if "--format" in command else described) + "\n",
         )
+
+    def _listed(
+        self, command: list[str], kind: str
+    ) -> subprocess.CompletedProcess[str]:
+        """``ps`` and ``network ls``: the ids of the objects carrying every ``--filter label=``."""
+        wanted = [
+            command[i + 1].removeprefix("label=").split("=", 1)
+            for i, part in enumerate(command)
+            if part == "--filter"
+        ]
+        return _done(
+            command,
+            "".join(
+                f"{obj['id']}\n"
+                for obj in self.objects.values()
+                if obj["kind"] == kind
+                and all(obj["labels"].get(key) == value for key, value in wanted)
+            ),
+        )
+
+    def _remove(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        """``rm`` refuses a running container without ``--force``, as the engine does."""
+        if self.on_remove is not None:
+            self.on_remove(command)
+        kind = "network" if command[1] == "network" else "container"
+        item = self._find(kind, command[-1])
+        if item is None:
+            return _done(command, command[-1] + "\n")
+        if item.get("status") == "running" and "--force" not in command:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                f"cannot remove container {item['name']}: container is running",
+            )
+        del self.objects[str(item["id"])]
+        return _done(command, command[-1] + "\n")
 
 
 class DockerFixture(unittest.TestCase):

@@ -470,6 +470,154 @@ def inspect_worker(launch_id: str) -> JsonObject:
     return result
 
 
+def _listed_ids(argv: list[str], filters: list[str]) -> list[str] | None:
+    """The ids an engine ``ps`` or ``network ls`` lists for the label filters; ``None`` on failure."""
+    ok, output = _engine(
+        [*argv, "--quiet", "--no-trunc", *[a for f in filters for a in ("--filter", f)]]
+    )
+    return output.split() if ok else None
+
+
+def _labelled(
+    kind: str,
+    command: list[str],
+    ids: list[str],
+    repository: str,
+    dispatch_id: str | None,
+) -> list[JsonObject] | None:
+    """The inspected objects whose own labels name this repository (and dispatch), or ``None``.
+
+    The engine filter only narrows the search: every object is checked again against its own
+    labels, so an object of another repository is never returned.
+    """
+    if not ids:
+        return []
+    ok, output = _engine([*command, *ids])
+    try:
+        inspected = json.loads(output) if ok else None
+    except ValueError:
+        inspected = None
+    if not isinstance(inspected, list):
+        return None
+    found: list[JsonObject] = []
+    for item in inspected:
+        if not isinstance(item, dict):
+            continue
+        container = kind == "container"
+        labels = (
+            (item.get("Config") or {}).get("Labels")
+            if container
+            else item.get("Labels")
+        )
+        if not isinstance(labels, dict):
+            continue
+        dispatch = labels.get("harness.dispatch")
+        name = str(item.get("Name", "")).removeprefix("/")
+        role = {
+            container_name(str(dispatch)): "worker",
+            proxy_name(str(dispatch)): "proxy",
+            network_name(str(dispatch)): "network",
+        }.get(name)
+        if (
+            labels.get("harness.repository") != repository
+            or not isinstance(dispatch, str)
+            or (dispatch_id is not None and dispatch != dispatch_id)
+            or role is None
+            or (role == "network") == container
+        ):
+            continue
+        found.append(
+            {
+                "kind": kind,
+                "id": str(item.get("Id", "")),
+                "name": name,
+                "dispatch": dispatch,
+                "role": role,
+                "state": str(item["State"]["Status"]) if container else "present",
+            }
+        )
+    return found
+
+
+def engine_objects(
+    repository: str, dispatch_id: str | None = None
+) -> list[JsonObject] | None:
+    """The containers and networks the harness created for ``repository`` (one dispatch if named).
+
+    ``None`` means the engine could not answer, which is never the same as "nothing is there".
+    """
+    filters = [f"label=harness.repository={repository}"]
+    if dispatch_id is not None:
+        filters.append(f"label=harness.dispatch={dispatch_id}")
+    containers = _listed_ids(["docker", "ps", "--all"], filters)
+    networks = _listed_ids(["docker", "network", "ls"], filters)
+    if containers is None or networks is None:
+        return None
+    found_containers = _labelled(
+        "container",
+        ["docker", "container", "inspect"],
+        containers,
+        repository,
+        dispatch_id,
+    )
+    found_networks = _labelled(
+        "network", ["docker", "network", "inspect"], networks, repository, dispatch_id
+    )
+    if found_containers is None or found_networks is None:
+        return None
+    return [*found_containers, *found_networks]
+
+
+_ROLE_ORDER = {"worker": 0, "proxy": 1, "network": 2}
+
+
+def _remove(argv: list[str], result: JsonObject, label: str) -> bool:
+    """Run one removal; an object that is already gone counts as removed. Whether it is now gone."""
+    ok, detail = _engine(argv)
+    if ok:
+        result["removed"].append(label)
+    elif _gone(detail):
+        result["missing"].append(label)
+    else:
+        result["failed"].append({"object": label, "reason": detail})
+        return False
+    return True
+
+
+def remove_objects(objects: Sequence[Mapping[str, object]]) -> JsonObject:
+    """Remove the given engine objects dispatch by dispatch: worker, then sidecar, then network.
+
+    The worker goes by a plain ``docker rm``: the engine itself refuses a running container, so no
+    race can stop a live worker. The sidecar is force-removed only once its dispatch's worker is
+    gone. A network is removed only after the containers on it, and an object that is already
+    absent is reported as ``missing``, which makes a repeated run safe.
+    """
+    result: JsonObject = {"removed": [], "missing": [], "failed": []}
+    by_dispatch: dict[str, list[Mapping[str, object]]] = {}
+    for item in objects:
+        by_dispatch.setdefault(str(item["dispatch"]), []).append(item)
+    for group in by_dispatch.values():
+        gone = True
+        for item in sorted(group, key=lambda entry: _ROLE_ORDER[str(entry["role"])]):
+            label = f"{item['kind']} {item['name']}"
+            if not gone:
+                result["failed"].append(
+                    {
+                        "object": label,
+                        "reason": "an earlier object of this dispatch is still present",
+                    }
+                )
+                continue
+            identity = str(item["id"])
+            argv = {
+                "worker": ["docker", "rm", identity],
+                "proxy": ["docker", "rm", "--force", identity],
+                "network": ["docker", "network", "rm", identity],
+            }[str(item["role"])]
+            gone = _remove(argv, result, label)
+    return result
+
+
 def _overlaps_home(path: str) -> bool:
     home = PurePosixPath(CONTAINER_HOME)
     root = PurePosixPath(path)

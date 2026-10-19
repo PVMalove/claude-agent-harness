@@ -21,8 +21,19 @@ CONTAINER_ID = executor_tests.CONTAINER_ID
 class LifecycleFixture(executor_tests.DockerFixture):
     """A sent, self-reported architect dispatch whose worker runs in the scripted engine."""
 
+    # A non-empty host list gives the dispatch an egress sidecar and an internal network.
+    hosts: list[str] = []
+
     def setUp(self) -> None:
         super().setUp()
+        if self.hosts:
+            self.configure(
+                container={
+                    "worker_image": executor_tests.WORKER_TAG,
+                    "proxy_image": executor_tests.PROXY_TAG,
+                },
+                network={"hosts": self.hosts},
+            )
         self.brief = self.fx._dispatch(self.batch_id, "architect")["brief"]
         self.dispatch_id = self.brief["dispatch_id"]
         sent = self.send(self.dispatch_id)
@@ -59,6 +70,9 @@ class LifecycleFixture(executor_tests.DockerFixture):
 
     def batch(self) -> JsonObject:
         return self.fx._batch_record(self.batch_id)
+
+    def report(self) -> None:
+        self.fx._submit(self.dispatch_id, self.fx._base_report(self.brief, "architect"))
 
     def removals(self) -> list[list[str]]:
         return [
@@ -279,3 +293,214 @@ class WorkerLivenessTests(LifecycleFixture):
         self.assertEqual(record["state"], "cancelled")
         self.assertEqual(record["runtime_access"], receipt)
         self.assertEqual(record["worker_exit"], exit_evidence)
+
+
+class TerminalTeardownTests(LifecycleFixture):
+    """A terminal dispatch's engine objects go only after the exit evidence is persisted."""
+
+    hosts = executor_tests.HOSTS
+
+    def objects_left(self) -> set[str]:
+        return {str(item["name"]) for item in self.engine.objects.values()}
+
+    def test_a_reported_dispatch_with_a_running_worker_removes_nothing(self) -> None:
+        self.report()
+        self.engine.calls.clear()
+
+        entry = self.status()
+
+        self.assertEqual(self.record()["state"], "reported")
+        self.assertEqual(entry["worker"]["state"], "running")
+        self.assertNotIn("worker_exit", self.record())
+        self.assertNotIn("worker_teardown", self.record())
+        self.assertEqual(self.removals(), [])
+        self.assertEqual(len(self.objects_left()), 3)
+
+    def test_the_exit_evidence_is_on_disk_before_the_first_removal(self) -> None:
+        self.report()
+        self.engine.exit_worker(self.dispatch_id, 3)
+        seen: list[JsonObject] = []
+        self.engine.on_remove = lambda argv: seen.append(self.record())
+
+        entry = self.status()
+
+        self.assertEqual(len(seen), 3)
+        for record in seen:
+            self.assertEqual(record["worker_exit"]["exit_code"], 3)
+        # The worker by a plain rm, the sidecar forced, the network last.
+        self.assertEqual(
+            self.removals(),
+            [
+                ["docker", "rm", CONTAINER_ID],
+                ["docker", "rm", "--force", executor_tests.PROXY_CONTAINER_ID],
+                ["docker", "network", "rm", executor_tests.NETWORK_ID],
+            ],
+        )
+        self.assertEqual(self.objects_left(), set())
+        teardown = self.record()["worker_teardown"]
+        self.assertTrue(teardown["complete"])
+        self.assertEqual(
+            teardown["removed"],
+            [
+                f"container harness-{self.dispatch_id}",
+                f"container harness-{self.dispatch_id}-proxy",
+                f"network harness-{self.dispatch_id}-net",
+            ],
+        )
+        self.assertEqual(entry["worker"]["teardown"], teardown)
+        self.assertEqual(entry["worker"]["exit_code"], 3)
+
+    def test_removal_follows_the_exit_when_the_worker_stops_after_the_report(
+        self,
+    ) -> None:
+        self.report()
+        self.status()
+        self.assertEqual(self.removals(), [])
+
+        self.engine.exit_worker(self.dispatch_id)
+        self.status()
+
+        self.assertEqual(self.objects_left(), set())
+        self.assertEqual(self.record()["worker_exit"]["exit_code"], 0)
+
+    def test_resources_that_are_already_gone_count_as_removed(self) -> None:
+        self.report()
+        self.engine.exit_worker(self.dispatch_id)
+        self.engine.failures[f"network-rm:{executor_tests.NETWORK_ID}"] = (
+            f"Error: No such network: {executor_tests.NETWORK_ID}"
+        )
+
+        self.status()
+
+        teardown = self.record()["worker_teardown"]
+        self.assertTrue(teardown["complete"])
+        self.assertEqual(
+            teardown["missing"], [f"network harness-{self.dispatch_id}-net"]
+        )
+        self.assertEqual(teardown["failed"], [])
+
+    def test_a_worker_the_engine_lost_still_releases_its_sidecar_and_network(
+        self,
+    ) -> None:
+        self.report()
+        del self.engine.objects[CONTAINER_ID]
+
+        entry = self.status()
+
+        self.assertEqual(entry["worker"]["state"], "missing")
+        self.assertEqual(self.objects_left(), set())
+        self.assertTrue(self.record()["worker_teardown"]["complete"])
+
+    def test_repeated_observation_after_a_complete_teardown_asks_the_engine_nothing(
+        self,
+    ) -> None:
+        self.report()
+        self.engine.exit_worker(self.dispatch_id, 3)
+        self.status()
+        persisted = self.record()
+        self.engine.calls.clear()
+
+        entry = self.status()
+
+        self.assertEqual(self.engine.calls, [])
+        self.assertEqual(self.record(), persisted)
+        self.assertEqual(entry["worker"]["exit_code"], 3)
+
+    def test_a_refused_removal_is_kept_for_the_next_observation(self) -> None:
+        self.report()
+        self.engine.exit_worker(self.dispatch_id, 3)
+        self.engine.failures[f"rm:{CONTAINER_ID}"] = (
+            "cannot remove container: container is running"
+        )
+
+        self.status()
+
+        record = self.record()
+        self.assertFalse(record["worker_teardown"]["complete"])
+        self.assertEqual(record["worker_exit"]["exit_code"], 3)
+        # The sidecar and the network stay while the worker does.
+        self.assertEqual(
+            self.objects_left(),
+            {
+                f"harness-{self.dispatch_id}",
+                f"harness-{self.dispatch_id}-proxy",
+                f"harness-{self.dispatch_id}-net",
+            },
+        )
+        self.engine.failures.clear()
+
+        self.status()
+
+        self.assertTrue(self.record()["worker_teardown"]["complete"])
+        self.assertEqual(self.objects_left(), set())
+        self.assertEqual(self.record()["worker_exit"]["exit_code"], 3)
+
+    def test_a_worker_that_is_running_again_is_never_stopped_by_the_removal(
+        self,
+    ) -> None:
+        self.report()
+        self.engine.exit_worker(self.dispatch_id)
+
+        def restart(argv: list[str]) -> None:
+            self.engine.objects[CONTAINER_ID]["status"] = "running"
+
+        self.engine.on_remove = restart
+
+        self.status()
+
+        self.assertEqual(self.engine.objects[CONTAINER_ID]["status"], "running")
+        self.assertFalse(self.record()["worker_teardown"]["complete"])
+        self.assertNotIn(["docker", "rm", "--force", CONTAINER_ID], self.engine.calls)
+
+    def test_an_engine_that_cannot_list_its_objects_changes_nothing_but_the_evidence(
+        self,
+    ) -> None:
+        self.report()
+        self.engine.exit_worker(self.dispatch_id, 3)
+        self.engine.failures["ps"] = "Cannot connect to the Docker daemon"
+
+        self.status()
+
+        record = self.record()
+        self.assertEqual(record["worker_exit"]["exit_code"], 3)
+        self.assertNotIn("worker_teardown", record)
+        self.assertEqual(self.removals(), [])
+        self.engine.failures.clear()
+
+        self.status()
+
+        self.assertTrue(self.record()["worker_teardown"]["complete"])
+
+    def test_a_cancelled_dispatch_is_released_after_the_stop(self) -> None:
+        coordinator.cancel_dispatch(
+            self.fx._args(
+                dispatch=self.dispatch_id,
+                reason="the worker was stopped",
+                runtime_stopped=True,
+                **self.fx._approval(),
+            )
+        )
+        self.assertIn("runtime_access", self.record())
+        self.engine.exit_worker(self.dispatch_id, 143)
+
+        self.status()
+
+        self.assertEqual(self.record()["state"], "cancelled")
+        self.assertEqual(self.record()["worker_exit"]["exit_code"], 143)
+        self.assertEqual(self.objects_left(), set())
+
+    def test_another_repositorys_resources_are_never_touched(self) -> None:
+        foreign = {
+            "harness.dispatch": self.dispatch_id,
+            "harness.repository": "/elsewhere/.git",
+        }
+        self.engine.add_container(
+            "f" * 64, f"harness-{self.dispatch_id}-proxy", foreign, "exited"
+        )
+        self.report()
+        self.engine.exit_worker(self.dispatch_id)
+
+        self.status()
+
+        self.assertIn("f" * 64, self.engine.objects)
+        self.assertNotIn(["docker", "rm", "--force", "f" * 64], self.engine.calls)
