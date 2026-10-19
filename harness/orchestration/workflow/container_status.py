@@ -94,12 +94,17 @@ def _teardown(
 
 
 def needs_engine(status: JsonObject) -> bool:
-    """Whether reading this dispatch would reach the engine: a docker receipt whose teardown is not
-    complete."""
+    """Whether reading this dispatch would reach the engine, as ``reconcile`` does: a docker receipt
+    whose teardown is not complete and that either has no stop proof yet or is terminal (so its
+    objects are released). A live dispatch with a persisted proof is shown without the engine."""
     if _launch_id(status) is None:
         return False
     teardown = status.get("worker_teardown")
-    return not (isinstance(teardown, dict) and teardown.get("complete") is True)
+    if isinstance(teardown, dict) and teardown.get("complete") is True:
+        return False
+    return not isinstance(status.get("worker_exit"), dict) or (
+        status.get("state") in TERMINAL_DISPATCH_STATES
+    )
 
 
 def reconcile(

@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from harness.orchestration import coordinator
-from harness.orchestration.workflow import delivery
+from harness.orchestration.workflow import container_status, delivery
 from harness.orchestration.core.utils import JsonObject
 from tests.orchestration import test_container_executor as executor_tests
 
@@ -189,6 +189,24 @@ class WorkerLivenessTests(LifecycleFixture):
 
         self.assertEqual(named["worker"]["state"], "exited")
         self.assertEqual(self.record()["worker_exit"]["exit_code"], 3)
+
+    def test_a_live_dispatch_with_a_persisted_proof_does_not_spend_the_engine_budget(
+        self,
+    ) -> None:
+        self.engine.exit_worker(self.dispatch_id, 3)
+        self.assertTrue(container_status.needs_engine(self.record()))
+        self.status()
+        self.engine.calls.clear()
+
+        # The proof is on disk and the dispatch is not terminal: no engine read, so no budget used.
+        self.assertFalse(container_status.needs_engine(self.record()))
+        everything = self.fx._args(dispatch=None, batch=None, stale_after=None)
+        with mock.patch.object(delivery, "MAX_ENGINE_READS", 0):
+            [entry] = coordinator.dispatch_status(everything)["dispatches"]
+
+        self.assertEqual(entry["worker"]["state"], "exited")
+        self.assertEqual(entry["worker"]["exit_code"], 3)
+        self.assertEqual(self.engine.calls, [])
 
     def test_the_first_proof_is_permanent(self) -> None:
         self.engine.exit_worker(self.dispatch_id, 3)
