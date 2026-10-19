@@ -507,7 +507,7 @@
             "proxy_image": {
               "type": "string",
               "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
-              "description": "Необязательный тег образа egress-proxy. Если тег задан, образ должен присутствовать, и dispatch propose закрепляет его digest."
+              "description": "Тег образа egress-proxy: собирается из .harness/container/Dockerfile.proxy, харнесс образ не собирает и не скачивает. Обязателен, когда network.hosts не пуст: исполнитель запускает из него отдельный sidecar на внутренней сети dispatch, и worker выходит наружу только через него по HTTP(S) к перечисленным хостам. Если тег задан, образ должен присутствовать, и dispatch propose закрепляет его digest."
             }
           }
         },
