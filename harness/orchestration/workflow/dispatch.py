@@ -1205,6 +1205,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         plan = _verification_plan(
             repo, batch, role_name, purpose, next_action, candidate, snapshot_commit
         )
+        if plan is not None and role_name in {"code-review", "qa"}:
+            verification_plan.require_covered(plan)
         transition = _proposed_transition(
             batch,
             next_action,

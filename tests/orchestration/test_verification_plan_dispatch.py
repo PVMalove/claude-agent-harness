@@ -9,13 +9,16 @@ bundle, which the suite does not install, is replaced by a regex parser.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
 import json
 import subprocess
+import sys
 import unittest
 from unittest import mock
 
-from harness.orchestration import operational_guards, verification_plan
+from harness.orchestration import coordinator, operational_guards, verification_plan
 from harness.orchestration.core.utils import JsonObject
 from harness.repo_map import change_impact
 from tests.orchestration import test_coordinator as coordinator_tests
@@ -55,7 +58,9 @@ def _stage(plan: JsonObject, stage_id: str) -> JsonObject:
     return next(item for item in plan["stages"] if item["stage_id"] == stage_id)
 
 
-class VerificationPlanDispatchTests(unittest.TestCase):
+class PlanFixture(unittest.TestCase):
+    """A coordinator fixture with a related test and a regex parser in place of the bundle."""
+
     def setUp(self) -> None:
         self.fx = coordinator_tests.CoordinatorRetryRoutingTests()
         self.fx.setUp()
@@ -104,6 +109,22 @@ class VerificationPlanDispatchTests(unittest.TestCase):
             json.dumps(config), encoding="utf-8"
         )
 
+    def _assessed_candidate(self) -> tuple[str, str]:
+        fx = self.fx
+        batch_id = fx._create_batch()["batch_id"]
+        fx._accepted_architect(batch_id)
+        first = fx._dispatch(batch_id, "developer")["brief"]
+        fx._start(first["dispatch_id"])
+        candidate, changed = fx._developer_commit("x")
+        fx._submit(
+            first["dispatch_id"], fx._developer_report(first, candidate, changed)
+        )
+        fx._decide(batch_id, "accept")
+        fx._assess(batch_id, candidate, changed)
+        return batch_id, candidate
+
+
+class VerificationPlanDispatchTests(PlanFixture):
     def _briefs(self) -> JsonObject:
         """First developer, review (with a finding), developer-retry, then QA briefs."""
         fx = self.fx
@@ -215,20 +236,6 @@ class VerificationPlanDispatchTests(unittest.TestCase):
                 self.assertNotIn("verification_plan", briefs[name])
                 self.assertNotIn("verification_plan_sha256", briefs[name]["transition"])
 
-    def _assessed_candidate(self) -> tuple[str, str]:
-        fx = self.fx
-        batch_id = fx._create_batch()["batch_id"]
-        fx._accepted_architect(batch_id)
-        first = fx._dispatch(batch_id, "developer")["brief"]
-        fx._start(first["dispatch_id"])
-        candidate, changed = fx._developer_commit("x")
-        fx._submit(
-            first["dispatch_id"], fx._developer_report(first, candidate, changed)
-        )
-        fx._decide(batch_id, "accept")
-        fx._assess(batch_id, candidate, changed)
-        return batch_id, candidate
-
     def test_a_proposal_shows_the_plan_its_digest_binds(self) -> None:
         self._configure(POLICY)
         batch_id, candidate = self._assessed_candidate()
@@ -291,6 +298,202 @@ class VerificationPlanDispatchTests(unittest.TestCase):
 
         with self.assertRaises(operational_guards.GuardError):
             operational_guards.validate_binding(brief, briefs["batch_id"])
+
+
+class ImpactGateTests(PlanFixture):
+    """`dispatch propose` and `dispatch create` refuse a review or QA plan that misses a test.
+
+    The real `build_plan` always covers its impact set, so the plan the coordinator builds is
+    replaced, at the `verification_plan.build_plan` seam, by one whose pytest stage selects nothing.
+    The command runs through the CLI entry point, the real ledger and the real git repository.
+    """
+
+    def _uncovered(self) -> mock._patch[mock.MagicMock]:
+        real = verification_plan.build_plan
+
+        def build(*args: object, **kwargs: object) -> JsonObject:
+            plan = real(*args, **kwargs)  # type: ignore[arg-type]
+            tests = next(item for item in plan["stages"] if item["kind"] == "pytest")
+            tests["selection"], tests["nodeids"] = "focused", []
+            return plan
+
+        return mock.patch.object(verification_plan, "build_plan", side_effect=build)
+
+    def _cli(self, *argv: str) -> tuple[int, str, str]:
+        fx = self.fx
+        out, err = io.StringIO(), io.StringIO()
+        command = [
+            "coordinator.py",
+            "--repo",
+            str(fx.repo),
+            "--state-dir",
+            str(fx.state_dir),
+            *argv,
+        ]
+        with (
+            mock.patch.object(sys, "argv", command),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = coordinator.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def _propose_cli(
+        self, batch_id: str, role: str, candidate: str
+    ) -> tuple[int, str, str]:
+        return self._cli(
+            "dispatch", "propose", "--batch", batch_id, "--role", role,
+            "--candidate-commit", candidate, "--runtime", "claude",
+            "--model", "sonnet", "--effort", "high",
+        )  # fmt: skip
+
+    def _create_cli(
+        self, batch_id: str, role: str, candidate: str
+    ) -> tuple[int, str, str]:
+        return self._cli(
+            "dispatch", "create", "--batch", batch_id, "--role", role,
+            "--candidate-commit", candidate, "--runtime", "claude",
+            "--model", "sonnet", "--effort", "high",
+            "--approved-by", "Malove", "--approved-at", self.fx.APPROVED_AT,
+            "--transition-digest", "0" * 64,
+        )  # fmt: skip
+
+    def _accepted_review(self) -> tuple[str, str]:
+        batch_id, candidate = self._assessed_candidate()
+        self.fx._reported_review(batch_id, candidate)
+        self.fx._decide(batch_id, "accept")
+        return batch_id, candidate
+
+    def test_a_review_proposal_that_misses_a_related_test_is_refused_with_exit_code_2(
+        self,
+    ) -> None:
+        self._configure(POLICY)
+        batch_id, candidate = self._assessed_candidate()
+        before = self.fx._batch_record(batch_id)
+
+        with self._uncovered():
+            code, out, err = self._propose_cli(batch_id, "code-review", candidate)
+
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("impact_not_covered", err)
+        self.assertIn("tests/test_x.py", err)
+        self.assertEqual(self.fx._batch_record(batch_id), before)
+
+    def test_a_qa_proposal_that_misses_a_related_test_is_refused_with_exit_code_2(
+        self,
+    ) -> None:
+        self._configure(POLICY)
+        batch_id, candidate = self._accepted_review()
+
+        with self._uncovered():
+            code, _, err = self._propose_cli(batch_id, "qa", candidate)
+
+        self.assertEqual(code, 2)
+        self.assertIn("impact_not_covered", err)
+        self.assertIn("tests/test_x.py", err)
+
+    def test_creating_a_review_dispatch_is_refused_too_and_writes_no_brief(
+        self,
+    ) -> None:
+        self._configure(POLICY)
+        batch_id, candidate = self._assessed_candidate()
+        before = self.fx._batch_record(batch_id)["dispatches"]
+
+        with self._uncovered():
+            code, _, err = self._create_cli(batch_id, "code-review", candidate)
+
+        self.assertEqual(code, 2)
+        self.assertIn("impact_not_covered", err)
+        self.assertEqual(self.fx._batch_record(batch_id)["dispatches"], before)
+
+    def test_a_real_plan_is_proposed_with_exit_code_0(self) -> None:
+        self._configure(POLICY)
+        batch_id, candidate = self._assessed_candidate()
+
+        code, out, _ = self._propose_cli(batch_id, "code-review", candidate)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            _stage(json.loads(out)["verification_plan"], "tests")["nodeids"],
+            ["tests/test_x.py"],
+        )
+
+    def test_a_full_pytest_stage_covers_every_related_test(self) -> None:
+        self._configure(POLICY)
+        batch_id, candidate = self._assessed_candidate()
+        real = verification_plan.build_plan
+
+        def build(*args: object, **kwargs: object) -> JsonObject:
+            plan = real(*args, **kwargs)  # type: ignore[arg-type]
+            tests = next(item for item in plan["stages"] if item["kind"] == "pytest")
+            tests["selection"], tests["nodeids"] = "full", []
+            return plan
+
+        with mock.patch.object(verification_plan, "build_plan", side_effect=build):
+            code, _, _ = self._propose_cli(batch_id, "code-review", candidate)
+
+        self.assertEqual(code, 0)
+
+    def test_a_developer_retry_proposal_is_not_gated(self) -> None:
+        self._configure(POLICY)
+        fx = self.fx
+        batch_id, candidate = self._assessed_candidate()
+        finding = [
+            {"severity": "warning", "summary": "off-by-one", "evidence": "x.py:1"}
+        ]
+        fx._reported_review(batch_id, candidate, standards=("warning", finding))
+        fx._decide(batch_id, "retry", reason_category="code")
+
+        with self._uncovered():
+            code, _, _ = self._cli(
+                "dispatch", "propose", "--batch", batch_id, "--role", "developer",
+                "--runtime", "claude", "--model", "sonnet", "--effort", "high",
+            )  # fmt: skip
+
+        self.assertEqual(code, 0)
+
+
+class UncoveredTestsTests(unittest.TestCase):
+    @staticmethod
+    def _plan(*stages: tuple[str, str, list[str]], related: list[str]) -> JsonObject:
+        return {
+            "role": "qa",
+            "impact": {"related_tests": related},
+            "stages": [
+                {"kind": kind, "selection": selection, "nodeids": nodeids}
+                for kind, selection, nodeids in stages
+            ],
+        }
+
+    def test_a_full_pytest_stage_leaves_nothing_uncovered(self) -> None:
+        plan = self._plan(("pytest", "full", []), related=["tests/a.py"])
+
+        self.assertEqual(verification_plan.uncovered_tests(plan), [])
+
+    def test_a_focused_stage_covers_exactly_its_node_ids(self) -> None:
+        plan = self._plan(
+            ("pytest", "focused", ["tests/a.py"]), related=["tests/a.py", "tests/b.py"]
+        )
+
+        self.assertEqual(verification_plan.uncovered_tests(plan), ["tests/b.py"])
+
+    def test_a_node_id_inside_a_file_does_not_cover_the_whole_file(self) -> None:
+        plan = self._plan(
+            ("pytest", "focused", ["tests/a.py::test_one"]), related=["tests/a.py"]
+        )
+
+        self.assertEqual(verification_plan.uncovered_tests(plan), ["tests/a.py"])
+
+    def test_a_plan_without_a_pytest_stage_covers_nothing(self) -> None:
+        plan = self._plan(("lint", "full", []), related=["tests/a.py"])
+
+        self.assertEqual(verification_plan.uncovered_tests(plan), ["tests/a.py"])
+
+    def test_no_related_tests_leave_nothing_uncovered(self) -> None:
+        plan = self._plan(("pytest", "focused", []), related=[])
+
+        self.assertEqual(verification_plan.uncovered_tests(plan), [])
 
 
 class VerificationPlanShapeTests(unittest.TestCase):

@@ -12,8 +12,9 @@ import hashlib
 import json
 import platform
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 from harness.repo_map.backend import ParserBackend
 from harness.repo_map.change_impact import ImpactSet, compute_change_impact
@@ -27,6 +28,7 @@ from .core.utils import CoordinatorError, JsonObject
 # Роли, для которых строится план: первый developer без diff плана не получает.
 PLAN_ROLES = ("developer", "code-review", "qa")
 PYTEST_KIND = "pytest"
+IMPACT_NOT_COVERED = "impact_not_covered"
 # Таймаут одной git-команды при чтении манифестов окружения.
 _GIT_TIMEOUT_SECONDS = 60
 
@@ -134,6 +136,43 @@ def _stage(
         "nodeids": nodeids,
         "environment_fingerprint": fingerprint,
     }
+
+
+def uncovered_tests(plan: Mapping[str, object]) -> list[str]:
+    """Связанные тесты ImpactSet, которые план не выбирает (ADR 0023, раздел 6).
+
+    Тесты покрыты, если любая стадия pytest имеет выбор ``full`` либо ``nodeids`` перечисляют сам
+    тестовый файл целиком: nodeid внутри файла (``file::test``) файл не покрывает.
+    """
+    impact = cast(Mapping[str, Sequence[str]], plan["impact"])
+    related = list(impact["related_tests"])
+    stages = [
+        stage
+        for stage in cast(Sequence[Mapping[str, object]], plan["stages"])
+        if stage["kind"] == PYTEST_KIND
+    ]
+    if any(stage["selection"] == "full" for stage in stages):
+        return []
+    selected = {
+        nodeid for stage in stages for nodeid in cast(Sequence[str], stage["nodeids"])
+    }
+    return [path for path in related if path not in selected]
+
+
+def require_covered(plan: Mapping[str, object]) -> None:
+    """Отказать ``impact_not_covered``, если план не выбирает связанный тест ImpactSet.
+
+    Это машинная проверка dispatch propose и create для code-review и qa; текст отчёта роли её
+    не заменяет.
+    """
+    missing = uncovered_tests(plan)
+    if missing:
+        raise CoordinatorError(
+            f"{IMPACT_NOT_COVERED}: the verification plan does not select "
+            f"{len(missing)} related test(s): {', '.join(missing)}",
+            remedy="widen the pytest stage selection to full or select every related test "
+            "of the impact set, then propose the dispatch again",
+        )
 
 
 def build_plan(
