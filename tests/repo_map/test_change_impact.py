@@ -16,6 +16,7 @@ from harness.repo_map.change_impact import (
     compute_change_impact,
 )
 from harness.repo_map.git_source import read_blobs
+from harness.repo_map.policy import RepoMapPolicy
 
 _IMPORT = re.compile(r"^import ([\w.]+)$", re.MULTILINE)
 _FROM = re.compile(r"^from ([\w.]+) import ([\w, ]+)$", re.MULTILINE)
@@ -255,6 +256,36 @@ def test_a_deleted_module_that_others_import_sets_unknown(repo: Path) -> None:
     assert _codes(_impact(repo, base)) == {"removed-module-referenced"}
 
 
+class CountingBackend(RegexBackend):
+    """A regex backend that records the paths parsed at each commit."""
+
+    def __init__(self, repo: Path) -> None:
+        super().__init__(repo)
+        self.parsed: dict[str, list[str]] = {}
+
+    def parse(self, commit: str, paths: list[str]) -> ParseOutcome:
+        self.parsed.setdefault(commit, []).extend(paths)
+        return super().parse(commit, paths)
+
+
+def test_a_deleted_module_parses_the_repository_once_and_the_base_only_for_changes(
+    repo: Path,
+) -> None:
+    base = _base(repo)
+    _git(repo, "rm", "-q", "pkg/core.py")
+    candidate = _commit(repo, "delete core")
+    backend = CountingBackend(repo)
+
+    impact = compute_change_impact(repo, base, candidate, backend=backend)
+
+    assert _codes(impact) == {"removed-module-referenced"}
+    assert "pkg/lib.py" in impact.impacted_modules
+    assert sorted(backend.parsed[candidate]) == sorted(
+        path for path in BASE_FILES if path != "pkg/core.py"
+    )
+    assert backend.parsed[base] == ["pkg/core.py"]
+
+
 def test_a_renamed_module_nobody_imports_stays_known(repo: Path) -> None:
     base = _base(repo)
     _write(repo, {"pkg/orphan.py": "Z = 1\n"})
@@ -287,6 +318,65 @@ def test_a_dynamic_import_in_a_touched_module_sets_unknown(repo: Path) -> None:
     _commit(repo, "dynamic")
 
     assert _codes(_impact(repo, base)) == {"dynamic-import"}
+
+
+class BrokenParseBackend(RegexBackend):
+    """A regex backend that reports one file as unparsable: a record without facts."""
+
+    def __init__(self, repo: Path, broken: str) -> None:
+        super().__init__(repo)
+        self._broken = broken
+
+    def parse(self, commit: str, paths: list[str]) -> ParseOutcome:
+        outcome = super().parse(commit, paths)
+        outcome.records[self._broken]["parser_status"] = "syntax_error"
+        del outcome.facts[self._broken]
+        return outcome
+
+
+def _unseen(impact: ImpactSet) -> list[tuple[str, str]]:
+    return [
+        (reason.code, reason.path)
+        for reason in impact.unknown
+        if reason.code == "unseen-importer"
+    ]
+
+
+def test_an_importer_the_policy_hides_from_the_graph_sets_unknown(repo: Path) -> None:
+    _write(repo, {"pkg/hidden.py": "from pkg import core\n"})
+    base = _commit(repo, "hidden importer")
+    _write(repo, {"pkg/core.py": "VALUE = 2\n"})
+    _commit(repo, "change core")
+
+    impact = _impact(repo, base, policy=RepoMapPolicy(deny_paths=("pkg/hidden.py",)))
+
+    assert _unseen(impact) == [("unseen-importer", "pkg/hidden.py")]
+
+
+def test_a_hidden_file_that_never_names_an_impacted_module_keeps_the_impact_known(
+    repo: Path,
+) -> None:
+    _write(repo, {"pkg/hidden.py": "OTHER = 3\n"})
+    base = _commit(repo, "hidden file")
+    _write(repo, {"pkg/core.py": "VALUE = 2\n"})
+    _commit(repo, "change core")
+
+    impact = _impact(repo, base, policy=RepoMapPolicy(deny_paths=("pkg/hidden.py",)))
+
+    assert impact.unknown == ()
+
+
+def test_an_importer_the_parser_could_not_read_sets_unknown(repo: Path) -> None:
+    _write(repo, {"pkg/broken.py": "from pkg import core\n"})
+    base = _commit(repo, "importer")
+    _write(repo, {"pkg/core.py": "VALUE = 2\n"})
+    candidate = _commit(repo, "change core")
+
+    impact = compute_change_impact(
+        repo, base, candidate, backend=BrokenParseBackend(repo, "pkg/broken.py")
+    )
+
+    assert _unseen(impact) == [("unseen-importer", "pkg/broken.py")]
 
 
 def test_an_unavailable_parser_sets_graph_degraded(repo: Path) -> None:

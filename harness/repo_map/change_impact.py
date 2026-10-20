@@ -9,13 +9,14 @@ ADR 0023, раздел 1. Всё, чего граф не видит, попад�
 from __future__ import annotations
 
 import fnmatch
+import re
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from harness.repo_map.backend import BundleParserBackend, ParserBackend
+from harness.repo_map.backend import BundleParserBackend, ParseOutcome, ParserBackend
 from harness.repo_map.bundle_worker import FileFacts
-from harness.repo_map.git_source import run_git, tracked_paths
+from harness.repo_map.git_source import blob_contents, run_git, tracked_paths
 from harness.repo_map.graph import build_graph
 from harness.repo_map.policy import RepoMapPolicy, path_allowed
 
@@ -29,6 +30,7 @@ UNKNOWN_REMOVED_REFERENCED = "removed-module-referenced"
 UNKNOWN_DYNAMIC_IMPORT = "dynamic-import"
 UNKNOWN_OVER_THRESHOLD = "related-tests-over-threshold"
 UNKNOWN_GRAPH_DEGRADED = "graph-degraded"
+UNKNOWN_UNSEEN_IMPORTER = "unseen-importer"
 
 # Манифесты и конфиги сборки и проверок: их изменение влияет на каждый тест.
 _BUILD_CONFIG_NAMES = frozenset(
@@ -94,12 +96,18 @@ class ImpactSet:
 
 @dataclass(frozen=True)
 class _Graph:
-    """Граф импортов одного коммита: обратные рёбра, факты и статусы разбора Python-файлов."""
+    """Граф импортов одного коммита: обратные рёбра, факты и статусы разбора Python-файлов.
+
+    `blind` — tracked-файлы Python, чьих импортов граф не видит: их скрывает политика Repo Map либо
+    парсер не вернул факты (`too_large`, ошибка разбора).
+    """
 
     importers: dict[str, set[str]]
     facts: dict[str, FileFacts]
     paths: frozenset[str]
     degraded: str | None = None
+    blind: tuple[str, ...] = ()
+    parsed: ParseOutcome | None = None
 
 
 def is_test_path(path: str) -> bool:
@@ -137,11 +145,8 @@ def _graph(
     repo: Path, commit: str, backend: ParserBackend, policy: RepoMapPolicy
 ) -> _Graph:
     """Граф импортов коммита; деградация парсера или лимит файлов дают `degraded` с причиной."""
-    paths = [
-        path
-        for path in tracked_paths(repo, commit, policy.timeout_seconds)
-        if path_allowed(path, policy)
-    ]
+    tracked = tracked_paths(repo, commit, policy.timeout_seconds)
+    paths = [path for path in tracked if path_allowed(path, policy)]
     if len(paths) > policy.max_files:
         return _Graph(
             {},
@@ -152,6 +157,30 @@ def _graph(
     parsed = backend.parse(commit, paths)
     if not parsed.applied:
         return _Graph({}, {}, frozenset(), parsed.reason)
+    importers = _importers(parsed, policy)
+    blind = sorted(
+        {
+            path
+            for path in tracked
+            if path.endswith(".py") and path not in parsed.records
+        }
+        | {
+            path
+            for path, record in parsed.records.items()
+            if path.endswith(".py") and record["parser_status"] != "ok"
+        }
+    )
+    return _Graph(
+        importers,
+        parsed.facts,
+        frozenset(parsed.records),
+        blind=tuple(blind),
+        parsed=parsed,
+    )
+
+
+def _importers(parsed: ParseOutcome, policy: RepoMapPolicy) -> dict[str, set[str]]:
+    """Обратные рёбра импорта: цель — файлы, которые её импортируют."""
     edges = build_graph(
         parsed.records,
         parsed.facts,
@@ -163,7 +192,94 @@ def _graph(
     for edge in edges:
         if edge["kind"] == "import":
             importers[edge["target"]].add(edge["source"])
-    return _Graph(dict(importers), parsed.facts, frozenset(parsed.records))
+    return dict(importers)
+
+
+def _base_graph(
+    repo: Path,
+    base: str,
+    graph: _Graph,
+    changed: list[ChangedPath],
+    backend: ParserBackend,
+    policy: RepoMapPolicy,
+) -> _Graph:
+    """Граф импортов `base` без повторного разбора всего репозитория.
+
+    Неизменённый файл одинаков на `base` и в кандидате, поэтому его записи и факты берутся из графа
+    кандидата; на `base` разбираются только прежние версии изменённых, удалённых и переименованных
+    файлов. Так удаление или переименование не удваивает стоимость графа под lock ledger.
+    """
+    candidate = graph.parsed
+    if candidate is None:
+        return _Graph({}, {}, frozenset(), "candidate graph is unavailable")
+    new_paths = {item.path for item in changed if item.status != "deleted"}
+    old_paths = [
+        old
+        for item in changed
+        if item.status != "added"
+        and path_allowed(old := item.old_path or item.path, policy)
+    ]
+    parsed = backend.parse(base, old_paths)
+    if not parsed.applied:
+        return _Graph({}, {}, frozenset(), parsed.reason)
+    records = {
+        path: dict(record)
+        for path, record in candidate.records.items()
+        if path not in new_paths
+    } | parsed.records
+    facts = {
+        path: record
+        for path, record in candidate.facts.items()
+        if path not in new_paths
+    } | parsed.facts
+    merged = ParseOutcome(
+        True,
+        parsed.reason,
+        {},
+        records,
+        facts,
+        list(parsed.diagnostics),
+        candidate.extension_grammars,
+    )
+    return _Graph(_importers(merged, policy), facts, frozenset(records), parsed=merged)
+
+
+def _module_name(path: str) -> str:
+    """Имя, под которым другой файл импортирует модуль: stem файла или имя пакета `__init__.py`."""
+    pure = PurePosixPath(path)
+    return pure.parent.name if pure.stem == "__init__" else pure.stem
+
+
+def _unseen_importers(
+    repo: Path, commit: str, graph: _Graph, closure: set[str], timeout: int
+) -> list[UnknownReason]:
+    """Скрытые от графа файлы, которые могут импортировать модуль замыкания.
+
+    Граф не знает их импортов, поэтому файл с именем модуля замыкания в тексте считается возможным
+    импортёром: его тесты не попадают в `related_tests`, и вызывающий расширяет выбор до полного.
+    Совпадение по слову консервативно: лишнее срабатывание даёт `full`, а не пропущенный тест.
+    """
+    names = {_module_name(path) for path in closure} - {""}
+    if not names or not graph.blind:
+        return []
+    pattern = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(names))) + r")\b")
+    contents = blob_contents(repo, commit, list(graph.blind), timeout)
+    reasons: list[UnknownReason] = []
+    for path in graph.blind:
+        content = contents.get(path)
+        if content is None:
+            reasons.append(
+                UnknownReason(UNKNOWN_UNSEEN_IMPORTER, path, "content is unreadable")
+            )
+        elif match := pattern.search(content.decode("utf-8", "replace")):
+            reasons.append(
+                UnknownReason(
+                    UNKNOWN_UNSEEN_IMPORTER,
+                    path,
+                    f"not in the import graph and names {match.group(0)!r}",
+                )
+            )
+    return reasons
 
 
 def _config_unknown(item: ChangedPath) -> list[UnknownReason]:
@@ -273,7 +389,7 @@ def compute_change_impact(
         if old and old.endswith(".py")
     ]
     if removed:
-        before = _graph(repo, base, parser, effective_policy)
+        before = _base_graph(repo, base, graph, changed, parser, effective_policy)
         if before.degraded is not None:
             unknown.append(UnknownReason(UNKNOWN_GRAPH_DEGRADED, "", before.degraded))
         for old in removed:
@@ -288,6 +404,11 @@ def compute_change_impact(
                 )
                 seeds |= referencing & graph.paths
     closure = _closure(seeds, graph.importers)
+    unknown.extend(
+        _unseen_importers(
+            repo, candidate, graph, closure, effective_policy.timeout_seconds
+        )
+    )
     for path in sorted(closure):
         facts = graph.facts.get(path)
         if facts is not None and _uses_dynamic_import(facts):
