@@ -145,7 +145,7 @@ def _bind_reassessment(
     was_retry: bool,
     retry_candidate: str | None,
 ) -> None:
-    """Bind a completed writer report to the batch's risk-reassessment state (issue #781).
+    """Bind a completed or blocked writer report to the batch's risk-reassessment state (issue #781).
 
     The report escalates the triggers it names (a retry inherits the batch's earlier ones); the new
     state is decided by ``risk.next_after_writer_report`` and checked before anything is written."""
@@ -1913,10 +1913,12 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             batch["retry_candidate_required"] = False
         # Only a work report reaches this point with risk_triggers: a publish dispatch is refused by
         # `send` and recorded by `publish_dispatch` (delivery.py) without a submitted report, and it
-        # runs after QA, so it has no reassessment to bind (issue #781).
+        # runs after QA, so it has no reassessment to bind (issue #781).  A blocked writer report
+        # binds too: it carries the commit that `accept-conditional` or an infrastructure retry
+        # then makes the batch's candidate, and no later step would bind it.
         if (
             role["name"] in {"developer", "conflict-resolver"}
-            and report.get("outcome") == "completed"
+            and report.get("outcome") in {"completed", "blocked"}
             and dispatch.get("purpose", "work") == "work"
         ):
             _bind_reassessment(

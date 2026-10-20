@@ -2400,7 +2400,7 @@ class RecoveryTests(unittest.TestCase):
         )
 
     def _rewound_writer_report(
-        self, batch_id: str, name: str
+        self, batch_id: str, name: str, **overrides: object
     ) -> tuple[str, list[str], JsonObject]:
         """A fresh writer after a rewind: its report is submitted but not yet accepted."""
         brief = self._dispatch(batch_id, "developer")["brief"]
@@ -2424,6 +2424,7 @@ class RecoveryTests(unittest.TestCase):
                 commit_map=commit_map,
                 dod_coverage=[{"dod_item": 1, "commits": [candidate]}],
                 divergence_justification="the rewound writer adds a second commit",
+                **overrides,
             ),
         )
         return candidate, changed, brief
@@ -2447,6 +2448,57 @@ class RecoveryTests(unittest.TestCase):
         self._decide(batch_id, "accept")
         blocked = self._cli_propose_qa(batch_id, second)
         self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        assessed = self._cli_assess(batch_id, second, changed)
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        after = self._batch_record(batch_id)
+        self.assertIs(after["risk_reassessment_required"], False)
+        self.assertEqual(after["next_action"], "code-review")
+        self._reported_review(batch_id, second)
+        self._decide(batch_id, "accept")
+        proposal = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def _cli_accept_conditional(self, batch_id: str) -> None:
+        result = self._cli(
+            "batch",
+            "decide",
+            "--batch",
+            batch_id,
+            "--decision",
+            "accept-conditional",
+            "--infrastructure-failure",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            self.APPROVED_AT,
+            "--note",
+            "runtime restored; commits match the plan",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_blocked_writer_after_a_rewind_binds_its_candidate_through_qa(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        second, changed, _ = self._rewound_writer_report(
+            batch_id,
+            "second",
+            outcome="blocked",
+            blockers={
+                "status": "present",
+                "details": "runtime connection reset during the handoff to review",
+            },
+        )
+        bound = self._batch_record(batch_id)
+        self.assertIs(bound["risk_reassessment_required"], True)
+        self.assertEqual(bound["risk_reassessment_candidate"], second)
+        self.assertNotIn("risk_reassessment_pending_next", bound)
+        self._cli_accept_conditional(batch_id)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "risk-assessment")
         assessed = self._cli_assess(batch_id, second, changed)
         self.assertEqual(assessed.returncode, 0, assessed.stderr)
         after = self._batch_record(batch_id)
@@ -2578,7 +2630,8 @@ class RecoveryTests(unittest.TestCase):
         before = self._ledger_bytes()
         blocked = self._cli_propose_qa(batch_id, candidate)
         self.assertEqual(blocked.returncode, 2, blocked.stdout)
-        self.assertIn(candidate, blocked.stderr.partition("REMEDY:")[2])
+        remedy = blocked.stderr.partition("REMEDY:")[2]
+        self.assertIn(candidate, remedy)
         self.assertEqual(before, self._ledger_bytes())
         verification = self._dispatch(batch_id, "verification", candidate=candidate)[
             "brief"
