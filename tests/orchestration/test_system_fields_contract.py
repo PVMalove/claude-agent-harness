@@ -27,7 +27,6 @@ from harness.orchestration import (
     runtime_attestation,
 )
 from harness.orchestration.core import ci_source, constants, system_fields
-from harness.orchestration.core.runtime_state_contract import RUNTIME_VOCABULARIES
 from harness.diagnostics import DIAGNOSTIC_CODES, DIAGNOSTIC_SEVERITIES
 from harness.orchestration.core.system_fields import (
     CONTRACT_VERSION,
@@ -55,11 +54,6 @@ from harness.orchestration.workflow import (
 V1_FIELDS = frozenset(
     {
         "batch.state",
-        "runtime.state",
-        "runtime.operation_kind",
-        "runtime.operation_phase",
-        "runtime.effect_state",
-        "runtime.failure_code",
         "batch.next_action",
         "dispatch.state",
         "dispatch.purpose",
@@ -208,7 +202,6 @@ def test_sentinels_name_their_safe_handling() -> None:
 
     assert sentinels == {
         "retry.reason": ("unknown",),
-        "runtime.effect_state": ("unknown",),
         "qa.code_checks_started": ("unknown",),
         "qa.diagnosis_category": ("unknown",),
         "integration.target_state": ("unavailable",),
@@ -960,12 +953,6 @@ BINDINGS.update(
     {
         "diagnostic.code": {"DIAGNOSTIC_CODES": DIAGNOSTIC_CODES},
         "diagnostic.severity": {"DIAGNOSTIC_SEVERITIES": DIAGNOSTIC_SEVERITIES},
-    }
-)
-BINDINGS.update(
-    {
-        key: {"runtime_state_contract": vocabulary}
-        for key, vocabulary in RUNTIME_VOCABULARIES.items()
     }
 )
 

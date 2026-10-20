@@ -1,26 +1,8 @@
-"""The future operational-store vocabularies have a versioned, checkable contract."""
+"""Transition-contract references of the registry resolve in the packaged namespace."""
 
 import importlib
 
 from harness.orchestration.core.system_fields import load_registry
-
-
-def test_runtime_store_states_and_transition_reference_are_registered() -> None:
-    registry = load_registry()
-
-    assert set(registry.fields["runtime.state"].allowed) == {
-        "ready",
-        "running",
-        "suspended",
-        "reconciling",
-        "completed",
-    }
-    assert registry.fields["runtime.state"].transition_contract == (
-        "harness.orchestration.core.runtime_state_contract:RUNTIME_TRANSITIONS"
-    )
-    assert registry.fields["batch.state"].transition_contract == (
-        "harness.orchestration.ledger.lifecycle:LifecycleLedger._validate_batch_transition"
-    )
 
 
 def test_all_registered_transition_references_resolve_in_the_packaged_namespace() -> (
