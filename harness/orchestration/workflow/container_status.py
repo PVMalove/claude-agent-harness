@@ -1,6 +1,6 @@
 """Worker liveness of a container dispatch: the engine's answer bound to the dispatch receipt.
 
-A docker dispatch's receipt names the worker's container id as ``launch_id`` (ADR 0018). Reading a
+A docker dispatch's receipt names the worker's container id as ``launch_id`` (ADR 0025). Reading a
 dispatch asks the engine about exactly that container and records the first proof that it stopped
 (``worker_exit``) in the dispatch status. Silence alone -- a missing heartbeat or report -- is never
 such a proof. This module adds no lifecycle state: it only appends evidence to the status record

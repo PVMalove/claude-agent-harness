@@ -2,7 +2,7 @@
 
 The executor runs only what the immutable brief approved: the resolved plan's resources at the same
 absolute paths, the network the plan names, and the image digests that ``dispatch propose`` pinned.
-It never builds or pulls an image and never approves anything on the human's behalf (ADR 0018).
+It never builds or pulls an image and never approves anything on the human's behalf (ADR 0025).
 Every engine command goes through ``run_engine``; nothing else here starts a process.
 
 An empty ``network.hosts`` runs the worker with ``--network none``. A non-empty list runs it on an
@@ -40,7 +40,7 @@ EXTENSION_NAME = "docker"
 ENGINE_TIMEOUT_SECONDS = 30
 # The worker's HOME is a tmpfs, so no host home directory is mounted and any image works.
 CONTAINER_HOME = "/harness-home"
-# A project adapter reads this marker to set its agent's flags for a container run (ADR 0018).
+# A project adapter reads this marker to set its agent's flags for a container run (ADR 0025).
 EXECUTOR_ENV = ("HARNESS_EXECUTOR", EXTENSION_NAME)
 # The worker environment the executor sets itself; preflight and send block a plan name that
 # would replace it.
