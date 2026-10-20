@@ -493,6 +493,23 @@ coordinator refused its self-report, so the process may still run), `stopped` (t
 confirmed the stop), `live` and `unknown`. Silence, a timeout or a stop acknowledgement never
 proves that a worker stopped. Capacity, rate-limit and service-unavailable are separate
 classifications.
+For a `docker` dispatch, `dispatch status` and `dispatch wait` also ask the container engine about
+the container named by the receipt's `launch_id` and show it as `worker`: `state` (`running`,
+`exited`, `missing` or `unknown`), `exit_code` and the `teardown` result. Only `exited` and `missing`
+prove that the worker stopped. A live dispatch whose worker exited without a report becomes `stale`
+at once and raises the existing `stale-dispatch` attention. A container worker cannot write the
+ledger, so when its staged report is on disk the recommended action is `report submit --file <path>`
+first (`dispatch wait` returns it as `staged_report`) and `dispatch cancel --runtime-stopped` only for
+an unusable report; the engine never changes a lifecycle state. An engine CLI that did not run or did
+not answer is `unknown`, never `missing`. A `dispatch status` without `--dispatch` asks the engine
+about at most four dispatches per read; the rest show `not_observed`. The first proof is
+recorded permanently as `worker_exit`. After a dispatch is `reported`, `cancelled`, `abandoned` or
+`failed`, the same commands remove that dispatch's worker, sidecar and network by their labels, always
+after `worker_exit` is persisted. A worker that is still running is never stopped or removed: stop
+it explicitly with the container engine. `harness cleanup <repo>` previews and, with `--apply`,
+removes the container resources of this repository that no open dispatch owns; it skips a running
+worker, an open dispatch (even one with `worker_exit`) and a terminal dispatch whose exit evidence is not recorded yet (run
+`dispatch status` first), and it never touches another repository's resources.
 `ledger validate` is read-only: it validates the generation, checksums, audit, graph and current
 batch contracts; it never repairs, migrates or resets a ledger. A legacy generation receives its
 version's graph/audit validation; mutations require the normal explicit migration.

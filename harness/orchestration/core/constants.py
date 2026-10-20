@@ -201,6 +201,15 @@ DEFAULT_COMMUNICATION_POLICY = {
     "coordinator_report_language": "ru",
 }
 LIVE_DISPATCH_STATES = {DispatchState.DISPATCHED, DispatchState.WORKING}
+# A dispatch in one of these states needs no worker any more: its container resources may be released.
+TERMINAL_DISPATCH_STATES = frozenset(
+    {
+        DispatchState.REPORTED,
+        DispatchState.CANCELLED,
+        DispatchState.ABANDONED,
+        DispatchState.FAILED,
+    }
+)
 # The read-only commands an operator inspects before choosing any recovery or abandon (#679).
 RECOVERY_EVIDENCE_COMMANDS = (
     "batch auto-report, batch decision-packet, dispatch status and ledger validate"

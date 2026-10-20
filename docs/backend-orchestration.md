@@ -492,10 +492,68 @@ worker. Без него brief сохраняет `inherit`, а `dispatch send` �
 Docker и Podman не поддерживаются. Worker видит `shared_storage` только для чтения, а в хранилище
 пишет только в `.sandboxes/scratch`, поэтому команды coordinator, которые меняют ledger
 (`dispatch self-report`, `dispatch heartbeat`, `report submit`), из контейнера не выполняются. После выхода worker
-контейнер остаётся: coordinator не снимает exit code и не удаляет контейнер. Отдельный
-`--checkout` роли `code-review` в контейнер не монтируется. QA и операции `git` и `publish`
+контейнер остаётся до первого чтения: `dispatch status` и `dispatch wait` снимают exit code и
+удаляют ресурсы dispatch, когда он завершён (раздел «Статус и очистка контейнерного worker»
+ниже). Отдельный `--checkout` роли `code-review` в контейнер не монтируется. QA и операции `git` и `publish`
 по-прежнему выполняет coordinator в своём окружении, а не в контейнере: операция с
 `mode: sandbox` останавливается как неподдерживаемая (раздел ниже).
+
+### Статус и очистка контейнерного worker
+
+Для dispatch с квитанцией `docker` `dispatch status` и `dispatch wait` спрашивают движок о
+контейнере, который называет `launch_id` квитанции, и сверяют его метки `harness.dispatch` и
+`harness.repository` с брифом: чужой объект с тем же id считается `unknown` и не трогается. Ответ
+виден в поле `worker` каждой записи `dispatch status`:
+
+- `state` — `running`, `exited`, `missing` (движок ответил, что не знает такого контейнера) или
+  `unknown` (движок недоступен, CLI не запустился или не ответил вовремя, либо ответ не доказывает
+  остановку); `exit_code` и `finished_at` заполнены для `exited`;
+- `source` — `engine` (ответ получен сейчас), `ledger` (показано сохранённое доказательство) или
+  `not_observed` (в этом чтении движок не опрашивался, см. ниже);
+- `teardown` — итог удаления ресурсов или `null`.
+
+Остановку доказывают только `exited` и `missing`. Тишина — отсутствие heartbeat или report — её не
+доказывает: `running` и `unknown` ничего не записывают. Первое доказательство сохраняется навсегда
+в статусе dispatch как `worker_exit` (`launch_id`, `state`, `exit_code`, `finished_at`,
+`oom_killed`, `observed_at`) и позже не перезаписывается. Новых состояний dispatch не появляется.
+Live dispatch, чей worker завершился без report, получает `stale: true` сразу, не дожидаясь порога
+тишины. `dispatch wait` возвращает событие `stale` с полем `worker`, а `attention check` поднимает
+уже существующее `stale-dispatch` с exit code в тексте. Контейнер не пишет в ledger, поэтому обычно
+он завершается раньше, чем report записан: если подготовленный report лежит в `report_staging_path`,
+`dispatch wait` возвращает его путь в поле `staged_report`, а рекомендация сначала предлагает
+`report submit --file <путь>`, и только для непригодного report — `dispatch cancel
+--runtime-stopped`. Без подготовленного report рекомендуется `dispatch cancel --runtime-stopped`.
+`dispatch cancel --runtime-stopped` сохраняет квитанцию и `worker_exit` в записи статуса.
+
+Когда dispatch становится `reported`, `cancelled`, `abandoned` или `failed`, а `worker_exit` уже
+записан, следующее чтение удаляет ресурсы, созданные для него: worker обычным `docker rm`, sidecar
+`docker rm --force` и сеть `docker network rm`, в таком порядке и по меткам. Сначала всегда
+записывается `worker_exit`, потом идёт удаление; итог записывается как `worker_teardown`
+(`removed`, `missing`, `failed`, `at`, `complete`). Уже отсутствующий объект считается удалённым, а
+отказ движка оставляет `complete: false`, и удаление повторяется при следующем чтении. После
+`complete: true` чтение не обращается к движку. Работающий worker coordinator не останавливает:
+`docker rm` без `--force` отказывает для запущенного контейнера, а остановить worker можно только
+явной командой движка.
+
+`dispatch status` поэтому больше не только чтение: для незавершённого docker-dispatch он дописывает
+доказательство и освобождает ресурсы завершённого dispatch, но не меняет состояние жизненного
+цикла. Вызовы движка выполняются под lock ledger, каждый ограничен `ENGINE_TIMEOUT_SECONDS`.
+Чтение без `--dispatch` опрашивает движок не более чем о `MAX_ENGINE_READS` (4) dispatch; остальные
+показываются с `source: not_observed` и `state: unknown` и ничего не записывают. Чтобы наблюдать
+конкретный dispatch, назовите его через `--dispatch`: именованный dispatch опрашивается всегда.
+
+`harness cleanup <repo>` ищет в движке оставшиеся контейнеры и сети только этого репозитория (по
+метке `harness.repository`; метка проверяется по самому объекту, а не по фильтру движка) и работает
+по общим правилам: предпросмотр без `--apply`, `--apply` применяет свежий план и отказывает, если
+план изменился. Раздел выполняется только когда `.harness/orchestration.json` выбирает
+`extensions.runtime_access: "docker"`, и одинаков для `soft` и `hard`. Cleanup пропускает:
+не остановленный worker (с подсказкой `docker stop <имя>`), открытый в ledger dispatch, терминальный
+dispatch без записанного `worker_exit` (сначала `dispatch status`), недоступный движок и нечитаемый
+ledger. Сиротами считаются ресурсы dispatch, которого нет в ledger, и ресурсы терминального
+dispatch с записанным `worker_exit`; открытый dispatch пропускается, даже если у него уже есть
+`worker_exit`. Cleanup не
+пишет в ledger и не стирает сохранённое доказательство, повторный запуск после успеха ничего не
+делает.
 
 ### Доступ QA, Git и publish
 

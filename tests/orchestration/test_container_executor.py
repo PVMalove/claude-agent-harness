@@ -13,7 +13,7 @@ import os
 import subprocess
 import tempfile
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -43,6 +43,15 @@ PODMAN_PROXY_BARE = "b" * 64
 CONTAINER_ID = "0123456789abcdef" * 4
 PROXY_CONTAINER_ID = "89abcdef01234567" * 4
 NETWORK_ID = "fedcba9876543210" * 4
+# What the docker CLI prints when the daemon socket is missing: it names no missing object.
+DAEMON_UNREACHABLE = subprocess.CompletedProcess(
+    [],
+    1,
+    "",
+    "failed to connect to the docker API at unix:///nonexistent/docker.sock; check if the path is "
+    "correct and if the daemon is running: dial unix /nonexistent/docker.sock: connect: no such "
+    "file or directory",
+)
 ROOTFUL_INFO: JsonObject = {
     "ID": DAEMON_ID,
     "ServerVersion": "29.9.0",
@@ -96,6 +105,43 @@ class FakeEngine:
         # A command kind (info, inspect, create, start, rm, network-create, network-connect,
         # network-rm), or ``kind:object``, that raises or exits non-zero.
         self.failures: dict[str, BaseException | str] = {}
+        # The engine's containers and networks by id: created and started by the calls that make
+        # them, so a test scripts a worker's exit instead of the answers.
+        self.objects: dict[str, JsonObject] = {}
+        # An engine whose ``--filter label=`` narrows nothing: a caller must check labels itself.
+        self.ignore_label_filters = False
+        # Called with the argv of every ``rm`` before the engine acts on it.
+        self.on_remove: Callable[[list[str]], None] | None = None
+
+    def add_container(
+        self,
+        container_id: str,
+        name: str,
+        labels: dict[str, str],
+        status: str = "running",
+    ) -> None:
+        self.objects[container_id] = {
+            "kind": "container",
+            "id": container_id,
+            "name": name,
+            "labels": labels,
+            "status": status,
+            "exit_code": 0,
+        }
+
+    def removals(self) -> list[list[str]]:
+        """Every removal the executor asked for, in order."""
+        return [
+            call
+            for call in self.calls
+            if call[1] == "rm" or call[1:3] == ["network", "rm"]
+        ]
+
+    def exit_worker(self, dispatch_id: str, exit_code: int = 0) -> None:
+        """The worker's process ends: the container stays, exited with ``exit_code``."""
+        for item in self.objects.values():
+            if item["name"] == f"harness-{dispatch_id}":
+                item.update(status="exited", exit_code=exit_code)
 
     def kinds(self) -> list[str]:
         return [self._kind(call) for call in self.calls]
@@ -105,8 +151,8 @@ class FakeEngine:
         """The command kind: ``inspect`` for images, ``network-<verb>`` for networks."""
         if argv[1] == "image":
             return argv[2]
-        if argv[1] == "network":
-            return f"network-{argv[2]}"
+        if argv[1] in ("network", "container"):
+            return f"{argv[1]}-{argv[2]}"
         return argv[1]
 
     @staticmethod
@@ -136,15 +182,130 @@ class FakeEngine:
                 )
             return _done(command, image + "\n")
         if kind == "create":
-            proxy = self._target(command, kind).endswith("-proxy")
-            return _done(
-                command, (PROXY_CONTAINER_ID if proxy else CONTAINER_ID) + "\n"
+            name = self._target(command, kind)
+            container_id = (
+                PROXY_CONTAINER_ID if name.endswith("-proxy") else CONTAINER_ID
             )
+            self.add_container(container_id, name, self._labels(command), "created")
+            return _done(command, container_id + "\n")
         if kind == "network-create":
+            self.objects[NETWORK_ID] = {
+                "kind": "network",
+                "id": NETWORK_ID,
+                "name": command[-1],
+                "labels": self._labels(command),
+            }
             return _done(command, NETWORK_ID + "\n")
-        if kind in ("start", "rm", "network-connect", "network-rm"):
+        if kind == "start":
+            if command[-1] in self.objects:
+                self.objects[command[-1]]["status"] = "running"
+            return _done(command, command[-1] + "\n")
+        if kind == "container-inspect":
+            return self._inspect(command, "container")
+        if kind == "network-inspect":
+            return self._inspect(command, "network")
+        if kind == "ps":
+            return self._listed(command, "container")
+        if kind == "network-ls":
+            return self._listed(command, "network")
+        if kind in ("rm", "network-rm"):
+            return self._remove(command)
+        if kind == "network-connect":
             return _done(command, command[-1] + "\n")
         raise AssertionError(f"unexpected engine command {command}")
+
+    @staticmethod
+    def _labels(argv: list[str]) -> dict[str, str]:
+        return dict(
+            argv[i + 1].split("=", 1)
+            for i, part in enumerate(argv)
+            if part == "--label"
+        )
+
+    def _find(self, kind: str, wanted: str) -> JsonObject | None:
+        return next(
+            (
+                obj
+                for obj in self.objects.values()
+                if obj["kind"] == kind and wanted in (obj["id"], obj["name"])
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _describe(item: JsonObject) -> JsonObject:
+        if item["kind"] == "network":
+            return {"Id": item["id"], "Name": item["name"], "Labels": item["labels"]}
+        exited = item["status"] == "exited"
+        return {
+            "Id": item["id"],
+            "Name": "/" + item["name"],
+            "State": {
+                "Status": item["status"],
+                "ExitCode": item["exit_code"] if exited else 0,
+                "FinishedAt": "2026-10-19T13:30:00Z"
+                if exited
+                else "0001-01-01T00:00:00Z",
+                "OOMKilled": False,
+            },
+            "Config": {"Labels": item["labels"]},
+        }
+
+    def _inspect(
+        self, command: list[str], kind: str
+    ) -> subprocess.CompletedProcess[str]:
+        """``--format`` answers one object; without it every id answers in one JSON array."""
+        ids = command[command.index("inspect") + 1 :]
+        if "--format" in command:
+            ids = ids[2:]
+        found = [self._find(kind, wanted) for wanted in ids]
+        missing = [wanted for wanted, item in zip(ids, found) if item is None]
+        if missing:
+            return subprocess.CompletedProcess(
+                command, 1, "", f"Error: No such {kind}: {missing[0]}"
+            )
+        described = [self._describe(item) for item in found if item is not None]
+        return _done(
+            command,
+            json.dumps(described[0] if "--format" in command else described) + "\n",
+        )
+
+    def _listed(
+        self, command: list[str], kind: str
+    ) -> subprocess.CompletedProcess[str]:
+        """``ps`` and ``network ls``: the ids of the objects carrying every ``--filter label=``."""
+        wanted = [
+            command[i + 1].removeprefix("label=").split("=", 1)
+            for i, part in enumerate(command)
+            if part == "--filter" and not self.ignore_label_filters
+        ]
+        return _done(
+            command,
+            "".join(
+                f"{obj['id']}\n"
+                for obj in self.objects.values()
+                if obj["kind"] == kind
+                and all(obj["labels"].get(key) == value for key, value in wanted)
+            ),
+        )
+
+    def _remove(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        """``rm`` refuses a running container without ``--force``, as the engine does."""
+        if self.on_remove is not None:
+            self.on_remove(command)
+        kind = "network" if command[1] == "network" else "container"
+        item = self._find(kind, command[-1])
+        if item is None:
+            return _done(command, command[-1] + "\n")
+        if item.get("status") == "running" and "--force" not in command:
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                "",
+                f"cannot remove container {item['name']}: container is running",
+            )
+        del self.objects[str(item["id"])]
+        return _done(command, command[-1] + "\n")
 
 
 class DockerFixture(unittest.TestCase):
@@ -1596,6 +1757,113 @@ class DockerPlanSupportTests(unittest.TestCase):
 
         self.assertIn("cannot be mounted safely", verification["reason"])
         self.assertIn("without commas", verification["remedy"])
+
+
+class InspectWorkerTests(unittest.TestCase):
+    """The engine's answer about one container reduces to a stop proof or to ``unknown``."""
+
+    def inspect(
+        self, answer: subprocess.CompletedProcess[str] | BaseException
+    ) -> JsonObject:
+        def engine(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            if isinstance(answer, BaseException):
+                raise answer
+            return answer
+
+        with mock.patch.object(container_executor, "run_engine", engine):
+            return container_executor.inspect_worker(CONTAINER_ID)
+
+    @staticmethod
+    def state(status: str, code: int = 0) -> subprocess.CompletedProcess[str]:
+        return _done(
+            [],
+            json.dumps(
+                {
+                    "State": {"Status": status, "ExitCode": code, "OOMKilled": True},
+                    "Config": {"Labels": {"harness.dispatch": "d"}},
+                }
+            ),
+        )
+
+    def test_engine_statuses_map_to_running_exited_or_unknown(self) -> None:
+        for status, expected in (
+            ("running", "running"),
+            ("paused", "running"),
+            ("restarting", "running"),
+            ("exited", "exited"),
+            ("dead", "exited"),
+            ("created", "unknown"),
+            ("removing", "unknown"),
+        ):
+            with self.subTest(status):
+                inspected = self.inspect(self.state(status, 7))
+                self.assertEqual(inspected["state"], expected)
+                self.assertEqual(inspected["labels"], {"harness.dispatch": "d"})
+                self.assertEqual(
+                    inspected["exit_code"], 7 if expected == "exited" else None
+                )
+
+    def test_only_a_no_such_container_answer_is_missing(self) -> None:
+        gone = subprocess.CompletedProcess([], 1, "", "Error: No such container: x")
+        for answer, expected in (
+            (gone, "missing"),
+            (subprocess.CompletedProcess([], 1, "", "daemon is down"), "unknown"),
+            # The CLI answered, but only that it cannot reach the daemon: no object is named.
+            (DAEMON_UNREACHABLE, "unknown"),
+            (OSError("docker vanished"), "unknown"),
+            # The CLI itself is missing: its text says "No such file", but no engine answered.
+            (
+                FileNotFoundError(2, "No such file or directory", "docker"),
+                "unknown",
+            ),
+            (subprocess.TimeoutExpired("docker", 30), "unknown"),
+            (_done([], "not json"), "unknown"),
+            (_done([], json.dumps({"State": {}})), "unknown"),
+        ):
+            with self.subTest(str(answer)):
+                self.assertEqual(self.inspect(answer)["state"], expected)
+
+    def test_a_missing_engine_cli_does_not_count_as_a_removed_object(self) -> None:
+        objects = [
+            {
+                "kind": "container",
+                "id": CONTAINER_ID,
+                "name": "harness-d",
+                "dispatch": "d",
+                "role": "worker",
+                "state": "exited",
+            }
+        ]
+        for answer, bucket in (
+            (FileNotFoundError(2, "No such file or directory", "docker"), "failed"),
+            (DAEMON_UNREACHABLE, "failed"),
+            (
+                subprocess.CompletedProcess([], 1, "", "Error: No such container: x"),
+                "missing",
+            ),
+            (
+                subprocess.CompletedProcess([], 1, "", "Error: network x not found"),
+                "missing",
+            ),
+        ):
+
+            def engine(
+                argv: Sequence[str],
+                answer: subprocess.CompletedProcess[str] | BaseException = answer,
+            ) -> subprocess.CompletedProcess[str]:
+                if isinstance(answer, BaseException):
+                    raise answer
+                return answer
+
+            with (
+                self.subTest(bucket),
+                mock.patch.object(container_executor, "run_engine", engine),
+            ):
+                removal = container_executor.remove_objects(objects)
+            self.assertEqual(
+                {name: bool(removal[name]) for name in ("failed", "missing")},
+                {"failed": bucket == "failed", "missing": bucket == "missing"},
+            )
 
 
 if __name__ == "__main__":
