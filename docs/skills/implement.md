@@ -115,6 +115,14 @@ worker остановился; правила перезапуска — в ра
 запускает role subagent в указанном worktree. External adapter является только transport и сохраняет
 тот же handoff, liveness, approval и report contract.
 
+**Тест-автор в полном маршруте.** Preflight тест-автора обслуживает только тот checkout, где он
+лежит. Developer с `in-process` transport запускает
+`"$CLAUDE_PROJECT_DIR/.claude/hooks/test-author-preflight.sh" --worktree <send.worker_worktree>`;
+для отдельного worker checkout ответ — `disabled` с причиной `checkout_mismatch`.
+Developer с `external` transport (headless `claude -p` в worktree) автора не включает и preflight
+не запускает: причина `transport_unsupported`. Любой ответ, кроме `{"status":"ok"}`, оставляет
+обычный TDD с названной в выводе причиной и никогда не становится blocker.
+
 Перед первым dispatch coordinator может зарегистрировать immutable Context Package, собранный
 `context_builder.py` без LLM из pinned `base_commit`/`candidate_commit`. Он содержит exact diff,
 5–10 стартовых файлов с причинами, bounded graph, связанные тесты, карточки ADR/precedent и SHA-256
@@ -235,6 +243,11 @@ Rewind не меняет Git history, но исключает старое за�
 подтверждённого сбоя окружения — отдельный infrastructure budget.
 Перед send coordinator проверяет явный каталог воркера через `--worktree`, а worker подтверждает
 фактический path/branch/HEAD через self-report. Coordinator CLI остаётся привязан к main repo/state.
+Сам coordinator никогда не делает `cd` в worktree, даже в виде `cd <worktree> && …`: рабочий каталог
+shell сохраняется между командами, поэтому один такой вызов переносит в worktree всю сессию. Файлы
+worktree читаются по абсолютным путям: `git -C <worktree> …`, `rg <шаблон> <путь в worktree>` и
+инструменты чтения файлов. Если сессия всё же сместилась, верните её в main checkout до следующей
+команды.
 Подробные ограничения задаёт `.harness/orchestration/playbook.md`, раздел Operator recovery.
 
 ### Сбой запуска worker

@@ -29,11 +29,11 @@ from harness.orchestration.core.config import (
     _continuation_policy,
     _execution_policy,
     _reject_sensitive,
-    _role,
 )
 from harness.orchestration.core.constants import (
     CHECKPOINT_INPUT_FIELDS,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
+    CONTINUATION_DECISIONS,
     CONTINUATION_FACTS_FIELDS,
     FINDING_SEVERITIES,
     INCOMPLETE_ITEM_FIELDS,
@@ -53,6 +53,7 @@ from harness.orchestration.core.constants import (
     QA_STAGE_NAMES,
     QA_STAGES_FIELDS,
     QA_STAGES_OPTIONAL_FIELDS,
+    RATE_LIMIT_RESUME_DECISIONS,
     RATE_LIMIT_TERMINATION_REASONS,
     REPORT_CHECK_RESULTS,
     REPORT_FIELDS,
@@ -60,8 +61,10 @@ from harness.orchestration.core.constants import (
     REPORT_OUTCOMES,
     REVIEW_SEVERITIES,
     TELEMETRY_FIELDS,
+    TELEMETRY_SESSION_KINDS,
     TOOLING_BLOCKER_FIELDS,
     TOOLING_BLOCKER_UNCOMMITTED_FIELD,
+    ReviewRecommendation,
 )
 from harness.orchestration.core.git_utils import (
     _candidate_commit,
@@ -69,6 +72,7 @@ from harness.orchestration.core.git_utils import (
     _commit_changed_files,
     _git_is_ancestor,
 )
+from harness.orchestration.core.system_fields import EXACT_SPELLING, near_miss
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -129,6 +133,7 @@ from harness.orchestration.workflow.history import (
     _validate_batch_integrity,
     _validate_dispatch,
 )
+from harness.orchestration.workflow import risk
 from harness.orchestration.workflow.risk import (
     _risk_triggers,
     _validate_trigger_names,
@@ -138,18 +143,67 @@ from harness.orchestration.workflow.risk import (
 SCOPE_WARNING_ROLE = "developer"
 
 
+def _bind_reassessment(
+    repo: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    was_retry: bool,
+    retry_candidate: str | None,
+) -> None:
+    """Bind a completed or blocked writer report to the batch's risk-reassessment state (issue #781).
+
+    The report escalates the triggers it names (a retry inherits the batch's earlier ones); the new
+    state is decided by ``risk.next_after_writer_report`` and checked before anything is written."""
+    triggers: list[str] = []
+    if dispatch["role"] == "developer" and "risk_triggers" in report:
+        triggers = _validate_trigger_names(
+            report["risk_triggers"],
+            "completion report risk_triggers",
+            _risk_triggers(repo),
+        )
+        if not triggers and was_retry:
+            triggers = sorted(
+                {
+                    trigger
+                    for escalation in batch.get("risk_escalations", [])
+                    for trigger in escalation.get("triggers", [])
+                }
+            )
+    fields = risk.reassessment_fields(batch)
+    before = risk.reassessment_state(batch)
+    candidate = (
+        retry_candidate or _candidate_commit(repo, report["commit_sha"])
+        if triggers or before.kind != risk.IDLE
+        else ""
+    )
+    after = risk.next_after_writer_report(before, candidate, tuple(triggers))
+    proposed = dict(batch)
+    risk.apply_reassessment(proposed, after)
+    risk.require_legal_reassessment(fields, proposed, risk.WRITER_REPORT)
+    if triggers or (after.triggers and after != before):
+        batch.setdefault("risk_escalations", []).append(
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "candidate_commit": candidate,
+                "triggers": list(after.triggers),
+            }
+        )
+    if after != before or "risk_triggers" in report:
+        risk.apply_reassessment(batch, after)
+
+
 def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]:
     decisions = [
         decision
         for decision in batch.get("coordinator_decisions", [])
         if decision.get("dispatch_id") == dispatch_id
-        and decision.get("decision")
-        in {"continue", "continue-automatic", "continue-rate-limit"}
+        and decision.get("decision") in CONTINUATION_DECISIONS
     ]
     automatic = sum(
         1
         for decision in decisions
-        if decision.get("decision") in {"continue-automatic", "continue-rate-limit"}
+        if decision.get("decision") in RATE_LIMIT_RESUME_DECISIONS
     )
     return len(decisions), automatic
 
@@ -442,7 +496,7 @@ def record_telemetry(args: argparse.Namespace) -> JsonObject:
             + INTERNAL_INVARIANT_REMEDY,
         )
     _reject_sensitive(payload, "telemetry payload")
-    if payload["session_kind"] not in {"worker", "coordinator"}:
+    if payload["session_kind"] not in TELEMETRY_SESSION_KINDS:
         raise CoordinatorError(
             "telemetry session_kind must be worker or coordinator",
             remedy="set session_kind to 'worker' or 'coordinator'",
@@ -642,10 +696,21 @@ def checkpoint_dispatch(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch, status = _live_status(root, cast(str, checkpoint.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
-        role = _role(repo, dispatch["role"])
+        from harness.orchestration.pinned_configuration import (
+            read_snapshot,
+            capture_unaccepted,
+        )
+
+        try:
+            _validate_batch_integrity(root, batch)
+            pinned = read_snapshot(dispatch)
+            _validate_dispatch(repo, pinned["config"], root, batch, dispatch)
+        except CoordinatorError as exc:
+            path = capture_unaccepted(root, dispatch, checkpoint, exc)
+            raise CoordinatorError(
+                exc.message, remedy=f"{exc.remedy}; unaccepted evidence: {path}"
+            ) from exc
+        role = pinned["role"]
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
         if not entry or entry.get("state") != "dispatched":
             raise CoordinatorError(
@@ -823,13 +888,21 @@ def resume_dispatch(args: argparse.Namespace) -> JsonObject:
     decision. Anything else -- no reason, or one this coordinator does not recognize -- is treated
     as a planned trigger and requires the existing coordinator-decision approval, with its recorded
     facts checked against the checkpoint for drift."""
+    # Only an exact spelling is recognized: a variant of one is refused before anything is read,
+    # and any other text stays an unrecognized diagnostic, kept as it was given.
+    termination_reason = (
+        args.termination_reason if isinstance(args.termination_reason, str) else ""
+    )
+    if exact := near_miss(termination_reason, RATE_LIMIT_TERMINATION_REASONS):
+        raise CoordinatorError(
+            f"--termination-reason {termination_reason!r} is not a recognized rate-limit "
+            f"reason; write exactly {' or '.join(map(repr, exact))}",
+            remedy="pass --termination-reason as exactly one of: "
+            + ", ".join(sorted(RATE_LIMIT_TERMINATION_REASONS))
+            + f" ({EXACT_SPELLING}), or pass --trigger for a planned continuation",
+        )
     repo = _repo(args)
     root = _state_root(args, repo)
-    termination_reason = (
-        args.termination_reason.strip().lower()
-        if _non_empty(args.termination_reason)
-        else ""
-    )
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
@@ -1086,10 +1159,8 @@ def _validate_review(review: object, dispatch: JsonObject) -> None:
             "composite review must contain independent standards and spec evidence",
             remedy="submit composite review evidence with independent standards and spec findings",
         )
-    if review.get("recommendation") is not None and review["recommendation"] not in (
-        "accept",
-        "retry",
-    ):
+    recommendation = review.get("recommendation")
+    if recommendation is not None and recommendation not in tuple(ReviewRecommendation):
         raise CoordinatorError(
             "composite review recommendation must be accept or retry",
             remedy="set review.recommendation to accept or retry",
@@ -1860,9 +1931,21 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, cast(str, report.get("dispatch_id")))
         batch = _load_batch(root, dispatch["batch_id"])
-        _validate_batch_integrity(root, batch)
-        config = core_config._config(repo)
-        _validate_dispatch(repo, config, root, batch, dispatch)
+        from harness.orchestration.pinned_configuration import (
+            read_snapshot,
+            capture_unaccepted,
+        )
+
+        try:
+            _validate_batch_integrity(root, batch)
+            pinned = read_snapshot(dispatch)
+            _validate_dispatch(repo, pinned["config"], root, batch, dispatch)
+        except CoordinatorError as exc:
+            path = capture_unaccepted(root, dispatch, report, exc)
+            raise CoordinatorError(
+                exc.message, remedy=f"{exc.remedy}; unaccepted evidence: {path}"
+            ) from exc
+        config = pinned["config"]
         if dispatch["role"] == "qa":
             raise CoordinatorError(
                 "QA reports must be produced by the clean-room QA runner",
@@ -1926,7 +2009,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 "a dispatched role must attest its canonical Git worktree before reporting",
                 remedy="attest the canonical Git worktree (dispatch self-report) before reporting",
             )
-        role = _role(repo, dispatch["role"])
+        role = pinned["role"]
         _validate_report_in_batch(repo, root, batch, dispatch, report, role)
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
@@ -1954,55 +2037,19 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                     remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch",
                 )
             batch["retry_candidate_required"] = False
+        # Only a work report reaches this point with risk_triggers: a publish dispatch is refused by
+        # `send` and recorded by `publish_dispatch` (delivery.py) without a submitted report, and it
+        # runs after QA, so it has no reassessment to bind (issue #781).  A blocked writer report
+        # binds too: it carries the commit that `accept-conditional` or an infrastructure retry
+        # then makes the batch's candidate, and no later step would bind it.
         if (
-            "risk_triggers" in report
-            and role["name"] == "developer"
-            and report.get("outcome") == "completed"
+            role["name"] in {"developer", "conflict-resolver"}
+            and report.get("outcome") in {"completed", "blocked"}
+            and dispatch.get("purpose", "work") == "work"
         ):
-            triggers = _validate_trigger_names(
-                report["risk_triggers"],
-                "completion report risk_triggers",
-                _risk_triggers(repo),
+            _bind_reassessment(
+                repo, batch, dispatch, report, was_retry, retry_candidate
             )
-            if triggers:
-                escalated_candidate = _candidate_commit(repo, report["commit_sha"])
-                batch.setdefault("risk_escalations", []).append(
-                    {
-                        "dispatch_id": dispatch["dispatch_id"],
-                        "candidate_commit": escalated_candidate,
-                        "triggers": triggers,
-                    }
-                )
-                batch["risk_reassessment_required"] = True
-                batch["risk_reassessment_candidate"] = escalated_candidate
-                batch["risk_reassessment_triggers"] = triggers
-            elif was_retry:
-                inherited = sorted(
-                    {
-                        trigger
-                        for escalation in batch.get("risk_escalations", [])
-                        for trigger in escalation.get("triggers", [])
-                    }
-                )
-                if inherited:
-                    batch.setdefault("risk_escalations", []).append(
-                        {
-                            "dispatch_id": dispatch["dispatch_id"],
-                            "candidate_commit": retry_candidate,
-                            "triggers": inherited,
-                        }
-                    )
-                    batch["risk_reassessment_required"] = True
-                    batch["risk_reassessment_candidate"] = retry_candidate
-                    batch["risk_reassessment_triggers"] = inherited
-                else:
-                    batch["risk_reassessment_required"] = False
-                    batch.pop("risk_reassessment_candidate", None)
-                    batch.pop("risk_reassessment_triggers", None)
-            elif not batch.get("risk_reassessment_required"):
-                batch["risk_reassessment_required"] = False
-                batch.pop("risk_reassessment_candidate", None)
-                batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(
             ledger,
             root,
@@ -2020,6 +2067,34 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "report": str(report_json),
         **({"report_relay": report_relay} if report_relay else {}),
     }
+    # Acceptance belongs to the approved snapshot; progression belongs to a newly validated
+    # transition. Never invite resubmission of evidence already durably accepted.
+    try:
+        current_config = core_config._config(repo)
+        current_project = getattr(current_config, "project_snapshot", None)
+        if not isinstance(current_project, dict):
+            current_project = core_config._project(repo)
+    except CoordinatorError as exc:
+        response.update(
+            {
+                "transition_blocked": True,
+                "diagnostic": exc.message,
+                "remedy": exc.remedy,
+            }
+        )
+        return response
+    if (
+        dict(current_config) != dict(config)
+        or current_project != pinned["project"]
+    ):
+        response.update(
+            {
+                "transition_blocked": True,
+                "diagnostic": "configuration changed since dispatch approval",
+                "remedy": "review the pending report and approve the next transition under current policy",
+            }
+        )
+        return response
     if rebase_check is not None:
         # The patch-id comparison of a rebase-fix-forward report (issue #504), for delta-review.
         response["rebase_check"] = rebase_check

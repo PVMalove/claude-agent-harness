@@ -32,7 +32,10 @@ from harness.orchestration.contract import (
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
-from harness.orchestration.core.constants import ACCEPTED_DECISIONS
+from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
+    ContextPackageFreshness,
+)
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _approval_policy,
@@ -93,6 +96,7 @@ from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow import supersede
+from harness.orchestration.workflow import risk as risk_policy
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -379,7 +383,7 @@ def _bind_dispatch_approval(
     if supplied.strip() != digest:
         raise CoordinatorError(
             f"approval digest does not match the proposed transition: approved {supplied.strip()}, proposed {digest}",
-            remedy="a changed scope, candidate, role, verification command, reason category or Context Package needs a new approval: run 'dispatch propose' again and approve its digest",
+            remedy="a changed scope, candidate, role, verification command, reason category, Context Package or pinned runtime image needs a new approval: run 'dispatch propose' again and approve its digest",
         )
     return {**_approval(args, digest), "transition_digest": digest}
 
@@ -708,6 +712,10 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                                 "model_self_report",
                                 "worker_worktree",
                                 "worker_snapshot_commit",
+                                # The receipt and the worker's exit evidence outlive the cancel.
+                                "runtime_access",
+                                "worker_exit",
+                                "worker_teardown",
                             )
                             if k in status
                         }
@@ -894,6 +902,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 (resolver_state.RESOLVER_ROLE, "work")
             },
         }
+        if role_name == "qa" and batch.get("risk_reassessment_required"):
+            message, remedy = risk_policy.reassessment_remedy(batch)
+            raise CoordinatorError(message, remedy=remedy)
         if next_action == "risk-assessment":
             raise CoordinatorError(
                 "risk assessment must prepare the next dispatch before another role starts",
@@ -1033,11 +1044,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="only pass --delta-review-of for a code-review dispatch",
             )
         if role_name == "qa":
-            if batch.get("risk_reassessment_required"):
-                raise CoordinatorError(
-                    "QA is blocked until the candidate is risk-assessed again",
-                    remedy="register a new risk assessment for this candidate before dispatching QA",
-                )
             if risk is None:
                 # The guard above raised when a qa dispatch has no risk.
                 raise CoordinatorError(
@@ -1157,7 +1163,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             if (
                 context_package_freshness is None
-                or context_package_freshness["status"] != "fresh"
+                or context_package_freshness["status"] != ContextPackageFreshness.FRESH
             ):
                 raise CoordinatorError(
                     "newly registered Context Package is stale; refresh before dispatch",
@@ -1234,11 +1240,30 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"
         ]
+        # A docker plan pins the image digests observed now, beside the plan and outside its
+        # digest; propose and create each observe, so an image changed in between is refused.
+        runtime_images = runtime_access.pin_images(
+            access_plan, transport, role_name, purpose
+        )
+        if runtime_images is not None:
+            transition = operational_guards.bind_transition(
+                transition, {"runtime_images": runtime_images}
+            )
         if batch.get("recovery_events"):
             transition["recovery_event_sha256"] = batch["recovery_events"][-1][
                 "record_sha256"
             ]
+        from harness.orchestration import pinned_configuration
+
         orchestration_policy = _orchestration_policy(config)
+        project_snapshot = getattr(config, "project_snapshot", None)
+        if not isinstance(project_snapshot, dict):
+            project_snapshot = core_config._project(repo)
+        pinned_config = pinned_configuration.snapshot(config, project_snapshot, role)
+        orchestration_policy["configuration"] = pinned_config
+        transition[pinned_configuration.TRANSITION_FIELD] = pinned_config[
+            "canonical_sha256"
+        ]
         transition[infrastructure_retry.TRANSITION_FIELD] = (
             operational_guards.policy_digest(
                 orchestration_policy["infrastructure_retry"]
@@ -1292,6 +1317,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     proposal["context_package_quality_warning"] = warning
             if delta_scope is not None:
                 proposal["delta_review_scope"] = delta_scope
+            if runtime_images is not None:
+                proposal["runtime_images"] = runtime_images
             return proposal
         if approval_mode is None:
             # Only a proposal skips the approval mode, and a proposal returned above.
@@ -1385,6 +1412,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "rebase_target_commit": transition.get("rebase_target_sha"),
             "runtime_access": access_plan,
         }
+        if runtime_images is not None:
+            brief["runtime_images"] = runtime_images
         if role_name == resolver_state.RESOLVER_ROLE:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]

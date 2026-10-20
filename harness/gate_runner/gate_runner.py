@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
@@ -10,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -314,6 +315,38 @@ def concise_evidence(text: str) -> str:
     return lines[0][:240] if lines else "no output"
 
 
+@contextmanager
+def _command_environment(checkout: Path) -> Iterator[dict[str, str]]:
+    """The environment of the QA commands: temporary data in a fresh directory of the harness
+    storage (`.harness/.sandboxes/runs/qa/tmp-*`), removed afterwards.
+
+    The host /tmp may be read-only under an outer sandbox, and such a failure is no defect of the
+    candidate. Git does not search above the directory for a repository, so a tool that runs Git
+    there never finds the checkout's own.
+    """
+    try:
+        parent = storage_path(checkout, "runs", "qa")
+        parent.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix="tmp-", dir=parent))
+    except (OSError, ValueError) as exc:
+        raise GateRunnerError(
+            f"could not prepare the QA temporary directory: {sanitise(str(exc))}",
+            remedy="grant the coordinator process write access to .harness/.sandboxes/runs/qa "
+            "and run the QA runner again",
+        ) from exc
+    try:
+        ceilings = (os.environ.get("GIT_CEILING_DIRECTORIES", ""), str(directory))
+        yield dict(
+            os.environ,
+            TMPDIR=str(directory),
+            TMP=str(directory),
+            TEMP=str(directory),
+            GIT_CEILING_DIRECTORIES=os.pathsep.join(part for part in ceilings if part),
+        )
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _execute_commands(
     commands: Sequence[str | list[str]],
     checkout: Path,
@@ -323,6 +356,7 @@ def _execute_commands(
     outputs: list[str],
     started: float,
     stage: list[StageCommand] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> None:
     """Run commands in one checkout, appending each check, artifact block and optional stage record.
 
@@ -343,6 +377,7 @@ def _execute_commands(
             result: subprocess.CompletedProcess[str] = subprocess.run(
                 prepared,
                 cwd=checkout,
+                env=env,
                 shell=shell,
                 capture_output=True,
                 text=True,
@@ -394,10 +429,11 @@ def run_gate(
     checks: list[dict[str, str]] = []
     outputs: list[str] = []
     started: float = time.monotonic()
-    with policy.checkout() as checkout:
+    with policy.checkout() as checkout, _command_environment(checkout) as env:
         _execute_commands(
             commands,
             checkout,
+            env=env,
             stop_on_failure=stop_on_failure,
             checks=checks,
             outputs=outputs,
@@ -690,11 +726,12 @@ def run_qa_stages(
     outputs: list[str] = []
     started = time.monotonic()
     stages: list[dict[str, object]] = []
-    with policy.checkout() as checkout:
+    with policy.checkout() as checkout, _command_environment(checkout) as env:
         prepared: list[StageCommand] = []
         _execute_commands(
             preparation,
             checkout,
+            env=env,
             stop_on_failure=True,
             checks=[],
             outputs=outputs,
@@ -713,6 +750,7 @@ def run_qa_stages(
                 _execute_commands(
                     commands,
                     checkout,
+                    env=env,
                     stop_on_failure=False,
                     checks=[],
                     outputs=outputs,
@@ -743,6 +781,7 @@ def run_qa_stages(
         _execute_commands(
             gate,
             checkout,
+            env=env,
             stop_on_failure=True,
             checks=checks,
             outputs=outputs,

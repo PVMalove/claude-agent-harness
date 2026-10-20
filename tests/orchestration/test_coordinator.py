@@ -3046,6 +3046,95 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             stored["dispatches"][-1]["decision"]["approved_by"], "policy:auto"
         )
 
+    def _auto_failed_qa(self, diagnostics: str) -> tuple[str, JsonObject]:
+        """An auto batch whose QA gate failed with ``diagnostics``, as ``qa run`` records it."""
+        self._patch_config(approval_policy="auto")
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["add simple marker"]
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
+        batch = coordinator.create_batch(self._args(**plan))
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+        self.batch_id = batch["batch_id"]
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer_id, self._developer_report(developer, candidate, changed)
+        )
+        qa_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        qa = coordinator._read_object(
+            self._records() / "dispatches" / f"{qa_id}.json", "dispatch"
+        )
+        first, *rest = qa["verification_commands"]
+        gate = {
+            "stage": "gate",
+            "command": first,
+            "result": "fail",
+            "exit_code": 2,
+            "diagnostics": diagnostics,
+        }
+        report = qa_lane._qa_report(
+            qa,
+            [{"command": first, "result": "fail", "evidence": "exit 2"}],
+            self._records() / "qa-artifacts" / f"{'0' * 64}.log",
+            "0" * 64,
+            {"stages": [gate], "failed_stage": "gate", "code_checks_started": "started"},
+        )
+        self._stage_report(batch["batch_id"], qa_id, report, via_qa_lane=True)
+        return batch["batch_id"], coordinator.auto_decide(
+            self._args(batch=batch["batch_id"])
+        )
+
+    def test_auto_stops_on_a_qa_gate_that_failed_on_its_environment(self) -> None:
+        batch_id, result = self._auto_failed_qa(
+            "FAILED tests/a.py::t - OSError: [Errno 30] Read-only file system: "
+            "'/tmp/harness-db-1'\n1 failed, 9 passed in 1.00s"
+        )
+
+        stored = self._batch_record(batch_id)
+        self.assertEqual(result["outcome"], "stopped")
+        self.assertEqual(
+            (stored["auto_stop"]["category"], stored["auto_stop"]["reason"]),
+            ("no-automatic-route", "qa-environment-failure"),
+        )
+        self.assertIn("batch rewind --to qa", stored["auto_stop"]["evidence"]["remedy"])
+        self.assertNotIn("decision", stored["dispatches"][-1])
+        self.assertEqual(decisions._developer_retry_count(stored), 0)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_auto_retries_the_developer_on_a_qa_gate_that_failed_on_the_code(
+        self,
+    ) -> None:
+        batch_id, result = self._auto_failed_qa(
+            "FAILED tests/a.py::t - AssertionError: assert 1 == 2\n1 failed in 1.00s"
+        )
+
+        stored = self._batch_record(batch_id)
+        self.assertEqual(result["outcome"], "decided")
+        self.assertNotIn("auto_stop", stored)
+        routing = stored["coordinator_decisions"][-1]["routing"]
+        self.assertEqual(routing["next_action"], "developer-retry")
+
     def test_low_risk_review_with_findings_still_waits_for_decision(self) -> None:
         self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
         batch = self._create_batch()
@@ -7440,6 +7529,54 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         )
 
+    def test_an_unrecognized_termination_reason_takes_the_planned_trigger_path(
+        self,
+    ) -> None:
+        batch = self._create_batch(
+            definition_of_done=["first slice", "remaining slice"]
+        )
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(brief, first, changed)
+        facts = {
+            "dispatch_id": brief["dispatch_id"],
+            "remaining_definition_of_done": checkpoint["remaining_definition_of_done"],
+            "risks": checkpoint["risks"],
+            "dependencies": brief["dependencies"],
+        }
+        path = workspace._prepare_agent_inbox(self.repo) / "continuation-facts.json"
+        path.write_text(json.dumps(facts), encoding="utf-8")
+        resume = {
+            "dispatch": brief["dispatch_id"],
+            "trigger": "vertical-slice",
+            "measured_value": None,
+            "file": str(path),
+            "note": "resume the recorded green slice",
+            **self._approval(),
+        }
+        before = self._ledger_bytes()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.resume_dispatch(
+                self._args(termination_reason="Rate_Limit", **resume)
+            )
+        self.assertIn(
+            "write exactly 'rate-limit' or 'rate_limit'", caught.exception.message
+        )
+        self.assertIn("or pass --trigger", caught.exception.remedy)
+        self.assertEqual(before, self._ledger_bytes())
+
+        resumed = coordinator.resume_dispatch(
+            self._args(termination_reason="worker-exited", **resume)
+        )
+
+        self.assertEqual(resumed["authorization"], "continue")
+        decision = self._batch_record(batch["batch_id"])["coordinator_decisions"][-1]
+        self.assertEqual(decision["decision"], "continue")
+        self.assertEqual(decision["note"], "resume the recorded green slice")
+
     def test_committed_checkpoint_continuation_attests_exact_progress_and_completes_plan(
         self,
     ) -> None:
@@ -8488,7 +8625,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256"},
+            | {"runtime_access_sha256", "infrastructure_retry_sha256", "configuration_sha256"},
         )
         self.assertEqual(
             proposal["transition_digest"],

@@ -798,6 +798,51 @@ class AutoDecisionTableTests(unittest.TestCase):
         )
         self.assertTrue(inputs.block_bypass)
 
+    def _failed_gate(self, diagnostics: str) -> JsonObject:
+        return _clean(
+            "qa",
+            outcome="failed",
+            checks_run=[{"command": "make verify", "result": "fail", "evidence": "exit 2"}],
+            qa_stages={
+                "stages": [
+                    {
+                        "stage": "gate",
+                        "command": "make verify",
+                        "result": "fail",
+                        "exit_code": 2,
+                        "diagnostics": diagnostics,
+                    }
+                ],
+                "failed_stage": "gate",
+                "code_checks_started": "started",
+            },
+        )
+
+    def test_a_qa_gate_failed_on_its_environment_stops_without_a_retry(self) -> None:
+        report = self._failed_gate(
+            "FAILED tests/a.py::t - OSError: [Errno 30] Read-only file system: "
+            "'/tmp/harness-db-1'\n1 failed, 9 passed in 1.00s"
+        )
+        stop = auto_policy.environment_stop("qa", report, Path("/work/repo"))
+        assert stop is not None
+        self.assertEqual(
+            (stop.category, stop.reason), ("no-automatic-route", "qa-environment-failure")
+        )
+        self.assertEqual(stop.evidence["command"], "make verify")
+        self.assertEqual(
+            stop.evidence["classification"]["category"], "read-only-filesystem"
+        )
+        self.assertIn("batch rewind --to qa", stop.evidence["remedy"])
+        # The same evidence from any other stage is no QA environment failure.
+        self.assertIsNone(auto_policy.environment_stop("developer", report, Path("/work/repo")))
+
+    def test_a_qa_gate_failed_on_the_code_keeps_the_developer_retry(self) -> None:
+        report = self._failed_gate(
+            "FAILED tests/a.py::t - AssertionError: assert 1 == 2\n1 failed in 1.00s"
+        )
+        self.assertIsNone(auto_policy.environment_stop("qa", report, Path("/work/repo")))
+        self.assertEqual(self._category("qa", report).decision, "retry")
+
     def test_a_stop_outside_the_closed_list_cannot_exist(self) -> None:
         with self.assertRaises(CoordinatorError):
             auto_policy.Stop("no-automatic-route", "operator-preference", {})

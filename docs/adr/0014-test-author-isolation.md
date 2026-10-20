@@ -126,8 +126,11 @@ runner вызывает сам:
 `--test-runner-command`: без них runner отказывает с `test_paths_missing` или
 `test_runner_missing`. Значение `test_paths` по умолчанию включило бы тест-автора в каждом новом
 проекте и предполагало бы раскладку проекта, поэтому его нет; opt-in остаётся за #554.
-Writable-зоны запуска — каталоги `test_paths`, `/tmp` (tmpfs) и свежие `cache/` и `reports/` в
-`.harness/.sandboxes/runs/isolated-test-<run_id>/`. Перед тестом runner выполняет probe с тем же
+Writable-зоны запуска — каталоги `test_paths`, `/tmp` и свежие `cache/` и `reports/` в
+`.harness/.sandboxes/runs/isolated-test-<run_id>/`. С #769 `/tmp` — не tmpfs, а свой пустой каталог
+`<run>/tmp-*` на каждый запуск bwrap, смонтированный как `/tmp` и удаляемый после запуска (hermetic
+`/tmp` в Bazel): временные данные лежат в хранилище harness, хостовый `/tmp` в песочницу не попадает,
+а короткий путь `/tmp` сохраняет сокеты базы данных в лимите AF_UNIX. Перед тестом runner выполняет probe с тем же
 набором монтирований: запись в корень checkout получает `EROFS`, а `/run` и `/var/run` пусты.
 Провал любой проверки до запуска даёт отказ `isolation_unavailable` с кодом `platform`,
 `bwrap_missing`, `checkout_masked`, `sandbox_failed` или `probe_failed`.

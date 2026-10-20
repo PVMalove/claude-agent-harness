@@ -1,7 +1,7 @@
 """Durable local configuration versions and recoverable paired writes.
 
-Distribution-side code: validates sets against the Harness contract, so it is not part of
-the lightweight readers installed into target projects (see ``harness.configuration``).
+Shared writer for distribution tools and the opt-in backend config CLI. Lightweight readers
+remain in ``harness.configuration`` and never import this writer.
 """
 
 from __future__ import annotations

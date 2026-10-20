@@ -8,10 +8,18 @@ import os
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
 from harness.health import isolated_runner_session
+
+
+@pytest.fixture(autouse=True)
+def _writable_tmpdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The helper's temporary data goes to TMPDIR, so a read-only host /tmp never matters."""
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    return tmp_path
 
 
 def test_stop_terminates_running_process() -> None:
@@ -62,6 +70,27 @@ def test_run_success() -> None:
     )
     assert available is True
     assert code == 0
+
+
+def test_run_creates_database_directory_in_tmpdir(_writable_tmpdir: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("prctl is POSIX/Linux only")
+    seen = _writable_tmpdir / "seen"
+    database: dict[str, object] = {
+        "command": [sys.executable, "-c", "import time; time.sleep(5)"],
+        "ready_command": [sys.executable, "-c", "pass"],
+    }
+    record = (
+        "import os,sys; open(sys.argv[1],'w').write(os.environ['HARNESS_TEST_DATABASE_DIR'])"
+    )
+    available, code = isolated_runner_session.run(
+        database, [sys.executable, "-c", record, str(seen)]
+    )
+    assert (available, code) == (True, 0)
+    directory = Path(seen.read_text())
+    assert directory.parent.name.startswith("harness-db-")
+    assert directory.parent.parent == _writable_tmpdir
+    assert not directory.exists()
 
 
 def test_run_server_exits_prematurely() -> None:

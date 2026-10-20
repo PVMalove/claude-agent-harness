@@ -126,7 +126,11 @@ and send verify the selected path, branch and startup SHA. Start the worker in e
 `send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify that
 mechanism before launch: `isolation: worktree` alone does not prove attachment to an existing
 worktree. If the runtime cannot select that checkout, report a blocker. The coordinator stays in the
-main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the
+main checkout. Never `cd` into a worktree from the coordinator session, not even as
+`cd <worktree> && …`: the shell's working directory persists between commands, so one `cd` moves the
+whole session. Read worktree files by absolute path: `git -C <abs worktree> …`, `rg <pattern> <abs
+worktree path>`, and the file tools with absolute paths. If the session moved anyway, `cd` back to
+the main checkout before the next command. A selected path is intent; self-report proves the worker's actual CWD. Pass the
 brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
 belongs writes it outside the project.
 
@@ -145,6 +149,15 @@ main checkout, and `EnterWorktree` refuses it there. Two paths exist; state whic
   branch and HEAD, run every command with `git -C` or `cd <worker_worktree> &&`, and use absolute
   paths for every file. Its self-report then proves the checkout it works in, not its CWD; say so in
   the final report.
+
+**Test author in the full route.** The test-author preflight serves only the checkout that holds
+it. An `in-process` developer runs `"$CLAUDE_PROJECT_DIR/.claude/hooks/test-author-preflight.sh"
+--worktree <send.worker_worktree>`; for a separate worker checkout the answer is
+`{"status":"disabled","reason":"checkout_mismatch"}`. An `external` developer (headless `claude -p`
+in the worktree, where the trust dialog is skipped and the path has no trust decision) does not
+enable the author and runs no preflight: the reason is `transport_unsupported`. Any answer other
+than `{"status":"ok"}` keeps the ordinary TDD route with the reason named in the worker's output,
+never a blocker. State this in the worker prompt.
 
 `dispatch send` checks the adapter's flags against its `dispatch --help` before the handoff and
 refuses an unsupported one: fix the `--adapter-arg` values and send the same approved dispatch

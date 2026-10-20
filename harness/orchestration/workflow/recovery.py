@@ -22,7 +22,7 @@ from harness.orchestration.ledger.recovery_chain import (
     terminal,
     writer_start,
 )
-from harness.orchestration.workflow import approval
+from harness.orchestration.workflow import approval, risk
 from harness.orchestration.workflow.recovery_events import append_event
 
 ENVIRONMENT_REASONS = frozenset(
@@ -662,8 +662,11 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
                 "rewind cannot skip forward to an unreached gate",
                 remedy="choose architect or a gate this batch has reached, then pass the normal approvals and prerequisites",
             )
+        verification_candidate = None
         if target == "verification":
-            _latest_registered_verification_candidate(repo, batch)
+            verification_candidate = _latest_registered_verification_candidate(
+                repo, batch
+            )
         if target == "resolve-conflict" and not isinstance(batch.get("resolver"), dict):
             raise CoordinatorError(
                 "resolver boundary is not registered",
@@ -696,15 +699,38 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
                 or writer_start(batch)
                 or cast(str, batch.get("branch_start_commit", batch["base_commit"])),
             )
+        reassessment_before = risk.reassessment_fields(batch)
+        superseded_risks = (
+            [r["risk_assessment_id"] for r in active_risks(batch)]
+            if target_rank <= RISK_INVALIDATING_RANK
+            else []
+        )
+        # Decided and checked before the first ledger write, so a refusal leaves no record.
+        reassessment_event = (
+            risk.REWIND_CLEAR
+            if target_rank > RISK_INVALIDATING_RANK
+            else risk.REWIND_VERIFICATION
+            if target == "verification"
+            else risk.REWIND_WRITER
+        )
+        reassessment = risk.next_after_rewind(
+            risk.reassessment_state(batch),
+            event=reassessment_event,
+            superseded=bool(superseded_risks),
+            verification_candidate=verification_candidate,
+        )
+        proposed = dict(batch)
+        risk.apply_reassessment(proposed, reassessment)
+        risk.require_legal_reassessment(
+            reassessment_before, proposed, reassessment_event
+        )
         before = batch["state"]
         retired = _abandon_open_dispatches(ledger, root, batch, utils._now())
         evidence: JsonObject = {
             "superseded_dispatches": [
                 e["dispatch_id"] for e in entries if _stage_rank(root, e) >= target_rank
             ],
-            "superseded_risks": [r["risk_assessment_id"] for r in active_risks(batch)]
-            if target_rank <= RISK_INVALIDATING_RANK
-            else [],
+            "superseded_risks": superseded_risks,
             "writer_start_commit": candidate,
             "retired_dispatches": retired,
             "target": target,
@@ -728,7 +754,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
         batch["manual_recovery"] = True
         if target_rank <= CANDIDATE_INVALIDATING_RANK and candidate:
             batch["rewind_writer_pending"] = True
-        batch["risk_reassessment_required"] = bool(evidence["superseded_risks"])
+        risk.apply_reassessment(batch, reassessment)
         upgrade_runtime(repo, root, batch, evidence)
         event = append_event(
             root,

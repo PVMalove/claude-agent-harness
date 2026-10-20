@@ -121,12 +121,14 @@ class TransitionDigestTests(unittest.TestCase):
             guards.OPTIONAL_TRANSITION_FIELDS,
             (
                 "retry_reason_sha256",
+                "configuration_sha256",
                 "recovery_event_sha256",
                 "carried_items_sha256",
                 "rebase_target_sha",
                 "delta_review_sha256",
                 "infrastructure_retry_sha256",
                 "infrastructure_attempt_sha256",
+                "runtime_images_sha256",
             ),
         )
         self.assertNotEqual(
@@ -162,6 +164,31 @@ class TransitionDigestTests(unittest.TestCase):
         with self.assertRaises(HarnessError) as unknown:
             guards.transition_digest(_transition(delta_review_scope=digest))
         self.assertIn("delta_review_sha256 only when", unknown.exception.remedy)
+
+    def test_pinned_runtime_images_are_bound_only_when_the_brief_pins_them(
+        self,
+    ) -> None:
+        """Issue #704: a docker brief binds its image digests beside, not inside, the plan."""
+        images = {"worker": "sha256:" + "a" * 64, "proxy": None}
+        rebuilt = {"worker": "sha256:" + "c" * 64, "proxy": None}
+        transition = _transition(runtime_access_sha256="d" * 64)
+
+        bound = guards.bind_transition(transition, {"runtime_images": images})
+        legacy = guards.bind_transition(transition, {})
+
+        self.assertEqual(legacy, transition)
+        self.assertEqual(
+            bound["runtime_images_sha256"], guards.runtime_images_digest(images)
+        )
+        self.assertNotEqual(
+            guards.transition_digest(bound), guards.transition_digest(transition)
+        )
+        self.assertNotEqual(
+            guards.transition_digest(bound),
+            guards.transition_digest(
+                guards.bind_transition(transition, {"runtime_images": rebuilt})
+            ),
+        )
 
 
 class RetryIdempotencyKeyTests(unittest.TestCase):

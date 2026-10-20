@@ -444,3 +444,21 @@ def test_an_existing_new_store_wins_over_the_former_directory(tmp_path: Path) ->
     store = ConfigurationStore(tmp_path)
     assert store.root.name == "config_versions"
     assert (root / "config-versions").is_dir()
+
+
+def test_project_set_with_test_runner_is_saved_and_loaded_without_problems(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".harness"
+    root.mkdir()
+    runner = {"command": ["python3", "-m", "pytest", "{test_id}"]}
+    raw = json.dumps({**json.loads(project("ru")), "test_runner": runner}).encode()
+    (root / "project.json").write_bytes(raw)
+    bundle = read_config_bundle(tmp_path)
+    sut = ConfigurationStore(tmp_path)
+
+    problems = sut.problems(bundle)
+    saved = sut.save(bundle, "test runner")
+
+    assert problems == []
+    assert sut.load(saved.id)["project.json"] == raw

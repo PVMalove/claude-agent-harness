@@ -20,6 +20,38 @@ Every batch has one ticket, one issue branch, and one isolated worktree. The coo
 the resolved provider profile and model in the dispatch brief. Credentials never belong in the
 brief, project configuration, or reports.
 
+## Configuration validation and pinned evidence
+
+Runtime configuration passes through `normalization.v1` in memory before strict canonical
+validation. Only the enum fields listed in `config_boundary.NORMALIZATION_FIELDS` support
+unambiguous trimming and case folding. Documented aliases are `manual-all` → `manual_all` and
+`low-risk` → `low_risk` for `approval_policy`, and `in_process` → `in-process` for assignment
+transport. Each applied rule emits a structured warning with its field ID and version. IDs,
+models, paths, commands, extensions, ledger records, reports and approvals are never normalized.
+Explicit nulls, duplicate JSON keys, nonfinite numbers, secrets and ambiguous values are errors.
+Fuzzy spelling suggestions are diagnostics only.
+
+Inspect a configuration without writing it:
+
+```bash
+python .harness/orchestration/coordinator.py config validate --repo . --json
+python .harness/orchestration/coordinator.py config validate --repo . --canonical --json
+python .harness/orchestration/coordinator.py config validate --repo . --fix --dry-run --json
+python .harness/orchestration/coordinator.py config validate --repo . --fix --json
+```
+
+`--canonical` rejects spelling that requires normalization. `--fix` writes only a valid authored
+configuration through the shared transaction store, with expected-byte concurrency protection
+and a backup; `--dry-run` previews the diff. Headless validation never waits for input and returns
+exit code 2 for an invalid configuration. Runtime loading never writes the configuration file.
+
+Each new dispatch binds a complete canonical config, project and role snapshot to its approval
+digest, with separate source and canonical hashes. Checkpoints and manual or clean-room QA reports
+use that snapshot. Invalid or changed live configuration blocks a subsequent transition while
+accepted evidence remains saved. Missing or corrupt snapshots allow only unaccepted evidence
+capture with a remedy; they never reconstruct approval from current files. Runtime state-store
+reconciliation and recovery UI are separate follow-up work.
+
 ## Lifecycle
 
 The coordinator records exactly one current state for each batch. A role may report progress or a
@@ -299,7 +331,7 @@ that stage. The coordinator chooses a route by this table:
 | A human selects a reached earlier gate, or resumes the pending report boundary of a no-route pause | `rewind` | Human `batch rewind --to` or `resume-stop`; fresh approvals; no budget reset and a new writing attempt spends developer retry budget | Sealed event binds before/after state, target, preserved writer SHA, superseded evidence and human approval; unchanged Git history |
 | After a forced abandon (a dead end), the work resumes in a new batch for the same ticket and issue branch from the abandoned batch's `abandoned.last_accepted` record: `batch create --supersedes <batch>` | `supersede` | A human only, with `--approved-by` and `--approved-at` on `batch create`; a `policy:` approver is refused. The new batch still needs `batch approve`, its dispatches are approved under `approval_policy`, and a first developer-retry that carries a rebase target always needs an explicit approval except under `auto`; no `retry_policy.max_developer_retries` is spent | The superseded batch ID and its `abandoned.last_accepted`; for the same Definition of Done, the carried architect reference (`dispatch_id`, `report`, `report_sha256`, `commit_plan_sha256`); the `start_commit` and the `rebase_target_commit`. No risk, review, QA or operator decision evidence is copied |
 | `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
-| Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict |
+| Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status`, or a `qa run` failure `QA dispatch <id> was not released` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner. `qa run` waits up to 30 seconds for a busy lock before it releases its own QA lease and queue entry. If the lock frees after a failure, the dispatch is `approved` again: run `qa run` for it again. If the lock stays held, the dispatch stays `working`: after the lease expires, a coordinator runs `qa clear-stale-lease`, which also returns that dispatch to `approved`, and then runs `qa run` again | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict; after a released `qa run` failure, its QA attempt record; after `was not released`, the lease owner and `expires_at` in the error and `restored_dispatch_state` in the `qa clear-stale-lease` answer and recovery record |
 
 `batch decision-packet` shows the route before the decision is recorded: its `route_preview` holds
 the `retry` routing record computed as `batch decide` computes it (it takes the same
@@ -457,6 +489,7 @@ detect them in this order: integrity, budget, route.
 | `no-automatic-route` | `unknown-reason` | The route has reason category `unknown`, or attention `unknown-reason` |
 | `no-automatic-route` | `abandon-dead-end` | The coordinator refuses the retry route, or the batch is `blocked` or `failed` |
 | `no-automatic-route` | `supersede-dead-end` | The batch is `abandoned`; only a human continues with `batch create --supersedes` |
+| `no-automatic-route` | `qa-environment-failure` | The QA gate failed on its environment (a read-only file system, or permission denied outside the repository) with no code-defect sign; the evidence names the remedy: a writable temporary directory, then `batch rewind --to qa` |
 
 The coordinator records the stop once as the hashed `batch.auto_stop` (`category`, `reason`,
 `detected_at`, `detected_by`, `evidence`). A stop records no decision and weakens no validation.
@@ -492,6 +525,23 @@ coordinator refused its self-report, so the process may still run), `stopped` (t
 confirmed the stop, or bound local process evidence proves exit), `live` and `unknown`. Silence, a timeout or a stop acknowledgement never
 proves that a worker stopped. Capacity, rate-limit and service-unavailable are separate
 classifications.
+For a `docker` dispatch, `dispatch status` and `dispatch wait` also ask the container engine about
+the container named by the receipt's `launch_id` and show it as `worker`: `state` (`running`,
+`exited`, `missing` or `unknown`), `exit_code` and the `teardown` result. Only `exited` and `missing`
+prove that the worker stopped. A live dispatch whose worker exited without a report becomes `stale`
+at once and raises the existing `stale-dispatch` attention. A container worker cannot write the
+ledger, so when its staged report is on disk the recommended action is `report submit --file <path>`
+first (`dispatch wait` returns it as `staged_report`) and `dispatch cancel --runtime-stopped` only for
+an unusable report; the engine never changes a lifecycle state. An engine CLI that did not run or did
+not answer is `unknown`, never `missing`. A `dispatch status` without `--dispatch` asks the engine
+about at most four dispatches per read; the rest show `not_observed`. The first proof is
+recorded permanently as `worker_exit`. After a dispatch is `reported`, `cancelled`, `abandoned` or
+`failed`, the same commands remove that dispatch's worker, sidecar and network by their labels, always
+after `worker_exit` is persisted. A worker that is still running is never stopped or removed: stop
+it explicitly with the container engine. `harness cleanup <repo>` previews and, with `--apply`,
+removes the container resources of this repository that no open dispatch owns; it skips a running
+worker, an open dispatch (even one with `worker_exit`) and a terminal dispatch whose exit evidence is not recorded yet (run
+`dispatch status` first), and it never touches another repository's resources.
 `ledger validate` is read-only: it validates the generation, checksums, audit, graph and current
 batch contracts; it never repairs, migrates or resets a ledger. A legacy generation receives its
 version's graph/audit validation; mutations require the normal explicit migration.
@@ -558,6 +608,13 @@ in the recovery event; a new architect must be accepted before coding. Git HEAD 
 stay unchanged. Known current writer progress supplies the new startup SHA. A new code attempt
 spends the remaining developer retry budget when its dispatch is created; rewind never resets
 continuation, rate-limit, resolver or attention counters.
+
+A rewind to the writer that retires risk assessments leaves `risk_reassessment_required` true and
+sets `risk_reassessment_pending_next`: the next completed or blocked writer report (the one whose commit `accept-conditional`
+or a verification retry then registers) binds its candidate to the
+requirement (`risk_reassessment_candidate`) and clears the marker. Only `risk assess` of that
+candidate clears it; a rewind to `verification` binds the registered candidate at once, a rewind to
+`code-review` or later clears the requirement, and QA stays refused while it is open.
 
 If the stopped writer made commits or left pending files without submitting a report or
 checkpoint, use the explicit preservation route. First inspect its registered issue worktree,

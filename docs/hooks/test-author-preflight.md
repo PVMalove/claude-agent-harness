@@ -13,9 +13,18 @@
 завершается кодом 0: `{"status":"ok"}` либо `{"status":"disabled","reason":"<причина>"}`. Отказ не
 создаёт состояния оркестрации, а developer продолжает обычный маршрут.
 
+**Аргумент `--worktree <путь>`.** Скрипт проверяет только тот checkout, в котором лежит сам, то есть
+checkout, откуда он запущен. Developer in-process worker работает в другом worktree, поэтому
+вызывает `test-author-preflight.sh --worktree <worktree из brief>`. Ответ `{"status":"ok"}`
+возможен, только если канонический путь (после `cd` и `pwd -P`) совпадает с checkout скрипта;
+иначе скрипт отвечает `checkout_mismatch`. Отсутствующий, пустой или неразрешимый путь, а также
+любые другие аргументы (неизвестный флаг, лишние аргументы, `--worktree` без значения) дают тот же
+`checkout_mismatch`. Проверка идёт сразу после определения корня скрипта и раньше остальных, а путь
+из аргумента в ответ не попадает. Вызов без аргументов работает как прежде.
+
 Скрипт проверяет условия и на первом нарушении отвечает фиксированной причиной (таблица условий и
 причин есть в [руководстве](../agents/test-author.md), раздел 3). Поддерживаемые причины:
-`runner_unavailable`, `project_untrusted`, `claude_code_unsupported`, `agent_missing`,
+`checkout_mismatch`, `runner_unavailable`, `project_untrusted`, `claude_code_unsupported`, `agent_missing`,
 `scoped_hook_unsupported`, `test_paths_missing`, `test_runner_missing`, `config_invalid`,
 `write_zone_rejected`, `guard_hook_unavailable`, `isolation_unavailable`. Ответы guard и runner
 пропускаются через список допустимых причин: любое другое значение заменяется на

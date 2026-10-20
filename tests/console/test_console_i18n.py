@@ -91,10 +91,10 @@ def test_f2_translates_screens_that_are_already_open_below(tmp_path: Path) -> No
             await pilot.press("9")  # Help
             await pilot.pause()
             await pilot.press("f2")
-            await pilot.pause()
+            await wait_until(pilot, lambda: "Console guide" in _dump(app))
             help_screen = _dump(app)
             await pilot.press("escape")
-            await pilot.pause()
+            await wait_until(pilot, lambda: "MAIN MENU" in _dump(app))
             return help_screen, _dump(app)
 
     help_screen, dashboard = asyncio.run(scenario())

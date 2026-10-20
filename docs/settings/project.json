@@ -1,0 +1,56 @@
+{
+  "$schema": "./project.schema.json",
+  "language": "ru",
+  "base_branch": "master",
+  "branch_pattern": "^feature/issue-[0-9]+-.+",
+  "qa_gate_commands": [
+    "make verify"
+  ],
+  "tracker": {
+    "type": "github",
+    "host": "github.com",
+    "project": "PVMalove/claude-agent-harness"
+  },
+  "memory": {
+    "enabled": true
+  },
+  "memory_policy": {
+    "source_types": [
+      "adr",
+      "glossary"
+    ],
+    "allow_paths": [
+      "docs/adr/*.md",
+      "CONTEXT.md"
+    ],
+    "redact_rules": [],
+    "min_similarity": 0.0,
+    "top_k": 5,
+    "max_tokens": 1000
+  },
+  "story_points": {
+    "scale": [
+      1,
+      2,
+      3,
+      5,
+      8,
+      13,
+      21
+    ],
+    "fast_threshold": 3,
+    "full_threshold": 5,
+    "gray_zone": 4
+  },
+  "test_paths": [
+    "tests/**"
+  ],
+  "test_runner": {
+    "command": [
+      "python3",
+      "-m",
+      "pytest",
+      "{test_id}"
+    ]
+  }
+}

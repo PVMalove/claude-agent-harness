@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import tempfile
+import threading
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -34,6 +36,7 @@ from harness.orchestration.ledger import (
     PlanRecord,
 )
 from harness.orchestration.qa_lane import QaWorkflowOps
+from harness.orchestration.pinned_configuration import snapshot
 from harness.orchestration.workflow import reports, qa_integration
 
 DISPATCH_ID = "dispatch-0123456789abcdef"
@@ -43,6 +46,14 @@ BATCH_ID = "batch-0123456789abcdef"
 
 def _ns(**values: object) -> argparse.Namespace:
     return argparse.Namespace(**values)
+
+
+def _passing_gate() -> GateResult:
+    return GateResult(
+        checks=[{"result": "pass", "command": "true"}],
+        artifact="all green",
+        duration_seconds=0.0,
+    )
 
 
 class _Ops:
@@ -493,7 +504,14 @@ class QaLaneClearStaleLeaseTests(QaLaneTestCase):
 
         result = qa_lane.clear_stale_lease(self._args(lease), self._ops())
 
-        self.assertEqual(result, {"state": "cleared", "dispatch_id": OTHER_DISPATCH_ID})
+        self.assertEqual(
+            result,
+            {
+                "state": "cleared",
+                "dispatch_id": OTHER_DISPATCH_ID,
+                "restored_dispatch_state": None,
+            },
+        )
         self.assertFalse((self.lane / "lease.json").exists())
         self.assertEqual(qa_lane._queue_entries(self.ledger), [])
         recoveries = list((self.lane / "recoveries").glob("*.json"))
@@ -520,8 +538,17 @@ class QaLaneRunTests(QaLaneTestCase):
         )
 
     def _seed(
-        self, *, batch_state: str = "approved", status_state: str = "approved"
+        self,
+        *,
+        batch_state: str = "approved",
+        status_state: str = "approved",
+        policy: JsonObject | None = None,
     ) -> None:
+        approved = snapshot(policy or {}, {}, {"name": self.dispatch["role"]})
+        self.dispatch["orchestration_policy"] = {"configuration": approved}
+        self.dispatch["transition"] = {
+            "configuration_sha256": approved["canonical_sha256"]
+        }
         records = self.ledger.records_root()
         batch: JsonObject = {
             "batch_id": BATCH_ID,
@@ -963,7 +990,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def _run_staged(self, staged: QAStagesResult) -> dict[str, object]:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         persisted: list[dict[str, object]] = []
 
         def persist(
@@ -1099,7 +1126,7 @@ class QaLaneRunTests(QaLaneTestCase):
 
     def test_stages_that_disagree_with_the_artifact_release_the_lane(self) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         staged = self._staged()
         tampered = QAStagesResult(
             **{**staged.__dict__, "artifact": format_command_log("other", 0, "x")}
@@ -1127,7 +1154,7 @@ class QaLaneRunTests(QaLaneTestCase):
         self,
     ) -> None:
         self.dispatch["verification_commands"] = list(self.GATE)
-        self._seed()
+        self._seed(policy={"qa_preparation": [self.PREPARE]})
         with (
             mock.patch.object(qa_lane, "run_qa_stages", return_value=self._staged()),
             mock.patch.object(
@@ -1150,6 +1177,276 @@ class QaLaneRunTests(QaLaneTestCase):
             )
 
         self._assert_transient_failure_released()
+
+    @contextlib.contextmanager
+    def _another_operation(self) -> Iterator[Callable[[float | None], None]]:
+        """Yield ``hold(release_after)``, which makes another operation take the real ledger lock.
+
+        The holder releases the lock ``release_after`` seconds later, or only when the block exits
+        for ``None``."""
+        release = threading.Event()
+        holders: list[threading.Thread] = []
+        timers: list[threading.Timer] = []
+
+        def hold(release_after: float | None) -> None:
+            holding = threading.Event()
+
+            def locked() -> None:
+                with LifecycleLedger(self.root).lock():
+                    holding.set()
+                    release.wait(30)
+
+            holder = threading.Thread(target=locked)
+            holders.append(holder)
+            holder.start()
+            self.assertTrue(holding.wait(10))
+            if release_after is not None:
+                timers.append(threading.Timer(release_after, release.set))
+                timers[-1].start()
+
+        try:
+            yield hold
+        finally:
+            release.set()
+            for timer in timers:
+                timer.cancel()
+            for holder in holders:
+                holder.join()
+
+    def _gate_then(self, step: Callable[[], None]) -> object:
+        """A passing gate that runs ``step`` before it returns."""
+
+        def gate(*arguments: object, **keywords: object) -> GateResult:
+            step()
+            return _passing_gate()
+
+        return gate
+
+    def test_a_busy_ledger_after_the_lease_releases_the_lane_once_the_lock_frees(
+        self,
+    ) -> None:
+        self._seed()
+
+        with (
+            self._another_operation() as hold,
+            mock.patch.object(
+                qa_lane, "run_gate", side_effect=self._gate_then(lambda: hold(0.5))
+            ),
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(
+            caught.exception.message, "ledger is locked by another operation"
+        )
+        self._assert_transient_failure_released()
+        with mock.patch.object(qa_lane, "run_gate", return_value=_passing_gate()):
+            result = qa_lane.run(self.args, self._ops())
+        self.assertEqual(result["state"], "reported")
+
+    def test_a_ledger_busy_past_the_wait_names_the_lane_left_held(self) -> None:
+        self._seed()
+
+        with (
+            mock.patch.object(qa_lane, "RELEASE_LOCK_WAIT_SECONDS", 0.5),
+            self._another_operation() as hold,
+            mock.patch.object(
+                qa_lane, "run_gate", side_effect=self._gate_then(lambda: hold(None))
+            ),
+            self.assertRaises(coordinator.CoordinatorError) as caught,
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        lease = qa_lane._lease(self.ledger)
+        assert lease is not None
+        self.assertEqual(qa_lane._owner(lease), ("dispatch", DISPATCH_ID))
+        self.assertIn(f"dispatch {DISPATCH_ID}", caught.exception.message)
+        self.assertIn(str(lease["expires_at"]), caught.exception.message)
+        self.assertRemedy(caught)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(status["state"], "working")
+
+    def _clear_expired_lease(self) -> JsonObject:
+        """Expire the current lease, then clear it as an operator who checked its owner."""
+        lease = qa_lane._lease(self.ledger)
+        assert lease is not None
+        expired = {
+            **lease,
+            "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat(),
+        }
+        with self.ledger.lock():
+            self.ledger.replace(qa_lane._lane_path(self.ledger), expired)
+        return qa_lane.clear_stale_lease(
+            _ns(
+                repo=str(self.repo),
+                state_dir=None,
+                expected_host=expired["host"],
+                expected_pid=expired["pid"],
+                expected_expiry=expired["expires_at"],
+                reason="lane left held",
+            ),
+            cast(
+                QaWorkflowOps,
+                _Ops(
+                    _approval=lambda args: {
+                        "approved_by": "operator",
+                        "approved_at": "now",
+                    }
+                ),
+            ),
+        )
+
+    def test_clearing_the_lane_left_held_lets_the_same_dispatch_run_again(
+        self,
+    ) -> None:
+        self._seed()
+        with (
+            mock.patch.object(qa_lane, "RELEASE_LOCK_WAIT_SECONDS", 0.5),
+            self._another_operation() as hold,
+            mock.patch.object(
+                qa_lane, "run_gate", side_effect=self._gate_then(lambda: hold(None))
+            ),
+            self.assertRaises(coordinator.CoordinatorError),
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        cleared = self._clear_expired_lease()
+
+        self.assertEqual(cleared["restored_dispatch_state"], "approved")
+        batch = coordinator._load_batch(self.root, BATCH_ID)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(batch["dispatches"][0]["state"], "approved")
+        self.assertEqual(status["state"], "approved")
+        recovery = coordinator._read_object(
+            next((self.lane / "recoveries").glob("*.json")), "recovery"
+        )
+        self.assertEqual(recovery["restored_dispatch_state"], "approved")
+        with mock.patch.object(qa_lane, "run_gate", return_value=_passing_gate()):
+            result = qa_lane.run(self.args, self._ops())
+        self.assertEqual(result["state"], "reported")
+
+    def test_clearing_a_lease_keeps_a_reported_dispatch_as_it_is(self) -> None:
+        self._seed(batch_state="reported", status_state="reported")
+        with self.ledger.lock():
+            qa_lane.acquire(self.ledger, DISPATCH_ID, lease_seconds=60)
+
+        cleared = self._clear_expired_lease()
+
+        self.assertIsNone(cleared["restored_dispatch_state"])
+        batch = coordinator._load_batch(self.root, BATCH_ID)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(batch["dispatches"][0]["state"], "reported")
+        self.assertEqual(status["state"], "reported")
+
+    def test_a_late_rollback_keeps_a_lease_a_newer_run_of_the_dispatch_took(
+        self,
+    ) -> None:
+        self._seed()
+        retaken: list[JsonObject] = []
+
+        def cleared_and_run_again(*arguments: object, **keywords: object) -> GateResult:
+            # The run outlived its lease: an operator cleared it and the dispatch ran again.
+            with self.ledger.lock():
+                for path, _ in qa_lane._queue_entries(self.ledger):
+                    qa_lane._delete_record(self.ledger, path, reason="test clearance")
+                qa_lane._delete_record(
+                    self.ledger,
+                    qa_lane._lane_path(self.ledger),
+                    reason="test clearance",
+                )
+                admission = qa_lane.acquire(self.ledger, DISPATCH_ID, lease_seconds=60)
+                retaken.append(admission["lease"])
+            raise GateRunnerError("checkout failed", remedy="fix the candidate commit")
+
+        with (
+            mock.patch.object(qa_lane, "run_gate", side_effect=cleared_and_run_again),
+            self.assertRaises(coordinator.CoordinatorError),
+        ):
+            qa_lane.run(self.args, self._ops())
+
+        self.assertEqual(qa_lane._lease(self.ledger), retaken[0])
+        self.assertEqual(len(qa_lane._queue_entries(self.ledger)), 1)
+        batch = coordinator._load_batch(self.root, BATCH_ID)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(batch["dispatches"][0]["state"], "dispatched")
+        self.assertEqual(status["state"], "working")
+
+    def _assert_busy_release_keeps_a_lease_taken_over_by(
+        self, owner: tuple[str, str]
+    ) -> None:
+        self._seed()
+        kind, identity = owner
+
+        with (
+            self._another_operation() as hold,
+            self.assertRaises(coordinator.CoordinatorError),
+        ):
+
+            def taken_over_then_busy() -> None:
+                # The run outlived its lease: the lease was cleared and another owner took the lane.
+                with self.ledger.lock():
+                    for path, _ in qa_lane._queue_entries(self.ledger):
+                        qa_lane._delete_record(
+                            self.ledger, path, reason="test takeover"
+                        )
+                    qa_lane._delete_record(
+                        self.ledger,
+                        qa_lane._lane_path(self.ledger),
+                        reason="test takeover",
+                    )
+                    qa_lane.acquire(
+                        self.ledger, identity, owner_kind=kind, lease_seconds=60
+                    )
+                hold(0.5)
+
+            with mock.patch.object(
+                qa_lane, "run_gate", side_effect=self._gate_then(taken_over_then_busy)
+            ):
+                qa_lane.run(self.args, self._ops())
+
+        lease = qa_lane._lease(self.ledger)
+        assert lease is not None
+        self.assertEqual(qa_lane._owner(lease), owner)
+        status = coordinator._load_dispatch_status(self.root, DISPATCH_ID)
+        self.assertEqual(status["state"], "approved")
+
+    def test_a_busy_release_keeps_a_lease_another_dispatch_took_over(self) -> None:
+        self._assert_busy_release_keeps_a_lease_taken_over_by(
+            ("dispatch", OTHER_DISPATCH_ID)
+        )
+
+    def test_a_busy_release_keeps_a_local_lease_without_a_dispatch(self) -> None:
+        self._assert_busy_release_keeps_a_lease_taken_over_by(
+            ("local-qa", "local-qa-" + "c" * 32)
+        )
+
+    def test_a_busy_ledger_after_the_report_still_releases_the_lane(self) -> None:
+        self._seed()
+        persisted: list[dict[str, object]] = []
+        original_lock = qa_lane._lock
+        took_over: list[bool] = []
+
+        with self._another_operation() as hold:
+
+            @contextlib.contextmanager
+            def busy_after_report(ledger: LifecycleLedger) -> Iterator[None]:
+                with original_lock(ledger):
+                    yield
+                if persisted and not took_over:
+                    # Another operation takes the ledger as soon as the report's lock is released.
+                    took_over.append(True)
+                    hold(0.5)
+
+            with (
+                mock.patch.object(qa_lane, "run_gate", return_value=_passing_gate()),
+                mock.patch.object(qa_lane, "_lock", busy_after_report),
+            ):
+                result = qa_lane.run(self.args, self._ops(persisted))
+
+        self.assertEqual(took_over, [True])
+        self.assertEqual(result["state"], "reported")
+        self.assertIsNone(qa_lane._lease(self.ledger))
+        self.assertEqual(qa_lane._queue_entries(self.ledger), [])
 
     def test_a_transient_failure_keeps_a_lease_another_owner_took_over(self) -> None:
         self._seed()

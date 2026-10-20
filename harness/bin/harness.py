@@ -1523,7 +1523,8 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     cleanup = commands.add_parser(
-        "cleanup", help="preview or remove disposable .harness data"
+        "cleanup",
+        help="preview or remove disposable .harness data and orphaned container resources",
     )
     cleanup.add_argument("repo")
     cleanup.add_argument("--mode", choices=("soft", "hard"), default="soft")

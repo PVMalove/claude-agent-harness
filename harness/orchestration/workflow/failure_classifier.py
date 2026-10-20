@@ -7,8 +7,10 @@ scope or requirements problem wins over an infrastructure sign, and unknown text
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Mapping
+from pathlib import Path
 
 from harness.orchestration.core.utils import JsonObject
 
@@ -71,6 +73,63 @@ def classify(*texts: object) -> JsonObject | None:
                 "text": joined[:500],
             }
     return None
+
+
+# The environment refused a write (issue #769): an outer sandbox's read-only /tmp, for example. A
+# permission error counts only on an absolute path outside the repository, where the candidate's
+# code cannot be at fault.
+READ_ONLY_PATTERN = re.compile(
+    r"read-only file system|\berofs\b|\[errno 30\]", re.IGNORECASE
+)
+PERMISSION_PATTERN = re.compile(
+    r"permission denied:?\s*['\"]?(/[^'\"\s]+)", re.IGNORECASE
+)
+# A failed-test summary line (pytest's `FAILED <id> - <reason>`); each must name an environment sign.
+FAILURE_LINE = re.compile(r"^(?:FAILED|ERROR)\b")
+
+
+def _outside(path: str, repo: Path) -> bool:
+    root = os.path.normpath(repo)
+    return os.path.commonpath([os.path.normpath(path), root]) != root
+
+
+def _environment_sign(line: str, repo: Path) -> tuple[str, str] | None:
+    match = READ_ONLY_PATTERN.search(line)
+    if match:
+        return "read-only-filesystem", match.group(0)
+    match = PERMISSION_PATTERN.search(line)
+    if match and _outside(match.group(1), repo):
+        return "permission-denied", match.group(0)
+    return None
+
+
+def classify_environment(text: object, repo: Path) -> JsonObject | None:
+    """The environment category of a failed check's output, or None when the code may be at fault.
+
+    Any code-defect sign wins, and so does a failed-test line without an environment sign: a real
+    test failure next to the environment one still routes to a developer retry.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    lowered = text.lower()
+    if any(re.search(p, lowered) for p in CODE_DEFECT_PATTERNS):
+        return None
+    signs = []
+    for line in text.splitlines():
+        sign = _environment_sign(line, repo)
+        if sign is not None:
+            signs.append(sign)
+        elif FAILURE_LINE.match(line.strip()):
+            return None
+    if not signs:
+        return None
+    category, matched = signs[0]
+    return {
+        "method": "heuristic",
+        "category": category,
+        "matched": matched,
+        "text": text[:500],
+    }
 
 
 # Categories a runtime adapter or probe may name in a structured field, and the HTTP statuses

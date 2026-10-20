@@ -8,14 +8,13 @@
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Iterator
 from pathlib import Path
 from typing import TypeGuard, cast
 
-from harness.configuration import read_config_file
+from harness.configuration import read_config_file, parse_config_json
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from .core.constants import (
@@ -27,12 +26,23 @@ from .core.constants import (
     DEFAULT_RETRY_POLICY,
     SENSITIVE_KEY,
 )
+from .core.system_fields import enum_problem, enum_remedy, near_miss
 from .extensions import DEFAULT_EXTENSION, EXTENSION_KINDS, EXTENSION_NAME
 from harness.json_types import JsonObject as JsonObject
 
 ROLE_MODES = {"write", "read-only"}
 ROLE_TRANSPORTS = {"in-process", "external"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*")
+# An image reference becomes one argv element of the engine: no spaces, and never a leading '-'
+# that the engine would read as an option.
+CONTAINER_IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}")
+# A variable name only, never ``NAME=value``: the engine reads the value from its own environment.
+ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# Without a container default the built-in executor would leave a role plan without an image.
+DOCKER_CONTAINER_PROBLEM = (
+    "orchestration extensions.runtime_access 'docker' requires "
+    "access_policy.defaults.container with a worker_image"
+)
 EFFORT_LEVELS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 )
@@ -43,6 +53,12 @@ CONFIG_REQUIRED_FIELDS = (
     "concurrency_budget",
     "verification_commands",
 )
+EMPTY_SEED_CONFIG: JsonObject = {
+    "provider_profiles": {},
+    "assignment_plans": {},
+    "concurrency_budget": 1,
+    "verification_commands": [],
+}
 CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "$schema",
     # Legacy zone model: still accepted so an existing project config keeps validating, never required.
@@ -113,6 +129,33 @@ CODE_REVIEW_REQUIRED_RISK_TRIGGERS = frozenset(
 
 class ContractError(HarnessError):
     """Манифест, назначение или неизменяемое задание нарушают переносимую ролевую политику."""
+
+
+def fallback_cycles(graph: Mapping[str, list[str]]) -> list[str]:
+    """Cycle members in declared fallback chains, without recursion or execution."""
+    visited: set[str] = set()
+    cyclic: set[str] = set()
+    for start in graph:
+        if start in visited:
+            continue
+        path = [start]
+        positions = {start: 0}
+        frames: list[tuple[str, Iterator[str]]] = [(start, iter(graph.get(start, [])))]
+        while frames:
+            node, edges = frames[-1]
+            target = next(edges, None)
+            if target is None:
+                frames.pop()
+                path.pop()
+                positions.pop(node)
+                visited.add(node)
+            elif target in positions:
+                cyclic.update(path[positions[target] :])
+            elif target not in visited:
+                positions[target] = len(path)
+                path.append(target)
+                frames.append((target, iter(graph.get(target, []))))
+    return sorted(cyclic)
 
 
 def non_empty(value: object) -> TypeGuard[str]:
@@ -402,14 +445,12 @@ def _valid_model(value: object) -> str:
 
 
 def _valid_effort(value: object) -> str:
-    """Проверить и вернуть допустимый уровень рассуждений (effort)."""
-    if not non_empty(value) or value.strip() not in EFFORT_LEVELS:
+    """Проверить и вернуть допустимый уровень рассуждений (effort): только точное значение."""
+    if problem := enum_problem("assignment effort", value, EFFORT_LEVELS):
         raise ContractError(
-            "assignment effort must be one of: " + ", ".join(sorted(EFFORT_LEVELS)),
-            remedy="set the assignment's effort to one of: "
-            + ", ".join(sorted(EFFORT_LEVELS)),
+            problem, remedy=enum_remedy("the assignment's effort", EFFORT_LEVELS)
         )
-    return value.strip()
+    return str(value)
 
 
 def resolve_runtime_name(plan: Mapping[str, object], requested: object) -> str:
@@ -485,7 +526,12 @@ def resolve_assignment(
             "project orchestration config has invalid assignments or profiles",
             remedy="set assignment_plans and provider_profiles to objects in the project orchestration config",
         )
-    if role.get("name") != role_name or role.get("mode") not in ROLE_MODES:
+    mode = role.get("mode")
+    if (
+        role.get("name") != role_name
+        or not isinstance(mode, str)
+        or mode not in ROLE_MODES
+    ):
         raise ContractError(
             f"role manifest {role_name!r} has invalid name or mode",
             remedy=f"set the role manifest's name to {role_name!r} and mode to one of {sorted(ROLE_MODES)}",
@@ -503,10 +549,14 @@ def resolve_assignment(
             remedy=f"add assignment_plans[{role_name!r}] to the project orchestration config",
         )
     transport = plan.get("transport", "in-process")
-    if transport not in ROLE_TRANSPORTS:
+    if problem := enum_problem(
+        f"role {role_name!r} transport", transport, ROLE_TRANSPORTS
+    ):
         raise ContractError(
-            f"role {role_name!r} has an invalid transport",
-            remedy=f"set assignment_plans[{role_name!r}].transport to one of {sorted(ROLE_TRANSPORTS)}",
+            problem,
+            remedy=enum_remedy(
+                f"assignment_plans[{role_name!r}].transport", ROLE_TRANSPORTS
+            ),
         )
     write_paths = role_write_ceiling(config, plan, role_name)
     runtimes = plan.get("runtimes")
@@ -568,6 +618,7 @@ def validate_brief_policy(
     roles_root: Path,
     *,
     expected_transport: str | None = None,
+    role_manifest: JsonObject | None = None,
     allowed_paths: list[str] | None = None,
 ) -> tuple[JsonObject, JsonObject]:
     """Валидировать относящуюся к политикам часть утверждённого неизменяемого задания диспетчеризации.
@@ -713,7 +764,11 @@ def validate_brief_policy(
             remedy=f"use an issue branch matching {pattern!r}, never {base!r} or an integration/* branch",
         )
     role_name = brief["role"]
-    role = load_role_manifest(roles_root / f"{role_name}.md")
+    role = (
+        role_manifest
+        if role_manifest is not None
+        else load_role_manifest(roles_root / f"{role_name}.md")
+    )
     assignment = resolve_assignment(
         config, role, role_name, brief.get("resolved_runtime")
     )
@@ -863,6 +918,11 @@ def accepted_verification_commands(
     return accepted
 
 
+def _allowed_names(names: Iterable[str]) -> str:
+    """The suffix of an unknown-key problem: the exact names the key may take."""
+    return f" (allowed: {', '.join(sorted(names))})"
+
+
 def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
     """Валидировать политику Repo Map без импорта её базовых ресурсов возможностей."""
     value = config.get("repo_map_policy")
@@ -917,12 +977,11 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
                 )
     for field, choices in enum_values.items():
         if field in value and (
-            not isinstance(value[field], str) or value[field] not in choices
-        ):
-            problems.append(
-                f"orchestration repo_map_policy.{field} must be one of: "
-                + ", ".join(sorted(choices))
+            problem := enum_problem(
+                f"orchestration repo_map_policy.{field}", value[field], choices
             )
+        ):
+            problems.append(problem)
     if "min_tier_by_role" in value:
         by_role = value["min_tier_by_role"]
         if not isinstance(by_role, dict):
@@ -934,12 +993,14 @@ def _repo_map_policy_problems(config: Mapping[str, object]) -> list[str]:
                 if role_name not in REPO_MAP_POLICY_ROLES:
                     problems.append(
                         f"orchestration repo_map_policy.min_tier_by_role names unknown role {role_name!r}"
+                        + _allowed_names(REPO_MAP_POLICY_ROLES)
                     )
-                if not isinstance(tier, str) or tier not in REPO_MAP_TIER_ORDER:
-                    problems.append(
-                        f"orchestration repo_map_policy.min_tier_by_role.{role_name} must be one of: "
-                        + ", ".join(sorted(REPO_MAP_TIER_ORDER))
-                    )
+                if problem := enum_problem(
+                    f"orchestration repo_map_policy.min_tier_by_role.{role_name}",
+                    tier,
+                    REPO_MAP_TIER_ORDER,
+                ):
+                    problems.append(problem)
     return problems
 
 
@@ -1010,6 +1071,7 @@ def _tool_policy_problems(
             if name not in known:
                 problems.append(
                     f"orchestration tool_policy.{section} names unknown entry {name!r}"
+                    + _allowed_names(known)
                 )
             if not valid_tool_list(tools):
                 problems.append(
@@ -1078,14 +1140,20 @@ def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
             if unknown:
                 problems.append(
                     f"orchestration extensions has unknown interface(s): {', '.join(unknown)}"
+                    + _allowed_names(EXTENSION_KINDS)
                 )
             for kind, name in selected.items():
-                if kind in EXTENSION_KINDS and (
-                    not isinstance(name, str)
-                    or (
-                        name != DEFAULT_EXTENSION
-                        and EXTENSION_NAME.fullmatch(name) is None
+                if kind not in EXTENSION_KINDS:
+                    continue
+                # A spelling of 'none' is never taken for a module named 'None'.
+                variant = near_miss(name, (DEFAULT_EXTENSION,))
+                if variant:
+                    problems.append(
+                        f"orchestration extensions.{kind} must be 'none' or a name like 'module:factory' "
+                        f"(got {name!r}; write exactly {DEFAULT_EXTENSION!r})"
                     )
+                elif not isinstance(name, str) or (
+                    name != DEFAULT_EXTENSION and EXTENSION_NAME.fullmatch(name) is None
                 ):
                     problems.append(
                         f"orchestration extensions.{kind} must be 'none' or a name like 'module:factory'"
@@ -1095,7 +1163,13 @@ def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
 
 def access_policy_problems(value: object, roles: set[str]) -> list[str]:
     """Validate authored access independently of role transport and tool policy."""
-    from .core.constants import ACCESS_MODES, ACCESS_OPERATIONS, ACCESS_RESOURCES
+    from .core.constants import (
+        ACCESS_MODES,
+        ACCESS_OPERATIONS,
+        ACCESS_PERMISSIONS,
+        ACCESS_RESOURCES,
+        CONTAINER_ENGINES,
+    )
 
     errors: list[str] = []
     host_pattern = re.compile(
@@ -1103,11 +1177,53 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
     )
 
     def component(item: object, label: str) -> None:
-        if not isinstance(item, dict) or set(item) - {"mode", "network", "filesystem"}:
+        if not isinstance(item, dict) or set(item) - {
+            "mode",
+            "network",
+            "filesystem",
+            "container",
+            "environment",
+        }:
             errors.append(f"{label} must be an access component object with known keys")
             return
-        if "mode" in item and item["mode"] not in ACCESS_MODES:
-            errors.append(f"{label}.mode must be inherit, sandbox or unsandboxed")
+        if "mode" in item and (
+            problem := enum_problem(f"{label}.mode", item["mode"], ACCESS_MODES)
+        ):
+            errors.append(problem)
+        if "container" in item:
+            container = item["container"]
+            if (
+                not isinstance(container, dict)
+                or set(container) - {"engine", "worker_image", "proxy_image"}
+                or "worker_image" not in container
+                or container.get("engine", CONTAINER_ENGINES[0])
+                not in CONTAINER_ENGINES
+                or any(
+                    not isinstance(container[key], str)
+                    or CONTAINER_IMAGE_REF.fullmatch(container[key]) is None
+                    for key in ("worker_image", "proxy_image")
+                    if key in container
+                )
+            ):
+                errors.append(
+                    f"{label}.container must name a worker_image, an optional proxy_image as "
+                    "image references without spaces or a leading '-', and an optional engine "
+                    "docker or podman"
+                )
+        if "environment" in item:
+            names = item["environment"]
+            if (
+                not isinstance(names, list)
+                or any(
+                    not isinstance(name, str)
+                    or ENVIRONMENT_NAME.fullmatch(name) is None
+                    for name in names
+                )
+                or len(set(names)) != len(names)
+            ):
+                errors.append(
+                    f"{label}.environment must list unique variable names, never values"
+                )
         if "network" in item:
             network = item["network"]
             hosts = network.get("hosts") if isinstance(network, dict) else None
@@ -1136,26 +1252,43 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
             if not isinstance(filesystem, list):
                 errors.append(f"{label}.filesystem must be a list")
                 return
+            invalid = f"{label}.filesystem has an invalid resource/access requirement; cache needs an explicit path"
             for requirement in filesystem:
-                if (
-                    not isinstance(requirement, dict)
-                    or set(requirement) - {"resource", "access", "path"}
-                    or requirement.get("resource") not in ACCESS_RESOURCES
-                    or requirement.get("access") not in ("read", "write")
-                    or (
-                        requirement.get("resource") == "cache"
+                if not isinstance(requirement, dict) or set(requirement) - {
+                    "resource",
+                    "access",
+                    "path",
+                }:
+                    errors.append(invalid)
+                    continue
+                values = [
+                    problem
+                    for problem in (
+                        enum_problem(
+                            f"{label}.filesystem resource",
+                            requirement.get("resource"),
+                            ACCESS_RESOURCES,
+                        ),
+                        enum_problem(
+                            f"{label}.filesystem access",
+                            requirement.get("access"),
+                            ACCESS_PERMISSIONS,
+                        ),
+                    )
+                    if problem
+                ]
+                errors.extend(values)
+                if not values and (
+                    (
+                        requirement["resource"] == "cache"
                         and (
                             not non_empty(requirement.get("path"))
                             or "\x00" in requirement["path"]
                         )
                     )
-                    or (
-                        requirement.get("resource") != "cache" and "path" in requirement
-                    )
+                    or (requirement["resource"] != "cache" and "path" in requirement)
                 ):
-                    errors.append(
-                        f"{label}.filesystem has an invalid resource/access requirement; cache needs an explicit path"
-                    )
+                    errors.append(invalid)
 
     if not isinstance(value, dict) or set(value) - {"defaults", "roles", "operations"}:
         return [
@@ -1172,7 +1305,10 @@ def access_policy_problems(value: object, roles: set[str]) -> list[str]:
             continue
         for name, item in overrides.items():
             if name not in names:
-                errors.append(f"access_policy.{section} has unknown name {name!r}")
+                errors.append(
+                    f"access_policy.{section} has unknown name {name!r}"
+                    + _allowed_names(names)
+                )
             component(item, f"access_policy.{section}.{name}")
     return errors
 
@@ -1184,7 +1320,7 @@ def health_problems(config_path: Path, roles_root: Path) -> list[str]:
         raw = read_config_file(config_path)
         if raw is None:
             return problems
-        config = json.loads(raw)
+        config = parse_config_json(raw)
     except (OSError, ValueError) as exc:
         return [f"{config_path.as_posix()} is not valid JSON: {exc}"]
     if not isinstance(config, dict):
@@ -1197,6 +1333,20 @@ def configuration_problems(
 ) -> list[str]:
     """Validate a draft without writing it to the active project config."""
     problems: list[str] = []
+    # No shipped config field has a nullable type. Missing optional fields are different
+    # from explicitly authored nulls, including in nested policies.
+    pending: list[object] = [config]
+    while pending:
+        item = pending.pop()
+        if item is None:
+            problems.append(
+                "orchestration configuration does not allow explicit null values"
+            )
+            break
+        if isinstance(item, dict):
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
     reject_error: ContractError | None = None
     try:
         reject_sensitive(config, "project orchestration config")
@@ -1205,9 +1355,7 @@ def configuration_problems(
     if reject_error:
         problems.append(str(reject_error))
     # Access-only projects keep session assignments; validate authored values before defaults.
-    if (
-        "access_policy" in config or "infrastructure_retry_policy" in config
-    ) and not any(
+    if not any(
         config.get(key)
         for key in ("assignment_plans", "backend_zones", "provider_profiles")
     ):
@@ -1226,7 +1374,10 @@ def configuration_problems(
         problems.append(f"{location} has unknown field(s): {', '.join(extra)}")
     roles: dict[str, JsonObject] = {}
     if not roles_root.is_dir():
-        problems.append("missing .harness/orchestration/roles")
+        if {
+            key: value for key, value in config.items() if key != "$schema"
+        } != EMPTY_SEED_CONFIG:
+            problems.append("missing .harness/orchestration/roles")
     else:
         for path in sorted(roles_root.glob("*.md")):
             if path.stem == "_common":
@@ -1247,10 +1398,12 @@ def configuration_problems(
                 problems.append(
                     f"orchestration role manifest {path.name} name must be {path.stem!r}"
                 )
-            if role.get("mode") not in ROLE_MODES:
-                problems.append(
-                    f"orchestration role manifest {path.name} mode must be 'write' or 'read-only'"
-                )
+            if problem := enum_problem(
+                f"orchestration role manifest {path.name} mode",
+                role.get("mode"),
+                ROLE_MODES,
+            ):
+                problems.append(problem)
             if not string_list(role.get("required_capabilities")):
                 problems.append(
                     f"orchestration role manifest {path.name} required_capabilities must be a non-empty list"
@@ -1283,6 +1436,15 @@ def configuration_problems(
             )
     if "access_policy" in config:
         problems.extend(access_policy_problems(config["access_policy"], set(roles)))
+    selected_extensions = config.get("extensions")
+    policy = config.get("access_policy")
+    defaults = policy.get("defaults") if isinstance(policy, dict) else None
+    if (
+        isinstance(selected_extensions, dict)
+        and selected_extensions.get("runtime_access") == "docker"
+        and not (isinstance(defaults, dict) and "container" in defaults)
+    ):
+        problems.append(DOCKER_CONTAINER_PROBLEM)
     profiles = config.get("provider_profiles")
     profile_capabilities: dict[str, set[str]] = {}
     profile_fallbacks: dict[str, list[str]] = {}
@@ -1335,6 +1497,10 @@ def configuration_problems(
                 problems.append(
                     f"provider profile {profile_id!r} references unknown fallback profile {fallback_id!r}"
                 )
+    for profile_id in fallback_cycles(profile_fallbacks):
+        problems.append(
+            f"provider profile {profile_id!r} fallback chain contains a cycle"
+        )
     # backend_zones is a legacy declaration: optional, validated only when a project still states it.
     zones = config.get("backend_zones", {})
     if not isinstance(zones, dict):
@@ -1379,11 +1545,14 @@ def configuration_problems(
                 problems.append(
                     f"assignment plan for role {role_name!r} cannot override role manifest fields: {', '.join(extra_plan)}"
                 )
-            if "transport" in plan and plan["transport"] not in ROLE_TRANSPORTS:
-                problems.append(
-                    f"assignment plan for role {role_name!r} transport must be one of: "
-                    + ", ".join(sorted(ROLE_TRANSPORTS))
+            if "transport" in plan and (
+                problem := enum_problem(
+                    f"assignment plan for role {role_name!r} transport",
+                    plan["transport"],
+                    ROLE_TRANSPORTS,
                 )
+            ):
+                problems.append(problem)
             zone_id = plan.get("zone")
             if "zone" in plan and not non_empty(zone_id):
                 problems.append(
@@ -1445,22 +1614,26 @@ def configuration_problems(
                         f"assignment runtime {runtime_name!r} for role {role_name!r} profiles must be a non-empty list"
                     )
                     profile_ids = []
-                for field in ("model", "effort"):
-                    if not non_empty(runtime.get(field)):
-                        problems.append(
-                            f"assignment runtime {runtime_name!r} for role {role_name!r} {field} must be a non-empty string"
-                        )
+                if not non_empty(runtime.get("model")):
+                    problems.append(
+                        f"assignment runtime {runtime_name!r} for role {role_name!r} model must be a non-empty string"
+                    )
                 model = runtime.get("model")
                 if non_empty(model) and MODEL_ID.fullmatch(model.strip()) is None:
                     problems.append(
                         f"assignment runtime {runtime_name!r} for role {role_name!r} model must be a CLI model ID or alias without spaces"
                     )
-                effort = runtime.get("effort")
-                if non_empty(effort) and effort.strip() not in EFFORT_LEVELS:
+                # A present effort gets exactly one problem: the exact-value refusal.
+                if "effort" not in runtime:
                     problems.append(
-                        f"assignment runtime {runtime_name!r} for role {role_name!r} effort must be one of: "
-                        + ", ".join(sorted(EFFORT_LEVELS))
+                        f"assignment runtime {runtime_name!r} for role {role_name!r} effort must be a non-empty string"
                     )
+                elif problem := enum_problem(
+                    f"assignment runtime {runtime_name!r} for role {role_name!r} effort",
+                    runtime["effort"],
+                    EFFORT_LEVELS,
+                ):
+                    problems.append(problem)
                 for profile_id in profile_ids:
                     if profile_id not in profiles:
                         problems.append(
@@ -1507,17 +1680,15 @@ def configuration_problems(
                 f"orchestration {qa_key} must be a list of strings when provided"
             )
     approval_policy = config.get("approval_policy", "manual_all")
-    if approval_policy not in APPROVAL_POLICIES:
-        problems.append(
-            "orchestration approval_policy must be one of: "
-            + ", ".join(sorted(APPROVAL_POLICIES))
-        )
+    if problem := enum_problem(
+        "orchestration approval_policy", approval_policy, APPROVAL_POLICIES
+    ):
+        problems.append(problem)
     human_gate = config.get("human_approval_gate", "trusted")
-    if human_gate not in HUMAN_APPROVAL_GATES:
-        problems.append(
-            "orchestration human_approval_gate must be one of: "
-            + ", ".join(sorted(HUMAN_APPROVAL_GATES))
-        )
+    if problem := enum_problem(
+        "orchestration human_approval_gate", human_gate, HUMAN_APPROVAL_GATES
+    ):
+        problems.append(problem)
     if approval_policy == "auto":
         if human_gate == "tty":
             problems.append(AUTO_TTY_PROBLEM)
@@ -1557,13 +1728,18 @@ def configuration_problems(
             problems.append(
                 "orchestration communication_policy must contain exactly agent_to_agent_language and coordinator_report_language"
             )
-        elif any(
-            value not in COMMUNICATION_LANGUAGES
-            for value in communication_policy.values()
-        ):
-            problems.append(
-                "orchestration communication_policy languages must be en or ru"
+        elif languages := [
+            problem
+            for field in sorted(COMMUNICATION_POLICY_FIELDS)
+            if (
+                problem := enum_problem(
+                    f"orchestration communication_policy.{field}",
+                    communication_policy[field],
+                    COMMUNICATION_LANGUAGES,
+                )
             )
+        ]:
+            problems.extend(languages)
         elif communication_policy["agent_to_agent_language"] != "en":
             problems.append(
                 "orchestration communication_policy agent_to_agent_language must be en"
@@ -1621,12 +1797,12 @@ def configuration_problems(
             booleans={"require_estimates"},
         )
     )
-    auto_retry_severity = config.get("auto_retry_min_severity")
-    if (
-        auto_retry_severity is not None
-        and auto_retry_severity not in AUTO_RETRY_SEVERITIES
-    ):
-        problems.append(
-            "orchestration auto_retry_min_severity must be info, warning, error or blocker"
+    if "auto_retry_min_severity" in config and (
+        problem := enum_problem(
+            "orchestration auto_retry_min_severity",
+            config["auto_retry_min_severity"],
+            AUTO_RETRY_SEVERITIES,
         )
+    ):
+        problems.append(problem)
     return problems

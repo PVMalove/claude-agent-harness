@@ -47,6 +47,7 @@ from harness.orchestration.core.constants import (
     CARRIED_ITEM_SOURCES,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTEXT_PACKAGE_FIELDS,
+    ContextPackageFreshness,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
@@ -457,7 +458,9 @@ def _context_package_freshness(
             else {}
         ),
         "context_package_id": package["context_package_id"],
-        "status": "fresh" if fresh else "stale",
+        "status": ContextPackageFreshness.FRESH
+        if fresh
+        else ContextPackageFreshness.STALE,
         "checked_at": utils._now(),
         "registered_base_commit": package["base_commit"],
         "current_base_commit": current_base,
@@ -1145,7 +1148,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="create a fresh approved dispatch after a recorded recovery event",
         )
     policy = dispatch["orchestration_policy"]
-    if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
+    if not isinstance(policy, dict) or set(policy) - {
+        "infrastructure_retry",
+        "configuration",
+    } != {
         "approval_ttl_seconds",
         "attention",
         "context_pressure",
@@ -1156,6 +1162,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    if "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        read_snapshot(dispatch)
     from harness.orchestration.infrastructure_retry import pinned
 
     pinned(dispatch)
@@ -1284,6 +1294,13 @@ def _validate_resolver_section(dispatch: JsonObject) -> None:
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
+    pinned: JsonObject | None = None
+    policy = dispatch.get("orchestration_policy")
+    if isinstance(policy, dict) and "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        pinned = read_snapshot(dispatch)
+        config = pinned["config"]
     _validate_harness_runtime_snapshot(repo, batch)
     from harness.orchestration.workflow import preserved_progress
 
@@ -1328,8 +1345,14 @@ def _validate_dispatch(
     accepted |= {fields - {"runtime_access"} for fields in set(accepted)}
     # The delta-review scope of a code-review after a fix-forward (issue #625) came after that.
     accepted |= {fields - {"delta_review_scope"} for fields in set(accepted)}
-    # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
+    # The conflict-resolver brief's resolver section (issue #534) is one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
+    # The image digests a docker brief pins (issue #704) only ever accompany its access plan.
+    accepted |= {
+        fields | {"runtime_images"}
+        for fields in set(accepted)
+        if "runtime_access" in fields
+    }
     accepted |= {fields | {"preserved_progress"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
@@ -1506,9 +1529,10 @@ def _validate_dispatch(
         try:
             _, assignment = validate_brief_policy(
                 dispatch,
-                _project(repo),
+                pinned["project"] if pinned is not None else _project(repo),
                 config,
                 _roles_dir(repo),
+                role_manifest=pinned["role"] if pinned is not None else None,
                 allowed_paths=cast(list[str] | None, batch.get("allowed_paths")),
             )
         except ContractError as exc:
@@ -1526,6 +1550,8 @@ def _validate_dispatch(
                 dispatch["resolved_runtime"],
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
+                replay=True,
+                role_manifest=pinned["role"] if pinned is not None else None,
             )
         )
         if (

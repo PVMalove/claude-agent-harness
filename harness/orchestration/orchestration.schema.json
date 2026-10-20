@@ -5,16 +5,15 @@
   "type": "object",
   "additionalProperties": false,
   "anyOf": [
-    {"required": ["provider_profiles", "assignment_plans", "concurrency_budget", "verification_commands"]},
-    {"required": ["access_policy"], "properties": {
-      "provider_profiles": {"maxProperties": 0},
-      "assignment_plans": {"maxProperties": 0},
-      "backend_zones": {"maxProperties": 0}
-    }},
     {
       "required": [
-        "infrastructure_retry_policy"
-      ],
+        "provider_profiles",
+        "assignment_plans",
+        "concurrency_budget",
+        "verification_commands"
+      ]
+    },
+    {
       "properties": {
         "provider_profiles": {
           "maxProperties": 0
@@ -40,6 +39,26 @@
           "worker_attestation_required": {"const": true}
         },
         "required": ["worker_attestation_required"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "extensions": {
+            "properties": {"runtime_access": {"const": "docker"}},
+            "required": ["runtime_access"]
+          }
+        },
+        "required": ["extensions"]
+      },
+      "then": {
+        "properties": {
+          "access_policy": {
+            "properties": {"defaults": {"required": ["container"]}},
+            "required": ["defaults"]
+          }
+        },
+        "required": ["access_policy"]
       }
     }
   ],
@@ -433,7 +452,7 @@
       "type": "object",
       "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier", "runtime_access"]},
       "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
-      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и подтверждения доступа среды запуска. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'."
+      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и подтверждения доступа среды запуска. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'. Для 'runtime_access' встроено имя 'docker' — контейнерный исполнитель; он требует access_policy.defaults.container."
     },
     "preflight_policy": {
       "type": "object",
@@ -463,6 +482,43 @@
             "sandbox",
             "unsandboxed"
           ]
+        },
+        "container": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker_image"
+          ],
+          "description": "Образы контейнерного исполнителя extensions.runtime_access 'docker'. Override роли или операции заменяет компонент целиком. Resolver не опрашивает движок и образы: digest образов закрепляет dispatch propose. Харнесс образы не собирает и не скачивает.",
+          "properties": {
+            "engine": {
+              "enum": [
+                "docker",
+                "podman"
+              ],
+              "default": "docker",
+              "description": "Движок контейнеров: docker или podman. Режим (rootful или rootless) и SELinux определяет dispatch preflight одним запросом info; удалённый Podman и Docker с userns-remap дают явный блокер до запуска worker-а."
+            },
+            "worker_image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
+              "description": "Тег образа worker-а, например 'harness-worker:local'."
+            },
+            "proxy_image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
+              "description": "Тег образа egress-proxy: собирается из .harness/container/Dockerfile.proxy, харнесс образ не собирает и не скачивает. Обязателен, когда network.hosts не пуст: исполнитель запускает из него отдельный sidecar на внутренней сети dispatch, и worker выходит наружу только через него по HTTP(S) к перечисленным хостам. Если тег задан, образ должен присутствовать, и dispatch propose закрепляет его digest."
+            }
+          }
+        },
+        "environment": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "description": "Имена переменных окружения хоста, которые контейнерный исполнитель передаёт worker-у как '--env NAME' без значения. Значения остаются в окружении хоста и не попадают в конфиг, brief, digest, argv и evidence. Отсутствующая на хосте переменная даёт блокер до запуска. Override роли или операции заменяет список целиком."
         },
         "network": {
           "type": "object",

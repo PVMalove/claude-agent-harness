@@ -66,7 +66,10 @@ def _runner(project: Path, answer: str) -> None:
 
 
 def _run(
-    project: Path, *, env_overrides: dict[str, str | None] | None = None
+    project: Path,
+    *,
+    env_overrides: dict[str, str | None] | None = None,
+    args: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """Run preflight and keep its machine-readable output bounded."""
     environment = dict(
@@ -82,7 +85,11 @@ def _run(
         else:
             environment[key] = value
     return subprocess.run(
-        [find_bash(), str(project / ".claude" / "hooks" / "test-author-preflight.sh")],
+        [
+            find_bash(),
+            str(project / ".claude" / "hooks" / "test-author-preflight.sh"),
+            *args,
+        ],
         cwd=project,
         capture_output=True,
         text=True,
@@ -374,3 +381,54 @@ def test_preflight_preserves_runner_mount_refusal(tmp_path: Path, reason: str) -
         project, json.dumps({"status": "unavailable", "reason": reason, "detail": None})
     )
     assert _answer(_run(project)) == {"status": "disabled", "reason": reason}
+
+
+_MISMATCH = {"status": "disabled", "reason": "checkout_mismatch"}
+
+
+def test_worktree_argument_naming_the_served_checkout_keeps_the_zero_argument_answer(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    link = tmp_path / "project-link"
+    link.symlink_to(project, target_is_directory=True)
+
+    assert _answer(_run(project, args=("--worktree", str(project)))) == {"status": "ok"}
+    # The comparison is canonical: a symlink to the served checkout is the same checkout.
+    assert _answer(_run(project, args=("--worktree", str(link)))) == {"status": "ok"}
+
+
+def test_worktree_argument_naming_another_checkout_is_a_checkout_mismatch(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    worker = tmp_path / "worker-checkout"
+    worker.mkdir()
+
+    result = _run(project, args=("--worktree", str(worker)))
+
+    assert _answer(result) == _MISMATCH
+    assert str(worker) not in result.stdout
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ("--worktree", "missing-directory"),
+        ("--worktree", ""),
+        ("--worktree",),
+        ("--worktree", "{project}", "extra"),
+        ("--unknown", "{project}"),
+        ("{project}",),
+    ],
+)
+def test_unresolvable_or_unknown_arguments_are_a_checkout_mismatch(
+    tmp_path: Path, args: tuple[str, ...]
+) -> None:
+    project = _project(tmp_path)
+    _runner(project, '{"status":"ok"}')
+    argv = tuple(item.replace("{project}", str(project)) for item in args)
+
+    assert _answer(_run(project, args=argv)) == _MISMATCH
