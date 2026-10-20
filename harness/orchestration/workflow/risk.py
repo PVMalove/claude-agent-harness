@@ -340,11 +340,22 @@ def reassessment_remedy(batch: JsonObject) -> tuple[str, str]:
     candidate that must be assessed, or the writer report the batch still waits for."""
     state = reassessment_state(batch)
     if state.kind == BOUND:
+        assess = (
+            f"register a risk assessment for the awaited candidate {state.candidate} (risk assess "
+            f"--batch {batch.get('batch_id')} --candidate-commit {state.candidate})"
+        )
+        if batch.get("next_action") == "verification":
+            # A rewind to verification keeps the registered candidate: the awaited step is a new
+            # verification dispatch and its accept, which make the candidate assessable again.
+            assess += (
+                ", once the verification dispatch for it (dispatch propose --role verification "
+                f"--candidate-commit {state.candidate}) is reported and accepted"
+            )
+        elif batch.get("next_action") != "risk-assessment":
+            assess += ", once its writer report is accepted"
         return (
             "QA is blocked until the awaited candidate is risk-assessed again",
-            f"register a risk assessment for the awaited candidate {state.candidate} (risk assess "
-            f"--batch {batch.get('batch_id')} --candidate-commit {state.candidate}), once its "
-            "writer report is accepted",
+            assess,
         )
     remedy = (
         "wait for the writer report of the rewound writer, accept it, then register the risk "

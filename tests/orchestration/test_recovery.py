@@ -2632,6 +2632,9 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(blocked.returncode, 2, blocked.stdout)
         remedy = blocked.stderr.partition("REMEDY:")[2]
         self.assertIn(candidate, remedy)
+        # The awaited step is the verification dispatch and its accept, not a writer report.
+        self.assertIn("verification", remedy)
+        self.assertNotIn("writer report", remedy)
         self.assertEqual(before, self._ledger_bytes())
         verification = self._dispatch(batch_id, "verification", candidate=candidate)[
             "brief"
