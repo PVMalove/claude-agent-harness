@@ -556,6 +556,13 @@ stay unchanged. Known current writer progress supplies the new startup SHA. A ne
 spends the remaining developer retry budget when its dispatch is created; rewind never resets
 continuation, rate-limit, resolver or attention counters.
 
+A rewind to the writer that retires risk assessments leaves `risk_reassessment_required` true and
+sets `risk_reassessment_pending_next`: the next completed or blocked writer report (the one whose commit `accept-conditional`
+or a verification retry then registers) binds its candidate to the
+requirement (`risk_reassessment_candidate`) and clears the marker. Only `risk assess` of that
+candidate clears it; a rewind to `verification` binds the registered candidate at once, a rewind to
+`code-review` or later clears the requirement, and QA stays refused while it is open.
+
 If the stopped writer made commits or left pending files without submitting a report or
 checkpoint, use the explicit preservation route. First inspect its registered issue worktree,
 full HEAD SHA, branch, and tracked/untracked changes. Stop the actual worker and record
