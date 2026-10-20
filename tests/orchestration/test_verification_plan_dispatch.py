@@ -93,7 +93,9 @@ class PlanFixture(unittest.TestCase):
                 capture_output=True,
             )
 
-    def _configure(self, policy: JsonObject | None) -> None:
+    def _configure(
+        self, policy: JsonObject | None, repo_map_policy: JsonObject | None = None
+    ) -> None:
         config: JsonObject = {
             "provider_profiles": {},
             "assignment_plans": {},
@@ -105,6 +107,8 @@ class PlanFixture(unittest.TestCase):
         }
         if policy is not None:
             config["verification_plan_policy"] = policy
+        if repo_map_policy is not None:
+            config["repo_map_policy"] = repo_map_policy
         (self.fx.repo / ".harness" / "orchestration.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
@@ -271,6 +275,19 @@ class VerificationPlanDispatchTests(PlanFixture):
             ["lint", "tests"],
         )
         self.assertEqual(review["verification_plan"]["max_related_tests"], 5)
+
+    def test_a_repo_map_policy_edit_after_batch_create_does_not_change_the_plan(
+        self,
+    ) -> None:
+        # The Repo Map policy shapes the import graph, so it is frozen with the plan policy.
+        self._configure(POLICY, repo_map_policy={"deny_paths": ["tests/*"]})
+        fx = self.fx
+        batch_id, candidate = self._assessed_candidate()
+        self._configure(POLICY)
+
+        review = fx._reported_review(batch_id, candidate)
+
+        self.assertEqual(review["verification_plan"]["impact"]["related_tests"], [])
 
     def test_a_tampered_plan_no_longer_matches_its_approval(self) -> None:
         self._configure(POLICY)

@@ -156,10 +156,14 @@ class VerificationPlanBatchTests(unittest.TestCase):
         self.fx.setUp()
         self.addCleanup(self.fx.tearDown)
 
-    def _create(self, policy: JsonObject | None) -> JsonObject:
+    def _create(
+        self, policy: JsonObject | None, repo_map_policy: JsonObject | None = None
+    ) -> JsonObject:
         config: JsonObject = {"access_policy": {"defaults": {"mode": "inherit"}}}
         if policy is not None:
             config["verification_plan_policy"] = policy
+        if repo_map_policy is not None:
+            config["repo_map_policy"] = repo_map_policy
         (self.fx.repo / ".harness" / "orchestration.json").write_text(
             json.dumps(config), encoding="utf-8"
         )
@@ -174,6 +178,17 @@ class VerificationPlanBatchTests(unittest.TestCase):
         batch = self._create(None)
 
         self.assertNotIn("verification_plan_policy", batch)
+        self.assertNotIn("repo_map_policy", batch)
+
+    def test_the_repo_map_policy_is_frozen_beside_the_plan_policy(self) -> None:
+        batch = self._create(POLICY, {"deny_paths": ["docs/*"]})
+
+        self.assertEqual(batch["repo_map_policy"], {"deny_paths": ["docs/*"]})
+
+    def test_a_missing_repo_map_policy_is_frozen_as_an_empty_section(self) -> None:
+        batch = self._create(POLICY)
+
+        self.assertEqual(batch["repo_map_policy"], {})
 
 
 def _plan(

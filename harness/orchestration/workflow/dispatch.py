@@ -68,7 +68,6 @@ from harness.orchestration.core.workspace import (
     _integration_ref,
     _prepare_agent_inbox,
 )
-from harness.repo_map.policy import load_policy as load_repo_map_policy
 from harness.orchestration.dispatch_preflight import (
     PreflightError,
 )
@@ -137,6 +136,7 @@ from harness.orchestration.workflow.risk import (
     _matching_triggers,
     _risk_triggers,
 )
+from harness.repo_map.policy import policy_from_section as repo_map_policy_from_section
 
 
 def _dispatch_verification_commands(
@@ -195,8 +195,8 @@ def _verification_plan(
         base=_effective_base(batch),
         candidate=head,
         role=role_name,
-        repo_map_policy=load_repo_map_policy(
-            repo / ".harness" / "orchestration.json", explicit=False
+        repo_map_policy=repo_map_policy_from_section(
+            cast(dict[str, object], batch.get("repo_map_policy") or {})
         ),
     )
 

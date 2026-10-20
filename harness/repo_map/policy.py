@@ -332,3 +332,12 @@ def load_policy(path: Path | None, *, explicit: bool) -> RepoMapPolicy:
         return RepoMapPolicy()
     section, raw = loaded
     return _policy_from_section(section, raw)
+
+
+def policy_from_section(section: dict[str, object]) -> RepoMapPolicy:
+    """Собрать политику из уже прочитанной секции `repo_map_policy`, например замороженной в batch.
+
+    Проверка полей та же, что у `load_policy`; `sha256` — хеш канонического JSON секции.
+    """
+    raw = json.dumps(section, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return _policy_from_section(section, raw)
