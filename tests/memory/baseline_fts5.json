@@ -12,7 +12,7 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "315f9903467b695f11d2662824dc47437c225091832026e397d6fd1ff5f70af1",
   "source_hashes": {
-    "CONTEXT.md": "3bb5fce271835971eccf4d240e969e909d678e86864ffed2c9df356eff729346",
+    "CONTEXT.md": "b058e52c24257dd657dabd146d4dd70aaa201fce250951e98c3f3df92bb6ae0d",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
     "docs/adr/0003-orchestration-core.md": "5d9f76d167f0c963eb452394e28959fd7502cc7596a98941715b113dacde4409",
@@ -483,5 +483,5 @@
     "gate_passed": true
   },
   "annotation_revision": "Version 2 corrected source-grounded multi-label annotations; version 3 re-evaluates the updated corpus. Initial single-label measurement remains unchanged in baseline_fts5_initial.json.",
-  "corpus_revision": "Issue #662 updates orchestration lifecycle in CONTEXT.md and ADR 0003. Dataset, engine, windows and thresholds are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
+  "corpus_revision": "Issue #662 updates orchestration lifecycle in CONTEXT.md and ADR 0003. Issue #635 adds the container executor term to CONTEXT.md; it changes only that source hash, not the metrics or ranked paths. Dataset, engine, windows and thresholds are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
 }

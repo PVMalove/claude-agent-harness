@@ -29,8 +29,9 @@ The reproducibility test checks the complete report and CLI exit code 0 on that 
 
 `baseline_fts5_initial.json` preserves the original single-label measurement byte-for-byte:
 recall@1 **0.70**, recall@3 **0.75**, recall@5 **0.85**, noise **0.83**, FAIL.
-The historical test reconstructs that dataset, verifies its original SHA-256 and reproduces the
-entire old report. Version 2 was an **annotation correction, not a retrieval-engine improvement**:
+The historical test reconstructs that dataset, verifies its original SHA-256, reproduces the
+entire old report and confirms that both baselines index the same sources and that only archived
+sources differ. Version 2 was an **annotation correction, not a retrieval-engine improvement**:
 queries, source bytes, FTS5, top-5 window and thresholds were identical to the initial measurement.
 Version 3 explicitly re-evaluates the corpus after #662 changes `CONTEXT.md` and ADR 0003.
 The aggregate retrieval metrics remain unchanged, but the ranked paths of several queries differ
@@ -40,11 +41,16 @@ source documents for historical reproduction; `baseline_fts5_initial.json` is un
 metrics and hits are unchanged; only the order inside the top-5 window of queries 345, 402 and 422
 differs. `fixtures/initial-corpus.json` now also keeps the original ADR 0005 bytes, so
 `baseline_fts5_initial.json` stays unchanged.
+#635 adds the container executor term to `CONTEXT.md` and re-evaluates the corpus explicitly.
+Only that source hash changes: the aggregate metrics and every query's ranked paths are identical
+to the revision above.
 #786 changes `CONTEXT.md` and ADR 0003 and #788 re-evaluates the corpus explicitly. Recall and hits
 are unchanged; the mean noise ratio rises from 0.60 to 0.61 because ADR 0008 replaces ADR 0001 in
 the top-5 window of query 426 (noise 0.6 to 0.8), and the ranked paths of queries 165, 422 and 423
 differ without changing their noise. `fixtures/initial-corpus.json` already keeps the original bytes of both
 documents, so `baseline_fts5_initial.json` stays unchanged.
+#789 imports #635 into Harness Next and re-evaluates the merged `CONTEXT.md` explicitly: only its
+source hash changes, and the report is identical to the #788 revision.
 Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.
 

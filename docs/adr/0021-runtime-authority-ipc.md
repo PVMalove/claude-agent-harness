@@ -17,11 +17,10 @@ audit, очередью QA и решением о публикации. Approval
 (`:158`) уже делает повтор developer-retry идемпотентным. `allowed_tools` попадает в brief
 (`workflow/dispatch.py:1282`), но в transition digest не входит.
 
-Контейнерный исполнитель ADR 0025 (до импорта — `0018-container-executor.md` в
-`integration/container-executor`, ADR 0026) живёт в Python (`container_executor.py` в
-`integration/container-executor`) и вызывает движок через `subprocess.run`. Процесс coordinator
-выполняет и решение, и запись, и запуск, поэтому SIGKILL между запуском и записью оставляет
-контейнер без записи о нём, а повтор команды не знает, что запуск уже был.
+Контейнерный исполнитель ADR 0025 живёт в Python (`harness/orchestration/container_executor.py`)
+и вызывает движок через `subprocess.run`. Процесс coordinator выполняет и решение, и запись, и
+запуск, поэтому SIGKILL между запуском и записью оставляет контейнер без записи о нём, а повтор
+команды не знает, что запуск уже был.
 
 ## Действующий контракт
 

@@ -1,5 +1,7 @@
 """Real-path and replacement semantics of the project access plan."""
 
+import hashlib
+import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import replace
@@ -440,6 +442,296 @@ def test_a_git_metadata_lookup_that_hangs_or_cannot_start_is_an_access_error(
     assert caught.value.remedy.strip()
     assert len(timeouts) == 1
     assert isinstance(timeouts[0], int) and timeouts[0] > 0
+
+
+_HISTORICAL_PLAN_FIELDS = {
+    "mode",
+    "network",
+    "filesystem",
+    "sources",
+    "requirements",
+    "runtime_extension",
+    "plan_digest",
+}
+
+
+def _redigest(plan: JsonObject) -> JsonObject:
+    """A tampered plan with a matching checksum, so only its shape can refuse it."""
+    plan["plan_digest"] = runtime_access._digest(plan)
+    return plan
+
+
+def test_the_container_component_is_replaced_whole_by_each_layer_without_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    commands: list[list[str]] = []
+    real_run = subprocess.run
+
+    def recorded(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(list(command))
+        return real_run(command, capture_output=True, text=True, check=False)
+
+    monkeypatch.setattr(subprocess, "run", recorded)
+    config = {
+        "access_policy": {
+            "defaults": {
+                "mode": "sandbox",
+                "container": {"worker_image": "worker:base", "proxy_image": "proxy:1"},
+            },
+            "roles": {"developer": {"container": {"worker_image": "worker:dev"}}},
+            "operations": {
+                "qa": {"container": {"engine": "podman", "worker_image": "worker:qa"}}
+            },
+        },
+        "extensions": {"runtime_access": "docker"},
+    }
+
+    architect = runtime_access.resolve_plan(
+        repo, repo, config, "architect", "read-only"
+    )
+    developer = runtime_access.resolve_plan(repo, repo, config, "developer", "write")
+    qa = runtime_access.resolve_plan(
+        repo, repo, config, "developer", "read-only", operation="qa"
+    )
+
+    assert (architect["container"], architect["sources"]["container"]) == (
+        {"engine": "docker", "worker_image": "worker:base", "proxy_image": "proxy:1"},
+        "defaults",
+    )
+    assert (developer["container"], developer["sources"]["container"]) == (
+        {"engine": "docker", "worker_image": "worker:dev"},
+        "roles.developer",
+    )
+    assert (qa["container"], qa["sources"]["container"]) == (
+        {"engine": "podman", "worker_image": "worker:qa"},
+        "operations.qa",
+    )
+    for plan in (architect, developer, qa):
+        runtime_access.validate_plan(plan)
+        assert plan["runtime_extension"] == "docker"
+    assert commands and all(command[0] == "git" for command in commands)
+
+
+def test_a_plan_without_a_container_keeps_its_historical_shape(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    authored = runtime_access.resolve_plan(
+        repo,
+        repo,
+        {"access_policy": {"defaults": {"mode": "sandbox"}}},
+        "qa",
+        "read-only",
+    )
+    legacy = runtime_access.resolve_plan(repo, repo, {}, "qa", "read-only")
+
+    for plan in (authored, legacy):
+        runtime_access.validate_plan(plan)
+        assert set(plan) == _HISTORICAL_PLAN_FIELDS
+        assert set(plan["sources"]) == {"mode", "network", "filesystem"}
+        assert (
+            plan["plan_digest"]
+            == hashlib.sha256(
+                json.dumps(
+                    {key: value for key, value in plan.items() if key != "plan_digest"},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+        )
+
+
+def _tampered_container_plans(plan: JsonObject) -> list[JsonObject]:
+    def changed(edit: Callable[[JsonObject], object]) -> JsonObject:
+        copy: JsonObject = json.loads(json.dumps(plan))
+        edit(copy)
+        return _redigest(copy)
+
+    legacy: JsonObject = {
+        "mode": "inherit",
+        "network": {"hosts": []},
+        "filesystem": [],
+        "sources": {
+            key: "legacy" for key in ("mode", "network", "filesystem", "container")
+        },
+        "requirements": [],
+        "runtime_extension": "none",
+        "container": {"engine": "docker", "worker_image": "w"},
+    }
+    return [
+        changed(lambda p: p["sources"].pop("container")),
+        changed(lambda p: p.pop("container")),
+        changed(lambda p: p["container"].pop("engine")),
+        changed(lambda p: p["container"].update(engine="kubernetes")),
+        changed(lambda p: p["container"].update(worker_image="-privileged")),
+        changed(lambda p: p["container"].update(environment=["TOKEN"])),
+        _redigest(legacy),
+    ]
+
+
+def test_a_tampered_container_plan_is_refused(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    plan = runtime_access.resolve_plan(
+        repo,
+        repo,
+        {
+            "access_policy": {
+                "defaults": {"mode": "sandbox", "container": {"worker_image": "w"}}
+            }
+        },
+        "developer",
+        "write",
+    )
+    runtime_access.validate_plan(plan)
+    for tampered in _tampered_container_plans(plan):
+        with pytest.raises(runtime_access.AccessError):
+            runtime_access.validate_plan(tampered)
+
+
+def test_the_environment_component_is_replaced_whole_and_resolves_names_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    secret = "synthetic-secret-7f3a"
+    monkeypatch.setenv("LLM_API_KEY", secret)
+    config = {
+        "access_policy": {
+            "defaults": {
+                "mode": "sandbox",
+                "environment": ["LLM_API_KEY", "HTTPS_PROXY"],
+            },
+            "roles": {"developer": {"environment": ["NPM_TOKEN"]}},
+            "operations": {"qa": {"environment": []}},
+        },
+        "extensions": {"runtime_access": "docker"},
+    }
+
+    architect = runtime_access.resolve_plan(
+        repo, repo, config, "architect", "read-only"
+    )
+    developer = runtime_access.resolve_plan(repo, repo, config, "developer", "write")
+    qa = runtime_access.resolve_plan(
+        repo, repo, config, "developer", "read-only", operation="qa"
+    )
+
+    assert (architect["environment"], architect["sources"]["environment"]) == (
+        ["HTTPS_PROXY", "LLM_API_KEY"],
+        "defaults",
+    )
+    assert (developer["environment"], developer["sources"]["environment"]) == (
+        ["NPM_TOKEN"],
+        "roles.developer",
+    )
+    assert (qa["environment"], qa["sources"]["environment"]) == ([], "operations.qa")
+    for plan in (architect, developer, qa):
+        runtime_access.validate_plan(plan)
+        assert secret not in json.dumps(plan)
+
+
+def test_a_tampered_environment_plan_is_refused(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    plan = runtime_access.resolve_plan(
+        repo,
+        repo,
+        {
+            "access_policy": {
+                "defaults": {"mode": "sandbox", "environment": ["A_KEY", "B_KEY"]}
+            }
+        },
+        "developer",
+        "write",
+    )
+    runtime_access.validate_plan(plan)
+
+    def changed(edit: Callable[[JsonObject], object]) -> JsonObject:
+        copy: JsonObject = json.loads(json.dumps(plan))
+        edit(copy)
+        return _redigest(copy)
+
+    legacy: JsonObject = {
+        "mode": "inherit",
+        "network": {"hosts": []},
+        "filesystem": [],
+        "sources": {
+            key: "legacy" for key in ("mode", "network", "filesystem", "environment")
+        },
+        "requirements": [],
+        "runtime_extension": "none",
+        "environment": ["A_KEY"],
+    }
+    tampered = [
+        changed(lambda p: p["sources"].pop("environment")),
+        changed(lambda p: p.pop("environment")),
+        changed(lambda p: p.update(environment=["B_KEY", "A_KEY"])),
+        changed(lambda p: p.update(environment=["A_KEY", "A_KEY"])),
+        changed(lambda p: p.update(environment=["A_KEY=value"])),
+        changed(lambda p: p.update(environment="A_KEY")),
+        _redigest(legacy),
+    ]
+
+    for invalid in tampered:
+        with pytest.raises(runtime_access.AccessError):
+            runtime_access.validate_plan(invalid)
+
+
+def test_the_built_in_docker_name_selects_the_shipped_executor_and_cannot_be_taken() -> (
+    None
+):
+    from harness.orchestration import container_executor
+
+    provider = extensions.runtime_access("docker")
+
+    assert isinstance(provider, container_executor.DockerExecutor)
+    assert extensions.runtime_access("docker") is provider
+    with pytest.raises(extensions.ExtensionError, match="invalid extension name"):
+        extensions.register("runtime_access", "docker", provider)
+
+
+def test_a_provider_blocker_reaches_preflight_and_send_with_its_remedy_and_facts(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+
+    class Blocking:
+        def observe(self, plan: JsonObject, transport: str) -> None:
+            raise extensions.RuntimeAccessBlocked(
+                "the worker engine is gone",
+                remedy="start the worker engine",
+                facts={"engine": "test", "blockers": ["gone"]},
+            )
+
+    extensions.register("runtime_access", "test-blocking", Blocking())
+    try:
+        plan = runtime_access.resolve_plan(
+            repo,
+            repo,
+            {
+                "access_policy": {"defaults": {"mode": "sandbox"}},
+                "extensions": {"runtime_access": "test-blocking"},
+            },
+            "developer",
+            "write",
+        )
+        summary, observation = runtime_access.verify_plan(plan, "external")
+        with pytest.raises(runtime_access.AccessError) as refused:
+            runtime_access.apply_plan({"runtime_access": plan}, "external")
+    finally:
+        extensions.unregister("runtime_access", "test-blocking")
+
+    assert observation is None
+    assert (summary["status"], summary["reason"], summary["remedy"]) == (
+        "unverified",
+        "the worker engine is gone",
+        "start the worker engine",
+    )
+    assert summary["environment"] == {"engine": "test", "blockers": ["gone"]}
+    assert (refused.value.message, refused.value.remedy) == (
+        "the worker engine is gone",
+        "start the worker engine",
+    )
 
 
 @pytest.mark.parametrize("policy", ["not an object", {"defaults": "not an object"}])

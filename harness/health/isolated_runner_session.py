@@ -80,7 +80,11 @@ def run(database: dict[str, object], command: Sequence[str]) -> tuple[bool, int]
     if ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) != 0:
         return False, 3
     server: subprocess.Popen[bytes] | None = None
-    with tempfile.TemporaryDirectory(prefix="harness-db-", dir="/tmp") as directory:
+    # TMPDIR is the sandbox's own /tmp (isolated_runner.sandbox_environment); outside the sandbox
+    # it is the caller's writable directory, never a hard-coded /tmp.
+    with tempfile.TemporaryDirectory(
+        prefix="harness-db-", dir=os.environ.get("TMPDIR") or tempfile.gettempdir()
+    ) as directory:
         data, sockets = Path(directory) / "data", Path(directory) / "socket"
         data.mkdir(mode=0o700)
         sockets.mkdir(mode=0o700)

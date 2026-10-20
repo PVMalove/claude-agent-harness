@@ -235,6 +235,11 @@ Rewind не меняет Git history, но исключает старое за�
 подтверждённого сбоя окружения — отдельный infrastructure budget.
 Перед send coordinator проверяет явный каталог воркера через `--worktree`, а worker подтверждает
 фактический path/branch/HEAD через self-report. Coordinator CLI остаётся привязан к main repo/state.
+Сам coordinator никогда не делает `cd` в worktree, даже в виде `cd <worktree> && …`: рабочий каталог
+shell сохраняется между командами, поэтому один такой вызов переносит в worktree всю сессию. Файлы
+worktree читаются по абсолютным путям: `git -C <worktree> …`, `rg <шаблон> <путь в worktree>` и
+инструменты чтения файлов. Если сессия всё же сместилась, верните её в main checkout до следующей
+команды.
 Подробные ограничения задаёт `.harness/orchestration/playbook.md`, раздел Operator recovery.
 
 ### Сбой запуска worker
