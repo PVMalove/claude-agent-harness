@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DEVELOPER = ROOT / "harness" / "orchestration" / "roles" / "developer.md"
 COMMON = ROOT / "harness" / "orchestration" / "roles" / "_common.md"
 AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
+IMPLEMENT = ROOT / "skills" / "first-party" / "pvmalove" / "implement" / "SKILL.md"
+IMPLEMENT_DESCRIPTION = ROOT / "docs" / "skills" / "implement.md"
+CHANGELOG = ROOT / "CHANGELOG.md"
 FAST_IMPLEMENT = ROOT / "skills" / "first-party" / "pvmalove" / "fast-implement" / "SKILL.md"
 TDD = ROOT / "skills" / "first-party" / "pvmalove" / "tdd" / "SKILL.md"
 GUIDE = ROOT / "harness" / "project" / "docs-agents" / "test-author.md"
@@ -31,6 +34,27 @@ DEVELOPER_MARKERS = (
     "Not a behavioral Red",
     "immediately",
     "ordinary blocker path",
+)
+FULL_ROUTE_MARKERS = (
+    '"$CLAUDE_PROJECT_DIR/.claude/hooks/test-author-preflight.sh" --worktree',
+    "checkout_mismatch",
+    "transport_unsupported",
+    "ordinary TDD route",
+    "never a blocker",
+)
+FULL_ROUTE_GUIDE_MARKERS = (
+    "Полный маршрут `/implement`",
+    "test-author-preflight.sh\" --worktree",
+    "`checkout_mismatch`",
+    "`transport_unsupported`",
+    "обычный TDD",
+    "не blocker",
+)
+FULL_ROUTE_DESCRIPTION_MARKERS = (
+    "--worktree",
+    "`checkout_mismatch`",
+    "`transport_unsupported`",
+    "обычный TDD",
 )
 FAST_MARKERS = (
     "Agree the seams before the first test",
@@ -71,6 +95,10 @@ def _text(path: Path) -> str:
     [
         (DEVELOPER, DEVELOPER_MARKERS),
         (DEVELOPER, SHORT_ROUTE_MARKERS),
+        (DEVELOPER, FULL_ROUTE_MARKERS),
+        (IMPLEMENT, FULL_ROUTE_MARKERS),
+        (GUIDE, FULL_ROUTE_GUIDE_MARKERS),
+        (IMPLEMENT_DESCRIPTION, FULL_ROUTE_DESCRIPTION_MARKERS),
         (TDD, SHORT_ROUTE_MARKERS),
         (FAST_IMPLEMENT, FAST_MARKERS),
         (AGENT, AGENT_MARKERS),
@@ -82,6 +110,12 @@ def test_protocol_markers(path: Path, markers: tuple[str, ...]) -> None:
     text = " ".join(_text(path).split())
     missing = [marker for marker in markers if marker not in text]
     assert not missing, f"{path.name} lost cycle markers: {missing}"
+
+
+def test_changelog_records_the_full_route_worktree_fix() -> None:
+    unreleased = _text(CHANGELOG).split("\n## [", 2)[1]
+    assert "#768" in unreleased
+    assert "checkout_mismatch" in unreleased
 
 
 def test_common_contract_points_to_the_cycle() -> None:
