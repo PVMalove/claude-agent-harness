@@ -43,7 +43,7 @@ PR в integration-ветки и релизы вливаются squash-merge (т
 | `orchestration-system-fields`: ccc1d1e (#690) — реестр `systemFields.v1`, normalizer конфигурации, pinned configuration snapshot | импортируется |
 | `orchestration-system-fields`: 38ae9d7 (#699), c8f5774 (#701), b095142 (#703) — store, intent, reconcile, effect | **Superseded-by-Harness-Next**: критерии переходят на Rust store (ADR 0020), идемпотентность (ADR 0021, раздел 4) и reconcile (ADR 0022, раздел 5) |
 | `orchestration-system-fields`: bf3def1 (#712), 968ab8d (#728), 35f76bd (#735), b69eed1 | **Superseded-by-Harness-Next**: файловый ledger в 2.0.0 не пишется (ADR 0020, раздел 1); quarantine неизвестных значений переходит в repair импорта, цепочка хэшей — в audit-цепочку store (ADR 0020, разделы 4–5). b69eed1 правит только запись файлового ledger, поэтому следует тому же решению |
-| `orchestration-system-fields`: 7719682 (#746) | **Superseded-by-Harness-Next**: recovery API и совместимость строятся на `runtime_state_store`; команды восстановления поверх Rust store — отдельный тикет Harness Next |
+| `orchestration-system-fields`: 7719682 (#746) | **Superseded-by-Harness-Next**: recovery API и совместимость строятся на `runtime_state_store`. Recovery policy (`recovery_api.py`, `operational_hold.py`) переходит в тикет команд восстановления Harness Next; Rust заменяет только store. Тесты Superseded-коммитов становятся acceptance-сценариями тикетов store, supervisor и recovery |
 | #685 (canonical CI, не реализован) | критерии остаются; CI проверяет реестр против Python и Rust (ADR 0021, раздел 3) |
 
 Реестр `systemFields.v1` из ccc1d1e уже содержит словари Python store: `runtime.state`,
