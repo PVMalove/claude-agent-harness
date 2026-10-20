@@ -18,7 +18,12 @@ import sys
 import unittest
 from unittest import mock
 
-from harness.orchestration import coordinator, operational_guards, verification_plan
+from harness.orchestration import (
+    coordinator,
+    operational_guards,
+    runtime_access,
+    verification_plan,
+)
 from harness.orchestration.core.utils import JsonObject
 from harness.repo_map import change_impact
 from tests.orchestration import test_coordinator as coordinator_tests
@@ -288,6 +293,22 @@ class VerificationPlanDispatchTests(PlanFixture):
         review = fx._reported_review(batch_id, candidate)
 
         self.assertEqual(review["verification_plan"]["impact"]["related_tests"], [])
+
+    def test_a_docker_proposal_pins_the_images_in_the_plan_fingerprint(self) -> None:
+        self._configure(POLICY)
+        batch_id, candidate = self._assessed_candidate()
+        plain = self.fx._propose(batch_id, "code-review", candidate=candidate)
+        images = {"worker": "sha256:" + "a" * 64, "proxy": None}
+
+        with mock.patch.object(runtime_access, "pin_images", return_value=images):
+            pinned = self.fx._propose(batch_id, "code-review", candidate=candidate)
+
+        self.assertEqual(pinned["runtime_images"], images)
+        for name in ("lint", "tests"):
+            self.assertNotEqual(
+                _stage(pinned["verification_plan"], name)["environment_fingerprint"],
+                _stage(plain["verification_plan"], name)["environment_fingerprint"],
+            )
 
     def test_a_tampered_plan_no_longer_matches_its_approval(self) -> None:
         self._configure(POLICY)

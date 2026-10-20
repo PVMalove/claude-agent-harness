@@ -33,10 +33,14 @@ IMPACT_NOT_COVERED = "impact_not_covered"
 _GIT_TIMEOUT_SECONDS = 60
 
 
-def environment_fingerprint(repo: Path, commit: str) -> str:
-    """sha256 окружения проверки: интерпретатор, ``uv.lock`` и секции ``[tool.*]`` ``pyproject.toml``.
+def environment_fingerprint(
+    repo: Path, commit: str, runtime_images: Mapping[str, str | None] | None = None
+) -> str:
+    """sha256 окружения проверки: интерпретатор, ``uv.lock``, секции ``[tool.*]`` и образы.
 
     Манифесты читаются из коммита, а не из рабочего дерева. Отсутствующий файл даёт пустой вклад.
+    ``runtime_images`` — digest образов docker-dispatch из brief; без образа (native-запуск) ключ
+    не входит в хеш, и fingerprint совпадает с прежним (ADR 0023, раздел 2).
     """
     files = blob_contents(
         repo, commit, ["uv.lock", "pyproject.toml"], _GIT_TIMEOUT_SECONDS
@@ -49,13 +53,14 @@ def environment_fingerprint(repo: Path, commit: str) -> str:
             tool = tomllib.loads(pyproject.decode("utf-8")).get("tool", {})
         except (UnicodeDecodeError, tomllib.TOMLDecodeError):
             tool = {"unparsed": hashlib.sha256(pyproject).hexdigest()}
-    return _digest(
-        {
-            "interpreter": platform.python_version(),
-            "uv_lock": hashlib.sha256(lock).hexdigest(),
-            "pyproject_tool": tool,
-        }
-    )
+    parts: dict[str, object] = {
+        "interpreter": platform.python_version(),
+        "uv_lock": hashlib.sha256(lock).hexdigest(),
+        "pyproject_tool": tool,
+    }
+    if runtime_images is not None:
+        parts["runtime_images"] = dict(runtime_images)
+    return _digest(parts)
 
 
 def _digest(value: object) -> str:
@@ -184,6 +189,7 @@ def build_plan(
     role: str,
     backend: ParserBackend | None = None,
     repo_map_policy: RepoMapPolicy | None = None,
+    runtime_images: Mapping[str, str | None] | None = None,
 ) -> JsonObject:
     """План проверки роли для diff ``base..candidate`` по замороженной ``policy``.
 
@@ -206,7 +212,7 @@ def build_plan(
         policy=repo_map_policy,
         max_related_tests=threshold,
     )
-    fingerprint = environment_fingerprint(repo, candidate)
+    fingerprint = environment_fingerprint(repo, candidate, runtime_images)
     widen = role == "qa" or bool(impact.unknown)
     return {
         "base_sha": base,

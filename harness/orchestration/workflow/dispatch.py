@@ -173,12 +173,14 @@ def _verification_plan(
     next_action: object,
     candidate: str | None,
     snapshot_commit: str,
+    runtime_images: JsonObject | None = None,
 ) -> JsonObject | None:
     """План проверки brief по замороженной ``verification_plan_policy`` (ADR 0023), либо ``None``.
 
     План строится для developer-retry (diff до кандидата, который он дорабатывает), code-review
     и qa (diff до кандидата роли). Первый developer диффа не имеет, а batch без политики остаётся
-    без плана и без нового поля в brief.
+    без плана и без нового поля в brief. ``runtime_images`` — образы docker-dispatch, которые
+    входят в ``environment_fingerprint`` стадий.
     """
     policy = batch.get("verification_plan_policy")
     if not isinstance(policy, dict) or purpose != "work":
@@ -198,6 +200,7 @@ def _verification_plan(
         repo_map_policy=repo_map_policy_from_section(
             cast(dict[str, object], batch.get("repo_map_policy") or {})
         ),
+        runtime_images=runtime_images,
     )
 
 
@@ -1202,8 +1205,29 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             root,
             delta_scope,
         )
+        access_plan = runtime_access.resolve_plan(
+            repo,
+            Path(batch["worktree"]),
+            config,
+            role_name,
+            role["mode"],
+            operation=runtime_access.dispatch_operation(role_name, purpose),
+        )
+        # A docker plan pins the image digests observed now, beside the plan and outside its
+        # digest; propose and create each observe, so an image changed in between is refused.
+        # The plan's environment fingerprint carries them (ADR 0023, section 2).
+        runtime_images = runtime_access.pin_images(
+            access_plan, transport, role_name, purpose
+        )
         plan = _verification_plan(
-            repo, batch, role_name, purpose, next_action, candidate, snapshot_commit
+            repo,
+            batch,
+            role_name,
+            purpose,
+            next_action,
+            candidate,
+            snapshot_commit,
+            runtime_images,
         )
         if plan is not None and role_name in {"code-review", "qa"}:
             verification_plan.require_covered(plan)
@@ -1221,22 +1245,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             supersede_target,
             plan,
         )
-        access_plan = runtime_access.resolve_plan(
-            repo,
-            Path(batch["worktree"]),
-            config,
-            role_name,
-            role["mode"],
-            operation=runtime_access.dispatch_operation(role_name, purpose),
-        )
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"
         ]
-        # A docker plan pins the image digests observed now, beside the plan and outside its
-        # digest; propose and create each observe, so an image changed in between is refused.
-        runtime_images = runtime_access.pin_images(
-            access_plan, transport, role_name, purpose
-        )
         if runtime_images is not None:
             transition = operational_guards.bind_transition(
                 transition, {"runtime_images": runtime_images}

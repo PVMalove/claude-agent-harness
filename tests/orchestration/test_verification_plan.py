@@ -198,6 +198,7 @@ def _plan(
     role: str = "developer",
     policy: JsonObject = POLICY,
     backend: object | None = None,
+    runtime_images: dict[str, str] | None = None,
 ) -> JsonObject:
     return verification_plan.build_plan(
         repo,
@@ -206,6 +207,7 @@ def _plan(
         candidate=_git(repo, "rev-parse", "HEAD"),
         role=role,
         backend=backend or RegexBackend(repo),  # type: ignore[arg-type]
+        runtime_images=runtime_images,
     )
 
 
@@ -421,6 +423,39 @@ def test_the_environment_fingerprint_follows_the_lock_and_tool_sections(
     assert after_project_section == start
     assert after_tool_section != start
     assert after_lock != after_tool_section
+
+
+IMAGES = {"worker": "sha256:" + "a" * 64, "proxy": "sha256:" + "b" * 64}
+
+
+def test_the_environment_fingerprint_follows_the_pinned_runtime_images(
+    repo: Path,
+) -> None:
+    head = _git(repo, "rev-parse", "HEAD")
+
+    def fingerprint(images: dict[str, str] | None) -> str:
+        return verification_plan.environment_fingerprint(repo, head, images)
+
+    rebuilt = {**IMAGES, "worker": "sha256:" + "c" * 64}
+
+    assert fingerprint(IMAGES) != fingerprint(None)
+    assert fingerprint(IMAGES) != fingerprint(rebuilt)
+    assert fingerprint(IMAGES) == fingerprint(dict(reversed(IMAGES.items())))
+    assert fingerprint(None) == verification_plan.environment_fingerprint(repo, head)
+
+
+def test_a_plan_pins_the_runtime_images_in_every_stage_fingerprint(repo: Path) -> None:
+    base = _base(repo)
+    _write(repo, {"pkg/core.py": "VALUE = 2\n"})
+    _commit(repo, "change core")
+
+    plain = _stages(_plan(repo, base))
+    pinned = _stages(_plan(repo, base, runtime_images=IMAGES))
+
+    for name, stage in pinned.items():
+        assert (
+            stage["environment_fingerprint"] != plain[name]["environment_fingerprint"]
+        )
 
 
 def test_building_a_plan_does_not_touch_the_repository(repo: Path) -> None:
