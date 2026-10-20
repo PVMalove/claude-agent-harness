@@ -16,7 +16,11 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.memory.index import context as memory_context
 from harness.memory.sources import allowed_paths, read_source
-from harness.orchestration import operational_guards, runtime_access
+from harness.orchestration import (
+    operational_guards,
+    runtime_access,
+    verification_plan,
+)
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     ContractError,
@@ -1345,6 +1349,9 @@ def _validate_dispatch(
         if "runtime_access" in fields
     }
     accepted |= {fields | {"preserved_progress"} for fields in set(accepted)}
+    # The verification plan (ADR 0023) is one optional field, present only for a batch whose
+    # configuration carried `verification_plan_policy`.
+    accepted |= {fields | {"verification_plan"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
@@ -1364,6 +1371,14 @@ def _validate_dispatch(
         _validate_carried_section(dispatch)
     _validate_delta_review_scope(dispatch)
     _validate_resolver_section(dispatch)
+    if "verification_plan" in dispatch and (
+        problems := verification_plan.plan_problems(dispatch["verification_plan"])
+    ):
+        raise CoordinatorError(
+            "dispatch verification_plan is malformed: " + "; ".join(problems),
+            remedy="the dispatch record's verification_plan is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     target = dispatch.get("rebase_target_commit")
     if target is not None and (
         not isinstance(target, str)

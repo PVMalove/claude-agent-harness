@@ -20,6 +20,8 @@ from harness.repo_map.change_impact import ImpactSet, compute_change_impact
 from harness.repo_map.git_source import blob_contents
 from harness.repo_map.policy import RepoMapPolicy
 
+from . import operational_guards
+from .core.constants import VERIFICATION_PLAN_SELECTIONS, VERIFICATION_STAGE_KINDS
 from .core.utils import CoordinatorError, JsonObject
 
 # Роли, для которых строится план: первый developer без diff плана не получает.
@@ -60,8 +62,54 @@ def _digest(value: object) -> str:
 
 
 def plan_sha256(plan: Mapping[str, object]) -> str:
-    """Канонический digest плана: порядок ключей не важен, а любой изменённый байт меняет digest."""
-    return _digest(dict(plan))
+    """Канонический digest плана: порядок ключей не важен, а любой изменённый байт меняет digest.
+
+    Это тот же digest, который approval связывает с переходом как ``verification_plan_sha256``.
+    """
+    return operational_guards.verification_plan_digest(plan)
+
+
+STAGE_FIELDS = frozenset(
+    {
+        "stage_id",
+        "kind",
+        "argv",
+        "timeout_seconds",
+        "selection",
+        "nodeids",
+        "environment_fingerprint",
+    }
+)
+
+
+def plan_problems(plan: object) -> list[str]:
+    """Нарушения формы плана в brief; пусто, если план корректен."""
+    if not isinstance(plan, dict):
+        return ["verification_plan must be an object"]
+    problems: list[str] = []
+    if plan.get("role") not in PLAN_ROLES:
+        problems.append(
+            f"verification_plan.role must be one of: {', '.join(PLAN_ROLES)}"
+        )
+    stages = plan.get("stages")
+    if not isinstance(stages, list) or not stages:
+        return [*problems, "verification_plan.stages must be a non-empty list"]
+    for index, stage in enumerate(stages):
+        where = f"verification_plan.stages[{index}]"
+        if not isinstance(stage, dict) or set(stage) != STAGE_FIELDS:
+            problems.append(
+                f"{where} must have exactly: {', '.join(sorted(STAGE_FIELDS))}"
+            )
+            continue
+        if stage["kind"] not in VERIFICATION_STAGE_KINDS:
+            problems.append(f"{where}.kind is not a registered stage kind")
+        if stage["selection"] not in VERIFICATION_PLAN_SELECTIONS:
+            problems.append(f"{where}.selection is not a registered selection")
+        if not isinstance(stage["nodeids"], list) or not all(
+            isinstance(item, str) for item in stage["nodeids"]
+        ):
+            problems.append(f"{where}.nodeids must be a list of strings")
+    return problems
 
 
 def _stage(
