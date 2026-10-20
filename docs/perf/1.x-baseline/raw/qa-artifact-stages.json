@@ -1,0 +1,478 @@
+{
+  "06cd5019baab4a040ea5fec7dfb568257bb4f3b9feac39414f4de10ca4f09ef0.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 11.88
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 458.49
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 246.27
+    }
+  },
+  "1037f704f39b95688b312c53c02df433825a5671bb570e581d10c9007334edd7.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.84
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 518.6
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 237.88
+    }
+  },
+  "193a4f2799a3a7a844acfeacf3d5e04e7acefbbc70faf68c7105edc3c468c412.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.2
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 321.6
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 139.04
+    }
+  },
+  "23cf8c9003c8bd2e4ad7e579d63a6c0aae96cef174ecb0d740c5b6ae3f314f8d.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 11.09
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 528.26
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 222.91
+    }
+  },
+  "24ca29442654e2c1a71e7966329ff41dd12440cf3418f3900797eba62803d962.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.83
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 338.12
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 148.03
+    }
+  },
+  "266b1f36e554cfcbf2ab54b2d1b3241454057ce46a8124b40b6a66024a0b275c.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.68
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 116.1
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 115.65
+    }
+  },
+  "2827435f84d68fd3315faeb1678dc40336f7e592bd4b0d615c3516edbbe5427b.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.91
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 132.73
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 126.63
+    }
+  },
+  "2bc129860f9ce007a59137a8e368b82ee4e3985004b99d5cbd76354bd0f75f28.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.42
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 264.87
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 140.84
+    }
+  },
+  "38220667da1a6555744f709460597a924ec66bf800f54707f26b82233b639974.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.38
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 284.05
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 140.15
+    }
+  },
+  "3a9d643d2e6f6357d04c237fafa46db3de7022219c8515422b6771b027c83315.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.24
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 88.02
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 113.42
+    }
+  },
+  "3da2eb5b289eea9bc6a1dec8ade46af1befac163e4dfc0f6bfe4d34f56db451b.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.76
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 129.5
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 125.82
+    }
+  },
+  "45a2490a3686d7ad07e3c5765270ab7735766ea86f682e3571e14d3e162ead4e.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.4
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 105.79
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 123.77
+    }
+  },
+  "4931636b70751e70ee781eac74d17e918eeb007e9a0ba5bb04d0fbee556b8e9a.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.97
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 474.54
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 217.91
+    }
+  },
+  "5575c2d8580735c07367f341dc625ea38108cc18990f8a9b6d46ee66a8c23ab6.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.66
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 113.53
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 125.96
+    }
+  },
+  "5604006eefa9514be8ad7736ed94a13ac745b9ffa7bd64582fc7e8f516e42ea6.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.27
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 88.76
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 108.92
+    }
+  },
+  "6932098164f7bab5f016f3565caf6edc09543d76927bfe857fdfa783c2a3918d.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.67
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 472.0
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 223.53
+    }
+  },
+  "6c429e393d10ef2a6a053c6eea7f28734ca2f414fc178581715ebc9ce7b465e3.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 11.01
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 565.15
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 217.16
+    }
+  },
+  "6ed9e7d7911ddaeecf04903a7d64d9ad42617d8959921e03cd27db52bdcecf82.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.32
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 311.35
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 140.62
+    }
+  },
+  "8bb2e7084f3c7f7bd8825e98468fa3e4708e381b1be229b62d24f8ae18d0e378.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 11.07
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 700.45
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 268.11
+    }
+  },
+  "a3416ff70cbbd01868d8ba75c045145cb6dbbbe6dd4b43fdde3fe768cecf607a.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 9.22
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 370.92
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 156.2
+    }
+  },
+  "b0caa3d4f8f008eab2be7f51c8b25b97c37aa9460a02ded07933d6d45df4df1f.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.57
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 105.65
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 121.15
+    }
+  },
+  "b55c95322d8cb0508d62ada4c89bdf0bc903f4c4edfac6b3ada30538d10c1b17.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.78
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 481.98
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 229.07
+    }
+  },
+  "b66dc6d81fdc9541e9caa2c33858506616dd757ccde3e80fc08c660b27a8a2a2.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.67
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 503.54
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 216.06
+    }
+  },
+  "b77272d8491698271ae54df99141c7a33be4c24e31ef7e6e0bb94de897214e11.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.4
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 323.53
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 138.66
+    }
+  },
+  "b9f5415e74c2f1315d2e63e26ff667d03461758b341d66a84ce3fd4042278f63.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.17
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 115.25
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 108.65
+    }
+  },
+  "c7fa276c419acd195aa3ffff5e7abd4bfbe09bebc8b323edabe86c99b91aec0e.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.45
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 106.13
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 119.07
+    }
+  },
+  "d29f521faf13d11df728d0b30ceb85ffd5d7be2ec82c64b21b562f8f5604de2c.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.82
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 615.59
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 248.76
+    }
+  },
+  "d39cd97240c4ab866c093fa300b7a2f62ceea2185091929638451edf5e24920a.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 8.88
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 287.81
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 141.87
+    }
+  },
+  "d4bd4184e222966905e5dffeab608af54478a982861c9485e9aea93abe464e0e.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 6.82
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 52.77
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 81.98
+    }
+  },
+  "e6168d5aad28a7283fd0e932af66c578943ea20b7eba7d0caa1f31cf8400fc0b.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 6.6
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 54.68
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 82.79
+    }
+  },
+  "e7cc0094628b3975f539e22b48746ee3196a1d50486141ac7176386a486ff106.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 7.28
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 109.54
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 115.45
+    }
+  },
+  "e98a76f4b180a881901eae1859a91105d3337a1179e2e3340489efa9d474e728.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 11.64
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 480.48
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 249.48
+    }
+  },
+  "eccbcc0cdc4561527bfe6fe4e3428eb18479aa06d793a8c073d41e61fa3c92e6.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 6.67
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 51.44
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 81.09
+    }
+  },
+  "f0e92201b2a528844521172d7412821d03e3a6c179a293f04a250a2f70560ba7.log": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 10.88
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 636.71
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 247.82
+    }
+  }
+}

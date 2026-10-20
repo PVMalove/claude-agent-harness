@@ -1,0 +1,771 @@
+{
+  "ledger validate": {
+    "samples": [
+      {
+        "seconds": 69.84443080378696,
+        "returncode": 0
+      },
+      {
+        "seconds": 70.62597633618861,
+        "returncode": 0
+      },
+      {
+        "seconds": 69.92637924896553,
+        "returncode": 0
+      },
+      {
+        "seconds": 70.91283011529595,
+        "returncode": 0
+      },
+      {
+        "seconds": 68.88179460307583,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 5,
+      "min": 68.88179460307583,
+      "p50": 69.92637924896553,
+      "p95": 70.91283011529595,
+      "p99": 70.91283011529595,
+      "max": 70.91283011529595
+    },
+    "argv": [
+      "ledger",
+      "validate"
+    ]
+  },
+  "ledger status": {
+    "samples": [
+      {
+        "seconds": 0.6558595928363502,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6601631389930844,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6685788761824369,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6566087706014514,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.68899664003402,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6729733706451952,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6622014897875488,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6521794092841446,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6508596809580922,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6997357849031687,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6790850958786905,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6664172308519483,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6635230430401862,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6545281759463251,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6706786942668259,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6666202498599887,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.660581402014941,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6588133471086621,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6606035414151847,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6677427622489631,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6690659280866385,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6621566577814519,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6733424519188702,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6586119602434337,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6709594600833952,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.65222651604563,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6815902660600841,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6766567509621382,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6790225910954177,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6680552470497787,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 30,
+      "min": 0.6508596809580922,
+      "p50": 0.6664172308519483,
+      "p95": 0.68899664003402,
+      "p99": 0.6997357849031687,
+      "max": 0.6997357849031687
+    },
+    "argv": [
+      "ledger",
+      "status"
+    ]
+  },
+  "ledger lock-status": {
+    "samples": [
+      {
+        "seconds": 0.13310323283076286,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1356714959256351,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13317592395469546,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1395658659748733,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.17327135289087892,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1828835872001946,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13875324605032802,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13796184584498405,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1595605849288404,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13671885896474123,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.14199885772541165,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.15845591109246016,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.14624512335285544,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1392335519194603,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13492066645994782,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13826404931023717,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13793541491031647,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1575372782535851,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.16619733115658164,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13745891768485308,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.14177378499880433,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.15787195321172476,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13257475523278117,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.14254661416634917,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13880233466625214,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.16147754900157452,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1565278060734272,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.14049556804820895,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.13581982720643282,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.1393323033116758,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 30,
+      "min": 0.13257475523278117,
+      "p50": 0.1393323033116758,
+      "p95": 0.17327135289087892,
+      "p99": 0.1828835872001946,
+      "max": 0.1828835872001946
+    },
+    "argv": [
+      "ledger",
+      "lock-status"
+    ]
+  },
+  "batch list": {
+    "samples": [
+      {
+        "seconds": 0.6769182868301868,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6865794798359275,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6939272051677108,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6836423999629915,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.686968952883035,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6612503100186586,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6601544450968504,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6836117771454155,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6598655800335109,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6558607169426978,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6579251931980252,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6830329368822277,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6645003659650683,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6617060899734497,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6641216897405684,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6655628080479801,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6581727908924222,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6722429329529405,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6717627849429846,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6597302290610969,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6640789047814906,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6647096718661487,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6636003870517015,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6634297342970967,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6628389358520508,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6653407383710146,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6556819221004844,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.6694621681235731,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.66412159986794,
+        "returncode": 0
+      },
+      {
+        "seconds": 0.663049875292927,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 30,
+      "min": 0.6556819221004844,
+      "p50": 0.66412159986794,
+      "p95": 0.686968952883035,
+      "p99": 0.6939272051677108,
+      "max": 0.6939272051677108
+    },
+    "argv": [
+      "batch",
+      "list"
+    ]
+  },
+  "qa status": {
+    "samples": [
+      {
+        "seconds": 1.1457942412234843,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1567935608327389,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1560321091674268,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1574542648158967,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1527395322918892,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1522244126535952,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1553299208171666,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1669519990682602,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.155315465759486,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.15377709409222,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1614298913627863,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1554684611037374,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1487953336909413,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1533528291620314,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1694495449773967,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1635523866862059,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.162271617911756,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1506405058316886,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1603161981329322,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1714039593935013,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.170395574066788,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1579632321372628,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1785283526405692,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1614153520204127,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1503461468964815,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1529666292481124,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1597389127127826,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1522924862802029,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1522957729175687,
+        "returncode": 0
+      },
+      {
+        "seconds": 1.1878666393458843,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 30,
+      "min": 1.1457942412234843,
+      "p50": 1.1560321091674268,
+      "p95": 1.1785283526405692,
+      "p99": 1.1878666393458843,
+      "max": 1.1878666393458843
+    },
+    "argv": [
+      "qa",
+      "status"
+    ]
+  },
+  "dispatch status": {
+    "samples": [
+      {
+        "seconds": 269.792685917113,
+        "returncode": 0
+      },
+      {
+        "seconds": 267.96018435200676,
+        "returncode": 0
+      },
+      {
+        "seconds": 262.16374803101644,
+        "returncode": 0
+      },
+      {
+        "seconds": 270.242595423013,
+        "returncode": 0
+      },
+      {
+        "seconds": 269.0598345147446,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 5,
+      "min": 262.16374803101644,
+      "p50": 269.0598345147446,
+      "p95": 270.242595423013,
+      "p99": 270.242595423013,
+      "max": 270.242595423013
+    },
+    "argv": [
+      "dispatch",
+      "status"
+    ]
+  },
+  "dispatch heartbeat": {
+    "samples": [
+      {
+        "seconds": 4.488957311026752,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.494466803967953,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.4692662470042706,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.403586432337761,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.422573099844158,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.424942646175623,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.4228993891738355,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.420125933829695,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.408867795020342,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.449975518975407,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.40334780421108,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.371916512027383,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.404583685100079,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.40635064477101,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.435105188749731,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.4585836310870945,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.455841026734561,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.445720382034779,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.525780857075006,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.522734867874533,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.4012907687574625,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.4455945822410285,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.435190544929355,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.454689579084516,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.439423932228237,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.442123213317245,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.455455823335797,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.488979544956237,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.455791682936251,
+        "returncode": 0
+      },
+      {
+        "seconds": 4.527176002971828,
+        "returncode": 0
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 30,
+      "min": 4.371916512027383,
+      "p50": 4.442123213317245,
+      "p95": 4.525780857075006,
+      "p99": 4.527176002971828,
+      "max": 4.527176002971828
+    },
+    "argv": [
+      "dispatch",
+      "heartbeat",
+      "--dispatch",
+      "dispatch-8d84fe69-3f31-4878-acb4-634c739759a5"
+    ],
+    "live_state": "synthetic"
+  }
+}

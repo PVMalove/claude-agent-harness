@@ -1,0 +1,712 @@
+.harness/.venv/bin/python scripts/verify.py 
+private-terms: no matches (.private-terms.txt, 6 terms)
+wrote <repo>/skills/REGISTRY.md with 44 skills
+Success: no issues found in 414 source files
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0
+rootdir: <repo>
+configfile: pyproject.toml
+plugins: cov-7.1.0, xdist-3.8.0, platformdirs-4.12.0
+created: 8/8 workers
+8 workers [3726 items]
+
+........................................................................ [  1%]
+........................................................................ [  3%]
+....................................ssss................................ [  5%]
+........................................................................ [  7%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+........................................................................ [ 15%]
+........................................................................ [ 17%]
+........s............................................................... [ 19%]
+........................................................................ [ 21%]
+........................................................................ [ 23%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 28%]
+...................s.................................................... [ 30%]
+........................................................................ [ 32%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 40%]
+........................................................................ [ 42%]
+......................................s................................. [ 44%]
+........................................................................ [ 46%]
+........................................................................ [ 48%]
+.........................................s.............................. [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+..............................sssssss................................... [ 59%]
+........................................................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 65%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+........................................................................ [ 71%]
+........................................................................ [ 73%]
+........................................................................ [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+......................................................................ss [ 85%]
+sssssssssssssssssssss................................................... [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 90%]
+........................................................................ [ 92%]
+..............................................................sss....... [ 94%]
+........................................................................ [ 96%]
+........................................................................ [ 98%]
+............s.........................................                   [100%]
+================= 3684 passed, 42 skipped in 337.32s (0:05:37) =================
+installed agent-harness 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/foundation
+capabilities: project-foundation
+managed files: 18
+state: clean
+capabilities: project-foundation
+[health] foundation: PASS ok=29 warn=1 fail=0 skipped=25; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-foundation-0whn_ib3.log
+installed agent-harness 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/project
+capabilities: mattpocock-suite
+managed files: 79
+state: clean
+capabilities: mattpocock-suite
+[health] project: PASS ok=29 warn=1 fail=0 skipped=25; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-project-l0zz8cd9.log
+wrote .harness/skills/REGISTRY.md for <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/project
+[health] project: PASS ok=29 warn=1 fail=0 skipped=25; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-project-3lm7pryd.log
+[health] project: PASS ok=29 warn=1 fail=0 skipped=25; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-project-6ufcvjhf.log
+installed agent-harness 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/pv_project
+capabilities: pvmalove-suite
+managed files: 193
+[health] pv_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-pv_project-wz5ofr91.log
+updated agent-harness to 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/pv_project
+managed files: 189
+
+Seed entry points: review and explicitly approve these additions before applying them by edit/patch.
+The CLI has not changed these project-owned files; --force-seed-files is not needed.
+  .claude/agents/code-review-spec.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/code-review-standards.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/pr-composer.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/test-author.md: No mandatory path to the installed shared contract was found.
+diff --git a/.claude/agents/code-review-spec.md b/.claude/agents/code-review-spec.md
+--- a/.claude/agents/code-review-spec.md
++++ b/.claude/agents/code-review-spec.md
+@@ -15,3 +15,6 @@
+ (c) requirements that look implemented but where the implementation looks wrong
+ 
+ Quote the spec line for each finding. Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/code-review-standards.md b/.claude/agents/code-review-standards.md
+--- a/.claude/agents/code-review-standards.md
++++ b/.claude/agents/code-review-standards.md
+@@ -14,3 +14,6 @@
+ (b) any baseline smell you spot: name it and quote the hunk
+ 
+ Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling already enforces (lint/format/type-check). Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/pr-composer.md b/.claude/agents/pr-composer.md
+--- a/.claude/agents/pr-composer.md
++++ b/.claude/agents/pr-composer.md
+@@ -19,3 +19,6 @@
+ 3. Gather context: `git diff <target-branch>...HEAD` (three-dot, against the merge-base) and `git log <target-branch>..HEAD --oneline`.
+ 4. Fill in every section defined by the template you read in step 1, from the diff and commit log. Use the qa-gate result for the verification/testing section; if no qa-gate was run this session, say so plainly under the risks/caveats section rather than inventing test coverage.
+ 5. Save the finished PR body markdown only to the scratch path you were given, with the `Write` tool and not through Bash (`cat`/`printf`/heredoc, Python, a temp file + `cp`): the scratch-path hook checks `Write`/`Edit` paths, so a Bash write skips the `pr_body/` name check. Never use `docs/tasks/` or another location. Respond with only that path — no preamble, no commentary, no copy of the body itself. Bash is for gathering context in steps 1–3 only; if a call errors, fix its cause before retrying.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/test-author.md b/.claude/agents/test-author.md
+--- a/.claude/agents/test-author.md
++++ b/.claude/agents/test-author.md
+@@ -50,3 +50,6 @@
+ The runner starts a database only for matching `test_runner.database.test_ids`; pure domain
+ logic needs no server. Test SQL, rollback and constraints against the production engine.
+ `build_failed`, `build_timeout` and `database_unavailable` refusals are not behavioral Red.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+[health] pv_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-pv_project-r__o6j8z.log
+[health] pv_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-pv_project-xut9pekv.log
+updated agent-harness to 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/pv_project
+managed files: 189
+
+Seed entry points: review and explicitly approve these additions before applying them by edit/patch.
+The CLI has not changed these project-owned files; --force-seed-files is not needed.
+  .claude/agents/code-review-spec.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/code-review-standards.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/pr-composer.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/test-author.md: No mandatory path to the installed shared contract was found.
+diff --git a/.claude/agents/code-review-spec.md b/.claude/agents/code-review-spec.md
+--- a/.claude/agents/code-review-spec.md
++++ b/.claude/agents/code-review-spec.md
+@@ -15,3 +15,6 @@
+ (c) requirements that look implemented but where the implementation looks wrong
+ 
+ Quote the spec line for each finding. Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/code-review-standards.md b/.claude/agents/code-review-standards.md
+--- a/.claude/agents/code-review-standards.md
++++ b/.claude/agents/code-review-standards.md
+@@ -14,3 +14,6 @@
+ (b) any baseline smell you spot: name it and quote the hunk
+ 
+ Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling already enforces (lint/format/type-check). Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/pr-composer.md b/.claude/agents/pr-composer.md
+--- a/.claude/agents/pr-composer.md
++++ b/.claude/agents/pr-composer.md
+@@ -19,3 +19,6 @@
+ 3. Gather context: `git diff <target-branch>...HEAD` (three-dot, against the merge-base) and `git log <target-branch>..HEAD --oneline`.
+ 4. Fill in every section defined by the template you read in step 1, from the diff and commit log. Use the qa-gate result for the verification/testing section; if no qa-gate was run this session, say so plainly under the risks/caveats section rather than inventing test coverage.
+ 5. Save the finished PR body markdown only to the scratch path you were given, with the `Write` tool and not through Bash (`cat`/`printf`/heredoc, Python, a temp file + `cp`): the scratch-path hook checks `Write`/`Edit` paths, so a Bash write skips the `pr_body/` name check. Never use `docs/tasks/` or another location. Respond with only that path — no preamble, no commentary, no copy of the body itself. Bash is for gathering context in steps 1–3 only; if a call errors, fix its cause before retrying.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/test-author.md b/.claude/agents/test-author.md
+--- a/.claude/agents/test-author.md
++++ b/.claude/agents/test-author.md
+@@ -50,3 +50,6 @@
+ The runner starts a database only for matching `test_runner.database.test_ids`; pure domain
+ logic needs no server. Test SQL, rollback and constraints against the production engine.
+ `build_failed`, `build_timeout` and `database_unavailable` refusals are not behavioral Red.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+installed agent-harness 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/o
+capabilities: backend-orchestration
+managed files: 278
+[health] o: PASS ok=37 warn=3 fail=0 skipped=15; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-o-fkdhsqxy.log
+[health] o: PASS ok=37 warn=3 fail=0 skipped=15; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-o-_uqjrwia.log
+== Файлы харнесса ==
+✅ harness.lock присутствует
+✅ AGENTS.md заполнен, нерешённых плейсхолдеров нет
+✅ discovery-ссылки скиллов исправны
+✅ project.json корректен
+✅ хранилище .harness/.sandboxes исправно
+✅ конфигурация backend-orchestration корректна
+✅ снэпшот скиллов без расхождений
+✅ реестр скиллов актуален
+✅ overlay-локи согласованы
+✅ интеграции инвентаризованы (1)
+- нет .harness/orchestration.json
+== Каталоги харнесса ==
+✅ каталог .harness доступен на запись
+✅ каталог .harness/.sandboxes доступен на запись
+✅ каталог .harness/.sandboxes/cache отсутствует, будет создан
+✅ каталог .harness/.sandboxes/logs отсутствует, будет создан
+✅ каталог .harness/.sandboxes/scratch доступен на запись
+✅ каталог .harness/.sandboxes/pr_body отсутствует, будет создан
+✅ каталог .harness/.sandboxes/runs доступен на запись
+✅ каталог .harness/.sandboxes/reports отсутствует, будет создан
+✅ каталог .harness/.sandboxes/worktrees отсутствует, будет создан
+✅ каталог .harness/orchestration/state доступен на запись
+== Repo Map ==
+⚠️ Repo Map: tier=minimal (offline parser bundle unavailable); Repo Map provenance: offline parser bundle unavailable; Repo Map policy: portable; dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable
+-> Как исправить: установите offline parser bundle в .harness/.sandboxes/cache/repo_map/parser_bundle/registry и повторите harness health
+== Память проекта ==
+- память выключена или список источников пуст
+- модель не требуется: память выключена или список источников пуст
+== Окружение ==
+✅ ОС: Linux 6.8.0-139-generic (#139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026)
+✅ git version 2.43.0
+✅ git user.name и user.email заданы
+⚠️ нет .gitattributes: переводы строк зависят от core.autocrlf каждой машины
+-> Как исправить: добавьте .gitattributes с явной нормализацией, например строку `* text=auto eol=lf`, и закоммитьте его
+✅ переводы строк не расходятся с атрибутами git; core.autocrlf=не задан (информация)
+✅ Python 3.12.3 (<repo>/.harness/.venv/bin/python)
+✅ uv 0.12.21 (x86_64-unknown-linux-gnu)
+- glab: не проверено (трекер проекта не GitLab)
+- не репозиторий claude-agent-harness: синхронность dev-окружения не проверяется
+✅ кодировка UTF-8 (вывод: utf-8, локаль: utf-8)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: пользовательские настройки песочницы для локальных сокетов заданы (<home>/.claude/settings.json)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: кеш uv <home>/.cache/uv доступен для записи из песочницы (<home>/.claude/settings.json)
+- не Windows: LongPathsEnabled не проверяется
+✅ путь репозитория 79 символов, запас до 260: 179 (MAX_PATH ограничивает только Windows)
+- не Windows: каталог pytest-of-<user> не проверяется
+- не Windows: право создавать symlink не проверяется
+- не Windows: bash для хуков не проверяется
+== Трекер задач ==
+⚠️ нет поля tracker в .harness/project.json; трекер проекта: local (источник: origin)
+-> Как исправить: добавьте в .harness/project.json: "tracker": {"type": "local"}
+- авторизация gh/glab: не проверено (офлайн — без --online проверки трекера не выполняются)
+- достижимость origin: не проверено (офлайн — без --online проверки трекера не выполняются)
+- права в репозитории: не проверено (офлайн — без --online проверки трекера не выполняются)
+- лейблы трекера: не проверено (офлайн — без --online проверки трекера не выполняются)
+- Git base тикетов: не проверено (офлайн — без --online проверки трекера не выполняются)
+== Оркестрация ==
+✅ леджер: generation=generation-8145326b schema_version=3; батчи по состояниям: abandoned=2, awaiting-approval=1
+✅ незавершённые батчи (1): batch-4745abdc-b0a7-434b-a864-e445b2201acb [awaiting-approval] ticket=#901 branch=feature/issue-901-coordinator worktree=<main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/shared-worktree возраст=1м
+✅ заблокированных батчей нет
+✅ все активные диспатчи посылают heartbeat вовремя
+✅ осиротевших воркдеревьев нет
+✅ одноразовых данных для очистки нет
+Итого: ok=36 warn=3 fail=0 skipped=16
+activation: verify advertised and invoked skills/integrations in a fresh runtime session
+== Файлы харнесса ==
+✅ harness.lock присутствует
+✅ AGENTS.md заполнен, нерешённых плейсхолдеров нет
+✅ discovery-ссылки скиллов исправны
+✅ project.json корректен
+✅ хранилище .harness/.sandboxes исправно
+✅ конфигурация backend-orchestration корректна
+✅ снэпшот скиллов без расхождений
+✅ реестр скиллов актуален
+✅ overlay-локи согласованы
+✅ интеграции инвентаризованы (1)
+✅ developer_verification_commands заданы; developer получает фокусные проверки
+== Каталоги харнесса ==
+✅ каталог .harness доступен на запись
+✅ каталог .harness/.sandboxes доступен на запись
+✅ каталог .harness/.sandboxes/cache отсутствует, будет создан
+✅ каталог .harness/.sandboxes/logs отсутствует, будет создан
+✅ каталог .harness/.sandboxes/scratch доступен на запись
+✅ каталог .harness/.sandboxes/pr_body отсутствует, будет создан
+✅ каталог .harness/.sandboxes/runs доступен на запись
+✅ каталог .harness/.sandboxes/reports отсутствует, будет создан
+✅ каталог .harness/.sandboxes/worktrees отсутствует, будет создан
+✅ каталог .harness/orchestration/state доступен на запись
+== Repo Map ==
+⚠️ Repo Map: tier=minimal (offline parser bundle unavailable); Repo Map provenance: offline parser bundle unavailable; Repo Map policy: portable; dispatch may use full parser-backed Repo Map and degrades to minimal when the bundle is unavailable
+-> Как исправить: установите offline parser bundle в .harness/.sandboxes/cache/repo_map/parser_bundle/registry и повторите harness health
+== Память проекта ==
+- память выключена или список источников пуст
+- модель не требуется: память выключена или список источников пуст
+== Окружение ==
+✅ ОС: Linux 6.8.0-139-generic (#139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026)
+✅ git version 2.43.0
+✅ git user.name и user.email заданы
+⚠️ нет .gitattributes: переводы строк зависят от core.autocrlf каждой машины
+-> Как исправить: добавьте .gitattributes с явной нормализацией, например строку `* text=auto eol=lf`, и закоммитьте его
+✅ переводы строк не расходятся с атрибутами git; core.autocrlf=не задан (информация)
+✅ Python 3.12.3 (<repo>/.harness/.venv/bin/python)
+✅ uv 0.12.21 (x86_64-unknown-linux-gnu)
+- glab: не проверено (трекер проекта не GitLab)
+- не репозиторий claude-agent-harness: синхронность dev-окружения не проверяется
+✅ кодировка UTF-8 (вывод: utf-8, локаль: utf-8)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: пользовательские настройки песочницы для локальных сокетов заданы (<home>/.claude/settings.json)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: кеш uv <home>/.cache/uv доступен для записи из песочницы (<home>/.claude/settings.json)
+- не Windows: LongPathsEnabled не проверяется
+✅ путь репозитория 79 символов, запас до 260: 179 (MAX_PATH ограничивает только Windows)
+- не Windows: каталог pytest-of-<user> не проверяется
+- не Windows: право создавать symlink не проверяется
+- не Windows: bash для хуков не проверяется
+== Трекер задач ==
+⚠️ нет поля tracker в .harness/project.json; трекер проекта: local (источник: origin)
+-> Как исправить: добавьте в .harness/project.json: "tracker": {"type": "local"}
+- авторизация gh/glab: не проверено (офлайн — без --online проверки трекера не выполняются)
+- достижимость origin: не проверено (офлайн — без --online проверки трекера не выполняются)
+- права в репозитории: не проверено (офлайн — без --online проверки трекера не выполняются)
+- лейблы трекера: не проверено (офлайн — без --online проверки трекера не выполняются)
+- Git base тикетов: не проверено (офлайн — без --online проверки трекера не выполняются)
+== Оркестрация ==
+✅ леджер: generation=generation-8145326b schema_version=3; батчи по состояниям: abandoned=2, awaiting-approval=1
+✅ незавершённые батчи (1): batch-4745abdc-b0a7-434b-a864-e445b2201acb [awaiting-approval] ticket=#901 branch=feature/issue-901-coordinator worktree=<main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/shared-worktree возраст=1м
+✅ заблокированных батчей нет
+✅ все активные диспатчи посылают heartbeat вовремя
+✅ осиротевших воркдеревьев нет
+✅ одноразовых данных для очистки нет
+Итого: ok=37 warn=3 fail=0 skipped=15
+activation: verify advertised and invoked skills/integrations in a fresh runtime session
+updated agent-harness to 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/pv_project
+managed files: 156
+
+Seed entry points: review and explicitly approve these additions before applying them by edit/patch.
+The CLI has not changed these project-owned files; --force-seed-files is not needed.
+  .claude/agents/code-review-spec.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/code-review-standards.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/pr-composer.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/test-author.md: No mandatory path to the installed shared contract was found.
+diff --git a/.claude/agents/code-review-spec.md b/.claude/agents/code-review-spec.md
+--- a/.claude/agents/code-review-spec.md
++++ b/.claude/agents/code-review-spec.md
+@@ -15,3 +15,6 @@
+ (c) requirements that look implemented but where the implementation looks wrong
+ 
+ Quote the spec line for each finding. Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/code-review-standards.md b/.claude/agents/code-review-standards.md
+--- a/.claude/agents/code-review-standards.md
++++ b/.claude/agents/code-review-standards.md
+@@ -14,3 +14,6 @@
+ (b) any baseline smell you spot: name it and quote the hunk
+ 
+ Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling already enforces (lint/format/type-check). Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/pr-composer.md b/.claude/agents/pr-composer.md
+--- a/.claude/agents/pr-composer.md
++++ b/.claude/agents/pr-composer.md
+@@ -19,3 +19,6 @@
+ 3. Gather context: `git diff <target-branch>...HEAD` (three-dot, against the merge-base) and `git log <target-branch>..HEAD --oneline`.
+ 4. Fill in every section defined by the template you read in step 1, from the diff and commit log. Use the qa-gate result for the verification/testing section; if no qa-gate was run this session, say so plainly under the risks/caveats section rather than inventing test coverage.
+ 5. Save the finished PR body markdown only to the scratch path you were given, with the `Write` tool and not through Bash (`cat`/`printf`/heredoc, Python, a temp file + `cp`): the scratch-path hook checks `Write`/`Edit` paths, so a Bash write skips the `pr_body/` name check. Never use `docs/tasks/` or another location. Respond with only that path — no preamble, no commentary, no copy of the body itself. Bash is for gathering context in steps 1–3 only; if a call errors, fix its cause before retrying.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/test-author.md b/.claude/agents/test-author.md
+--- a/.claude/agents/test-author.md
++++ b/.claude/agents/test-author.md
+@@ -50,3 +50,6 @@
+ The runner starts a database only for matching `test_runner.database.test_ids`; pure domain
+ logic needs no server. Test SQL, rollback and constraints against the production engine.
+ `build_failed`, `build_timeout` and `database_unavailable` refusals are not behavioral Red.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+updated agent-harness to 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/pv_project
+managed files: 154
+
+Seed entry points: review and explicitly approve these additions before applying them by edit/patch.
+The CLI has not changed these project-owned files; --force-seed-files is not needed.
+  .claude/agents/code-review-spec.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/code-review-standards.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/pr-composer.md: No mandatory path to the installed shared contract was found.
+  .claude/agents/test-author.md: No mandatory path to the installed shared contract was found.
+diff --git a/.claude/agents/code-review-spec.md b/.claude/agents/code-review-spec.md
+--- a/.claude/agents/code-review-spec.md
++++ b/.claude/agents/code-review-spec.md
+@@ -15,3 +15,6 @@
+ (c) requirements that look implemented but where the implementation looks wrong
+ 
+ Quote the spec line for each finding. Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/code-review-standards.md b/.claude/agents/code-review-standards.md
+--- a/.claude/agents/code-review-standards.md
++++ b/.claude/agents/code-review-standards.md
+@@ -14,3 +14,6 @@
+ (b) any baseline smell you spot: name it and quote the hunk
+ 
+ Distinguish hard violations from judgement calls — documented-standard breaches can be hard, but baseline smells are always judgement calls, and a documented repo standard overrides the baseline. Skip anything tooling already enforces (lint/format/type-check). Keep the report to findings and their evidence — no preamble.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/pr-composer.md b/.claude/agents/pr-composer.md
+--- a/.claude/agents/pr-composer.md
++++ b/.claude/agents/pr-composer.md
+@@ -19,3 +19,6 @@
+ 3. Gather context: `git diff <target-branch>...HEAD` (three-dot, against the merge-base) and `git log <target-branch>..HEAD --oneline`.
+ 4. Fill in every section defined by the template you read in step 1, from the diff and commit log. Use the qa-gate result for the verification/testing section; if no qa-gate was run this session, say so plainly under the risks/caveats section rather than inventing test coverage.
+ 5. Save the finished PR body markdown only to the scratch path you were given, with the `Write` tool and not through Bash (`cat`/`printf`/heredoc, Python, a temp file + `cp`): the scratch-path hook checks `Write`/`Edit` paths, so a Bash write skips the `pr_body/` name check. Never use `docs/tasks/` or another location. Respond with only that path — no preamble, no commentary, no copy of the body itself. Bash is for gathering context in steps 1–3 only; if a call errors, fix its cause before retrying.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+diff --git a/.claude/agents/test-author.md b/.claude/agents/test-author.md
+--- a/.claude/agents/test-author.md
++++ b/.claude/agents/test-author.md
+@@ -50,3 +50,6 @@
+ The runner starts a database only for matching `test_runner.database.test_ids`; pure domain
+ logic needs no server. Test SQL, rollback and constraints against the production engine.
+ `build_failed`, `build_timeout` and `database_unavailable` refusals are not behavioral Red.
++
++Before the first English handoff, agents must read
++[Technical English](../../.harness/docs/technical-english.md).
+ledger schema-upgrade migration verification passed
+risk-aware composite review verification passed
+delta-review eligibility probe passed
+delta-review verification passed
+fixed-sequence review verification passed
+context package ledger integration and freshness-gate verification passed
+checkpoint and worker session verification passed
+base-commit gate verification passed
+dispatch model self-report and watchdog verification passed
+stuck-batch abandonment verification passed
+parallel batches with explicit scope verification passed
+zero-config coordinator defaults verification passed
+delivery-stats verification passed
+orchestration baseline metrics verification passed
+[health] runner_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-runner_project-zt_pyzem.log
+isolated-test-runner: Claude Code confirmation not requested
+isolated-test-runner: process isolation verified
+isolated-test-runner: test-author cycle verified
+[health] runner_build_db_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-runner_build_db_project-scettbqe.log
+isolated-build-db: cc missing; real build not proved
+[health] runner_build_db_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-runner_build_db_project-zre1j66l.log
+isolated-build-db: real PostgreSQL not proved; missing postgres,initdb
+[health] fast_route_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-fast_route_project-3sne7743.log
+[health] fast_route_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-fast_route_project-ukd843u4.log
+[health] fast_route_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-fast_route_project-jlt2pfqv.log
+[health] fast_route_project: PASS ok=28 warn=3 fail=0 skipped=24; log: <main-checkout>/.harness/.sandboxes/logs/clean-room-health-fast_route_project-xj0sdake.log
+fast-implement route: short route verified
+installed agent-harness 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/recovery-project
+capabilities: backend-orchestration
+managed files: 278
+======================================================
+ Starting Agent Global Setup
+======================================================
+Target Home Directory: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home
+Source Kit Root:       <repo>
+
+>>> Configuring Runtime: codex
+  [WRITE] Copied profile to: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.codex/AGENTS.md
+  [RETIRE] Removed legacy skill: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/project-harness-bootstrap
+  [RETIRE] Removed legacy skill: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/skill-library
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+>>> Configuring Runtime: claude
+  [WRITE] Copied profile to: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/CLAUDE.md
+  [RETIRE] Removed legacy skill: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/skills/project-harness-bootstrap
+  [RETIRE] Removed legacy skill: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/skills/skill-library
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+>>> Configuring Runtime: kimi
+  [WRITE] Copied profile to: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.kimi-code/AGENTS.md
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: opencode
+  [WRITE] Copied profile to: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.config/opencode/AGENTS.md
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: hermes
+  [INFO] Skipping profile for Hermes (reads project AGENTS.md)
+  [RETIRE] Removed legacy skill: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.hermes/skills/project-harness-bootstrap
+  [RETIRE] Removed legacy skill: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.hermes/skills/skill-library
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.hermes/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.hermes/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+======================================================
+[OK] Installation completed successfully!
+======================================================
+======================================================
+ Starting Agent Global Setup
+======================================================
+Target Home Directory: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home
+Source Kit Root:       <repo>
+Mode: CHECK (Dry Run)
+
+>>> Configuring Runtime: codex
+  [OK] Profile already matches: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.codex/AGENTS.md
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: claude
+  [OK] Profile already matches: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/CLAUDE.md
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.claude/skills/integrate-project
+
+>>> Configuring Runtime: kimi
+  [OK] Profile already matches: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.kimi-code/AGENTS.md
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: opencode
+  [OK] Profile already matches: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.config/opencode/AGENTS.md
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: hermes
+  [INFO] Skipping profile for Hermes (reads project AGENTS.md)
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.hermes/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/home/.hermes/skills/integrate-project
+
+======================================================
+[OK] Installation completed successfully!
+======================================================
+======================================================
+ Starting Agent Global Setup
+======================================================
+Target Home Directory: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/foreign-home
+Source Kit Root:       <repo>
+
+>>> Configuring Runtime: codex
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/foreign-home/.agents/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/foreign-home/.agents/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+======================================================
+[FAIL] Installation finished with errors (see conflicts above).
+======================================================
+======================================================
+ Starting Agent Global Setup
+======================================================
+Target Home Directory: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home
+Source Kit Root:       <repo>
+
+>>> Configuring Runtime: codex
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.agents/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.agents/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+>>> Configuring Runtime: claude
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.claude/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.claude/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+>>> Configuring Runtime: kimi
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: opencode
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.agents/skills/start-project
+  [OK] Skill linked correctly: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.agents/skills/integrate-project
+
+>>> Configuring Runtime: hermes
+  [INFO] Skipping profile for Hermes (reads project AGENTS.md)
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.hermes/skills/start-project -> <repo>/global-skills/start-project
+  [LINK] Created link: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/overlay-home/.hermes/skills/integrate-project -> <repo>/global-skills/integrate-project
+
+======================================================
+[OK] Installation completed successfully!
+======================================================
+adopted agent-harness 1.5.1 in <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/legacy
+preserved project-owned skill names outside: ask-matt, diagnosing-bugs, grill-with-docs, triage, improve-codebase-architecture, setup-matt-pocock-skills, tdd, to-spec, to-tickets, wayfinder, implement, prototype, research, domain-modeling, codebase-design, code-review, resolving-merge-conflicts, wizard, grill-me, grilling, handoff, teach, to-questionnaire, wait-what, writing-for-agents
+managed files: 77
+locked 1 project-local skills in .harness/overlays/project-local.lock
+== Файлы харнесса ==
+✅ harness.lock присутствует
+✅ AGENTS.md заполнен, нерешённых плейсхолдеров нет
+✅ discovery-ссылки скиллов исправны
+✅ project.json отсутствует (необязателен)
+✅ хранилище .harness/.sandboxes исправно
+- backend-orchestration capability не выбрана
+✅ снэпшот скиллов без расхождений
+✅ реестр скиллов актуален
+✅ overlay-локи согласованы
+✅ интеграции инвентаризованы (0)
+- backend-orchestration capability не выбрана
+== Каталоги харнесса ==
+✅ каталог .harness доступен на запись
+✅ каталог .harness/.sandboxes отсутствует, будет создан
+✅ каталог .harness/.sandboxes/cache отсутствует, будет создан
+✅ каталог .harness/.sandboxes/logs отсутствует, будет создан
+✅ каталог .harness/.sandboxes/scratch отсутствует, будет создан
+✅ каталог .harness/.sandboxes/pr_body отсутствует, будет создан
+✅ каталог .harness/.sandboxes/runs отсутствует, будет создан
+✅ каталог .harness/.sandboxes/reports отсутствует, будет создан
+✅ каталог .harness/.sandboxes/worktrees отсутствует, будет создан
+- backend-orchestration capability не выбрана
+== Repo Map ==
+- Repo Map не установлен в проект
+== Память проекта ==
+- память выключена или список источников пуст
+- модель не требуется: память выключена или список источников пуст
+== Окружение ==
+✅ ОС: Linux 6.8.0-139-generic (#139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026)
+✅ git version 2.43.0
+✅ git user.name и user.email заданы
+⚠️ нет .gitattributes: переводы строк зависят от core.autocrlf каждой машины
+-> Как исправить: добавьте .gitattributes с явной нормализацией, например строку `* text=auto eol=lf`, и закоммитьте его
+✅ переводы строк не расходятся с атрибутами git; core.autocrlf=не задан (информация)
+✅ Python 3.12.3 (<repo>/.harness/.venv/bin/python)
+✅ uv 0.12.21 (x86_64-unknown-linux-gnu)
+- glab: не проверено (трекер проекта не GitLab)
+- не репозиторий claude-agent-harness: синхронность dev-окружения не проверяется
+✅ кодировка UTF-8 (вывод: utf-8, локаль: utf-8)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: пользовательские настройки песочницы для локальных сокетов заданы (<home>/.claude/settings.json)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: кеш uv <home>/.cache/uv доступен для записи из песочницы (<home>/.claude/settings.json)
+- не Windows: LongPathsEnabled не проверяется
+✅ путь репозитория 84 символов, запас до 260: 174 (MAX_PATH ограничивает только Windows)
+- не Windows: каталог pytest-of-<user> не проверяется
+- не Windows: право создавать symlink не проверяется
+- не Windows: bash для хуков не проверяется
+== Трекер задач ==
+✅ трекер проекта: local (источник: нет origin); .harness/project.json отсутствует
+- авторизация gh/glab: не проверено (офлайн — без --online проверки трекера не выполняются)
+- достижимость origin: не проверено (офлайн — без --online проверки трекера не выполняются)
+- права в репозитории: не проверено (офлайн — без --online проверки трекера не выполняются)
+- лейблы трекера: не проверено (офлайн — без --online проверки трекера не выполняются)
+- Git base тикетов: не проверено (офлайн — без --online проверки трекера не выполняются)
+== Оркестрация ==
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+Итого: ok=29 warn=1 fail=0 skipped=25
+activation: verify advertised and invoked skills/integrations in a fresh runtime session
+== Файлы харнесса ==
+✅ harness.lock присутствует
+✅ AGENTS.md заполнен, нерешённых плейсхолдеров нет
+✅ discovery-ссылки скиллов исправны
+✅ project.json отсутствует (необязателен)
+✅ хранилище .harness/.sandboxes исправно
+- backend-orchestration capability не выбрана
+✅ снэпшот скиллов без расхождений
+✅ реестр скиллов актуален
+✅ overlay-локи согласованы
+✅ интеграции инвентаризованы (0)
+- backend-orchestration capability не выбрана
+== Каталоги харнесса ==
+✅ каталог .harness доступен на запись
+✅ каталог .harness/.sandboxes отсутствует, будет создан
+✅ каталог .harness/.sandboxes/cache отсутствует, будет создан
+✅ каталог .harness/.sandboxes/logs отсутствует, будет создан
+✅ каталог .harness/.sandboxes/scratch отсутствует, будет создан
+✅ каталог .harness/.sandboxes/pr_body отсутствует, будет создан
+✅ каталог .harness/.sandboxes/runs отсутствует, будет создан
+✅ каталог .harness/.sandboxes/reports отсутствует, будет создан
+✅ каталог .harness/.sandboxes/worktrees отсутствует, будет создан
+- backend-orchestration capability не выбрана
+== Repo Map ==
+- Repo Map не установлен в проект
+== Память проекта ==
+- память выключена или список источников пуст
+- модель не требуется: память выключена или список источников пуст
+== Окружение ==
+✅ ОС: Linux 6.8.0-139-generic (#139-Ubuntu SMP PREEMPT_DYNAMIC Sat Aug  1 03:52:05 UTC 2026)
+✅ git version 2.43.0
+✅ git user.name и user.email заданы
+⚠️ нет .gitattributes: переводы строк зависят от core.autocrlf каждой машины
+-> Как исправить: добавьте .gitattributes с явной нормализацией, например строку `* text=auto eol=lf`, и закоммитьте его
+✅ переводы строк не расходятся с атрибутами git; core.autocrlf=не задан (информация)
+✅ Python 3.12.3 (<repo>/.harness/.venv/bin/python)
+✅ uv 0.12.21 (x86_64-unknown-linux-gnu)
+- glab: не проверено (трекер проекта не GitLab)
+- не репозиторий claude-agent-harness: синхронность dev-окружения не проверяется
+✅ кодировка UTF-8 (вывод: utf-8, локаль: utf-8)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: пользовательские настройки песочницы для локальных сокетов заданы (<home>/.claude/settings.json)
+- codex: утилита и пользовательский конфиг отсутствуют
+✅ Claude Code: кеш uv <home>/.cache/uv доступен для записи из песочницы (<home>/.claude/settings.json)
+- не Windows: LongPathsEnabled не проверяется
+✅ путь репозитория 84 символов, запас до 260: 174 (MAX_PATH ограничивает только Windows)
+- не Windows: каталог pytest-of-<user> не проверяется
+- не Windows: право создавать symlink не проверяется
+- не Windows: bash для хуков не проверяется
+== Трекер задач ==
+✅ трекер проекта: local (источник: нет origin); .harness/project.json отсутствует
+- авторизация gh/glab: не проверено (офлайн — без --online проверки трекера не выполняются)
+- достижимость origin: не проверено (офлайн — без --online проверки трекера не выполняются)
+- права в репозитории: не проверено (офлайн — без --online проверки трекера не выполняются)
+- лейблы трекера: не проверено (офлайн — без --online проверки трекера не выполняются)
+- Git base тикетов: не проверено (офлайн — без --online проверки трекера не выполняются)
+== Оркестрация ==
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+- backend-orchestration capability не выбрана
+Итого: ok=29 warn=1 fail=0 skipped=25
+activation: verify advertised and invoked skills/integrations in a fresh runtime session
+installed orchestration recovery cycle passed
+clean-room verification passed
+[verify] mypy: passed in 11.39s
+[verify] pytest: passed in 337.59s
+[verify] clean-room: passed in 250.22s
+agent-harness verification passed
+Previous HEAD position was 74d387d chore: create baseline
+HEAD is now at 00a66ce feat: add retry path
+  [CONFLICT] Retired entry has a foreign target: <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/foreign-home/.agents/skills/skill-library -> <main-checkout>/.harness/.sandboxes/runs/tests/vxtq_fmou/c/foreign-home/foreign

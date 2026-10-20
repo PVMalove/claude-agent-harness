@@ -1,0 +1,8 @@
+{
+  "measured_at": "2026-10-20T11:34:31.032707+00:00",
+  "commit": "a4f485b1eff1ad26ff384c25b27146a042c4ab3e",
+  "worktree_clean": true,
+  "python": "3.12.3",
+  "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.39",
+  "cpu_count": 8
+}

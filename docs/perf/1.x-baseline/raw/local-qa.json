@@ -1,0 +1,69 @@
+[
+  {
+    "local_qa_id": "local-qa-3490dcde7c2a628aaebdd2799067b8c2",
+    "finished_at": "2026-10-07T14:45:09.471410+00:00",
+    "state": "completed",
+    "target_sha": "75ae608e813e7f5909651cd92e40c597a6c99bc0",
+    "duration_seconds": 470.55347951920703,
+    "commands": [
+      "python scripts/verify.py"
+    ],
+    "full_run": true
+  },
+  {
+    "local_qa_id": "local-qa-2f7c7c3bfe8e017e1b0466677d04c908",
+    "finished_at": "2026-10-08T06:10:27.499418+00:00",
+    "state": "completed",
+    "target_sha": "e2233a3a998662146d925bdbbd931dafd8b0835b",
+    "duration_seconds": 462.1098660030402,
+    "commands": [
+      "python scripts/verify.py"
+    ],
+    "full_run": true
+  },
+  {
+    "local_qa_id": "local-qa-e04d9eb4cf47bdfee20a0691ad9a2a82",
+    "finished_at": "2026-10-13T18:11:23.092107+00:00",
+    "state": "completed",
+    "target_sha": "dec8ebaf99351e307b059553407d31338bfbef31",
+    "duration_seconds": 732.4773993268609,
+    "commands": [
+      "python scripts/verify.py"
+    ],
+    "full_run": true
+  },
+  {
+    "local_qa_id": "local-qa-aa27149919a12b74cb59d35dca94c02f",
+    "finished_at": "2026-10-14T11:30:22.982994+00:00",
+    "state": "completed",
+    "target_sha": "5c7f9b529ca1f526736ece1918ee164adb96fd98",
+    "duration_seconds": 764.6597315426916,
+    "commands": [
+      "python scripts/verify.py"
+    ],
+    "full_run": true
+  },
+  {
+    "local_qa_id": "local-qa-cf65da98ca0d8555be985fd076e17f73",
+    "finished_at": "2026-10-16T12:54:55.226700+00:00",
+    "state": "completed",
+    "target_sha": "6b84c613af6fa42a6697c61eae3675f7fc9f6c9b",
+    "duration_seconds": 878.2323711412027,
+    "commands": [
+      "python scripts/verify.py"
+    ],
+    "full_run": true
+  },
+  {
+    "local_qa_id": "local-qa-8f8065792b0ef14fcdbd6967c9fab447",
+    "finished_at": "2026-10-20T10:24:17.624155+00:00",
+    "state": "completed",
+    "target_sha": "3556b16c0d65ad885e12da8ee195cb86869dd4f7",
+    "duration_seconds": 17.79710484109819,
+    "commands": [
+      "make lint",
+      ".harness/.venv/bin/python -m pytest -q tests/orchestration/test_verification_profiles.py::VerificationProfileBatchTests::test_a_profile_covering_every_allowed_path_is_frozen_in_the_batch"
+    ],
+    "full_run": false
+  }
+]
