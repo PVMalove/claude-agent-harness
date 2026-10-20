@@ -1,0 +1,70 @@
+{
+  "focused": {
+    "tests": [
+      "tests/orchestration/test_verification_profiles.py",
+      "tests/orchestration/test_retry_verification.py",
+      "tests/core/test_gate_runner.py",
+      "tests/orchestration/test_qa_lane.py",
+      "tests/scripts/test_verify_temp.py"
+    ],
+    "samples": [
+      {
+        "seconds": 16.85760055994615,
+        "returncode": 0,
+        "summary_line": "136 passed, 59 subtests passed in 16.66s"
+      },
+      {
+        "seconds": 16.825006450992078,
+        "returncode": 0,
+        "summary_line": "136 passed, 59 subtests passed in 16.62s"
+      },
+      {
+        "seconds": 16.858644355088472,
+        "returncode": 0,
+        "summary_line": "136 passed, 59 subtests passed in 16.66s"
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 3,
+      "min": 16.825006450992078,
+      "p50": 16.85760055994615,
+      "p95": 16.858644355088472,
+      "p99": 16.858644355088472,
+      "max": 16.858644355088472
+    }
+  },
+  "failed_only": {
+    "node_ids": [
+      "tests/orchestration/test_verification_profiles.py::VerificationProfileBatchTests::test_a_profile_covering_every_allowed_path_is_frozen_in_the_batch"
+    ],
+    "samples": [
+      {
+        "seconds": 1.516078408807516,
+        "returncode": 0,
+        "summary_line": "1 passed, 3725 deselected in 1.13s"
+      },
+      {
+        "seconds": 1.5052850050851703,
+        "returncode": 0,
+        "summary_line": "1 passed, 3725 deselected in 1.15s"
+      },
+      {
+        "seconds": 1.5081079746596515,
+        "returncode": 0,
+        "summary_line": "1 passed, 3725 deselected in 1.13s"
+      }
+    ],
+    "summary": {
+      "status": "measured",
+      "failed_runs": 0,
+      "n": 3,
+      "min": 1.5052850050851703,
+      "p50": 1.5081079746596515,
+      "p95": 1.516078408807516,
+      "p99": 1.516078408807516,
+      "max": 1.516078408807516
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  ".claude": 1,
+  "audit": 5044,
+  "batches": 44,
+  "checkpoints": 0,
+  "context-packages": 123,
+  "dispatch-status": 267,
+  "dispatches": 267,
+  "plans": 44,
+  "qa-artifacts": 37,
+  "qa-lane": 3,
+  "reports": 520,
+  "risk-assessments": 80
+}
