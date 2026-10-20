@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -271,6 +275,266 @@ class ImplementRunsTests(unittest.TestCase):
                 }
             ],
         )
+
+
+class LedgerHistoryTests(unittest.TestCase):
+    def _write(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def test_only_local_qa_results_are_reported_in_finish_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            generation = Path(tmp)
+            qa = generation / "reports" / "integration-local-qa"
+            self._write(
+                qa / "local-qa-a.json",
+                json.dumps({"event": "request", "local_qa_id": "local-qa-a"}),
+            )
+            self._write(
+                qa / "local-qa-b.json",
+                json.dumps(
+                    {
+                        "event": "result",
+                        "local_qa_id": "local-qa-b",
+                        "finished_at": "2026-10-08T10:00:00+00:00",
+                        "state": "completed",
+                        "target_sha": "bbb",
+                        "duration_seconds": 462.1,
+                        "verification_commands": ["python scripts/verify.py"],
+                    }
+                ),
+            )
+            self._write(
+                qa / "local-qa-c.json",
+                json.dumps(
+                    {
+                        "event": "result",
+                        "local_qa_id": "local-qa-c",
+                        "finished_at": "2026-10-07T10:00:00+00:00",
+                        "state": "completed",
+                        "target_sha": "ccc",
+                        "duration_seconds": 17.8,
+                        "verification_commands": ["make lint"],
+                    }
+                ),
+            )
+
+            result = baseline.local_qa_results(generation)
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "local_qa_id": "local-qa-c",
+                    "finished_at": "2026-10-07T10:00:00+00:00",
+                    "state": "completed",
+                    "target_sha": "ccc",
+                    "duration_seconds": 17.8,
+                    "commands": ["make lint"],
+                    "full_run": False,
+                },
+                {
+                    "local_qa_id": "local-qa-b",
+                    "finished_at": "2026-10-08T10:00:00+00:00",
+                    "state": "completed",
+                    "target_sha": "bbb",
+                    "duration_seconds": 462.1,
+                    "commands": ["python scripts/verify.py"],
+                    "full_run": True,
+                },
+            ],
+        )
+
+    def test_qa_logs_without_verify_stages_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            generation = Path(tmp)
+            artifacts = generation / "qa-artifacts"
+            self._write(artifacts / "a.log", "[verify] mypy: passed in 8.38s\n")
+            self._write(artifacts / "b.log", "exit 0; private-terms: no matches\n")
+
+            result = baseline.qa_artifact_stages(generation)
+
+        self.assertEqual(
+            result, {"a.log": {"mypy": {"status": "passed", "seconds": 8.38}}}
+        )
+
+
+class TimeCommandTests(unittest.TestCase):
+    def test_every_successful_run_is_sampled_with_its_summary_line(self) -> None:
+        argv = [sys.executable, "-c", "print('collecting'); print('3 passed in 0.01s')"]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            samples = baseline.time_command(
+                argv, cwd=Path(tmp), repeats=2, keep_summary_line=True
+            )
+
+        self.assertEqual(
+            [(s["returncode"], s.get("summary_line")) for s in samples],
+            [(0, "3 passed in 0.01s"), (0, "3 passed in 0.01s")],
+        )
+        self.assertTrue(all(s["seconds"] > 0 for s in samples))
+
+    def test_repeats_stop_after_the_first_refusal(self) -> None:
+        argv = [
+            sys.executable,
+            "-c",
+            "import sys; print('ERROR: refused', file=sys.stderr); sys.exit(2)",
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            samples = baseline.time_command(argv, cwd=Path(tmp), repeats=5)
+
+        self.assertEqual(len(samples), 1)
+        self.assertEqual(samples[0]["returncode"], 2)
+        self.assertEqual(samples[0].get("stderr_tail"), ["ERROR: refused"])
+
+
+class MainArgumentTests(unittest.TestCase):
+    def _main_exit_code(self, argv: list[str]) -> object:
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            baseline.main(argv)
+        return raised.exception.code
+
+    def test_zero_repeats_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            code = self._main_exit_code(
+                ["--repo", tmp, "--state-dir", tmp, "--out", tmp, "--repeats", "0"]
+            )
+
+        self.assertEqual(code, 2)
+
+    def test_checkout_that_already_holds_a_ledger_state_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / ".harness" / "orchestration" / "state").mkdir(parents=True)
+            out = Path(tmp) / "out"
+
+            code = self._main_exit_code(
+                ["--repo", str(repo), "--state-dir", tmp, "--out", str(out)]
+            )
+            out_created = out.exists()
+
+        self.assertEqual(code, 2)
+        self.assertFalse(out_created)
+
+
+class MainRunTests(unittest.TestCase):
+    """`main` on a stub checkout: coordinator and lifecycle stubs, the focused test files."""
+
+    def _write(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def _stub_checkout(self, repo: Path) -> None:
+        self._write(repo / "harness/orchestration/coordinator.py", "print('{}')\n")
+        for package in (
+            "harness",
+            "harness/orchestration",
+            "harness/orchestration/ledger",
+        ):
+            self._write(repo / package / "__init__.py", "")
+        self._write(
+            repo / "harness/orchestration/ledger/lifecycle.py",
+            "class LifecycleLedger:\n"
+            "    @staticmethod\n"
+            "    def _validate_audit(root):\n"
+            "        return None\n",
+        )
+        for test_file in baseline.FOCUSED_TESTS:
+            self._write(repo / test_file, "def test_ok():\n    pass\n")
+        self._write(
+            repo / "tests/orchestration/test_verification_profiles.py",
+            "import unittest\n"
+            "class VerificationProfileBatchTests(unittest.TestCase):\n"
+            "    def test_a_profile_covering_every_allowed_path_is_frozen_in_the_batch(self):\n"
+            "        pass\n",
+        )
+        self._write(repo / ".gitignore", ".harness/\n")
+        identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
+        for argv in (
+            ["git", "init", "-q"],
+            ["git", "add", "-A"],
+            ["git", *identity, "commit", "-qm", "stub"],
+        ):
+            subprocess.run(argv, cwd=repo, check=True)
+
+    def _state(self, state: Path) -> Path:
+        generation = state / "generations" / "generation-1"
+        self._write(state / "ledger.json", json.dumps({"generation": "generation-1"}))
+        self._write(generation / "audit" / "audit-1.json", "{}")
+        self._write(
+            generation / "dispatch-status" / "dispatch-1.json",
+            json.dumps(
+                {
+                    "dispatch_id": "dispatch-1",
+                    "state": "reported",
+                    "updated_at": "2026-10-01T10:00:00+00:00",
+                }
+            ),
+        )
+        for directory in ("batches", "dispatches"):
+            (generation / directory).mkdir()
+        return generation / "dispatch-status" / "dispatch-1.json"
+
+    def test_measurement_writes_raw_data_and_leaves_both_states_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, state, out = (
+                Path(tmp) / "repo",
+                Path(tmp) / "state",
+                Path(tmp) / "out",
+            )
+            self._stub_checkout(repo)
+            source_status = self._state(state)
+            argv = ["--repo", str(repo), "--state-dir", str(state), "--out", str(out)]
+            repeats = ["--repeats", "2", "--slow-repeats", "1", "--test-repeats", "1"]
+
+            code = baseline.main([*argv, *repeats])
+
+            written = sorted(path.name for path in out.iterdir())
+            coordinator = json.loads(
+                (out / "coordinator.json").read_text(encoding="utf-8")
+            )
+            pytest_runs = json.loads((out / "pytest.json").read_text(encoding="utf-8"))
+            environment = json.loads(
+                (out / "environment.json").read_text(encoding="utf-8")
+            )
+            audit = json.loads((out / "audit.json").read_text(encoding="utf-8"))
+            copy_left = (repo / ".harness/orchestration/state").exists()
+            source_state = json.loads(source_status.read_text(encoding="utf-8"))[
+                "state"
+            ]
+
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            written,
+            [
+                "audit.json",
+                "coordinator.json",
+                "environment.json",
+                "implement-runs.json",
+                "ledger-size.json",
+                "local-qa.json",
+                "pytest.json",
+                "qa-artifact-stages.json",
+                "run.json",
+            ],
+        )
+        heartbeat = coordinator["dispatch heartbeat"]
+        self.assertEqual(heartbeat["live_state"], "synthetic")
+        self.assertEqual(heartbeat["summary"]["n"], 2)
+        self.assertEqual(coordinator["ledger status"]["summary"]["status"], "measured")
+        self.assertEqual(audit["records"], 1)
+        self.assertEqual(audit["summary"]["status"], "measured")
+        self.assertIn(
+            "1 passed", pytest_runs["failed_only"]["samples"][0]["summary_line"]
+        )
+        self.assertIn("5 passed", pytest_runs["focused"]["samples"][0]["summary_line"])
+        self.assertTrue(environment["worktree_clean"])
+        self.assertFalse(copy_left)
+        self.assertEqual(source_state, "reported")
 
 
 if __name__ == "__main__":
