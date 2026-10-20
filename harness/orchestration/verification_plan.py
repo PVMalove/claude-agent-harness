@@ -1,0 +1,134 @@
+"""VerificationPlan: стадии проверки роли по ImpactSet (ADR 0023, разделы 1 и 2).
+
+План строится при ``dispatch propose`` из замороженной политики ``verification_plan_policy`` и
+ImpactSet кандидата. Стадия pytest получает выбор ``focused`` по затронутым тестам или ``full``,
+если влияние неизвестно либо роль — QA. Модуль только строит данные и их digest; исполняет план
+другой компонент.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import platform
+import tomllib
+from collections.abc import Mapping
+from pathlib import Path
+
+from harness.repo_map.backend import ParserBackend
+from harness.repo_map.change_impact import ImpactSet, compute_change_impact
+from harness.repo_map.git_source import blob_contents
+from harness.repo_map.policy import RepoMapPolicy
+
+from .core.utils import CoordinatorError, JsonObject
+
+# Роли, для которых строится план: первый developer без diff плана не получает.
+PLAN_ROLES = ("developer", "code-review", "qa")
+PYTEST_KIND = "pytest"
+# Таймаут одной git-команды при чтении манифестов окружения.
+_GIT_TIMEOUT_SECONDS = 60
+
+
+def environment_fingerprint(repo: Path, commit: str) -> str:
+    """sha256 окружения проверки: интерпретатор, ``uv.lock`` и секции ``[tool.*]`` ``pyproject.toml``.
+
+    Манифесты читаются из коммита, а не из рабочего дерева. Отсутствующий файл даёт пустой вклад.
+    """
+    files = blob_contents(
+        repo, commit, ["uv.lock", "pyproject.toml"], _GIT_TIMEOUT_SECONDS
+    )
+    lock = files["uv.lock"] or b""
+    tool: object = {}
+    pyproject = files["pyproject.toml"]
+    if pyproject is not None:
+        try:
+            tool = tomllib.loads(pyproject.decode("utf-8")).get("tool", {})
+        except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+            tool = {"unparsed": hashlib.sha256(pyproject).hexdigest()}
+    return _digest(
+        {
+            "interpreter": platform.python_version(),
+            "uv_lock": hashlib.sha256(lock).hexdigest(),
+            "pyproject_tool": tool,
+        }
+    )
+
+
+def _digest(value: object) -> str:
+    canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def plan_sha256(plan: Mapping[str, object]) -> str:
+    """Канонический digest плана: порядок ключей не важен, а любой изменённый байт меняет digest."""
+    return _digest(dict(plan))
+
+
+def _stage(
+    template: Mapping[str, object],
+    impact: ImpactSet,
+    *,
+    widen: bool,
+    fingerprint: str,
+) -> JsonObject:
+    """Стадия плана по шаблону политики: выбор тестов применяется только к стадии pytest."""
+    argv = list(template["argv"])  # type: ignore[call-overload]
+    selection, nodeids = "full", []
+    if template["kind"] == PYTEST_KIND and not widen:
+        selection, nodeids = "focused", list(impact.related_tests)
+        argv += nodeids
+    return {
+        "stage_id": template["stage_id"],
+        "kind": template["kind"],
+        "argv": argv,
+        "timeout_seconds": template["timeout_seconds"],
+        "selection": selection,
+        "nodeids": nodeids,
+        "environment_fingerprint": fingerprint,
+    }
+
+
+def build_plan(
+    repo: Path,
+    policy: Mapping[str, object],
+    *,
+    base: str,
+    candidate: str,
+    role: str,
+    backend: ParserBackend | None = None,
+    repo_map_policy: RepoMapPolicy | None = None,
+) -> JsonObject:
+    """План проверки роли для diff ``base..candidate`` по замороженной ``policy``.
+
+    Стадия pytest получает ``full`` при неизвестном влиянии (конфиг сборки, ``conftest.py``,
+    удалённый или переименованный модуль, порог ``max_related_tests``, недоступный парсер) и для
+    QA, иначе ``focused`` по ``related_tests`` без отсечения. ``focused`` без тестов не выбирает
+    ничего: исполнитель отчитывается ``not_run``, а не запускает весь набор.
+    """
+    if role not in PLAN_ROLES:
+        raise CoordinatorError(
+            f"a verification plan is not built for role {role!r}",
+            remedy=f"build a plan only for: {', '.join(PLAN_ROLES)}",
+        )
+    threshold = int(policy["max_related_tests"])  # type: ignore[call-overload]
+    impact = compute_change_impact(
+        repo,
+        base,
+        candidate,
+        backend=backend,
+        policy=repo_map_policy,
+        max_related_tests=threshold,
+    )
+    fingerprint = environment_fingerprint(repo, candidate)
+    widen = role == "qa" or bool(impact.unknown)
+    return {
+        "base_sha": base,
+        "candidate_sha": candidate,
+        "role": role,
+        "max_related_tests": threshold,
+        "impact": impact.to_json(),
+        "stages": [
+            _stage(template, impact, widen=widen, fingerprint=fingerprint)
+            for template in policy["stages"]  # type: ignore[attr-defined]
+        ],
+    }

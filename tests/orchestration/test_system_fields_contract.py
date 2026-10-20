@@ -830,6 +830,9 @@ SCHEMA_BINDINGS = {
     "/properties/repo_map_policy/properties/min_tier_by_role/properties/developer": _TIER,
     "/properties/repo_map_policy/properties/min_tier_by_role/properties/code-review": _TIER,
     "/properties/auto_retry_min_severity": "config.auto_retry_min_severity",
+    "/properties/verification_plan_policy/properties/stages/items/properties/kind": (
+        "verification_plan.stage_kind"
+    ),
     "/properties/extensions/propertyNames": "extension.kind",
     "/definitions/accessComponent/properties/mode": "access.mode",
     "/definitions/accessComponent/properties/container/properties/engine": "access.container_engine",

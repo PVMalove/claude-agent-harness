@@ -321,6 +321,23 @@
     ],
     "test_command": "pytest -q -n 8"
   },
+  "verification_plan_policy": {
+    "max_related_tests": 200,
+    "stages": [
+      {
+        "stage_id": "lint",
+        "kind": "lint",
+        "argv": ["make", "lint"],
+        "timeout_seconds": 900
+      },
+      {
+        "stage_id": "tests",
+        "kind": "pytest",
+        "argv": ["pytest", "-q", "-n", "8"],
+        "timeout_seconds": 1800
+      }
+    ]
+  },
   "verification_commands": [],
   "test_path_patterns": [
     "tests/**",
