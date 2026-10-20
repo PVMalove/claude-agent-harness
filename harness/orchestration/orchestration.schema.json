@@ -269,7 +269,8 @@
               "timeout_seconds": {"type": "integer", "minimum": 1, "description": "Таймаут стадии в секундах."}
             }
           },
-          "description": "Шаблоны стадий плана проверки в порядке выполнения."
+          "not": {"items": {"properties": {"kind": {"not": {"const": "pytest"}}}}},
+          "description": "Шаблоны стадий плана проверки в порядке выполнения; хотя бы одна стадия обязана иметь kind pytest, иначе review и qa отказывают impact_not_covered при любых related_tests."
         }
       },
       "description": "Цель: план проверки по ChangeImpact (ADR 0023). За что отвечает: при dispatch propose для developer-retry, code-review и qa строится план стадий; стадия pytest получает выбор focused по затронутым тестам или full при неизвестном влиянии. Варианты: объект {max_related_tests, stages}; если ключ не задан, batch работает по замороженным командам проверки, как раньше. Значение замораживается в batch при batch create."

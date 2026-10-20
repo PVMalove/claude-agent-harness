@@ -444,6 +444,12 @@ def verification_plan_policy_problems(value: object) -> list[str]:
             problems.append(f"{where}.argv must be a non-empty list of strings")
         if not _positive_int(stage.get("timeout_seconds")):
             problems.append(f"{where}.timeout_seconds must be a positive integer")
+    # Without a pytest stage the plan cannot select any related test, so every review and QA
+    # proposal with related tests would be refused as impact_not_covered until a supersede.
+    if not any(
+        isinstance(stage, dict) and stage.get("kind") == "pytest" for stage in stages
+    ):
+        problems.append(f"{label}.stages must include a stage of kind 'pytest'")
     return problems
 
 

@@ -97,6 +97,9 @@ INVALID_POLICIES: dict[str, object] = {
     "zero timeout": _with(stages=[_stage(timeout_seconds=0)]),
     "unknown stage field": _with(stages=[_stage(selection="full")]),
     "unknown policy field": _with(retries=1),
+    "no pytest stage": _with(
+        stages=[_stage(kind="lint"), _stage(stage_id="t2", kind="custom")]
+    ),
 }
 
 
@@ -143,9 +146,8 @@ class VerificationPlanPolicyContractTests(unittest.TestCase):
     def test_every_kind_of_the_registry_vocabulary_is_a_valid_stage(self) -> None:
         for kind in VERIFICATION_STAGE_KINDS:
             with self.subTest(kind=kind):
-                self.assertEqual(
-                    _policy_problems(_with(stages=[_stage(kind=kind)])), []
-                )
+                stages = [_stage(stage_id="other", kind=kind), _stage()]
+                self.assertEqual(_policy_problems(_with(stages=stages)), [])
 
 
 class VerificationPlanBatchTests(unittest.TestCase):

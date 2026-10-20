@@ -51,7 +51,7 @@ OTHER_POLICY: JsonObject = {
     "stages": [
         {
             "stage_id": "everything",
-            "kind": "custom",
+            "kind": "pytest",
             "argv": ["make", "verify"],
             "timeout_seconds": 60,
         }
