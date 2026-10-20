@@ -127,6 +127,7 @@ from harness.orchestration.workflow.history import (
     _validate_batch_integrity,
     _validate_dispatch,
 )
+from harness.orchestration.workflow import risk
 from harness.orchestration.workflow.risk import (
     _risk_triggers,
     _validate_trigger_names,
@@ -134,6 +135,56 @@ from harness.orchestration.workflow.risk import (
 
 # The one write role whose change outside write_paths is a warning, not a rejection (issue #633).
 SCOPE_WARNING_ROLE = "developer"
+
+
+def _bind_reassessment(
+    repo: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    was_retry: bool,
+    retry_candidate: str | None,
+) -> None:
+    """Bind a completed writer report to the batch's risk-reassessment state (issue #781).
+
+    The report escalates the triggers it names (a retry inherits the batch's earlier ones); the new
+    state is decided by ``risk.next_after_writer_report`` and checked before anything is written."""
+    triggers: list[str] = []
+    if dispatch["role"] == "developer" and "risk_triggers" in report:
+        triggers = _validate_trigger_names(
+            report["risk_triggers"],
+            "completion report risk_triggers",
+            _risk_triggers(repo),
+        )
+        if not triggers and was_retry:
+            triggers = sorted(
+                {
+                    trigger
+                    for escalation in batch.get("risk_escalations", [])
+                    for trigger in escalation.get("triggers", [])
+                }
+            )
+    fields = risk.reassessment_fields(batch)
+    before = risk.reassessment_state(batch)
+    candidate = (
+        retry_candidate or _candidate_commit(repo, report["commit_sha"])
+        if triggers or before.kind != risk.IDLE
+        else ""
+    )
+    after = risk.next_after_writer_report(before, candidate, tuple(triggers))
+    proposed = dict(batch)
+    risk.apply_reassessment(proposed, after)
+    risk.require_legal_reassessment(fields, proposed, risk.WRITER_REPORT)
+    if triggers or (after.triggers and after != before):
+        batch.setdefault("risk_escalations", []).append(
+            {
+                "dispatch_id": dispatch["dispatch_id"],
+                "candidate_commit": candidate,
+                "triggers": list(after.triggers),
+            }
+        )
+    if after != before or "risk_triggers" in report:
+        risk.apply_reassessment(batch, after)
 
 
 def _continuation_counts(batch: JsonObject, dispatch_id: str) -> tuple[int, int]:
@@ -1861,54 +1912,13 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 )
             batch["retry_candidate_required"] = False
         if (
-            "risk_triggers" in report
-            and role["name"] == "developer"
+            role["name"] in {"developer", "conflict-resolver"}
             and report.get("outcome") == "completed"
+            and dispatch.get("purpose", "work") == "work"
         ):
-            triggers = _validate_trigger_names(
-                report["risk_triggers"],
-                "completion report risk_triggers",
-                _risk_triggers(repo),
+            _bind_reassessment(
+                repo, batch, dispatch, report, was_retry, retry_candidate
             )
-            if triggers:
-                escalated_candidate = _candidate_commit(repo, report["commit_sha"])
-                batch.setdefault("risk_escalations", []).append(
-                    {
-                        "dispatch_id": dispatch["dispatch_id"],
-                        "candidate_commit": escalated_candidate,
-                        "triggers": triggers,
-                    }
-                )
-                batch["risk_reassessment_required"] = True
-                batch["risk_reassessment_candidate"] = escalated_candidate
-                batch["risk_reassessment_triggers"] = triggers
-            elif was_retry:
-                inherited = sorted(
-                    {
-                        trigger
-                        for escalation in batch.get("risk_escalations", [])
-                        for trigger in escalation.get("triggers", [])
-                    }
-                )
-                if inherited:
-                    batch.setdefault("risk_escalations", []).append(
-                        {
-                            "dispatch_id": dispatch["dispatch_id"],
-                            "candidate_commit": retry_candidate,
-                            "triggers": inherited,
-                        }
-                    )
-                    batch["risk_reassessment_required"] = True
-                    batch["risk_reassessment_candidate"] = retry_candidate
-                    batch["risk_reassessment_triggers"] = inherited
-                else:
-                    batch["risk_reassessment_required"] = False
-                    batch.pop("risk_reassessment_candidate", None)
-                    batch.pop("risk_reassessment_triggers", None)
-            elif not batch.get("risk_reassessment_required"):
-                batch["risk_reassessment_required"] = False
-                batch.pop("risk_reassessment_candidate", None)
-                batch.pop("risk_reassessment_triggers", None)
         report_json = _persist_report(
             ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
         )

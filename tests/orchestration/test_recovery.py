@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, tzinfo
+from typing import cast
 from unittest import mock
 from pathlib import Path
 from harness.orchestration import coordinator
@@ -2299,4 +2300,131 @@ class RecoveryTests(unittest.TestCase):
         from harness.orchestration.workflow import conditions
 
         self.assertEqual(conditions.open_conditions(self._batch_record(batch_id)), [])
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def _cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """One public coordinator command in its own process, as an operator or a worker runs it."""
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ORCHESTRATION_ROOT / "coordinator.py"),
+                "--repo",
+                str(self.repo),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    def _cli_rewind(self, batch_id: str, target: str) -> JsonObject:
+        result = self._cli(
+            "batch",
+            "rewind",
+            "--batch",
+            batch_id,
+            "--to",
+            target,
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            self.APPROVED_AT,
+            "--note",
+            "rework through a fresh writer",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return cast(JsonObject, json.loads(result.stdout))
+
+    def _cli_assess(
+        self, batch_id: str, candidate: str, changed: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        flags = [item for path in changed for item in ("--changed-file", path)]
+        return self._cli(
+            "risk",
+            "assess",
+            "--batch",
+            batch_id,
+            "--candidate-commit",
+            candidate,
+            *flags,
+            "--developer-trigger",
+            "transactions",
+        )
+
+    def _cli_propose_qa(
+        self, batch_id: str, candidate: str
+    ) -> subprocess.CompletedProcess[str]:
+        return self._cli(
+            "dispatch",
+            "propose",
+            "--batch",
+            batch_id,
+            "--role",
+            "qa",
+            "--candidate-commit",
+            candidate,
+            "--model",
+            "sonnet",
+            "--effort",
+            "high",
+        )
+
+    def _rewound_writer_report(
+        self, batch_id: str, name: str
+    ) -> tuple[str, list[str], JsonObject]:
+        """A fresh writer after a rewind: its report is submitted but not yet accepted."""
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit(name)
+        base = self._batch_record(batch_id)["base_commit"]
+        commits = _git(
+            self.worktree, "rev-list", "--reverse", f"{base}..{candidate}"
+        ).split()
+        commit_map = [
+            {"commit_sha": sha, "plan_entry_id": entry["id"]}
+            for sha in commits
+            for entry in brief["commit_plan"]
+        ]
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                candidate,
+                changed,
+                commit_map=commit_map,
+                dod_coverage=[{"dod_item": 1, "commits": [candidate]}],
+                divergence_justification="the rewound writer adds a second commit",
+            ),
+        )
+        return candidate, changed, brief
+
+    def test_rewind_to_the_writer_binds_the_reassessment_until_the_new_candidate(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        pending = self._batch_record(batch_id)
+        self.assertIs(pending["risk_reassessment_required"], True)
+        self.assertIs(pending["risk_reassessment_pending_next"], True)
+        self.assertNotIn("risk_reassessment_candidate", pending)
+        second, changed, _ = self._rewound_writer_report(batch_id, "second")
+        bound = self._batch_record(batch_id)
+        self.assertIs(bound["risk_reassessment_required"], True)
+        self.assertEqual(bound["risk_reassessment_candidate"], second)
+        self.assertNotIn("risk_reassessment_pending_next", bound)
+        self._decide(batch_id, "accept")
+        blocked = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        assessed = self._cli_assess(batch_id, second, changed)
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        after = self._batch_record(batch_id)
+        self.assertIs(after["risk_reassessment_required"], False)
+        self.assertEqual(after["next_action"], "code-review")
+        self._reported_review(batch_id, second)
+        self._decide(batch_id, "accept")
+        proposal = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
