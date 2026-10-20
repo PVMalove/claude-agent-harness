@@ -446,6 +446,13 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     # Frozen like the command lists, and only when configured: a legacy batch keeps its shape.
     if isinstance(config.get("retry_verification"), dict):
         record["retry_verification"] = config["retry_verification"]
+    if isinstance(config.get("verification_plan_policy"), dict):
+        record["verification_plan_policy"] = config["verification_plan_policy"]
+        # The Repo Map policy shapes the import graph behind the plan, so it is frozen beside it.
+        repo_map_policy = config.get("repo_map_policy")
+        record["repo_map_policy"] = (
+            repo_map_policy if isinstance(repo_map_policy, dict) else {}
+        )
     _reject_sensitive(record, "batch")
     _store_runtime_snapshot(
         root, _runtime_snapshot_root(repo).parent, record["harness_runtime_sha256"]

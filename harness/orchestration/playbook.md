@@ -737,6 +737,10 @@ from the ledger and refuses on any difference, so a changed scope, candidate, ro
 command, reason category or Context Package needs a new proposal and a new approval. A shared
 package whose frozen memory source changed since registration is not reused: the proposal
 registers a new package with current pointers, so an approval of the old one no longer matches.
+A brief that carries a verification plan binds the plan's digest as `verification_plan_sha256`
+(added only then, so a transition without a plan keeps its digest): a changed policy, candidate or
+impact set after the proposal needs a new proposal, and a plan edited after approval no longer
+matches its approval.
 The digest is stored in the approval and in the immutable brief, together with the transition
 itself, and ledger validation re-derives it. A policy approval (`milestone`, `low_risk`, `auto`) is derived from the transition
 being created and binds to its own digest.
@@ -958,6 +962,25 @@ It must contain, at minimum:
   freezes `retry_verification` when configured: a developer-retry brief then runs its `lint`
   commands and one `test_command` over the Context Package's `related_tests`, or the developer list
   when there are none;
+- `verification plan`: `verification_plan`, built by `dispatch propose` from the batch's frozen
+  `verification_plan_policy` (`max_related_tests` and stage templates `{stage_id, kind, argv,
+  timeout_seconds}`, at least one of kind `pytest`) and the ChangeImpact of `base..candidate`
+  (ADR 0023, sections 1, 2 and 6). `batch create` freezes the project's `repo_map_policy` beside
+  the policy, because it shapes the import graph. It is present only on a developer-retry, code-review or QA brief of a batch that configured the
+  policy; a first developer has no diff, and a batch without the policy keeps the brief it always
+  had. Each stage adds `selection` (`full`, `focused` or `failed-only`), `nodeids` and
+  `environment_fingerprint`. The pytest stage is `focused` over every related test of the import
+  graph, without a first-N cutoff, and widens to `full` instead of failing when the impact is
+  unknown: a changed `conftest.py`, `pyproject.toml`, `uv.lock`, `Makefile`, `.github/**`, verify
+  scripts, capability catalog or skill, a removed or renamed module that others import, a
+  non-Python file, a dynamic import, an unavailable parser, a Python file the graph cannot read
+  (hidden by the Repo Map policy or not parsed) that names an impacted module, or more related
+  tests than `max_related_tests`. On a docker dispatch the pinned image digests are part of every
+  stage's `environment_fingerprint`. A QA plan is always `full`. The plan's digest is bound into the transition as
+  `verification_plan_sha256`; `verification_commands` stays the list a role reports in `checks_run`.
+  `dispatch propose` and `dispatch create` for code-review and QA refuse with `impact_not_covered`
+  (exit code 2, the uncovered tests listed) when the plan's pytest stage is not `full` and does not
+  list a related test; that is a machine check, not something a report replaces;
 - `dependencies and assumptions`: known blockers, required inputs, and their owner;
 - `coordinator approval`: approving person, timestamp, and the approved concurrency decision;
 - `commit plan` (developer work): ordered entries `{id, summary, expected_paths, covers}`, where

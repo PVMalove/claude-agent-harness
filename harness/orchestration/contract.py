@@ -25,6 +25,7 @@ from .core.constants import (
     DEFAULT_PREFLIGHT_POLICY,
     DEFAULT_RETRY_POLICY,
     SENSITIVE_KEY,
+    VERIFICATION_STAGE_KINDS,
 )
 from .core.system_fields import enum_problem, enum_remedy, near_miss
 from .extensions import DEFAULT_EXTENSION, EXTENSION_KINDS, EXTENSION_NAME
@@ -67,6 +68,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "review_verification_commands",
     "verification_profiles",
     "retry_verification",
+    "verification_plan_policy",
     "qa_preparation",
     "qa_environment_probes",
     "qa_project_file_checks",
@@ -382,6 +384,73 @@ def retry_verification_commands(
         return None
     tests = " ".join(shlex.quote(path) for path in related_tests)
     return [*lint, f"{test_command} {tests}"]
+
+
+VERIFICATION_PLAN_POLICY_FIELDS = ("max_related_tests", "stages")
+VERIFICATION_PLAN_STAGE_FIELDS = ("stage_id", "kind", "argv", "timeout_seconds")
+
+
+def _positive_int(value: object) -> bool:
+    return _is_int(value) and value >= 1
+
+
+def verification_plan_policy_problems(value: object) -> list[str]:
+    """Problems of the optional ``verification_plan_policy`` object; none when the key is absent.
+
+    The policy names the stage templates of a verification plan and the ``related_tests`` count
+    above which the pytest stage widens to the full suite (ADR 0023, section 2).
+    """
+    if value is None:
+        return []
+    label = "orchestration verification_plan_policy"
+    if not isinstance(value, dict):
+        return [f"{label} must be an object with max_related_tests and stages"]
+    problems: list[str] = []
+    extra = sorted(set(value) - set(VERIFICATION_PLAN_POLICY_FIELDS))
+    if extra:
+        problems.append(f"{label} has unknown field(s): {', '.join(extra)}")
+    if not _positive_int(value.get("max_related_tests")):
+        problems.append(f"{label}.max_related_tests must be a positive integer")
+    stages = value.get("stages")
+    if not isinstance(stages, list) or not stages:
+        problems.append(f"{label}.stages must be a non-empty list of stage objects")
+        return problems
+    seen: set[str] = set()
+    for index, stage in enumerate(stages):
+        where = f"{label}.stages[{index}]"
+        if not isinstance(stage, dict):
+            problems.append(
+                f"{where} must be an object with stage_id, kind, argv and timeout_seconds"
+            )
+            continue
+        extra = sorted(set(stage) - set(VERIFICATION_PLAN_STAGE_FIELDS))
+        if extra:
+            problems.append(f"{where} has unknown field(s): {', '.join(extra)}")
+        stage_id = stage.get("stage_id")
+        if not non_empty(stage_id):
+            problems.append(f"{where}.stage_id must be a non-empty string")
+        elif stage_id in seen:
+            problems.append(
+                f"{where}.stage_id {stage_id!r} is used by an earlier stage"
+            )
+        else:
+            seen.add(stage_id)
+        if problem := enum_problem(
+            f"{where}.kind", stage.get("kind"), VERIFICATION_STAGE_KINDS
+        ):
+            problems.append(problem)
+        argv = stage.get("argv")
+        if not (string_list(argv) and argv):
+            problems.append(f"{where}.argv must be a non-empty list of strings")
+        if not _positive_int(stage.get("timeout_seconds")):
+            problems.append(f"{where}.timeout_seconds must be a positive integer")
+    # Without a pytest stage the plan cannot select any related test, so every review and QA
+    # proposal with related tests would be refused as impact_not_covered until a supersede.
+    if not any(
+        isinstance(stage, dict) and stage.get("kind") == "pytest" for stage in stages
+    ):
+        problems.append(f"{label}.stages must include a stage of kind 'pytest'")
+    return problems
 
 
 def is_developer_retry(brief: Mapping[str, object]) -> bool:
@@ -1673,6 +1742,9 @@ def configuration_problems(
         )
     problems.extend(verification_profile_problems(config.get("verification_profiles")))
     problems.extend(retry_verification_problems(config.get("retry_verification")))
+    problems.extend(
+        verification_plan_policy_problems(config.get("verification_plan_policy"))
+    )
     for qa_key in ("qa_preparation", "qa_environment_probes", "qa_project_file_checks"):
         qa_commands = config.get(qa_key)
         if qa_commands is not None and not string_list(qa_commands):
