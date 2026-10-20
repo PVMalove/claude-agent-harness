@@ -49,6 +49,7 @@ Preflight проверяет условия и на первом нарушен�
 
 | Проверка | Причина отказа |
 | --- | --- |
+| Необязательный `--worktree <путь>` называет тот же checkout, где лежит preflight | `checkout_mismatch` |
 | `CLAUDE_PROJECT_DIR` совпадает с корнем Git checkout | `project_untrusted` |
 | Claude Code не запущен с `CLAUDE_CODE_SIMPLE=1` или `CLAUDE_CODE_SAFE_MODE=1` | `claude_code_unsupported` |
 | Пользователь принял диалог доверия для этого проекта | `project_untrusted` |
@@ -171,3 +172,22 @@ fixtures, останавливается до ответа разработчи�
 упал либо изоляция недоступна, `/fast-implement` продолжает обычным `/tdd` в той же сессии, одной
 строкой называет разработчику санитизированную причину и не запускает незащищённого автора. Этот
 исход не добавляет шагов coordinator, architect или QA и не меняет ledger.
+
+## 7. Полный маршрут `/implement`
+
+Preflight обслуживает только тот checkout, где лежит сам. Developer in-process worker работает в
+отдельном worktree из brief, а `CLAUDE_PROJECT_DIR` указывает на основной checkout, поэтому вызов
+без аргументов проверил бы не тот каталог. Такой developer запускает
+`"$CLAUDE_PROJECT_DIR/.claude/hooks/test-author-preflight.sh" --worktree <worktree из brief>`.
+Ответ `{"status":"ok"}` возможен, только если канонический путь аргумента совпадает с checkout
+скрипта; для отдельного worker checkout ответ — `checkout_mismatch`. Автор не пишет и не
+запускает тесты в основном checkout: guard и runner обслуживают только checkout скрипта.
+
+Внешний transport (`harness/adapters/claude_worker.py`, headless `claude -p` в worktree) автора не
+включает и preflight не запускает: нативный режим `--print` пропускает диалог доверия, а у пути
+worktree нет записи доверия, поэтому причина — `transport_unsupported`. Это решение developer, а не
+ответ preflight.
+
+Любой ответ, кроме `{"status":"ok"}`, оставляет обычный TDD в worker checkout: developer сам пишет
+падающий тест, затем делает его зелёным, и называет причину в выводе. Это не blocker, и ledger не
+меняется.

@@ -4,6 +4,13 @@
 # The script is invoked by the developer before spawning the in-session Claude Code subagent. It
 # prints exactly one sanitized JSON line and always exits 0: a disabled result preserves the normal
 # developer route and does not create orchestration or ledger state.
+#
+# Usage: test-author-preflight.sh [--worktree <path>]
+# The optional --worktree names the checkout the developer works in (the brief's worker
+# checkout).  The preflight only ever checks the checkout that holds this script, so the answer
+# is checkout_mismatch unless the canonical --worktree path is that checkout; a missing,
+# unresolvable or other argv answers checkout_mismatch as well.  With no argument the behavior
+# is unchanged.
 
 set -u
 
@@ -17,6 +24,12 @@ PY="$(command -v python3 || command -v python || true)"
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd -P)"
 [ -n "$REPO" ] || disabled project_untrusted
+
+if [ "$#" -gt 0 ]; then
+  [ "$#" -eq 2 ] && [ "$1" = "--worktree" ] && [ -n "$2" ] || disabled checkout_mismatch
+  WORKTREE="$(cd "$2" 2>/dev/null && pwd -P || true)"
+  [ -n "$WORKTREE" ] && [ "$WORKTREE" = "$REPO" ] || disabled checkout_mismatch
+fi
 
 # Claude Code supplies this identity to scoped hooks and its Bash tool.  A matching canonical
 # path is required before this helper can enable the optional subagent.

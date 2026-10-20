@@ -64,6 +64,18 @@ rephrased (see "Never work around a hook" in `_common.md`). A local author retry
 guard denial create no new dispatch, add no ledger state and do not bypass the recovery rules of
 ADR 0012.
 
+**Full `/implement` route.** The author must serve the checkout the developer works in. The
+preflight checks only the checkout that holds the script, so an in-process developer (its CWD is the
+main checkout, its work is in the brief's `worker_worktree`) runs
+`"$CLAUDE_PROJECT_DIR/.claude/hooks/test-author-preflight.sh" --worktree <brief worktree>`. The
+answer is `{"status":"ok"}` only when that path is the preflight's own checkout; for a separate
+worker checkout it is `{"status":"disabled","reason":"checkout_mismatch"}`, so the author never
+writes or runs tests against the main checkout. An `external` transport (headless `claude -p` in the
+worktree) does not enable the author: name the reason `transport_unsupported` and run no preflight.
+Any answer other than `{"status":"ok"}` keeps the ordinary TDD route in the worker checkout (write
+the failing test yourself, then make it pass) and names the reason in the report's output; it is
+never a blocker and adds no dispatch or ledger state.
+
 The `/fast-implement` short route runs this same cycle in its single session, with the seam agreed
 by the human before the first test instead of taken from the architect brief. It adds no coordinator,
 architect or QA step, and an unavailable author keeps the ordinary route with the reason stated.
