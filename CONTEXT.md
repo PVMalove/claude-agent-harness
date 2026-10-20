@@ -571,3 +571,17 @@ _Avoid_: scheduler, worker monitor с гарантией жизни процес
 индекс можно удалить и пересобрать. Включается проектом явно; хиты попадают в Context Package
 как advisory-контекст с пометкой статуса источника.
 _Avoid_: RAG-хранилище, база знаний, долгосрочная память агента, вектор-стор.
+
+**Эпоха authority** (`file-ledger` | `runtime-store`):
+Период, в котором operational state пишет ровно один writer: Python `LifecycleLedger` установки
+1.x или Rust runtime store. Эпоху меняют только `harness-runtime migrate` и
+`harness-runtime rollback --to-legacy`; признак — `ledger.json.version` и `state/AUTHORITY.json`
+(ADR 0020). Релиз 2.0.0 работает только в эпохе `runtime-store`.
+_Avoid_: dual-write, переходный период с двумя writer-ами, Python fallback-writer.
+
+**Release Gate**:
+Правило, по которому кандидат попадает в целевую ветку: полный прогон `qa_gate_commands` на паре
+`{candidate_sha, target_sha}`, merge только при неизменной голове целевой ветки и сверка дерева
+после squash-merge с `candidate_tree_sha` (ADR 0026). Focused-, failed-only- и кэшированные
+результаты Release Gate не проходят.
+_Avoid_: зелёный CI без `integration collect-ci`, QA другого SHA, частичный прогон.

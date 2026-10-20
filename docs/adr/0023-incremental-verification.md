@@ -1,6 +1,6 @@
 # Инкрементальная проверка: ChangeImpact, выбор тестов и полный gate на финальном SHA
 
-**Статус: PROPOSED (2026-10-20).** Эпик #784, ADR 0019, ADR 0021. Документ задаёт, какие проверки
+**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0019, ADR 0021, ADR 0026. Документ задаёт, какие проверки
 запускает каждая роль, когда допустим запуск только упавших тестов и почему publish разрешает
 только полный clean-room прогон на финальном SHA. Закрытые #756, #757 и #758 — основа, их
 поведение не отменяется.
@@ -105,9 +105,13 @@ Python строит план при propose. План входит в brief, а 
   digest плана, образа и `environment_fingerprint`.
 - Новый SHA делает прежний полный QA недействительным. Focused-, failed-only- и кэшированные
   результаты publish не разрешают.
+- QA-evidence привязан к паре `{candidate_sha, target_sha}` и к `candidate_tree_sha`. Merge
+  squash-ом в целевую ветку разрешает только Release Gate ADR 0026 (раздел 4); перед push и merge
+  Python получает вердикт `qa_evidence_verify` (ADR 0021, раздел 7).
 - Повтор QA на том же SHA после `infrastructure` или `environment_preparation` (#615, #769)
   допустим без расхода бюджета developer-а и без нового approval, если план и окружение заново
-  проверены. Повтор после `code_test` требует нового кандидата.
+  проверены. Такой повтор — новый `attempt` того же dispatch (ADR 0021, раздел 4), поэтому у него
+  новый `operation_id`. Повтор после `code_test` требует нового кандидата.
 - Каждая стадия и команда хранят `stage_id`, `candidate_sha`, digest-ы, `environment_fingerprint`,
   результат `pass`/`fail`/`not_run`, exit code, раздельные ссылки на stdout и stderr с sha256,
   длительность и упавшие nodeid из JUnit.

@@ -1,6 +1,6 @@
 # Rust-супервизор процессов и OCI-контейнеров
 
-**Статус: PROPOSED (2026-10-20).** Эпик #784, ADR 0018 (`0018-container-executor.md` в
+**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0018 (`0018-container-executor.md` в
 `integration/container-executor`), ADR 0021. Документ переносит границу движка контейнеров из
 Python в Rust runtime и задаёт модель жизненного цикла процессов на Linux (включая Fedora с SELinux
 и rootless Podman) и Windows. Решения ADR 0018 о монтированиях, сети, секретах, владельце файлов и
@@ -51,6 +51,9 @@ Python в Rust runtime и задаёт модель жизненного цик�
   хранит exit code, сигнал, `oom_killed` и время. `lost` — объект доказанно отсутствует без exit
   evidence. `unknown` — движок или ОС не дали ответа; из `unknown` нет автоматических действий,
   кроме повторного наблюдения.
+- Терминальны только `exited` и `lost`. `unknown` не терминально: повторное наблюдение переводит
+  его в `running`, `exited` или `lost`. Состояние исполнения — наблюдение; переход `DispatchState`
+  по нему выбирает только Python (ADR 0021, раздел 6).
 
 ### 3. Процессы и группы
 
@@ -59,7 +62,7 @@ Python в Rust runtime и задаёт модель жизненного цик�
   без systemd учёт идёт по группе процессов, и это записывается фактом в receipt.
 - **Windows:** именованный Job Object без `KILL_ON_JOB_CLOSE`, чтобы исполнение пережило рестарт
   runtime, и `CREATE_NEW_PROCESS_GROUP` для доставки `CTRL_BREAK`.
-- **Остановка** только по явной команде или по `deadline` из плана:
+- **Остановка** только по явной команде или по `execution_deadline` из плана:
   - Linux: SIGTERM группе, после grace-периода SIGKILL;
   - контейнер: `<engine> stop --time <grace>`, затем `<engine> kill`;
   - Windows: `CTRL_BREAK`, затем `TerminateJobObject`.

@@ -1,6 +1,6 @@
 # Профили runtime hooks: minimal, standard, strict
 
-**Статус: PROPOSED (2026-10-20).** Эпик #784, ADR 0021, ADR 0023. Профиль управляет поведенческой
+**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0021, ADR 0023, ADR 0026. Профиль управляет поведенческой
 политикой hooks: предупреждениями, повторными проверками и fail-closed на границах высокого
 риска. Он не управляет правами sandbox, native approval и изоляцией ОС, и ни один профиль не
 ослабляет критические guard-ы.
@@ -49,8 +49,13 @@
 - Источник профиля — только `hook_policy` в `.harness/project.json`. Переменные окружения
   (`HOOK_PROFILE` и подобные), параметры инструментов и текст брифа или отчёта игнорируются.
 - Изменение `hook_policy`, `.claude/settings*.json`, `.codex/hooks.json` и каталогов hooks
-  инструментом агента блокирует критический guard во всех профилях. Такие изменения делает
-  человек.
+  инструментом агента блокирует критический guard `protect-hook-policy` во всех профилях. Такие
+  изменения делает человек.
+  - Для `.harness/project.json` guard сравнивает ключ, а не файл: `Write`/`Edit` разрешены, если
+    разобранный `hook_policy` до и после правки совпадает. Неразбираемый JSON до или после правки —
+    блок.
+  - Запись в `.harness/project.json` через shell (`sed -i`, перенаправление, `tee` и подобные)
+    блокируется целиком, потому что её результат нельзя вычислить до исполнения.
 
 ### 2. Профили
 
@@ -75,6 +80,40 @@
   `qa clear-stale-lease`, `batch rewind`, `dispatch cancel`, `release-lock --force` (последняя
   по-прежнему требует human approval).
 
+### 2a. Матрица hooks
+
+Hooks ставятся в проект, поэтому действуют для всех ролей (developer, review, qa, coordinator),
+если в строке не указано иное. Read-only роли (review, qa) не пишут файлы, поэтому hooks на
+`Write`/`Edit` у них не срабатывают; запрет записи им даёт `allowed_tools` brief, а не hook. «Блок»
+— код 2, «предупр.» — код 0 с `decision: warn`.
+
+| hook_id | Событие | Класс | `minimal` | `standard` | `strict` | Внутренняя ошибка | Проверка вне hook |
+|---|---|---|---|---|---|---|---|
+| `block-public-attribution` | Bash: commit, PR | критический | блок | блок | блок | блок | CI `check_public_metadata.py` |
+| `block-direct-master` | Bash: commit, push | критический | блок | блок | блок | блок | `dispatch publish` пушит только ветку batch |
+| `block-pr-merge` | Bash: merge PR | критический | блок | блок | блок | блок | нет |
+| `check-branch-name` | Bash: создание ветки | критический | блок | блок | блок | блок | `batch create` по `branch_pattern` |
+| `check-worktree-branch-name` | EnterWorktree | критический | блок | блок | блок | блок | `batch create` по `branch_pattern` |
+| `block-dangerous-git` | Bash: разрушающий git | критический | блок | блок | блок | блок | нет |
+| `block-scratch-outside-docs-tasks` | Write, Edit | критический | блок | блок | блок | блок | нет |
+| `require-qa-gate` | Bash: создание PR | критический | блок | блок | блок | блок | `qa_evidence_verify` |
+| `test-author-guard` | Write, Edit, Bash субагента test-author (роль developer) | критический | блок | блок | блок | блок | нет |
+| `protect-hook-policy` (новый) | Write, Edit, Bash | критический | блок | блок | блок | блок | `hook_policy_sha256` в brief |
+| `require-bounded-check` | Bash: полный прогон | поведенческий | предупр. | блок | блок | разрешает | `VerificationPlan` |
+| `impact-first-touch` (новый) | Write, Edit рискованного пути | поведенческий | нет | предупр. | предупр. | разрешает | ChangeImpact-gate (ADR 0023) |
+| `targeted-check-reminder` (новый) | завершение хода роли | поведенческий | нет | предупр. | предупр. | разрешает | сверка `checks_run` |
+| `sensitive-path-recheck` (новый) | Write, Edit чувствительного пути | поведенческий | нет | нет | предупр. и evidence | разрешает | граница `strict` ниже |
+| `count-skill-usage` | Skill | учётный | да | да | да | разрешает | — |
+| `mark-qa-gate-passed` | PostToolUse Bash | учётный | да | да | да | разрешает | — |
+
+- Fail-closed на границах высокого риска `strict` — не hook, а проверка coordinator и Rust при
+  `dispatch propose` review и QA, `qa run` и publish (раздел 2).
+- Каждый runtime получает одни и те же скрипты. Если у runtime нет события строки, `harness health`
+  (`hooks.policy`) сообщает это. Для критического hook-а защиту тогда даёт только «Проверка вне
+  hook»; при значении «нет» это предупреждение health, а не тихий пропуск.
+- Новые hook_id входят в реестр `systemFields.v1`; ответ hook-а с неизвестным `hook_id` или
+  `reason_code` — ошибка контракта.
+
 ### 3. Исполнение и привязка к approval
 
 - Python resolver (`harness health` и установка) вычисляет effective policy: профиль, эскалации,
@@ -83,8 +122,9 @@
 - `hook_policy_sha256` входит в `OPTIONAL_TRANSITION_FIELDS`, а `allowed_tools` добавляется в
   transition digest. Поэтому изменение конфига после approval не меняет запущенный dispatch и его
   QA-evidence.
-- Для операций, которые исполняет Rust runtime (запуск, QA, publish-допуск), авторитетную проверку
-  делает модуль политики Rust по сохранённому `hook_policy_sha256` (ADR 0021). Hook-скрипты
+- Для операций, которые исполняет Rust runtime (запуск и QA), авторитетную проверку делает модуль
+  политики Rust по сохранённому `hook_policy_sha256` (ADR 0021). Push и merge решает Python; Rust
+  только отвечает `qa_evidence_verify` (ADR 0021, раздел 7) и не принимает решения о публикации. Hook-скрипты
   coding runtime — адаптеры той же таблицы политики и не единственный уровень защиты.
 - Адаптер для второго coding runtime (`.codex/hooks.json`) ставится из того же набора скриптов, и
   его критические guard-ы равны первому. Если hooks этого runtime недоступны, критическую
@@ -119,7 +159,8 @@
   - критический guard не отключается в `minimal`;
   - `HOOK_PROFILE=minimal` в окружении игнорируется;
   - понижение через `escalations` отвергается;
-  - правка `hook_policy` инструментом агента блокируется;
+  - правка `hook_policy` инструментом агента блокируется, а правка другого ключа
+    `.harness/project.json` через `Edit` разрешена; shell-запись в этот файл блокируется;
   - symlink на защищённый путь блокируется;
   - повторный вызов того же события даёт одно уведомление;
   - изменение конфига после approval не меняет решение по запущенному dispatch;
