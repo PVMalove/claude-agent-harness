@@ -127,7 +127,7 @@ def _stage(
     fingerprint: str,
 ) -> JsonObject:
     """Стадия плана по шаблону политики: выбор тестов применяется только к стадии pytest."""
-    argv = list(template["argv"])  # type: ignore[call-overload]
+    argv = list(cast(Sequence[str], template["argv"]))
     selection, nodeids = "full", []
     if template["kind"] == PYTEST_KIND and not widen:
         selection, nodeids = "focused", list(impact.related_tests)
@@ -203,7 +203,7 @@ def build_plan(
             f"a verification plan is not built for role {role!r}",
             remedy=f"build a plan only for: {', '.join(PLAN_ROLES)}",
         )
-    threshold = int(policy["max_related_tests"])  # type: ignore[call-overload]
+    threshold = cast(int, policy["max_related_tests"])
     impact = compute_change_impact(
         repo,
         base,
@@ -222,6 +222,6 @@ def build_plan(
         "impact": impact.to_json(),
         "stages": [
             _stage(template, impact, widen=widen, fingerprint=fingerprint)
-            for template in policy["stages"]  # type: ignore[attr-defined]
+            for template in cast(Sequence[Mapping[str, object]], policy["stages"])
         ],
     }
