@@ -1,5 +1,5 @@
 # ADR 0019 — Unified Rust runtime and incremental verification
-Status: PROPOSED. Parent epic #783. Owner decision 2026-10-20.
+Status: PROPOSED. Parent epic #784 (absorbed duplicate #783). Owner decision 2026-10-20.
 
 ## Decision
 Implement Rust immediately as the final execution kernel; retain Python for AI skills, workflows and policy. Single coordinated migration and cutover: do not create a temporary Python executor or multiple authoritative ledger writers. Parallelize work only across versioned, stable boundaries.
@@ -38,4 +38,4 @@ Measure before/after total implement elapsed time, full-suite invocations, faile
 harness/orchestration/{coordinator.py,qa_lane.py,runtime_access.py,container_executor.py,ledger/lifecycle.py,ledger/ledger_ops.py,workflow/risk.py,workflow/recovery.py,workflow/dispatch.py,contract.py}, harness/gate_runner/gate_runner.py, scripts/verify.py, scripts/test_clean_room.py, harness/repo_map/, tests/orchestration/, .github/workflows/verify.yml.
 
 ## Workflow
-Use grill-with-docs to challenge remaining unknowns without reopening the fixed Rust/one-cutover decision; to-spec reconciles existing epic #783; to-tickets produces result-dependent slices; implement respects owner approval.
+Use grill-with-docs to challenge remaining unknowns without reopening the fixed Rust/one-cutover decision; to-spec reconciles existing epic #784 (absorbed #783); to-tickets produces result-dependent slices; implement respects owner approval.
