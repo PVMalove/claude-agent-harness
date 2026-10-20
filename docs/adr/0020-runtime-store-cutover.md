@@ -1,7 +1,7 @@
 # Переход operational state с файлового ledger на Rust SQLite WAL store
 
-**Статус: PROPOSED (2026-10-20).** Эпик #784 (поглотил #783), ADR 0019. Решение вступает в силу
-после утверждения владельцем; до этого действуют ADR 0003 и тексты issue. ADR снимает противоречие
+**Статус: ACCEPTED (2026-10-20).** Эпик #784 (поглотил #783), ADR 0019, ADR 0026. До cutover
+operational state ведут ADR 0003 и тексты issue. ADR снимает противоречие
 между исходными критериями #774/#777/#778/#779 (развитие файлового ledger, «формат записей не
 меняется», «миграция вне scope») и целевым требованием #784: Rust SQLite WAL — единственный writer
 operational state после одного cutover, который выходит в релизе 2.0.0.
@@ -47,7 +47,7 @@ Operational state живёт ровно в одной эпохе:
 
 | Эпоха | Writer | Читатели | Признак |
 |---|---|---|---|
-| `file-ledger` (сейчас → cutover) | Python `LifecycleLedger` | Python | `ledger.json.version ∈ {1,2,3}` |
+| `file-ledger` (сейчас → cutover) | Python `LifecycleLedger` установки 1.x | Python 1.x | `ledger.json.version ∈ {1,2,3}` |
 | `runtime-store` (после cutover) | Rust runtime (`native/harness-runtime`, crate `state`) | Python только через IPC `runtime_client.py` | `ledger.json.version = 4` + `state/AUTHORITY.json` |
 
 Одновременной записи в оба хранилища нет ни в какой момент, включая миграцию и откат. Python
@@ -56,8 +56,13 @@ Operational state живёт ровно в одной эпохе:
 
 `version = 4` — fence против старых установок harness: их `LifecycleLedger` отвергает указатель
 с версией вне `(1, 2, 3)` и завершается с кодом 2, поэтому устаревший процесс не может стать
-вторым writer-ом. Новый Python-код при `version = 4` переключает чтение и запись на
-`runtime_client` и сам в `generations/` не пишет.
+вторым writer-ом.
+
+Релиз 2.0.0 работает только в эпохе `runtime-store`: Python-writer файлового ledger из него
+удалён, а operational state читается и пишется только через `runtime_client`. При
+`version ∈ {1,2,3}` coordinator 2.0.0 завершается с кодом 2 и remedy `harness-runtime migrate`.
+Файловый ledger в 2.0.0 нужен только как источник импорта и формат отката; в обоих случаях его
+читает и пишет Rust (раздел 5).
 
 ### 2. Разделение ответственности
 
@@ -91,6 +96,10 @@ Operational state живёт ровно в одной эпохе:
   Допуск, постановка в очередь и снятие — по одной транзакции; `fencing_token` монотонно растёт.
   Снятие и откат требуют совпадения `(owner, fencing_token)`, что обобщает правило #780: lease
   другого владельца или нового запуска того же dispatch не снимается.
+- Версия схемы store — `PRAGMA user_version`. `serve` при старте под эксклюзивной блокировкой
+  применяет только прямые миграции схемы, каждую одной транзакцией с audit-записью
+  `schema-migrate`. Runtime, который встречает версию новее своей, завершается с кодом 2 и не
+  пишет. Понижение схемы не поддерживается: путь назад — только `rollback --to-legacy`.
 - Ошибка ожидания: `store_busy` (retryable, после `busy_timeout`) отличается от
   `revision_conflict` и от `runtime_unavailable`; все три отображаются в код выхода 2 с разными
   `REMEDY`.
@@ -135,10 +144,12 @@ Operational state живёт ровно в одной эпохе:
    (`before_sha256`, `after_sha256`, правило). Первое правило — #781: batch с
    `risk_reassessment_required = true` без `risk_reassessment_candidate` получает
    `risk_reassessment_pending_next = true`.
-5. **Сверка паритета**: для каждого batch Python вызывает `dispatch status`, `batch auto-report`,
-   `batch decision-packet` и `qa status` против legacy-ledger и против импортированного store через
-   `runtime_client` в режиме read-only; канонический JSON обоих ответов совпадает, кроме полей,
-   перечисленных в repair-записях.
+5. **Сверка паритета** выполняется в Rust, без запуска `serve` и Python: для каждой записи
+   выбранного поколения мигратор сравнивает sha256 канонического JSON legacy-записи и проекции
+   импортированных строк обратно в форму записи. Расхождение вне полей из repair-записей — код 4.
+   Паритет ответов Python CLI (`dispatch status`, `batch auto-report`, `batch decision-packet`,
+   `qa status`) проверяется не здесь, а golden-тестом в CI: фикстура state-каталога 1.x даёт те же
+   ответы CLI 1.x до импорта и CLI 2.0.0 после импорта.
 6. **Точка фиксации**: `rename(runtime.db.importing → runtime.db)`, `fsync` каталога, запись
    `state/AUTHORITY.json` (`authority`, `store_id`, `manifest_sha256`, `snapshot`, `cutover_at`),
    затем замена `ledger.json` на `version: 4` через `os.replace`. Запись указателя — commit point.
@@ -161,9 +172,14 @@ authority прежняя; 4 — нарушение инварианта, тре�
 - Rust экспортирует store в **новое** legacy-поколение `generation-<hex>` формата v3; история
   исполнения, которой нет в формате v3 (receipts, fencing), уходит неизменяемым архивом
   `state/runtime-export/<store_id>.tar` с sha256 в audit-записи `runtime-rollback`;
-- Python выполняет полную `ledger validate` нового поколения; при успехе указатель возвращается
-  на `version: 3` и новое поколение, `AUTHORITY.json` получает `authority: file-ledger` и
-  `rolled_back_from`; `runtime.db` переводится в read-only и сохраняется для разбора;
+- Rust пишет поколение и проверяет его тем же правилом паритета, что и импорт (шаг 5), затем
+  возвращает указатель на `version: 3` и новое поколение; `AUTHORITY.json` получает
+  `authority: file-ledger` и `rolled_back_from`; `runtime.db` переводится в read-only и
+  сохраняется для разбора. Второго writer-а формата v3 в 2.0.0 нет: Python-writer удалён
+  (раздел 1);
+- после отката coordinator 2.0.0 отказывает с кодом 2, и оператор возвращает последний релиз 1.x.
+  Его `ledger validate` по новому поколению — обязательный шаг процедуры отката; провал означает
+  восстановление снимка (ниже);
 - аварийный откат восстановлением снимка теряет состояние после cutover, поэтому требует
   отдельного approval владельца и audit-записи `snapshot-restore`.
 
@@ -185,6 +201,15 @@ Python-доработки файлового ledger, которые store зам
 | #778 | **Superseded-by-Harness-Next** как Python-кэш. Критерии переходят на store: инкрементальная проверка по checkpoint audit-цепочки, `validate --full` без кэша, удалённый checkpoint → полная проверка, замер до и после (раздел 4). |
 | #779 | **Superseded-by-Harness-Next**: замки на batch в файловом ledger — новая архитектура конкурентности, которую store заменяет целиком. Критерии (параллельные batch, согласованное чтение, последовательный QA-lane, совместимость CLI, ADR порядка блокировок) переходят на store; требование ADR выполняет раздел 3. |
 | #781 | Исправляется в Python `workflow/recovery.py` и `workflow/risk.py`: это policy, которая остаётся на Python после cutover, поэтому исправление не временное и может выйти в `master` до 2.0.0 (у задачи нет эпика). Store добавляет CHECK-ограничение и repair при миграции (раздел 5). |
+
+Доработки файлового ledger и Python store из `integration/orchestration-system-fields` (#699,
+#701, #703, #712, #728, #735) тоже Superseded-by-Harness-Next; разбор по коммитам — ADR 0026,
+раздел 1.
+
+**Обновление до 2.0.0.** `harness update` до 2.0.0 сначала проверяет предусловия `migrate`
+(шаг 1) и при отказе не устанавливает 2.0.0. Затем он устанавливает файлы и запускает
+`harness-runtime migrate`. Если migrate прервался (код 3 или 4), authority остаётся у файлового
+ledger, coordinator 2.0.0 отказывает с кодом 2, а remedy — повтор `migrate` или возврат на 1.x.
 
 Если до 2.0.0 зависшие замки файлового ledger станут недопустимыми для работы, исправление
 выпускается отдельным hotfix-тикетом от `master` (1.x), а не через `integration/orchestration-ledger`.
@@ -216,7 +241,9 @@ Lease и execution receipt в store хранят `boot_id`, inode PID-namespace,
   batch одновременно → оба коммита; конфликт `expected_revision` в одном batch → ровно один
   победитель и `revision_conflict` у второго; снятие QA-lease с чужим `fencing_token` → отказ;
   PID reuse и другой PID-namespace → lease не снимается; откат с живым исполнением → код 2;
-  batch #781 с `required=true` без кандидата → repair и последующий `risk assess` снимает флаг.
+  batch #781 с `required=true` без кандидата → repair и последующий `risk assess` снимает флаг;
+  поколение v3, записанное откатом, проходит `ledger validate` последнего релиза 1.x на фикстурах
+  с batch в каждом `DispatchState`; store с `user_version` новее runtime → код 2 без записи.
 - **Race-сценарии:** Python-процесс, прочитавший `version = 3` до cutover, после захвата
   legacy-замка перечитывает указатель и отказывает при `version = 4`; два `migrate` одновременно —
   второй получает занятый замок (код 2); `rollback` во время QA-допуска — сериализуются
@@ -236,4 +263,7 @@ Lease и execution receipt в store хранят `boot_id`, inode PID-namespace,
   (`container_executor.run_engine`) переходит к Rust до 2.0.0; #709, #777, #778 и #779 стоят в
   `status::blocked` до появления тикетов Rust-фундамента и store.
 - **Откат на 1.x:** `rollback --to-legacy` экспортирует состояние в формат v3, поэтому после него
-  state-каталог снова читает установка 1.x.
+  state-каталог снова читает установка 1.x; её `ledger validate` завершает откат.
+- **Golden-тест паритета CLI** (обязателен до cutover): фикстуры state-каталогов 1.x с batch в
+  каждом состоянии `DispatchState`, с QA-lease и очередью; ответы CLI 1.x и CLI 2.0.0 после
+  импорта совпадают в каноническом JSON, кроме полей repair-записей.

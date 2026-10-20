@@ -1,11 +1,11 @@
 # ADR 0019 — Unified Rust runtime and incremental verification
-Status: PROPOSED. Parent epic #784 (absorbed duplicate #783). Owner decision 2026-10-20.
+Status: ACCEPTED (2026-10-20). Parent epic #784 (absorbed duplicate #783). Detailed contracts: ADR 0020–0024, branch consolidation and Release Gate: ADR 0026.
 
 ## Decision
 Implement Rust immediately as the final execution kernel; retain Python for AI skills, workflows and policy. Single coordinated migration and cutover: do not create a temporary Python executor or multiple authoritative ledger writers. Parallelize work only across versioned, stable boundaries.
 
 ## Interfaces
-Rust crates: core/contracts, ipc, state, exec, container, qa, reconcile. Python bridge: harness/orchestration/runtime_client.py. IPC envelope contains protocol_version, operation_id, batch_id, dispatch_id, candidate_sha, plan_digest, operation, deadline, payload. Outcomes include execution_id, revision, phase, status, structured failure domain/code/retryability, evidence references. Validate approved plans server-side; do not trust agent-supplied approval flags.
+Rust crates: core/contracts, ipc, state, exec, container, qa, reconcile. Python bridge: harness/orchestration/runtime_client.py. IPC envelope contains protocol_version, operation_id, batch_id, dispatch_id, candidate_sha, plan_digest, operation, request_deadline, payload (ADR 0021). Outcomes include execution_id, revision, phase, status, structured failure domain/code/retryability, evidence references. Validate approved plans server-side; do not trust agent-supplied approval flags.
 
 ## Invariants
 - SQLite WAL transactional operational state, one writer authority, CAS revisions, consistent reads, serialized QA admission, independent batch writes.
@@ -29,7 +29,7 @@ environment_preparation, infrastructure, policy, tooling, code_test, timeout, ca
 SIGKILL Python/Rust; stale locks across PID namespaces; PID reuse; OCI crash; SELinux denial; read-only /tmp; offline uv sync; tampered audit; concurrent batches; orphaned QA lease; rewind risk-state dead end (#781); changed SHA; crash mid-transaction; lost IPC response.
 
 ## Existing work reconciliation
-#634 and #709 from integration/container-executor; #774 #777 #778 #779 from integration/orchestration-ledger; #781 state-machine bug. Completed issues #615 #666 #756 #757 #758 #769 #780 are historical prerequisites. Do not reset/force-merge existing branches. Reconcile their acceptance criteria to this final Rust state model and make only one cutover.
+#634 and #709 from integration/container-executor; #774 #777 #778 #779 from integration/orchestration-ledger; #681 from integration/orchestration-system-fields (split per ADR 0026); integration/console-redesign; #781 state-machine bug. Completed issues #615 #666 #756 #757 #758 #769 #780 are historical prerequisites. Do not reset/force-merge existing branches. Reconcile their acceptance criteria to this final Rust state model and make only one cutover.
 
 ## Measurement and acceptance
 Measure before/after total implement elapsed time, full-suite invocations, failed-only rerun time, coordinator p50/p95/p99, audit verification overhead, crash recovery and cross-platform compatibility. Full QA still required. Agent-written code must pass contract, property, integration and fault-injection tests before PR.
