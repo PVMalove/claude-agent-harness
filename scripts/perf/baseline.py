@@ -376,7 +376,9 @@ def _working_dispatch(state: Path) -> str | None:
 
 
 def _pytest_timings(repo: Path, scratch: Path, *, repeats: int) -> dict[str, object]:
-    pytest = [sys.executable, "-m", "pytest", "-q"]
+    # `-c` фиксирует rootdir, confcutdir и ini в измеряемом checkout: настройки
+    # объемлющего проекта (addopts) не должны попадать в замер.
+    pytest = [sys.executable, "-m", "pytest", "-q", "-c", str(repo / "pyproject.toml")]
     focused = time_command(
         [*pytest, *FOCUSED_TESTS], cwd=repo, repeats=repeats, keep_summary_line=True
     )

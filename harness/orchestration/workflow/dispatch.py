@@ -20,6 +20,7 @@ from harness.orchestration import (
     infrastructure_retry,
     operational_guards,
     runtime_access,
+    verification_plan,
 )
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -136,6 +137,7 @@ from harness.orchestration.workflow.risk import (
     _matching_triggers,
     _risk_triggers,
 )
+from harness.repo_map.policy import policy_from_section as repo_map_policy_from_section
 
 
 def _dispatch_verification_commands(
@@ -162,6 +164,45 @@ def _dispatch_verification_commands(
         if retry is not None:
             return retry
     return cast(list[str], role_verification_commands(batch, role_name, purpose))
+
+
+def _verification_plan(
+    repo: Path,
+    batch: JsonObject,
+    role_name: str,
+    purpose: str,
+    next_action: object,
+    candidate: str | None,
+    snapshot_commit: str,
+    runtime_images: JsonObject | None = None,
+) -> JsonObject | None:
+    """План проверки brief по замороженной ``verification_plan_policy`` (ADR 0023), либо ``None``.
+
+    План строится для developer-retry (diff до кандидата, который он дорабатывает), code-review
+    и qa (diff до кандидата роли). Первый developer диффа не имеет, а batch без политики остаётся
+    без плана и без нового поля в brief. ``runtime_images`` — образы docker-dispatch, которые
+    входят в ``environment_fingerprint`` стадий.
+    """
+    policy = batch.get("verification_plan_policy")
+    if not isinstance(policy, dict) or purpose != "work":
+        return None
+    if role_name == "developer" and next_action == "developer-retry":
+        head = snapshot_commit
+    elif role_name in {"code-review", "qa"} and candidate is not None:
+        head = candidate
+    else:
+        return None
+    return verification_plan.build_plan(
+        repo,
+        policy,
+        base=_effective_base(batch),
+        candidate=head,
+        role=role_name,
+        repo_map_policy=repo_map_policy_from_section(
+            cast(dict[str, object], batch.get("repo_map_policy") or {})
+        ),
+        runtime_images=runtime_images,
+    )
 
 
 def _developer_commit_plan(
@@ -519,6 +560,7 @@ def _proposed_transition(
     carried: JsonObject,
     delta_scope: JsonObject | None = None,
     supersede_target: str | None = None,
+    plan: JsonObject | None = None,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
@@ -528,7 +570,7 @@ def _proposed_transition(
     new approval. The developer-retry of a ``rebase-fix-forward`` decision binds the rebase target
     its routing record proposed (issue #504), else the ``supersede_target`` of a superseding batch
     (issue #506), and a code-review brief after a fix-forward binds its ``delta_review_scope``
-    (issue #625)."""
+    (issue #625). A brief that carries a verification plan binds its digest (ADR 0023)."""
     previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
@@ -570,6 +612,7 @@ def _proposed_transition(
             if isinstance(rebase_target, str)
             else None,
             "delta_review_scope": delta_scope,
+            "verification_plan": plan,
         },
     )
 
@@ -1216,6 +1259,32 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             root,
             delta_scope,
         )
+        access_plan = runtime_access.resolve_plan(
+            repo,
+            Path(batch["worktree"]),
+            config,
+            role_name,
+            role["mode"],
+            operation=runtime_access.dispatch_operation(role_name, purpose),
+        )
+        # A docker plan pins the image digests observed now, beside the plan and outside its
+        # digest; propose and create each observe, so an image changed in between is refused.
+        # The plan's environment fingerprint carries them (ADR 0023, section 2).
+        runtime_images = runtime_access.pin_images(
+            access_plan, transport, role_name, purpose
+        )
+        plan = _verification_plan(
+            repo,
+            batch,
+            role_name,
+            purpose,
+            next_action,
+            candidate,
+            snapshot_commit,
+            runtime_images,
+        )
+        if plan is not None and role_name in {"code-review", "qa"}:
+            verification_plan.require_covered(plan)
         transition = _proposed_transition(
             batch,
             next_action,
@@ -1228,23 +1297,11 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             carried,
             delta_scope,
             supersede_target,
-        )
-        access_plan = runtime_access.resolve_plan(
-            repo,
-            Path(batch["worktree"]),
-            config,
-            role_name,
-            role["mode"],
-            operation=runtime_access.dispatch_operation(role_name, purpose),
+            plan,
         )
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"
         ]
-        # A docker plan pins the image digests observed now, beside the plan and outside its
-        # digest; propose and create each observe, so an image changed in between is refused.
-        runtime_images = runtime_access.pin_images(
-            access_plan, transport, role_name, purpose
-        )
         if runtime_images is not None:
             transition = operational_guards.bind_transition(
                 transition, {"runtime_images": runtime_images}
@@ -1317,6 +1374,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     proposal["context_package_quality_warning"] = warning
             if delta_scope is not None:
                 proposal["delta_review_scope"] = delta_scope
+            if plan is not None:
+                proposal["verification_plan"] = plan
             if runtime_images is not None:
                 proposal["runtime_images"] = runtime_images
             return proposal
@@ -1414,6 +1473,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         }
         if runtime_images is not None:
             brief["runtime_images"] = runtime_images
+        if plan is not None:
+            brief["verification_plan"] = plan
         if role_name == resolver_state.RESOLVER_ROLE:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]

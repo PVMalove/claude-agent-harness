@@ -129,6 +129,7 @@ class TransitionDigestTests(unittest.TestCase):
                 "infrastructure_retry_sha256",
                 "infrastructure_attempt_sha256",
                 "runtime_images_sha256",
+                "verification_plan_sha256",
             ),
         )
         self.assertNotEqual(
@@ -370,6 +371,19 @@ class ExtensionRegistryTests(unittest.TestCase):
             extensions.human_notifier("not-registered")
         with self.assertRaises(HarnessError):
             extensions.selected({"extensions": {"prompt_rewriter": "x"}})
+
+
+def test_a_verification_plan_is_bound_only_when_the_brief_carries_one() -> None:
+    plan = {"role": "qa", "stages": []}
+    bound = guards.bind_transition(_transition(), {"verification_plan": plan})
+
+    assert bound["verification_plan_sha256"] == guards.verification_plan_digest(plan)
+    assert guards.bind_transition(_transition(), {}) == _transition()
+    assert guards.transition_digest(bound) != guards.transition_digest(_transition())
+    changed = guards.bind_transition(
+        _transition(), {"verification_plan": {**plan, "role": "code-review"}}
+    )
+    assert guards.transition_digest(changed) != guards.transition_digest(bound)
 
 
 def test_the_transition_field_remedy_names_every_optional_field() -> None:

@@ -44,6 +44,7 @@ OPTIONAL_TRANSITION_FIELDS = (
     "infrastructure_retry_sha256",
     "infrastructure_attempt_sha256",
     "runtime_images_sha256",
+    "verification_plan_sha256",
 )
 # A new dispatch (issue #624) always binds the sha256 of its resolved runtime access plan.
 ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
@@ -140,6 +141,11 @@ def runtime_images_digest(section: Mapping[str, object]) -> str:
     return _digest(dict(section))
 
 
+def verification_plan_digest(plan: Mapping[str, object]) -> str:
+    """Digest of the verification plan a brief carries, bound to the transition (ADR 0023)."""
+    return _digest(dict(plan))
+
+
 def transition_digest(transition: Mapping[str, object]) -> str:
     """Канонический дайджест, с которым связывается подтверждение; порядок ключей не имеет значения."""
     extra = {*OPTIONAL_TRANSITION_FIELDS, ACCESS_TRANSITION_FIELD}
@@ -155,7 +161,8 @@ def transition_digest(transition: Mapping[str, object]) -> str:
             "carries a delta-review scope, runtime_access_sha256 and "
             "infrastructure_retry_sha256 for a new brief, infrastructure_attempt_sha256 "
             "only when a policy retry binds a recorded operation refusal, and "
-            "runtime_images_sha256 only when a docker brief pins its images",
+            "runtime_images_sha256 only when a docker brief pins its images, and "
+            "verification_plan_sha256 only when a brief carries a verification plan",
         )
     return _digest(dict(transition))
 
@@ -194,6 +201,7 @@ def _brief_bindings(brief: Mapping[str, object]) -> dict[str, object]:
     carried = brief.get("carried_items")
     scope = brief.get("delta_review_scope")
     images = brief.get("runtime_images")
+    plan = brief.get("verification_plan")
     return {
         "retry_reason_sha256": policy_digest(
             cast(Mapping[str, object], brief["retry_reason"])
@@ -211,6 +219,9 @@ def _brief_bindings(brief: Mapping[str, object]) -> dict[str, object]:
         else None,
         "runtime_images_sha256": runtime_images_digest(images)
         if isinstance(images, dict)
+        else None,
+        "verification_plan_sha256": verification_plan_digest(plan)
+        if isinstance(plan, dict)
         else None,
     }
 
@@ -293,6 +304,7 @@ def validate_binding(dispatch: Mapping[str, object], batch_id: object) -> None:
         "rebase_target_sha": ("rebase target", "rebase_target_commit"),
         "delta_review_sha256": ("delta-review scope", "delta_review_scope"),
         "runtime_images_sha256": ("pinned runtime images", "runtime_images"),
+        "verification_plan_sha256": ("verification plan", "verification_plan"),
     }
     for field, expected in _brief_bindings(dispatch).items():
         if transition.get(field) != expected:

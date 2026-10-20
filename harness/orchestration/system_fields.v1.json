@@ -991,6 +991,28 @@
         "qa": "The plan requires the qa gate."
       }
     },
+    "verification_plan.selection": {
+      "description": "How a verification-plan stage selects its tests (ADR 0023 section 2); dispatch propose for code-review and qa refuses a pytest stage that is not full and leaves an impacted test unselected.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "full": "The stage runs the whole suite; the conservative widening an unknown impact falls back to.",
+        "focused": "The stage runs only the node ids the impact analysis selected.",
+        "failed-only": "The stage reruns the exact node ids that failed before; a diagnostic inside a developer session, never evidence."
+      }
+    },
+    "verification_plan.stage_kind": {
+      "description": "What a verification-plan stage runs (ADR 0023 section 2); recorded in the stage and never authorizes a lifecycle transition.",
+      "automatic_decisions": false,
+      "unrecognized": "reject",
+      "values": {
+        "lint": "A static lint stage.",
+        "typecheck": "A type-check stage.",
+        "pytest": "A pytest stage; the only kind whose selection the impact gate checks.",
+        "clean-room": "The clean-room scenario run.",
+        "custom": "A project-defined command that fits no other kind."
+      }
+    },
     "diagnostic.code": {
       "description": "Structured configuration diagnostic vocabulary; explanatory text is separate. Never authorizes lifecycle transitions.",
       "automatic_decisions": false,

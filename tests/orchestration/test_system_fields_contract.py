@@ -127,6 +127,8 @@ V1_FIELDS = frozenset(
         "context_package.role",
         "context_package.freshness",
         "batch.required_gate",
+        "verification_plan.selection",
+        "verification_plan.stage_kind",
     }
 )
 
@@ -281,6 +283,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "context_package.role",
         "batch.required_gate",
         "telemetry.session_kind",
+        "verification_plan.stage_kind",
     }
 
 
@@ -779,6 +782,12 @@ BINDINGS: dict[str, dict[str, Iterable[str]]] = {
     "extension.kind": {"extensions.EXTENSION_KINDS": extensions.EXTENSION_KINDS},
     "repo_map.tier": {"contract.REPO_MAP_TIER_ORDER": contract.REPO_MAP_TIER_ORDER},
     "batch.required_gate": {"REQUIRED_GATES": constants.REQUIRED_GATES},
+    "verification_plan.selection": {
+        "VERIFICATION_PLAN_SELECTIONS": constants.VERIFICATION_PLAN_SELECTIONS
+    },
+    "verification_plan.stage_kind": {
+        "VERIFICATION_STAGE_KINDS": constants.VERIFICATION_STAGE_KINDS
+    },
     "context_package.freshness": {
         "ContextPackageFreshness": constants.ContextPackageFreshness
     },
@@ -821,6 +830,9 @@ SCHEMA_BINDINGS = {
     "/properties/repo_map_policy/properties/min_tier_by_role/properties/developer": _TIER,
     "/properties/repo_map_policy/properties/min_tier_by_role/properties/code-review": _TIER,
     "/properties/auto_retry_min_severity": "config.auto_retry_min_severity",
+    "/properties/verification_plan_policy/properties/stages/items/properties/kind": (
+        "verification_plan.stage_kind"
+    ),
     "/properties/extensions/propertyNames": "extension.kind",
     "/definitions/accessComponent/properties/mode": "access.mode",
     "/definitions/accessComponent/properties/container/properties/engine": "access.container_engine",

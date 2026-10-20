@@ -256,6 +256,9 @@ NEXT_ACTION_DISPATCH_ROLE = {
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
 # The gates `batch create --required-gate` may name; a batch that names none records `none`.
 REQUIRED_GATES = ("none", "review", "qa")
+# ADR 0023 section 2: how a verification-plan stage picks its tests, and what the stage runs.
+VERIFICATION_PLAN_SELECTIONS = ("full", "focused", "failed-only")
+VERIFICATION_STAGE_KINDS = ("lint", "typecheck", "pytest", "clean-room", "custom")
 ROLE_TRANSPORTS = {"in-process", "external"}
 ACCESS_MODES = ("inherit", "sandbox", "unsandboxed")
 ACCESS_RESOURCES = ("checkout", "git_common", "shared_storage", "cache")

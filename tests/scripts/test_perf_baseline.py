@@ -452,14 +452,8 @@ class MainRunTests(unittest.TestCase):
             "    def test_a_profile_covering_every_allowed_path_is_frozen_in_the_batch(self):\n"
             "        pass\n",
         )
+        self._write(repo / "pyproject.toml", '[project]\nname = "stub"\n')
         self._write(repo / ".gitignore", ".harness/\n")
-        # Как в настоящем checkout: без своего ini-файла rootdir pytest уходит к ближайшему
-        # предку с конфигурацией (у `make verify` TMPDIR лежит внутри репозитория), и `--lf` не
-        # узнаёт node id из `lastfailed`.
-        self._write(
-            repo / "pyproject.toml",
-            '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
-        )
         identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
         for argv in (
             ["git", "init", "-q"],
@@ -485,6 +479,29 @@ class MainRunTests(unittest.TestCase):
         for directory in ("batches", "dispatches"):
             (generation / directory).mkdir()
         return generation / "dispatch-status" / "dispatch-1.json"
+
+    def test_pytest_timings_ignore_the_configuration_of_an_enclosing_project(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, scratch = Path(tmp) / "repo", Path(tmp) / "scratch"
+            self._write(
+                Path(tmp) / "pyproject.toml",
+                '[tool.pytest.ini_options]\naddopts = "-k nomatch"\n',
+            )
+            self._stub_checkout(repo)
+            scratch.mkdir()
+
+            timings = json.loads(
+                json.dumps(baseline._pytest_timings(repo, scratch, repeats=1))
+            )
+
+        focused = timings["focused"]["samples"][0]
+        failed_only = timings["failed_only"]["samples"][0]
+        self.assertEqual(focused["returncode"], 0)
+        self.assertEqual(failed_only["returncode"], 0)
+        self.assertIn("5 passed", focused["summary_line"])
+        self.assertIn("1 passed", failed_only["summary_line"])
 
     def test_measurement_writes_raw_data_and_leaves_both_states_untouched(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
