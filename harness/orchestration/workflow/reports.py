@@ -1911,6 +1911,9 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                     remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch",
                 )
             batch["retry_candidate_required"] = False
+        # Only a work report reaches this point with risk_triggers: a publish dispatch is refused by
+        # `send` and recorded by `publish_dispatch` (delivery.py) without a submitted report, and it
+        # runs after QA, so it has no reassessment to bind (issue #781).
         if (
             role["name"] in {"developer", "conflict-resolver"}
             and report.get("outcome") == "completed"
