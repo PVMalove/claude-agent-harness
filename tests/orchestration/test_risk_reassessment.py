@@ -93,6 +93,37 @@ class RewindAndWriterReportTableTests(unittest.TestCase):
         self.assertEqual(risk.reassessment_state(legacy), PENDING_STATE)
 
 
+class AssessmentTableTests(unittest.TestCase):
+    def test_assessment_table(self) -> None:
+        rows = [
+            # (state, assessed candidate, matched triggers, expected)
+            (IDLE_STATE, C1, ["t"], IDLE_STATE),
+            (bound(C1), C1, [], IDLE_STATE),
+            (bound(C1, "t"), C1, ["t", "u"], IDLE_STATE),
+            # Only the bound candidate discharges the requirement.
+            (bound(C1), C2, ["t"], bound(C1)),
+            # Every owed trigger must be matched.
+            (bound(C1, "t", "u"), C1, ["t"], bound(C1, "t", "u")),
+            # Nothing is bound yet: an assessment cannot discharge a pending requirement.
+            (PENDING_STATE, C1, ["t"], PENDING_STATE),
+            (PENDING_STATE, C2, [], PENDING_STATE),
+        ]
+        for state, candidate, matched, expected in rows:
+            with self.subTest(state=state, candidate=candidate, matched=matched):
+                self.assertEqual(
+                    risk.next_after_assessment(state, candidate, matched), expected
+                )
+
+    def test_repeating_an_assessment_changes_nothing(self) -> None:
+        for state in (IDLE_STATE, PENDING_STATE, bound(C1), bound(C1, "t")):
+            for candidate in (C1, C2):
+                with self.subTest(state=state, candidate=candidate):
+                    once = risk.next_after_assessment(state, candidate, ["t"])
+                    self.assertEqual(
+                        risk.next_after_assessment(once, candidate, ["t"]), once
+                    )
+
+
 class GuardTests(unittest.TestCase):
     def test_a_legal_transition_passes(self) -> None:
         before = fields_of(PENDING_STATE)

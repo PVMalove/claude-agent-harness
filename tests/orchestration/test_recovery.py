@@ -2337,9 +2337,18 @@ class RecoveryTests(unittest.TestCase):
         return cast(JsonObject, json.loads(result.stdout))
 
     def _cli_assess(
-        self, batch_id: str, candidate: str, changed: list[str]
+        self,
+        batch_id: str,
+        candidate: str,
+        changed: list[str],
+        *triggers: str,
     ) -> subprocess.CompletedProcess[str]:
         flags = [item for path in changed for item in ("--changed-file", path)]
+        trigger_flags = [
+            item
+            for trigger in (triggers or ("transactions",))
+            for item in ("--developer-trigger", trigger)
+        ]
         return self._cli(
             "risk",
             "assess",
@@ -2348,9 +2357,28 @@ class RecoveryTests(unittest.TestCase):
             "--candidate-commit",
             candidate,
             *flags,
-            "--developer-trigger",
-            "transactions",
+            *trigger_flags,
         )
+
+    def _changed_for(self, batch_id: str, candidate: str) -> list[str]:
+        base = self._batch_record(batch_id)["base_commit"]
+        return git_utils._changed_files_between(self.repo, base, candidate)
+
+    def _accepted_review_for(self, batch_id: str, name: str) -> tuple[str, list[str]]:
+        """A review-required candidate with an accepted composite review: QA is the next handoff."""
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id, name)
+        self._reported_review(batch_id, candidate)
+        self._decide(batch_id, "accept")
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "qa")
+        return candidate, self._changed_for(batch_id, candidate)
+
+    def _evidence_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for folder in ("risk-assessments", "reports", "dispatches")
+            for path in (self._records() / folder).glob("*.json")
+        }
 
     def _cli_propose_qa(
         self, batch_id: str, candidate: str
@@ -2428,3 +2456,34 @@ class RecoveryTests(unittest.TestCase):
         proposal = self._cli_propose_qa(batch_id, second)
         self.assertEqual(proposal.returncode, 0, proposal.stderr)
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_repeated_assessment_after_an_accepted_review_keeps_qa_reachable(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, changed = self._accepted_review_for(batch_id, "stable")
+        evidence = self._evidence_bytes()
+        for _ in range(2):
+            replay = self._cli_assess(batch_id, candidate, changed)
+            self.assertEqual(replay.returncode, 0, replay.stderr)
+            stored = self._batch_record(batch_id)
+            self.assertEqual(stored["next_action"], "qa")
+            self.assertIs(stored["risk_reassessment_required"], False)
+        # The replays only append risk records: every earlier record is untouched.
+        after = self._evidence_bytes()
+        for path, content in evidence.items():
+            self.assertEqual(after[path], content, path.name)
+        proposal = self._cli_propose_qa(batch_id, candidate)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_an_assessment_matching_a_trigger_the_review_never_covered_returns_to_review(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, changed = self._accepted_review_for(batch_id, "wider")
+        wider = self._cli_assess(
+            batch_id, candidate, changed, "transactions", "concurrency-retry"
+        )
+        self.assertEqual(wider.returncode, 0, wider.stderr)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
+from harness.orchestration.core.constants import ACCEPTED_DECISIONS
 from harness.orchestration.core.config import (
     _reject_sensitive,
     _role,
@@ -39,6 +40,8 @@ from harness.orchestration.core.utils import (
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
     _load_batch,
+    _load_dispatch,
+    _load_risk,
     _replace_record,
     _state_root,
     _write_record,
@@ -48,6 +51,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
     RiskAssessmentRecord,
 )
+from harness.orchestration.ledger.recovery_chain import active_dispatches
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.carried_items import (
     open_coordinator_findings,
@@ -331,6 +335,37 @@ def require_legal_reassessment(
         )
 
 
+def _accepted_review_covers(
+    root: Path,
+    batch: JsonObject,
+    candidate: str,
+    matched: list[str],
+    changed_files: list[str],
+) -> bool:
+    """Whether an active, accepted code review of ``candidate`` was made against an assessment of
+    the same diff whose triggers include every trigger ``matched`` now.  Assessing such a candidate
+    again adds no review obligation, so the handoff stays QA instead of looping back to review."""
+    for item in active_dispatches(batch):
+        if (
+            item.get("role") != "code-review"
+            or item.get("state") != "reported"
+            or item.get("decision", {}).get("decision") not in ACCEPTED_DECISIONS
+        ):
+            continue
+        brief = _load_dispatch(root, item["dispatch_id"])
+        risk_id = brief.get("risk_assessment_id")
+        if brief.get("candidate_commit") != candidate or not isinstance(risk_id, str):
+            continue
+        reviewed = _load_risk(root, risk_id)
+        if (
+            reviewed.get("candidate_commit") == candidate
+            and reviewed.get("changed_files") == changed_files
+            and set(matched) <= set(reviewed.get("matched_triggers", []))
+        ):
+            return True
+    return False
+
+
 def assess_risk(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -428,6 +463,14 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
         }
         _reject_sensitive(risk, "risk assessment")
         _safe_id(risk["risk_assessment_id"], "risk assessment")
+        # Decided and checked before the first ledger write: only the bound candidate, with every
+        # owed trigger matched, discharges the requirement.
+        before = reassessment_state(batch)
+        after = next_after_assessment(before, candidate, matched)
+        proposed = dict(batch)
+        if after != before:
+            apply_reassessment(proposed, after)
+        require_legal_reassessment(reassessment_fields(batch), proposed, ASSESSMENT)
         _write_record(ledger, RiskAssessmentRecord.from_dict(risk))
         batch.setdefault("risk_assessments", []).append(
             {
@@ -440,16 +483,8 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
                 ).hexdigest(),
             }
         )
-        pending_candidate = batch.get("risk_reassessment_candidate")
-        pending_triggers = set(batch.get("risk_reassessment_triggers", []))
-        if (
-            batch.get("risk_reassessment_required")
-            and pending_candidate == candidate
-            and pending_triggers <= set(matched)
-        ):
-            batch["risk_reassessment_required"] = False
-            batch.pop("risk_reassessment_candidate", None)
-            batch.pop("risk_reassessment_triggers", None)
+        if after != before:
+            apply_reassessment(batch, after)
         # Assessment is evidence, not a launch instruction.  It makes the one allowed next
         # handoff visible to the coordinator; a later, separately approved dispatch creates the
         # immutable brief.  A pending developer retry stays the next handoff.  An open coordinator
@@ -458,7 +493,12 @@ def assess_risk(args: argparse.Namespace) -> JsonObject:
         # and the risk record is left as assessed.
         if pinned is None:
             review = (
-                risk["review_required"]
+                (
+                    risk["review_required"]
+                    and not _accepted_review_covers(
+                        root, batch, candidate, matched, changed_files
+                    )
+                )
                 or bool(open_coordinator_findings(root, batch))
                 or bool(open_incomplete_items(root, batch, "code-review"))
             )
