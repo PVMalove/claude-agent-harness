@@ -983,9 +983,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="only pass --delta-review-of for a code-review dispatch",
             )
         if role_name == "qa":
-            if batch.get("risk_reassessment_required"):
-                message, remedy = risk_policy.reassessment_remedy(batch)
-                raise CoordinatorError(message, remedy=remedy)
             if risk is None:
                 # The guard above raised when a qa dispatch has no risk.
                 raise CoordinatorError(
