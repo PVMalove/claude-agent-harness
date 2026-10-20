@@ -49,6 +49,8 @@ are unchanged; the mean noise ratio rises from 0.60 to 0.61 because ADR 0008 rep
 the top-5 window of query 426 (noise 0.6 to 0.8), and the ranked paths of queries 165, 422 and 423
 differ without changing their noise. `fixtures/initial-corpus.json` already keeps the original bytes of both
 documents, so `baseline_fts5_initial.json` stays unchanged.
+#789 imports #635 into Harness Next and re-evaluates the merged `CONTEXT.md` explicitly: only its
+source hash changes, and the report is identical to the #788 revision.
 Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.
 

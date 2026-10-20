@@ -483,5 +483,5 @@
     "gate_passed": true
   },
   "annotation_revision": "Version 2 corrected source-grounded multi-label annotations; version 3 re-evaluates the updated corpus. Initial single-label measurement remains unchanged in baseline_fts5_initial.json.",
-  "corpus_revision": "Issue #662 updates orchestration lifecycle in CONTEXT.md and ADR 0003. Dataset, engine, windows and thresholds are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
+  "corpus_revision": "Issue #662 updates orchestration lifecycle in CONTEXT.md and ADR 0003. Issue #635 adds the container executor term to CONTEXT.md; it changes only that source hash, not the metrics or ranked paths. Dataset, engine, windows and thresholds are unchanged. The initial corpus is retained by tests/memory/fixtures/initial-corpus.json for changed source files."
 }
