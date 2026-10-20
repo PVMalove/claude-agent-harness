@@ -964,16 +964,19 @@ It must contain, at minimum:
   when there are none;
 - `verification plan`: `verification_plan`, built by `dispatch propose` from the batch's frozen
   `verification_plan_policy` (`max_related_tests` and stage templates `{stage_id, kind, argv,
-  timeout_seconds}`) and the ChangeImpact of `base..candidate` (ADR 0023, sections 1, 2 and 6).
-  It is present only on a developer-retry, code-review or QA brief of a batch that configured the
+  timeout_seconds}`, at least one of kind `pytest`) and the ChangeImpact of `base..candidate`
+  (ADR 0023, sections 1, 2 and 6). `batch create` freezes the project's `repo_map_policy` beside
+  the policy, because it shapes the import graph. It is present only on a developer-retry, code-review or QA brief of a batch that configured the
   policy; a first developer has no diff, and a batch without the policy keeps the brief it always
   had. Each stage adds `selection` (`full`, `focused` or `failed-only`), `nodeids` and
   `environment_fingerprint`. The pytest stage is `focused` over every related test of the import
   graph, without a first-N cutoff, and widens to `full` instead of failing when the impact is
   unknown: a changed `conftest.py`, `pyproject.toml`, `uv.lock`, `Makefile`, `.github/**`, verify
   scripts, capability catalog or skill, a removed or renamed module that others import, a
-  non-Python file, a dynamic import, an unavailable parser, or more related tests than
-  `max_related_tests`. A QA plan is always `full`. The plan's digest is bound into the transition as
+  non-Python file, a dynamic import, an unavailable parser, a Python file the graph cannot read
+  (hidden by the Repo Map policy or not parsed) that names an impacted module, or more related
+  tests than `max_related_tests`. On a docker dispatch the pinned image digests are part of every
+  stage's `environment_fingerprint`. A QA plan is always `full`. The plan's digest is bound into the transition as
   `verification_plan_sha256`; `verification_commands` stays the list a role reports in `checks_run`.
   `dispatch propose` and `dispatch create` for code-review and QA refuse with `impact_not_covered`
   (exit code 2, the uncovered tests listed) when the plan's pytest stage is not `full` and does not
