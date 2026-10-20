@@ -276,7 +276,17 @@ class ResolveAssignmentTests(unittest.TestCase):
         config = _config()
         config["assignment_plans"]["developer"]["transport"] = "smoke"
         error = self._fail(config, _role())
-        self.assertEqual(error.message, "role 'developer' has an invalid transport")
+        self.assertEqual(
+            error.message,
+            "role 'developer' transport must be one of: external, in-process "
+            "(got 'smoke'; write one listed value exactly: case-sensitive, "
+            "no surrounding spaces, no synonyms)",
+        )
+        self.assertEqual(
+            error.remedy,
+            "set assignment_plans['developer'].transport to exactly one of: "
+            "external, in-process (case-sensitive, no surrounding spaces, no synonyms)",
+        )
 
     def test_external_transport_resolves_for_project_adapter(self) -> None:
         config = _config()
@@ -473,7 +483,9 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
                 "orchestration repo_map_policy.max_signature_length must be a positive integer",
                 "orchestration repo_map_policy.max_symbol_length must be a positive integer",
                 "orchestration repo_map_policy.redact_symbols must be a list of non-empty path globs",
-                "orchestration repo_map_policy.tier must be one of: full, minimal",
+                "orchestration repo_map_policy.tier must be one of: full, minimal "
+                "(got 'reduced'; write one listed value exactly: case-sensitive, "
+                "no surrounding spaces, no synonyms)",
             ],
         )
 
@@ -483,7 +495,11 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
         )
         self.assertEqual(
             problems,
-            ["orchestration repo_map_policy.tier must be one of: full, minimal"],
+            [
+                "orchestration repo_map_policy.tier must be one of: full, minimal "
+                "(got a list; write one listed value exactly: case-sensitive, "
+                "no surrounding spaces, no synonyms)"
+            ],
         )
 
     def test_full_tier_and_parser_bundle_fields_are_valid(self) -> None:
@@ -552,9 +568,14 @@ class RepoMapPolicyProblemTests(unittest.TestCase):
         self.assertEqual(
             sorted(problems),
             [
-                "orchestration repo_map_policy.min_tier must be one of: full, minimal",
-                "orchestration repo_map_policy.min_tier_by_role names unknown role 'qa'",
-                "orchestration repo_map_policy.min_tier_by_role.developer must be one of: full, minimal",
+                "orchestration repo_map_policy.min_tier must be one of: full, minimal "
+                "(got 'reduced'; write one listed value exactly: case-sensitive, "
+                "no surrounding spaces, no synonyms)",
+                "orchestration repo_map_policy.min_tier_by_role names unknown role 'qa' "
+                "(allowed: architect, code-review, developer)",
+                "orchestration repo_map_policy.min_tier_by_role.developer must be one of: "
+                "full, minimal (got 'reduced'; write one listed value exactly: "
+                "case-sensitive, no surrounding spaces, no synonyms)",
             ],
         )
 
