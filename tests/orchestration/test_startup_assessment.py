@@ -22,7 +22,7 @@ MATCHED = {
     ("status", "state"),
     [
         ({"state": "working", **MATCHED}, "live"),
-        ({"state": "dispatched"}, "live"),
+        ({"state": "dispatched"}, "unknown"),
         (
             {
                 "state": "blocked",
@@ -78,7 +78,7 @@ def test_a_missing_self_report_stays_fail_closed_while_the_worker_may_run() -> N
     assessment = assess_startup(DISPATCH, {"state": "dispatched"})
 
     assert assessment["classification"] == "model-self-report-missing"
-    assert assessment["worker_state"] == "live"
+    assert assessment["worker_state"] == "unknown"
     assert assessment["restart_allowed"] is False
     assert "the active model identity is not known" in assessment["unknowns"]
 

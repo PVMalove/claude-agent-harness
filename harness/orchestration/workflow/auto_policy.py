@@ -421,7 +421,9 @@ def attention_stops(batch: JsonObject, findings: list[dict[str, str]]) -> list[S
     return stops
 
 
-def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
+def _status_stops(
+    root: Path, batch: JsonObject, *, repo: Path | None = None
+) -> list[Stop]:
     """An open dispatch whose worker ran another model or another worktree than its brief
     approved; a dispatch a human already settled (abandoned on resume) is no stop."""
     stops = []
@@ -434,7 +436,16 @@ def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
             continue
         model = status.get("model_self_report")
         failure = status.get("runtime_failure", {})
-        if (
+        from harness.orchestration.workflow.startup import assess_startup
+
+        startup = assess_startup(
+            _load_dispatch(root, entry["dispatch_id"]), status, repo=repo
+        )
+        early_exit = (
+            startup["worker_state"] == "stopped"
+            and startup["classification"] == "runtime-crash"
+        )
+        if early_exit or (
             failure.get("kind") == "runtime-unavailable"
             and failure.get("worker_started") is False
         ):
@@ -442,7 +453,11 @@ def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
                 Stop(
                     "integrity-failure",
                     "runtime-unavailable",
-                    {"dispatch_id": entry["dispatch_id"], "runtime_failure": failure},
+                    {
+                        "dispatch_id": entry["dispatch_id"],
+                        "runtime_failure": failure,
+                        "startup": startup,
+                    },
                 )
             )
         if isinstance(model, dict) and model.get("match") is False:
@@ -522,7 +537,7 @@ def fact_stops(
                 {"refused": exc.message},
             )
         )
-    stops.extend(_status_stops(root, batch))
+    stops.extend(_status_stops(root, batch, repo=repo))
     findings = (
         []
         if batch.get("state") in TERMINAL_BATCH_STATES

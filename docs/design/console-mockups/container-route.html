@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Контейнерный запуск — макет</title><link rel="stylesheet" href="console.css"><style>.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}.rs{display:flex;flex-direction:column;gap:8px}</style></head><body>
+<div class="caption"><span><b>6 · Контейнерный запуск — этап «План / approval» (≈160×52)</b></span><span>Демонстрационные данные: ничего из показанного не наблюдалось в реальном runtime.</span></div>
+<div class="app wide dense" style="height:1010px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><a href="#">Оркестрация</a><span class="sep">›</span><span class="cur">Контейнерный запуск</span></div><div class="strip"><span>batch-698fa45a-70a2-497c-9086-7ae0cb7c986e</span><span>Этап 3 из 6</span></div>
+      <div class="page fill">
+<div class="hd"><div style="display:flex;align-items:baseline;gap:16px"><h1>Контейнерный исполнитель</h1><div class="sub">batch-698fa45a… · dispatch-e98a4a72… · developer</div></div>
+  <span class="badge w">Ⅱ ждёт approval</span></div>
+<div class="tabs">
+  <span class="tab done"><span class="g">✔</span>1 Настройка</span>
+  <span class="tab done"><span class="g">✔</span>2 Preflight</span>
+  <span class="tab cur"><span class="g">▶</span>3 План / approval</span>
+  <span class="tab"><span class="g">○</span>4 Worker</span>
+  <span class="tab"><span class="g">○</span>5 QA</span>
+  <span class="tab"><span class="g">○</span>6 Очистка</span>
+</div>
+<div class="lab" style="margin:0">Выбор вкладки только показывает этап: он не запускает команду, не выдаёт approval и не обходит gates. Настройка ≠ approval ≠ send.</div>
+
+<div class="cols g2 tight" style="gap:12px">
+  <div class="panel al" style="grid-row:1;grid-column:1">
+    <div class="ph"><span class="t">Что будет смонтировано<span>фактический план</span></span></div>
+    <div class="mt"><span class="p">/home/malove/Projects/Code/claude-agent-harness/.harness/.sandboxes/worktrees/issue-721-console-design-system<small>→ /workspace · issue-worktree исполнителя</small></span><span class="m badge w" style="padding:0 10px">read-write</span></div>
+    <div class="mt"><span class="p">/home/malove/Projects/Code/claude-agent-harness/.harness/.sandboxes/scratch/inbox<small>→ /inbox · каталог входящих отчётов</small></span><span class="m badge w" style="padding:0 10px">read-write</span></div>
+    <div class="mt"><span class="p">/home/malove/Projects/Code/claude-agent-harness/.git<small>→ /repo-git · метаданные Git для worktree</small></span><span class="m badge o" style="padding:0 10px">read-only</span></div>
+    <div class="lab" style="margin:8px 0 0;font-size:12.5px">Пути абсолютные и показаны полностью. Всё остальное на хосте недоступно.</div>
+  </div>
+
+  <div class="panel al" style="grid-row:1;grid-column:2">
+    <div class="ph"><span class="t">Сеть и окружение</span></div>
+    <div class="lab" style="margin:0 0 4px">Разрешённые hosts (через proxy)</div>
+    <div class="chk"><span class="e-ok">✔</span><span>api.anthropic.com:443</span><span class="d">proxy</span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>github.com:443</span><span class="d">proxy</span></div>
+    <div class="lab" style="margin:10px 0 4px">Переменные окружения — только имена</div>
+    <div class="chk"><span class="e-ok">✔</span><span>ANTHROPIC_API_KEY<small>значение скрыто</small></span><span class="d">задана</span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>HARNESS_REPORT_PATH<small>значение скрыто</small></span><span class="d">задана</span></div>
+    <div class="lab" style="margin:auto 0 0;padding-top:8px;font-size:12.5px">Остальной трафик запрещён. Значения не попадают в UI, логи и артефакты.</div>
+  </div>
+
+  <div class="panel al" style="grid-row:2;grid-column:1">
+    <div class="ph"><span class="t">Образы<span>закреплены рядом с планом</span></span><span class="e-ok" style="font-size:13px">✔ digest закреплены</span></div>
+    <div class="rs">
+      <div class="digest"><b>Worker</b> ghcr.io/pvmalove/harness-worker<br><small>sha256:aa11c3d97e0b…42f9 · полный digest: <b style="color:var(--primary)">d</b></small></div>
+      <div class="digest"><b>Proxy</b> ghcr.io/pvmalove/harness-proxy<br><small>sha256:5be08f1a64c2…b7d3 · полный digest: <b style="color:var(--primary)">d</b></small></div>
+    </div>
+    <div class="lab" style="margin:auto 0 0;padding-top:8px;font-size:12.5px">Образы не собираются и не скачиваются автоматически.</div>
+  </div>
+
+  <div class="panel al" style="grid-row:2;grid-column:2">
+    <div class="ph"><span class="t">Approval<span>привязан к переходу</span></span></div>
+    <dl class="kv i" style="grid-template-columns:130px 1fr">
+      <dt>Переход</dt><dd>dispatch send · developer</dd>
+      <dt>plan_digest</dt><dd class="digest">sha256:7c4e2a90…91ab <small>(полный: d)</small></dd>
+      <dt>Состояние</dt><dd class="e-warn">Ⅱ ждёт approval</dd>
+    </dl>
+    <div class="warnbox" style="margin-top:10px;border:1px solid #6b5326;background:#2b2418;border-radius:8px;padding:8px 12px;color:var(--warn);font-size:13px">Если план изменится до send, потребуется новое предложение и новое разрешение.</div>
+    <div class="btns"><a class="btn solid" href="#">Подтвердить переход…</a><a class="btn" href="#">Предложить заново</a></div>
+  </div>
+</div>
+
+<div class="panel" style="padding:10px 14px">
+  <div class="hd"><div class="tbtns"><a class="btn" href="#">‹ Preflight</a></div>
+    <div style="display:flex;align-items:center;gap:14px"><span class="e-warn" style="font-size:13px">⚠ Отправка недоступна: нужен approval этого перехода</span><a class="btn dis" href="#">Отправить dispatch →</a></div></div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Tab</b>Фокус</span><span><b class="k">←→</b>Этап</span><span><b class="k">Enter</b>Выбрать</span><span><b class="k">d</b>Полный digest</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Остальные этапы</b></span><span>Те же компоненты. Тексты и данные демонстрационные; отказы показаны честно, без ложного success.</span></div>
+<div class="sheet"><h3>Этапы 1, 2, 4, 5, 6</h3><p>Каждый этап показывает наблюдаемые факты отдельно от решений; недоступное действие — с причиной рядом. Карточки — разные ситуации этапа (не один batch): так, блокер Preflight и пройденный Preflight на вкладках выше не противоречат друг другу.</p>
+  <div class="two"><div class="panel"><div class="ph"><span class="t">1 · Настройка</span><span class="e-ok" style="font-size:13px">✔ принято</span></div>
+ <dl class="kv i" style="grid-template-columns:150px 1fr"><dt>runtime_access</dt><dd>docker</dd><dt>transport</dt><dd>external</dd><dt>Worker / Proxy-образ</dt><dd>2 образа закреплены</dd><dt>Имена environment</dt><dd>ANTHROPIC_API_KEY, HARNESS_REPORT_PATH</dd><dt>network.hosts</dt><dd>2</dd><dt>access_policy</dt><dd>defaults ✔ · roles ✔ · operations.qa ✔</dd></dl>
+ <div class="chk" style="margin-top:6px"><span class="e-warn">⚠</span><span>Effective plan: <b>replace-override</b><small>roles.developer.network.hosts заменяет defaults · источник: project.json</small></span><span class="d"></span></div>
+ <div class="lab" style="margin:8px 0 0;font-size:12.5px">Запись: черновик → проверка → diff → подтверждение · backup · проверка устаревших байтов. Сохранение не запускает worker.</div>
+ <div class="btns"><a class="btn xs" href="#">Править в «Настройке» (8) →</a></div></div><div class="panel"><div class="ph"><span class="t">2 · Preflight</span><span class="e-err" style="font-size:13px">✖ пример: есть блокер</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Движок: docker 27.3, rootless</span><span class="d">наблюдено</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Образы: worker и proxy на месте</span><span class="d">наблюдено</span></div>
+ <div class="chk"><span class="e-err">✖</span><span>Переменная HARNESS_TOKEN не задана<small>Как исправить: задайте её в окружении и повторите проверку</small></span><span class="d">блокер</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Транспорт: external</span><span class="d">наблюдено</span></div>
+ <div class="chk"><span style="color:var(--muted)">○</span><span>Применимость mounts и сети<small>зависит от непройденной проверки</small></span><span class="d">не проверено</span></div>
+ <div class="lab" style="margin:8px 0 0;font-size:12.5px">in-process и неподдерживаемый режим — отказ с причиной. Повторная проверка не запускает worker, build и pull не выполняются.</div>
+ <div class="btns"><a class="btn xs" href="#">Проверить заново</a></div></div><div class="panel"><div class="ph"><span class="t">4 · Worker</span><span class="e-ok" style="font-size:13px">▶ пример: контейнер жив</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Receipt · launch_id L-7f3a91…</span><span class="d">получен</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Движок и образы: docker · worker@sha256:aa11…</span><span class="d">как в плане</span></div>
+ <div class="chk"><span class="e-ok">▶</span><span>Inspect: контейнер работает</span><span class="d">2 с назад</span></div>
+ <div class="chk"><span style="color:var(--muted)">○</span><span>Exit code</span><span class="d">ещё нет</span></div>
+ <div class="chk"><span style="color:var(--muted)">○</span><span>Report</span><span class="d">не получен</span></div>
+ <div class="chk"><span style="color:var(--muted)">○</span><span>Terminal evidence</span><span class="d">нет</span></div>
+ <div class="lab" style="margin:8px 0 0;font-size:12.5px">Факты разделены. Detached-запуск не показывается как завершение задачи; отсутствие report не доказывает остановку.</div></div><div class="panel"><div class="ph"><span class="t">5 · QA</span><span class="e-err" style="font-size:13px">✖ пример: gate не пройден</span></div>
+ <div class="lab" style="margin:0 0 4px">Отдельный dispatch · operations.qa · собственный binding. Approval worker QA не заменяет.</div>
+ <div class="chk"><span class="e-ok">✔</span><span>make lint · контейнер qa-1<small>stdout/stderr: Enter</small></span><span class="d">exit 0</span></div>
+ <div class="chk"><span class="e-err">✖</span><span>make verify · контейнер qa-2<small>сигнал KILL по timeout · grace 30 с · partial evidence сохранён</small></span><span class="d">exit 137</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Lane освобождена по фактическому результату</span><span class="d">после exit</span></div></div></div><div style="margin-top:16px"><div class="panel"><div class="ph"><span class="t">6 · Очистка</span><span class="e-warn" style="font-size:13px">⚠ пример: часть защищена</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Контейнер worker dispatch-e98a… · остановлен</span><span class="d">можно удалить</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Proxy sidecar · остановлен</span><span class="d">можно удалить</span></div>
+ <div class="chk"><span class="e-ok">✔</span><span>Сеть harness-e98a</span><span class="d">пуста</span></div>
+ <div class="chk"><span class="e-warn">🔒</span><span>Контейнер dispatch-1d3e… · жив<small>без отдельной авторизации не останавливается</small></span><span class="d">защищён</span></div>
+ <div class="lab" style="margin:8px 0 0;font-size:12.5px">Список по меткам текущего repo и dispatch; чужие ресурсы не показываются и не удаляются. Terminal evidence сохраняется до удаления.</div>
+ <div class="btns"><a class="btn xs" href="#">План очистки</a><a class="btn xs dng" href="#">Применить…</a></div></div></div></div>
+<div class="caption"><span><b>6 · Контейнерный запуск — узкий терминал (≈80×24)</b></span><span>Вкладки сворачиваются в «Этап N из 6»; поля в одну колонку; digest и пути — полностью по клавише.</span></div>
+<div class="app narrow dense" style="height:1000px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">⎇ feature/issue-721…</div></div>
+  <div class="body"><main><div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><a href="#">Оркестрация</a><span class="sep">›</span><span class="cur">Контейнерный запуск</span></div><div class="page fill">
+<div class="hd"><h1 style="font-size:18px">Контейнерный запуск</h1><span class="badge w">Ⅱ ждёт approval</span></div>
+<div class="panel" style="padding:8px 12px"><div class="hd"><span><span class="e-ok">▶</span> Этап <b>3 из 6</b> · План / approval</span><span class="chip">Этапы ▾</span></div>
+  <div class="lab" style="margin:6px 0 0;font-size:12.5px">✔ Настройка · ✔ Preflight · ▶ План · ○ Worker · ○ QA · ○ Очистка</div></div>
+<div class="panel"><div class="ph"><span class="t">Mounts</span></div>
+  <div class="mt"><span class="p">…/worktrees/issue-721-console-design-system<small>→ /workspace</small></span><span class="m badge w" style="padding:0 8px">rw</span></div>
+  <div class="mt"><span class="p">…/scratch/inbox<small>→ /inbox</small></span><span class="m badge w" style="padding:0 8px">rw</span></div>
+  <div class="mt"><span class="p">…/.git<small>→ /repo-git</small></span><span class="m badge o" style="padding:0 8px">ro</span></div></div>
+<div class="card fold"><span>▸ Сеть и env</span><span>2 hosts · 2 имени</span></div>
+<div class="card fold"><span>▸ Образы</span><span>✔ закреплены</span></div>
+<div class="panel"><div class="ph"><span class="t">Approval</span><span class="e-warn" style="font-size:13px">Ⅱ ждёт</span></div>
+  <div class="digest">plan_digest sha256:7c4e2a90…91ab <small>(d — полный)</small></div>
+  <div class="btns"><a class="btn solid" href="#">Подтвердить…</a><a class="btn dis" href="#">Отправить →</a></div>
+  <div class="lab" style="margin:8px 0 0;font-size:12.5px;color:var(--warn)">⚠ Отправка недоступна: нужен approval этого перехода</div></div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">←→</b>Этап</span><span><b class="k">Enter</b>Выбрать</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="legend">Из #711: шесть этапов (Настройка, Preflight, План/approval, Worker, QA, Очистка); этап «План» — фактические mounts, hosts, имена env, закреплённые digest, plan_digest и binding перехода, drift требует нового approval; Worker — receipt, inspect, exit, report, terminal evidence отдельными фактами; QA — отдельный approval и результат каждой gate-команды; Очистка — preview по меткам, защита живого worker и чужих ресурсов. Образы, digest, hosts, имена env, exit-коды — демонстрационные.</div>
+</body></html>

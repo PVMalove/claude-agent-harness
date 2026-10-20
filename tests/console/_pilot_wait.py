@@ -7,7 +7,10 @@ import asyncio
 from collections.abc import Callable
 
 from textual.pilot import Pilot
-from textual.widgets import Button
+from textual.widgets import Button, Static
+
+from harness.console.crumbs import SEPARATOR
+from harness.console.shell import Breadcrumbs
 
 WAIT_SECONDS = 30.0
 POLL_SECONDS = 0.05
@@ -45,3 +48,14 @@ async def press[T](pilot: Pilot[T], selector: str) -> None:
     )
     pilot.app.screen.query_one(selector, Button).press()
     await pilot.pause()
+
+
+def crumb_text(crumbs: Breadcrumbs) -> str:
+    """Путь, как он нарисован: сегменты хлебных крошек через `SEPARATOR`, свёрнутые — как «…»."""
+    parts = []
+    for widget in crumbs.query(Static):
+        text = str(widget.content)
+        parts.append(
+            SEPARATOR if widget.has_class("crumb-sep") and text.strip() == "›" else text
+        )
+    return "".join(parts)

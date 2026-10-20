@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Настройка — макет</title>
+<link rel="stylesheet" href="console.css">
+<style>
+.new{border-color:#6b4a3c !important;position:relative;margin-top:8px}
+.newtag{position:absolute;top:-10px;right:14px;background:var(--sel);color:var(--selfg);border:1px solid #6b4a3c;border-radius:999px;padding:0 10px;font-size:12px}
+.adp{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.acard{background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.acard .n{display:flex;justify-content:space-between;gap:10px;align-items:baseline}
+.acard .n b{font-weight:600}
+.acard .p{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.acard .why{font-size:13px;color:var(--muted)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.modalwrap{background:#0f0e0d;border:1px solid var(--rule);border-radius:10px;padding:26px;display:flex;justify-content:center}
+.modal{width:100%;max-width:560px;border:1px solid var(--primary);border-radius:10px;background:var(--surface);padding:16px 18px;position:relative;display:flex;flex-direction:column;gap:9px}
+.modal .bt{position:absolute;top:-11px;left:16px;background:var(--surface);padding:0 8px;color:var(--primary);font-size:13px}
+.modal .ti{font-weight:700}
+.modal .pl{background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:10px 12px;font-size:13px;line-height:1.75}
+.modal .pl .h{color:var(--muted)}
+.modal .row2{display:flex;gap:10px;margin-top:2px}
+.btn.off{opacity:.45;border-style:dashed}
+.modal .blk{color:var(--warn);font-size:13px}
+.input.plain{color:var(--muted)}
+</style>
+</head>
+<body>
+
+<div class="caption"><span><b>8 · Настройка — стартовая страница (≈160×52), компактно</b></span><span>Блок «Адаптеры runtime» — из PR #732 (открыт, в консоль на этой ветке ещё не влит).</span></div>
+
+<div class="app wide dense" style="height:760px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div>
+  </div>
+  <div class="body" style="grid-template-columns:250px 1fr">
+    <nav>
+      <h6>Главное меню</h6>
+      <a href="#"><i>0</i>Главная</a>
+      <a href="#"><i>1</i>Открыть проект</a>
+      <a href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a>
+      <a href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>5</i>Оркестрация<em>3</em></a>
+      <a href="#"><i>6</i>Отчёты</a>
+      <a href="#"><i>7</i>Repo Map<em>full</em></a>
+      <a class="on" href="#"><i>8</i>Настройка</a>
+      <a href="#"><i>9</i>Справка</a>
+    </nav>
+    <main>
+      <div class="crumbs"><a href="#" title="Вернуться на главное меню">Главная</a><span class="sep">›</span><span class="cur">Настройка конфигурации</span></div>
+      <div class="strip"><span>Проект: claude-agent-harness</span><span>Изменения применяются только после просмотра и подтверждения</span></div>
+      <div class="page fill">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:16px">
+          <h1>Настройка конфигурации</h1>
+          <div class="sub">Файлы project.json и orchestration.json, сохранённые версии и адаптеры runtime.</div>
+        </div>
+
+        <div class="cols g2" style="gap:12px">
+          <div class="panel al" style="grid-row:1;grid-column:1">
+            <h4>Редактирование конфигурации</h4>
+            <div class="lab" style="margin:0">Выберите, какие файлы настроить.</div>
+            <div class="btns"><a class="btn" href="#">project.json</a><a class="btn" href="#">orchestration.json</a><a class="btn" href="#">Оба файла</a></div>
+            <div class="lab" style="margin:12px 0 0">Изменения применяются после просмотра и подтверждения.</div>
+          </div>
+          <div class="panel al" style="grid-row:1;grid-column:2">
+            <h4>Сохранённые версии</h4>
+            <div class="lab" style="margin:0 0 6px">Сохранить текущий набор без редактирования.</div>
+            <div class="input plain" style="padding:7px 12px">Описание версии (необязательно)</div>
+            <div class="lab" style="margin:8px 0 0">Хранилище: ~/.local/share/harness/config/claude-agent-harness</div>
+            <div class="btns"><a class="btn" href="#">Сохранить версию</a><a class="btn" href="#">Версии / восстановить</a></div>
+          </div>
+        </div>
+
+        <div class="panel new">
+          <span class="newtag">новое · PR #732</span>
+          <h4>Адаптеры runtime <span>внешний транспорт оркестрации (<b style="color:var(--fg);font-weight:600">transport: external</b>)</span></h4>
+          <div class="adp">
+            <div class="acard">
+              <div class="n"><b>claude_worker</b><span class="e-ok">✔ актуален</span></div>
+              <div class="p">.harness/adapters/claude_worker.py</div>
+              <div class="why">Запускает Claude worker в issue-worktree.</div>
+            </div>
+            <div class="acard">
+              <div class="n"><b>codex_worker</b><span class="e-warn">⚠ требует обновления</span></div>
+              <div class="p">.harness/adapters/codex_worker.py</div>
+              <div class="why">Запускает Codex worker в issue-worktree.</div>
+            </div>
+          </div>
+          <div class="cliline" style="margin-top:12px;align-items:center"><span>Установка и обновление требуют просмотра и подтверждения. Консоль не включает force и не меняет transport.</span><a class="btn p" href="#">Просмотр установки и обновления</a></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Tab</b>Фокус</span><span><b class="k">Enter</b>Выбрать</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Просмотр установки и обновления</b></span><span>Тексты — из PR #732; названия ключей (package_changed…) в макете заменены словами — предлагаю.</span></div>
+<div class="sheet">
+  <h3>Окно подтверждения «Обновить адаптеры runtime?»</h3>
+  <p>Показывает то же, что сделает обычный <b style="color:var(--fg)">harness update</b>. «Подтвердить» выключена, если есть локальные изменения, коллизии или не выбрана capability.</p>
+  <div class="two">
+    <div>
+      <div class="lab">Можно подтверждать</div>
+      <div class="modalwrap"><div class="modal">
+        <span class="bt">Подтверждение</span>
+        <div class="ti">Обновить адаптеры runtime?</div>
+        <div class="pl">
+          <div><span class="h">Возможности:</span> pvmalove-suite, backend-orchestration</div>
+          <div class="h">Обновятся управляемые файлы харнесса:</div>
+          <div><span class="e-ok">✔ обновится</span>&nbsp; .harness/adapters/codex_worker.py</div>
+          <div><span class="e-ok">✔ обновится</span>&nbsp; .harness/orchestration/playbook.md</div>
+          <div><span class="h">Seed-файлы сохраняются:</span> AGENTS.md</div>
+        </div>
+        <div class="row2"><a class="btn solid" href="#">Подтвердить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+    <div>
+      <div class="lab">Нельзя подтвердить: capability не выбрана</div>
+      <div class="modalwrap"><div class="modal">
+        <span class="bt">Подтверждение</span>
+        <div class="ti">Обновить адаптеры runtime?</div>
+        <div class="pl">
+          <div><span class="h">Возможности:</span> pvmalove-suite</div>
+          <div class="blk">⚠ Capability backend-orchestration не выбрана. Выберите состав явно в CLI:</div>
+          <div>$ harness update /home/malove/…/claude-agent-harness --capability backend-orchestration</div>
+          <div class="h">y — копировать CLI (предлагаю)</div>
+        </div>
+        <div class="row2"><a class="btn solid off" href="#">Подтвердить</a><a class="btn" href="#">Отмена</a></div>
+      </div></div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><span><b>Состояния блока «Адаптеры runtime»</b></span><span>Статусы и тексты — из кода PR; цвета статусов — предлагаю.</span></div>
+<div class="sheet">
+  <h3>Что видно в блоке и после нажатия</h3>
+  <p>Статус адаптера — один из трёх: «не установлен», «актуален», «требует обновления». Причина проблемы хранится в данных, но на экране сейчас не показывается.</p>
+  <div class="states" style="grid-template-columns:230px 1fr 290px">
+    <span class="lab2">Оба актуальны</span>
+    <div class="status ok"><span>✔</span><div>claude_worker: актуален · codex_worker: актуален<small>Просмотр доступен и покажет, что изменений нет.</small></div></div>
+    <span class="res2">Кнопка остаётся: нужна, чтобы проверить заново</span>
+
+    <span class="lab2">Адаптер не установлен</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>codex_worker: не установлен<small>Просмотр предложит восстановить файл обычным обновлением.</small></div></div>
+    <span class="res2">Включается при выбранной backend-orchestration</span>
+
+    <span class="lab2">Есть локальные правки</span>
+    <div class="status warn"><span>⚠</span><div>claude_worker: требует обновления<small>В окне: «Сначала устраните локальные изменения и коллизии. Принудительное обновление не включено.» (предлагаю показать причину «locally changed adapter» уже в карточке)</small></div></div>
+    <span class="res2">«Подтвердить» выключена</span>
+
+    <span class="lab2">backend-orchestration не выбрана</span>
+    <div class="status warn"><span>⚠</span><div>Оба адаптера: не установлен<small>Окно объясняет и даёт команду для явного выбора состава.</small></div></div>
+    <span class="res2">Консоль capability сама не добавляет</span>
+
+    <span class="lab2">Harness не установлен</span>
+    <div class="status err"><span>✖</span><div>Сначала установите харнесс проекта<small>Вместо карточек — это сообщение; кнопки нет. Ссылка «Открыть проект (1) →» — предлагаю.</small></div></div>
+    <span class="res2">Или: «Не удалось прочитать snapshot харнесса»</span>
+
+    <span class="lab2">План устарел</span>
+    <div class="status err"><span>✖</span><div>План изменился: выполните просмотр заново<small>Файлы изменились между просмотром и подтверждением; запись не выполнена.</small></div></div>
+    <span class="res2">Защита от гонки: запись только свежего плана</span>
+
+    <span class="lab2">Обновление прошло</span>
+    <div class="status ok"><span>✔</span><div>Вывод harness update<small>Статусы адаптеров перечитаны автоматически.</small></div></div>
+    <span class="res2">Ошибка команды показывается текстом stderr</span>
+  </div>
+</div>
+
+<div class="caption"><span><b>8 · Настройка — узкий терминал (≈80×24)</b></span><span>Блоки друг под другом, адаптеры — две строки.</span></div>
+
+<div class="app narrow dense" style="height:760px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">⎇ feature/issue-721…</div>
+  </div>
+  <div class="body">
+    <main>
+      <div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Настройка</span></div>
+      <div class="page fill">
+        <div><h1>Настройка конфигурации</h1></div>
+        <div class="panel">
+          <h4>Редактирование</h4>
+          <div class="btns" style="margin-top:0"><a class="btn" href="#">project.json</a><a class="btn" href="#">orchestration.json</a><a class="btn" href="#">Оба</a></div>
+        </div>
+        <div class="panel">
+          <h4>Сохранённые версии</h4>
+          <div class="btns" style="margin-top:0"><a class="btn" href="#">Сохранить версию</a><a class="btn" href="#">Версии</a></div>
+        </div>
+        <div class="panel new">
+          <span class="newtag">PR #732</span>
+          <h4>Адаптеры runtime</h4>
+          <dl class="kv i" style="grid-template-columns:140px 1fr"><dt>claude_worker</dt><dd class="e-ok">✔ актуален</dd><dt>codex_worker</dt><dd class="e-warn">⚠ требует обновл.</dd></dl>
+          <div class="btns"><a class="btn p" href="#">Просмотр обновления</a></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Enter</b>Выбрать</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="legend">
+  Из кода и PR: стартовая страница «Настройка конфигурации» с блоками «Редактирование конфигурации» и «Сохранённые версии»; блок «Адаптеры runtime» (по одному статусу на адаптер) с кнопкой «Просмотр установки и обновления»;
+  окно подтверждения с текстом плана, отключаемой «Подтвердить» и защитой от устаревшего плана. Другие страницы мастера (шаги параметров, ИИ-подсказки, diff, версии) в этом макете не нарисованы.
+  Путь хранилища и имена файлов в плане — демонстрационные. Моё: карточки адаптеров вместо двух строк текста, символы статусов, слова вместо ключей в плане, показ причины в карточке, CLI-подсказка с копированием.
+</div>
+</body>
+</html>

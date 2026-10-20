@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -86,6 +87,7 @@ from harness.orchestration.core.utils import (
 )
 from harness.orchestration.core.workspace import (
     _agent_authored_file,
+    _agent_inbox,
     _reject_non_english,
 )
 from harness.orchestration.ledger.ledger_ops import (
@@ -1083,6 +1085,7 @@ def _persist_report(
     report: JsonObject,
     *,
     auto_accept_policy: str | None = None,
+    report_relay: JsonObject | None = None,
 ) -> Path:
     """Persist a role report and advance its batch atomically under the coordinator lock.
 
@@ -1115,6 +1118,8 @@ def _persist_report(
             remedy="the dispatch is not registered in its batch -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    if report_relay is not None:
+        entry["report_relay"] = report_relay
     entry["state"] = "reported"
     entry["report"] = f"reports/{dispatch['dispatch_id']}.json"
     entry["report_sha256"] = hashlib.sha256(
@@ -1134,7 +1139,13 @@ def _persist_report(
     _safe_id(dispatch["dispatch_id"], "dispatch")
     _replace_record(ledger, DispatchStatusRecord.from_dict(closed))
     _safe_id(batch["batch_id"], "batch")
-    _replace_record(ledger, BatchRecord.from_dict(batch))
+    _replace_record(
+        ledger,
+        BatchRecord.from_dict(batch),
+        decision={"decision": "report-relay", "report_relay": report_relay}
+        if report_relay
+        else None,
+    )
     return report_json
 
 
@@ -1861,10 +1872,60 @@ def _report_markdown(report: JsonObject) -> str:
 
 def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
-    report = _read_object(
-        _agent_authored_file(repo, args.file, "a completion report"),
-        "completion report",
-    )
+    path = _agent_authored_file(repo, args.file, "a completion report")
+    relay_fields = [
+        getattr(args, key, None)
+        for key in ("relayed_by", "relay_reason", "source_sha256")
+    ]
+    report_relay: JsonObject | None = None
+    if any(value is not None for value in relay_fields):
+        if not all(
+            _non_empty(value) and value.strip().lower() != "none"
+            for value in relay_fields
+        ):
+            raise CoordinatorError(
+                "report relay requires sender, reason and source checksum",
+                remedy="pass --relayed-by, --relay-reason and --source-sha256 together",
+            )
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise CoordinatorError(
+                "cannot read the original worker report",
+                remedy="preserve the worker file and restore its read access",
+            ) from exc
+        checksum = hashlib.sha256(raw).hexdigest()
+        if checksum != args.source_sha256:
+            raise CoordinatorError(
+                "worker report source checksum differs",
+                remedy="inspect the original worker file; never rewrite it to pass relay validation",
+            )
+        try:
+            report = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise CoordinatorError(
+                "completion report is not valid JSON",
+                remedy="return the validation failure to its author; preserve the original file",
+            ) from exc
+        if not isinstance(report, dict):
+            raise CoordinatorError(
+                "completion report must be an object",
+                remedy="preserve the worker evidence and report its invalid format",
+            )
+        report_relay = utils.sealed(
+            {
+                "author_dispatch_id": report.get("dispatch_id"),
+                "author_role": report.get("role"),
+                "submitted_by": args.relayed_by,
+                "reason": args.relay_reason,
+                "source_path": str(path),
+                "source_sha256": checksum,
+                "recorded_at": utils._now(),
+            }
+        )
+        _reject_sensitive(report_relay, "report relay")
+    else:
+        report = _read_object(path, "completion report")
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger):
@@ -1892,6 +1953,39 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
             )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
         entry = _dispatch_entry(batch, dispatch["dispatch_id"])
+        if report_relay is not None:
+            if (
+                path.resolve()
+                != Path(
+                    dispatch.get("report_staging_path")
+                    or _agent_inbox(repo) / f"{dispatch['dispatch_id']}.json"
+                ).resolve()
+            ):
+                raise CoordinatorError(
+                    "relay file does not match the worker staging path",
+                    remedy="use the exact report_staging_path from the immutable brief",
+                )
+            if entry and entry.get("report"):
+                recorded = _read_object(
+                    _records_root(root) / entry["report"], "recorded report"
+                )
+                prior_relay = entry.get("report_relay", {})
+                if (
+                    recorded != report
+                    or prior_relay.get("source_sha256") != report_relay["source_sha256"]
+                ):
+                    raise CoordinatorError(
+                        "a different worker report is already recorded",
+                        remedy="inspect the recorded evidence; do not submit or replace it again",
+                    )
+                return {
+                    "dispatch_id": dispatch["dispatch_id"],
+                    "state": "reported",
+                    "report": str(_records_root(root) / entry["report"]),
+                    "already_recorded": True,
+                    "report_relay": prior_relay,
+                    "next_coordinator_action": "inspect the decision packet; use report complete only for a pending policy chain",
+                }
         if (
             not entry
             or entry.get("state") != "dispatched"
@@ -1957,7 +2051,13 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
                 repo, batch, dispatch, report, was_retry, retry_candidate
             )
         report_json = _persist_report(
-            ledger, root, batch, dispatch, report, auto_accept_policy=auto_accept_policy
+            ledger,
+            root,
+            batch,
+            dispatch,
+            report,
+            auto_accept_policy=auto_accept_policy,
+            report_relay=report_relay,
         )
         if resolver_state.is_resolver_brief(dispatch):
             resolver_state.record_report(ledger, root, batch, dispatch, report)
@@ -1965,6 +2065,7 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",
         "report": str(report_json),
+        **({"report_relay": report_relay} if report_relay else {}),
     }
     # Acceptance belongs to the approved snapshot; progression belongs to a newly validated
     # transition. Never invite resubmission of evidence already durably accepted.

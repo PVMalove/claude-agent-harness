@@ -6,14 +6,12 @@ import shlex
 from pathlib import Path
 from typing import Callable, Iterable
 
+from rich.text import Text
 from textual.app import ComposeResult
-from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import Screen
 from textual.widgets import (
     Button,
     DirectoryTree,
-    Footer,
     Input,
     RadioButton,
     RadioSet,
@@ -21,9 +19,8 @@ from textual.widgets import (
 )
 
 from .. import brand, i18n
-from ..chrome import TopBar
-from ..translate import Translated
-from ..logtext import colorize_log
+from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
+from ..status import Status
 from .. import data
 from ...health.model import Report
 from ..catalog import process_argv
@@ -37,7 +34,7 @@ from ..project_target import (
 )
 from ..runner import CommandRunner
 from .commands import call_from_worker, render_result
-from .diagnostics import render_report
+from .diagnostics import render_report, styled_log
 from .configuration import ConfirmConfiguration
 from .harness import CommandFormScreen
 
@@ -50,6 +47,7 @@ _STAGES = (
     "Итоговая диагностика",
 )
 _TARGET_HINT = "Укажите путь к проекту и нажмите «Проверить путь»."
+_BUSY_NOTE = "Дождитесь окончания операции"
 _PLAN_HINT = "План появится после проверки пути."
 _OUTPUT_HINT = "Результат проверок и установки появится здесь."
 _AFTER_INSPECT = (
@@ -98,13 +96,17 @@ class _DirectoryOnlyTree(DirectoryTree):
         return [path for path in paths if path.is_dir()]
 
 
-class ProjectSetupScreen(Translated, Screen[Path | None]):
-    BINDINGS = [Binding("escape", "cancel", "Назад")]
-    HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (120, "-wide")]
-    DEFAULT_CSS = """
-    ProjectSetupScreen #setup-scroll { width: 100%; height: 1fr; overflow-x: hidden; }
+class ProjectSetupScreen(ConsoleShell[Path | None]):
+    """Open project on the shared shell; it is dismissed with the chosen project or with None."""
+
+    CRUMBS = "Главная › Открыть проект"
+    SECTION = "Open project"
+    NARROW_FOOTER_KEYS = ("escape", "f1", "f2")
+    AUTO_FOCUS = "#project-path"
+    CSS = SHELL_CSS + brand.shell_css("""
+    ProjectSetupScreen #setup-scroll { width: 100%; height: 1fr; overflow-x: hidden; padding: 0 2; }
     ProjectSetupScreen #setup-columns { width: 100%; height: auto; layout: vertical; }
-    ProjectSetupScreen.-wide #setup-columns { layout: horizontal; }
+    ProjectSetupScreen.-spacious #setup-columns { layout: horizontal; }
     ProjectSetupScreen #setup-left, ProjectSetupScreen #setup-right { width: 1fr; height: auto; }
     ProjectSetupScreen .frame { height: auto; }
     ProjectSetupScreen Vertical.frame { overflow: hidden hidden; }
@@ -116,7 +118,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
     ProjectSetupScreen #target-status, ProjectSetupScreen .hint { color: $text-muted; }
     ProjectSetupScreen #directory-browser { height: 12; }
     ProjectSetupScreen #setup-output-scroll { height: auto; max-height: 18; }
-    """
+    """)
 
     def __init__(self, repo: Path, *, command_runner: CommandRunner) -> None:
         super().__init__()
@@ -127,6 +129,8 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
         self.stage = 0
         self.options = capability_options()
         self._capability_value = ""
+        # What `#target-status` shows as a status: (kind, text); None while it shows the hint.
+        self._target_status: tuple[str, str] | None = None
 
     def _set_busy(self, value: bool) -> None:
         self.busy = value
@@ -156,18 +160,42 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
         )
 
     def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
         self._set_stage(self.stage)
+        if self._target_status is not None:
+            self._show_target(*self._target_status)
 
-    def compose(self) -> ComposeResult:
-        yield TopBar("Главная › Проект")
+    def _show_target(self, kind: str, text: str) -> None:
+        """The target line as a status: its symbol and colour on the first line, the facts below."""
+        self._target_status = (kind, text)
+        language = getattr(self.app, "language", "ru")
+        first, _, rest = i18n.tr_text(language, text).partition("\n")
+        status = Status(kind, first, first)
+        shown = Text(status.render(language), style=status.color)
+        if rest:
+            shown.append("\n" + rest)
+        self.query_one("#target-status", Static).update(shown)
+
+    def _show_running(self, text: str) -> None:
+        """The output block while a command runs: a running symbol and the text."""
+        language = getattr(self.app, "language", "ru")
+        status = Status("running", text, i18n.tr_text("en", text))
+        self.query_one("#setup-output", Static).update(
+            Text(status.render(language), style=status.color)
+        )
+
+    def compose_strip(self) -> ComposeResult:
+        yield WrappedValue(str(self.repo))
+
+    def compose_content(self) -> ComposeResult:
         with VerticalScroll(id="setup-scroll"):
             with Vertical(id="setup-stage-frame", classes="frame") as stages:
-                stages.border_title = brand.frame_title("Этапы")
+                stages.border_title = brand.section_title("Этапы")
                 yield Static("", id="setup-stage", markup=False)
             with Horizontal(id="setup-columns"):
                 with Vertical(id="setup-left"):
                     with Vertical(id="project-frame", classes="frame") as project:
-                        project.border_title = brand.frame_title("Проект")
+                        project.border_title = brand.section_title("Проект")
                         yield Input(
                             value=str(self.repo),
                             placeholder="Путь к локальному Git-проекту",
@@ -192,7 +220,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
                             markup=False,
                         )
                     with Vertical(id="capability-frame", classes="frame") as capability:
-                        capability.border_title = brand.frame_title("Состав Harness")
+                        capability.border_title = brand.section_title("Состав Harness")
                         yield Static(
                             "workflow нужен для project.json; Backend добавляет orchestration.json.",
                             classes="hint",
@@ -204,7 +232,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
                                 )
                 with Vertical(id="setup-right"):
                     with Vertical(id="plan-frame", classes="frame") as plan:
-                        plan.border_title = brand.frame_title("План установки")
+                        plan.border_title = brand.section_title("План установки")
                         yield Static(_PLAN_HINT, id="installation-plan", markup=False)
                         with Horizontal(classes="actions"):
                             yield Button(
@@ -214,7 +242,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
                                 compact=True,
                             )
                     with Vertical(id="checks-frame", classes="frame") as checks:
-                        checks.border_title = brand.frame_title("Проверки")
+                        checks.border_title = brand.section_title("Проверки")
                         with Horizontal(classes="actions"):
                             yield Button(
                                 "Офлайн",
@@ -247,9 +275,8 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
                             classes="hint",
                         )
             with VerticalScroll(id="setup-output-scroll", classes="frame") as output:
-                output.border_title = brand.frame_title("Результат")
+                output.border_title = brand.section_title("Результат")
                 yield Static(_OUTPUT_HINT, id="setup-output", markup=False)
-        yield Footer()
 
     def on_mount(self) -> None:
         self._set_stage(0)
@@ -406,7 +433,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
 
     def _inspect(self, value: str) -> None:
         self._set_busy(True)
-        self.query_one("#target-status", Static).update("Проверяется путь…")
+        self._show_target("running", "Проверяется путь…")
 
         def work() -> None:
             try:
@@ -421,9 +448,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
 
     def _install(self, target: ProjectTarget, capability: str) -> None:
         self._set_busy(True)
-        self.query_one("#setup-output", Static).update(
-            colorize_log("Устанавливается Harness…")
-        )
+        self._show_running("Устанавливается Harness…")
         entry = installation_entry(target, capability)
         argv = entry.cli_argv(target.repo)
         self._capability_value = capability
@@ -453,7 +478,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
 
     def _failed(self, message: str) -> None:
         self._set_busy(False)
-        self.query_one("#target-status", Static).update(message)
+        self._show_target("error", message)
 
     def _inspected(self, target: ProjectTarget) -> None:
         # A changed path invalidates a result returned by an earlier inspection.
@@ -473,7 +498,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
             + "\nУстановлено: "
             + (", ".join(target.capabilities) or "нет")
         )
-        self.query_one("#target-status", Static).update(text)
+        self._show_target("accepted", text)
         for name in _AFTER_INSPECT:
             self.query_one("#" + name, Button).disabled = False
         if first:
@@ -489,7 +514,7 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
 
     def _run(self, run: Callable[[], str], *, refresh: bool = False) -> None:
         self._set_busy(True)
-        self.query_one("#setup-output", Static).update(colorize_log("Выполняется…"))
+        self._show_running("Выполняется…")
 
         def work() -> None:
             try:
@@ -502,19 +527,28 @@ class ProjectSetupScreen(Translated, Screen[Path | None]):
 
     def _finished(self, text: str, refresh: bool) -> None:
         self._set_busy(False)
-        self.query_one("#setup-output", Static).update(colorize_log(text))
+        self.query_one("#setup-output", Static).update(styled_log(text))
         if refresh and self.target is not None:
             try:
                 self._inspected(inspect_target(str(self.target.repo)))
             except ValueError as exc:
                 self._failed(str(exc))
 
-    def action_cancel(self) -> None:
+    def _wait_for_operation(self) -> bool:
+        """True (after telling the user) while an operation runs: the screen is not left meanwhile."""
         if self.busy:
-            self.notify(
-                "Дождитесь окончания операции перед сменой проекта", severity="warning"
-            )
-        else:
+            language = getattr(self.app, "language", "ru")
+            self.notify(i18n.tr(language, _BUSY_NOTE), severity="warning")
+        return self.busy
+
+    async def open_section(self, index: int) -> None:
+        if not self._wait_for_operation():
+            await super().open_section(index)
+
+    async def action_back(self) -> None:
+        # Not `ConsoleShell.action_back` (`pop_screen`): it would drop the push callback, which
+        # receives None when the screen is closed without a choice.
+        if not self._wait_for_operation():
             self.dismiss(None)
 
     def on_unmount(self) -> None:

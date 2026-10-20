@@ -21,6 +21,9 @@ from textual.app import App
 from textual.pilot import Pilot
 from textual.widgets import ListItem, ListView, Static, TextArea
 
+from tests.console._pilot_wait import crumb_text
+from harness.console.shell import Breadcrumbs
+from harness.console.app import HarnessConsoleApp
 from harness.console.coordinator_catalog import (
     COORDINATOR_COMMANDS,
     CoordinatorCommand,
@@ -351,7 +354,10 @@ def test_pipeline_stats_and_history_filter_by_state_and_open_a_timeline(
         app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
         async with app.run_test(size=(120, 60)) as pilot:
             await pilot.pause()
-            stats_text = str(app.screen.query_one("#pipeline-stats", Static).content)
+            stats_text = "\n".join(
+                str(cell.content)
+                for cell in app.screen.query("#pipeline-stats .field").results(Static)
+            )
             history = app.screen.query_one("#batch-history", ListView)
             everything = [item.name for item in history.children]
             states = app.screen.query_one("#state-filter", ListView)
@@ -363,14 +369,17 @@ def test_pipeline_stats_and_history_filter_by_state_and_open_a_timeline(
             await pilot.press("enter")
             await pilot.pause()
             assert isinstance(app.screen, BatchTimelineScreen)
-            timeline = str(app.screen.query_one("#batch-timeline", Static).content)
+            timeline = "\n".join(
+                str(widget.content)
+                for widget in app.screen.query_one("#batch-timeline").query(Static)
+            )
         return stats_text, everything, blocked, timeline
 
     stats_text, everything, blocked, timeline = asyncio.run(scenario())
-    assert "Запусков (batch): 2" in stats_text
+    assert "Запусков (batch)\n2, тикетов: 2" in stats_text
     assert everything == ["batch-stuck", "batch-flow"]
     assert blocked == ["batch-stuck"]
-    assert "[decision] решение coordinator: block" in timeline
+    assert "решение coordinator: block" in timeline
 
 
 def test_without_a_ledger_the_section_says_so_and_keeps_its_commands(
@@ -386,3 +395,174 @@ def test_without_a_ledger_the_section_says_so_and_keeps_its_commands(
     text, history = asyncio.run(scenario())
     assert "не найден или не инициализирован" in text
     assert history == 0
+
+
+# -- the shared shell -----------------------------------------------------------------------
+
+
+async def _shell_orchestration(
+    app: HarnessConsoleApp, pilot: Pilot[None], tmp_path: Path
+) -> OrchestrationScreen:
+    screen = OrchestrationScreen(tmp_path, command_runner=_RecordingRunner())
+    await app.push_screen(screen)
+    await _settle(pilot, app)
+    return screen
+
+
+def test_orchestration_sits_on_the_shell_and_keeps_its_content(tmp_path: Path) -> None:
+    from harness.console.shell import SECTIONS, ContextPanel
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _shell_orchestration(app, pilot, tmp_path)
+            assert crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs)) == (
+                "Главная  ›  Оркестрация"
+            )
+            menu = screen.query_one("#shell-sections", ListView)
+            assert menu.index == SECTIONS.index("Orchestration")
+            assert not screen.query(ContextPanel)
+            assert screen.query_one("#command-menu", ListView).has_focus
+            for widget_id in ("#pipeline-stats", "#command-detail", "#command-output"):
+                assert screen.query_one(widget_id)
+            sidebar = screen.query_one("#shell-navigation")
+            assert sidebar.region.right <= screen.query_one("#command-menu").region.x
+            # Selecting the entry of the open section runs nothing and opens nothing.
+            before = len(app.screen_stack)
+            menu.focus()
+            await pilot.press("enter")
+            await _settle(pilot, app)
+            await pilot.press("5")
+            await _settle(pilot, app)
+            assert len(app.screen_stack) == before and app.screen is screen
+
+    asyncio.run(scenario())
+
+
+def test_orchestration_on_a_narrow_terminal_keeps_the_commands_reachable(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(70, 36)) as pilot:
+            screen = await _shell_orchestration(app, pilot, tmp_path)
+            assert not screen.query_one("#shell-navigation").display
+            assert screen.query_one("#shell-menu").display
+            await pilot.click("#shell-menu")
+            await pilot.pause()
+            assert screen.query_one("#shell-navigation").display
+            await pilot.click("#shell-menu")
+            await pilot.pause()
+            menu = screen.query_one("#command-menu", ListView)
+            assert menu.region.height >= 8
+            # The page scrolls: the menu, then the output, come into view one after the other.
+            for widget in (menu, screen.query_one("#command-output-scroll")):
+                widget.scroll_visible(animate=False, immediate=True)
+                await pilot.pause()
+                assert screen.region.contains_region(widget.region)
+
+    asyncio.run(scenario())
+
+
+def test_orchestration_switches_language_and_goes_back_with_escape(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[str, str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = await _shell_orchestration(app, pilot, tmp_path)
+            await pilot.press("f2")
+            await _settle(pilot, app)
+            crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
+            item = screen.query("#shell-sections > ListItem").results(ListItem)
+            # The entry is a grid of its label and its badge; the label is the first cell.
+            label = str(list(item)[5].query_one(Static).content.columns[0]._cells[0])  # type: ignore[union-attr]
+            await pilot.press("escape")
+            await _settle(pilot, app)
+            return crumbs, label, app.screen is not screen
+
+    crumbs, label, went_back = asyncio.run(scenario())
+    assert crumbs == "Home  ›  Orchestration"
+    assert label == "5 Orchestration"
+    assert went_back
+
+
+def test_worker_sessions_button_sits_in_the_header_and_shows_the_active_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from textual.widgets import Button
+
+    from harness.console import reports
+    from harness.console.screens.worker_observation import WorkerObservationScreen
+
+    stages = [
+        reports.StageEntry(
+            "d-1", "batch-a", "#1", "developer", "working", "2026-10-16"
+        ),
+        reports.StageEntry("d-2", "batch-a", "#2", "qa", "approved", "2026-10-15"),
+        reports.StageEntry(
+            "d-3", "batch-a", "#3", "architect", "reported", "2026-10-14"
+        ),
+    ]
+    view = reports.LedgerView(stages=stages)
+    monkeypatch.setattr(reports, "load_ledger_view", lambda _repo: view)
+
+    async def scenario() -> tuple[str, str, list[str], bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 60)) as pilot:
+            screen = OrchestrationScreen(
+                tmp_path, command_runner=_RecordingRunner(), load_view=lambda _: view
+            )
+            await app.push_screen(screen)
+            await _settle(pilot, app)
+            button = screen.query_one("#worker-sessions", Button)
+            ru = str(button.label)
+            header = screen.query_one("#orchestration-header")
+            page_buttons = [
+                str(item.id)
+                for item in screen.query_one("#orchestration-page").query(Button)
+                if item.parent is not header
+            ]
+            await pilot.press("f2")
+            await _settle(pilot, app)
+            en = str(button.label)
+            button.press()
+            await pilot.pause()
+            await pilot.pause()
+            return ru, en, page_buttons, isinstance(app.screen, WorkerObservationScreen)
+
+    ru, en, orphans, opened = asyncio.run(scenario())
+    assert ru == "Рабочие сессии · 2" and en == "Working sessions · 2"
+    assert orphans == []  # no button stands outside the header
+    assert opened
+
+
+@pytest.mark.parametrize("size", [(120, 30), (100, 24)])
+def test_the_page_opens_at_its_top_and_stays_there(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    """The command menu takes focus on arrival, which must not leave the page scrolled down."""
+    from tests.console._console_ledger_fixture import build_reports_fixture
+    from textual.containers import VerticalScroll
+
+    build_reports_fixture(tmp_path)
+
+    async def scenario() -> tuple[int, float, float]:
+        app = _HostApp(OrchestrationScreen(tmp_path, command_runner=_RecordingRunner()))
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            page = app.screen.query_one("#orchestration-page", VerticalScroll)
+            first = page.scroll_y
+            await pilot.pause(0.3)
+            return page.max_scroll_y, first, page.scroll_y
+
+    max_scroll, first, later = asyncio.run(scenario())
+    assert max_scroll > 0  # the page does scroll at this size
+    assert first == 0 and later == 0
+
+
+def test_the_screen_uses_the_base_overview_repaint() -> None:
+    from harness.console.screens.commands import CommandMenuScreen
+
+    assert "_repaint_overview" not in vars(OrchestrationScreen)
+    assert OrchestrationScreen._repaint_overview is CommandMenuScreen._repaint_overview

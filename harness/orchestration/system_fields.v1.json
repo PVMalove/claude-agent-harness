@@ -156,7 +156,8 @@
         "resume-stop": "batch resume-stop: a human retired a proven environment failure of a stopped batch for a new same-stage dispatch; a recovery event binds the approval.",
         "rewind": "batch rewind: a human returned the batch to an earlier gate; a recovery event binds the approval and Git history is unchanged.",
         "pause": "Audit record only: the automatic policy paused the batch with a recovery event; a human resumes or rewinds it.",
-        "startup-evidence": "Audit record only: binds the startup evidence point of a restart or of the first rate-limit resume of a dispatch to the batch transition."
+        "startup-evidence": "Audit record only: binds the startup evidence point of a restart or of the first rate-limit resume of a dispatch to the batch transition.",
+        "report-relay": "Audit record only: report submit --relayed-by delivered an existing report file; it binds the author, the relaying sender and the hash of the original bytes to the batch transition and spends no retry."
       },
       "groups": {
         "continuation": [
@@ -296,6 +297,7 @@
         "continuation_policy.max_rate_limit_resumes": "The rate-limit resume budget is spent.",
         "attention_policy.max_infrastructure_retries": "The infrastructure retry budget is spent.",
         "tooling-retry-repeated": "A tool blocked the same candidate repeatedly.",
+        "runtime-unavailable": "The selected runtime could not be started.",
         "stale": "A dispatch, a queued retry or decision evidence is stale.",
         "model-mismatch": "The worker runs a model other than the resolved one.",
         "worktree-mismatch": "The worker started outside the expected worker checkout.",
@@ -316,6 +318,7 @@
           "tooling-retry-repeated"
         ],
         "integrity-failure": [
+          "runtime-unavailable",
           "stale",
           "model-mismatch",
           "worktree-mismatch",

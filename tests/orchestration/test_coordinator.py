@@ -438,7 +438,11 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self.assertEqual(on_disk_status["state"], "approved")
         self.assertEqual(
             on_disk_dispatch["liveness"],
-            {"heartbeat_every_seconds": 300, "stale_after_seconds": 3600},
+            {
+                "heartbeat_every_seconds": 300,
+                "stale_after_seconds": 3600,
+                "startup_timeout_seconds": 120,
+            },
         )
 
     def test_clean_base_context_package_starts_with_expected_scope_file(self) -> None:
@@ -1588,7 +1592,15 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         parameters = inspect.signature(coordinator._persist_report).parameters
         self.assertEqual(
             list(parameters),
-            ["ledger", "root", "batch", "dispatch", "report", "auto_accept_policy"],
+            [
+                "ledger",
+                "root",
+                "batch",
+                "dispatch",
+                "report",
+                "auto_accept_policy",
+                "report_relay",
+            ],
         )
         self.assertIs(
             parameters["auto_accept_policy"].kind, inspect.Parameter.KEYWORD_ONLY

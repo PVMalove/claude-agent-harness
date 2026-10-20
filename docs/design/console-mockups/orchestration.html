@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Оркестрация — макет</title><link rel="stylesheet" href="console.css"><style>.two{display:grid;grid-template-columns:1fr 1fr;gap:20px}.new{border-color:#6b4a3c !important;position:relative;margin-top:8px}.newtag{position:absolute;top:-10px;right:14px;background:var(--sel);color:var(--selfg);border:1px solid #6b4a3c;border-radius:999px;padding:0 10px;font-size:12px}</style></head><body>
+<div class="caption"><span><b>5 · Оркестрация — широкий терминал (≈160×52), компактно</b></span><span>Демонстрационные данные. Блок «Контейнерный запуск» и «Открыть восстановление» — из #711.</span></div>
+<div class="app wide dense" style="height:930px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><span class="cur">Оркестрация</span></div><div class="strip"><span>Проект: claude-agent-harness</span><span>Выбор batch и вкладок не запускает команд</span></div>
+      <div class="page fill">
+<div class="hd">
+  <div style="display:flex;align-items:baseline;gap:16px"><h1>Оркестрация</h1><div class="sub">Пайплайн batch, рабочие сессии и команды координатора.</div></div>
+  <div class="tbtns"><a class="btn" href="#">Рабочие сессии <b style="color:var(--primary)">2</b></a><a class="btn p" href="#">Контейнерный запуск →</a></div>
+</div>
+
+<div class="panel">
+  <div class="ph"><span class="t">Состояние и статистика<span>из ledger</span></span><span style="color:var(--muted);font-size:13px">период 2026-09-28 — 2026-10-16</span></div>
+  <div class="statg">
+    <div class="sc"><div class="k">Запусков (batch) · тикетов</div><div class="v"><b>38</b> · <b>31</b></div></div>
+    <div class="sc"><div class="k">По состояниям</div><div class="v">завершён <b>32</b> · в работе <b>2</b> · заблокирован <b>1</b> · отменён <b>3</b></div></div>
+    <div class="sc"><div class="k">Диспатчи по ролям</div><div class="v">architect 38 · developer 44 · code-review 41 · qa 35 · verification 6</div></div>
+    <div class="sc"><div class="k">Отчёты по итогам</div><div class="v"><span class="e-ok">completed 140</span> · <span class="e-warn">blocked 9</span> · <span class="e-err">failed 3</span></div></div>
+    <div class="sc"><div class="k">QA-прогонов</div><div class="v"><b>35</b> · неудачных попыток qa-lane: <span class="e-warn">2</span></div></div>
+    <div class="sc"><div class="k">Требуют внимания</div><div class="v"><span class="e-warn">⚠ 1</span> batch приостановлен</div></div>
+  </div>
+</div>
+
+<div class="cols" style="grid-template-columns:260px 1fr;gap:12px">
+  <div class="panel">
+    <div class="ph"><span class="t">Состояния</span></div>
+    <div class="flt">
+      <div class="fr sel"><span>все</span><span>38</span></div>
+      <div class="fr"><span>запланирован</span><span>0</span></div>
+      <div class="fr"><span>ждёт подтверждения</span><span>0</span></div>
+      <div class="fr"><span>в работе</span><span>2</span></div>
+      <div class="fr"><span><span class="e-warn">⚠</span> заблокирован</span><span>1</span></div>
+      <div class="fr"><span>завершён</span><span>32</span></div>
+      <div class="fr"><span>провален</span><span>0</span></div>
+      <div class="fr"><span>не требуется</span><span>0</span></div>
+      <div class="fr"><span>отменён</span><span>3</span></div>
+    </div>
+  </div>
+  <div class="panel">
+    <div class="ph"><span class="t">История пайплайна<span>все · новые сверху</span></span><span class="r"><a class="btn xs" href="#">Хронология <span style="opacity:.7">Enter</span></a><a class="btn xs p" href="#">Открыть восстановление</a></span></div>
+    <div class="bi"><div class="a"><span><b>#721</b> · завершён</span><span style="color:var(--muted)">2026-10-16 11:22</span></div><div class="b">batch-698fa45a-70a2-497c-9086-7ae0cb7c986e</div></div>
+    <div class="bi"><div class="a"><span><b>#715</b> · в работе</span><span style="color:var(--muted)">2026-10-16 08:40</span></div><div class="b">batch-1d3e9c40-5a0b-4f6e-8c11-7b2f0a9d4e55</div></div>
+    <div class="bi sel"><div class="a"><span><b>#556</b> · <span class="e-warn">⚠ заблокирован</span> <span class="badge w" style="padding:0 10px;margin-left:6px">Ⅱ приостановлено · нужно внимание</span></span><span style="color:var(--muted)">2026-10-15 17:03</span></div><div class="b">batch-5a2c7e11-90bd-4c3a-a1d2-3f8e6b0c9d42</div></div>
+    <div class="bi"><div class="a"><span><b>#704</b> · в работе</span><span style="color:var(--muted)">2026-10-15 15:49</span></div><div class="b">batch-504d9b14-62f3-4bc9-b2a7-94e2437cbf9d</div></div>
+    <div class="bi"><div class="a"><span><b>#716</b> · завершён</span><span style="color:var(--muted)">2026-10-14 19:12</span></div><div class="b">batch-c0a4be72-3d18-4a95-b6f0-11d29a7e8c03</div></div>
+  </div>
+</div>
+
+<div class="panel" style="padding:9px 14px">
+  <div class="ph" style="margin:0"><span class="t">▸ Команды координатора<span>17 · 7 групп · ⚠ 6 с подтверждением</span></span><span style="color:var(--muted);font-size:13px">тот же шаблон, что в «Harness» (4)</span></div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">↑↓</b>Выбор</span><span><b class="k">Enter</b>Хронология</span><span><b class="k">y</b>Копировать CLI</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Новые входы из #711</b></span><span>Что добавляется к существующему экрану.</span></div>
+<div class="sheet">
+  <h3>Две новые точки входа, остальное — как сейчас</h3>
+  <p>Существующее остаётся: статистика, фильтр состояний, история с хронологией по Enter, «Рабочие сессии», 17 команд координатора. Вход выбирает место, но ничего не запускает.</p>
+  <div class="two">
+    <div class="panel" style="background:var(--bg)">
+      <div class="ph"><span class="t">«Контейнерный запуск →»</span></div>
+      <div class="lab" style="margin:0">Открывает маршрут из шести этапов: Настройка → Preflight → План / approval → Worker → QA → Очистка. Путь в крошках: <b style="color:var(--fg)">Главная › Оркестрация › Контейнерный запуск</b>. Проект и выбранный batch сохраняются.</div>
+    </div>
+    <div class="panel" style="background:var(--bg)">
+      <div class="ph"><span class="t">«Открыть восстановление»</span></div>
+      <div class="lab" style="margin:0">Появляется у batch, который core пометил приостановленным или с незавершённой операцией. Вход: <b style="color:var(--fg)">история batch → выбранный batch → Восстановление</b>. Показывает причину и последнюю подтверждённую границу до выбора действия. У остальных batch кнопки нет.</div>
+    </div>
+  </div>
+</div>
+<div class="caption"><span><b>5 · Оркестрация — узкий терминал (≈80×24)</b></span><span>Фильтр состояний сворачивается в выпадающий список.</span></div>
+<div class="app narrow dense" style="height:700px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">⎇ feature/issue-721…</div></div>
+  <div class="body"><main><div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Оркестрация</span></div><div class="page fill">
+<div><h1>Оркестрация</h1></div>
+<div class="tbtns"><a class="btn" href="#">Сессии <b style="color:var(--primary)">2</b></a><a class="btn p" href="#">Контейнерный →</a></div>
+<div class="panel"><div class="ph"><span class="t">Статистика</span></div>
+  <div class="pills"><span class="pill"><b>38</b><small>batch</small></span><span class="pill"><b class="e-ok">32</b><small>готово</small></span><span class="pill"><b>2</b><small>в работе</small></span><span class="pill"><b class="e-warn">⚠ 1</b><small>внимание</small></span></div></div>
+<div class="panel"><div class="ph"><span class="t">История</span><span class="chip on" style="color:var(--selfg);border-color:var(--primary);background:var(--sel)">все 38 ▾</span></div>
+  <div class="bi"><div class="a"><span><b>#721</b> · завершён</span><span style="color:var(--muted)">10-16</span></div></div>
+  <div class="bi sel"><div class="a"><span><b>#556</b> · <span class="e-warn">⚠ заблокирован</span></span><span style="color:var(--muted)">10-15</span></div><div class="b">Ⅱ приостановлено · «Открыть восстановление»</div></div>
+  <div class="bi"><div class="a"><span><b>#704</b> · в работе</span><span style="color:var(--muted)">10-15</span></div></div></div>
+<div class="card fold"><span>▸ Команды координатора</span><span>17</span></div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">Enter</b>Хронология</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="legend">Из кода: «Состояние и статистика» (шесть строк pipeline_stats_text), «Состояния» с числом batch, «История пайплайна» (Enter — хронология), «Рабочие сессии», команды координатора (17, группы Batch/Решения/Dispatch/QA/Риск/Context Package/Ledger). Из #711: вход в «Контейнерный запуск», «Открыть восстановление» у приостановленного batch, контекст исполнителя внизу меню. Числа и batch-ID демонстрационные.</div>
+</body></html>

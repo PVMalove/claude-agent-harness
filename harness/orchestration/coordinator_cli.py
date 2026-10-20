@@ -227,13 +227,18 @@ def build_parser(
     batch_resume.set_defaults(handler=handlers.resume_batch)
     resume_stop = batch_commands.add_parser(
         "resume-stop",
-        help="resume a recorded stop with human approval; next dispatch still needs a fresh approval",
+        help="resume a recorded stop; --restart includes its unchanged successor in the human approval",
     )
     _common(resume_stop)
     resume_stop.add_argument("--batch", required=True)
     resume_stop.add_argument("--approved-by", required=True)
     resume_stop.add_argument("--approved-at", required=True)
     resume_stop.add_argument("--note", required=True)
+    resume_stop.add_argument(
+        "--restart",
+        action="store_true",
+        help="also approve one same-contract successor; does not send it or relax later manual approvals",
+    )
     resume_stop.add_argument(
         "--runtime-stopped",
         action="store_true",
@@ -621,6 +626,14 @@ def build_parser(
         "candidate_commit; every other role omits this",
     )
     dispatch_send.set_defaults(handler=handlers.send_dispatch)
+    dispatch_observe = dispatch_commands.add_parser(
+        "observe",
+        help="read existing worker events; no model calls or lifecycle changes",
+    )
+    _common(dispatch_observe)
+    dispatch_observe.add_argument("--dispatch", required=True)
+    dispatch_observe.add_argument("--offset", type=int, default=0)
+    dispatch_observe.set_defaults(handler=handlers.observe_dispatch)
     dispatch_cancel = dispatch_commands.add_parser("cancel")
     _common(dispatch_cancel)
     dispatch_cancel.add_argument("--dispatch", required=True)
@@ -966,6 +979,16 @@ def build_parser(
     report_submit = report_commands.add_parser("submit", aliases=["record"])
     _common(report_submit)
     report_submit.add_argument("--file", required=True)
+    report_submit.add_argument(
+        "--relayed-by", help="coordinator delivering an unchanged worker report"
+    )
+    report_submit.add_argument(
+        "--relay-reason",
+        help="exact worker submission failure; requires --relayed-by and --source-sha256",
+    )
+    report_submit.add_argument(
+        "--source-sha256", help="SHA256 of the original staged worker bytes"
+    )
     report_submit.set_defaults(handler=handlers.submit_report)
     report_complete = report_commands.add_parser(
         "complete",

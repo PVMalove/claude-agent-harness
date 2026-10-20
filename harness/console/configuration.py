@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import copy
+import difflib
 import json
 from dataclasses import dataclass
 from harness.runtime_adapters import AdapterStatus
 from pathlib import Path
 
-from harness.configuration import parse_object, read_config_bundle, reject_secrets
-from harness.configuration import bundle_diff as bundle_diff
+from harness.configuration import (
+    mask_secrets,
+    parse_object,
+    read_config_bundle,
+    reject_secrets,
+)
 from harness.configuration_schema import PACKAGE
 from harness.configuration_store import json_bytes
 from harness.health.project_files import validate_project_data
 from harness.json_types import JsonObject
+
+from . import i18n
 
 CONFIG_NAMES = ("project.json", "orchestration.json")
 
@@ -72,6 +79,75 @@ def _changed_paths(
                 paths.extend(_changed_paths(old[key], new[key], (*prefix, key)))
         return paths
     return [] if old == new else [prefix]
+
+
+_UNPARSED = "содержимое скрыто: файл не разобран как JSON"
+_ONLY_HIDDEN = "изменены только скрытые значения или форматирование"
+
+
+def _masked_bundle(
+    bundle: dict[str, bytes | None], language: str
+) -> dict[str, bytes | None]:
+    """The files as the UI may show them: a file without secrets keeps its raw bytes, one with
+    secrets (also under an overridden duplicate key) is shown through `mask_secrets`, one that is
+    not a JSON object is replaced by a line (a key secret cannot be found in unparsed text)."""
+    masked: dict[str, bytes | None] = {}
+    for name, raw in bundle.items():
+        if raw is None:
+            masked[name] = None
+            continue
+        shadowed: list[tuple[str, object]] = []
+
+        def keep_last(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            # json.loads keeps only the last of duplicate keys; the shadowed values are still
+            # in the raw bytes, so they are checked too.
+            seen: dict[str, object] = {}
+            for key, item in pairs:
+                if key in seen:
+                    shadowed.append((key, seen[key]))
+                seen[key] = item
+            return seen
+
+        try:
+            parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=keep_last)
+        except (ValueError, RecursionError):
+            parsed = None
+        if not isinstance(parsed, dict):
+            masked[name] = (i18n.tr(language, _UNPARSED) + "\n").encode()
+        elif mask_secrets(parsed) == parsed and all(
+            mask_secrets(item, key) == item for key, item in shadowed
+        ):
+            masked[name] = raw
+        else:
+            masked[name] = json_bytes(mask_secrets(parsed))  # type: ignore[arg-type]
+    return masked
+
+
+def bundle_diff(
+    before: dict[str, bytes | None],
+    after: dict[str, bytes | None],
+    old_label: str,
+    new_label: str,
+    language: str = "ru",
+) -> str:
+    """Unified diff of two configuration sets; a deleted file is announced explicitly. Secret values
+    never appear in it: both sets are masked first (see `_masked_bundle`)."""
+    shown_before = _masked_bundle(before, language)
+    shown_after = _masked_bundle(after, language)
+    lines: list[str] = []
+    for name, raw in shown_after.items():
+        old = (shown_before[name] or b"").decode("utf-8").splitlines(keepends=True)
+        new = (raw or b"").decode("utf-8").splitlines(keepends=True)
+        lines.extend(
+            difflib.unified_diff(
+                old, new, fromfile=f"{old_label}/{name}", tofile=f"{new_label}/{name}"
+            )
+        )
+        if raw is None and before[name] is not None:
+            lines.append(f"Удалить {name}\n")
+        if before[name] != after[name] and old == new:
+            lines.append(f"{name}: {i18n.tr(language, _ONLY_HIDDEN)}\n")
+    return "".join(lines)
 
 
 @dataclass
@@ -188,9 +264,23 @@ class ConfigurationDraft:
     def encoded(self) -> dict[str, bytes | None]:
         return {name: json_bytes(data) for name, data in self.documents.items()}
 
-    def diff(self) -> str:
+    def diff(self, language: str = "ru") -> str:
         """Unified diff of the saved files against this draft; empty when unchanged."""
-        return bundle_diff(self.original, self.encoded(), "текущий", "новый")
+        return bundle_diff(self.original, self.encoded(), "текущий", "новый", language)
+
+
+# The words of an update plan, one per `harness diff --json` field: a symbol and a word, never a
+# key. The Update Harness screen tags its file list with the same words.
+SNAPSHOT_TAGS = {
+    "package_changed": "✔ обновится",
+    "added": "✔ добавится",
+    "missing": "⚠ восстановится",
+    "local_changed": "⚠ ваши правки",
+    "conflict": "✖ конфликт",
+    "retired": "⚠ удалится",
+}
+_NO_CAPABILITY = "⚠ Capability backend-orchestration не выбрана"
+_BLOCKED_BY_FILES = "⚠ Сначала устраните локальные изменения и коллизии"
 
 
 @dataclass(frozen=True)
@@ -200,6 +290,8 @@ class RuntimeAdapterPreview:
     fingerprint: str
     text: str
     blocked: bool
+    # The blocking line of the plan (the reason `Подтвердить` is unavailable); empty when not blocked.
+    reason: str = ""
 
 
 def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
@@ -258,7 +350,7 @@ def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
         "conflict",
         "retired",
     ):
-        lines.extend(f"{key}: {path}" for path in snapshot.get(key, []))
+        lines.extend(f"{SNAPSHOT_TAGS[key]}  {path}" for path in snapshot.get(key, []))
     differing = seed_differing(repo)
     if differing:
         lines.append("Seed-файлы сохраняются: " + ", ".join(differing))
@@ -268,9 +360,7 @@ def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
     if not enabled:
         import shlex
 
-        lines.append(
-            "Capability backend-orchestration не выбрана. Выберите состав явно в CLI:"
-        )
+        lines.append(_NO_CAPABILITY + ". Выберите состав явно в CLI:")
         lines.append(
             shlex.join(
                 [
@@ -283,11 +373,10 @@ def preview_runtime_adapters(repo: Path) -> RuntimeAdapterPreview:
             )
         )
     if enabled and blocked:
-        lines.append(
-            "Сначала устраните локальные изменения и коллизии. Принудительное обновление не включено."
-        )
+        lines.append(_BLOCKED_BY_FILES + ". Принудительное обновление не включено.")
+    reason = "" if not blocked else _NO_CAPABILITY if not enabled else _BLOCKED_BY_FILES
     return RuntimeAdapterPreview(
-        adapters, selected, fingerprint, "\n".join(lines), blocked
+        adapters, selected, fingerprint, "\n".join(lines), blocked, reason
     )
 
 

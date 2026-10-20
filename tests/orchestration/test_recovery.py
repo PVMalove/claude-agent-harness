@@ -1954,7 +1954,7 @@ class RecoveryTests(unittest.TestCase):
                 startup["classification"],
                 startup["restart_allowed"],
             ),
-            ("live", "model-self-report-missing", False),
+            ("unknown", "model-self-report-missing", False),
         )
         coordinator.cancel_dispatch(
             self._args(
@@ -2189,7 +2189,9 @@ class RecoveryTests(unittest.TestCase):
         )
         self._accepted_architect(batch_id)
         self._blocked_developer(batch_id)
-        self._decide(batch_id, "retry", reason_category="verification-infrastructure")
+        self._decide(
+            batch_id, "retry", reason_category="verification-infrastructure"
+        )
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
         coordinator.rewind_batch(
             self._args(

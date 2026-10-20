@@ -120,6 +120,7 @@ class TransitionDigestTests(unittest.TestCase):
         self.assertEqual(
             guards.OPTIONAL_TRANSITION_FIELDS,
             (
+                "retry_reason_sha256",
                 "configuration_sha256",
                 "recovery_event_sha256",
                 "carried_items_sha256",

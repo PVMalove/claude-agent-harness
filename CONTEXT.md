@@ -579,6 +579,18 @@ _Avoid_: scheduler, worker monitor с гарантией жизни процес
 как advisory-контекст с пометкой статуса источника.
 _Avoid_: RAG-хранилище, база знаний, долгосрочная память агента, вектор-стор.
 
+**Receipt запуска worker** (`harness-worker-v1`):
+Сведения adapter о конкретном dispatch/launch, идентичности процесса и канале существующих
+событий. Не заменяет model self-report, отчёт роли или решение о приёмке.
+
+**Наблюдение worker** (worker observation):
+Локальное представление уже существующих событий runtime, без дополнительных LLM-вызовов
+и сообщений в контекст модели. Native permissions остаются отдельными действиями человека.
+
+**Передача отчёта** (report relay):
+Доставка координатором неизменного файла worker с раздельным учётом автора, отправителя и hash
+исходных байтов. Сама передача не принимает работу и не расходует developer retry.
+
 **Эпоха authority** (`file-ledger` | `runtime-store`):
 Период, в котором operational state пишет ровно один writer: Python `LifecycleLedger` установки
 1.x или Rust runtime store. Эпоху меняют только `harness-runtime migrate` и

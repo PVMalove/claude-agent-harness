@@ -12,13 +12,13 @@ from pathlib import Path
 from typing import Callable
 
 from rich.text import Text
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
-    Footer,
     Input,
     Static,
     TabbedContent,
@@ -27,7 +27,8 @@ from textual.widgets import (
 )
 from textual.widgets.tree import TreeNode
 
-from ..chrome import TopBar
+from ..shell import SHELL_CSS, ConsoleShell, FieldGrid, Fold, SectionCard
+from ..status import Status
 from ..translate import Translated
 from .. import repo_map as console_repo_map
 from ..repo_map import RepoMapView
@@ -45,28 +46,38 @@ from .export import (
 )
 
 _NO_MAP = "карты нет"
-
-
-def _panel(title: str, content: Static, *, id: str | None = None) -> VerticalScroll:
-    """A scrolling panel in a titled frame, like the frames of the other sections."""
-    panel = VerticalScroll(content, id=id, classes="map-panel")
-    panel.border_title = brand.frame_title(title)
-    return panel
+# Header buttons: the label on a wide terminal and on a narrow one.
+_BUTTONS = {
+    "build-map": ("b Собрать карту", "b Собрать"),
+    "export-markdown": ("e Экспорт в Markdown", "e MD"),
+    "export-json": ("j Экспорт в JSON", "j JSON"),
+}
+# Tab titles: on a wide terminal and on a narrow one.
+_TABS = {
+    "tab-summary": ("Сводка", "Свод"),
+    "tab-files": ("Файлы", "Файлы"),
+    "tab-hubs": ("Хабы", "Хабы"),
+    "tab-diagnostics": ("Диагностики", "Диагн."),
+    "tab-settings": ("Настройки", "Настр."),
+}
+_CACHE_NOTE = "Данные карты из кэша; сеть не используется"
+_SETTINGS_NOTE = "Установка и сборка запускают команду из формы подтверждения"
 
 
 class BuildConfirmScreen(Translated, ModalScreen[bool]):
     """Модальный экран подтверждения запуска построения карты Repo Map для коммита HEAD."""
 
     BINDINGS = [Binding("escape", "cancel", "Отмена")]
-    DEFAULT_CSS = """
+    DEFAULT_CSS = brand.shell_css("""
     BuildConfirmScreen { align: center middle; }
     BuildConfirmScreen #build-confirm {
         width: 80%; max-width: 100; height: auto; padding: 0 1;
-        border: round $primary; border-title-color: $primary;
+        background: $surface; border: round $primary; border-title-color: $text-muted;
     }
     BuildConfirmScreen Static { height: auto; }
+    BuildConfirmScreen #build-warning { color: $warning; margin: 1 0; }
     BuildConfirmScreen Horizontal { height: auto; }
-    """
+    """)
 
     def __init__(self, commit: str) -> None:
         """Инициализирует экран подтверждения для указанного хэша коммита."""
@@ -96,33 +107,53 @@ class BuildConfirmScreen(Translated, ModalScreen[bool]):
         self.dismiss(False)
 
 
-class RepoMapScreen(Translated, Screen[None]):
+class RepoMapScreen(ConsoleShell):
     """Экран раздела Repo Map: визуализация дерева файлов, сигнатур, связей, хабов и диагностик."""
 
+    CRUMBS = "Главная › Repo Map"
+    SECTION = "Repo Map"
+    NARROW_FOOTER_KEYS = ("escape", "b", "f2")
+    AUTO_FOCUS = "Tabs"
     BINDINGS = [
-        Binding("escape", "app.pop_screen", "Назад"),
-        Binding("b", "build", "Построить карту"),
-        Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown"),
-        Binding(EXPORT_JSON_BINDING_KEY, "export_json", "Экспорт в JSON"),
+        Binding("b", "build", "Собрать"),
+        Binding(EXPORT_BINDING_KEY, "export", "Markdown"),
+        Binding(EXPORT_JSON_BINDING_KEY, "export_json", "JSON"),
     ]
-    DEFAULT_CSS = """
-    RepoMapScreen #repo-map-head { height: auto; }
+    CSS = SHELL_CSS + brand.shell_css("""
+    RepoMapScreen #repo-map-head { height: auto; padding: 0 2; margin-bottom: 1; }
+    RepoMapScreen #repo-map-title { height: 1; text-style: bold; }
     RepoMapScreen #repo-map-status { height: auto; }
-    RepoMapScreen #repo-map-actions { height: auto; }
-    RepoMapScreen #checks-frame { height: auto; }
-    RepoMapScreen #map-checks { height: auto; }
-    RepoMapScreen #repo-map-tabs { height: 1fr; margin: 0 1; }
-    RepoMapScreen .map-panel {
-        height: 1fr; padding: 0 1;
-        border: round $panel-lighten-2; border-title-color: $primary;
-    }
-    RepoMapScreen .map-panel:focus, RepoMapScreen .map-panel:focus-within { border: round $primary; }
+    RepoMapScreen #repo-map-actions { height: 1; margin-top: 1; }
+    RepoMapScreen #repo-map-actions Button { margin-right: 1; }
+    RepoMapScreen .strip-note { text-align: right; color: $text-muted; }
+    RepoMapScreen #repo-map-tabs { height: 1fr; padding: 0 2; }
+    RepoMapScreen TabPane { padding: 1 0 0 0; }
+    RepoMapScreen #tab-settings { padding: 0; }
+    RepoMapScreen .section-card { margin-bottom: 1; }
+    RepoMapScreen #file-search { height: auto; }
+    RepoMapScreen #symbol-search { width: 1fr; }
+    RepoMapScreen #search-status { width: auto; height: 3; content-align: left middle; padding-left: 2; color: $text-muted; }
     RepoMapScreen #file-browser { height: 1fr; }
-    RepoMapScreen #file-tree { width: 1fr; }
-    RepoMapScreen #file-relations-scroll { width: 1fr; }
-    RepoMapScreen #search-status { height: auto; padding: 0 1; color: $text-muted; }
-    RepoMapScreen #build-confirm { height: auto; }
-    """
+    RepoMapScreen #files-card { width: 1fr; height: 1fr; margin-right: 1; margin-bottom: 0; }
+    RepoMapScreen #file-tree { height: 1fr; background: transparent; }
+    RepoMapScreen #relations-fold { width: 1fr; height: 1fr; margin-bottom: 0; }
+    RepoMapScreen #relations-fold > Contents { height: 1fr; padding: 0; }
+    RepoMapScreen #file-relations-scroll { height: 1fr; }
+    RepoMapScreen #file-relations { height: auto; }
+    RepoMapScreen.-wide #relations-fold > CollapsibleTitle, RepoMapScreen.-spacious #relations-fold > CollapsibleTitle { display: none; }
+    RepoMapScreen #map-summary { margin-bottom: 1; }
+    RepoMapScreen #map-summary-empty { height: auto; color: $text-muted; }
+    RepoMapScreen #map-hubs, RepoMapScreen #map-diagnostics, RepoMapScreen #map-checks, RepoMapScreen #map-provenance { height: auto; }
+    RepoMapScreen.-narrow #file-browser { layout: vertical; height: auto; }
+    RepoMapScreen.-narrow #files-card { width: 100%; height: 14; margin-right: 0; }
+    RepoMapScreen.-narrow #relations-fold { width: 100%; height: auto; }
+    RepoMapScreen.-narrow #relations-fold > Contents { height: auto; padding: 1 0 0 0; }
+    RepoMapScreen.-narrow #file-relations-scroll { height: auto; max-height: 10; }
+    RepoMapScreen.-narrow #tab-files { overflow-y: auto; }
+    RepoMapScreen.-narrow #search-status { height: 3; }
+    RepoMapScreen.-narrow .settings-row { layout: vertical; }
+    RepoMapScreen.-narrow .strip-note { display: none; }
+    """)
 
     def __init__(
         self,
@@ -144,71 +175,177 @@ class RepoMapScreen(Translated, Screen[None]):
         self.view: RepoMapView | None = (
             load_cached(repo, self.head) if self.head is not None else None
         )
-        self._status_text = self._initial_status()
+        self._status_text, self._status_kind = self._initial_status()
         self._check_serial = 0
         self._check_inputs: tuple[ParserStatus | None, dict[str, int]] | None = None
+        self._narrow = False
+        self._tab = "tab-summary"
+        self._selected: str | None = None
 
-    def _initial_status(self) -> str:
-        """Формирует начальный текст строки статуса при открытии экрана."""
+    def _initial_status(self) -> tuple[str, str]:
+        """The status line at opening, with the kind that gives it its symbol."""
         if self.head is None:
-            return "HEAD не найден: это не Git-репозиторий или в нём нет коммитов"
+            return (
+                "HEAD не найден: это не Git-репозиторий или в нём нет коммитов",
+                "error",
+            )
         if self.view is not None:
-            return f"карта HEAD {self.head[:12]} из кэша"
-        return f"кэша карты для HEAD {self.head[:12]} нет — «Построить карту» (b)"
+            return f"карта HEAD {self.head[:12]} из кэша · {self.view.tier}", "accepted"
+        return (
+            f"кэша карты для HEAD {self.head[:12]} нет — «Построить карту» (b)",
+            "not_started",
+        )
 
-    def compose(self) -> ComposeResult:
+    @property
+    def _language(self) -> str:
+        return str(getattr(self.app, "language", "ru"))
+
+    def _status_line(self) -> Text:
+        """The status as a symbol and its text, coloured by kind."""
+        text = i18n.tr_text(self._language, self._status_text)
+        status = Status(self._status_kind, text, text)
+        return Text(status.render(self._language), style=status.color)
+
+    def _context_text(self) -> str:
+        line = f"Проект: {self.repo.name}"
+        if self._tab == "tab-settings":
+            return line + " · политика: orchestration.json → repo_map_policy"
+        return line + (f" · HEAD {self.head[:12]}" if self.head else "")
+
+    def _context_note(self) -> str:
+        return _SETTINGS_NOTE if self._tab == "tab-settings" else _CACHE_NOTE
+
+    def compose_strip(self) -> ComposeResult:
+        yield Static(
+            i18n.tr_text("ru", self._context_text()),
+            id="repo-map-context",
+            classes="no-i18n",
+            markup=False,
+        )
+        yield Static(
+            self._context_note(),
+            id="repo-map-note",
+            classes="strip-note no-i18n",
+            markup=False,
+        )
+
+    def compose_content(self) -> ComposeResult:
         """Формирует структуру виджетов и вкладок экрана Repo Map."""
-        yield TopBar("Главная › Repo Map")
-        with Vertical(id="repo-map-head", classes="frame") as head:
-            head.border_title = brand.frame_title("Состояние")
-            yield Static(self._status_text, id="repo-map-status", markup=False)
+        narrow = self.app.size.width < brand.NARROW_WIDTH
+        with Vertical(id="repo-map-head"):
+            yield Static("Repo Map", id="repo-map-title")
+            yield Static(
+                self._status_line(),
+                id="repo-map-status",
+                classes="no-i18n",
+                markup=False,
+            )
             with Horizontal(id="repo-map-actions", classes="actions"):
-                yield Button(
-                    "Собрать карту",
-                    id="build-map",
-                    disabled=self.head is None,
-                    compact=True,
-                )
-                yield Button("Экспорт в Markdown", id="export-markdown", compact=True)
-                yield Button("Экспорт в JSON", id="export-json", compact=True)
-        with TabbedContent(id="repo-map-tabs"):
-            with TabPane("Сводка", id="tab-summary"):
-                yield _panel("Сводка", Static("", id="map-summary", markup=False))
-            with TabPane("Файлы", id="tab-files"):
-                yield Input(
-                    placeholder="поиск символа в сигнатурах", id="symbol-search"
-                )
-                yield Static("", id="search-status", markup=False)
-                with Horizontal(id="file-browser"):
-                    tree: Tree[str] = Tree("карта", id="file-tree", classes="map-panel")
-                    tree.border_title = brand.frame_title("Файлы")
-                    yield tree
-                    yield _panel(
-                        "Связи",
-                        Static("выберите файл", id="file-relations", markup=False),
-                        id="file-relations-scroll",
+                for identifier, labels in _BUTTONS.items():
+                    yield Button(
+                        labels[narrow],
+                        id=identifier,
+                        disabled=identifier == "build-map" and self.head is None,
+                        compact=True,
                     )
-            with TabPane("Хабы", id="tab-hubs"):
-                yield _panel("Хабы", Static("", id="map-hubs", markup=False))
-            with TabPane("Диагностики", id="tab-diagnostics"):
-                with Vertical(id="checks-frame", classes="frame") as checks:
-                    checks.border_title = brand.frame_title("Проверка Repo Map")
+        with TabbedContent(id="repo-map-tabs"):
+            with TabPane(_TABS["tab-summary"][narrow], id="tab-summary"):
+                yield FieldGrid(id="map-summary")
+                yield Static(_NO_MAP, id="map-summary-empty")
+                with SectionCard(title="Provenance парсера", id="provenance-card"):
+                    yield Static(
+                        "", id="map-provenance", classes="no-i18n", markup=False
+                    )
+            with TabPane(_TABS["tab-files"][narrow], id="tab-files"):
+                with Horizontal(id="file-search"):
+                    yield Input(
+                        placeholder="поиск символа в сигнатурах", id="symbol-search"
+                    )
+                    yield Static(
+                        "", id="search-status", classes="no-i18n", markup=False
+                    )
+                with Horizontal(id="file-browser"):
+                    with SectionCard(
+                        title="Файлы", note="дерево · ←→ раскрыть", id="files-card"
+                    ):
+                        tree: Tree[str] = Tree("карта", id="file-tree")
+                        yield tree
+                    with Fold(
+                        title="Связи",
+                        summary="выберите файл",
+                        collapsed=narrow,
+                        id="relations-fold",
+                    ):
+                        with VerticalScroll(id="file-relations-scroll"):
+                            yield Static(
+                                "выберите файл",
+                                id="file-relations",
+                                classes="no-i18n",
+                                markup=False,
+                            )
+            with TabPane(_TABS["tab-hubs"][narrow], id="tab-hubs"):
+                with SectionCard(
+                    title="Хабы", note="по входящей степени", id="hubs-card"
+                ):
+                    yield Static("", id="map-hubs", classes="no-i18n", markup=False)
+            with TabPane(_TABS["tab-diagnostics"][narrow], id="tab-diagnostics"):
+                with SectionCard(title="Проверка Repo Map", id="checks-frame"):
                     yield Static("", id="map-checks", classes="no-i18n", markup=False)
                     with Horizontal(classes="actions"):
                         yield Button("Проверить", id="run-checks", compact=True)
-                yield _panel(
-                    "Диагностики карты", Static("", id="map-diagnostics", markup=False)
-                )
-            with TabPane("Настройки", id="tab-settings"):
+                with SectionCard(title="Диагностики карты", id="diagnostics-card"):
+                    yield Static(
+                        "", id="map-diagnostics", classes="no-i18n", markup=False
+                    )
+            with TabPane(_TABS["tab-settings"][narrow], id="tab-settings"):
                 yield RepoMapSettings(
                     self.repo,
                     command_runner=self._command_runner,
                     load_parsers=self._load_parsers,
                 )
-        yield Footer()
+
+    # -- language and width --------------------------------------------------------------------
+
+    def _relabel(self) -> None:
+        """Button and tab labels for the current width and language, the frame title of the
+        relations card, and the texts built in code."""
+        language = self._language
+        narrow = int(self._narrow)
+        for identifier, labels in _BUTTONS.items():
+            self.query_one(f"#{identifier}", Button).label = i18n.tr(
+                language, labels[narrow]
+            )
+        tabs = self.query_one("#repo-map-tabs", TabbedContent)
+        for identifier, labels in _TABS.items():
+            tabs.get_tab(identifier).label = i18n.tr(language, labels[narrow])
+        fold = self.query_one("#relations-fold", Fold)
+        fold.border_title = (
+            "" if self._narrow else brand.section_title(i18n.tr(language, "Связи"))
+        )
+        self.query_one("#repo-map-status", Static).update(self._status_line())
+        self.query_one("#repo-map-context", Static).update(
+            i18n.tr_text(language, self._context_text())
+        )
+        self.query_one("#repo-map-note", Static).update(
+            i18n.tr_text(language, self._context_note())
+        )
+
+    def _apply_layout(self) -> None:
+        self.query_one("#relations-fold", Fold).collapsed = self._narrow
+        self._relabel()
+
+    def on_resize(self, event: events.Resize) -> None:
+        narrow = event.size.width < brand.NARROW_WIDTH
+        if narrow != self._narrow:
+            self._narrow = narrow
+            self._apply_layout()
 
     def sync_language(self) -> None:
         """Repaints the texts built in the current language: the checks and the settings pane."""
+        ConsoleShell.sync_language(self)
+        self._relabel()
+        self._render_map()
+        self._show_relations()
         self._paint_checks()
         for pane in self.query(RepoMapSettings):
             pane.repaint()
@@ -216,7 +353,14 @@ class RepoMapScreen(Translated, Screen[None]):
     def on_tabbed_content_tab_activated(
         self, event: TabbedContent.TabActivated
     ) -> None:
-        """The checks are read fresh each time their tab opens."""
+        """The checks are read fresh each time their tab opens; the strip follows the tab."""
+        self._tab = event.pane.id or self._tab
+        self.query_one("#repo-map-context", Static).update(
+            i18n.tr_text(self._language, self._context_text())
+        )
+        self.query_one("#repo-map-note", Static).update(
+            i18n.tr_text(self._language, self._context_note())
+        )
         if event.pane.id == "tab-diagnostics":
             self._run_checks()
 
@@ -247,10 +391,6 @@ class RepoMapScreen(Translated, Screen[None]):
         self._check_inputs = (parsers, files)
         self._paint_checks()
 
-    @property
-    def _language(self) -> str:
-        return str(getattr(self.app, "language", "ru"))
-
     def _paint_checks(self) -> None:
         if self._check_inputs is None:
             return
@@ -278,57 +418,94 @@ class RepoMapScreen(Translated, Screen[None]):
 
     def on_mount(self) -> None:
         """Отрисовывает карту репозитория при монтировании экрана."""
+        self._narrow = self.app.size.width < brand.NARROW_WIDTH
+        self._apply_layout()
         self._render_map()
         self._run_checks()
 
+    # -- the map -------------------------------------------------------------------------------
+
     def _render_map(self) -> None:
         view = self.view
-        summary = self.query_one("#map-summary", Static)
+        language = self._language
+        summary = self.query_one("#map-summary", FieldGrid)
+        empty = self.query_one("#map-summary-empty", Static)
+        self.query_one("#provenance-card").display = view is not None
         if view is None:
-            summary.update(_NO_MAP)
+            summary.set_fields([])
+            empty.display = True
             self.query_one("#map-hubs", Static).update(_NO_MAP)
             self.query_one("#map-diagnostics", Static).update(_NO_MAP)
         else:
-            summary.update(
-                "\n".join(
-                    [
-                        *console_repo_map.summary_lines(view),
-                        "",
-                        "provenance парсера:",
-                        *(
-                            f"  {line}"
-                            for line in console_repo_map.provenance_lines(view)
-                        ),
-                    ]
-                )
+            empty.display = False
+            summary.set_fields(console_repo_map.summary_fields(view))
+            self.query_one("#map-provenance", Static).update(
+                "\n".join(console_repo_map.provenance_lines(view))
             )
-            self.query_one("#map-hubs", Static).update(console_repo_map.hubs_text(view))
+            self.query_one("#map-hubs", Static).update(self._hubs(view, language))
             self.query_one("#map-diagnostics", Static).update(
-                console_repo_map.diagnostics_text(view)
+                self._diagnostics(view, language)
             )
         self._render_tree(self.query_one("#symbol-search", Input).value)
+
+    @staticmethod
+    def _hubs(view: RepoMapView, language: str) -> Text:
+        text = console_repo_map.hubs_text(view)
+        if not console_repo_map.hubs(view):
+            return Text(i18n.tr_text(language, text))
+        shown = Text()
+        for index, line in enumerate(text.split("\n")):
+            if index:
+                shown.append("\n")
+            count, _, path = line.partition("  ")
+            shown.append(count, style=f"bold {brand.PALETTE['primary']}")
+            shown.append("  " + path)
+        return shown
+
+    @staticmethod
+    def _diagnostics(view: RepoMapView, language: str) -> Text:
+        rows = console_repo_map.diagnostic_rows(view)
+        if not rows:
+            ok = Status("accepted", "диагностик нет", "no diagnostics")
+            return Text(ok.render(language), style=ok.color)
+        shown = Text()
+        for index, (status, _, path) in enumerate(rows):
+            if index:
+                shown.append("\n")
+            shown.append(status.render(language), style=status.color)
+            shown.append(f": {path}")
+        return shown
 
     def _render_tree(self, query: str) -> None:
         tree: Tree[str] = self.query_one("#file-tree", Tree)
         tree.clear()
-        status = self.query_one("#search-status", Static)
+        counter = self.query_one("#search-status", Static)
         view = self.view
+        language = self._language
         if view is None:
-            tree.root.set_label(_NO_MAP)
-            status.update("")
+            tree.root.set_label(i18n.tr(language, _NO_MAP))
+            counter.update("")
             return
         tree.root.set_label(Text(f"{view.commit[:12]} · {view.tier}"))
         files = console_repo_map.search_files(view, query)
-        status.update(
-            f"найдено файлов: {len(files)} из {len(view.files)}"
-            if query.strip()
-            else f"файлов: {len(view.files)}"
-        )
+        searching = bool(query.strip())
+        if language == "en":
+            counter.update(
+                f"found files: {len(files)} of {len(view.files)}"
+                if searching
+                else f"files: {len(view.files)}"
+            )
+        else:
+            counter.update(
+                f"найдено файлов: {len(files)} из {len(view.files)}"
+                if searching
+                else f"файлов: {len(view.files)}"
+            )
         directories: dict[str, TreeNode[str]] = {"": tree.root}
         for item in files:
             parent_path = item.path.rpartition("/")[0]
             parent = self._directory_node(directories, parent_path)
-            node = parent.add(Text(console_repo_map.file_label(item)), data=item.path)
+            node = parent.add(self._file_label(item), data=item.path)
             for signature in item.signatures:
                 node.add_leaf(Text(signature), data=item.path)
             if query.strip():
@@ -337,6 +514,21 @@ class RepoMapScreen(Translated, Screen[None]):
         if query.strip():
             for node in directories.values():
                 node.expand()
+
+    @staticmethod
+    def _file_label(item: console_repo_map.MapFile) -> Text:
+        """A file in the tree: its name and parser status. `ok` is the green word in brackets; any
+        other status also carries its symbol, so a colour is never the only cue."""
+        status = console_repo_map.file_status(item)
+        name = item.path.rsplit("/", 1)[-1]
+        if status is None or item.parser_status == "ok":
+            label = Text(name)
+            if status is not None:
+                label.append(f" [{item.parser_status}]", style=status.color)
+            return label
+        label = Text(f"{name} ")
+        label.append(f"{status.symbol} [{item.parser_status}]", style=status.color)
+        return label
 
     def _directory_node(
         self, directories: dict[str, TreeNode[str]], path: str
@@ -357,11 +549,39 @@ class RepoMapScreen(Translated, Screen[None]):
         path = event.node.data
         if path is None or self.view is None:
             return
-        self.query_one("#file-relations", Static).update(
-            console_repo_map.relations_text(self.view, path)
+        self._selected = path
+        self._show_relations()
+
+    def _show_relations(self) -> None:
+        """The links of the selected file: a group per direction, kind and confidence, with the
+        count, and the paths of the group whole, wrapping at the commas."""
+        relations = self.query_one("#file-relations", Static)
+        fold = self.query_one("#relations-fold", Fold)
+        view, path, language = self.view, self._selected, self._language
+        if view is None or path is None:
+            relations.update(i18n.tr(language, "выберите файл"))
+            fold.set_summary("выберите файл")
+            return
+        groups = console_repo_map.relations(view, path)
+        shown = Text(path, style="bold")
+        if not groups:
+            shown.append("\n" + i18n.tr(language, "связей нет"))
+        for group in groups:
+            shown.append(
+                "\n"
+                + i18n.tr(language, group.direction)
+                + f" · {group.kind} · {group.confidence} · {len(group.paths)}\n",
+                style=brand.PALETTE["primary"],
+            )
+            shown.append("  " + ", ".join(group.paths))
+        relations.update(shown)
+        incoming, outgoing = console_repo_map.relation_counts(view, path)
+        fold.set_summary(
+            f"{path.rsplit('/', 1)[-1]} · {incoming} входящих · {outgoing} исходящих"
         )
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        super().on_button_pressed(event)
         if event.button.id == "build-map":
             self.action_build()
         elif event.button.id == "export-markdown":
@@ -388,7 +608,7 @@ class RepoMapScreen(Translated, Screen[None]):
         self.workers.cancel_all()
 
     def _build(self, head: str) -> None:
-        self._set_status(f"строится карта HEAD {head[:12]}…")
+        self._set_status(f"строится карта HEAD {head[:12]}…", "running")
 
         def work() -> None:
             outcome: RepoMapView | str
@@ -405,17 +625,18 @@ class RepoMapScreen(Translated, Screen[None]):
 
     def _apply_build(self, outcome: RepoMapView | str) -> None:
         if isinstance(outcome, str):
-            self._set_status(f"карта не построена: {outcome}")
+            self._set_status(f"карта не построена: {outcome}", "error")
             return
         self.view = outcome
-        self._set_status(f"карта HEAD {outcome.commit[:12]} построена")
-        self.query_one("#file-relations", Static).update("выберите файл")
+        self._selected = None
+        self._set_status(f"карта HEAD {outcome.commit[:12]} построена", "accepted")
+        self._show_relations()
         self._render_map()
         self._paint_checks()
 
-    def _set_status(self, text: str) -> None:
-        self._status_text = text
-        self.query_one("#repo-map-status", Static).update(text)
+    def _set_status(self, text: str, kind: str) -> None:
+        self._status_text, self._status_kind = text, kind
+        self.query_one("#repo-map-status", Static).update(self._status_line())
 
     def action_export(self) -> None:
         if self.view is None:

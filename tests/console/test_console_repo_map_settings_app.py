@@ -403,3 +403,136 @@ def test_memory_with_empty_allow_paths_is_fixed_then_built(tmp_path: Path) -> No
             assert runner.calls[0][2:4] == ["memory", "build"]
 
     asyncio.run(scenario())
+
+
+def _region(app: App[None], selector: str) -> tuple[int, int]:
+    widget = app.screen.query_one(selector)
+    return widget.region.x, widget.region.y
+
+
+def test_the_settings_cards_form_a_two_by_two_grid_on_a_wide_terminal(
+    tmp_path: Path,
+) -> None:
+    from harness.console.shell import SectionCard
+
+    repo = _git_project(tmp_path)
+
+    async def scenario() -> tuple[list[str], dict[str, tuple[int, int]]]:
+        app = _Host(repo, _Runner(), NO_BUNDLE)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await _open(app, pilot)
+            titles = [
+                str(card.border_title).strip()
+                for card in app.screen.query_one("#repo-map-settings").query(
+                    SectionCard
+                )
+            ]
+            where = {
+                name: _region(app, f"#{name}")
+                for name in (
+                    "tier-frame",
+                    "parsers-frame",
+                    "memory-frame",
+                    "result-frame",
+                )
+            }
+            return titles, where
+
+    titles, where = asyncio.run(scenario())
+    assert titles == [
+        "РЕЖИМ КАРТЫ",
+        "ПАРСЕРЫ ЯЗЫКОВ",
+        "ПАМЯТЬ ПРОЕКТА",
+        "РЕЗУЛЬТАТ  последнее действие",
+    ]
+    (tier_x, tier_y), (parsers_x, parsers_y) = (
+        where["tier-frame"],
+        where["parsers-frame"],
+    )
+    (memory_x, memory_y), (result_x, result_y) = (
+        where["memory-frame"],
+        where["result-frame"],
+    )
+    assert tier_y == parsers_y and tier_x < parsers_x
+    assert memory_y == result_y and memory_x < result_x
+    assert memory_x == tier_x and result_x == parsers_x
+    assert memory_y > tier_y
+
+
+def test_the_settings_cards_stack_in_one_column_on_a_narrow_terminal(
+    tmp_path: Path,
+) -> None:
+    repo = _git_project(tmp_path)
+
+    async def scenario() -> list[tuple[int, int]]:
+        app = _Host(repo, _Runner(), NO_BUNDLE)
+        async with app.run_test(size=(80, 60)) as pilot:
+            await _open(app, pilot)
+            return [
+                _region(app, f"#{name}")
+                for name in (
+                    "tier-frame",
+                    "parsers-frame",
+                    "memory-frame",
+                    "result-frame",
+                )
+            ]
+
+    places = asyncio.run(scenario())
+    assert len({x for x, _ in places}) == 1
+    assert [y for _, y in places] == sorted(y for _, y in places)
+    assert len({y for _, y in places}) == 4
+
+
+def test_the_status_lines_carry_a_symbol_beside_their_label(tmp_path: Path) -> None:
+    repo = _git_project(tmp_path)
+    ready = ParserStatus(
+        Path("/registry"), "cp314-linux_x86_64", "local-cache", ("python",), None
+    )
+
+    async def scenario() -> tuple[str, str, str, str]:
+        app = _Host(repo, _Runner(), NO_BUNDLE)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await _open(app, pilot)
+            not_ready = _text(app, "#parser-status")
+            memory = _text(app, "#memory-status")
+            tier = _text(app, "#tier-status")
+        app = _Host(repo, _Runner(), ready)
+        async with app.run_test(size=(120, 48)) as pilot:
+            await _open(app, pilot)
+            return not_ready, memory, tier, _text(app, "#parser-status")
+
+    not_ready, memory, tier, ready_line = asyncio.run(scenario())
+    assert not_ready.startswith("⚠ Bundle не готов: ")
+    assert memory.startswith("Память: ○ выключена")
+    assert "\n⚠ Фактически карта строится в minimal" in tier
+    assert ready_line.startswith("✔ Bundle готов, режим full доступен")
+
+
+def test_the_result_card_names_the_last_action_and_follows_the_language(
+    tmp_path: Path,
+) -> None:
+    repo = _git_project(tmp_path)
+
+    async def scenario() -> tuple[str, str, str]:
+        app = HarnessConsoleApp(repo)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await app.push_screen(
+                RepoMapScreen(
+                    repo,
+                    command_runner=_Runner(),
+                    find_head=lambda _repo: None,
+                    load_parsers=lambda _repo: NO_BUNDLE,
+                )
+            )
+            await _open(app, pilot)
+            before = str(app.screen.query_one("#result-frame").border_title).strip()
+            await pilot.press("f2")
+            await _settle(pilot)
+            after = str(app.screen.query_one("#result-frame").border_title).strip()
+            return before, after, _text(app, "#settings-output")
+
+    before, after, output = asyncio.run(scenario())
+    assert before == "РЕЗУЛЬТАТ  последнее действие"
+    assert after == "RESULT  last action"
+    assert output == "No actions yet"

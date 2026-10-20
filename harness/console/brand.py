@@ -7,6 +7,7 @@ textual."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from string import hexdigits
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from . import json_fields
 
 THEME_NAME = "harness-warm"
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
+# Terminals narrower than this many columns get the shell's narrow layout.
+NARROW_WIDTH = 100
 
 # Terracotta/coral accents and amber on a soft graphite background.
 PALETTE = {
@@ -29,8 +32,47 @@ PALETTE = {
     "background": "#1F1E1C",
     "surface": "#262523",
     "panel": "#2E2C29",
-    "muted": "#9C958C",
+    "muted": "#AAA398",
 }
+
+# Tones of the workspace shell that Textual's theme has no slot for. CSS refers to them as
+# `$border-subtle`, `$selection-background` and so on; `shell_css` resolves them, so a screen's
+# CSS works in any host app, not only in one that registered the harness theme.
+SHELL_TOKENS = {
+    # A decorative divider stays faint; a component's own edge (button, field, list, note) must
+    # reach 3:1 against the surface, like the selection edge and the scrollbar.
+    "border-subtle": "#3a3731",
+    "component-border": "#847d70",
+    "selection-background": "#45332c",
+    "selection-foreground": "#f6baa3",
+    "selection-edge": "#d97757",
+    # The outline of the selected main-menu entry, drawn around its fill (decorative: the fill
+    # and the selection colour of its text already mark it).
+    "selection-outline": "#6b4a3c",
+    "row-highlight": "#35302b",
+    "scrollbar-thumb": "#f2ece1",
+    "scrollbar-track": "#8a8378",
+    "event-background": "#292621",
+    "event-active-background": "#423029",
+}
+# One colour per worker role, so a role reads the same on the dashboard and in the worker view.
+ROLE_COLORS = {
+    "architect": "#B79CED",
+    "developer": "#E58A6A",
+    "code-review": "#E5A04B",
+    "qa": "#6FB7C9",
+    "publish": "#8FB573",
+    "verification": "#7FA3E0",
+}
+_SHELL_TOKEN = re.compile(
+    r"\$(" + "|".join(sorted(SHELL_TOKENS, key=len, reverse=True)) + r")(?![\w-])"
+)
+
+
+def shell_css(css: str) -> str:
+    """`css` with every `$<shell token>` replaced by its colour."""
+    return _SHELL_TOKEN.sub(lambda match: SHELL_TOKENS[match.group(1)], css)
+
 
 # The harness mark: an "H" in a ring - the harness holding the parts together.
 LOGO = (
@@ -58,9 +100,29 @@ def shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: max(limit - 1, 0)] + "…"
 
 
+def elide_path(path: str, width: int) -> str:
+    """`path` cut from the left to `width` cells at a separator, `…/Code/project`, so its end
+    (the project) stays readable; a path that fits is kept whole."""
+    if len(path) <= width:
+        return path
+    parts = path.split("/")
+    for start in range(1, len(parts)):
+        tail = "…/" + "/".join(parts[start:])
+        if len(tail) <= width:
+            return tail
+    return "…" + path[len(path) - max(width - 1, 0) :] if width > 1 else "…"
+
+
 def frame_title(title: str) -> str:
     """Add symmetric spacing to Textual's built-in border label padding."""
     return f" {title.strip()} "
+
+
+def section_title(title: str, note: str = "") -> str:
+    """A section card's title for its top border: the title in capitals, then its counter or
+    note, if any (`" ТРЕБУЕТ ВНИМАНИЯ  2 "`)."""
+    heading = title.strip().upper()
+    return frame_title(f"{heading}  {note.strip()}" if note.strip() else heading)
 
 
 @dataclass(frozen=True)

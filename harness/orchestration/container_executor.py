@@ -813,6 +813,9 @@ def _plan_support(data: JsonObject, transport: str, block: _Block) -> None:
 class DockerExecutor:
     """Run the approved worker in one Docker or Podman container, offline or behind its sidecar."""
 
+    # The evidence type, so a handoff outside the ledger lock can rebuild it from the stored dict.
+    observation_type = ContainerObservation
+
     def observe(
         self, plan: Mapping[str, object], transport: str
     ) -> ContainerObservation:

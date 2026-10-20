@@ -35,6 +35,7 @@ TRANSITION_FIELDS = (
 # digests a docker dispatch pinned (issue #704), so every transition without one keeps the digest
 # it always had.
 OPTIONAL_TRANSITION_FIELDS = (
+    "retry_reason_sha256",
     "configuration_sha256",
     "recovery_event_sha256",
     "carried_items_sha256",
@@ -152,6 +153,7 @@ def transition_digest(transition: Mapping[str, object]) -> str:
         raise GuardError(
             "a transition must carry exactly the fields an approval binds",
             remedy=f"provide exactly: {', '.join(TRANSITION_FIELDS)}, plus "
+            "retry_reason_sha256 only when the brief carries an architect retry reason, "
             "configuration_sha256 for a new brief's pinned config, "
             "recovery_event_sha256 only after an audited recovery, "
             "carried_items_sha256 only when the brief carries items, rebase_target_sha only "
@@ -201,6 +203,11 @@ def _brief_bindings(brief: Mapping[str, object]) -> dict[str, object]:
     images = brief.get("runtime_images")
     plan = brief.get("verification_plan")
     return {
+        "retry_reason_sha256": policy_digest(
+            cast(Mapping[str, object], brief["retry_reason"])
+        )
+        if isinstance(brief.get("retry_reason"), dict)
+        else None,
         "carried_items_sha256": carried_items_digest(
             cast(Mapping[str, object], carried)
         )
@@ -292,6 +299,7 @@ def validate_binding(dispatch: Mapping[str, object], batch_id: object) -> None:
             + INTERNAL_INVARIANT_REMEDY,
         )
     labels = {
+        "retry_reason_sha256": ("architect retry reason", "retry_reason"),
         "carried_items_sha256": ("carried items", "carried items"),
         "rebase_target_sha": ("rebase target", "rebase_target_commit"),
         "delta_review_sha256": ("delta-review scope", "delta_review_scope"),
