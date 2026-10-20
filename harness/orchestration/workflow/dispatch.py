@@ -92,6 +92,7 @@ from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow import supersede
+from harness.orchestration.workflow import risk as risk_policy
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -840,6 +841,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 (resolver_state.RESOLVER_ROLE, "work")
             },
         }
+        if role_name == "qa" and batch.get("risk_reassessment_required"):
+            message, remedy = risk_policy.reassessment_remedy(batch)
+            raise CoordinatorError(message, remedy=remedy)
         if next_action == "risk-assessment":
             raise CoordinatorError(
                 "risk assessment must prepare the next dispatch before another role starts",
@@ -980,10 +984,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             )
         if role_name == "qa":
             if batch.get("risk_reassessment_required"):
-                raise CoordinatorError(
-                    "QA is blocked until the candidate is risk-assessed again",
-                    remedy="register a new risk assessment for this candidate before dispatching QA",
-                )
+                message, remedy = risk_policy.reassessment_remedy(batch)
+                raise CoordinatorError(message, remedy=remedy)
             if risk is None:
                 # The guard above raised when a qa dispatch has no risk.
                 raise CoordinatorError(

@@ -335,6 +335,29 @@ def require_legal_reassessment(
         )
 
 
+def reassessment_remedy(batch: JsonObject) -> tuple[str, str]:
+    """The message and remedy of a QA dispatch refused while a reassessment is owed: they name the
+    candidate that must be assessed, or the writer report the batch still waits for."""
+    state = reassessment_state(batch)
+    if state.kind == BOUND:
+        return (
+            "QA is blocked until the awaited candidate is risk-assessed again",
+            f"register a risk assessment for the awaited candidate {state.candidate} (risk assess "
+            f"--batch {batch.get('batch_id')} --candidate-commit {state.candidate}), once its "
+            "writer report is accepted",
+        )
+    remedy = (
+        "wait for the writer report of the rewound writer, accept it, then register the risk "
+        "assessment of its candidate"
+    )
+    if batch.get("risk_reassessment_pending_next") is not True:
+        remedy += (
+            "; this record names no awaited writer, so a human may instead run batch rewind "
+            "--to developer (or --to code-review to repeat the review)"
+        )
+    return "QA is blocked until the writer's next candidate is risk-assessed", remedy
+
+
 def _accepted_review_covers(
     root: Path,
     batch: JsonObject,

@@ -21,6 +21,7 @@ from harness.orchestration.workflow import (
     commit_plan,
     decisions,
     recovery,
+    risk as risk_policy,
 )
 from tests.orchestration.test_coordinator import (
     _init_repo,
@@ -2487,3 +2488,85 @@ class RecoveryTests(unittest.TestCase):
         )
         self.assertEqual(wider.returncode, 0, wider.stderr)
         self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")
+
+    def test_qa_refusal_names_the_awaited_candidate_and_writes_nothing(self) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        second, _, _ = self._rewound_writer_report(batch_id, "second")
+        self._decide(batch_id, "accept")
+        before = self._ledger_bytes()
+        blocked = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        remedy = blocked.stderr.partition("REMEDY:")[2]
+        self.assertIn(second, remedy)
+        self.assertEqual(before, self._ledger_bytes())
+
+    def test_qa_refusal_while_the_writer_is_awaited_says_to_wait_for_its_report(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        before = self._ledger_bytes()
+        blocked = self._cli_propose_qa(
+            batch_id, _git(self.worktree, "rev-parse", "HEAD")
+        )
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        self.assertIn(
+            "wait for the writer report", blocked.stderr.partition("REMEDY:")[2]
+        )
+        self.assertEqual(before, self._ledger_bytes())
+
+    def test_a_second_rewind_keeps_the_pending_requirement(self) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        self._cli_rewind(batch_id, "architect")
+        stored = self._batch_record(batch_id)
+        self.assertIs(stored["risk_reassessment_required"], True)
+        self.assertIs(stored["risk_reassessment_pending_next"], True)
+        self.assertNotIn("risk_reassessment_candidate", stored)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_rewind_to_review_clears_the_requirement_and_keeps_history(self) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, _ = self._accepted_review_for(batch_id, "reviewed")
+        evidence = self._evidence_bytes()
+        self._cli_rewind(batch_id, "code-review")
+        stored = self._batch_record(batch_id)
+        self.assertIs(stored["risk_reassessment_required"], False)
+        self.assertNotIn("risk_reassessment_pending_next", stored)
+        for path, content in evidence.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_an_illegal_reassessment_state_is_refused_before_any_ledger_write(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        before = self._ledger_bytes()
+
+        def illegal(batch: JsonObject, state: object) -> None:
+            batch["risk_reassessment_required"] = True
+
+        with (
+            mock.patch.object(risk_policy, "apply_reassessment", illegal),
+            self.assertRaisesRegex(
+                coordinator.CoordinatorError, "illegal risk reassessment"
+            ),
+        ):
+            coordinator.rewind_batch(
+                self._args(
+                    batch=batch_id,
+                    to="developer",
+                    note="return to writer",
+                    **self._approval(),
+                )
+            )
+        self.assertEqual(before, self._ledger_bytes())
