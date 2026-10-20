@@ -5,7 +5,7 @@ Status: ACCEPTED (2026-10-20). Parent epic #784 (absorbed duplicate #783). Detai
 Implement Rust immediately as the final execution kernel; retain Python for AI skills, workflows and policy. Single coordinated migration and cutover: do not create a temporary Python executor or multiple authoritative ledger writers. Parallelize work only across versioned, stable boundaries.
 
 ## Interfaces
-Rust crates: core/contracts, ipc, state, exec, container, qa, reconcile. Python bridge: harness/orchestration/runtime_client.py. IPC envelope contains protocol_version, operation_id, batch_id, dispatch_id, candidate_sha, plan_digest, operation, deadline, payload. Outcomes include execution_id, revision, phase, status, structured failure domain/code/retryability, evidence references. Validate approved plans server-side; do not trust agent-supplied approval flags.
+Rust crates: core/contracts, ipc, state, exec, container, qa, reconcile. Python bridge: harness/orchestration/runtime_client.py. IPC envelope contains protocol_version, operation_id, batch_id, dispatch_id, candidate_sha, plan_digest, operation, request_deadline, payload (ADR 0021). Outcomes include execution_id, revision, phase, status, structured failure domain/code/retryability, evidence references. Validate approved plans server-side; do not trust agent-supplied approval flags.
 
 ## Invariants
 - SQLite WAL transactional operational state, one writer authority, CAS revisions, consistent reads, serialized QA admission, independent batch writes.

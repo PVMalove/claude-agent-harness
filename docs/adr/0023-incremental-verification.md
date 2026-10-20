@@ -1,8 +1,8 @@
 # Инкрементальная проверка: ChangeImpact, выбор тестов и полный gate на финальном SHA
 
-**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0019, ADR 0021, ADR 0026. Документ задаёт, какие проверки
-запускает каждая роль, когда допустим запуск только упавших тестов и почему publish разрешает
-только полный clean-room прогон на финальном SHA. Закрытые #756, #757 и #758 — основа, их
+**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0019, ADR 0021, ADR 0026. Документ задаёт, какие
+проверки запускает каждая роль, когда допустим запуск только упавших тестов и почему publish
+разрешает только полный clean-room прогон на финальном SHA. Закрытые #756, #757 и #758 — основа, их
 поведение не отменяется.
 
 ## Контекст системы
@@ -152,5 +152,5 @@ Python строит план при propose. План входит в brief, а 
   время `/implement` до и после. Числа без замера не публикуются.
 - **Команды проверки:** `.harness/.venv/bin/python -m pytest -q
   tests/orchestration/test_verification_profiles.py tests/orchestration/test_retry_verification.py
-  tests/core/test_gate_runner.py tests/orchestration/test_qa_lane.py tests/scripts/test_verify_temp.py`;
-  `cargo test` в `native/harness-runtime`; `make verify`.
+  tests/core/test_gate_runner.py tests/orchestration/test_qa_lane.py
+  tests/scripts/test_verify_temp.py`; `cargo test` в `native/harness-runtime`; `make verify`.

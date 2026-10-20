@@ -1,10 +1,10 @@
 # Rust-супервизор процессов и OCI-контейнеров
 
-**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0018 (`0018-container-executor.md` в
-`integration/container-executor`), ADR 0021. Документ переносит границу движка контейнеров из
-Python в Rust runtime и задаёт модель жизненного цикла процессов на Linux (включая Fedora с SELinux
-и rootless Podman) и Windows. Решения ADR 0018 о монтированиях, сети, секретах, владельце файлов и
-закреплении digest остаются в силе; меняется только исполнитель.
+**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0025 (до импорта — `0018-container-executor.md` в
+`integration/container-executor`, ADR 0026), ADR 0021. Документ переносит границу движка контейнеров
+из Python в Rust runtime и задаёт модель жизненного цикла процессов на Linux (включая Fedora с
+SELinux и rootless Podman) и Windows. Решения ADR 0025 о монтированиях, сети, секретах, владельце
+файлов и закреплении digest остаются в силе; меняется только исполнитель.
 
 ## Контекст системы
 
@@ -14,7 +14,7 @@ Python в Rust runtime и задаёт модель жизненного цик�
 `inspect_worker` (`:447`), очистку делают `engine_objects`/`remove_objects` (`:560`, `:605`),
 `workflow/container_status.reconcile` и `harness/cleanup.py`. Ограничения текущего кода:
 
-- остановки с grace-периодом нет; живой worker без явной команды не останавливается (ADR 0018);
+- остановки с grace-периодом нет; живой worker без явной команды не останавливается (ADR 0025);
 - `inspect_worker`, `engine_objects` и `remove_objects` вызывают `docker` даже на Podman-хосте
   (`:463`, `:570-582`, `:631-633`);
 - clean-room QA в контейнере (#709) не реализован: `gate_runner._execute_commands` запускает
@@ -44,7 +44,7 @@ Python в Rust runtime и задаёт модель жизненного цик�
 - **Процесс Windows:** `pid`, время создания процесса и имя Job Object, производное от
   `operation_id`.
 - **Контейнер:** id, метки `harness.dispatch`, `harness.repository`, `harness.plan_digest`
-  (ADR 0018) и новые `harness.operation`, `harness.execution`.
+  (ADR 0025) и новые `harness.operation`, `harness.execution`.
 - PID никогда не служит доказательством сам по себе. Объект другого namespace или boot без
   доказательства смерти считается живым.
 - Состояния исполнения: `launching → running → stopping → exited | lost | unknown`. `exited`
@@ -62,6 +62,9 @@ Python в Rust runtime и задаёт модель жизненного цик�
   без systemd учёт идёт по группе процессов, и это записывается фактом в receipt.
 - **Windows:** именованный Job Object без `KILL_ON_JOB_CLOSE`, чтобы исполнение пережило рестарт
   runtime, и `CREATE_NEW_PROCESS_GROUP` для доставки `CTRL_BREAK`.
+- `execution_deadline` — абсолютное время UTC: старт исполнения плюс `timeout_seconds` стадии
+  `VerificationPlan` (ADR 0023) или срок handoff из brief для worker-а. `stop_grace_seconds` —
+  поле того же плана; оба закрепляются в brief, значения по умолчанию задаёт тикет супервизора.
 - **Остановка** только по явной команде или по `execution_deadline` из плана:
   - Linux: SIGTERM группе, после grace-периода SIGKILL;
   - контейнер: `<engine> stop --time <grace>`, затем `<engine> kill`;
@@ -72,7 +75,7 @@ Python в Rust runtime и задаёт модель жизненного цик�
 
 ### 4. Контейнеры
 
-- **Worker (handoff):** detached, как в ADR 0018. Launch, inspect, remove и reconcile выполняет
+- **Worker (handoff):** detached, как в ADR 0025. Launch, inspect, remove и reconcile выполняет
   Rust; Python больше не формирует argv.
 - **QA-команда (#709):** отдельный foreground-контейнер `--rm --init` на каждую команду
   `VerificationPlan` из образа, закреплённого в brief QA-dispatch, по плану `operations.qa`.
@@ -87,7 +90,7 @@ Python в Rust runtime и задаёт модель жизненного цик�
   `/run/podman/podman.sock`, `$XDG_RUNTIME_DIR/podman/`, `$XDG_RUNTIME_DIR/docker.sock`), с
   каталогом runtime, сокетом или токеном ADR 0021. Проверка идёт по `realpath` после разрешения
   symlink.
-- Существующие запреты ADR 0018 остаются: `--cap-drop ALL`, `no-new-privileges`, `--pull never`,
+- Существующие запреты ADR 0025 остаются: `--cap-drop ALL`, `no-new-privileges`, `--pull never`,
   монтирования только по плану, env только по именам.
 
 ### 5. Reconcile
@@ -106,10 +109,10 @@ Reconcile запускается при старте runtime, перед каж�
 
 | Платформа | Процессы | Контейнеры | Особенности |
 |---|---|---|---|
-| Fedora, SELinux enforcing, rootless Podman | группы + systemd scope | Podman, `--userns=keep-id` | `label=disable`, как в ADR 0018: SELinux-разделение для контейнера выключается, зато файлы хоста не перемаркируются. Перемаркировка `:z`/`:Z` остаётся отвергнутой. Ограничения ресурсов требуют делегирования cgroup пользователю: без него ограничение из плана — блокер, а не тихий пропуск. |
-| Linux, rootful/rootless Docker | группы + systemd scope | Docker, режимы ADR 0018 | userns-remap — блокер, как в ADR 0018 |
+| Fedora, SELinux enforcing, rootless Podman | группы + systemd scope | Podman, `--userns=keep-id` | `label=disable`, как в ADR 0025: SELinux-разделение для контейнера выключается, зато файлы хоста не перемаркируются. Перемаркировка `:z`/`:Z` остаётся отвергнутой. Ограничения ресурсов требуют делегирования cgroup пользователю: без него ограничение из плана — блокер, а не тихий пропуск. |
+| Linux, rootful/rootless Docker | группы + systemd scope | Docker, режимы ADR 0025 | userns-remap — блокер, как в ADR 0025 |
 | Ubuntu CI | группы | Docker | AppArmor userns уже настраивается в `verify.yml` |
-| Windows | Job Objects | только Docker Desktop | Podman на Windows работает через VM, то есть удалённо, а удалённый Podman — блокер ADR 0018 |
+| Windows | Job Objects | только Docker Desktop | Podman на Windows работает через VM, то есть удалённо, а удалённый Podman — блокер ADR 0025 |
 
 ## Операционные последствия
 

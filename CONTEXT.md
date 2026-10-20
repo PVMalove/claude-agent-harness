@@ -580,8 +580,18 @@ _Avoid_: RAG-хранилище, база знаний, долгосрочная
 _Avoid_: dual-write, переходный период с двумя writer-ами, Python fallback-writer.
 
 **Release Gate**:
-Правило, по которому кандидат попадает в целевую ветку: полный прогон `qa_gate_commands` на паре
-`{candidate_sha, target_sha}`, merge только при неизменной голове целевой ветки и сверка дерева
-после squash-merge с `candidate_tree_sha` (ADR 0026). Focused-, failed-only- и кэшированные
-результаты Release Gate не проходят.
-_Avoid_: зелёный CI без `integration collect-ci`, QA другого SHA, частичный прогон.
+Условие, при котором кандидат вливается в целевую ветку, будь то integration-ветка или `master`:
+правила пары `{candidate_sha, target_sha}` и дерева кандидата из ADR 0026, раздел 4.
+_Avoid_: merge gate, release QA, QA-gate (проверка кода в checkout, а не допуск к merge).
+
+**Harness Next**:
+Программа эпика #784: Rust runtime, транзакционный store, инкрементальная проверка и профили
+hooks. Работа идёт в `integration/harness-runtime-reliability` и выходит одним релизом 2.0.0
+(ADR 0019–0026).
+_Avoid_: harness-next-runtime (такой ветки нет), HN как имя ветки.
+
+**Superseded-by-Harness-Next**:
+Статус issue или коммита, чью Python-реализацию заменяет компонент Harness Next. Критерии такой
+задачи переходят на новый компонент; сама реализация в Harness Next не импортируется (ADR 0020,
+раздел 6; ADR 0026, раздел 1).
+_Avoid_: отменено, won't fix, закрыто без замены.

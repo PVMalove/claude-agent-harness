@@ -61,8 +61,8 @@ Operational state живёт ровно в одной эпохе:
 Релиз 2.0.0 работает только в эпохе `runtime-store`: Python-writer файлового ledger из него
 удалён, а operational state читается и пишется только через `runtime_client`. При
 `version ∈ {1,2,3}` coordinator 2.0.0 завершается с кодом 2 и remedy `harness-runtime migrate`.
-Файловый ledger в 2.0.0 — только источник импорта и формат отката, и оба читает и пишет Rust
-(раздел 5).
+Файловый ledger в 2.0.0 нужен только как источник импорта и формат отката; в обоих случаях его
+читает и пишет Rust (раздел 5).
 
 ### 2. Разделение ответственности
 
@@ -96,6 +96,10 @@ Operational state живёт ровно в одной эпохе:
   Допуск, постановка в очередь и снятие — по одной транзакции; `fencing_token` монотонно растёт.
   Снятие и откат требуют совпадения `(owner, fencing_token)`, что обобщает правило #780: lease
   другого владельца или нового запуска того же dispatch не снимается.
+- Версия схемы store — `PRAGMA user_version`. `serve` при старте под эксклюзивной блокировкой
+  применяет только прямые миграции схемы, каждую одной транзакцией с audit-записью
+  `schema-migrate`. Runtime, который встречает версию новее своей, завершается с кодом 2 и не
+  пишет. Понижение схемы не поддерживается: путь назад — только `rollback --to-legacy`.
 - Ошибка ожидания: `store_busy` (retryable, после `busy_timeout`) отличается от
   `revision_conflict` и от `runtime_unavailable`; все три отображаются в код выхода 2 с разными
   `REMEDY`.
@@ -237,7 +241,9 @@ Lease и execution receipt в store хранят `boot_id`, inode PID-namespace,
   batch одновременно → оба коммита; конфликт `expected_revision` в одном batch → ровно один
   победитель и `revision_conflict` у второго; снятие QA-lease с чужим `fencing_token` → отказ;
   PID reuse и другой PID-namespace → lease не снимается; откат с живым исполнением → код 2;
-  batch #781 с `required=true` без кандидата → repair и последующий `risk assess` снимает флаг.
+  batch #781 с `required=true` без кандидата → repair и последующий `risk assess` снимает флаг;
+  поколение v3, записанное откатом, проходит `ledger validate` последнего релиза 1.x на фикстурах
+  с batch в каждом `DispatchState`; store с `user_version` новее runtime → код 2 без записи.
 - **Race-сценарии:** Python-процесс, прочитавший `version = 3` до cutover, после захвата
   legacy-замка перечитывает указатель и отказывает при `version = 4`; два `migrate` одновременно —
   второй получает занятый замок (код 2); `rollback` во время QA-допуска — сериализуются

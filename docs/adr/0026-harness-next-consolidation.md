@@ -1,8 +1,8 @@
 # Консолидация integration-веток Harness Next и Release Gate
 
-**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0019–0024. Документ задаёт, какие существующие
-integration-ветки входят в `integration/harness-runtime-reliability` и как, что из них заменяет
-Harness Next и какое evidence разрешает влить кандидата в целевую ветку.
+**Статус: ACCEPTED (2026-10-20).** Эпик #784, ADR 0019–0024. Документ определяет, какие
+integration-ветки входят в `integration/harness-runtime-reliability` и как они импортируются,
+какие их части заменяет Harness Next и какое evidence разрешает влить кандидата в целевую ветку.
 
 ## Контекст системы
 
@@ -41,15 +41,21 @@ PR в integration-ветки и релизы вливаются squash-merge (т
 | `integration/container-executor` | импортируется целиком; граница движка `run_engine` переходит к Rust до 2.0.0 (ADR 0022) |
 | `integration/console-redesign` | импортируется целиком |
 | `orchestration-system-fields`: ccc1d1e (#690) — реестр `systemFields.v1`, normalizer конфигурации, pinned configuration snapshot | импортируется |
-| `orchestration-system-fields`: файлы реестра из 968ab8d (#728) — `core/system_fields.py`, `system_fields.v1.json` | импортируются |
 | `orchestration-system-fields`: 38ae9d7 (#699), c8f5774 (#701), b095142 (#703) — store, intent, reconcile, effect | **Superseded-by-Harness-Next**: критерии переходят на Rust store (ADR 0020), идемпотентность (ADR 0021, раздел 4) и reconcile (ADR 0022, раздел 5) |
-| `orchestration-system-fields`: bf3def1 (#712), ledger-часть 968ab8d (#728), 35f76bd (#735), b69eed1 | **Superseded-by-Harness-Next**: файловый ledger в 2.0.0 не пишется (ADR 0020, раздел 1); quarantine неизвестных значений переходит в repair импорта, цепочка хэшей — в audit-цепочку store (ADR 0020, разделы 4–5) |
-| `orchestration-system-fields`: 7719682 (#746) | импортируется только CLI-поверхность и контракт консоли, не опирающиеся на `runtime_state_store`/`runtime_intent`; команды восстановления поверх store — отдельный тикет Harness Next |
+| `orchestration-system-fields`: bf3def1 (#712), 968ab8d (#728), 35f76bd (#735), b69eed1 | **Superseded-by-Harness-Next**: файловый ledger в 2.0.0 не пишется (ADR 0020, раздел 1); quarantine неизвестных значений переходит в repair импорта, цепочка хэшей — в audit-цепочку store (ADR 0020, разделы 4–5). b69eed1 правит только запись файлового ledger, поэтому следует тому же решению |
+| `orchestration-system-fields`: 7719682 (#746) | **Superseded-by-Harness-Next**: recovery API и совместимость строятся на `runtime_state_store`; команды восстановления поверх Rust store — отдельный тикет Harness Next |
 | #685 (canonical CI, не реализован) | критерии остаются; CI проверяет реестр против Python и Rust (ADR 0021, раздел 3) |
+
+Реестр `systemFields.v1` из ccc1d1e уже содержит словари Python store: `runtime.state`,
+`runtime.operation_kind`, `runtime.operation_phase`, `runtime.effect_state`,
+`runtime.failure_code`. Они несовместимы с состояниями и кодами ADR 0021 (разделы 3–4) и при
+импорте удаляются; словари Rust runtime добавляет в реестр тикет IPC-контракта (ADR 0021,
+раздел 3).
 
 Классификацию по коммитам импорт сверяет по файлам: модуль, который пишет operational state или
 читает `runtime_state_store`/`runtime_intent`, не импортируется. Спорный файл — блокер импорта,
-а не решение исполнителя.
+а не решение исполнителя. Для целых источников то же правило проверяется по итоговому дереву
+импорт-PR (раздел «Операционные последствия»).
 
 ### 2. Процедура импорта
 
@@ -64,11 +70,12 @@ PR в integration-ветки и релизы вливаются squash-merge (т
 - Исходные integration-ветки не переписываются и не удаляются; force push запрещён. Тело PR
   перечисляет SHA источника и решение из раздела 1 для каждого коммита.
 - Каждый импорт-PR — кандидат: полный clean-room QA на его голове (раздел 4).
-- В PR импорта `container-executor` файл `docs/adr/0018-container-executor.md` переименовывается
-  в `docs/adr/0025-container-executor.md`, а ссылки в ADR 0019–0024, `CONTEXT.md` и коде
-  исправляются. Номер 0018 остаётся за `0018-ci-windows-subset.md`.
-- Issue, чья Python-реализация стала Superseded, не закрываются молча: тикет обновления трекера
-  (HN-01) добавляет в них раздел Harness Next со ссылкой на этот ADR.
+- Номер 0025 зарезервирован за контейнерным исполнителем. В PR импорта `container-executor` файл
+  `docs/adr/0018-container-executor.md` переименовывается в `docs/adr/0025-container-executor.md`,
+  а ссылки на него в самом ADR, `CONTEXT.md` и коде исправляются. ADR 0019–0024 уже ссылаются на
+  него как на ADR 0025. Номер 0018 остаётся за `0018-ci-windows-subset.md`.
+- Issue, чья Python-реализация стала Superseded, не закрываются молча: тикет HN-01 эпика #784
+  (обновление открытых issue) добавляет в них раздел Harness Next со ссылкой на этот ADR.
 
 ### 3. Тикеты Harness Next
 
@@ -78,7 +85,9 @@ PR в integration-ветки и релизы вливаются squash-merge (т
 
 ### 4. Release Gate
 
-Release Gate расширяет существующую проверку пары `integration next --pull-request <n>`
+Решение владельца D4 («tree SHA при неизменной базе») реализуется так: evidence привязан к паре
+коммитов, а дерево подтверждает, что squash-merge не изменил проверенное содержимое. Release Gate
+расширяет существующую проверку пары `integration next --pull-request <n>`
 (`harness/orchestration/workflow/integration.py`): пара `{candidate_sha, target_sha}`, источник QA
 `original-qa`, `local-qa` или `ci` и обязательная новая проверка при новом `target_sha`.
 
@@ -87,8 +96,8 @@ Release Gate расширяет существующую проверку пар
   кэшированные результаты пару не подтверждают.
 - Запись пары дополнительно хранит `candidate_tree_sha` (`git rev-parse <candidate>^{tree}`).
 - Push ветки разрешён, только если её голова равна `candidate_sha`.
-- Merge в целевую ветку разрешён, только если её текущая голова равна `target_sha` пары и является
-  предком кандидата. Тогда squash-merge даёт дерево, равное `candidate_tree_sha`.
+- Merge в целевую ветку разрешён, только если её текущая голова равна `target_sha` пары и входит
+  в историю кандидата. Тогда squash-merge даёт дерево, равное `candidate_tree_sha`.
 - После подтверждённого merge `to-pull-requests` сверяет дерево нового коммита целевой ветки с
   `candidate_tree_sha`. Расхождение — блокер: следующий merge от этой ветки требует нового полного
   QA на её голове.
@@ -103,8 +112,9 @@ Release Gate расширяет существующую проверку пар
 - **Approval.** Импорт не меняет утверждённые brief, approval и evidence исходных веток: они
   остаются в истории источника. Merge каждого PR выполняет человек; auto-merge запрещён.
 - **Проверки импорта:** `git merge-tree --write-tree` перед созданием ветки; `make verify` на
-  голове каждого импорт-PR; после импорта `container-executor` — `rg -n "0018-container-executor"`
-  без совпадений вне истории.
+  голове каждого импорт-PR; `rg -n "runtime_state_store|runtime_intent|runtime\.(state|operation_kind|operation_phase|effect_state|failure_code)" harness tests`
+  на голове каждого импорт-PR — без совпадений; после импорта `container-executor` файла
+  `docs/adr/0018-container-executor.md` нет, а `docs/adr/0025-container-executor.md` есть.
 - **Негативные проверки Release Gate:** голова целевой ветки ушла вперёд после QA → merge отказан;
   дерево после squash-merge не равно `candidate_tree_sha` → блокер; QA на SHA, отличном от головы
   push → push отказан; CI, привязанный вручную без `integration collect-ci`, пару не подтверждает.
