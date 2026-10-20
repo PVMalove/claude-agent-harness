@@ -2544,6 +2544,61 @@ class RecoveryTests(unittest.TestCase):
             self.assertEqual(path.read_bytes(), content, path.name)
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
 
+    def _registered_candidate_after_verification(self, batch_id: str) -> tuple[str, list[str]]:
+        """A blocked developer candidate retried as verification-infrastructure, then verified,
+        accepted and risk-assessed: the registered candidate carries an active risk assessment."""
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._blocked_developer(batch_id)
+        self._decide(batch_id, "retry", reason_category="verification-infrastructure")
+        verification = self._dispatch(batch_id, "verification", candidate=candidate)[
+            "brief"
+        ]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"], self._base_report(verification, "verification")
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, candidate, changed)
+        return candidate, changed
+
+    def test_rewind_to_verification_binds_the_registered_candidate_through_qa(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, changed = self._registered_candidate_after_verification(batch_id)
+        evidence = self._evidence_bytes()
+        self._cli_rewind(batch_id, "verification")
+        stored = self._batch_record(batch_id)
+        self.assertIs(stored["risk_reassessment_required"], True)
+        self.assertEqual(stored["risk_reassessment_candidate"], candidate)
+        self.assertNotIn("risk_reassessment_pending_next", stored)
+        # The superseded assessments and reports stay readable and unmodified.
+        for path, content in evidence.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+        before = self._ledger_bytes()
+        blocked = self._cli_propose_qa(batch_id, candidate)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        self.assertIn(candidate, blocked.stderr.partition("REMEDY:")[2])
+        self.assertEqual(before, self._ledger_bytes())
+        verification = self._dispatch(batch_id, "verification", candidate=candidate)[
+            "brief"
+        ]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"], self._base_report(verification, "verification")
+        )
+        self._decide(batch_id, "accept")
+        assessed = self._cli_assess(batch_id, candidate, changed)
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        after = self._batch_record(batch_id)
+        self.assertIs(after["risk_reassessment_required"], False)
+        self.assertEqual(after["next_action"], "code-review")
+        self._reported_review(batch_id, candidate)
+        self._decide(batch_id, "accept")
+        proposal = self._cli_propose_qa(batch_id, candidate)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
     def test_an_illegal_reassessment_state_is_refused_before_any_ledger_write(
         self,
     ) -> None:
