@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **[Тест-автор в полном маршруте `/implement`]:** `test-author-preflight.sh` принимает необязательный `--worktree <путь>` и отвечает `checkout_mismatch`, если путь не совпадает с checkout скрипта или аргументы неверны, поэтому in-process developer отдельного worktree больше не получает `{"status":"ok"}` для основного checkout. Внешний transport автора не включает (`transport_unsupported`); любой отказ оставляет обычный TDD с названной причиной, не blocker. Новый clean-room сценарий `full_route_worktree` проверяет, что тест не попадает в основной checkout (#768).
+
 ## [1.5.1] - 2026-10-18
 
 ### Added
