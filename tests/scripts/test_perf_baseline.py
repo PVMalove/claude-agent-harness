@@ -453,6 +453,13 @@ class MainRunTests(unittest.TestCase):
             "        pass\n",
         )
         self._write(repo / ".gitignore", ".harness/\n")
+        # Как в настоящем checkout: без своего ini-файла rootdir pytest уходит к ближайшему
+        # предку с конфигурацией (у `make verify` TMPDIR лежит внутри репозитория), и `--lf` не
+        # узнаёт node id из `lastfailed`.
+        self._write(
+            repo / "pyproject.toml",
+            '[tool.pytest.ini_options]\ntestpaths = ["tests"]\n',
+        )
         identity = ["-c", "user.name=t", "-c", "user.email=t@example.com"]
         for argv in (
             ["git", "init", "-q"],
