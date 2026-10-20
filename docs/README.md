@@ -21,6 +21,7 @@
 | [Руководства и агенты](./agents/README.md) | Git, тикеты, артефакты, worktrees, релизы и русские описания агентов code-review-spec, code-review-standards, pr-composer и test-author. |
 | [Skills](./skills/README.md) | Русские описания first-party, global, role и vendor skills. |
 | [Hooks](./hooks/) | Русские описания проектных hooks и вспомогательных скриптов, включая `run-test.sh`, `test-author-guard.py` и `test-author-preflight.sh`. |
+| [Базовый замер 1.x](./perf/1.x-baseline/methodology.md) | Методика и сырые данные замера производительности до Harness Next. |
 | [Runtime discovery](./runtime-discovery.md) | Обнаружение skills в Claude Code и Codex. |
 
 [releases.md](./agents/releases.md) описывает порядок выпуска версии, а также проверку приватных

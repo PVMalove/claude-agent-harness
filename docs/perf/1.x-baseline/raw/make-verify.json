@@ -1,0 +1,19 @@
+{
+  "seconds": 601.4848152021877,
+  "returncode": 0,
+  "stages": {
+    "mypy": {
+      "status": "passed",
+      "seconds": 11.39
+    },
+    "pytest": {
+      "status": "passed",
+      "seconds": 337.59
+    },
+    "clean-room": {
+      "status": "passed",
+      "seconds": 250.22
+    }
+  },
+  "log": "make-verify.log"
+}
