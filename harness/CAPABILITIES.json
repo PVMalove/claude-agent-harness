@@ -87,7 +87,8 @@
       "orchestration",
       "orchestration.example.json",
       "adapters",
-      "context_builder"
+      "context_builder",
+      "container"
     ]
   }
 }

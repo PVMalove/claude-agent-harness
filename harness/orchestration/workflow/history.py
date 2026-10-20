@@ -1319,8 +1319,14 @@ def _validate_dispatch(
     accepted |= {fields - {"runtime_access"} for fields in set(accepted)}
     # The delta-review scope of a code-review after a fix-forward (issue #625) came after that.
     accepted |= {fields - {"delta_review_scope"} for fields in set(accepted)}
-    # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
+    # The conflict-resolver brief's resolver section (issue #534) is one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
+    # The image digests a docker brief pins (issue #704) only ever accompany its access plan.
+    accepted |= {
+        fields | {"runtime_images"}
+        for fields in set(accepted)
+        if "runtime_access" in fields
+    }
     accepted |= {fields | {"preserved_progress"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(

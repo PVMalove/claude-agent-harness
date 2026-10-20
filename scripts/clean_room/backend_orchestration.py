@@ -191,6 +191,19 @@ def run(ctx: SimpleNamespace) -> None:
     orchestration_root = orchestration_project / ".harness" / "orchestration"
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
+    # Issue #706: the egress proxy and its Dockerfile are a byte-identical, drift-checked payload
+    # of backend-orchestration only; a pvmalove-suite project never receives the container directory.
+    for proxy_file in ("egress_proxy.py", "Dockerfile.proxy"):
+        installed_proxy = orchestration_project / ".harness" / "container" / proxy_file
+        if not installed_proxy.is_file():
+            sys.exit(f"backend-orchestration payload is missing container/{proxy_file}")
+        if (
+            installed_proxy.read_bytes()
+            != (ROOT / "harness" / "container" / proxy_file).read_bytes()
+        ):
+            sys.exit(f"installed container/{proxy_file} differs from its source")
+    if (pv_project / ".harness" / "container").exists():
+        sys.exit("pvmalove-suite unexpectedly installed container resources")
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")

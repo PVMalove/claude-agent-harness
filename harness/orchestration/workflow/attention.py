@@ -61,7 +61,45 @@ from harness.orchestration.workflow.history import (
 )
 
 
-def _stale_dispatch_finding(dispatch_id: str, silent: int) -> dict[str, str]:
+def staged_report(dispatch: JsonObject) -> str | None:
+    """The report file a worker staged for this dispatch, if it is on disk.
+
+    A container worker cannot write the ledger, so it normally exits with its report still staged:
+    that report, not a cancel, is what a human should record first."""
+    staged = dispatch.get("report_staging_path")
+    return staged if isinstance(staged, str) and Path(staged).is_file() else None
+
+
+def _stale_dispatch_finding(
+    dispatch_id: str,
+    silent: int,
+    worker_exit: JsonObject | None = None,
+    staged: str | None = None,
+) -> dict[str, str]:
+    if worker_exit and staged:
+        return operational_guards.attention_finding(
+            "stale-dispatch",
+            dispatch_id,
+            last_safe_action=f"dispatch {dispatch_id}: the container worker exited (exit code {worker_exit.get('exit_code')}) and left a staged report at {staged}; nothing was recorded or cancelled",
+            recommended_human_action=f"inspect {staged}, then record it with report submit --file {staged}; "
+            f"only if that report is unusable, inspect {RECOVERY_EVIDENCE_COMMANDS} and record dispatch cancel --runtime-stopped before "
+            "batch resume-stop or batch rewind; then resolve this attention",
+        )
+    if worker_exit:
+        gone = worker_exit.get("state") == "missing"
+        outcome = (
+            "the container engine no longer has its worker container"
+            if gone
+            else f"the container engine reports its worker exited with exit code {worker_exit.get('exit_code')}"
+        )
+        return operational_guards.attention_finding(
+            "stale-dispatch",
+            dispatch_id,
+            last_safe_action=f"dispatch {dispatch_id}: {outcome}; its brief, any report and the recorded exit evidence stay as immutable evidence and nothing was cancelled",
+            recommended_human_action=f"the engine proves the worker stopped; inspect {RECOVERY_EVIDENCE_COMMANDS}, "
+            "then record dispatch cancel --runtime-stopped before "
+            "batch resume-stop or batch rewind; batch abandon is a separate human decision; then resolve this attention",
+        )
     return operational_guards.attention_finding(
         "stale-dispatch",
         dispatch_id,
@@ -165,12 +203,21 @@ def _attention_findings(
         threshold = frozen.get(
             "stale_dispatch_seconds", policy["stale_dispatch_seconds"]
         )
-        if (
-            status.get("state") in LIVE_DISPATCH_STATES
-            and _silent_seconds(status) >= threshold
+        worker_exit = (
+            status["worker_exit"]
+            if isinstance(status.get("worker_exit"), dict)
+            else None
+        )
+        if status.get("state") in LIVE_DISPATCH_STATES and (
+            worker_exit is not None or _silent_seconds(status) >= threshold
         ):
             findings.append(
-                _stale_dispatch_finding(entry["dispatch_id"], _silent_seconds(status))
+                _stale_dispatch_finding(
+                    entry["dispatch_id"],
+                    _silent_seconds(status),
+                    worker_exit,
+                    staged_report(dispatch) if worker_exit else None,
+                )
             )
     return findings
 
@@ -265,13 +312,25 @@ def _require_no_attention(
 
 
 def _flag_stale_dispatch(
-    ledger: LifecycleLedger, repo: Path, root: Path, dispatch: JsonObject, silent: int
+    ledger: LifecycleLedger,
+    repo: Path,
+    root: Path,
+    dispatch: JsonObject,
+    silent: int,
+    worker_exit: JsonObject | None = None,
 ) -> None:
     batch = _load_batch(root, dispatch["batch_id"])
     if _apply_attention(
         core_config._config(repo),
         batch,
-        [_stale_dispatch_finding(dispatch["dispatch_id"], silent)],
+        [
+            _stale_dispatch_finding(
+                dispatch["dispatch_id"],
+                silent,
+                worker_exit,
+                staged_report(dispatch) if worker_exit else None,
+            )
+        ],
         utils._now(),
     ):
         _safe_id(batch["batch_id"], "batch")

@@ -184,6 +184,8 @@ ROLE_TRANSPORTS = {"in-process", "external"}
 ACCESS_MODES = ("inherit", "sandbox", "unsandboxed")
 ACCESS_RESOURCES = ("checkout", "git_common", "shared_storage", "cache")
 ACCESS_OPERATIONS = ("qa", "git", "publish")
+# The container access component names its engine; docker is the default when it names none.
+CONTAINER_ENGINES = ("docker", "podman")
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.
 # Keep the default long enough for that work, while the handoff still requires frequent, explicit
@@ -199,6 +201,15 @@ DEFAULT_COMMUNICATION_POLICY = {
     "coordinator_report_language": "ru",
 }
 LIVE_DISPATCH_STATES = {DispatchState.DISPATCHED, DispatchState.WORKING}
+# A dispatch in one of these states needs no worker any more: its container resources may be released.
+TERMINAL_DISPATCH_STATES = frozenset(
+    {
+        DispatchState.REPORTED,
+        DispatchState.CANCELLED,
+        DispatchState.ABANDONED,
+        DispatchState.FAILED,
+    }
+)
 # The read-only commands an operator inspects before choosing any recovery or abandon (#679).
 RECOVERY_EVIDENCE_COMMANDS = (
     "batch auto-report, batch decision-packet, dispatch status and ledger validate"
@@ -614,7 +625,12 @@ AUTO_STOP_REASONS = {
         "deterministic-gate-failed",
         "ledger-validation-failed",
     ),
-    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+    "no-automatic-route": (
+        "unknown-reason",
+        "abandon-dead-end",
+        "supersede-dead-end",
+        "qa-environment-failure",
+    ),
 }
 AUTO_STOP_FIELDS = frozenset(
     {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}

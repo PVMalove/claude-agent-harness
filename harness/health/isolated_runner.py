@@ -3,8 +3,9 @@
 `.claude/hooks/run-test.sh <test-id>` запускает один выбранный тест командой `test_runner` из
 `.harness/project.json` внутри bubblewrap: checkout, `.git` и конфигурация runner доступны тесту
 и его потомкам только на чтение, сокеты сервисов хоста в `/run` скрыты, запись разрешена в
-каталоги `test_paths`, в `/tmp` (tmpfs) и в свежие `cache/` и `reports/` запуска. Тест никогда
-не запускается без песочницы, подтверждённой probe: любой провал до запуска даёт отказ. Вывод —
+каталоги `test_paths`, в `/tmp` (свой пустой каталог запуска, как hermetic `/tmp` в Bazel) и в
+свежие `cache/` и `reports/` запуска. Тест никогда не запускается без песочницы, подтверждённой
+probe: любой провал до запуска даёт отказ. Вывод —
 одна JSON-строка не длиннее 512 байт без путей, вывода теста и окружения; полный лог остаётся
 локальным артефактом запуска.
 
@@ -24,10 +25,22 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO, Callable, Iterable, Mapping, Protocol, Sequence, cast
+from typing import (
+    IO,
+    BinaryIO,
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    Protocol,
+    Sequence,
+    cast,
+)
 
 from harness.storage import storage_path
 
@@ -45,9 +58,13 @@ ZONE_SUFFIX = "/**"
 GLOB_CHARACTERS = frozenset("*?[]{}\\")
 # Top-level directories that hold the repository, the harness and runtime configuration.
 PROTECTED_TOP_LEVEL = frozenset({".git", ".harness", ".claude", ".agents", ".codex"})
+# The sandbox's /tmp, as in Bazel's hermetic /tmp: each launch mounts its own fresh, empty
+# directory of the run here (`_launch_tmp`), never the host's /tmp. HOME and TMPDIR of the test
+# point here; the short path keeps database sockets within AF_UNIX's 107-byte limit.
+SANDBOX_TMP = "/tmp"
 # The sandbox replaces these with its own /tmp, /run, /dev and /proc: a checkout below them is
 # invisible.
-MASKED_ROOTS = ("/tmp", "/run", "/dev", "/proc")
+MASKED_ROOTS = (SANDBOX_TMP, "/run", "/dev", "/proc")
 # Host service sockets live in /run (/var/run links there): the D-Bus buses and the systemd user
 # manager in /run/user/<uid>, container engines. A read-only bind does not stop connect(), and such
 # a service starts processes outside the sandbox, so the sandbox mounts an empty tmpfs over /run
@@ -353,10 +370,11 @@ def sandbox_argv(
     binds: Sequence[Path | Mount],
     command: Sequence[str],
     status_fd: int,
+    tmp: Path,
 ) -> list[str]:
-    """The bubblewrap argv of ADR 0014: a read-only root, private /dev, /proc and /tmp, an empty
-    /run without host sockets, writable `binds`, every namespace unshared and no capabilities;
-    `command` runs without a shell."""
+    """The bubblewrap argv of ADR 0014: a read-only root, private /dev and /proc, the launch's own
+    `tmp` as /tmp, an empty /run without host sockets, writable `binds`, every namespace unshared
+    and no capabilities; `command` runs without a shell."""
     argv = [
         bwrap,
         "--ro-bind",
@@ -366,8 +384,9 @@ def sandbox_argv(
         "/dev",
         "--proc",
         "/proc",
-        "--tmpfs",
-        "/tmp",
+        "--bind",
+        str(tmp),
+        SANDBOX_TMP,
         "--tmpfs",
         "/run",
     ]
@@ -407,8 +426,8 @@ def sandbox_environment(
     """The test's whole environment: allowlisted locale and PATH plus the run's own locations."""
     env = {name: environ[name] for name in ENV_ALLOWLIST if name in environ}
     env.update(
-        HOME="/tmp",
-        TMPDIR="/tmp",
+        HOME=SANDBOX_TMP,
+        TMPDIR=SANDBOX_TMP,
         XDG_CACHE_HOME=str(cache),
         PYTHONPYCACHEPREFIX=str(cache / "pycache"),
         HARNESS_TEST_CACHE_DIR=str(cache),
@@ -577,6 +596,20 @@ def _make_run_dir(repo: Path, run_id: str) -> Path:
         raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed") from None
 
 
+@contextmanager
+def _launch_tmp(run_dir: Path) -> Iterator[Path]:
+    """A fresh, empty directory of the run for one launch's /tmp, removed after the launch: the
+    data stays in the harness storage, and no launch sees what an earlier one left in /tmp."""
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="tmp-", dir=run_dir))
+    except OSError:
+        raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed") from None
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
 def _probe(
     *,
     bwrap: str,
@@ -617,12 +650,13 @@ def _probe(
         str(allowed),
     ]
     try:
-        result = launcher(
-            lambda fd: sandbox_argv(bwrap, repo, binds, command, fd),
-            env=env,
-            log=run_dir / "log.txt",
-            timeout=PROBE_TIMEOUT_SECONDS,
-        )
+        with _launch_tmp(run_dir) as tmp:
+            result = launcher(
+                lambda fd: sandbox_argv(bwrap, repo, binds, command, fd, tmp),
+                env=env,
+                log=run_dir / "log.txt",
+                timeout=PROBE_TIMEOUT_SECONDS,
+            )
         isolated = (
             result.exit_code == 0
             and not os.path.lexists(blocked)
@@ -754,12 +788,15 @@ def run_test(
                 readonly_targets=zones,
             )
             build_command = settings.build.command
-            built = launcher(
-                lambda fd: sandbox_argv(bwrap, repo, prepare_binds, build_command, fd),
-                env=sandbox_environment(cache, reports, environ),
-                log=run_dir / "log.txt",
-                timeout=TIMEOUT_SECONDS,
-            )
+            with _launch_tmp(run_dir) as tmp:
+                built = launcher(
+                    lambda fd: sandbox_argv(
+                        bwrap, repo, prepare_binds, build_command, fd, tmp
+                    ),
+                    env=sandbox_environment(cache, reports, environ),
+                    log=run_dir / "log.txt",
+                    timeout=TIMEOUT_SECONDS,
+                )
             if not built.started:
                 raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
             if built.timed_out:
@@ -793,13 +830,14 @@ def run_test(
                 json.dumps(argv),
             ]
         session_options = {"session": True} if use_database else {}
-        result = launcher(
-            lambda fd: sandbox_argv(bwrap, repo, binds, argv, fd),
-            env=env,
-            log=run_dir / "log.txt",
-            timeout=TIMEOUT_SECONDS,
-            **session_options,
-        )
+        with _launch_tmp(run_dir) as tmp:
+            result = launcher(
+                lambda fd: sandbox_argv(bwrap, repo, binds, argv, fd, tmp),
+                env=env,
+                log=run_dir / "log.txt",
+                timeout=TIMEOUT_SECONDS,
+                **session_options,
+            )
         if not result.started:
             raise Refused(ISOLATION_UNAVAILABLE, "sandbox_failed")
         if result.database_unavailable and not result.timed_out:
