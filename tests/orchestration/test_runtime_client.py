@@ -543,6 +543,373 @@ def test_a_windows_connect_gets_the_real_time_left_so_a_busy_pipe_can_time_out(
     assert limit <= 0
 
 
+# -- the Windows pipe through a fake of the _winapi boundary --------------------------------------
+# These run on every platform: the pipe takes its Win32 API as a parameter, so a scripted fake
+# stands in for ``_winapi`` and each rule of the transport is observed at that boundary.
+
+ERROR_BROKEN_PIPE = 109
+ERROR_PIPE_BUSY = 231
+ERROR_SEM_TIMEOUT = 121
+ERROR_ACCESS_DENIED = 5
+SQOS_IDENTIFICATION = 0x00100000 | 0x00010000
+
+
+class WinError(OSError):
+    """An ``OSError`` with ``winerror``, which only Windows fills in."""
+
+    def __init__(self, winerror: int) -> None:
+        super().__init__(f"winerror {winerror}")
+        self.winerror = winerror
+
+
+class FakeOverlapped:
+    """A started operation; a cancelled one ends as aborted (995)."""
+
+    event = 99
+
+    def __init__(self, moved: bytes) -> None:
+        self.moved = moved
+        self.cancelled = False
+
+    def GetOverlappedResult(self, wait: bool, /) -> tuple[int, int]:
+        return (0, 995) if self.cancelled else (len(self.moved), 0)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def getbuffer(self) -> bytes | None:
+        return self.moved
+
+
+class FakePipeApi:
+    """A scripted ``_winapi``: it records its calls and fails or stalls where a test says so.
+
+    With ``pending`` every read and write is still running when it starts. ``signalled`` says
+    whether its event is set when the pipe waits for it; an unset one runs into the time limit.
+    """
+
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    NULL = 0
+    OPEN_EXISTING = 3
+    FILE_FLAG_OVERLAPPED = 0x40000000
+    INFINITE = 0xFFFFFFFF
+    HANDLE = 7
+
+    def __init__(
+        self,
+        *,
+        busy: int = 0,
+        incoming: bytes = b"",
+        write_limit: int = 1 << 20,
+        pending: bool = False,
+        signalled: bool = True,
+        create_error: OSError | None = None,
+        named_wait_error: OSError | None = None,
+        event_wait_error: OSError | None = None,
+        read_error: OSError | None = None,
+        timing: FakeTime | None = None,
+    ) -> None:
+        self.busy = busy
+        self.incoming = bytearray(incoming)
+        self.write_limit = write_limit
+        self.pending = pending
+        self.signalled = signalled
+        self.create_error = create_error
+        self.named_wait_error = named_wait_error
+        self.event_wait_error = event_wait_error
+        self.read_error = read_error
+        self.timing = timing
+        self.written = bytearray()
+        self.create_calls: list[tuple[object, ...]] = []
+        self.named_waits: list[int] = []
+        self.event_waits: list[int] = []
+        self.operations: list[FakeOverlapped] = []
+        self.closed: list[int] = []
+
+    def CreateFile(self, *args: object) -> int:
+        self.create_calls.append(args)
+        if self.create_error is not None:
+            raise self.create_error
+        if self.busy:
+            self.busy -= 1
+            raise WinError(ERROR_PIPE_BUSY)
+        return self.HANDLE
+
+    def WaitNamedPipe(self, name: str, timeout: int, /) -> None:
+        self.named_waits.append(timeout)
+        if self.timing is not None:
+            self.timing.sleep(timeout / 1000)
+        if self.named_wait_error is not None:
+            raise self.named_wait_error
+
+    def _start(self, moved: bytes) -> tuple[FakeOverlapped, int]:
+        operation = FakeOverlapped(moved)
+        self.operations.append(operation)
+        return operation, (997 if self.pending else 0)
+
+    def WriteFile(
+        self, handle: int, buffer: bytes | memoryview, /, overlapped: bool = False
+    ) -> tuple[FakeOverlapped, int]:
+        chunk = bytes(buffer[: self.write_limit])
+        if self.signalled or not self.pending:
+            self.written.extend(chunk)
+        return self._start(chunk)
+
+    def ReadFile(
+        self, handle: int, size: int, /, overlapped: bool = False
+    ) -> tuple[FakeOverlapped, int]:
+        if self.read_error is not None:
+            raise self.read_error
+        data = bytes(self.incoming[:size])
+        del self.incoming[:size]
+        return self._start(data)
+
+    def WaitForMultipleObjects(
+        self, handles: list[int], wait_all: bool, milliseconds: int, /
+    ) -> int:
+        self.event_waits.append(milliseconds)
+        if self.event_wait_error is not None:
+            raise self.event_wait_error
+        return 0 if self.signalled else 258
+
+    def CloseHandle(self, handle: int, /) -> None:
+        self.closed.append(handle)
+
+
+def _frame(message: JsonObject) -> bytes:
+    body = json.dumps(message).encode()
+    return HEADER.pack(len(body)) + body
+
+
+def _frames(data: bytes) -> list[JsonObject]:
+    frames: list[JsonObject] = []
+    while data:
+        (length,) = HEADER.unpack_from(data)
+        frames.append(json.loads(data[HEADER.size : HEADER.size + length]))
+        data = data[HEADER.size + length :]
+    return frames
+
+
+def _pipe(api: FakePipeApi, limit: float | None = 10.0) -> runtime_client._PipeConnection:
+    return runtime_client._PipeConnection(api.HANDLE, lambda: limit, api)
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_a_windows_request_says_hello_then_asks_through_the_pipe_api(
+    dirs: Directories, monkeypatch: pytest.MonkeyPatch, pending: bool
+) -> None:
+    paths = runtime_client.runtime_paths(dirs.repo, dirs.environ)
+    paths.directory.mkdir(parents=True, mode=0o700)
+    paths.token.write_text(TOKEN)
+    api = FakePipeApi(
+        incoming=_frame(_ok("op-1.hello", HELLO_RESULT))
+        + _frame(_ok("op-1", {"state": "serving"})),
+        pending=pending,
+    )
+    client = RuntimeClient(dirs.repo, environ=dirs.environ)
+    # Without an `api` the pipe takes the real `_winapi` module, here the fake.
+    monkeypatch.setitem(sys.modules, "_winapi", api)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    reply = client.call("status", operation_id="op-1")
+
+    assert reply.result == {"state": "serving"}
+    hello, status = _frames(bytes(api.written))
+    assert hello["payload"]["token"] == TOKEN
+    assert status["operation_id"] == "op-1"
+    (create,) = api.create_calls
+    assert create[0] == str(client.paths.socket)
+    # The client lets the server identify it but not impersonate it.
+    assert create[5] == api.FILE_FLAG_OVERLAPPED | SQOS_IDENTIFICATION
+    assert api.closed == [api.HANDLE]
+    assert (api.event_waits != []) == pending
+    assert all(milliseconds > 0 for milliseconds in api.event_waits)
+
+
+def test_a_token_without_a_listening_runtime_is_runtime_unavailable(
+    dirs: Directories,
+) -> None:
+    paths = runtime_client.runtime_paths(dirs.repo, dirs.environ)
+    paths.directory.mkdir(parents=True, mode=0o700)
+    paths.token.write_text(TOKEN)
+    timing = FakeTime()
+    client = RuntimeClient(
+        dirs.repo, environ=dirs.environ, clock=timing.clock, sleep=timing.sleep
+    )
+
+    with pytest.raises(RuntimeClientError) as caught:
+        client.call("status", operation_id="x", timeout_seconds=1)
+
+    assert caught.value.code == "runtime_unavailable"
+    assert timing.sleeps
+
+
+def test_a_busy_pipe_is_waited_for_until_an_instance_is_free() -> None:
+    timing = FakeTime()
+    api = FakePipeApi(busy=2, timing=timing)
+    deadline = timing.now + 10
+
+    pipe = runtime_client._PipeConnection.open(
+        "pipe", lambda: deadline - timing.clock(), api
+    )
+
+    assert api.named_waits == [500, 500]
+    assert len(api.create_calls) == 3
+    pipe.close()
+
+
+def test_the_wait_for_a_busy_pipe_never_outlasts_the_time_left() -> None:
+    timing = FakeTime()
+    api = FakePipeApi(busy=1, timing=timing)
+    deadline = timing.now + 0.25
+
+    runtime_client._PipeConnection.open("pipe", lambda: deadline - timing.clock(), api)
+
+    assert api.named_waits == [250]
+
+
+def test_a_pipe_that_stays_busy_past_the_limit_is_a_timeout() -> None:
+    timing = FakeTime()
+    api = FakePipeApi(busy=10**6, timing=timing)
+    deadline = timing.now + 1.25
+
+    with pytest.raises(TimeoutError, match="stayed busy"):
+        runtime_client._PipeConnection.open(
+            "pipe", lambda: deadline - timing.clock(), api
+        )
+
+    assert api.named_waits == [500, 500, 250]
+
+
+def test_a_busy_pipe_without_a_limit_is_waited_for_in_slices() -> None:
+    api = FakePipeApi(busy=1)
+
+    runtime_client._PipeConnection.open("pipe", lambda: None, api)
+
+    assert api.named_waits == [500]
+
+
+def test_a_wait_for_a_busy_pipe_that_times_out_looks_again() -> None:
+    api = FakePipeApi(busy=1, named_wait_error=WinError(ERROR_SEM_TIMEOUT))
+
+    runtime_client._PipeConnection.open("pipe", lambda: 10.0, api)
+
+    assert len(api.create_calls) == 2
+
+
+def test_a_failed_wait_for_a_busy_pipe_is_raised() -> None:
+    api = FakePipeApi(busy=1, named_wait_error=WinError(ERROR_ACCESS_DENIED))
+
+    with pytest.raises(OSError, match="winerror 5"):
+        runtime_client._PipeConnection.open("pipe", lambda: 10.0, api)
+
+
+def test_an_open_error_other_than_busy_is_raised_at_once() -> None:
+    api = FakePipeApi(create_error=WinError(2))
+
+    with pytest.raises(OSError, match="winerror 2"):
+        runtime_client._PipeConnection.open("pipe", lambda: 10.0, api)
+
+    assert api.named_waits == []
+
+
+def test_a_write_in_parts_sends_every_byte() -> None:
+    api = FakePipeApi(write_limit=3)
+
+    _pipe(api).sendall(b"0123456789")
+
+    assert bytes(api.written) == b"0123456789"
+    assert len(api.operations) == 4
+
+
+def test_a_write_that_does_not_end_by_the_limit_is_cancelled_as_a_timeout() -> None:
+    api = FakePipeApi(pending=True, signalled=False)
+
+    with pytest.raises(TimeoutError, match="take the request"):
+        _pipe(api).sendall(b"request")
+
+    assert api.operations[0].cancelled
+
+
+def test_a_read_gives_what_the_runtime_sent_in_pieces() -> None:
+    pipe = _pipe(FakePipeApi(incoming=b"abcdef"))
+
+    assert (pipe.recv(4), pipe.recv(4)) == (b"abcd", b"ef")
+
+
+def test_a_read_that_does_not_end_by_the_limit_is_cancelled_as_a_timeout() -> None:
+    api = FakePipeApi(pending=True, signalled=False)
+
+    with pytest.raises(TimeoutError, match="answer in time"):
+        _pipe(api).recv(4)
+
+    assert api.operations[0].cancelled
+
+
+def test_a_passed_limit_cancels_an_operation_without_waiting() -> None:
+    api = FakePipeApi(pending=True)
+
+    with pytest.raises(TimeoutError):
+        _pipe(api, limit=0.0).recv(4)
+
+    assert api.event_waits == []
+    assert api.operations[0].cancelled
+
+
+def test_an_operation_without_a_limit_waits_without_end() -> None:
+    api = FakePipeApi(incoming=b"ok", pending=True)
+
+    assert _pipe(api, limit=None).recv(2) == b"ok"
+
+    assert api.event_waits == [api.INFINITE]
+
+
+def test_a_broken_pipe_reads_as_a_closed_connection() -> None:
+    api = FakePipeApi(read_error=WinError(ERROR_BROKEN_PIPE))
+
+    assert _pipe(api).recv(4) == b""
+
+
+def test_a_read_error_other_than_a_broken_pipe_is_raised() -> None:
+    api = FakePipeApi(read_error=WinError(ERROR_ACCESS_DENIED))
+
+    with pytest.raises(OSError, match="winerror 5"):
+        _pipe(api).recv(4)
+
+
+def test_a_failed_wait_cancels_the_operation_and_is_raised() -> None:
+    api = FakePipeApi(pending=True, event_wait_error=OSError("the wait failed"))
+
+    with pytest.raises(OSError, match="the wait failed"):
+        _pipe(api).recv(4)
+
+    assert api.operations[0].cancelled
+
+
+def test_a_closed_pipe_refuses_io_and_closing_twice_is_harmless() -> None:
+    api = FakePipeApi()
+    pipe = _pipe(api)
+
+    pipe.close()
+    pipe.close()
+
+    assert api.closed == [api.HANDLE]
+    with pytest.raises(OSError, match="closed"):
+        pipe.sendall(b"x")
+    with pytest.raises(OSError, match="closed"):
+        pipe.recv(1)
+
+
+def test_leaving_the_context_closes_the_pipe() -> None:
+    api = FakePipeApi()
+
+    with _pipe(api):
+        assert api.closed == []
+
+    assert api.closed == [api.HANDLE]
+
+
 if sys.platform == "win32":
 
     def test_a_pipe_whose_only_instance_is_taken_ends_in_runtime_unavailable(
