@@ -149,7 +149,12 @@ def verification_plan_digest(plan: Mapping[str, object]) -> str:
 
 
 def allowed_tools_digest(tools: Sequence[str]) -> str:
-    """Digest of the tool list a brief grants, bound to the transition with the hook policy (issue #794)."""
+    """Digest of the exact tool list a brief grants, bound to the transition with the hook policy (issue #794).
+
+    The transition holds this digest instead of the list: any widened, narrowed, reordered or replaced
+    list changes it, so the approval breaks exactly as it would if the list itself were bound, and the
+    transition does not grow with the tool list.
+    """
     return _digest(list(tools))
 
 

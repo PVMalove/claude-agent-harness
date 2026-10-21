@@ -406,6 +406,23 @@ def test_a_pinned_hook_policy_binds_the_allowed_tools_to_the_transition() -> Non
         assert guards.transition_digest(other) != digest
 
 
+def test_the_allowed_tools_digest_binds_the_list_itself_not_only_its_size() -> None:
+    """The transition carries the digest of the exact list, so any widened, narrowed, reordered or
+    replaced list breaks the approval, as binding the list itself would."""
+    tools = ["Read", "Grep", "Bash"]
+    digest = guards.allowed_tools_digest(tools)
+
+    assert guards.allowed_tools_digest(list(tools)) == digest
+    for other in (
+        [*tools, "Write"],
+        tools[:-1],
+        list(reversed(tools)),
+        ["Read", "Grep", "Edit"],
+        [],
+    ):
+        assert guards.allowed_tools_digest(other) != digest
+
+
 def test_a_brief_without_a_pinned_hook_policy_keeps_its_legacy_digest() -> None:
     legacy = guards.bind_transition(_transition(), {"allowed_tools": ["Read"]})
 
