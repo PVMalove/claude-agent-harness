@@ -6,9 +6,11 @@ import argparse
 import ast
 import copy
 import importlib
+import importlib.util
 import inspect
 import json
 import pkgutil
+import sys
 from collections.abc import Callable, Iterable, Iterator
 from enum import StrEnum
 from pathlib import Path
@@ -29,6 +31,7 @@ from harness.orchestration import (
 )
 from harness.orchestration.core import ci_source, constants, system_fields
 from harness.diagnostics import DIAGNOSTIC_CODES, DIAGNOSTIC_SEVERITIES
+from harness.health.project_files import HOOK_PROFILES
 from harness.orchestration.core.system_fields import (
     CONTRACT_VERSION,
     REGISTRY_PATH,
@@ -50,6 +53,23 @@ from harness.orchestration.workflow import (
     resolver_state,
     supersede,
 )
+
+_HOOKS_DIR = Path(__file__).resolve().parents[2] / "harness" / "project" / "hooks"
+
+
+def _load_hook_response() -> object:
+    """Import the standalone hook helper the way an installed project does."""
+    spec = importlib.util.spec_from_file_location(
+        "hook_response_contract", _HOOKS_DIR / "hook_response.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+hook_response = _load_hook_response()
 
 # The v1 inventory: every field the registry must carry.
 V1_FIELDS = frozenset(
@@ -130,6 +150,10 @@ V1_FIELDS = frozenset(
         "batch.required_gate",
         "verification_plan.selection",
         "verification_plan.stage_kind",
+        "hook.id",
+        "hook.profile",
+        "hook.decision",
+        "hook.reason_code",
     }
 )
 
@@ -241,6 +265,7 @@ def test_the_defaults_and_groups_of_the_inventory() -> None:
         "context_package.role": "shared",
         "batch.required_gate": "none",
         "qa_lane.owner_kind": "dispatch",
+        "hook.profile": "standard",
     }
     assert {
         field_id: set(field.groups)
@@ -286,6 +311,7 @@ def test_the_fields_that_drive_no_automatic_decision() -> None:
         "batch.required_gate",
         "telemetry.session_kind",
         "verification_plan.stage_kind",
+        "hook.reason_code",
     }
 
 
@@ -972,6 +998,15 @@ BINDINGS.update(
         },
         "runtime.failure_domain": {
             "runtime_client.FAILURE_DOMAINS": runtime_client.FAILURE_DOMAINS
+        },
+        "hook.id": {"hook_response.HOOKS": hook_response.HOOKS},  # type: ignore[attr-defined]
+        "hook.profile": {
+            "project_files.HOOK_PROFILES": HOOK_PROFILES,
+            "hook_response.PROFILES": hook_response.PROFILES,  # type: ignore[attr-defined]
+        },
+        "hook.decision": {"hook_response.DECISIONS": hook_response.DECISIONS},  # type: ignore[attr-defined]
+        "hook.reason_code": {
+            "hook_response.REASON_CODES": hook_response.REASON_CODES  # type: ignore[attr-defined]
         },
     }
 )

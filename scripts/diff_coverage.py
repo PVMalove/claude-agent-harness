@@ -27,6 +27,7 @@ EXCLUDED_FROM_GATE = frozenset(
         "harness/project/hooks/tracker-issue.py",
         "harness/project/hooks/pr_commands.py",
         "harness/project/hooks/direct_commits.py",
+        "harness/project/hooks/hook_response.py",
     }
 )
 # The clean-room scenarios `scripts/test_clean_room.py` runs, split into their own package.

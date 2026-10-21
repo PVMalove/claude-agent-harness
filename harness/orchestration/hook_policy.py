@@ -16,6 +16,8 @@ from pathlib import Path
 
 from ..errors import PolicyError
 from ..health.project_files import HOOK_PROFILES, hook_policy_problems
+from .contract import ContractError
+from .core.system_fields import enum_problem, enum_remedy, load_registry
 
 PROJECT_JSON_REL = ".harness/project.json"
 DEFAULT_PROFILE = "standard"
@@ -137,3 +139,64 @@ def hook_policy_sha256(policy: Mapping[str, object]) -> str:
 def project_hook_policy_sha256(repo: Path) -> str:
     """Хеш политики проекта ``repo``, прочитанной только из ``.harness/project.json``."""
     return hook_policy_sha256(load_policy(repo))
+
+
+HOOK_RESPONSE_FIELDS = (
+    "hook_id",
+    "profile",
+    "decision",
+    "reason_code",
+    "remedy",
+    "evidence_ref",
+)
+# The verdict key and the systemFields.v1 field whose values it must take.
+_HOOK_RESPONSE_ENUMS = (
+    ("hook_id", "hook.id"),
+    ("profile", "hook.profile"),
+    ("decision", "hook.decision"),
+    ("reason_code", "hook.reason_code"),
+)
+
+
+def _contract_error(problem: str, remedy: str) -> ContractError:
+    return ContractError(f"hook response {problem}", remedy=remedy)
+
+
+def parse_hook_response(text: str) -> dict[str, object]:
+    """Разобрать вердикт управляемого hook: последняя непустая строка вывода — JSON-объект.
+
+    Объект несёт ровно поля ``HOOK_RESPONSE_FIELDS``; ``hook_id``, ``profile``, ``decision`` и
+    ``reason_code`` обязаны быть значениями реестра systemFields.v1, иначе — ``ContractError``.
+    """
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise _contract_error(
+            "is empty", "run the hook through hook_response.py and pass its output"
+        )
+    try:
+        data = json.loads(lines[-1])
+    except ValueError as exc:
+        raise _contract_error(
+            "is not valid JSON", "the last output line must be the JSON verdict"
+        ) from exc
+    if not isinstance(data, dict) or set(data) != set(HOOK_RESPONSE_FIELDS):
+        raise _contract_error(
+            f"must be an object with exactly: {', '.join(HOOK_RESPONSE_FIELDS)}",
+            "emit the six verdict fields and no others",
+        )
+    registry = load_registry()
+    for key, field_id in _HOOK_RESPONSE_ENUMS:
+        allowed = registry.fields[field_id].allowed
+        if problem := enum_problem(f"hook response {key}", data[key], allowed):
+            raise _contract_error(
+                problem.removeprefix("hook response "),
+                enum_remedy(f"hook response {key}", allowed),
+            )
+    if not isinstance(data["remedy"], str):
+        raise _contract_error("remedy must be a string", "set remedy to text")
+    if data["evidence_ref"] is not None and not isinstance(data["evidence_ref"], str):
+        raise _contract_error(
+            "evidence_ref must be a string or null",
+            "set evidence_ref to a path or null",
+        )
+    return data

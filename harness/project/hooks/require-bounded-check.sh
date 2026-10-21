@@ -8,6 +8,15 @@
 # The shared shell parser keeps argv boundaries: literal text arguments, comments and inert
 # heredoc bodies do not fire; executable substitutions and nested shell commands still do.
 # Absent .harness/project.json this hook is inactive, so it never fires on an unharnessed project.
+# Verdict envelope (hook_response.py): reruns this script, answers with the JSON verdict and the
+# exit code of the hook policy. Without Python or the helper the script below decides alone.
+if [ -z "${HARNESS_HOOK_ENVELOPE:-}" ]; then
+  ENVELOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
+  ENVELOPE_PY="$(command -v python3 || command -v python)"
+  if [ -n "$ENVELOPE_PY" ] && [ -f "$ENVELOPE_DIR/hook_response.py" ]; then
+    exec "$ENVELOPE_PY" "$ENVELOPE_DIR/hook_response.py" run require-bounded-check "${BASH:-bash}" "$0"
+  fi
+fi
 INPUT=$(cat)
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-.}"

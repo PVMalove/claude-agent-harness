@@ -68,6 +68,26 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pvmalove-suite init did not scaffold block-pr-merge.sh")
     if not (pv_project / ".claude" / "hooks" / "pr_commands.py").is_file():
         sys.exit("pvmalove-suite init did not scaffold the pr_commands.py hook helper")
+    if not (pv_project / ".claude" / "hooks" / "hook_response.py").is_file():
+        sys.exit("pvmalove-suite init did not scaffold the hook_response.py envelope")
+    if json.loads(project_json.read_text(encoding="utf-8")).get("hook_policy") != {
+        "profile": "standard"
+    }:
+        sys.exit("pvmalove-suite init did not set hook_policy.profile standard")
+    for command, code, decision in (
+        ("gh pr merge 1", 2, "block"),
+        ("echo done", 0, "allow"),
+    ):
+        answered = run_hook(merge_hook, pv_project, command)
+        verdict = json.loads(answered.stderr.strip().splitlines()[-1])
+        if (answered.returncode, verdict.get("decision"), verdict.get("hook_id")) != (
+            code,
+            decision,
+            "block-pr-merge",
+        ):
+            sys.exit(
+                f"block-pr-merge.sh did not answer {decision} in JSON: {command!r}"
+            )
 
     # A PR launched from the primary checkout can explicitly target a tested linked worktree.
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.
