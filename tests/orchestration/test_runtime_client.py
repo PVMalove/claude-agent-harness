@@ -1,16 +1,18 @@
 """The Python client of ``harness-runtime`` and the ``runtime status`` command (ADR 0021).
 
-Here a scripted runtime stands at the Unix socket, so each rule of the client is observed at the
-connection: the address, the token, the retry of one ``operation_id`` and the typed errors with
-exit code 2. The seam with the real Rust process, driven through the coordinator CLI, is at the end
-of the module; CI builds the binary first (``HARNESS_REQUIRE_RUNTIME=1`` makes a missing one fail).
+Here a scripted runtime stands at the Unix socket (on Windows, at a named pipe), so each rule of
+the client is observed at the connection: the address, the token, the retry of one ``operation_id``
+and the typed errors with exit code 2. The contract tests run unchanged on both transports; only
+the tests of Unix file modes and of the Unix socket path limit are Unix-only. The seam with the
+real Rust process, driven through the coordinator CLI, is at the end of the module; CI builds the
+binary first (``HARNESS_REQUIRE_RUNTIME=1`` makes a missing one fail).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import select
+import queue
 import shutil
 import signal
 import socket
@@ -22,7 +24,9 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
-from pathlib import Path
+from contextlib import closing
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Protocol
 
 import pytest
 
@@ -30,9 +34,18 @@ from harness.orchestration import coordinator, runtime_client
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 
-pytestmark = pytest.mark.skipif(
+if sys.platform == "win32":
+    import _winapi
+
+    # Ctrl+Break reaches only a process of its own group.
+    NEW_PROCESS_GROUP = subprocess.CREATE_NEW_PROCESS_GROUP
+else:
+    NEW_PROCESS_GROUP = 0
+
+# The rules that exist only for Unix files and sockets; the protocol contract has no such skip.
+UNIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
-    reason="the runtime IPC is a Unix domain socket; Windows uses a named pipe in a later ticket",
+    reason="a Unix socket path limit and POSIX file modes; Windows uses a pipe name and a DACL",
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,7 +53,11 @@ TOKEN = "t" * 64
 HEADER = struct.Struct(">I")
 # A socket path is limited to 100 bytes, which a pytest or CI temporary directory can exceed. A
 # writable /tmp is short; without one the temporary directory of the environment (TMPDIR) is used.
-SHORT_TMP = "/tmp" if os.access("/tmp", os.W_OK | os.X_OK) else tempfile.gettempdir()
+SHORT_TMP = (
+    "/tmp"
+    if sys.platform != "win32" and os.access("/tmp", os.W_OK | os.X_OK)
+    else tempfile.gettempdir()
+)
 
 
 class Directories:
@@ -65,7 +82,10 @@ def dirs() -> Iterator[Directories]:
     shutil.rmtree(directories.base, ignore_errors=True)
 
 
-def _read(connection: socket.socket, count: int) -> bytes:
+Connection = runtime_client._Transport  # a Unix socket or a named pipe end
+
+
+def _read(connection: Connection, count: int) -> bytes:
     data = b""
     while len(data) < count:
         chunk = connection.recv(count - len(data))
@@ -75,13 +95,13 @@ def _read(connection: socket.socket, count: int) -> bytes:
     return data
 
 
-def _read_frame(connection: socket.socket) -> JsonObject:
+def _read_frame(connection: Connection) -> JsonObject:
     (length,) = HEADER.unpack(_read(connection, HEADER.size))
     loaded: JsonObject = json.loads(_read(connection, length))
     return loaded
 
 
-def _write_frame(connection: socket.socket, message: JsonObject) -> None:
+def _write_frame(connection: Connection, message: JsonObject) -> None:
     body = json.dumps(message).encode()
     connection.sendall(HEADER.pack(len(body)) + body)
 
@@ -121,6 +141,92 @@ HELLO_RESULT: JsonObject = {
 }
 
 
+class Listener(Protocol):
+    """The listening end of a scripted runtime."""
+
+    def accept(self) -> Connection:
+        """Wait for a client; raise ``OSError`` once the listener is closed."""
+
+    def close(self) -> None:
+        """Stop listening."""
+
+
+if sys.platform != "win32":
+
+    class _SocketListener:
+        """The Unix socket at which a scripted runtime listens."""
+
+        def __init__(self, address: str) -> None:
+            self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.socket.bind(address)
+            self.socket.listen()
+
+        def accept(self) -> Connection:
+            connection, _ = self.socket.accept()
+            return connection
+
+        def close(self) -> None:
+            self.socket.close()
+
+
+if sys.platform == "win32":
+
+    class _PipeListener:
+        """The named pipe at which a scripted runtime listens: one instance per connection."""
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.closed = threading.Event()
+            self.instance = self._create(first=True)
+
+        def _create(self, *, first: bool) -> int:
+            flags = _winapi.PIPE_ACCESS_DUPLEX | _winapi.FILE_FLAG_OVERLAPPED
+            if first:
+                flags |= _winapi.FILE_FLAG_FIRST_PIPE_INSTANCE
+            return _winapi.CreateNamedPipe(
+                self.name,
+                flags,
+                # Byte type and byte read mode are both 0, the default.
+                _winapi.PIPE_WAIT,
+                _winapi.PIPE_UNLIMITED_INSTANCES,
+                65536,
+                65536,
+                _winapi.NMPWAIT_WAIT_FOREVER,
+                _winapi.NULL,
+            )
+
+        def accept(self) -> Connection:
+            instance = self.instance
+            overlapped = _winapi.ConnectNamedPipe(instance, overlapped=True)
+            try:
+                while _winapi.WaitForMultipleObjects([overlapped.event], False, 50) != 0:
+                    if self.closed.is_set():
+                        raise OSError("the listener is closed")
+            except BaseException:
+                # The cancelled connect ends at once; only then is the handle closed.
+                overlapped.cancel()
+                overlapped.GetOverlappedResult(True)
+                _winapi.CloseHandle(instance)
+                raise
+            overlapped.GetOverlappedResult(True)
+            self.instance = self._create(first=False)
+            return runtime_client._PipeConnection(instance, lambda: 10.0)
+
+        def close(self) -> None:
+            self.closed.set()
+
+
+if sys.platform == "win32":
+
+    def _listen(address: Path) -> Listener:
+        return _PipeListener(str(address))
+
+else:
+
+    def _listen(address: Path) -> Listener:
+        return _SocketListener(str(address))
+
+
 class ScriptedRuntime:
     """A runtime at the socket of a repository: it speaks the protocol and records every frame."""
 
@@ -138,9 +244,7 @@ class ScriptedRuntime:
         self.connections = 0
         self.paths.directory.mkdir(parents=True, mode=0o700)
         self.paths.token.write_text(TOKEN)
-        self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.listener.bind(str(self.paths.socket))
-        self.listener.listen()
+        self.listener = _listen(self.paths.socket)
         self.thread = threading.Thread(target=self._accept, daemon=True)
         self.thread.start()
 
@@ -150,7 +254,7 @@ class ScriptedRuntime:
     def _accept(self) -> None:
         while True:
             try:
-                connection, _ = self.listener.accept()
+                connection = self.listener.accept()
             except OSError:
                 return
             self.connections += 1
@@ -161,8 +265,8 @@ class ScriptedRuntime:
                 target=self._serve, args=(connection,), daemon=True
             ).start()
 
-    def _serve(self, connection: socket.socket) -> None:
-        with connection:
+    def _serve(self, connection: Connection) -> None:
+        with closing(connection):
             try:
                 while True:
                     request = _read_frame(connection)
@@ -227,9 +331,38 @@ class FakeTime:
 
 def test_the_repo_id_is_the_shared_golden_vector() -> None:
     # The Rust test `the_repo_id_is_sixteen_hex_digits_of_the_sha256_of_the_path` holds the same pair.
-    assert runtime_client.repo_id(Path("/r/.git")) == "2d09593ea5e01029"
+    assert runtime_client.repo_id(PurePosixPath("/r/.git")) == "2d09593ea5e01029"
 
 
+def test_the_windows_repo_id_is_the_shared_golden_vector() -> None:
+    # The Rust test `the_repo_id_of_a_windows_path_is_the_same_on_every_platform` holds the same pair.
+    assert runtime_client.repo_id(PureWindowsPath(r"C:\r\.git")) == "34fdb197a11ee020"
+
+
+def test_the_windows_pipe_name_is_the_shared_golden_vector() -> None:
+    # The Rust test `the_windows_pipe_is_named_after_the_repo_id` holds the same pair.
+    assert (
+        runtime_client.pipe_name("34fdb197a11ee020")
+        == r"\\.\pipe\harness-runtime-34fdb197a11ee020"
+    )
+
+
+def test_on_windows_the_address_is_a_named_pipe_without_the_unix_path_limit(
+    dirs: Directories,
+) -> None:
+    long_xdg = dirs.xdg / ("x" * 100)
+
+    paths = runtime_client.runtime_paths(
+        dirs.repo, {"XDG_RUNTIME_DIR": str(long_xdg)}, platform="win32"
+    )
+
+    identity = runtime_client.repo_id(dirs.repo / ".git")
+    assert str(paths.socket) == rf"\\.\pipe\harness-runtime-{identity}"
+    assert paths.directory == long_xdg / "harness"
+    assert paths.token == long_xdg / "harness" / f"{identity}.token"
+
+
+@UNIX_ONLY
 def test_the_socket_and_the_token_sit_in_the_xdg_runtime_directory(
     dirs: Directories,
 ) -> None:
@@ -272,6 +405,7 @@ def test_a_directory_that_is_no_repository_has_no_address(dirs: Directories) -> 
     assert caught.value.code == "runtime_unavailable"
 
 
+@UNIX_ONLY
 def test_a_socket_path_over_the_limit_is_refused(dirs: Directories) -> None:
     environ = {"XDG_RUNTIME_DIR": str(dirs.xdg / ("x" * 100))}
 
@@ -461,6 +595,7 @@ def test_a_wrong_token_is_unauthorized_peer(
     assert caught.value.code == "unauthorized_peer"
 
 
+@UNIX_ONLY
 def test_a_platform_without_unix_sockets_is_runtime_unavailable(
     dirs: Directories, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -476,8 +611,10 @@ def test_a_platform_without_unix_sockets_is_runtime_unavailable(
 def test_the_module_imports_where_the_socket_module_has_no_unix_apis() -> None:
     script = (
         "import socket, os\n"
-        "del socket.AF_UNIX\n"
-        "del os.getuid\n"
+        "if hasattr(socket, 'AF_UNIX'):\n"
+        "    del socket.AF_UNIX\n"
+        "if hasattr(os, 'getuid'):\n"
+        "    del os.getuid\n"
         "import harness.orchestration.runtime_client\n"
     )
 
@@ -528,7 +665,7 @@ def test_runtime_status_prints_what_the_runtime_reported(
     assert report["server_version"] == "0.1.0"
     assert report["protocol"] == {"major": 1, "minor": 0}
     assert report["runtime"] == {"state": "serving"}
-    assert report["socket"].endswith(".sock")
+    assert report["socket"] == str(runtimes[0].paths.socket)
 
 
 def test_an_unreachable_runtime_exits_2_with_the_code_in_the_remedy(
@@ -573,10 +710,11 @@ def test_an_error_of_the_runtime_exits_2_with_its_code_in_the_remedy(
 
 def _runtime_binary() -> Path:
     configured = os.environ.get("HARNESS_RUNTIME_BIN")
+    name = "harness-runtime.exe" if sys.platform == "win32" else "harness-runtime"
     binary = (
         Path(configured)
         if configured
-        else ROOT / "native/harness-runtime/target/debug/harness-runtime"
+        else ROOT / "native/harness-runtime/target/debug" / name
     )
     if binary.is_file():
         return binary
@@ -599,19 +737,34 @@ class RuntimeProcess:
             stderr=subprocess.PIPE,
             text=True,
             env={**os.environ, "XDG_RUNTIME_DIR": str(directories.xdg)},
+            creationflags=NEW_PROCESS_GROUP,
         )
         self.paths = runtime_client.runtime_paths(directories.repo, directories.environ)
 
     def wait_until_ready(self) -> dict[str, str]:
-        assert self.process.stdout is not None
-        ready, _, _ = select.select([self.process.stdout], [], [], 20)
-        assert ready, "harness-runtime printed no readiness line within 20 seconds"
-        line: dict[str, str] = json.loads(self.process.stdout.readline())
+        stdout = self.process.stdout
+        assert stdout is not None
+        # A thread reads the line: `select` does not work on a pipe on Windows.
+        lines: queue.Queue[str] = queue.Queue()
+        threading.Thread(
+            target=lambda: lines.put(stdout.readline()), daemon=True
+        ).start()
+        try:
+            text = lines.get(timeout=20)
+        except queue.Empty:
+            pytest.fail("harness-runtime printed no readiness line within 20 seconds")
+        line: dict[str, str] = json.loads(text)
         assert line["status"] == "ready"
         return line
 
-    def stop(self, sig: int = signal.SIGTERM) -> int:
-        self.process.send_signal(sig)
+    def stop(self, *, hard: bool = False) -> int:
+        """End the process: SIGTERM, or Ctrl+Break on Windows; ``hard`` kills it."""
+        if hard:
+            self.process.kill()
+        elif sys.platform == "win32":
+            self.process.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            self.process.send_signal(signal.SIGTERM)
         code = self.process.wait(timeout=20)
         for stream in (self.process.stdout, self.process.stderr):
             if stream:
@@ -625,7 +778,7 @@ def real_runtime(dirs: Directories) -> Iterator[RuntimeProcess]:
     runtime.wait_until_ready()
     yield runtime
     if runtime.process.poll() is None:
-        runtime.stop(signal.SIGKILL)
+        runtime.stop(hard=True)
 
 
 def _cli(
@@ -663,6 +816,23 @@ def _cli(
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+if sys.platform == "win32":
+
+    def _endpoint_exists(address: Path) -> bool:
+        """Whether the named pipe exists. `Path.exists` would connect to the pipe."""
+        try:
+            _winapi.WaitNamedPipe(str(address), 1)
+        except OSError as exc:
+            return bool(getattr(exc, "winerror", None) != 2)
+        return True
+
+else:
+
+    def _endpoint_exists(address: Path) -> bool:
+        """Whether the socket file exists."""
+        return address.exists()
 
 
 def test_the_coordinator_cli_reads_the_state_of_a_real_runtime(
@@ -704,6 +874,7 @@ def test_runtime_status_takes_no_state_dir(dirs: Directories) -> None:
     assert "unrecognized arguments" in result.stderr
 
 
+@UNIX_ONLY
 def test_the_runtime_directory_the_socket_and_the_token_are_private(
     dirs: Directories, real_runtime: RuntimeProcess
 ) -> None:
@@ -747,11 +918,19 @@ def test_an_incompatible_major_exits_2_as_protocol_unsupported(
     assert lines[1].startswith("REMEDY: [protocol_unsupported] update harness")
 
 
-def _raw_session(runtime: RuntimeProcess) -> socket.socket:
-    """A connection that has said hello with the real token."""
+def _open_raw(address: Path) -> Connection:
+    """A client connection of this platform to the runtime, with a limit of 10 seconds."""
+    if sys.platform == "win32":
+        return runtime_client._PipeConnection.open(str(address), lambda: 10.0)
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.settimeout(10)
-    connection.connect(str(runtime.paths.socket))
+    connection.connect(str(address))
+    return connection
+
+
+def _raw_session(runtime: RuntimeProcess) -> Connection:
+    """A connection that has said hello with the real token."""
+    connection = _open_raw(runtime.paths.socket)
     version = {"major": 1, "minor": 0}
     _write_frame(
         connection,
@@ -785,7 +964,7 @@ def _raw_request(operation: str, **extra: object) -> JsonObject:
 def test_an_unknown_request_field_is_malformed_request(
     dirs: Directories, real_runtime: RuntimeProcess
 ) -> None:
-    with _raw_session(real_runtime) as connection:
+    with closing(_raw_session(real_runtime)) as connection:
         _write_frame(connection, _raw_request("status", surprise=1))
         refused = _read_frame(connection)
         _write_frame(connection, _raw_request("status"))
@@ -813,7 +992,7 @@ def test_a_stopped_runtime_is_runtime_unavailable_and_leaves_no_socket(
     dirs: Directories, real_runtime: RuntimeProcess
 ) -> None:
     assert real_runtime.stop() == 0
-    assert not real_runtime.paths.socket.exists()
+    assert not _endpoint_exists(real_runtime.paths.socket)
     assert not real_runtime.paths.token.exists()
 
     result = _cli(dirs, timeout="0.3")
@@ -826,8 +1005,10 @@ def test_a_stopped_runtime_is_runtime_unavailable_and_leaves_no_socket(
 def test_a_killed_runtime_is_replaced_and_its_stale_socket_removed(
     dirs: Directories, real_runtime: RuntimeProcess
 ) -> None:
-    real_runtime.stop(signal.SIGKILL)
-    assert real_runtime.paths.socket.exists()
+    real_runtime.stop(hard=True)
+    if sys.platform != "win32":
+        # A killed Unix runtime leaves its socket file; a pipe goes away with its process.
+        assert real_runtime.paths.socket.exists()
     stale_token = real_runtime.paths.token.read_text()
 
     replacement = RuntimeProcess(dirs)
