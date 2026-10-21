@@ -2,6 +2,7 @@
 name = "ipc"
 description = "Local IPC server of harness-runtime: Unix domain socket, peer and token checks"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true

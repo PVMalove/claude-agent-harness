@@ -1,8 +1,11 @@
 //! Entry point of the `harness-runtime` process (ADR 0021, section 8).
 //!
 //! `harness-runtime serve [--repo <path>]` serves the local IPC of one repository until it gets
-//! SIGINT or SIGTERM. Exit code 0 is a normal stop, 2 is a refusal to start and 1 is a failure
-//! of the running server (ADR 0021, section 8).
+//! SIGINT or SIGTERM. ADR 0021, section 8 defines exit code 0 (a normal stop) and 2 (a refusal to
+//! start). The ADR leaves a failure of a server that is already ready undefined, so this
+//! implementation picks 1 for it. A supervisor learns that the start worked from the readiness
+//! line, so a failure to write that line is a refusal to start (2), not a failure of a running
+//! server.
 
 use std::env;
 use std::ffi::OsString;
@@ -50,7 +53,7 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<ServeArgs, Str
     Ok(ServeArgs { repo })
 }
 
-/// Why `serve` ended with an error: it never started, or it failed after it was ready.
+/// Why `serve` ended with an error: it never reported ready, or it failed after it was ready.
 #[derive(Debug)]
 enum Failure {
     Refused(String),
@@ -67,7 +70,7 @@ fn serve(args: &ServeArgs) -> Result<(), Failure> {
     let signalled = Arc::clone(&stop);
     ctrlc::set_handler(move || signalled.store(true, Ordering::Relaxed))
         .map_err(|err| Failure::Refused(format!("cannot install the signal handler: {err}")))?;
-    let server = Server::bind(&args.repo, paths).map_err(|err| refused(&err))?;
+    let server = Server::bind(paths).map_err(|err| refused(&err))?;
     let ready = json!({
         "status": "ready",
         "socket": server.paths().socket,
@@ -77,7 +80,7 @@ fn serve(args: &ServeArgs) -> Result<(), Failure> {
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{ready}")
         .and_then(|()| stdout.flush())
-        .map_err(|err| Failure::Failed(format!("cannot report readiness: {err}")))?;
+        .map_err(|err| Failure::Refused(format!("cannot report readiness: {err}")))?;
     drop(stdout);
     server
         .serve_until(&stop)

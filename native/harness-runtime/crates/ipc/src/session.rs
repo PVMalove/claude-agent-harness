@@ -4,7 +4,6 @@
 //! close afterwards. It does no I/O, so every rule is tested without a socket.
 
 use std::fs;
-use std::path::PathBuf;
 
 use contracts::{
     ErrorBody, ErrorCode, FailureDomain, HelloPayload, HelloResult, PROTOCOL_VERSION,
@@ -19,7 +18,6 @@ use crate::token::tokens_equal;
 #[derive(Clone, Debug)]
 pub struct Shared {
     pub token: String,
-    pub repo_root: PathBuf,
     pub repo_id: String,
     pub server_version: String,
 }
@@ -222,6 +220,7 @@ fn malformed(operation_id: &str, detail: &str) -> Reply {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use contracts::Status;
@@ -241,21 +240,22 @@ mod tests {
         fs::canonicalize(base.join("repo")).unwrap()
     }
 
-    fn shared_for(root: PathBuf) -> Shared {
-        let id = repo_id(&git_common_dir(&root).unwrap());
+    fn shared_for(root: &Path) -> Shared {
+        let id = repo_id(&git_common_dir(root).unwrap());
         Shared {
             token: "secret".to_owned(),
-            repo_root: root,
             repo_id: id,
             server_version: "9.9.9".to_owned(),
         }
     }
 
-    fn shared() -> Shared {
-        shared_for(scratch_repository("shared"))
+    /// A server state and the root of the repository it serves, the root a client says in `hello`.
+    fn setup() -> (Shared, PathBuf) {
+        let root = scratch_repository("shared");
+        (shared_for(&root), root)
     }
 
-    fn hello_body(shared: &Shared, token: &str, min: u32, max: u32) -> Vec<u8> {
+    fn hello_body(client_root: &Path, token: &str, min: u32, max: u32) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "protocol_version": {"major": max, "minor": 0},
             "operation_id": "h",
@@ -264,7 +264,7 @@ mod tests {
             "payload": {
                 "protocol": {"min": {"major": min, "minor": 0}, "max": {"major": max, "minor": 0}},
                 "client_version": "1",
-                "repo_root": shared.repo_root,
+                "repo_root": client_root,
                 "token": token,
             },
         }))
@@ -286,18 +286,18 @@ mod tests {
         reply.response.error.as_ref().unwrap().code
     }
 
-    fn authenticated(shared: &Shared) -> Session {
+    fn authenticated(shared: &Shared, root: &Path) -> Session {
         let mut session = Session::new();
-        let reply = session.handle(shared, &hello_body(shared, "secret", 1, 1), NOW);
+        let reply = session.handle(shared, &hello_body(root, "secret", 1, 1), NOW);
         assert_eq!(reply.response.status, Status::Ok);
         session
     }
 
     #[test]
     fn hello_with_the_token_negotiates_the_version_and_names_the_server() {
-        let shared = shared();
+        let (shared, root) = setup();
 
-        let reply = Session::new().handle(&shared, &hello_body(&shared, "secret", 1, 1), NOW);
+        let reply = Session::new().handle(&shared, &hello_body(&root, "secret", 1, 1), NOW);
 
         let result = reply.response.result.unwrap();
         assert_eq!(result["protocol"], json!({"major": 1, "minor": 0}));
@@ -308,9 +308,9 @@ mod tests {
 
     #[test]
     fn a_wrong_token_is_unauthorized_and_closes_the_connection() {
-        let shared = shared();
+        let (shared, root) = setup();
 
-        let reply = Session::new().handle(&shared, &hello_body(&shared, "guess", 1, 1), NOW);
+        let reply = Session::new().handle(&shared, &hello_body(&root, "guess", 1, 1), NOW);
 
         assert_eq!(code(&reply), ErrorCode::UnauthorizedPeer);
         assert!(reply.close);
@@ -318,9 +318,9 @@ mod tests {
 
     #[test]
     fn an_incompatible_major_is_protocol_unsupported_with_both_versions() {
-        let shared = shared();
+        let (shared, root) = setup();
 
-        let reply = Session::new().handle(&shared, &hello_body(&shared, "secret", 2, 2), NOW);
+        let reply = Session::new().handle(&shared, &hello_body(&root, "secret", 2, 2), NOW);
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
@@ -331,49 +331,49 @@ mod tests {
 
     #[test]
     fn hello_for_another_repository_is_refused() {
-        let mut shared = shared();
-        shared.repo_root = scratch_repository("other");
+        let (shared, _) = setup();
+        let other = scratch_repository("other");
 
-        let reply = Session::new().handle(&shared, &hello_body(&shared, "secret", 1, 1), NOW);
+        let reply = Session::new().handle(&shared, &hello_body(&other, "secret", 1, 1), NOW);
 
         assert_eq!(code(&reply), ErrorCode::PolicyDenied);
     }
 
     #[test]
     fn hello_from_a_path_that_is_no_repository_is_refused() {
-        let mut shared = shared();
-        shared.repo_root = PathBuf::from("/nonexistent-repo");
+        let (shared, _) = setup();
 
-        let reply = Session::new().handle(&shared, &hello_body(&shared, "secret", 1, 1), NOW);
+        let reply = Session::new().handle(
+            &shared,
+            &hello_body(Path::new("/nonexistent-repo"), "secret", 1, 1),
+            NOW,
+        );
 
         assert_eq!(code(&reply), ErrorCode::PolicyDenied);
     }
 
     #[test]
     fn hello_from_a_linked_worktree_is_the_same_repository() {
-        let shared = shared();
-        let common = shared.repo_root.join(".git");
-        let git_dir = common.join("worktrees/linked");
+        let (shared, root) = setup();
+        let git_dir = root.join(".git/worktrees/linked");
         fs::create_dir_all(&git_dir).unwrap();
         fs::write(git_dir.join("commondir"), "../..\n").unwrap();
-        let linked = shared.repo_root.parent().unwrap().join("linked");
+        let linked = root.parent().unwrap().join("linked");
         fs::create_dir_all(&linked).unwrap();
         fs::write(
             linked.join(".git"),
             format!("gitdir: {}\n", git_dir.display()),
         )
         .unwrap();
-        let mut asker = shared.clone();
-        asker.repo_root = linked;
 
-        let reply = Session::new().handle(&shared, &hello_body(&asker, "secret", 1, 1), NOW);
+        let reply = Session::new().handle(&shared, &hello_body(&linked, "secret", 1, 1), NOW);
 
         assert_eq!(reply.response.status, Status::Ok);
     }
 
     #[test]
     fn a_request_before_hello_is_unauthorized() {
-        let reply = Session::new().handle(&shared(), &status_body(1, "status", NOW + 1), NOW);
+        let reply = Session::new().handle(&setup().0, &status_body(1, "status", NOW + 1), NOW);
 
         assert_eq!(code(&reply), ErrorCode::UnauthorizedPeer);
         assert!(reply.close);
@@ -381,8 +381,8 @@ mod tests {
 
     #[test]
     fn an_authenticated_status_request_is_served() {
-        let shared = shared();
-        let mut session = authenticated(&shared);
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
 
         let reply = session.handle(&shared, &status_body(1, "status", NOW + 1), NOW);
 
@@ -393,8 +393,8 @@ mod tests {
 
     #[test]
     fn an_unknown_operation_is_named() {
-        let shared = shared();
-        let mut session = authenticated(&shared);
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
 
         let reply = session.handle(&shared, &status_body(1, "launch", NOW + 1), NOW);
 
@@ -404,8 +404,8 @@ mod tests {
 
     #[test]
     fn another_major_after_hello_is_protocol_unsupported() {
-        let shared = shared();
-        let mut session = authenticated(&shared);
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
 
         let reply = session.handle(&shared, &status_body(2, "status", NOW + 1), NOW);
 
@@ -414,8 +414,8 @@ mod tests {
 
     #[test]
     fn an_unknown_request_field_is_malformed_and_keeps_the_operation_id() {
-        let shared = shared();
-        let mut session = authenticated(&shared);
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
         let body = serde_json::to_vec(&json!({
             "protocol_version": {"major": 1, "minor": 0},
             "operation_id": "keep-me",
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn bytes_that_are_no_json_are_malformed() {
-        let reply = Session::new().handle(&shared(), b"\xff not json", NOW);
+        let reply = Session::new().handle(&setup().0, b"\xff not json", NOW);
 
         assert_eq!(code(&reply), ErrorCode::MalformedRequest);
         assert_eq!(reply.response.operation_id, "");
@@ -442,8 +442,8 @@ mod tests {
 
     #[test]
     fn a_passed_request_deadline_is_deadline_exceeded() {
-        let shared = shared();
-        let mut session = authenticated(&shared);
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
 
         let reply = session.handle(&shared, &status_body(1, "status", NOW - 1), NOW);
 
@@ -454,7 +454,7 @@ mod tests {
     fn a_hello_without_a_payload_is_malformed() {
         let body = status_body(1, "hello", NOW + 1);
 
-        let reply = Session::new().handle(&shared(), &body, NOW);
+        let reply = Session::new().handle(&setup().0, &body, NOW);
 
         assert_eq!(code(&reply), ErrorCode::MalformedRequest);
     }

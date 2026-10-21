@@ -87,11 +87,7 @@ impl Server {
     /// Prepare the `0700` directory, take the lock, write the `0600` token, then bind the `0600`
     /// socket. The lock holder is the only runtime of the repository, so it alone touches the
     /// socket and the token files.
-    pub fn bind(repo_root: &Path, paths: RuntimePaths) -> Result<Self, StartError> {
-        let repo_root = fs::canonicalize(repo_root).map_err(io_context(format!(
-            "cannot resolve {}",
-            repo_root.display()
-        )))?;
+    pub fn bind(paths: RuntimePaths) -> Result<Self, StartError> {
         prepare_directory(&paths.dir, own_uid())?;
         let lock = take_lock(&paths)?;
         remove_stale_socket(&paths.socket)?;
@@ -108,7 +104,6 @@ impl Server {
             .map_err(io_context("cannot make the listener pollable"))?;
         let shared = Arc::new(Shared {
             token,
-            repo_root,
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
         });

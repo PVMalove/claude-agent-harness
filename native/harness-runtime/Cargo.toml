@@ -5,6 +5,8 @@ members = ["crates/contracts", "crates/ipc", "crates/harness-runtime"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+# `File::try_lock` (the runtime lock) is stable since Rust 1.89.
+rust-version = "1.89"
 license = "MIT"
 publish = false
 

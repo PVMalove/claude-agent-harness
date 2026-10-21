@@ -37,7 +37,7 @@ impl Fixture {
 
     fn bind(&self) -> Result<Server, StartError> {
         let paths = resolve_paths(&self.root, Some(&self.xdg)).unwrap();
-        Server::bind(&self.root, paths)
+        Server::bind(paths)
     }
 }
 

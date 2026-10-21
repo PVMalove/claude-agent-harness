@@ -2,6 +2,7 @@
 name = "harness-runtime"
 description = "The harness runtime process: `harness-runtime serve`"
 version.workspace = true
+rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
