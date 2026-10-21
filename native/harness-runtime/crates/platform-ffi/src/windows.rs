@@ -337,7 +337,9 @@ struct Overlapped {
 // address of the box, and `CancelIoEx` and `GetOverlappedResult` work from any thread, so an
 // operation that is still pending (the `ConnectNamedPipe` of a `PipeListener`) may move with the
 // value to another thread; whoever owns the value waits for or cancels the operation before it
-// frees the box (`finish_io`, `PipeListener::drop`).
+// frees the box (`finish_io`, `PipeListener::drop`). Windows cancels the pending calls of a thread
+// when it exits, so such an operation can end with `ERROR_OPERATION_ABORTED`;
+// `PipeListener::accept` starts it again.
 unsafe impl Send for Overlapped {}
 
 impl Overlapped {
@@ -616,6 +618,14 @@ impl PipeListener {
             self.pending = false;
             match self.overlapped.result(self.instance.as_raw_handle(), false) {
                 Ok(_) => self.ready = true,
+                // The thread that started the wait has exited and Windows cancelled its call. The
+                // instance still listens, so wait again from this thread.
+                Err(err) if is_os_error(&err, &[ERROR_OPERATION_ABORTED]) => {
+                    self.arm()?;
+                    if !self.ready {
+                        return Ok(None);
+                    }
+                }
                 // A client that connected and left at once.
                 Err(err) if is_os_error(&err, &[ERROR_NO_DATA, ERROR_BROKEN_PIPE]) => {
                     self.replace_instance()?;
@@ -721,5 +731,31 @@ pub fn connect_client(name: &str, timeout: Duration) -> io::Result<PipeConnectio
             }
             Err(err) => return Err(err),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wait_of_an_exited_thread_ends_as_aborted() {
+        let sid = current_user_sid().unwrap();
+        let name = format!(r"\\.\pipe\pf-unit-abort-{}", std::process::id());
+        let mut listener = std::thread::spawn(move || PipeListener::bind(&name, &sid).unwrap())
+            .join()
+            .unwrap();
+
+        assert!(
+            listener
+                .overlapped
+                .wait(Some(Duration::from_secs(5)))
+                .unwrap()
+        );
+        let err = listener
+            .overlapped
+            .result(listener.instance.as_raw_handle(), false)
+            .unwrap_err();
+        assert!(is_os_error(&err, &[ERROR_OPERATION_ABORTED]), "{err}");
     }
 }

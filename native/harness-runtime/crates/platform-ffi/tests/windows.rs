@@ -227,3 +227,19 @@ fn dropping_a_listener_with_a_pending_accept_is_safe() {
 
     assert!(connect_client(&pipe, SHORT).is_err());
 }
+
+#[test]
+fn a_listener_made_in_a_finished_thread_still_accepts_a_client() {
+    let pipe = pipe_name("thread");
+    let sid = current_user_sid().unwrap();
+    let bound = pipe.clone();
+    // Windows cancels the overlapped call of a thread that exits; the listener must survive it.
+    let mut listener = std::thread::spawn(move || PipeListener::bind(&bound, &sid).unwrap())
+        .join()
+        .unwrap();
+
+    assert!(listener.accept(SHORT).unwrap().is_none());
+    let _client = connect_client(&pipe, LONG).unwrap();
+
+    assert!(listener.accept(LONG).unwrap().is_some());
+}
