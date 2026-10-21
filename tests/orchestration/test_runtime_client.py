@@ -26,7 +26,7 @@ import time
 from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Protocol
+from typing import Protocol, cast
 
 import pytest
 
@@ -101,9 +101,13 @@ def _read_frame(connection: Connection) -> JsonObject:
     return loaded
 
 
-def _write_frame(connection: Connection, message: JsonObject) -> None:
+def _frame(message: JsonObject) -> bytes:
     body = json.dumps(message).encode()
-    connection.sendall(HEADER.pack(len(body)) + body)
+    return HEADER.pack(len(body)) + body
+
+
+def _write_frame(connection: Connection, message: JsonObject) -> None:
+    connection.sendall(_frame(message))
 
 
 def _ok(operation_id: object, result: JsonObject) -> JsonObject:
@@ -169,51 +173,86 @@ if sys.platform != "win32":
             self.socket.close()
 
 
-if sys.platform == "win32":
+class _ListenerApi(runtime_client._PipeApi, Protocol):
+    """The server half of ``_winapi`` that the scripted runtime uses besides the client half."""
 
-    class _PipeListener:
-        """The named pipe at which a scripted runtime listens: one instance per connection."""
+    PIPE_ACCESS_DUPLEX: int
+    FILE_FLAG_FIRST_PIPE_INSTANCE: int
+    PIPE_WAIT: int
+    PIPE_UNLIMITED_INSTANCES: int
+    NMPWAIT_WAIT_FOREVER: int
 
-        def __init__(self, name: str) -> None:
-            self.name = name
-            self.closed = threading.Event()
-            self.instance = self._create(first=True)
+    def CreateNamedPipe(
+        self,
+        name: str,
+        open_mode: int,
+        pipe_mode: int,
+        max_instances: int,
+        out_buffer_size: int,
+        in_buffer_size: int,
+        default_timeout: int,
+        security_attributes: int,
+        /,
+    ) -> int:
+        """Create an instance of the pipe."""
 
-        def _create(self, *, first: bool) -> int:
-            flags = _winapi.PIPE_ACCESS_DUPLEX | _winapi.FILE_FLAG_OVERLAPPED
-            if first:
-                flags |= _winapi.FILE_FLAG_FIRST_PIPE_INSTANCE
-            return _winapi.CreateNamedPipe(
-                self.name,
-                flags,
-                # Byte type and byte read mode are both 0, the default.
-                _winapi.PIPE_WAIT,
-                _winapi.PIPE_UNLIMITED_INSTANCES,
-                65536,
-                65536,
-                _winapi.NMPWAIT_WAIT_FOREVER,
-                _winapi.NULL,
-            )
+    def ConnectNamedPipe(
+        self, handle: int, /, overlapped: bool = False
+    ) -> runtime_client._Overlapped:
+        """Start the wait for a client at an instance."""
 
-        def accept(self) -> Connection:
-            instance = self.instance
-            overlapped = _winapi.ConnectNamedPipe(instance, overlapped=True)
-            try:
-                while _winapi.WaitForMultipleObjects([overlapped.event], False, 50) != 0:
-                    if self.closed.is_set():
-                        raise OSError("the listener is closed")
-            except BaseException:
-                # The cancelled connect ends at once; only then is the handle closed.
-                overlapped.cancel()
-                overlapped.GetOverlappedResult(True)
-                _winapi.CloseHandle(instance)
-                raise
+
+class _PipeListener:
+    """The named pipe at which a scripted runtime listens: one instance per connection.
+
+    The Win32 API is a parameter, as for the pipe of the client: the real ``_winapi`` on Windows,
+    a scripted fake wherever the rules of the listener are checked on another platform.
+    """
+
+    def __init__(self, name: str, api: _ListenerApi | None = None) -> None:
+        self.api = cast(_ListenerApi, runtime_client._windows_pipe_api()) if api is None else api
+        self.name = name
+        self.closed = threading.Event()
+        self.instance = self._create(first=True)
+
+    def _create(self, *, first: bool) -> int:
+        api = self.api
+        flags = api.PIPE_ACCESS_DUPLEX | api.FILE_FLAG_OVERLAPPED
+        if first:
+            flags |= api.FILE_FLAG_FIRST_PIPE_INSTANCE
+        handle: int = api.CreateNamedPipe(
+            self.name,
+            flags,
+            # Byte type and byte read mode are both 0, the default.
+            api.PIPE_WAIT,
+            api.PIPE_UNLIMITED_INSTANCES,
+            65536,
+            65536,
+            api.NMPWAIT_WAIT_FOREVER,
+            api.NULL,
+        )
+        return handle
+
+    def accept(self) -> Connection:
+        api = self.api
+        instance = self.instance
+        overlapped = api.ConnectNamedPipe(instance, overlapped=True)
+        try:
+            while api.WaitForMultipleObjects([overlapped.event], False, 50) != 0:
+                if self.closed.is_set():
+                    raise OSError("the listener is closed")
+        except BaseException:
+            # The cancelled connect ends at once; only then is the handle closed.
+            overlapped.cancel()
             overlapped.GetOverlappedResult(True)
-            self.instance = self._create(first=False)
-            return runtime_client._PipeConnection(instance, lambda: 10.0)
+            api.CloseHandle(instance)
+            raise
+        overlapped.GetOverlappedResult(True)
+        self.instance = self._create(first=False)
+        return runtime_client._PipeConnection(instance, lambda: 10.0, api)
 
-        def close(self) -> None:
-            self.closed.set()
+    def close(self) -> None:
+        self.closed.set()
 
 
 if sys.platform == "win32":
@@ -529,7 +568,7 @@ def test_a_windows_connect_gets_the_real_time_left_so_a_busy_pipe_can_time_out(
             given.append(remaining)
             raise OSError("the pipe stays busy")
 
-    monkeypatch.setattr(runtime_client, "_PipeConnection", RecordingPipe, raising=False)
+    monkeypatch.setattr(runtime_client, "_PipeConnection", RecordingPipe)
     monkeypatch.setattr(sys, "platform", "win32")
     deadline = timing.now + 1.0
 
@@ -595,6 +634,11 @@ class FakePipeApi:
     FILE_FLAG_OVERLAPPED = 0x40000000
     INFINITE = 0xFFFFFFFF
     HANDLE = 7
+    PIPE_ACCESS_DUPLEX = 3
+    FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
+    PIPE_WAIT = 0
+    PIPE_UNLIMITED_INSTANCES = 255
+    NMPWAIT_WAIT_FOREVER = 0xFFFFFFFF
 
     def __init__(
         self,
@@ -626,6 +670,17 @@ class FakePipeApi:
         self.event_waits: list[int] = []
         self.operations: list[FakeOverlapped] = []
         self.closed: list[int] = []
+        self.pipes: list[tuple[object, ...]] = []
+        self.connects: list[FakeOverlapped] = []
+
+    def CreateNamedPipe(self, *args: object) -> int:
+        self.pipes.append(args)
+        return 100 + len(self.pipes)
+
+    def ConnectNamedPipe(self, handle: int, /, overlapped: bool = False) -> FakeOverlapped:
+        operation = FakeOverlapped(b"")
+        self.connects.append(operation)
+        return operation
 
     def CreateFile(self, *args: object) -> int:
         self.create_calls.append(args)
@@ -675,11 +730,6 @@ class FakePipeApi:
 
     def CloseHandle(self, handle: int, /) -> None:
         self.closed.append(handle)
-
-
-def _frame(message: JsonObject) -> bytes:
-    body = json.dumps(message).encode()
-    return HEADER.pack(len(body)) + body
 
 
 def _frames(data: bytes) -> list[JsonObject]:
@@ -908,6 +958,64 @@ def test_leaving_the_context_closes_the_pipe() -> None:
         assert api.closed == []
 
     assert api.closed == [api.HANDLE]
+
+
+def test_a_pipe_listener_serves_one_instance_per_client_and_opens_the_next() -> None:
+    api = FakePipeApi()
+    listener = _PipeListener(r"\\.\pipe\scripted", api)
+
+    first = listener.instance
+    connection = listener.accept()
+
+    # Only the first instance claims the name; the next is created at once for the next client.
+    (opened_first, opened_next) = api.pipes
+    assert opened_first[0] == opened_next[0] == r"\\.\pipe\scripted"
+    first_flags = opened_first[1]
+    assert isinstance(first_flags, int)
+    assert first_flags & api.FILE_FLAG_FIRST_PIPE_INSTANCE
+    assert first_flags & api.FILE_FLAG_OVERLAPPED
+    next_flags = opened_next[1]
+    assert isinstance(next_flags, int)
+    assert not next_flags & api.FILE_FLAG_FIRST_PIPE_INSTANCE
+    assert listener.instance != first
+    # The client end of the accepted instance talks through the same API.
+    connection.sendall(b"hi")
+    assert bytes(api.written) == b"hi"
+    connection.close()
+    assert api.closed == [first]
+
+
+def test_a_closed_pipe_listener_cancels_the_connect_and_frees_the_instance() -> None:
+    api = FakePipeApi(signalled=False)
+    listener = _PipeListener(r"\\.\pipe\scripted", api)
+    instance = listener.instance
+    listener.close()
+
+    with pytest.raises(OSError, match="closed"):
+        listener.accept()
+
+    (connect,) = api.connects
+    assert connect.cancelled
+    assert api.closed == [instance]
+    assert len(api.pipes) == 1
+
+
+@pytest.mark.parametrize(
+    ("error", "exists"),
+    [
+        (None, True),
+        (WinError(2), False),
+        (WinError(ERROR_SEM_TIMEOUT), True),
+        (OSError("not a Windows error"), True),
+    ],
+)
+def test_a_pipe_exists_unless_its_name_is_not_found(
+    error: OSError | None, exists: bool
+) -> None:
+    api = FakePipeApi(named_wait_error=error)
+
+    assert _pipe_exists(Path(r"\\.\pipe\scripted"), api) is exists
+    assert api.named_waits == [1]
 
 
 if sys.platform == "win32":
@@ -1251,15 +1359,19 @@ def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
 
 
+def _pipe_exists(address: Path, api: runtime_client._PipeApi) -> bool:
+    """Whether the named pipe exists. `Path.exists` would connect to the pipe."""
+    try:
+        api.WaitNamedPipe(str(address), 1)
+    except OSError as exc:
+        return bool(getattr(exc, "winerror", None) != 2)
+    return True
+
+
 if sys.platform == "win32":
 
     def _endpoint_exists(address: Path) -> bool:
-        """Whether the named pipe exists. `Path.exists` would connect to the pipe."""
-        try:
-            _winapi.WaitNamedPipe(str(address), 1)
-        except OSError as exc:
-            return bool(getattr(exc, "winerror", None) != 2)
-        return True
+        return _pipe_exists(address, runtime_client._windows_pipe_api())
 
 else:
 
