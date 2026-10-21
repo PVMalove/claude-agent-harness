@@ -116,7 +116,10 @@ def build_parser(
         "status",
         help="Read-only: connect to harness-runtime, say hello and report its state",
     )
-    _common(runtime_status)
+    # The runtime serves one repository and reads no coordinator state: no `--state-dir` here.
+    runtime_status.add_argument(
+        "--repo", default=argparse.SUPPRESS, help="target project root"
+    )
     runtime_status.add_argument(
         "--timeout",
         type=float,

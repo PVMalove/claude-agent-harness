@@ -90,7 +90,6 @@ from harness.orchestration.infrastructure_retry import (
     retry_infrastructure_dispatch as retry_infrastructure_dispatch,
 )
 from harness.orchestration.ledger.lifecycle import set_lock_operation
-from harness.orchestration.runtime_client import runtime_status as runtime_status
 from harness.orchestration.ledger.ledger_admin import clean_ledger as clean_ledger
 from harness.orchestration.ledger.ledger_admin import (
     ledger_lock_status as ledger_lock_status,
@@ -102,6 +101,7 @@ from harness.orchestration.ledger.ledger_admin import (
     release_ledger_lock as release_ledger_lock,
 )
 from harness.orchestration.ledger.ledger_admin import reset_ledger as reset_ledger
+from harness.orchestration.runtime_client import runtime_status as runtime_status
 from harness.orchestration.workflow.attention import attention_check as attention_check
 from harness.orchestration.workflow.attention import (
     attention_resolve as attention_resolve,
