@@ -111,6 +111,24 @@ def test_valid_hook_policy(tmp_path: Path, value: object) -> None:
             {"profile": "standard", "escalations": [{"profile": "strict", "x": 1}]},
             "escalations[0] has unknown field(s): x",
         ),
+        (
+            {"profile": "standard", "escalations": [{"profile": "strict"}]},
+            "escalations[0] must set paths or roles",
+        ),
+        (
+            {
+                "profile": "standard",
+                "escalations": [{"profile": "strict", "paths": ["a/**", "a/**"]}],
+            },
+            "escalations[0].paths must not repeat an entry",
+        ),
+        (
+            {
+                "profile": "standard",
+                "escalations": [{"profile": "strict", "roles": ["qa", "qa"]}],
+            },
+            "escalations[0].roles must not repeat an entry",
+        ),
     ],
 )
 def test_invalid_hook_policy(tmp_path: Path, value: object, expected: str) -> None:
@@ -150,6 +168,19 @@ def test_problems_never_echo_values() -> None:
         },
         {"profile": "standard", "extra": 1},
         {"escalations": []},
+        {"profile": "standard", "escalations": [{"profile": "strict"}]},
+        {
+            "profile": "standard",
+            "escalations": [{"profile": "strict", "paths": ["a", "a"]}],
+        },
+        {
+            "profile": "standard",
+            "escalations": [{"profile": "strict", "roles": ["qa", "qa"]}],
+        },
+        {
+            "profile": "standard",
+            "escalations": [{"profile": "strict", "roles": ["qa"], "paths": ["a"]}],
+        },
     ],
 )
 def test_schema_and_health_agree(value: object) -> None:

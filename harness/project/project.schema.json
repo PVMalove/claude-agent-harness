@@ -140,20 +140,34 @@
             "required": [
               "profile"
             ],
+            "anyOf": [
+              {
+                "required": [
+                  "paths"
+                ]
+              },
+              {
+                "required": [
+                  "roles"
+                ]
+              }
+            ],
             "properties": {
               "paths": {
                 "type": "array",
                 "minItems": 1,
+                "uniqueItems": true,
                 "items": {
                   "type": "string",
                   "minLength": 1,
                   "pattern": "^(?![/\\\\])(?![A-Za-z]:)(?!(?:.*[/\\\\])?\\.\\.(?:[/\\\\]|$)).+$"
                 },
-                "description": "Relative globs without '..' segments; the escalation applies when a touched path matches one."
+                "description": "Relative globs without '..' segments; fnmatch semantics ('*' and '?' also cross '/'); the escalation applies when a touched path matches one. Each escalation sets paths or roles; entries are unique."
               },
               "roles": {
                 "type": "array",
                 "minItems": 1,
+                "uniqueItems": true,
                 "items": {
                   "type": "string",
                   "enum": [

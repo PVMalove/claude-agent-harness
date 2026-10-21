@@ -721,6 +721,15 @@ def hook_policy_problems(value: object) -> list[str]:
     return problems
 
 
+def _has_duplicates(items: list[object]) -> bool:
+    seen: list[object] = []
+    for item in items:
+        if item in seen:
+            return True
+        seen.append(item)
+    return False
+
+
 def _hook_escalation_problems(
     prefix: str, escalation: object, base: object
 ) -> list[str]:
@@ -737,11 +746,15 @@ def _hook_escalation_problems(
         base
     ):
         problems.append(f"{prefix}.profile must not be lower than the base profile")
+    if "paths" not in escalation and "roles" not in escalation:
+        problems.append(f"{prefix} must set paths or roles")
     if "paths" in escalation:
         paths = escalation["paths"]
         if not isinstance(paths, list) or not paths:
             problems.append(f"{prefix}.paths must be a non-empty list of glob strings")
         else:
+            if _has_duplicates(paths):
+                problems.append(f"{prefix}.paths must not repeat an entry")
             problems.extend(
                 f"{prefix}.paths[{i}] must be a relative glob without '..' segments"
                 for i, item in enumerate(paths)
@@ -752,6 +765,8 @@ def _hook_escalation_problems(
         if not isinstance(roles, list) or not roles:
             problems.append(f"{prefix}.roles must be a non-empty list of role names")
         else:
+            if _has_duplicates(roles):
+                problems.append(f"{prefix}.roles must not repeat an entry")
             problems.extend(
                 f"{prefix}.roles[{i}] must be one of: {', '.join(HOOK_POLICY_ROLES)}"
                 for i, item in enumerate(roles)
