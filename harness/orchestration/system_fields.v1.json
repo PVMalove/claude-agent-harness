@@ -1039,6 +1039,48 @@
         "error": "Configuration boundary observation: error.",
         "warning": "Configuration boundary observation: warning."
       }
+    },
+    "runtime.error_code": {
+      "description": "Error code of a runtime IPC response (ADR 0021, section 3); the Python client and the Rust contracts crate hold exactly these values.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "protocol_unsupported": "The peers share no protocol major version; update harness or the runtime.",
+        "unauthorized_peer": "The peer uid or the capability token was refused; the connection is closed.",
+        "malformed_request": "The frame or the request is not valid: bad length, bad JSON, a missing or an unknown field.",
+        "unknown_operation": "The operation name is not one the runtime serves.",
+        "approval_mismatch": "The request digest does not match the approval stored in the immutable brief.",
+        "revision_conflict": "The expected revision is not the stored one; read the entity again.",
+        "store_busy": "The store is occupied by another writer; the request may be repeated.",
+        "lease_held": "A live owner holds the lease; the request is refused without taking it.",
+        "fencing_mismatch": "The fencing token does not belong to the current lease owner.",
+        "idempotency_conflict": "The operation id was already used with a different request digest.",
+        "not_found": "The addressed entity does not exist.",
+        "invariant_violation": "The change would break a store invariant and is rejected.",
+        "deadline_exceeded": "The request deadline passed before the runtime could answer.",
+        "engine_unavailable": "The container engine does not answer; the outcome of the launch is unknown.",
+        "policy_denied": "The approved plan forbids the request.",
+        "internal": "A runtime defect; not caused by the request.",
+        "runtime_unavailable": "Client side only: the runtime does not answer; the runtime never sends it."
+      }
+    },
+    "runtime.failure_domain": {
+      "description": "Failure domain of a runtime IPC error (ADR 0019 taxonomy, ADR 0021, section 3).",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "environment_preparation": "The environment of the run could not be prepared.",
+        "infrastructure": "The host, the engine or the transport failed; the developer budget is not spent.",
+        "policy": "The approved plan or the access policy refused the action.",
+        "tooling": "A tool or the request itself is unusable.",
+        "code_test": "The checked code or its tests failed.",
+        "timeout": "A deadline passed.",
+        "cancelled": "The run was stopped by command.",
+        "unknown": "Sentinel: the cause is not proven; no reaction specific to a domain is derived from it."
+      },
+      "sentinels": [
+        "unknown"
+      ]
     }
   }
 }
