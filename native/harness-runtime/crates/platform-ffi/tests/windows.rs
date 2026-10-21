@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use platform_ffi::{
     OwnerOnly, PipeListener, connect_client, create_private_file, current_user_sid, dacl_of_path,
@@ -146,13 +146,29 @@ fn the_server_sees_the_process_id_of_its_client() {
 }
 
 #[test]
-fn a_second_client_finds_the_next_instance_ready() {
+fn a_second_client_waits_for_the_server_to_accept_the_first() {
     let (mut listener, pipe) = listener("two");
     let _first = connect_client(&pipe, LONG).unwrap();
-    let _second = connect_client(&pipe, LONG).unwrap();
+    let second_pipe = pipe.clone();
+    let second = std::thread::spawn(move || connect_client(&second_pipe, LONG));
 
+    // The first accept opens the next instance, which the waiting second client then takes.
     assert!(listener.accept(LONG).unwrap().is_some());
     assert!(listener.accept(LONG).unwrap().is_some());
+    // The client stays connected until both accepts are done.
+    let _second = second.join().unwrap().unwrap();
+}
+
+#[test]
+fn a_client_that_finds_no_listening_instance_gives_up_at_its_timeout() {
+    let (_listener, pipe) = listener("busy");
+    let _first = connect_client(&pipe, LONG).unwrap();
+    let started = Instant::now();
+
+    let second = connect_client(&pipe, SHORT);
+
+    assert!(second.is_err());
+    assert!(started.elapsed() < LONG, "{:?}", started.elapsed());
 }
 
 #[test]

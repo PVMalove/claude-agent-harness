@@ -8,7 +8,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::Path;
 use std::ptr::{null, null_mut};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_NO_DATA,
@@ -333,8 +333,11 @@ struct Overlapped {
     event: OwnedHandle,
 }
 
-// SAFETY: the box and the event handle are owned by this value alone, and every operation that
-// uses them completes or is cancelled before the owner hands the value to another thread.
+// SAFETY: the box and the event handle are owned by this value alone. The kernel keeps only the
+// address of the box, and `CancelIoEx` and `GetOverlappedResult` work from any thread, so an
+// operation that is still pending (the `ConnectNamedPipe` of a `PipeListener`) may move with the
+// value to another thread; whoever owns the value waits for or cancels the operation before it
+// frees the box (`finish_io`, `PipeListener::drop`).
 unsafe impl Send for Overlapped {}
 
 impl Overlapped {
@@ -414,7 +417,16 @@ fn finish_io(
         if !is_os_error(&err, &[ERROR_IO_PENDING]) {
             return Err(err);
         }
-        if !overlapped.wait(timeout)? {
+        let ended = match overlapped.wait(timeout) {
+            Ok(ended) => ended,
+            Err(wait_err) => {
+                // The wait itself failed, so the operation may still be running: end it before the
+                // caller frees the buffer, and report the failed wait.
+                let _ = overlapped.cancel(handle);
+                return Err(wait_err);
+            }
+        };
+        if !ended {
             // The operation may have finished in the race; its bytes then count.
             return match overlapped.cancel(handle) {
                 Err(err) if is_os_error(&err, &[ERROR_OPERATION_ABORTED]) => {
@@ -545,8 +557,10 @@ fn create_instance(name: &[u16], owner: &OwnerOnly, first: bool) -> io::Result<O
 }
 
 /// A named pipe server: a ring of instances that all carry the owner-only DACL and refuse
-/// remote clients. One instance always listens for the next client, so a client never finds the
-/// pipe busy between two accepts.
+/// remote clients. One instance listens for the next client. Once a client has connected to it,
+/// no instance listens until [`PipeListener::accept`] hands the connection over and opens the
+/// next one, so a second client finds the pipe busy and waits (see [`connect_client`]) until the
+/// server accepts.
 pub struct PipeListener {
     name: Vec<u16>,
     owner: OwnerOnly,
@@ -675,7 +689,7 @@ impl Drop for PipeListener {
 /// waited for up to `timeout`.
 pub fn connect_client(name: &str, timeout: Duration) -> io::Result<PipeConnection> {
     let wide_name = wide(OsStr::new(name))?;
-    let wait_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+    let deadline = Instant::now() + timeout;
     loop {
         // SAFETY: `wide_name` is NUL-terminated and outlives the call; no security attributes,
         // no template.
@@ -693,6 +707,13 @@ pub fn connect_client(name: &str, timeout: Duration) -> io::Result<PipeConnectio
         match owned_handle(handle) {
             Ok(pipe) => return PipeConnection::new(pipe),
             Err(err) if is_os_error(&err, &[ERROR_PIPE_BUSY]) => {
+                // The wait gets what is left of the timeout, so a busy pipe cannot hold a client
+                // past it.
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                let wait_ms = u32::try_from(left.as_millis()).map_or(u32::MAX - 1, |ms| ms.max(1));
                 // SAFETY: `wide_name` is NUL-terminated and outlives the call.
                 if unsafe { WaitNamedPipeW(wide_name.as_ptr(), wait_ms) } == 0 {
                     return Err(io::Error::last_os_error());
