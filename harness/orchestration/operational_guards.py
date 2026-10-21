@@ -45,6 +45,8 @@ OPTIONAL_TRANSITION_FIELDS = (
     "infrastructure_attempt_sha256",
     "runtime_images_sha256",
     "verification_plan_sha256",
+    "hook_policy_sha256",
+    "allowed_tools_sha256",
 )
 # A new dispatch (issue #624) always binds the sha256 of its resolved runtime access plan.
 ACCESS_TRANSITION_FIELD = "runtime_access_sha256"
@@ -146,6 +148,11 @@ def verification_plan_digest(plan: Mapping[str, object]) -> str:
     return _digest(dict(plan))
 
 
+def allowed_tools_digest(tools: Sequence[str]) -> str:
+    """Digest of the tool list a brief grants, bound to the transition with the hook policy (issue #794)."""
+    return _digest(list(tools))
+
+
 def transition_digest(transition: Mapping[str, object]) -> str:
     """Канонический дайджест, с которым связывается подтверждение; порядок ключей не имеет значения."""
     extra = {*OPTIONAL_TRANSITION_FIELDS, ACCESS_TRANSITION_FIELD}
@@ -162,7 +169,8 @@ def transition_digest(transition: Mapping[str, object]) -> str:
             "infrastructure_retry_sha256 for a new brief, infrastructure_attempt_sha256 "
             "only when a policy retry binds a recorded operation refusal, and "
             "runtime_images_sha256 only when a docker brief pins its images, and "
-            "verification_plan_sha256 only when a brief carries a verification plan",
+            "verification_plan_sha256 only when a brief carries a verification plan, and "
+            "hook_policy_sha256 with allowed_tools_sha256 only when a brief pins its hook policy",
         )
     return _digest(dict(transition))
 
@@ -202,6 +210,11 @@ def _brief_bindings(brief: Mapping[str, object]) -> dict[str, object]:
     scope = brief.get("delta_review_scope")
     images = brief.get("runtime_images")
     plan = brief.get("verification_plan")
+    hook_policy_sha256 = brief.get("hook_policy_sha256")
+    tools = brief.get("allowed_tools")
+    # The allowed tools join the binding only with the pinned hook policy, so a brief written
+    # before it keeps the digest it was approved with.
+    pinned = isinstance(hook_policy_sha256, str)
     return {
         "retry_reason_sha256": policy_digest(
             cast(Mapping[str, object], brief["retry_reason"])
@@ -222,6 +235,10 @@ def _brief_bindings(brief: Mapping[str, object]) -> dict[str, object]:
         else None,
         "verification_plan_sha256": verification_plan_digest(plan)
         if isinstance(plan, dict)
+        else None,
+        "hook_policy_sha256": hook_policy_sha256 if pinned else None,
+        "allowed_tools_sha256": allowed_tools_digest(tools)
+        if pinned and isinstance(tools, list)
         else None,
     }
 
@@ -305,6 +322,8 @@ def validate_binding(dispatch: Mapping[str, object], batch_id: object) -> None:
         "delta_review_sha256": ("delta-review scope", "delta_review_scope"),
         "runtime_images_sha256": ("pinned runtime images", "runtime_images"),
         "verification_plan_sha256": ("verification plan", "verification_plan"),
+        "hook_policy_sha256": ("pinned hook policy", "hook_policy_sha256"),
+        "allowed_tools_sha256": ("allowed tools", "allowed_tools"),
     }
     for field, expected in _brief_bindings(dispatch).items():
         if transition.get(field) != expected:

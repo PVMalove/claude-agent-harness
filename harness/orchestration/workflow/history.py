@@ -1361,6 +1361,8 @@ def _validate_dispatch(
     # The verification plan (ADR 0023) is one optional field, present only for a batch whose
     # configuration carried `verification_plan_policy`.
     accepted |= {fields | {"verification_plan"} for fields in set(accepted)}
+    # The pinned hook policy (issue #794) is one optional field of every new brief.
+    accepted |= {fields | {"hook_policy_sha256"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
@@ -1409,6 +1411,16 @@ def _validate_dispatch(
         raise CoordinatorError(
             "dispatch verification_plan is malformed: " + "; ".join(problems),
             remedy="the dispatch record's verification_plan is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    pinned_hook_policy = dispatch.get("hook_policy_sha256")
+    if "hook_policy_sha256" in dispatch and (
+        not isinstance(pinned_hook_policy, str)
+        or re.fullmatch(r"[0-9a-f]{64}", pinned_hook_policy) is None
+    ):
+        raise CoordinatorError(
+            "dispatch hook_policy_sha256 must be a sha256 hex digest",
+            remedy="the dispatch record's hook_policy_sha256 is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
     target = dispatch.get("rebase_target_commit")

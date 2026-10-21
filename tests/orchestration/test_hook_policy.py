@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 from harness.errors import PolicyError
 from harness.orchestration import hook_policy
+from harness.orchestration.core.utils import CoordinatorError
+from harness.orchestration.workflow import recovery
 
 _BASE = {
     "language": "ru",
@@ -165,3 +168,23 @@ def test_unreadable_project_json_is_an_error(tmp_path: Path, content: str) -> No
     path.write_text(content, encoding="utf-8")
     with pytest.raises(PolicyError):
         hook_policy.load_policy(tmp_path)
+
+
+def _restart(original: dict[str, str], renewed: dict[str, str]) -> None:
+    batch = {"environmental_restart": {"dispatch_id": "dispatch-1"}}
+    with mock.patch.object(recovery, "_load_dispatch", return_value=original):
+        recovery.require_restart_contract(Path("."), batch, renewed)
+
+
+def test_an_environment_restart_keeps_the_pinned_hook_policy() -> None:
+    pinned = {"hook_policy_sha256": "a" * 64}
+
+    _restart(pinned, dict(pinned))
+    with pytest.raises(CoordinatorError, match="hook_policy_sha256"):
+        _restart(pinned, {"hook_policy_sha256": "b" * 64})
+    with pytest.raises(CoordinatorError, match="hook_policy_sha256"):
+        _restart(pinned, {})
+
+
+def test_an_environment_restart_of_a_brief_without_a_pin_may_gain_one() -> None:
+    _restart({}, {"hook_policy_sha256": "a" * 64})
