@@ -37,6 +37,11 @@ jobs:
         run: make bootstrap
       - name: Make script executable
         run: chmod +x scripts/verify.py
+      # The IPC seam tests (tests/orchestration/test_runtime_client.py) start this binary through
+      # the coordinator CLI; a missing binary fails them here, it never skips them.
+      - name: Build harness-runtime for the IPC seam tests
+        working-directory: native/harness-runtime
+        run: cargo build --locked
       # The isolated test runner needs bubblewrap and unprivileged user namespaces, which Ubuntu
       # 24.04 restricts through AppArmor; without them the clean-room scenario proves only refusal.
       - name: Install bubblewrap for the isolated test runner
@@ -56,6 +61,8 @@ jobs:
       - name: Verify harness and clean-room install
         env:
           HARNESS_REQUIRE_TEST_SANDBOX: "1"
+          HARNESS_RUNTIME_BIN: ${{ github.workspace }}/native/harness-runtime/target/debug/harness-runtime
+          HARNESS_REQUIRE_RUNTIME: "1"
           # A pull request stops at the first failing test; `master` and releases run everything.
           VERIFY_ARGS: >-
             --junit-xml .harness/.sandboxes/logs/junit-verify.xml
