@@ -1,8 +1,11 @@
-//! The IPC server over a real Unix domain socket: permissions, `hello`, errors and shutdown.
+//! The IPC server over a real Unix domain socket or Windows named pipe: permissions, `hello`,
+//! errors and shutdown. The protocol tests run unchanged on both transports.
 
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,8 +16,37 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use contracts::{
     ErrorCode, MAX_FRAME_LEN, Response, Status, decode, encode, read_frame, write_frame,
 };
-use ipc::{Server, StartError, resolve_paths};
+use ipc::{PeerId, Server, StartError, resolve_paths};
 use serde_json::{Value, json};
+
+/// The client end of the transport under test.
+#[cfg(unix)]
+type Client = UnixStream;
+#[cfg(windows)]
+type Client = platform_ffi::PipeConnection;
+
+/// The identity of the user that runs these tests.
+#[cfg(unix)]
+fn own_peer() -> PeerId {
+    nix::unistd::getuid().as_raw()
+}
+
+#[cfg(windows)]
+fn own_peer() -> PeerId {
+    platform_ffi::current_user_sid().unwrap()
+}
+
+/// An identity that no test client has.
+#[cfg(unix)]
+fn foreign_peer() -> PeerId {
+    own_peer().wrapping_add(1)
+}
+
+#[cfg(windows)]
+fn foreign_peer() -> PeerId {
+    // The SID of the "Nobody" authority: it is never the SID of a logon user.
+    "S-1-0-0".to_owned()
+}
 
 struct Fixture {
     root: PathBuf,
@@ -54,18 +86,18 @@ impl Running {
     }
 
     /// Serve clients that run as `uid`; another uid makes every real client a foreign peer.
-    fn start_as(server: Server, uid: u32) -> Self {
-        Self::spawn(server, Some(uid))
+    fn start_as(server: Server, peer: PeerId) -> Self {
+        Self::spawn(server, Some(peer))
     }
 
-    fn spawn(server: Server, uid: Option<u32>) -> Self {
+    fn spawn(server: Server, peer: Option<PeerId>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let socket = server.paths().socket.clone();
         let token = fs::read_to_string(&server.paths().token).unwrap();
         let flag = Arc::clone(&stop);
         let thread = thread::spawn(move || {
-            match uid {
-                Some(uid) => server.serve_until_as(&flag, uid),
+            match peer {
+                Some(peer) => server.serve_until_as(&flag, peer),
                 None => server.serve_until(&flag),
             }
             .unwrap();
@@ -78,12 +110,22 @@ impl Running {
         }
     }
 
-    fn connect(&self) -> UnixStream {
+    #[cfg(unix)]
+    fn connect(&self) -> Client {
         let stream = UnixStream::connect(&self.socket).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         stream
+    }
+
+    #[cfg(windows)]
+    fn connect(&self) -> Client {
+        let timeout = Duration::from_secs(5);
+        let mut pipe =
+            platform_ffi::connect_client(self.socket.to_str().unwrap(), timeout).unwrap();
+        pipe.set_timeout(Some(timeout));
+        pipe
     }
 }
 
@@ -131,7 +173,7 @@ fn hello(root: &Path, token: &str, min: u32, max: u32) -> Value {
     )
 }
 
-fn exchange(stream: &mut UnixStream, body: &Value) -> Response {
+fn exchange(stream: &mut (impl Read + Write), body: &Value) -> Response {
     write_frame(stream, &encode(body).unwrap()).unwrap();
     decode(&read_frame(stream).unwrap()).unwrap()
 }
@@ -141,10 +183,12 @@ fn error_code(response: &Response) -> ErrorCode {
     response.error.as_ref().unwrap().code
 }
 
+#[cfg(unix)]
 fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
+#[cfg(unix)]
 #[test]
 fn the_directory_the_socket_and_the_token_are_private_to_the_owner() {
     let fixture = Fixture::new("modes");
@@ -155,6 +199,34 @@ fn the_directory_the_socket_and_the_token_are_private_to_the_owner() {
     assert_eq!(mode(&paths.socket), 0o600);
     assert_eq!(mode(&paths.token), 0o600);
     assert_eq!(fs::read_to_string(&paths.token).unwrap().len(), 64);
+}
+
+#[cfg(windows)]
+#[test]
+fn the_token_file_is_private_to_the_user() {
+    let fixture = Fixture::new("modes");
+    let server = fixture.bind().unwrap();
+    let paths = server.paths().clone();
+
+    let dacl = platform_ffi::dacl_of_path(&paths.token).unwrap();
+
+    assert!(dacl.protected, "{dacl:?}");
+    assert_eq!(dacl.aces.len(), 1, "{dacl:?}");
+    assert_eq!(dacl.aces[0].kind, "A");
+    assert_eq!(dacl.aces[0].trustee, own_peer());
+    assert_eq!(fs::read_to_string(&paths.token).unwrap().len(), 64);
+}
+
+#[cfg(windows)]
+#[test]
+fn the_pipe_is_named_after_the_repository() {
+    let fixture = Fixture::new("name");
+    let server = fixture.bind().unwrap();
+
+    assert_eq!(
+        server.paths().socket,
+        PathBuf::from(ipc::pipe_name(&server.paths().repo_id))
+    );
 }
 
 #[test]
@@ -246,6 +318,7 @@ fn a_second_runtime_for_the_same_repository_is_refused() {
     assert!(matches!(fixture.bind(), Err(StartError::AlreadyRunning(_))));
 }
 
+#[cfg(unix)]
 #[test]
 fn a_stale_socket_file_is_replaced() {
     let fixture = Fixture::new("stale");
@@ -274,6 +347,8 @@ fn stopping_the_server_removes_the_socket_and_the_token() {
 
     drop(server);
 
+    // A pipe name is no file: asking the file system about it would connect to the pipe.
+    #[cfg(unix)]
     assert!(!paths.socket.exists());
     assert!(!paths.token.exists());
 }
@@ -281,8 +356,7 @@ fn stopping_the_server_removes_the_socket_and_the_token() {
 #[test]
 fn a_peer_of_another_user_is_refused_with_unauthorized_peer() {
     let fixture = Fixture::new("peer");
-    let own = nix::unistd::getuid().as_raw();
-    let runtime = Running::start_as(fixture.bind().unwrap(), own.wrapping_add(1));
+    let runtime = Running::start_as(fixture.bind().unwrap(), foreign_peer());
     let mut stream = runtime.connect();
 
     // The refusal comes before the client has sent anything, even with the right token.

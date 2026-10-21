@@ -3,7 +3,7 @@
 //! A session turns one request frame into one response and says whether the connection must
 //! close afterwards. It does no I/O, so every rule is tested without a socket.
 
-use std::fs;
+use std::path::Path;
 
 use contracts::{
     ErrorBody, ErrorCode, FailureDomain, HelloPayload, HelloResult, PROTOCOL_VERSION,
@@ -11,7 +11,7 @@ use contracts::{
 };
 use serde_json::{Value, json};
 
-use crate::paths::{git_common_dir, repo_id};
+use crate::paths::{canonical, git_common_dir, repo_id};
 use crate::token::tokens_equal;
 
 /// What every session of one server shares.
@@ -199,7 +199,7 @@ impl Session {
 /// one checkout: a linked worktree has the repo-id of its main checkout (ADR 0021, section 2),
 /// the id that picked this socket, so it is the same repository.
 fn serves_repository(shared: &Shared, client_root: &str) -> bool {
-    fs::canonicalize(client_root)
+    canonical(Path::new(client_root))
         .and_then(|root| git_common_dir(&root).map_err(std::io::Error::other))
         .is_ok_and(|common| repo_id(&common) == shared.repo_id)
 }
@@ -220,7 +220,8 @@ fn malformed(operation_id: &str, detail: &str) -> Reply {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use contracts::Status;
@@ -237,7 +238,7 @@ mod tests {
             std::env::temp_dir().join(format!("hr-session-{name}-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join("repo/.git")).unwrap();
-        fs::canonicalize(base.join("repo")).unwrap()
+        canonical(&base.join("repo")).unwrap()
     }
 
     fn shared_for(root: &Path) -> Shared {

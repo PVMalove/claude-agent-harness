@@ -134,6 +134,7 @@ version = "0.1.0"
 dependencies = [
  "contracts",
  "nix",
+ "platform-ffi",
  "serde_json",
  "sha2",
 ]
