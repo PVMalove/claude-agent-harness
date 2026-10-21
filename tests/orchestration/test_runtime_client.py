@@ -512,6 +512,72 @@ def test_an_unreachable_runtime_is_runtime_unavailable_and_writes_nothing(
     assert not (dirs.repo / ".harness").exists()
 
 
+def test_a_windows_connect_gets_the_real_time_left_so_a_busy_pipe_can_time_out(
+    dirs: Directories, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timing = FakeTime()
+    client = RuntimeClient(
+        dirs.repo, environ=dirs.environ, clock=timing.clock, sleep=timing.sleep
+    )
+    given: list[Callable[[], float | None]] = []
+
+    class RecordingPipe:
+        @classmethod
+        def open(
+            cls, name: str, remaining: Callable[[], float | None]
+        ) -> RecordingPipe:
+            given.append(remaining)
+            raise OSError("the pipe stays busy")
+
+    monkeypatch.setattr(runtime_client, "_PipeConnection", RecordingPipe, raising=False)
+    monkeypatch.setattr(sys, "platform", "win32")
+    deadline = timing.now + 1.0
+
+    with pytest.raises(OSError, match="busy"):
+        client._connect(deadline)
+    timing.now = deadline + 5.0
+
+    # A floor above zero would hide the passed deadline from the wait loop of the pipe.
+    limit = given[0]()
+    assert limit is not None
+    assert limit <= 0
+
+
+if sys.platform == "win32":
+
+    def test_a_pipe_whose_only_instance_is_taken_ends_in_runtime_unavailable(
+        dirs: Directories,
+    ) -> None:
+        paths = runtime_client.runtime_paths(dirs.repo, dirs.environ)
+        paths.directory.mkdir(parents=True, mode=0o700)
+        paths.token.write_text(TOKEN)
+        pipe = _PipeListener(str(paths.socket))
+        connecting = _winapi.ConnectNamedPipe(pipe.instance, overlapped=True)
+        # One client takes the only instance and the scripted runtime never accepts another.
+        occupant = _winapi.CreateFile(
+            str(paths.socket),
+            _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
+            0,
+            _winapi.NULL,
+            _winapi.OPEN_EXISTING,
+            _winapi.FILE_FLAG_OVERLAPPED,
+            _winapi.NULL,
+        )
+        client = RuntimeClient(dirs.repo, environ=dirs.environ)
+        started = time.monotonic()
+        try:
+            with pytest.raises(RuntimeClientError) as caught:
+                client.call("status", operation_id="busy", timeout_seconds=1.0)
+            elapsed = time.monotonic() - started
+        finally:
+            _winapi.CloseHandle(occupant)
+            connecting.GetOverlappedResult(True)
+            _winapi.CloseHandle(pipe.instance)
+
+        assert caught.value.code == "runtime_unavailable"
+        assert elapsed < 10.0
+
+
 @pytest.mark.parametrize(
     ("code", "domain", "retryable"),
     [

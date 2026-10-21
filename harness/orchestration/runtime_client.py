@@ -3,8 +3,9 @@
 The coordinator asks the runtime over a Unix domain socket, or on Windows over a named pipe, and
 never writes state itself when the runtime is unavailable: an unreachable runtime is the typed
 error ``runtime_unavailable``, not a fallback. Both transports carry the same frames, ``hello``
-handshake, request envelope, error catalog, token check and retry. A request that loses its transport is repeated with the same ``operation_id`` until its
-``request_deadline``, so a lost answer never becomes a second intent.
+handshake, request envelope, error catalog, token check and retry. A request that loses its
+transport is repeated with the same ``operation_id`` until its ``request_deadline``, so a lost
+answer never becomes a second intent.
 
 The closed vocabularies of the protocol live here next to the client. The ``systemFields.v1``
 registry holds the same values, and ``native/harness-runtime/crates/contracts`` holds them on the
@@ -280,9 +281,9 @@ if sys.platform == "win32":
         """One end of a named pipe with overlapped I/O, bounded by a time limit for each operation.
 
         It has the three methods of a socket that the protocol code uses. ``remaining`` returns the
-        seconds an operation may still take, or ``None`` for no limit. Pattern of
-        ``multiprocessing.connection.PipeConnection``. The class exists on Windows only, so the
-        module imports on every platform.
+        seconds an operation may still take (zero or less once the limit has passed), or ``None``
+        for no limit. Pattern of ``multiprocessing.connection.PipeConnection``. The class exists on
+        Windows only, so the module imports on every platform.
         """
 
         def __init__(self, handle: int, remaining: Callable[[], float | None]) -> None:
@@ -353,11 +354,11 @@ if sys.platform == "win32":
 
         def recv(self, count: int, /) -> bytes:
             """Read at most ``count`` bytes; ``b""`` means the runtime closed the pipe."""
-            overlapped, error = _winapi.ReadFile(
-                self._open_handle(), count, overlapped=True
-            )
-            self._finish(overlapped, error)
             try:
+                overlapped, error = _winapi.ReadFile(
+                    self._open_handle(), count, overlapped=True
+                )
+                self._finish(overlapped, error)
                 _, error = overlapped.GetOverlappedResult(True)
             except OSError as exc:
                 if getattr(exc, "winerror", None) == _ERROR_BROKEN_PIPE:
@@ -534,7 +535,7 @@ class RuntimeClient:
         if sys.platform == "win32":
             return _PipeConnection.open(
                 str(self.paths.socket),
-                lambda: max(deadline - self._clock(), 0.001),
+                lambda: deadline - self._clock(),
             )
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
