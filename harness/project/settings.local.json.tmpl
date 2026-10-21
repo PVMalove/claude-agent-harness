@@ -18,6 +18,7 @@
       {
         "matcher": "Bash",
         "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-hook-policy.sh\"" },
           { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-public-attribution.sh\"" },
           { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-direct-master.sh\"" },
           { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-pr-merge.sh\"" },
@@ -25,6 +26,12 @@
           { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/require-qa-gate.sh\"" },
           { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/require-bounded-check.sh\"" },
           { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/block-dangerous-git.sh\"" }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-hook-policy.sh\"" }
         ]
       },
       {

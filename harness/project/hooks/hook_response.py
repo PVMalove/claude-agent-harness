@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,9 +40,19 @@ HOOKS: Dict[str, Tuple[str, bool]] = {
     "check-worktree-branch-name": ("worktree-branch-name", True),
     "block-scratch-outside-docs-tasks": ("scratch-location", True),
     "require-qa-gate": ("qa-gate-missing", True),
+    "protect-hook-policy": ("hook-policy-protected", True),
     "require-bounded-check": ("unbounded-check", False),
     "count-skill-usage": ("ok", False),
     "mark-qa-gate-passed": ("ok", False),
+}
+# Дополнительные причины блокировки: сценарий называет одну из них префиксом ``[reason_code] `` stderr.
+EXTRA_REASONS: Dict[str, Tuple[str, ...]] = {
+    "protect-hook-policy": (
+        "hook-policy-changed",
+        "hook-policy-unparseable",
+        "project-json-shell-write",
+        "agent-config-edit",
+    ),
 }
 PROFILES = ("minimal", "standard", "strict")
 DEFAULT_PROFILE = "standard"
@@ -50,9 +61,15 @@ REASON_OK = "ok"
 REASON_INTERNAL_ERROR = "internal-error"
 REASON_CODES = tuple(
     dict.fromkeys(
-        [REASON_OK, REASON_INTERNAL_ERROR, *(reason for reason, _ in HOOKS.values())]
+        [
+            REASON_OK,
+            REASON_INTERNAL_ERROR,
+            *(reason for reason, _ in HOOKS.values()),
+            *(reason for reasons in EXTRA_REASONS.values() for reason in reasons),
+        ]
     )
 )
+REASON_PREFIX = re.compile(r"\[([a-z][a-z-]*)\] ")
 ENVELOPE_FIELDS = (
     "hook_id",
     "profile",
@@ -116,6 +133,9 @@ def decide(
 ) -> Dict[str, object]:
     """Вердикт по коду возврата исходного сценария (``None`` — сценарий не запустился)."""
     block_reason, critical = HOOKS[hook_id]
+    named = REASON_PREFIX.match(stderr.lstrip())
+    if named and named.group(1) in EXTRA_REASONS.get(hook_id, ()):
+        block_reason = named.group(1)
     remedy = stderr.strip()[:REMEDY_LIMIT]
     evidence = f".claude/hooks/{hook_id}.sh"
     if code == 0:
