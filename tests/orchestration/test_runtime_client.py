@@ -38,8 +38,9 @@ pytestmark = pytest.mark.skipif(
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "t" * 64
 HEADER = struct.Struct(">I")
-# A socket path is limited to 100 bytes, which a pytest or CI temporary directory can exceed.
-SHORT_TMP = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
+# A socket path is limited to 100 bytes, which a pytest or CI temporary directory can exceed. A
+# writable /tmp is short; without one the temporary directory of the environment (TMPDIR) is used.
+SHORT_TMP = "/tmp" if os.access("/tmp", os.W_OK | os.X_OK) else tempfile.gettempdir()
 
 
 class Directories:
@@ -628,7 +629,11 @@ def real_runtime(dirs: Directories) -> Iterator[RuntimeProcess]:
 
 
 def _cli(
-    directories: Directories, *args: str, timeout: str = "10", python: str | None = None
+    directories: Directories,
+    *args: str,
+    timeout: str = "10",
+    python: str | None = None,
+    repo: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """The coordinator CLI as its own process: ``runtime status`` for this repository."""
     command = [sys.executable, str(ROOT / "harness/orchestration/coordinator.py")]
@@ -640,7 +645,7 @@ def _cli(
             "runtime",
             "status",
             "--repo",
-            str(directories.repo),
+            str(repo or directories.repo),
             "--timeout",
             timeout,
             *args,
@@ -674,6 +679,29 @@ def test_the_coordinator_cli_reads_the_state_of_a_real_runtime(
     # Both languages derive the same repo id and the same socket address.
     assert report["runtime"]["repo_id"] == real_runtime.paths.repo_id
     assert report["socket"] == str(real_runtime.paths.socket)
+
+
+def test_a_linked_worktree_reaches_the_runtime_of_its_main_checkout(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    admin = dirs.repo / ".git/worktrees/w"
+    admin.mkdir(parents=True)
+    (admin / "commondir").write_text("../..\n")
+    worktree = dirs.base / "w"
+    worktree.mkdir()
+    (worktree / ".git").write_text(f"gitdir: {admin}\n")
+
+    result = _cli(dirs, repo=worktree)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["runtime"]["repo_id"] == real_runtime.paths.repo_id
+
+
+def test_runtime_status_takes_no_state_dir(dirs: Directories) -> None:
+    result = _cli(dirs, "--state-dir", str(dirs.base))
+
+    assert result.returncode == 2
+    assert "unrecognized arguments" in result.stderr
 
 
 def test_the_runtime_directory_the_socket_and_the_token_are_private(
