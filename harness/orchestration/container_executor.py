@@ -642,9 +642,10 @@ def _runtime_exposed_by(
     """The plan roots that would give a worker the runtime's directory, socket or token.
 
     ADR 0021 and ADR 0022 keep every container away from the runtime: a root that is one of its
-    paths or lies under it is refused, and so is a root that contains it while it exists (the
-    fallback directory sits inside the repository's state root). Paths are compared after
-    symlinks are resolved.
+    paths or lies under it is refused, and so is a root that contains its socket or token while
+    that file exists (the fallback directory sits inside the repository's state root). A root that
+    contains only the empty directory of a stopped runtime exposes nothing. Paths are compared
+    after symlinks are resolved.
     """
     if repo_root is None:
         return []
@@ -652,16 +653,21 @@ def _runtime_exposed_by(
         paths = runtime_client.runtime_paths(Path(repo_root))
     except runtime_client.RuntimeClientError:
         return []
+    # Containing the directory is no exposure by itself: only a live socket or token is.
     protected = [
-        Path(os.path.realpath(item))
-        for item in (paths.directory, paths.socket, paths.token)
+        (Path(os.path.realpath(item)), live)
+        for item, live in (
+            (paths.directory, False),
+            (paths.socket, True),
+            (paths.token, True),
+        )
     ]
     exposed: list[tuple[str, Path]] = []
     for root in roots:
         resolved = Path(os.path.realpath(root))
-        for item in protected:
+        for item, live in protected:
             inside = resolved == item or item in resolved.parents
-            contains = resolved in item.parents and item.exists()
+            contains = live and resolved in item.parents and item.exists()
             if inside or contains:
                 exposed.append((root, paths.directory))
                 break

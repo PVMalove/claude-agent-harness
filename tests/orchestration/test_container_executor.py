@@ -26,6 +26,7 @@ from harness.orchestration import (
     extensions,
     operational_guards,
     runtime_access,
+    runtime_client,
 )
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from tests.orchestration import test_coordinator as coordinator_tests
@@ -1775,6 +1776,15 @@ class RuntimeDirectoryIsolationTests(unittest.TestCase):
         environ = self.enterContext(mock.patch.dict(os.environ))
         environ["XDG_RUNTIME_DIR"] = str(self.tmp / "run")
 
+    def write_runtime_file(self, suffix: str, directory: Path | None = None) -> None:
+        """Create the socket or token file of a running runtime (the name is its repo-id)."""
+        (directory or self.runtime_dir).joinpath(f"{self.repo_id()}{suffix}").touch()
+
+    def repo_id(self) -> str:
+        repo = self.tmp / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        return runtime_client.runtime_paths(repo).repo_id
+
     def verify(self, root: Path | str | None) -> JsonObject:
         filesystem = (
             [{"resource": "cache", "path": str(root), "access": "write"}]
@@ -1817,10 +1827,21 @@ class RuntimeDirectoryIsolationTests(unittest.TestCase):
 
         self.assertBlocked(self.verify(link))
 
-    def test_a_root_that_contains_the_existing_runtime_directory_is_blocked(
+    def test_a_root_that_contains_a_live_runtime_socket_is_blocked(self) -> None:
+        self.write_runtime_file(".sock")
+
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_a_root_that_contains_a_live_runtime_token_is_blocked(self) -> None:
+        self.write_runtime_file(".token")
+
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_a_root_that_contains_only_the_empty_runtime_directory_is_allowed(
         self,
     ) -> None:
-        self.assertBlocked(self.verify(self.tmp / "run"))
+        # The runtime removes its socket and token when it stops; its directory stays.
+        self.assertIsNone(self.verify(self.tmp / "run")["reason"])
 
     def test_the_state_root_fallback_directory_is_exposed_by_the_repository_root(
         self,
@@ -1828,8 +1849,17 @@ class RuntimeDirectoryIsolationTests(unittest.TestCase):
         del os.environ["XDG_RUNTIME_DIR"]
         fallback = self.tmp / "repo/.harness/orchestration/state/runtime"
         fallback.mkdir(parents=True)
+        self.write_runtime_file(".sock", fallback)
 
         self.assertBlocked(self.verify(None))
+
+    def test_the_state_root_fallback_directory_of_a_stopped_runtime_blocks_nothing(
+        self,
+    ) -> None:
+        del os.environ["XDG_RUNTIME_DIR"]
+        (self.tmp / "repo/.harness/orchestration/state/runtime").mkdir(parents=True)
+
+        self.assertIsNone(self.verify(None)["reason"])
 
     def test_a_runtime_outside_every_root_blocks_nothing(self) -> None:
         verification = self.verify(None)
