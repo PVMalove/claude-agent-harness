@@ -273,3 +273,64 @@ def test_minimal_downgrades_only_the_behavioral_hook(
 
     code, decision, _ = _decision(done)
     assert (code, decision) == ((0, "warn") if profile == "minimal" else (2, "block"))
+
+
+_UNBOUNDED_CHECK = {"tool_input": {"command": "python -m pytest -q tests"}}
+
+
+def _escalated_project(
+    tmp_path: Path, projects: dict[str, Path], policy: object
+) -> Path:
+    """A copy of the `minimal` project whose hook_policy is `policy`."""
+    project = tmp_path / "project"
+    shutil.copytree(
+        projects["minimal"], project, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    config = project / ".harness" / "project.json"
+    document = json.loads(config.read_text(encoding="utf-8"))
+    document["hook_policy"] = policy
+    config.write_text(json.dumps(document), encoding="utf-8")
+    return project
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_an_escalation_applies_to_every_hook_decision_for_every_role(
+    tmp_path: Path, projects: dict[str, Path], role: str
+) -> None:
+    """The hooks cannot see role or path, so an escalation of a minimal project applies to every
+    call: the behavioural hook blocks again and every critical guard still blocks."""
+    plain = _escalated_project(tmp_path / "plain", projects, {"profile": "minimal"})
+    escalated = _escalated_project(
+        tmp_path / "escalated",
+        projects,
+        {
+            "profile": "minimal",
+            "escalations": [{"roles": ["qa"], "profile": "standard"}],
+        },
+    )
+
+    soft = _run(plain, "require-bounded-check", _UNBOUNDED_CHECK, role, "minimal")
+    hard = _run(escalated, "require-bounded-check", _UNBOUNDED_CHECK, role, "minimal")
+
+    assert _decision(soft) == (0, "warn", "unbounded-check"), soft.stderr
+    assert _decision(hard) == (2, "block", "unbounded-check"), hard.stderr
+    assert parse_hook_response(hard.stderr)["profile"] == "standard"
+    for hook_id, (block, reason, _) in CRITICAL_GUARDS.items():
+        done = _run(escalated, hook_id, _fill(block, escalated), role, "minimal")
+        assert _decision(done) == (2, "block", reason), f"{hook_id}: {done.stderr}"
+
+
+def test_the_scoped_test_author_guard_stays_outside_the_envelope_by_decision() -> None:
+    """ADR 0024 section 2a lists it as critical, but it answers with its own soft refusal (ADR 0014)
+    inside the agent description, so it is wired outside the envelope; the matrix above proves it
+    denies in every profile and role."""
+    spec = importlib.util.spec_from_file_location(
+        "hook_response_scoped", HOOKS / "hook_response.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert "test-author-guard" not in module.HOOKS
+    assert "test-author-guard.py" in AGENT.read_text(encoding="utf-8")
