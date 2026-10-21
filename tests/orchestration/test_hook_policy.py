@@ -58,7 +58,7 @@ _ESCALATIONS = {
         ("review", ["docs/a.md"], "minimal"),
         ("review", ["harness/x/y.py"], "standard"),
         ("developer", ["harness/health/a.py"], "strict"),
-        ("developer", ["harness/health/sub/a.py"], "standard"),
+        ("developer", ["harness/health/sub/a.py"], "strict"),
         ("developer", ["docs/a.md", "harness/health/a.py"], "strict"),
         ("coordinator", ["harness/health/a.py"], "standard"),
         ("qa", [], "standard"),
@@ -81,11 +81,13 @@ def test_escalation_never_weakens_the_base_profile() -> None:
     assert hook_policy.resolve_profile(policy, role="qa") == "strict"
 
 
-def test_globs_match_by_segment() -> None:
+def test_globs_use_fnmatchcase_where_star_crosses_slash() -> None:
     policy = hook_policy.normalize_policy(
         {
             "profile": "minimal",
-            "escalations": [{"paths": ["**/secrets.*", "a/?/c"], "profile": "strict"}],
+            "escalations": [
+                {"paths": ["*secrets.*", "a/?/c", "src/*"], "profile": "strict"}
+            ],
         }
     )
 
@@ -97,6 +99,8 @@ def test_globs_match_by_segment() -> None:
     assert profile("a/b/c") == "strict"
     assert profile("a/bb/c") == "minimal"
     assert profile("a/b/c/d") == "minimal"
+    assert profile("src/a/b.py") == "strict"
+    assert profile("SRC/a.py") == "minimal"
 
 
 def test_environment_and_unknown_input_are_ignored(

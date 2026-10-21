@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections.abc import Iterable, Mapping
+from fnmatch import fnmatchcase
 from pathlib import Path
 
 from ..errors import PolicyError
@@ -76,31 +76,11 @@ def load_policy(repo: Path) -> dict[str, object]:
     return normalize_policy(data.get("hook_policy"))
 
 
-def _glob_regex(pattern: str) -> re.Pattern[str]:
-    out: list[str] = []
-    index = 0
-    while index < len(pattern):
-        if pattern.startswith("**/", index):
-            out.append("(?:.*/)?")
-            index += 3
-        elif pattern.startswith("**", index):
-            out.append(".*")
-            index += 2
-        elif pattern[index] == "*":
-            out.append("[^/]*")
-            index += 1
-        elif pattern[index] == "?":
-            out.append("[^/]")
-            index += 1
-        else:
-            out.append(re.escape(pattern[index]))
-            index += 1
-    return re.compile("".join(out) + r"\Z")
-
-
 def _path_matches(path: str, patterns: Iterable[str]) -> bool:
+    """``fnmatchcase``: ``*`` и ``?`` пересекают ``/``, поэтому эскалация ``src/*`` срабатывает и для
+    ``src/a/b.py`` — совпадений больше, а не меньше, и профиль только строже."""
     normalized = path.replace("\\", "/").removeprefix("./")
-    return any(_glob_regex(pattern).match(normalized) for pattern in patterns)
+    return any(fnmatchcase(normalized, pattern) for pattern in patterns)
 
 
 def resolve_profile(
