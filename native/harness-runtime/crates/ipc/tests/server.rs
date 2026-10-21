@@ -50,17 +50,25 @@ struct Running {
 
 impl Running {
     fn start(server: Server) -> Self {
-        Self::start_as(server, nix::unistd::getuid().as_raw())
+        Self::spawn(server, None)
     }
 
     /// Serve clients that run as `uid`; another uid makes every real client a foreign peer.
     fn start_as(server: Server, uid: u32) -> Self {
+        Self::spawn(server, Some(uid))
+    }
+
+    fn spawn(server: Server, uid: Option<u32>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let socket = server.paths().socket.clone();
         let token = fs::read_to_string(&server.paths().token).unwrap();
         let flag = Arc::clone(&stop);
         let thread = thread::spawn(move || {
-            server.serve_until_as(&flag, uid).unwrap();
+            match uid {
+                Some(uid) => server.serve_until_as(&flag, uid),
+                None => server.serve_until(&flag),
+            }
+            .unwrap();
         });
         Self {
             stop,

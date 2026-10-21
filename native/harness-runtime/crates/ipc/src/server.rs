@@ -4,7 +4,7 @@
 
 use std::fmt;
 use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -134,7 +134,7 @@ impl Server {
                     let shared = Arc::clone(&self.shared);
                     thread::spawn(move || {
                         // A broken connection ends its own thread, never the server.
-                        let _ = serve_connection(stream, own, &shared);
+                        let _ = serve_unix_stream(stream, own, &shared);
                     });
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
@@ -234,7 +234,7 @@ fn now_ms() -> u64 {
         })
 }
 
-fn send(stream: &mut UnixStream, response: &Response) -> Result<(), FrameError> {
+fn send(stream: &mut impl Write, response: &Response) -> Result<(), FrameError> {
     let body = encode(response).map_err(|err| FrameError::Io(io::Error::other(err)))?;
     write_frame(stream, &body)
 }
@@ -243,16 +243,27 @@ fn refusal(code: ErrorCode, domain: FailureDomain, message: &str, remedy: &str) 
     Response::error("", ErrorBody::new(code, domain, false, message, remedy))
 }
 
-fn serve_connection(mut stream: UnixStream, own: u32, shared: &Shared) -> Result<(), FrameError> {
+/// Prepare an accepted Unix socket, check its peer and serve it.
+fn serve_unix_stream(mut stream: UnixStream, own: u32, shared: &Shared) -> Result<(), FrameError> {
     // The accepted socket must block, whatever the listener's mode was.
     stream.set_nonblocking(false).map_err(FrameError::Io)?;
     stream
         .set_read_timeout(Some(IDLE_TIMEOUT))
         .map_err(FrameError::Io)?;
     let permitted = peer_uid(&stream).is_ok_and(|uid| same_user(uid, own));
+    serve_connection(&mut stream, permitted, shared)
+}
+
+/// Serve one connection of any byte stream. A peer that is not `permitted` gets
+/// `unauthorized_peer` and the connection ends before the client has sent anything.
+fn serve_connection<S: Read + Write>(
+    stream: &mut S,
+    permitted: bool,
+    shared: &Shared,
+) -> Result<(), FrameError> {
     if !permitted {
         return send(
-            &mut stream,
+            stream,
             &refusal(
                 ErrorCode::UnauthorizedPeer,
                 FailureDomain::Policy,
@@ -263,12 +274,12 @@ fn serve_connection(mut stream: UnixStream, own: u32, shared: &Shared) -> Result
     }
     let mut session = Session::new();
     loop {
-        let body = match read_frame(&mut stream) {
+        let body = match read_frame(stream) {
             Ok(body) => body,
             Err(FrameError::TooLarge(len)) => {
                 // The body was not read, so the stream cannot be resynchronised.
                 return send(
-                    &mut stream,
+                    stream,
                     &refusal(
                         ErrorCode::MalformedRequest,
                         FailureDomain::Tooling,
@@ -281,7 +292,7 @@ fn serve_connection(mut stream: UnixStream, own: u32, shared: &Shared) -> Result
             Err(err) => return Err(err),
         };
         let reply = session.handle(shared, &body, now_ms());
-        send(&mut stream, &reply.response)?;
+        send(stream, &reply.response)?;
         if reply.close {
             return Ok(());
         }
@@ -291,6 +302,74 @@ fn serve_connection(mut stream: UnixStream, own: u32, shared: &Shared) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    use contracts::{MAX_FRAME_LEN, Status, decode};
+
+    /// An in-memory connection: what the client sent, and what the server wrote back.
+    struct Duplex {
+        input: Cursor<Vec<u8>>,
+        output: Vec<u8>,
+    }
+
+    impl Duplex {
+        fn new(input: Vec<u8>) -> Self {
+            Self {
+                input: Cursor::new(input),
+                output: Vec::new(),
+            }
+        }
+    }
+
+    impl Read for Duplex {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.input.read(buf)
+        }
+    }
+
+    impl Write for Duplex {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.output.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn shared() -> Shared {
+        Shared {
+            token: "t".repeat(64),
+            repo_id: "0123456789abcdef".to_owned(),
+            server_version: "test".to_owned(),
+        }
+    }
+
+    fn first_error(output: &[u8]) -> ErrorCode {
+        let body = read_frame(&mut Cursor::new(output)).unwrap();
+        let response: Response = decode(&body).unwrap();
+        assert_eq!(response.status, Status::Error);
+        response.error.unwrap().code
+    }
+
+    #[test]
+    fn a_refused_peer_gets_unauthorized_peer_before_anything_is_read() {
+        let mut stream = Duplex::new(vec![0xff; 16]);
+
+        serve_connection(&mut stream, false, &shared()).unwrap();
+
+        assert_eq!(first_error(&stream.output), ErrorCode::UnauthorizedPeer);
+        assert_eq!(stream.input.position(), 0);
+    }
+
+    #[test]
+    fn a_permitted_peer_is_served_over_any_byte_stream() {
+        let mut stream = Duplex::new((MAX_FRAME_LEN + 1).to_be_bytes().to_vec());
+
+        serve_connection(&mut stream, true, &shared()).unwrap();
+
+        assert_eq!(first_error(&stream.output), ErrorCode::MalformedRequest);
+    }
 
     #[test]
     fn a_directory_owned_by_another_user_is_refused_before_it_is_touched() {
