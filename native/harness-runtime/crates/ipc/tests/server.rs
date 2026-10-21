@@ -5,8 +5,8 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,12 +50,17 @@ struct Running {
 
 impl Running {
     fn start(server: Server) -> Self {
+        Self::start_as(server, nix::unistd::getuid().as_raw())
+    }
+
+    /// Serve clients that run as `uid`; another uid makes every real client a foreign peer.
+    fn start_as(server: Server, uid: u32) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let socket = server.paths().socket.clone();
         let token = fs::read_to_string(&server.paths().token).unwrap();
         let flag = Arc::clone(&stop);
         let thread = thread::spawn(move || {
-            server.serve_until(&flag).unwrap();
+            server.serve_until_as(&flag, uid).unwrap();
         });
         Self {
             stop,
@@ -266,10 +271,48 @@ fn stopping_the_server_removes_the_socket_and_the_token() {
 }
 
 #[test]
-fn a_runtime_directory_of_another_user_is_not_taken() {
-    let fixture = Fixture::new("owner");
-    // `/proc` belongs to root; the runtime must not use a directory it does not own.
-    let paths = resolve_paths(&fixture.root, Some(Path::new("/proc"))).unwrap();
+fn a_peer_of_another_user_is_refused_with_unauthorized_peer() {
+    let fixture = Fixture::new("peer");
+    let own = nix::unistd::getuid().as_raw();
+    let runtime = Running::start_as(fixture.bind().unwrap(), own.wrapping_add(1));
+    let mut stream = runtime.connect();
 
-    assert!(Server::bind(&fixture.root, paths).is_err());
+    // The refusal comes before the client has sent anything, even with the right token.
+    let answer: Response = decode(&read_frame(&mut stream).unwrap()).unwrap();
+
+    assert_eq!(error_code(&answer), ErrorCode::UnauthorizedPeer);
+    assert!(read_frame(&mut stream).is_err());
+}
+
+#[test]
+fn simultaneous_starts_leave_one_runtime_with_its_own_token() {
+    let fixture = Arc::new(Fixture::new("race"));
+    let starters = 8;
+    let barrier = Arc::new(Barrier::new(starters));
+    let handles: Vec<_> = (0..starters)
+        .map(|_| {
+            let fixture = Arc::clone(&fixture);
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                fixture.bind()
+            })
+        })
+        .collect();
+    let outcomes: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let mut winners = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Ok(server) => winners.push(server),
+            Err(err) => assert!(matches!(err, StartError::AlreadyRunning(_)), "{err}"),
+        }
+    }
+    assert_eq!(winners.len(), 1);
+    let runtime = Running::start(winners.pop().unwrap());
+    let mut stream = runtime.connect();
+    assert_eq!(
+        exchange(&mut stream, &hello(&fixture.root, &runtime.token, 1, 1)).status,
+        Status::Ok
+    );
 }

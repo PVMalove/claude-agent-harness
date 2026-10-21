@@ -1,8 +1,9 @@
 //! The Unix domain socket server: directory, socket and token permissions, the peer check and one
-//! thread per connection (ADR 0021, section 2).
+//! thread per connection (ADR 0021, section 2). A lock file in the runtime directory makes the
+//! start of two runtimes for one repository exclusive.
 
 use std::fmt;
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -78,16 +79,21 @@ pub struct Server {
     listener: UnixListener,
     paths: RuntimePaths,
     shared: Arc<Shared>,
+    /// Holds the exclusive lock of this repository's runtime until the server is dropped.
+    _lock: File,
 }
 
 impl Server {
-    /// Prepare the `0700` directory, write the `0600` token, then bind the `0600` socket.
+    /// Prepare the `0700` directory, take the lock, write the `0600` token, then bind the `0600`
+    /// socket. The lock holder is the only runtime of the repository, so it alone touches the
+    /// socket and the token files.
     pub fn bind(repo_root: &Path, paths: RuntimePaths) -> Result<Self, StartError> {
         let repo_root = fs::canonicalize(repo_root).map_err(io_context(format!(
             "cannot resolve {}",
             repo_root.display()
         )))?;
-        prepare_directory(&paths.dir)?;
+        prepare_directory(&paths.dir, own_uid())?;
+        let lock = take_lock(&paths)?;
         remove_stale_socket(&paths.socket)?;
         let token = generate_token().map_err(io_context("cannot read the random source"))?;
         write_token(&paths.token, &token)?;
@@ -110,6 +116,7 @@ impl Server {
             listener,
             paths,
             shared,
+            _lock: lock,
         })
     }
 
@@ -119,7 +126,13 @@ impl Server {
 
     /// Serve connections until `stop` is set. A connection runs on its own thread.
     pub fn serve_until(&self, stop: &AtomicBool) -> io::Result<()> {
-        let own = own_uid();
+        self.serve_until_as(stop, own_uid())
+    }
+
+    /// Like [`Server::serve_until`], but a client must run as `expected_uid`. Tests use another
+    /// uid to see the refusal of a foreign peer on a real socket.
+    pub fn serve_until_as(&self, stop: &AtomicBool, expected_uid: u32) -> io::Result<()> {
+        let own = expected_uid;
         while !stop.load(Ordering::Relaxed) {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -147,7 +160,7 @@ impl Drop for Server {
     }
 }
 
-fn prepare_directory(dir: &Path) -> Result<(), StartError> {
+fn prepare_directory(dir: &Path, owner: u32) -> Result<(), StartError> {
     DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -155,7 +168,7 @@ fn prepare_directory(dir: &Path) -> Result<(), StartError> {
         .map_err(io_context(format!("cannot create {}", dir.display())))?;
     let metadata =
         fs::metadata(dir).map_err(io_context(format!("cannot read {}", dir.display())))?;
-    if metadata.uid() != own_uid() {
+    if metadata.uid() != owner {
         return Err(StartError::ForeignDirectory(dir.to_path_buf()));
     }
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(io_context(format!(
@@ -164,17 +177,36 @@ fn prepare_directory(dir: &Path) -> Result<(), StartError> {
     )))
 }
 
-/// A socket file nobody listens on is left by a runtime that died; one that answers is a rival.
-fn remove_stale_socket(socket: &Path) -> Result<(), StartError> {
-    if !socket.exists() {
-        return Ok(());
+/// Take the exclusive lock of the repository's runtime. It is held while the server lives, and
+/// the kernel drops it when the process dies, so a crash never leaves the repository locked.
+fn take_lock(paths: &RuntimePaths) -> Result<File, StartError> {
+    let path = paths.dir.join(format!("{}.lock", paths.repo_id));
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&path)
+        .map_err(io_context(format!("cannot open {}", path.display())))?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(StartError::AlreadyRunning(paths.socket.clone())),
+        Err(TryLockError::Error(source)) => Err(io_context(format!(
+            "cannot lock {}",
+            path.display()
+        ))(source)),
     }
-    match UnixStream::connect(socket) {
-        Ok(_) => Err(StartError::AlreadyRunning(socket.to_path_buf())),
-        Err(_) => fs::remove_file(socket).map_err(io_context(format!(
+}
+
+/// With the lock held, a socket file in the way is left by a runtime that died.
+fn remove_stale_socket(socket: &Path) -> Result<(), StartError> {
+    match fs::remove_file(socket) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(io_context(format!(
             "cannot remove the stale socket {}",
             socket.display()
-        ))),
+        ))(err)),
     }
 }
 
@@ -258,5 +290,43 @@ fn serve_connection(mut stream: UnixStream, own: u32, shared: &Shared) -> Result
         if reply.close {
             return Ok(());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_directory_owned_by_another_user_is_refused_before_it_is_touched() {
+        let dir = std::env::temp_dir().join(format!("hr-foreign-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let outcome = prepare_directory(&dir, own_uid().wrapping_add(1));
+
+        assert!(matches!(outcome, Err(StartError::ForeignDirectory(_))));
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_of_the_own_user_is_taken_and_restricted() {
+        let dir = std::env::temp_dir().join(format!("hr-own-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        prepare_directory(&dir, own_uid()).unwrap();
+
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

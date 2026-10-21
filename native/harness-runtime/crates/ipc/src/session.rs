@@ -12,6 +12,7 @@ use contracts::{
 };
 use serde_json::{Value, json};
 
+use crate::paths::{git_common_dir, repo_id};
 use crate::token::tokens_equal;
 
 /// What every session of one server shares.
@@ -154,9 +155,7 @@ impl Session {
                 true,
             );
         }
-        let same_repo =
-            fs::canonicalize(&hello.repo_root).is_ok_and(|root| root == shared.repo_root);
-        if !same_repo {
+        if !serves_repository(shared, &hello.repo_root) {
             return failure(
                 id,
                 ErrorBody::new(
@@ -198,6 +197,15 @@ impl Session {
     }
 }
 
+/// A client names its repository by a working tree root. The runtime serves the repository, not
+/// one checkout: a linked worktree has the repo-id of its main checkout (ADR 0021, section 2),
+/// the id that picked this socket, so it is the same repository.
+fn serves_repository(shared: &Shared, client_root: &str) -> bool {
+    fs::canonicalize(client_root)
+        .and_then(|root| git_common_dir(&root).map_err(std::io::Error::other))
+        .is_ok_and(|common| repo_id(&common) == shared.repo_id)
+}
+
 fn malformed(operation_id: &str, detail: &str) -> Reply {
     failure(
         operation_id,
@@ -214,20 +222,37 @@ fn malformed(operation_id: &str, detail: &str) -> Reply {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use contracts::Status;
 
     use super::*;
 
     const NOW: u64 = 1_000;
 
-    fn shared() -> Shared {
-        let root = fs::canonicalize(std::env::temp_dir()).unwrap();
+    /// A scratch directory with a `.git` directory: the root of a repository.
+    fn scratch_repository(name: &str) -> PathBuf {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let base =
+            std::env::temp_dir().join(format!("hr-session-{name}-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("repo/.git")).unwrap();
+        fs::canonicalize(base.join("repo")).unwrap()
+    }
+
+    fn shared_for(root: PathBuf) -> Shared {
+        let id = repo_id(&git_common_dir(&root).unwrap());
         Shared {
             token: "secret".to_owned(),
             repo_root: root,
-            repo_id: "0123456789abcdef".to_owned(),
+            repo_id: id,
             server_version: "9.9.9".to_owned(),
         }
+    }
+
+    fn shared() -> Shared {
+        shared_for(scratch_repository("shared"))
     }
 
     fn hello_body(shared: &Shared, token: &str, min: u32, max: u32) -> Vec<u8> {
@@ -307,11 +332,43 @@ mod tests {
     #[test]
     fn hello_for_another_repository_is_refused() {
         let mut shared = shared();
+        shared.repo_root = scratch_repository("other");
+
+        let reply = Session::new().handle(&shared, &hello_body(&shared, "secret", 1, 1), NOW);
+
+        assert_eq!(code(&reply), ErrorCode::PolicyDenied);
+    }
+
+    #[test]
+    fn hello_from_a_path_that_is_no_repository_is_refused() {
+        let mut shared = shared();
         shared.repo_root = PathBuf::from("/nonexistent-repo");
 
         let reply = Session::new().handle(&shared, &hello_body(&shared, "secret", 1, 1), NOW);
 
         assert_eq!(code(&reply), ErrorCode::PolicyDenied);
+    }
+
+    #[test]
+    fn hello_from_a_linked_worktree_is_the_same_repository() {
+        let shared = shared();
+        let common = shared.repo_root.join(".git");
+        let git_dir = common.join("worktrees/linked");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("commondir"), "../..\n").unwrap();
+        let linked = shared.repo_root.parent().unwrap().join("linked");
+        fs::create_dir_all(&linked).unwrap();
+        fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", git_dir.display()),
+        )
+        .unwrap();
+        let mut asker = shared.clone();
+        asker.repo_root = linked;
+
+        let reply = Session::new().handle(&shared, &hello_body(&asker, "secret", 1, 1), NOW);
+
+        assert_eq!(reply.response.status, Status::Ok);
     }
 
     #[test]

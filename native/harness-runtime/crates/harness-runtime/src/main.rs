@@ -1,7 +1,8 @@
 //! Entry point of the `harness-runtime` process (ADR 0021, section 8).
 //!
 //! `harness-runtime serve [--repo <path>]` serves the local IPC of one repository until it gets
-//! SIGINT or SIGTERM. Exit code 0 is a normal stop, 2 is a refusal to start.
+//! SIGINT or SIGTERM. Exit code 0 is a normal stop, 2 is a refusal to start and 1 is a failure
+//! of the running server (ADR 0021, section 8).
 
 use std::env;
 use std::ffi::OsString;
@@ -14,6 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ipc::{Server, resolve_paths};
 use serde_json::json;
 
+const EXIT_FAILED: u8 = 1;
 const EXIT_REFUSED: u8 = 2;
 const USAGE: &str = "usage: harness-runtime serve [--repo <path>]";
 
@@ -48,14 +50,24 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<ServeArgs, Str
     Ok(ServeArgs { repo })
 }
 
-fn serve(args: &ServeArgs) -> Result<(), String> {
+/// Why `serve` ended with an error: it never started, or it failed after it was ready.
+#[derive(Debug)]
+enum Failure {
+    Refused(String),
+    Failed(String),
+}
+
+fn serve(args: &ServeArgs) -> Result<(), Failure> {
+    let refused = |err: &dyn ToString| Failure::Refused(err.to_string());
     let xdg = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    let paths = resolve_paths(&args.repo, xdg.as_deref()).map_err(|err| err.to_string())?;
-    let server = Server::bind(&args.repo, paths).map_err(|err| err.to_string())?;
+    let paths = resolve_paths(&args.repo, xdg.as_deref()).map_err(|err| refused(&err))?;
+    // The handler comes before the bind: a signal then never kills a bound server without
+    // `Drop` removing its socket and token.
     let stop = Arc::new(AtomicBool::new(false));
     let signalled = Arc::clone(&stop);
     ctrlc::set_handler(move || signalled.store(true, Ordering::Relaxed))
-        .map_err(|err| format!("cannot install the signal handler: {err}"))?;
+        .map_err(|err| Failure::Refused(format!("cannot install the signal handler: {err}")))?;
+    let server = Server::bind(&args.repo, paths).map_err(|err| refused(&err))?;
     let ready = json!({
         "status": "ready",
         "socket": server.paths().socket,
@@ -65,20 +77,26 @@ fn serve(args: &ServeArgs) -> Result<(), String> {
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{ready}")
         .and_then(|()| stdout.flush())
-        .map_err(|err| format!("cannot report readiness: {err}"))?;
+        .map_err(|err| Failure::Failed(format!("cannot report readiness: {err}")))?;
     drop(stdout);
     server
         .serve_until(&stop)
-        .map_err(|err| format!("the accept loop failed: {err}"))
+        .map_err(|err| Failure::Failed(format!("the accept loop failed: {err}")))
 }
 
 fn main() -> ExitCode {
-    let outcome = parse_args(env::args_os().skip(1)).and_then(|args| serve(&args));
+    let outcome = parse_args(env::args_os().skip(1))
+        .map_err(Failure::Refused)
+        .and_then(|args| serve(&args));
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
+        Err(Failure::Refused(message)) => {
             eprintln!("ERROR: {message}");
             ExitCode::from(EXIT_REFUSED)
+        }
+        Err(Failure::Failed(message)) => {
+            eprintln!("ERROR: {message}");
+            ExitCode::from(EXIT_FAILED)
         }
     }
 }
