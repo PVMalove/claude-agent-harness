@@ -30,6 +30,7 @@ from harness.orchestration import (
 )
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from tests.orchestration import test_coordinator as coordinator_tests
+from tests.orchestration.test_runtime_client import SHORT_TMP
 
 WORKER_TAG = "harness-worker:local"
 PROXY_TAG = "harness-proxy:local"
@@ -1768,8 +1769,11 @@ class RuntimeDirectoryIsolationTests(unittest.TestCase):
         patcher = mock.patch.object(container_executor, "run_engine", self.engine)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # The runtime paths refuse a socket path over 100 bytes, which a CI temporary directory exceeds.
         self.tmp = Path(
-            self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+            self.enterContext(
+                tempfile.TemporaryDirectory(dir=SHORT_TMP, ignore_cleanup_errors=True)
+            )
         ).resolve()
         self.runtime_dir = self.tmp / "run" / "harness"
         self.runtime_dir.mkdir(parents=True)
