@@ -108,6 +108,26 @@ def build_parser(
     )
     ledger_reset.set_defaults(handler=handlers.reset_ledger)
 
+    runtime = commands.add_parser(
+        "runtime", help="ask the Rust harness-runtime process; never a fallback write"
+    )
+    runtime_commands = runtime.add_subparsers(dest="runtime_command", required=True)
+    runtime_status = runtime_commands.add_parser(
+        "status",
+        help="Read-only: connect to harness-runtime, say hello and report its state",
+    )
+    # The runtime serves one repository and reads no coordinator state: no `--state-dir` here.
+    runtime_status.add_argument(
+        "--repo", default=argparse.SUPPRESS, help="target project root"
+    )
+    runtime_status.add_argument(
+        "--timeout",
+        type=float,
+        default=5.0,
+        help="seconds to keep repeating the request while the runtime does not answer",
+    )
+    runtime_status.set_defaults(handler=handlers.runtime_status)
+
     batch = commands.add_parser("batch")
     batch_commands = batch.add_subparsers(dest="batch_command", required=True)
     create = batch_commands.add_parser("create", aliases=["plan"])

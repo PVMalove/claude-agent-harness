@@ -37,6 +37,11 @@ jobs:
         run: make bootstrap
       - name: Make script executable
         run: chmod +x scripts/verify.py
+      # The IPC seam tests (tests/orchestration/test_runtime_client.py) start this binary through
+      # the coordinator CLI; a missing binary fails them here, it never skips them.
+      - name: Build harness-runtime for the IPC seam tests
+        working-directory: native/harness-runtime
+        run: cargo build --locked
       # The isolated test runner needs bubblewrap and unprivileged user namespaces, which Ubuntu
       # 24.04 restricts through AppArmor; without them the clean-room scenario proves only refusal.
       - name: Install bubblewrap for the isolated test runner
@@ -56,6 +61,8 @@ jobs:
       - name: Verify harness and clean-room install
         env:
           HARNESS_REQUIRE_TEST_SANDBOX: "1"
+          HARNESS_RUNTIME_BIN: ${{ github.workspace }}/native/harness-runtime/target/debug/harness-runtime
+          HARNESS_REQUIRE_RUNTIME: "1"
           # A pull request stops at the first failing test; `master` and releases run everything.
           VERIFY_ARGS: >-
             --junit-xml .harness/.sandboxes/logs/junit-verify.xml
@@ -339,11 +346,28 @@ jobs:
             --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
             harness/repo_map/tree_sitter_worker.py
 
+  rust:
+    # Rust workspace of the runtime process (ADR 0019, ADR 0021): formatting, lints and tests of
+    # native/harness-runtime. `rust-toolchain.toml` there pins the toolchain and its components.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: native/harness-runtime
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+
   dashboard:
     # One page for the whole run: which jobs passed, which failed, which tests and why. It runs
     # after every other job, whatever their results, and only reads what they leave.
     if: always()
-    needs: [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle]
+    needs: [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

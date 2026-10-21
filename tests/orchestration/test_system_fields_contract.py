@@ -25,6 +25,7 @@ from harness.orchestration import (
     operational_guards,
     runtime_access,
     runtime_attestation,
+    runtime_client,
 )
 from harness.orchestration.core import ci_source, constants, system_fields
 from harness.diagnostics import DIAGNOSTIC_CODES, DIAGNOSTIC_SEVERITIES
@@ -213,6 +214,7 @@ def test_sentinels_name_their_safe_handling() -> None:
         "ci.verdict_reason": ("unavailable",),
         "operation_access.check_state": ("unsupported",),
         "operation_access.status": ("unsupported",),
+        "runtime.failure_domain": ("unknown",),
     }
     registry = load_registry()
     for field_id, names in sentinels.items():
@@ -965,6 +967,12 @@ BINDINGS.update(
     {
         "diagnostic.code": {"DIAGNOSTIC_CODES": DIAGNOSTIC_CODES},
         "diagnostic.severity": {"DIAGNOSTIC_SEVERITIES": DIAGNOSTIC_SEVERITIES},
+        "runtime.error_code": {
+            "runtime_client.RUNTIME_ERROR_CODES": runtime_client.RUNTIME_ERROR_CODES
+        },
+        "runtime.failure_domain": {
+            "runtime_client.FAILURE_DOMAINS": runtime_client.FAILURE_DOMAINS
+        },
     }
 )
 

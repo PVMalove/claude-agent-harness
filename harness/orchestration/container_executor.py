@@ -28,11 +28,11 @@ import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import NoReturn, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY
-from . import extensions
+from . import extensions, runtime_client
 from .core.utils import JsonObject
 
 EXTENSION_NAME = "docker"
@@ -636,6 +636,52 @@ def remove_objects(objects: Sequence[Mapping[str, object]]) -> JsonObject:
     return result
 
 
+def _runtime_exposed_by(
+    roots: Sequence[str], repo_root: str | None
+) -> list[tuple[str, Path]]:
+    """The plan roots that would give a worker the runtime's directory, socket or token.
+
+    ADR 0021 and ADR 0022 keep every container away from the runtime: a root that is one of its
+    paths or lies under it is refused, and so is a root that contains its socket or token while
+    that file exists. The ``$XDG_RUNTIME_DIR/harness`` directory is shared by every repository of
+    the user, so a root that contains an existing one is refused whatever it holds. The fallback
+    directory sits inside the repository's state root, which every plan mounts: there a root that
+    contains only the directory of a stopped runtime is allowed. The check runs at preflight only,
+    so a runtime started later without ``XDG_RUNTIME_DIR`` is not covered; ADR 0022 has to move
+    that directory out of the plan roots. Paths are compared after symlinks are resolved.
+    """
+    if repo_root is None:
+        return []
+    try:
+        paths = runtime_client.runtime_paths(Path(repo_root))
+    except runtime_client.RuntimeClientError:
+        return []
+    # Inside the repository (the fallback) containing the directory is no exposure by itself:
+    # only a live socket or token is. The shared XDG directory is exposed once it exists.
+    in_repository = (
+        Path(os.path.realpath(repo_root))
+        in Path(os.path.realpath(paths.directory)).parents
+    )
+    protected = [
+        (Path(os.path.realpath(item)), live)
+        for item, live in (
+            (paths.directory, not in_repository),
+            (paths.socket, True),
+            (paths.token, True),
+        )
+    ]
+    exposed: list[tuple[str, Path]] = []
+    for root in roots:
+        resolved = Path(os.path.realpath(root))
+        for item, live in protected:
+            inside = resolved == item or item in resolved.parents
+            contains = live and resolved in item.parents and item.exists()
+            if inside or contains:
+                exposed.append((root, paths.directory))
+                break
+    return exposed
+
+
 def _overlaps_home(path: str) -> bool:
     home = PurePosixPath(CONTAINER_HOME)
     root = PurePosixPath(path)
@@ -803,6 +849,24 @@ def _plan_support(data: JsonObject, transport: str, block: _Block) -> None:
                 "move the root to a path without commas, quotes or line breaks outside "
                 f"{CONTAINER_HOME}",
             )
+    storage = next(
+        (
+            item["path"]
+            for item in data["requirements"]
+            if item["resource"] == "shared_storage"
+        ),
+        None,
+    )
+    # The shared storage is the main checkout's `.harness`: its parent is the repository root.
+    for path, runtime_dir in _runtime_exposed_by(
+        sorted({item["path"] for item in data["requirements"]}),
+        str(Path(storage).parent) if storage else None,
+    ):
+        block(
+            f"plan root {path!r} would give the worker the harness-runtime directory {runtime_dir}",
+            "keep the runtime directory out of every plan root: set XDG_RUNTIME_DIR to a path "
+            "outside them and restart harness-runtime, or narrow the root",
+        )
     if not hasattr(os, "getuid"):
         block(
             "the host has no POSIX user identity for the container user",

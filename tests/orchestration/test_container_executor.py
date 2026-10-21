@@ -26,9 +26,11 @@ from harness.orchestration import (
     extensions,
     operational_guards,
     runtime_access,
+    runtime_client,
 )
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from tests.orchestration import test_coordinator as coordinator_tests
+from tests.orchestration.test_runtime_client import SHORT_TMP
 
 WORKER_TAG = "harness-worker:local"
 PROXY_TAG = "harness-proxy:local"
@@ -1757,6 +1759,132 @@ class DockerPlanSupportTests(unittest.TestCase):
 
         self.assertIn("cannot be mounted safely", verification["reason"])
         self.assertIn("without commas", verification["remedy"])
+
+
+class RuntimeDirectoryIsolationTests(unittest.TestCase):
+    """No plan root gives a worker the directory, socket or token of ``harness-runtime``."""
+
+    def setUp(self) -> None:
+        self.engine = FakeEngine()
+        patcher = mock.patch.object(container_executor, "run_engine", self.engine)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The runtime paths refuse a socket path over 100 bytes, which a CI temporary directory exceeds.
+        self.tmp = Path(
+            self.enterContext(
+                tempfile.TemporaryDirectory(dir=SHORT_TMP, ignore_cleanup_errors=True)
+            )
+        ).resolve()
+        self.runtime_dir = self.tmp / "run" / "harness"
+        self.runtime_dir.mkdir(parents=True)
+        environ = self.enterContext(mock.patch.dict(os.environ))
+        environ["XDG_RUNTIME_DIR"] = str(self.tmp / "run")
+
+    def write_runtime_file(self, suffix: str, directory: Path | None = None) -> None:
+        """Create the socket or token file of a running runtime (the name is its repo-id)."""
+        (directory or self.runtime_dir).joinpath(f"{self.repo_id()}{suffix}").touch()
+
+    def repo_id(self) -> str:
+        repo = self.tmp / "repo"
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        return runtime_client.runtime_paths(repo).repo_id
+
+    def verify(self, root: Path | str | None) -> JsonObject:
+        filesystem = (
+            [{"resource": "cache", "path": str(root), "access": "write"}]
+            if root
+            else []
+        )
+        plan = _plan(
+            self.tmp / "repo",
+            {
+                "access_policy": {
+                    "defaults": {
+                        "mode": "sandbox",
+                        "container": {"worker_image": WORKER_TAG},
+                        "filesystem": filesystem,
+                    }
+                },
+                "extensions": {"runtime_access": "docker"},
+            },
+        )
+        verification, _ = runtime_access.verify_plan(plan, "external")
+        return verification
+
+    def assertBlocked(self, verification: JsonObject) -> None:
+        self.assertIn("harness-runtime directory", verification["reason"])
+        self.assertIn("XDG_RUNTIME_DIR", verification["remedy"])
+
+    def test_the_runtime_directory_is_never_a_plan_root(self) -> None:
+        self.assertBlocked(self.verify(self.runtime_dir))
+
+    def test_a_root_under_the_runtime_directory_is_blocked(self) -> None:
+        (self.runtime_dir / "inner").mkdir()
+
+        self.assertBlocked(self.verify(self.runtime_dir / "inner"))
+
+    def test_a_symlink_to_the_runtime_directory_is_blocked_by_its_real_path(
+        self,
+    ) -> None:
+        link = self.tmp / "link"
+        link.symlink_to(self.runtime_dir)
+
+        self.assertBlocked(self.verify(link))
+
+    def test_a_root_that_contains_a_live_runtime_socket_is_blocked(self) -> None:
+        self.write_runtime_file(".sock")
+
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_a_root_that_contains_a_live_runtime_token_is_blocked(self) -> None:
+        self.write_runtime_file(".token")
+
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_a_root_that_contains_the_shared_xdg_runtime_directory_is_blocked(
+        self,
+    ) -> None:
+        # The directory holds the sockets and tokens of every repository of the user: a runtime
+        # of another repository can be live in it while this repository's files are absent.
+        (self.runtime_dir / "other.sock").touch()
+        (self.runtime_dir / "other.token").touch()
+
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_a_root_that_contains_the_empty_xdg_runtime_directory_is_blocked(
+        self,
+    ) -> None:
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_the_state_root_fallback_directory_is_exposed_by_the_repository_root(
+        self,
+    ) -> None:
+        del os.environ["XDG_RUNTIME_DIR"]
+        fallback = self.tmp / "repo/.harness/orchestration/state/runtime"
+        fallback.mkdir(parents=True)
+        self.write_runtime_file(".sock", fallback)
+
+        self.assertBlocked(self.verify(None))
+
+    def test_the_state_root_fallback_directory_of_a_stopped_runtime_blocks_nothing(
+        self,
+    ) -> None:
+        del os.environ["XDG_RUNTIME_DIR"]
+        (self.tmp / "repo/.harness/orchestration/state/runtime").mkdir(parents=True)
+
+        self.assertIsNone(self.verify(None)["reason"])
+
+    def test_a_runtime_outside_every_root_blocks_nothing(self) -> None:
+        verification = self.verify(None)
+
+        self.assertIsNone(verification["reason"])
+
+    def test_a_missing_fallback_directory_exposes_nothing(self) -> None:
+        del os.environ["XDG_RUNTIME_DIR"]
+
+        verification = self.verify(None)
+
+        self.assertIsNone(verification["reason"])
 
 
 class InspectWorkerTests(unittest.TestCase):
