@@ -385,6 +385,19 @@ SHELL_WRITES = [
     "(echo x > .harness/project.json)",
     "true && echo x > .harness/project.json",
     "echo x | sed -i p .harness/project.json",
+    # The directory as the target: the file is replaced together with the hook_policy key.
+    "git checkout HEAD~1 -- .harness",
+    "git restore --source=HEAD~1 .harness",
+    "git restore --source=HEAD~1 .harness/",
+    "git checkout HEAD~1 -- .harness/proj*",
+    "git checkout HEAD~1 -- .harn*",
+    "cp -r /nonexistent/dir/. .harness/",
+    "cp -r /nonexistent/dir .harness",
+    "tar -C .harness -xf /nonexistent/x.tar",
+    "tar -xf /nonexistent/x.tar --directory=.harness/ -C .harness",
+    "unzip /nonexistent/x.zip -d .harness",
+    "cd .harness && cp /nonexistent/x .",
+    "cp /nonexistent/x .harness/project.json",
 ]
 
 
@@ -436,12 +449,33 @@ SHELL_READS = [
     "git checkout feature/issue-1-demo",
     'git commit -m "$(date)"',
     "harness health .",
+    "git -C .harness status",
+    "git -C .harness diff --stat",
+    "ls -la .harness/",
+    "cp a.txt .harness/notes.txt",
+    "python3 .harness/orchestration/coordinator.py --repo . ledger validate",
+    "tar -xf /nonexistent/x.tar -C build",
+    "git checkout HEAD~1 -- harness/",
+]
+
+# Fail closed by design: any non-reading program whose argument names the file is refused, so a
+# note that merely mentions it goes through --body-file or a reading tool instead.
+NAMED_WITHOUT_WRITE = [
+    'gh issue comment 1 --body "edit project.json"',
+    "python3 -m json.tool .harness/project.json",
 ]
 
 
 @pytest.mark.parametrize("command", SHELL_READS)
 def test_reading_or_unrelated_writes_are_allowed(project: Path, command: str) -> None:
     assert _bash(project, command) is None
+
+
+@pytest.mark.parametrize("command", NAMED_WITHOUT_WRITE)
+def test_naming_the_file_without_a_write_fails_closed(
+    project: Path, command: str
+) -> None:
+    assert _bash(project, command) == "project-json-shell-write"
 
 
 def test_the_decision_ignores_profile_role_and_environment(

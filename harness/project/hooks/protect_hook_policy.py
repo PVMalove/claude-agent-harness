@@ -15,7 +15,10 @@
 Bash: любая запись в `.harness/project.json` — блок. Записью считается перенаправление в этот файл
 (цели перенаправлений записывает строгий лексер `pr_commands`) и упоминание файла аргументом любой
 программы, кроме читающих (`cat`, `grep`, `sed` без `-i`, безопасных подкоманд git и т. п.): `tee`,
-`cp`, `mv`, `dd of=`, `sed -i`, `git checkout --`, код интерпретатора. Команда вне строгого подмножества
+`cp`, `mv`, `dd of=`, `sed -i`, `git checkout --`, код интерпретатора. Слово, указывающее на каталог
+`.harness`, для пишущей программы тоже упоминание: `git checkout <ref> -- .harness`,
+`git restore --source=<ref> .harness`, `cp -r <каталог>/. .harness/`, `tar -C .harness -xf <архив>`
+заменяют файл вместе с ключом hook_policy. Команда вне строгого подмножества
 разбирается общим разбором `pr_commands.parse`; цель перенаправления в ней ищется по тексту.
 
 Пути сравниваются после `realpath` по хвосту (`.harness/project.json`), поэтому symlink на защищённый
@@ -85,8 +88,6 @@ READERS = frozenset(
         "wc",
     }
 )
-# Programs that move or delete a directory together with the file inside it.
-DESTROYERS = frozenset({"mv", "rm", "rmdir", "rsync", "unlink"})
 GIT_READ = frozenset(
     {
         "add",
@@ -293,11 +294,13 @@ def _writes(argv: Sequence[str]) -> bool:
     return True
 
 
-def _mentions(word: str, bases: Sequence[str], destroys: bool) -> bool:
-    """Называет ли слово `.harness/project.json`: по имени, по пути после realpath или по glob."""
+def _mentions(word: str, bases: Sequence[str]) -> bool:
+    """Называет ли слово `.harness/project.json` или каталог `.harness` с ним: по имени, по пути после
+    realpath или по glob. Каталог считается целью для любой пишущей программы: `git checkout|restore`,
+    `cp -r`, `tar -C`, `mv`, `rm`, `rsync` заменяют файл вместе с ключом hook_policy."""
     if PROJECT_NAME.search(word):
         return True
-    wanted = (PROJECT, HARNESS_DIR) if destroys else (PROJECT,)
+    wanted = (PROJECT, HARNESS_DIR)
     for base in bases:
         candidate = os.path.join(base, word)
         hits = glob.glob(candidate) if GLOB_CHARACTERS.search(word) else [candidate]
@@ -339,11 +342,10 @@ def check_bash(command: str, cwd: str, root: str) -> None:
             raise refusal
     bases = _bases(argvs, cwd, root)
     for operator, target in redirects or []:
-        if operator in WRITE_REDIRECTS and _mentions(target, bases, False):
+        if operator in WRITE_REDIRECTS and _mentions(target, bases):
             raise refusal
     for argv in argvs:
-        destroys = pr_commands.program(argv[0]) in DESTROYERS
-        if _writes(argv) and any(_mentions(word, bases, destroys) for word in argv[1:]):
+        if _writes(argv) and any(_mentions(word, bases) for word in argv[1:]):
             raise refusal
 
 
