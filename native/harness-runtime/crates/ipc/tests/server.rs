@@ -217,7 +217,7 @@ fn the_token_file_is_private_to_the_user() {
     assert!(dacl.protected, "{dacl:?}");
     assert_eq!(dacl.aces.len(), 1, "{dacl:?}");
     assert_eq!(dacl.aces[0].kind, "A");
-    assert_eq!(dacl.aces[0].trustee, own_peer());
+    assert_eq!(dacl.aces[0].trustee, own_peer(), "{dacl:?}");
     assert_eq!(fs::read_to_string(&paths.token).unwrap().len(), 64);
 }
 

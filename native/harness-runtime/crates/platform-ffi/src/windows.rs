@@ -18,8 +18,8 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
-    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_FILE_OBJECT,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW,
+    GetNamedSecurityInfoW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::Cryptography::{
     BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
@@ -274,7 +274,28 @@ fn dacl_of_descriptor(descriptor: PSECURITY_DESCRIPTOR) -> io::Result<Dacl> {
     let _free = LocalMemory(text.cast());
     // SAFETY: on success `text` is a NUL-terminated string that `_free` keeps alive.
     let sddl = unsafe { string_from_wide(text) };
-    parse_dacl(&sddl).map_err(io::Error::other)
+    let mut dacl = parse_dacl(&sddl).map_err(io::Error::other)?;
+    for ace in &mut dacl.aces {
+        ace.trustee = trustee_sid(&ace.trustee)?;
+    }
+    Ok(dacl)
+}
+
+/// The SID string of an SDDL trustee. Windows prints a well-known SID as a two-letter alias (`LA`
+/// for the built-in administrator, `SY` for the system), so callers could not compare it with a
+/// SID string.
+fn trustee_sid(trustee: &str) -> io::Result<String> {
+    if trustee.starts_with("S-") {
+        return Ok(trustee.to_owned());
+    }
+    let alias = wide(OsStr::new(trustee))?;
+    let mut sid: PSID = null_mut();
+    // SAFETY: `alias` is NUL-terminated and outlives the call; `sid` is a valid out pointer.
+    if unsafe { ConvertStringSidToSidW(alias.as_ptr(), &mut sid) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let _free = LocalMemory(sid);
+    sid_to_string(sid)
 }
 
 /// The DACL of a file or directory. Tests read it back to prove that a file is private.
@@ -737,6 +758,17 @@ pub fn connect_client(name: &str, timeout: Duration) -> io::Result<PipeConnectio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dacl_names_a_well_known_trustee_by_its_sid_not_its_alias() {
+        // Windows prints the SID `S-1-5-18` as the alias `SY`.
+        let owner = OwnerOnly::for_user_sid("S-1-5-18").unwrap();
+
+        let dacl = dacl_of_descriptor(owner.descriptor.0).unwrap();
+
+        assert_eq!(dacl.aces.len(), 1, "{dacl:?}");
+        assert_eq!(dacl.aces[0].trustee, "S-1-5-18");
+    }
 
     #[test]
     fn the_wait_of_an_exited_thread_ends_as_aborted() {

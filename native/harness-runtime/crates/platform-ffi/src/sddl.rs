@@ -8,7 +8,7 @@ pub struct Ace {
     pub kind: String,
     pub flags: String,
     pub rights: String,
-    /// A SID string or a two-letter alias.
+    /// A SID string or a two-letter alias. The FFI crate resolves an alias to its SID string.
     pub trustee: String,
 }
 
