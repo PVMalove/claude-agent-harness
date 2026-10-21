@@ -13,5 +13,6 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{
-    OwnerOnly, create_private_file, current_user_sid, dacl_of_path, process_user_sid, random_bytes,
+    OwnerOnly, PipeConnection, PipeListener, connect_client, create_private_file, current_user_sid,
+    dacl_of_path, process_user_sid, random_bytes,
 };

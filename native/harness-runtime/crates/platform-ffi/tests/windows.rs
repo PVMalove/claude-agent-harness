@@ -2,11 +2,27 @@
 #![cfg(windows)]
 
 use std::fs;
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use platform_ffi::{
-    OwnerOnly, create_private_file, current_user_sid, dacl_of_path, process_user_sid, random_bytes,
+    OwnerOnly, PipeListener, connect_client, create_private_file, current_user_sid, dacl_of_path,
+    process_user_sid, random_bytes,
 };
+
+const SHORT: Duration = Duration::from_millis(50);
+const LONG: Duration = Duration::from_secs(5);
+
+fn pipe_name(name: &str) -> String {
+    format!(r"\\.\pipe\pf-test-{name}-{}", std::process::id())
+}
+
+fn listener(name: &str) -> (PipeListener, String) {
+    let pipe = pipe_name(name);
+    let listener = PipeListener::bind(&pipe, &current_user_sid().unwrap()).unwrap();
+    (listener, pipe)
+}
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("pf-{name}-{}", std::process::id()));
@@ -84,4 +100,114 @@ fn random_bytes_fill_the_buffer_and_differ_between_calls() {
 
     assert_ne!(first, [0_u8; 32]);
     assert_ne!(first, second);
+}
+
+#[test]
+fn accept_gives_up_after_the_timeout_when_no_client_comes() {
+    let (mut listener, _) = listener("idle");
+
+    assert!(listener.accept(SHORT).unwrap().is_none());
+    assert!(listener.accept(SHORT).unwrap().is_none());
+}
+
+#[test]
+fn a_client_connects_and_bytes_travel_both_ways() {
+    let (mut listener, pipe) = listener("echo");
+    let mut client = connect_client(&pipe, LONG).unwrap();
+    let mut server = listener.accept(LONG).unwrap().unwrap();
+
+    client.write_all(b"ping").unwrap();
+    let mut buffer = [0_u8; 4];
+    server.read_exact(&mut buffer).unwrap();
+    server.write_all(&buffer).unwrap();
+    let mut echoed = [0_u8; 4];
+    client.read_exact(&mut echoed).unwrap();
+
+    assert_eq!(&echoed, b"ping");
+}
+
+#[test]
+fn a_client_that_connects_while_accept_waits_is_accepted() {
+    let (mut listener, pipe) = listener("late");
+    assert!(listener.accept(SHORT).unwrap().is_none());
+
+    let _client = connect_client(&pipe, LONG).unwrap();
+
+    assert!(listener.accept(LONG).unwrap().is_some());
+}
+
+#[test]
+fn the_server_sees_the_process_id_of_its_client() {
+    let (mut listener, pipe) = listener("pid");
+    let _client = connect_client(&pipe, LONG).unwrap();
+    let server = listener.accept(LONG).unwrap().unwrap();
+
+    assert_eq!(server.client_process_id().unwrap(), std::process::id());
+}
+
+#[test]
+fn a_second_client_finds_the_next_instance_ready() {
+    let (mut listener, pipe) = listener("two");
+    let _first = connect_client(&pipe, LONG).unwrap();
+    let _second = connect_client(&pipe, LONG).unwrap();
+
+    assert!(listener.accept(LONG).unwrap().is_some());
+    assert!(listener.accept(LONG).unwrap().is_some());
+}
+
+#[test]
+fn a_read_that_gets_nothing_times_out() {
+    let (mut listener, pipe) = listener("timeout");
+    let _client = connect_client(&pipe, LONG).unwrap();
+    let mut server = listener.accept(LONG).unwrap().unwrap();
+    server.set_timeout(Some(SHORT));
+
+    let err = server.read(&mut [0_u8; 1]).unwrap_err();
+
+    assert_eq!(err.kind(), ErrorKind::TimedOut);
+}
+
+#[test]
+fn a_closed_client_ends_the_stream() {
+    let (mut listener, pipe) = listener("eof");
+    let client = connect_client(&pipe, LONG).unwrap();
+    let mut server = listener.accept(LONG).unwrap().unwrap();
+
+    drop(client);
+
+    assert_eq!(server.read(&mut [0_u8; 1]).unwrap(), 0);
+}
+
+#[test]
+fn the_pipe_grants_access_to_its_user_only() {
+    let (listener, _) = listener("dacl");
+    let sid = current_user_sid().unwrap();
+
+    let dacl = listener.dacl().unwrap();
+
+    assert!(dacl.protected, "{dacl:?}");
+    assert_eq!(dacl.aces.len(), 1, "{dacl:?}");
+    assert_eq!(dacl.aces[0].kind, "A");
+    assert_eq!(dacl.aces[0].trustee, sid);
+}
+
+#[test]
+fn a_pipe_name_in_use_is_refused() {
+    let (_first, pipe) = listener("rival");
+
+    let err = PipeListener::bind(&pipe, &current_user_sid().unwrap())
+        .err()
+        .unwrap();
+
+    assert_eq!(err.kind(), ErrorKind::AddrInUse);
+}
+
+#[test]
+fn dropping_a_listener_with_a_pending_accept_is_safe() {
+    let (mut listener, pipe) = listener("drop");
+    assert!(listener.accept(SHORT).unwrap().is_none());
+
+    drop(listener);
+
+    assert!(connect_client(&pipe, SHORT).is_err());
 }
