@@ -2,20 +2,25 @@
 
 Here a scripted runtime stands at the Unix socket, so each rule of the client is observed at the
 connection: the address, the token, the retry of one ``operation_id`` and the typed errors with
-exit code 2. The seam with the real Rust process is at the end of the module.
+exit code 2. The seam with the real Rust process, driven through the coordinator CLI, is at the end
+of the module; CI builds the binary first (``HARNESS_REQUIRE_RUNTIME=1`` makes a missing one fail).
 """
 
 from __future__ import annotations
 
 import json
 import os
+import select
 import shutil
+import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -25,16 +30,23 @@ from harness.orchestration import coordinator, runtime_client
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the runtime IPC is a Unix domain socket; Windows uses a named pipe in a later ticket",
+)
+
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "t" * 64
 HEADER = struct.Struct(">I")
+# A socket path is limited to 100 bytes, which a pytest or CI temporary directory can exceed.
+SHORT_TMP = "/tmp" if os.path.isdir("/tmp") else tempfile.gettempdir()
 
 
 class Directories:
     """A repository and a runtime directory, both under a path short enough for a socket."""
 
     def __init__(self) -> None:
-        self.base = Path(tempfile.mkdtemp(prefix="hr")).resolve()
+        self.base = Path(tempfile.mkdtemp(prefix="hr", dir=SHORT_TMP)).resolve()
         self.repo = self.base / "repo"
         (self.repo / ".git").mkdir(parents=True)
         self.xdg = self.base / "run"
@@ -74,7 +86,12 @@ def _write_frame(connection: socket.socket, message: JsonObject) -> None:
 
 
 def _ok(operation_id: object, result: JsonObject) -> JsonObject:
-    return {"operation_id": operation_id, "status": "ok", "revision": None, "result": result}
+    return {
+        "operation_id": operation_id,
+        "status": "ok",
+        "revision": None,
+        "result": result,
+    }
 
 
 def _error(operation_id: object, code: str, **extra: object) -> JsonObject:
@@ -87,7 +104,12 @@ def _error(operation_id: object, code: str, **extra: object) -> JsonObject:
         "facts": {"seen": True},
     }
     error.update(extra)
-    return {"operation_id": operation_id, "status": "error", "revision": None, "error": error}
+    return {
+        "operation_id": operation_id,
+        "status": "error",
+        "revision": None,
+        "error": error,
+    }
 
 
 HELLO_RESULT: JsonObject = {
@@ -134,7 +156,9 @@ class ScriptedRuntime:
             if self.connections <= self.drop_connections:
                 connection.close()
                 continue
-            threading.Thread(target=self._serve, args=(connection,), daemon=True).start()
+            threading.Thread(
+                target=self._serve, args=(connection,), daemon=True
+            ).start()
 
     def _serve(self, connection: socket.socket) -> None:
         with connection:
@@ -145,18 +169,28 @@ class ScriptedRuntime:
                     if request["operation"] == "hello":
                         payload = request["payload"]
                         if payload["token"] != TOKEN:
-                            _write_frame(connection, _error(request["operation_id"], "unauthorized_peer"))
+                            _write_frame(
+                                connection,
+                                _error(request["operation_id"], "unauthorized_peer"),
+                            )
                             return
-                        if self.answer is not None and (
-                            refusal := self.answer(request)
-                        ).get("status") == "error":
+                        if (
+                            self.answer is not None
+                            and (refusal := self.answer(request)).get("status")
+                            == "error"
+                        ):
                             _write_frame(connection, refusal)
                             return
-                        _write_frame(connection, _ok(request["operation_id"], HELLO_RESULT))
+                        _write_frame(
+                            connection, _ok(request["operation_id"], HELLO_RESULT)
+                        )
                     elif self.answer is not None:
                         _write_frame(connection, self.answer(request))
                     else:
-                        _write_frame(connection, _ok(request["operation_id"], {"state": "serving"}))
+                        _write_frame(
+                            connection,
+                            _ok(request["operation_id"], {"state": "serving"}),
+                        )
             except (ConnectionError, OSError):
                 return
 
@@ -195,7 +229,9 @@ def test_the_repo_id_is_the_shared_golden_vector() -> None:
     assert runtime_client.repo_id(Path("/r/.git")) == "2d09593ea5e01029"
 
 
-def test_the_socket_and_the_token_sit_in_the_xdg_runtime_directory(dirs: Directories) -> None:
+def test_the_socket_and_the_token_sit_in_the_xdg_runtime_directory(
+    dirs: Directories,
+) -> None:
     paths = runtime_client.runtime_paths(dirs.repo, dirs.environ)
 
     identity = runtime_client.repo_id(dirs.repo / ".git")
@@ -204,14 +240,18 @@ def test_the_socket_and_the_token_sit_in_the_xdg_runtime_directory(dirs: Directo
     assert paths.token == dirs.xdg / "harness" / f"{identity}.token"
 
 
-def test_without_xdg_the_runtime_directory_is_in_the_state_root(dirs: Directories) -> None:
+def test_without_xdg_the_runtime_directory_is_in_the_state_root(
+    dirs: Directories,
+) -> None:
     for environ in ({}, {"XDG_RUNTIME_DIR": ""}, {"XDG_RUNTIME_DIR": "relative/run"}):
         paths = runtime_client.runtime_paths(dirs.repo, environ)
 
         assert paths.directory == dirs.repo / ".harness/orchestration/state/runtime"
 
 
-def test_a_linked_worktree_shares_the_runtime_of_its_main_checkout(dirs: Directories) -> None:
+def test_a_linked_worktree_shares_the_runtime_of_its_main_checkout(
+    dirs: Directories,
+) -> None:
     admin = dirs.repo / ".git/worktrees/w"
     admin.mkdir(parents=True)
     (admin / "commondir").write_text("../..\n")
@@ -219,9 +259,9 @@ def test_a_linked_worktree_shares_the_runtime_of_its_main_checkout(dirs: Directo
     worktree.mkdir()
     (worktree / ".git").write_text(f"gitdir: {admin}\n")
 
-    assert runtime_client.runtime_paths(worktree, dirs.environ) == runtime_client.runtime_paths(
-        dirs.repo, dirs.environ
-    )
+    assert runtime_client.runtime_paths(
+        worktree, dirs.environ
+    ) == runtime_client.runtime_paths(dirs.repo, dirs.environ)
 
 
 def test_a_directory_that_is_no_repository_has_no_address(dirs: Directories) -> None:
@@ -250,7 +290,9 @@ def test_a_request_says_hello_with_the_token_then_asks(
     runtime = ScriptedRuntime(dirs)
     runtimes.append(runtime)
 
-    reply = RuntimeClient(dirs.repo, environ=dirs.environ).call("status", operation_id="op-1")
+    reply = RuntimeClient(dirs.repo, environ=dirs.environ).call(
+        "status", operation_id="op-1"
+    )
 
     assert reply.result == {"state": "serving"}
     assert reply.hello["server_version"] == "0.1.0"
@@ -280,7 +322,9 @@ def test_a_lost_transport_repeats_the_request_with_the_same_operation_id(
 
     assert reply.result == {"state": "serving"}
     assert runtime.connections == 3
-    assert [request["operation_id"] for request in runtime.operations("status")] == ["same-intent"]
+    assert [request["operation_id"] for request in runtime.operations("status")] == [
+        "same-intent"
+    ]
     assert timing.sleeps == [0.1, 0.2]
 
 
@@ -372,7 +416,10 @@ def test_a_code_the_client_does_not_know_is_internal(
     dirs: Directories, runtimes: list[ScriptedRuntime]
 ) -> None:
     runtimes.append(
-        ScriptedRuntime(dirs, answer=lambda request: _error(request["operation_id"], "from_the_future"))
+        ScriptedRuntime(
+            dirs,
+            answer=lambda request: _error(request["operation_id"], "from_the_future"),
+        )
     )
 
     with pytest.raises(RuntimeClientError) as caught:
@@ -386,16 +433,23 @@ def test_a_field_the_client_does_not_know_is_ignored(
     dirs: Directories, runtimes: list[ScriptedRuntime]
 ) -> None:
     def answer(request: JsonObject) -> JsonObject:
-        return {**_ok(request["operation_id"], {"state": "serving"}), "added_later": [1]}
+        return {
+            **_ok(request["operation_id"], {"state": "serving"}),
+            "added_later": [1],
+        }
 
     runtimes.append(ScriptedRuntime(dirs, answer=answer))
 
-    reply = RuntimeClient(dirs.repo, environ=dirs.environ).call("status", operation_id="f")
+    reply = RuntimeClient(dirs.repo, environ=dirs.environ).call(
+        "status", operation_id="f"
+    )
 
     assert reply.result == {"state": "serving"}
 
 
-def test_a_wrong_token_is_unauthorized_peer(dirs: Directories, runtimes: list[ScriptedRuntime]) -> None:
+def test_a_wrong_token_is_unauthorized_peer(
+    dirs: Directories, runtimes: list[ScriptedRuntime]
+) -> None:
     runtime = ScriptedRuntime(dirs)
     runtimes.append(runtime)
     runtime.paths.token.write_text("someone-elses-token")
@@ -449,7 +503,9 @@ def _run_command(
 ) -> tuple[int, str, str]:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(directories.xdg))
     monkeypatch.setattr(
-        sys, "argv", ["coordinator", "runtime", "status", "--repo", str(directories.repo), *extra]
+        sys,
+        "argv",
+        ["coordinator", "runtime", "status", "--repo", str(directories.repo), *extra],
     )
     code = coordinator.main()
     captured = capsys.readouterr()
@@ -495,10 +551,316 @@ def test_an_error_of_the_runtime_exits_2_with_its_code_in_the_remedy(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runtimes.append(
-        ScriptedRuntime(dirs, answer=lambda request: _error(request["operation_id"], "protocol_unsupported"))
+        ScriptedRuntime(
+            dirs,
+            answer=lambda request: _error(
+                request["operation_id"], "protocol_unsupported"
+            ),
+        )
     )
 
     code, _, err = _run_command(monkeypatch, capsys, dirs)
 
     assert code == 2
-    assert err.splitlines()[1] == "REMEDY: [protocol_unsupported] fix protocol_unsupported"
+    assert (
+        err.splitlines()[1] == "REMEDY: [protocol_unsupported] fix protocol_unsupported"
+    )
+
+
+# -- seam 1: the coordinator CLI against a real ``harness-runtime serve`` -------------------------
+
+
+def _runtime_binary() -> Path:
+    configured = os.environ.get("HARNESS_RUNTIME_BIN")
+    binary = (
+        Path(configured)
+        if configured
+        else ROOT / "native/harness-runtime/target/debug/harness-runtime"
+    )
+    if binary.is_file():
+        return binary
+    message = (
+        f"build harness-runtime first (cargo build in native/harness-runtime): {binary}"
+    )
+    if os.environ.get("HARNESS_REQUIRE_RUNTIME") == "1":
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+class RuntimeProcess:
+    """One ``harness-runtime serve`` process of a repository."""
+
+    def __init__(self, directories: Directories, repo: Path | None = None) -> None:
+        self.directories = directories
+        self.process = subprocess.Popen(
+            [str(_runtime_binary()), "serve", "--repo", str(repo or directories.repo)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "XDG_RUNTIME_DIR": str(directories.xdg)},
+        )
+        self.paths = runtime_client.runtime_paths(directories.repo, directories.environ)
+
+    def wait_until_ready(self) -> dict[str, str]:
+        assert self.process.stdout is not None
+        ready, _, _ = select.select([self.process.stdout], [], [], 20)
+        assert ready, "harness-runtime printed no readiness line within 20 seconds"
+        line: dict[str, str] = json.loads(self.process.stdout.readline())
+        assert line["status"] == "ready"
+        return line
+
+    def stop(self, sig: int = signal.SIGTERM) -> int:
+        self.process.send_signal(sig)
+        code = self.process.wait(timeout=20)
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream:
+                stream.close()
+        return code
+
+
+@pytest.fixture
+def real_runtime(dirs: Directories) -> Iterator[RuntimeProcess]:
+    runtime = RuntimeProcess(dirs)
+    runtime.wait_until_ready()
+    yield runtime
+    if runtime.process.poll() is None:
+        runtime.stop(signal.SIGKILL)
+
+
+def _cli(
+    directories: Directories, *args: str, timeout: str = "10", python: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """The coordinator CLI as its own process: ``runtime status`` for this repository."""
+    command = [sys.executable, str(ROOT / "harness/orchestration/coordinator.py")]
+    if python:
+        command = [sys.executable, "-c", python]
+    return subprocess.run(
+        [
+            *command,
+            "runtime",
+            "status",
+            "--repo",
+            str(directories.repo),
+            "--timeout",
+            timeout,
+            *args,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "XDG_RUNTIME_DIR": str(directories.xdg),
+            "PYTHONPATH": str(ROOT),
+        },
+    )
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def test_the_coordinator_cli_reads_the_state_of_a_real_runtime(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    result = _cli(dirs)
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["protocol"] == {"major": 1, "minor": 0}
+    assert report["features"] == ["status"]
+    assert report["store_id"] is None
+    assert report["runtime"]["state"] == "serving"
+    # Both languages derive the same repo id and the same socket address.
+    assert report["runtime"]["repo_id"] == real_runtime.paths.repo_id
+    assert report["socket"] == str(real_runtime.paths.socket)
+
+
+def test_the_runtime_directory_the_socket_and_the_token_are_private(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    paths = real_runtime.paths
+
+    assert _mode(paths.directory) == 0o700
+    assert _mode(paths.socket) == 0o600
+    assert _mode(paths.token) == 0o600
+    assert len(paths.token.read_text()) == 64
+
+
+def test_a_wrong_token_exits_2_as_unauthorized_peer(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    real_runtime.paths.token.write_text("0" * 64)
+
+    result = _cli(dirs)
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.splitlines()[1].startswith("REMEDY: [unauthorized_peer] ")
+
+
+def test_an_incompatible_major_exits_2_as_protocol_unsupported(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    result = _cli(
+        dirs,
+        python=(
+            "import sys\n"
+            "from harness.orchestration import coordinator, runtime_client\n"
+            "runtime_client.PROTOCOL_VERSION = (2, 0)\n"
+            "sys.argv = ['coordinator', *sys.argv[1:]]\n"
+            "raise SystemExit(coordinator.main())\n"
+        ),
+    )
+
+    assert result.returncode == 2
+    lines = result.stderr.splitlines()
+    assert lines[0].startswith("ERROR: ")
+    assert lines[1].startswith("REMEDY: [protocol_unsupported] update harness")
+
+
+def _raw_session(runtime: RuntimeProcess) -> socket.socket:
+    """A connection that has said hello with the real token."""
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(10)
+    connection.connect(str(runtime.paths.socket))
+    version = {"major": 1, "minor": 0}
+    _write_frame(
+        connection,
+        {
+            "protocol_version": version,
+            "operation_id": "raw-hello",
+            "operation": "hello",
+            "request_deadline": int(time.time() * 1000) + 10_000,
+            "payload": {
+                "protocol": {"min": version, "max": version},
+                "client_version": "raw",
+                "repo_root": str(runtime.directories.repo),
+                "token": runtime.paths.token.read_text(),
+            },
+        },
+    )
+    assert _read_frame(connection)["status"] == "ok"
+    return connection
+
+
+def _raw_request(operation: str, **extra: object) -> JsonObject:
+    return {
+        "protocol_version": {"major": 1, "minor": 0},
+        "operation_id": f"raw-{operation}",
+        "operation": operation,
+        "request_deadline": int(time.time() * 1000) + 10_000,
+        **extra,
+    }
+
+
+def test_an_unknown_request_field_is_malformed_request(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    with _raw_session(real_runtime) as connection:
+        _write_frame(connection, _raw_request("status", surprise=1))
+        refused = _read_frame(connection)
+        _write_frame(connection, _raw_request("status"))
+        served = _read_frame(connection)
+
+    assert refused["status"] == "error"
+    assert refused["error"]["code"] == "malformed_request"
+    assert refused["operation_id"] == "raw-status"
+    assert served["status"] == "ok"
+
+
+def test_an_unknown_operation_is_unknown_operation(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    with pytest.raises(RuntimeClientError) as caught:
+        RuntimeClient(dirs.repo, environ=dirs.environ).call(
+            "launch", operation_id="seam-1"
+        )
+
+    assert caught.value.code == "unknown_operation"
+    assert caught.value.domain == "tooling"
+
+
+def test_a_stopped_runtime_is_runtime_unavailable_and_leaves_no_socket(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    assert real_runtime.stop() == 0
+    assert not real_runtime.paths.socket.exists()
+    assert not real_runtime.paths.token.exists()
+
+    result = _cli(dirs, timeout="0.3")
+
+    assert result.returncode == 2
+    assert result.stderr.splitlines()[1].startswith("REMEDY: [runtime_unavailable] ")
+    assert not (dirs.repo / ".harness").exists()
+
+
+def test_a_killed_runtime_is_replaced_and_its_stale_socket_removed(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    real_runtime.stop(signal.SIGKILL)
+    assert real_runtime.paths.socket.exists()
+    stale_token = real_runtime.paths.token.read_text()
+
+    replacement = RuntimeProcess(dirs)
+    try:
+        replacement.wait_until_ready()
+        result = _cli(dirs)
+        new_token = replacement.paths.token.read_text()
+    finally:
+        replacement.stop()
+
+    assert result.returncode == 0, result.stderr
+    assert new_token != stale_token
+
+
+def test_a_request_repeats_until_the_runtime_starts(dirs: Directories) -> None:
+    waiting = subprocess.Popen(
+        [
+            sys.executable,
+            str(ROOT / "harness/orchestration/coordinator.py"),
+            "runtime",
+            "status",
+            "--repo",
+            str(dirs.repo),
+            "--timeout",
+            "30",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "XDG_RUNTIME_DIR": str(dirs.xdg)},
+    )
+    time.sleep(1.0)
+    assert waiting.poll() is None
+    runtime = RuntimeProcess(dirs)
+    try:
+        runtime.wait_until_ready()
+        out, err = waiting.communicate(timeout=30)
+    finally:
+        runtime.stop()
+
+    assert waiting.returncode == 0, err
+    assert json.loads(out)["runtime"]["state"] == "serving"
+
+
+def test_a_second_runtime_for_the_same_repository_is_refused_with_code_2(
+    dirs: Directories, real_runtime: RuntimeProcess
+) -> None:
+    rival = RuntimeProcess(dirs)
+
+    assert rival.process.wait(timeout=20) == 2
+    assert rival.process.stderr is not None
+    assert "already serves" in rival.process.stderr.read()
+    # The refused rival must not have taken the first runtime's files.
+    assert _cli(dirs).returncode == 0
+
+
+def test_a_runtime_outside_a_git_working_tree_is_refused_with_code_2(
+    dirs: Directories,
+) -> None:
+    refused = RuntimeProcess(dirs, repo=dirs.base)
+
+    assert refused.process.wait(timeout=20) == 2
+    assert refused.process.stderr is not None
+    assert refused.process.stderr.read().startswith("ERROR: ")
