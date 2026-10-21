@@ -1,7 +1,7 @@
-//! The IPC server shared by every platform: connection handling, the start errors and the lock. The transport is `server_unix` (Unix domain
-//! socket) or `server_windows` (named pipe); both check the peer and serve one thread per
-//! connection (ADR 0021, section 2). A lock file in the runtime directory makes the
-//! start of two runtimes for one repository exclusive.
+//! The IPC server shared by every platform: connection handling, the start errors and the lock.
+//! The transport is `server_unix` (Unix domain socket) or `server_windows` (named pipe); both
+//! check the peer and serve one thread per connection (ADR 0021, section 2). A lock file in the
+//! runtime directory makes the start of two runtimes for one repository exclusive.
 
 use std::fmt;
 use std::fs::{File, OpenOptions, TryLockError};
