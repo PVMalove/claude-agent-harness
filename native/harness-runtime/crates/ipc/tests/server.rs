@@ -133,7 +133,11 @@ impl Drop for Running {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+            let served = thread.join();
+            // A second panic during unwinding aborts the process and hides the failed assertion.
+            if !thread::panicking() {
+                served.unwrap();
+            }
         }
     }
 }
@@ -397,4 +401,20 @@ fn simultaneous_starts_leave_one_runtime_with_its_own_token() {
         exchange(&mut stream, &hello(&fixture.root, &runtime.token, 1, 1)).status,
         Status::Ok
     );
+}
+
+#[test]
+#[should_panic(expected = "the test failed first")]
+fn a_failing_test_keeps_its_message_when_the_server_thread_failed_too() {
+    // A panic of the fixture destructor during unwinding aborts the whole test process, so the
+    // message of the failing test would never be printed.
+    let thread = thread::spawn(|| panic!("the server thread failed"));
+    let _runtime = Running {
+        stop: Arc::new(AtomicBool::new(false)),
+        thread: Some(thread),
+        socket: PathBuf::new(),
+        token: String::new(),
+    };
+
+    panic!("the test failed first");
 }
