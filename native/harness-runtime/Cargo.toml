@@ -1,6 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["crates/contracts", "crates/ipc", "crates/harness-runtime"]
+members = [
+    "crates/contracts",
+    "crates/ipc",
+    "crates/harness-runtime",
+    "crates/platform-ffi",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +15,8 @@ rust-version = "1.89"
 license = "MIT"
 publish = false
 
-# Safe Rust only (ADR 0019, ADR 0021): no crate of the workspace may contain `unsafe`.
+# Safe Rust only (ADR 0019, ADR 0021): no crate of the workspace may contain `unsafe`, except
+# `platform-ffi`, the one isolated platform FFI crate of ADR 0022, section 1. It sets its own lint
+# table and one `#[allow(unsafe_code)]` module; `forbid` here cannot be overridden by an `allow`.
 [workspace.lints.rust]
 unsafe_code = "forbid"

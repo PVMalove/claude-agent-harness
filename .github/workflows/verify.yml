@@ -363,11 +363,53 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+  runtime-ipc-windows:
+    # Light Windows job for the named pipe of the runtime (ADR 0021, section 2): it builds
+    # harness-runtime and runs only the IPC contract tests of both languages over the pipe. The full
+    # `verify-windows` job above stays off (#753); no step here runs the whole verification.
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          cache-local-path: ${{ runner.temp }}/setup-uv-cache
+      - name: Keep the uv cache where setup-uv restores it
+        run: echo "UV_CACHE_DIR=$RUNNER_TEMP/setup-uv-cache" >> "$GITHUB_ENV"
+      - name: Bootstrap harness environment
+        run: make bootstrap
+      # The Windows-only code (`platform-ffi`, the named pipe server) is compiled and linted here.
+      - name: Clippy
+        working-directory: native/harness-runtime
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build harness-runtime for the IPC seam tests
+        id: build
+        working-directory: native/harness-runtime
+        run: cargo build --locked
+      # One run reports every Windows failure: `--no-fail-fast` runs every test binary, and the
+      # Python step below runs after a successful build even when this step failed.
+      - name: Rust IPC contract tests
+        working-directory: native/harness-runtime
+        run: cargo test --locked --no-fail-fast -p ipc -p platform-ffi
+      - name: Python IPC contract tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          HARNESS_RUNTIME_BIN: ${{ github.workspace }}/native/harness-runtime/target/debug/harness-runtime.exe
+          HARNESS_REQUIRE_RUNTIME: "1"
+        run: .harness/.venv/Scripts/python -m pytest -q tests/orchestration/test_runtime_client.py
+
   dashboard:
     # One page for the whole run: which jobs passed, which failed, which tests and why. It runs
     # after every other job, whatever their results, and only reads what they leave.
     if: always()
-    needs: [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle, rust]
+    needs:
+      [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle, rust, runtime-ipc-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

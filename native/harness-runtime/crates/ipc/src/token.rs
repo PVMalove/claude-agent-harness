@@ -1,12 +1,27 @@
-//! The capability token: 256 random bits, hex-encoded, written to a `0600` file at start.
+//! The capability token: 256 random bits, hex-encoded, written to a file only the user can access
+//! (`0600`; on Windows a DACL for the user alone) at start.
 
-use std::fs::File;
-use std::io::{self, Read};
+use std::io;
+
+/// Fill `bytes` from the operating system's random source: `/dev/urandom`, or `BCryptGenRandom`
+/// on Windows.
+fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+
+        std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+    }
+    #[cfg(windows)]
+    {
+        platform_ffi::random_bytes(bytes)
+    }
+}
 
 /// A fresh token from the operating system's random source.
 pub fn generate_token() -> io::Result<String> {
     let mut bytes = [0_u8; 32];
-    File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    fill_random(&mut bytes)?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
