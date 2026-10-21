@@ -388,13 +388,17 @@ jobs:
       - name: Clippy
         working-directory: native/harness-runtime
         run: cargo clippy --locked --all-targets -- -D warnings
-      - name: Rust IPC contract tests
-        working-directory: native/harness-runtime
-        run: cargo test --locked -p ipc -p platform-ffi
       - name: Build harness-runtime for the IPC seam tests
+        id: build
         working-directory: native/harness-runtime
         run: cargo build --locked
+      # One run reports every Windows failure: `--no-fail-fast` runs every test binary, and the
+      # Python step below runs after a successful build even when this step failed.
+      - name: Rust IPC contract tests
+        working-directory: native/harness-runtime
+        run: cargo test --locked --no-fail-fast -p ipc -p platform-ffi
       - name: Python IPC contract tests
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           HARNESS_RUNTIME_BIN: ${{ github.workspace }}/native/harness-runtime/target/debug/harness-runtime.exe
           HARNESS_REQUIRE_RUNTIME: "1"
