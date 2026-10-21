@@ -1837,11 +1837,20 @@ class RuntimeDirectoryIsolationTests(unittest.TestCase):
 
         self.assertBlocked(self.verify(self.tmp / "run"))
 
-    def test_a_root_that_contains_only_the_empty_runtime_directory_is_allowed(
+    def test_a_root_that_contains_the_shared_xdg_runtime_directory_is_blocked(
         self,
     ) -> None:
-        # The runtime removes its socket and token when it stops; its directory stays.
-        self.assertIsNone(self.verify(self.tmp / "run")["reason"])
+        # The directory holds the sockets and tokens of every repository of the user: a runtime
+        # of another repository can be live in it while this repository's files are absent.
+        (self.runtime_dir / "other.sock").touch()
+        (self.runtime_dir / "other.token").touch()
+
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_a_root_that_contains_the_empty_xdg_runtime_directory_is_blocked(
+        self,
+    ) -> None:
+        self.assertBlocked(self.verify(self.tmp / "run"))
 
     def test_the_state_root_fallback_directory_is_exposed_by_the_repository_root(
         self,
