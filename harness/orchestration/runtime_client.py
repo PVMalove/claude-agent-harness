@@ -274,136 +274,215 @@ _ERROR_SEM_TIMEOUT = 121
 _SQOS_IDENTIFICATION = 0x00100000 | 0x00010000
 
 
-if sys.platform == "win32":
+class _Overlapped(Protocol):
+    """The part of ``_winapi.Overlapped`` that the named pipe uses."""
+
+    event: int
+
+    def GetOverlappedResult(self, wait: bool, /) -> tuple[int, int]:
+        """The bytes moved and the error code of the operation; with ``wait``, wait for its end."""
+
+    def cancel(self) -> None:
+        """Cancel the operation."""
+
+    def getbuffer(self) -> bytes | None:
+        """The bytes of a finished read."""
+
+
+class _PipeApi(Protocol):
+    """The ``_winapi`` constants and functions that the named pipe uses.
+
+    The module ``_winapi`` itself fits, so only the Windows-only ``_windows_pipe_api`` names it
+    and a test can hand the pipe a fake.
+    """
+
+    GENERIC_READ: int
+    GENERIC_WRITE: int
+    NULL: int
+    OPEN_EXISTING: int
+    FILE_FLAG_OVERLAPPED: int
+    INFINITE: int
+
+    def CreateFile(
+        self,
+        file_name: str,
+        desired_access: int,
+        share_mode: int,
+        security_attributes: int,
+        creation_disposition: int,
+        flags_and_attributes: int,
+        template_file: int,
+        /,
+    ) -> int:
+        """Open the pipe; a busy pipe raises ``OSError`` with ``winerror`` 231."""
+
+    def WaitNamedPipe(self, name: str, timeout: int, /) -> None:
+        """Wait up to ``timeout`` milliseconds until an instance of the pipe is free."""
+
+    def WriteFile(
+        self, handle: int, buffer: bytes | memoryview, /, overlapped: bool = False
+    ) -> tuple[_Overlapped, int]:
+        """Start a write; the error code is 997 while the write is pending."""
+
+    def ReadFile(
+        self, handle: int, size: int, /, overlapped: bool = False
+    ) -> tuple[_Overlapped, int]:
+        """Start a read; the error code is 997 while the read is pending."""
+
+    def WaitForMultipleObjects(
+        self, handles: list[int], wait_all: bool, milliseconds: int, /
+    ) -> int:
+        """Wait for an event; 0 means the first handle was signalled."""
+
+    def CloseHandle(self, handle: int, /) -> None:
+        """Close a handle."""
+
+
+def _windows_pipe_api() -> _PipeApi:
+    """The real Win32 API; the only place that names ``_winapi``, which exists on Windows only."""
     import _winapi
 
-    class _PipeConnection:
-        """One end of a named pipe with overlapped I/O, bounded by a time limit for each operation.
+    return cast(_PipeApi, _winapi)
 
-        It has the three methods of a socket that the protocol code uses. ``remaining`` returns the
-        seconds an operation may still take (zero or less once the limit has passed), or ``None``
-        for no limit. Pattern of ``multiprocessing.connection.PipeConnection``. The class exists on
-        Windows only, so the module imports on every platform.
-        """
 
-        def __init__(self, handle: int, remaining: Callable[[], float | None]) -> None:
-            """Wrap an open overlapped pipe handle; closing the wrapper closes the handle."""
-            self._handle: int | None = handle
-            self._remaining = remaining
+class _PipeConnection:
+    """One end of a named pipe with overlapped I/O, bounded by a time limit for each operation.
 
-        @classmethod
-        def open(
-            cls, name: str, remaining: Callable[[], float | None]
-        ) -> _PipeConnection:
-            """Connect to the pipe ``name``, waiting while every instance is busy."""
-            while True:
-                try:
-                    handle = _winapi.CreateFile(
-                        name,
-                        _winapi.GENERIC_READ | _winapi.GENERIC_WRITE,
-                        0,
-                        _winapi.NULL,
-                        _winapi.OPEN_EXISTING,
-                        _winapi.FILE_FLAG_OVERLAPPED | _SQOS_IDENTIFICATION,
-                        _winapi.NULL,
-                    )
-                    return cls(handle, remaining)
-                except OSError as exc:
-                    if getattr(exc, "winerror", None) != _ERROR_PIPE_BUSY:
-                        raise
-                limit = remaining()
-                if limit is not None and limit <= 0:
-                    raise TimeoutError(f"the pipe {name} stayed busy")
-                # An instance that is free is taken at once; the wait is cut short to look again.
-                wait_ms = 500 if limit is None else max(1, min(int(limit * 1000), 500))
-                try:
-                    _winapi.WaitNamedPipe(name, wait_ms)
-                except OSError as exc:
-                    if getattr(exc, "winerror", None) not in (
-                        _ERROR_PIPE_BUSY,
-                        _ERROR_SEM_TIMEOUT,
-                    ):
-                        raise
+    It has the three methods of a socket that the protocol code uses. ``remaining`` returns the
+    seconds an operation may still take (zero or less once the limit has passed), or ``None``
+    for no limit. Pattern of ``multiprocessing.connection.PipeConnection``. The Win32 API is a
+    parameter, so the class works, and is tested, on every platform; without ``api`` it is the
+    real one.
+    """
 
-        def _wait(self, event: int) -> bool:
-            """Whether the operation behind ``event`` ended before the time limit."""
-            limit = self._remaining()
-            if limit is None:
-                milliseconds = _winapi.INFINITE
-            elif limit <= 0:
-                return False
-            else:
-                milliseconds = max(1, int(limit * 1000))
-            return (
-                _winapi.WaitForMultipleObjects([event], False, milliseconds)
-                == _WAIT_OBJECT_0
-            )
+    def __init__(
+        self,
+        handle: int,
+        remaining: Callable[[], float | None],
+        api: _PipeApi | None = None,
+    ) -> None:
+        """Wrap an open overlapped pipe handle; closing the wrapper closes the handle."""
+        self._handle: int | None = handle
+        self._remaining = remaining
+        self._api = _windows_pipe_api() if api is None else api
 
-        def sendall(self, data: bytes, /) -> None:
-            """Write all of ``data`` or raise ``OSError``; a write past the limit is a timeout."""
-            view = memoryview(data)
-            while view:
-                overlapped, error = _winapi.WriteFile(
-                    self._open_handle(), view, overlapped=True
-                )
-                self._finish(overlapped, error)
-                written, error = overlapped.GetOverlappedResult(True)
-                if error == _ERROR_OPERATION_ABORTED:
-                    raise TimeoutError("the runtime did not take the request in time")
-                view = view[written:]
-
-        def recv(self, count: int, /) -> bytes:
-            """Read at most ``count`` bytes; ``b""`` means the runtime closed the pipe."""
+    @classmethod
+    def open(
+        cls,
+        name: str,
+        remaining: Callable[[], float | None],
+        api: _PipeApi | None = None,
+    ) -> _PipeConnection:
+        """Connect to the pipe ``name``, waiting while every instance is busy."""
+        api = _windows_pipe_api() if api is None else api
+        while True:
             try:
-                overlapped, error = _winapi.ReadFile(
-                    self._open_handle(), count, overlapped=True
+                handle = api.CreateFile(
+                    name,
+                    api.GENERIC_READ | api.GENERIC_WRITE,
+                    0,
+                    api.NULL,
+                    api.OPEN_EXISTING,
+                    api.FILE_FLAG_OVERLAPPED | _SQOS_IDENTIFICATION,
+                    api.NULL,
                 )
-                self._finish(overlapped, error)
-                _, error = overlapped.GetOverlappedResult(True)
+                return cls(handle, remaining, api)
             except OSError as exc:
-                if getattr(exc, "winerror", None) == _ERROR_BROKEN_PIPE:
-                    return b""
-                raise
-            if error == _ERROR_OPERATION_ABORTED:
-                raise TimeoutError("the runtime did not answer in time")
-            return bytes(overlapped.getbuffer() or b"")
-
-        def _finish(self, overlapped: _winapi.Overlapped, error: int) -> None:
-            """Wait for a started operation; past the limit, cancel it.
-
-            The caller then collects the result with ``GetOverlappedResult(True)``, which returns
-            as soon as the cancelled operation has ended, so no buffer is freed under the kernel.
-            """
+                if getattr(exc, "winerror", None) != _ERROR_PIPE_BUSY:
+                    raise
+            limit = remaining()
+            if limit is not None and limit <= 0:
+                raise TimeoutError(f"the pipe {name} stayed busy")
+            # An instance that is free is taken at once; the wait is cut short to look again.
+            wait_ms = 500 if limit is None else max(1, min(int(limit * 1000), 500))
             try:
-                if error == _ERROR_IO_PENDING and not self._wait(overlapped.event):
-                    overlapped.cancel()
-            except BaseException:
+                api.WaitNamedPipe(name, wait_ms)
+            except OSError as exc:
+                if getattr(exc, "winerror", None) not in (
+                    _ERROR_PIPE_BUSY,
+                    _ERROR_SEM_TIMEOUT,
+                ):
+                    raise
+
+    def _wait(self, event: int) -> bool:
+        """Whether the operation behind ``event`` ended before the time limit."""
+        limit = self._remaining()
+        if limit is None:
+            milliseconds = self._api.INFINITE
+        elif limit <= 0:
+            return False
+        else:
+            milliseconds = max(1, int(limit * 1000))
+        return (
+            self._api.WaitForMultipleObjects([event], False, milliseconds)
+            == _WAIT_OBJECT_0
+        )
+
+    def sendall(self, data: bytes, /) -> None:
+        """Write all of ``data`` or raise ``OSError``; a write past the limit is a timeout."""
+        view = memoryview(data)
+        while view:
+            overlapped, error = self._api.WriteFile(
+                self._open_handle(), view, overlapped=True
+            )
+            self._finish(overlapped, error)
+            written, error = overlapped.GetOverlappedResult(True)
+            if error == _ERROR_OPERATION_ABORTED:
+                raise TimeoutError("the runtime did not take the request in time")
+            view = view[written:]
+
+    def recv(self, count: int, /) -> bytes:
+        """Read at most ``count`` bytes; ``b""`` means the runtime closed the pipe."""
+        try:
+            overlapped, error = self._api.ReadFile(
+                self._open_handle(), count, overlapped=True
+            )
+            self._finish(overlapped, error)
+            _, error = overlapped.GetOverlappedResult(True)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) == _ERROR_BROKEN_PIPE:
+                return b""
+            raise
+        if error == _ERROR_OPERATION_ABORTED:
+            raise TimeoutError("the runtime did not answer in time")
+        return bytes(overlapped.getbuffer() or b"")
+
+    def _finish(self, overlapped: _Overlapped, error: int) -> None:
+        """Wait for a started operation; past the limit, cancel it.
+
+        The caller then collects the result with ``GetOverlappedResult(True)``, which returns
+        as soon as the cancelled operation has ended, so no buffer is freed under the kernel.
+        """
+        try:
+            if error == _ERROR_IO_PENDING and not self._wait(overlapped.event):
                 overlapped.cancel()
-                raise
+        except BaseException:
+            overlapped.cancel()
+            raise
 
-        def _open_handle(self) -> int:
-            if self._handle is None:
-                raise OSError("the pipe is closed")
-            return self._handle
+    def _open_handle(self) -> int:
+        if self._handle is None:
+            raise OSError("the pipe is closed")
+        return self._handle
 
-        def close(self) -> None:
-            """Close the pipe handle; closing twice is harmless."""
-            handle, self._handle = self._handle, None
-            if handle is not None:
-                _winapi.CloseHandle(handle)
+    def close(self) -> None:
+        """Close the pipe handle; closing twice is harmless."""
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            self._api.CloseHandle(handle)
 
-        def __enter__(self) -> _PipeConnection:
-            """Use the connection as a context manager."""
-            return self
+    def __enter__(self) -> _PipeConnection:
+        """Use the connection as a context manager."""
+        return self
 
-        def __exit__(
-            self,
-            exc_type: type[BaseException] | None,
-            exc: BaseException | None,
-            traceback: TracebackType | None,
-        ) -> None:
-            """Close the connection."""
-            self.close()
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the connection."""
+        self.close()
 
 
 def _typed_error(response: Mapping[str, object]) -> RuntimeClientError:
