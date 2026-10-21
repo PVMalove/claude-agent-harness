@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/contracts", "crates/ipc", "crates/harness-runtime"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Safe Rust only (ADR 0019, ADR 0021): no crate of the workspace may contain `unsafe`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
