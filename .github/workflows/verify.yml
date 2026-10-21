@@ -339,11 +339,28 @@ jobs:
             --python-executable "$RUNNER_TEMP/worker-typecheck/bin/python" \
             harness/repo_map/tree_sitter_worker.py
 
+  rust:
+    # Rust workspace of the runtime process (ADR 0019, ADR 0021): formatting, lints and tests of
+    # native/harness-runtime. `rust-toolchain.toml` there pins the toolchain and its components.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: native/harness-runtime
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
+
   dashboard:
     # One page for the whole run: which jobs passed, which failed, which tests and why. It runs
     # after every other job, whatever their results, and only reads what they leave.
     if: always()
-    needs: [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle]
+    needs: [verify, diff-coverage, private-terms, parser-bundle, repo-map-bundle, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
