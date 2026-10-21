@@ -28,11 +28,11 @@ import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import NoReturn, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY
-from . import extensions
+from . import extensions, runtime_client
 from .core.utils import JsonObject
 
 EXTENSION_NAME = "docker"
@@ -636,6 +636,38 @@ def remove_objects(objects: Sequence[Mapping[str, object]]) -> JsonObject:
     return result
 
 
+def _runtime_exposed_by(
+    roots: Sequence[str], repo_root: str | None
+) -> list[tuple[str, Path]]:
+    """The plan roots that would give a worker the runtime's directory, socket or token.
+
+    ADR 0021 and ADR 0022 keep every container away from the runtime: a root that is one of its
+    paths or lies under it is refused, and so is a root that contains it while it exists (the
+    fallback directory sits inside the repository's state root). Paths are compared after
+    symlinks are resolved.
+    """
+    if repo_root is None:
+        return []
+    try:
+        paths = runtime_client.runtime_paths(Path(repo_root))
+    except runtime_client.RuntimeClientError:
+        return []
+    protected = [
+        Path(os.path.realpath(item))
+        for item in (paths.directory, paths.socket, paths.token)
+    ]
+    exposed: list[tuple[str, Path]] = []
+    for root in roots:
+        resolved = Path(os.path.realpath(root))
+        for item in protected:
+            inside = resolved == item or item in resolved.parents
+            contains = resolved in item.parents and item.exists()
+            if inside or contains:
+                exposed.append((root, paths.directory))
+                break
+    return exposed
+
+
 def _overlaps_home(path: str) -> bool:
     home = PurePosixPath(CONTAINER_HOME)
     root = PurePosixPath(path)
@@ -803,6 +835,24 @@ def _plan_support(data: JsonObject, transport: str, block: _Block) -> None:
                 "move the root to a path without commas, quotes or line breaks outside "
                 f"{CONTAINER_HOME}",
             )
+    storage = next(
+        (
+            item["path"]
+            for item in data["requirements"]
+            if item["resource"] == "shared_storage"
+        ),
+        None,
+    )
+    # The shared storage is the main checkout's `.harness`: its parent is the repository root.
+    for path, runtime_dir in _runtime_exposed_by(
+        sorted({item["path"] for item in data["requirements"]}),
+        str(Path(storage).parent) if storage else None,
+    ):
+        block(
+            f"plan root {path!r} would give the worker the harness-runtime directory {runtime_dir}",
+            "keep the runtime directory out of every plan root: set XDG_RUNTIME_DIR to a path "
+            "outside them and restart harness-runtime, or narrow the root",
+        )
     if not hasattr(os, "getuid"):
         block(
             "the host has no POSIX user identity for the container user",

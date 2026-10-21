@@ -1759,6 +1759,91 @@ class DockerPlanSupportTests(unittest.TestCase):
         self.assertIn("without commas", verification["remedy"])
 
 
+class RuntimeDirectoryIsolationTests(unittest.TestCase):
+    """No plan root gives a worker the directory, socket or token of ``harness-runtime``."""
+
+    def setUp(self) -> None:
+        self.engine = FakeEngine()
+        patcher = mock.patch.object(container_executor, "run_engine", self.engine)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = Path(
+            self.enterContext(tempfile.TemporaryDirectory(ignore_cleanup_errors=True))
+        ).resolve()
+        self.runtime_dir = self.tmp / "run" / "harness"
+        self.runtime_dir.mkdir(parents=True)
+        environ = self.enterContext(mock.patch.dict(os.environ))
+        environ["XDG_RUNTIME_DIR"] = str(self.tmp / "run")
+
+    def verify(self, root: Path | str | None) -> JsonObject:
+        filesystem = (
+            [{"resource": "cache", "path": str(root), "access": "write"}]
+            if root
+            else []
+        )
+        plan = _plan(
+            self.tmp / "repo",
+            {
+                "access_policy": {
+                    "defaults": {
+                        "mode": "sandbox",
+                        "container": {"worker_image": WORKER_TAG},
+                        "filesystem": filesystem,
+                    }
+                },
+                "extensions": {"runtime_access": "docker"},
+            },
+        )
+        verification, _ = runtime_access.verify_plan(plan, "external")
+        return verification
+
+    def assertBlocked(self, verification: JsonObject) -> None:
+        self.assertIn("harness-runtime directory", verification["reason"])
+        self.assertIn("XDG_RUNTIME_DIR", verification["remedy"])
+
+    def test_the_runtime_directory_is_never_a_plan_root(self) -> None:
+        self.assertBlocked(self.verify(self.runtime_dir))
+
+    def test_a_root_under_the_runtime_directory_is_blocked(self) -> None:
+        (self.runtime_dir / "inner").mkdir()
+
+        self.assertBlocked(self.verify(self.runtime_dir / "inner"))
+
+    def test_a_symlink_to_the_runtime_directory_is_blocked_by_its_real_path(
+        self,
+    ) -> None:
+        link = self.tmp / "link"
+        link.symlink_to(self.runtime_dir)
+
+        self.assertBlocked(self.verify(link))
+
+    def test_a_root_that_contains_the_existing_runtime_directory_is_blocked(
+        self,
+    ) -> None:
+        self.assertBlocked(self.verify(self.tmp / "run"))
+
+    def test_the_state_root_fallback_directory_is_exposed_by_the_repository_root(
+        self,
+    ) -> None:
+        del os.environ["XDG_RUNTIME_DIR"]
+        fallback = self.tmp / "repo/.harness/orchestration/state/runtime"
+        fallback.mkdir(parents=True)
+
+        self.assertBlocked(self.verify(None))
+
+    def test_a_runtime_outside_every_root_blocks_nothing(self) -> None:
+        verification = self.verify(None)
+
+        self.assertIsNone(verification["reason"])
+
+    def test_a_missing_fallback_directory_exposes_nothing(self) -> None:
+        del os.environ["XDG_RUNTIME_DIR"]
+
+        verification = self.verify(None)
+
+        self.assertIsNone(verification["reason"])
+
+
 class InspectWorkerTests(unittest.TestCase):
     """The engine's answer about one container reduces to a stop proof or to ``unknown``."""
 
