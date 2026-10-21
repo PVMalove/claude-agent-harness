@@ -7,12 +7,16 @@
 Код возврата: 0 для allow/warn, 2 для block. JSON не пишется в stdout: Claude Code разбирает stdout
 при коде 0 как собственный протокол, а значения ``allow``/``warn`` в нём не определены.
 
-Профиль берётся только из ключа ``hook_policy.profile`` файла ``.harness/project.json`` проекта, где
-лежит этот модуль (``.claude/hooks/hook_response.py``). Переменные окружения, включая
-``HOOK_PROFILE``, и входные данные инструмента не читаются. Проект без ключа получает ``standard``.
-Эскалации по ролям и путям здесь не вычисляются: hook не знает роль, а пути команды неизвестны.
+Профиль берётся только из ключа ``hook_policy`` файла ``.harness/project.json`` проекта, где лежит
+этот модуль (``.claude/hooks/hook_response.py``). Переменные окружения, включая ``HOOK_PROFILE``, и
+входные данные инструмента не читаются. Проект без ключа (и без файла) получает ``standard``; ключ,
+который нельзя разобрать, или файл, который нельзя прочитать, даёт ``strict`` (только в строгую
+сторону). Hook не знает роль и пути команды, поэтому не может проверить условия эскалации и применяет
+самую строгую эскалацию ко всем вызовам: профиль становится не слабее базового и не слабее любой
+эскалации (``hook_policy.resolve_profile`` для вызова с подходящими ролью и путями не выше этого).
 
-Критичный hook при внутренней ошибке блокирует (код 2); поведенческий (``require-bounded-check``) и
+Критичный hook при внутренней ошибке блокирует (код 2); зависание тела дольше ``INNER_TIMEOUT_SECONDS``
+тоже внутренняя ошибка: процесс прерывается, критичный hook блокирует; поведенческий (``require-bounded-check``) и
 учётные (``count-skill-usage``, ``mark-qa-gate-passed``) разрешают с предупреждением (код 0). Профиль
 ``minimal`` понижает блокировку поведенческого hook до предупреждения; критичные hooks блокируют в любом
 профиле (ADR 0024). Только стандартная библиотека, Python 3.9+.
@@ -56,6 +60,7 @@ EXTRA_REASONS: Dict[str, Tuple[str, ...]] = {
 }
 PROFILES = ("minimal", "standard", "strict")
 DEFAULT_PROFILE = "standard"
+STRICT_PROFILE = "strict"
 DECISIONS = ("allow", "warn", "block")
 REASON_OK = "ok"
 REASON_INTERNAL_ERROR = "internal-error"
@@ -82,6 +87,8 @@ EXIT_CODES = {"allow": 0, "warn": 0, "block": 2}
 # Маркер повторного запуска: исходный сценарий видит его и не оборачивает себя второй раз.
 ENVELOPE_MARKER = "HARNESS_HOOK_ENVELOPE"
 REMEDY_LIMIT = 1000
+# Меньше тайм-аута hook-а в runtime (60 с): при зависании тела вердикт выдаёт конверт, а не runtime.
+INNER_TIMEOUT_SECONDS = 50
 
 
 def build_response(
@@ -118,14 +125,40 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _policy_profile(policy: object) -> str:
+    """Самый строгий профиль политики: базовый и все эскалации; неразбираемая политика — ``strict``."""
+    if not isinstance(policy, dict):
+        return STRICT_PROFILE
+    escalations = policy.get("escalations", [])
+    if policy.get("profile") not in PROFILES or not isinstance(escalations, list):
+        return STRICT_PROFILE
+    profiles: List[str] = [policy["profile"]]
+    for item in escalations:
+        if not isinstance(item, dict) or item.get("profile") not in PROFILES:
+            return STRICT_PROFILE
+        profiles.append(item["profile"])
+    return max(profiles, key=PROFILES.index)
+
+
 def read_profile(root: Path) -> str:
-    """Базовый профиль из ``hook_policy.profile``; всё нечитаемое или неизвестное — ``standard``."""
+    """Действующий профиль из ``hook_policy``: нет файла или ключа — ``standard``; иначе самый строгий
+    из базового и эскалаций; файл, который нельзя прочитать или разобрать, и неразбираемый ключ —
+    ``strict``."""
     try:
-        data = json.loads((root / ".harness" / "project.json").read_text("utf-8"))
-        profile = data["hook_policy"]["profile"]
-    except (OSError, ValueError, KeyError, TypeError):
+        raw = (root / ".harness" / "project.json").read_text("utf-8")
+    except FileNotFoundError:
         return DEFAULT_PROFILE
-    return profile if profile in PROFILES else DEFAULT_PROFILE
+    except (OSError, ValueError):
+        return STRICT_PROFILE
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return STRICT_PROFILE
+    if not isinstance(data, dict):
+        return STRICT_PROFILE
+    if "hook_policy" not in data:
+        return DEFAULT_PROFILE
+    return _policy_profile(data["hook_policy"])
 
 
 def decide(
@@ -147,7 +180,9 @@ def decide(
                 hook_id, profile, "warn", block_reason, f"{note}: {remedy}", evidence
             )
         return build_response(hook_id, profile, "block", block_reason, remedy, evidence)
-    reason = f"hook вернул код {code}" if code is not None else "hook не запустился"
+    reason = f"hook вернул код {code}" if code is not None else "hook не отработал"
+    if remedy:
+        reason = f"{reason}: {remedy}"
     decision = "block" if critical else "warn"
     return build_response(
         hook_id, profile, decision, REASON_INTERNAL_ERROR, reason, evidence
@@ -157,7 +192,7 @@ def decide(
 def run_inner(
     command: Sequence[str], payload: bytes
 ) -> Tuple[Optional[int], bytes, bytes]:
-    """Запустить исходный сценарий с тем же stdin; вернуть код (None при сбое запуска), stdout, stderr."""
+    """Запустить исходный сценарий с тем же stdin; код — ``None`` при сбое запуска или тайм-ауте."""
     env = dict(os.environ, **{ENVELOPE_MARKER: "1"})
     try:
         done = subprocess.run(
@@ -166,7 +201,11 @@ def run_inner(
             capture_output=True,
             env=env,
             check=False,
+            timeout=INNER_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired:
+        message = f"тайм-аут {INNER_TIMEOUT_SECONDS} с: hook прерван"
+        return None, b"", message.encode("utf-8")
     except OSError as exc:
         return None, b"", f"{exc}".encode("utf-8", "replace")
     return done.returncode, done.stdout, done.stderr

@@ -13,6 +13,7 @@ from types import ModuleType
 import pytest
 
 from harness.orchestration.contract import ContractError
+from harness.orchestration import hook_policy
 from harness.orchestration.hook_policy import parse_hook_response
 
 HOOKS = Path(__file__).resolve().parents[2] / "harness" / "project" / "hooks"
@@ -178,13 +179,22 @@ def test_the_remedy_is_bounded() -> None:
     ("document", "expected"),
     [
         (None, "standard"),
-        ("{not json", "standard"),
-        ("[]", "standard"),
         ({}, "standard"),
-        ({"hook_policy": []}, "standard"),
-        ({"hook_policy": {"profile": "lax"}}, "standard"),
         ({"hook_policy": {"profile": "minimal"}}, "minimal"),
         ({"hook_policy": {"profile": "strict", "escalations": []}}, "strict"),
+        # Present but unreadable or invalid: only toward strict.
+        ("{not json", "strict"),
+        ("[]", "strict"),
+        ({"hook_policy": []}, "strict"),
+        ({"hook_policy": None}, "strict"),
+        ({"hook_policy": {}}, "strict"),
+        ({"hook_policy": {"profile": "lax"}}, "strict"),
+        ({"hook_policy": {"profile": "minimal", "escalations": {}}}, "strict"),
+        ({"hook_policy": {"profile": "minimal", "escalations": ["x"]}}, "strict"),
+        (
+            {"hook_policy": {"profile": "minimal", "escalations": [{"profile": "x"}]}},
+            "strict",
+        ),
     ],
 )
 def test_the_profile_comes_only_from_project_json(
@@ -199,6 +209,79 @@ def test_the_profile_comes_only_from_project_json(
         )
 
     assert hook_response.read_profile(tmp_path) == expected
+
+
+_ESCALATING = {
+    "profile": "minimal",
+    "escalations": [
+        {"roles": ["qa"], "profile": "standard"},
+        {"paths": ["docs/**"], "roles": ["developer"], "profile": "strict"},
+    ],
+}
+
+
+def _write_policy(root: Path, policy: object) -> None:
+    path = root / ".harness" / "project.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"hook_policy": policy}), encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"profile": "minimal"},
+        {"profile": "standard", "escalations": []},
+        _ESCALATING,
+        {
+            "profile": "minimal",
+            "escalations": [{"roles": ["qa"], "profile": "standard"}],
+        },
+        {"profile": "strict", "escalations": [{"roles": ["qa"], "profile": "strict"}]},
+    ],
+)
+def test_the_envelope_profile_matches_the_resolver_for_the_strictest_escalation(
+    tmp_path: Path, policy: dict[str, object]
+) -> None:
+    """The hook cannot see role or path, so it applies the strictest escalation to every call: the
+    profile equals ``resolve_profile`` with every escalation condition satisfied."""
+    _write_policy(tmp_path, policy)
+    normalized = hook_policy.normalize_policy(policy)
+    unconditional = {
+        "profile": normalized["profile"],
+        "escalations": [
+            {"paths": [], "roles": [], "profile": item["profile"]}
+            for item in normalized["escalations"]  # type: ignore[attr-defined]
+        ],
+    }
+
+    assert hook_response.read_profile(tmp_path) == hook_policy.resolve_profile(
+        unconditional
+    )
+    # Any concrete role and path resolves to a profile no stricter than the envelope applies.
+    order = hook_response.PROFILES.index
+    for role in ("developer", "review", "qa", "coordinator"):
+        for paths in ([], ["docs/a.md"], ["src/a.py"]):
+            resolved = hook_policy.resolve_profile(normalized, role=role, paths=paths)
+            assert order(resolved) <= order(hook_response.read_profile(tmp_path))
+
+
+def test_an_escalation_to_standard_stops_the_minimal_downgrade(tmp_path: Path) -> None:
+    low = {"profile": "minimal"}
+    escalated = {
+        "profile": "minimal",
+        "escalations": [{"roles": ["qa"], "profile": "standard"}],
+    }
+    _write_policy(tmp_path, low)
+    soft = hook_response.decide(
+        "require-bounded-check", hook_response.read_profile(tmp_path), 2, "no"
+    )
+    _write_policy(tmp_path, escalated)
+    hard = hook_response.decide(
+        "require-bounded-check", hook_response.read_profile(tmp_path), 2, "no"
+    )
+
+    assert (soft["decision"], soft["profile"]) == ("warn", "minimal")
+    assert (hard["decision"], hard["profile"]) == ("block", "standard")
 
 
 def _project(tmp_path: Path, hook_policy: object | None = None) -> Path:
@@ -378,6 +461,40 @@ def test_a_command_that_cannot_start_is_an_internal_error(tmp_path: Path) -> Non
         )
         assert done.returncode == code
         assert parse_hook_response(done.stderr)["reason_code"] == "internal-error"
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("hook_id", "code", "decision"),
+    [("block-pr-merge", 2, "block"), ("require-bounded-check", 0, "warn")],
+)
+def test_a_hanging_hook_body_is_an_internal_error_after_the_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+    code: int,
+    decision: str,
+) -> None:
+    import io
+
+    project = _project(tmp_path)
+    script = project / "inner.sh"
+    script.write_text("sleep 30", encoding="utf-8")
+    monkeypatch.setattr(hook_response, "INNER_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(hook_response, "project_root", lambda: project)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"payload")))
+
+    returned = hook_response.main(["run", hook_id, str(BASH), str(script)])
+
+    assert returned == code
+    verdict = parse_hook_response(capsys.readouterr().err)
+    assert (verdict["decision"], verdict["reason_code"]) == (decision, "internal-error")
+    assert "тайм-аут" in str(verdict["remedy"])
+
+
+def test_the_timeout_is_below_the_runtime_hook_timeout() -> None:
+    assert 0 < hook_response.INNER_TIMEOUT_SECONDS < 60
 
 
 def test_an_unknown_hook_or_usage_is_refused(tmp_path: Path) -> None:
