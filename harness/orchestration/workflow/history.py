@@ -16,7 +16,11 @@ from typing import cast
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.memory.index import context as memory_context
 from harness.memory.sources import allowed_paths, read_source
-from harness.orchestration import operational_guards, runtime_access
+from harness.orchestration import (
+    operational_guards,
+    runtime_access,
+    verification_plan,
+)
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
     ContractError,
@@ -47,6 +51,7 @@ from harness.orchestration.core.constants import (
     CARRIED_ITEM_SOURCES,
     CHECKPOINT_NO_CONTEXT_PACKAGE,
     CONTEXT_PACKAGE_FIELDS,
+    ContextPackageFreshness,
     V2_CONTEXT_PACKAGE_FIELDS,
     CONTEXT_PRESSURE_FIELDS,
     CONTEXT_TELEMETRY_SOURCES,
@@ -84,6 +89,7 @@ from harness.orchestration.core.workspace import (
     _validate_branch,
     _validate_harness_runtime_snapshot,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.ledger import JsonValue
 from harness.orchestration.ledger.ledger_ops import (
     _load_checkpoint,
@@ -457,7 +463,9 @@ def _context_package_freshness(
             else {}
         ),
         "context_package_id": package["context_package_id"],
-        "status": "fresh" if fresh else "stale",
+        "status": ContextPackageFreshness.FRESH
+        if fresh
+        else ContextPackageFreshness.STALE,
         "checked_at": utils._now(),
         "registered_base_commit": package["base_commit"],
         "current_base_commit": current_base,
@@ -1026,13 +1034,13 @@ def _batches_for_ticket_branch(
     they are audit evidence, so this lists them all and leaves the choice to the caller.
     """
     batches_dir = _records_root(root) / "batches"
-    if not batches_dir.is_dir():
+    if not state_view.is_dir(batches_dir):
         raise CoordinatorError(
             "no orchestration batches exist for the ticket branch",
             remedy="verify the ticket/branch and that a batch exists for it",
         )
     matches = []
-    for path in sorted(batches_dir.glob("*.json")):
+    for path in state_view.glob(batches_dir, "*.json"):
         batch = _read_object(path, "batch record")
         if batch.get("ticket") == ticket and batch.get("branch") == branch:
             _validate_batch_integrity(root, batch)
@@ -1145,7 +1153,10 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="create a fresh approved dispatch after a recorded recovery event",
         )
     policy = dispatch["orchestration_policy"]
-    if not isinstance(policy, dict) or set(policy) - {"infrastructure_retry"} != {
+    if not isinstance(policy, dict) or set(policy) - {
+        "infrastructure_retry",
+        "configuration",
+    } != {
         "approval_ttl_seconds",
         "attention",
         "context_pressure",
@@ -1156,13 +1167,25 @@ def _validate_transition_binding(dispatch: JsonObject, batch: JsonObject) -> Non
             remedy="the dispatch orchestration_policy is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
         )
+    if "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        read_snapshot(dispatch)
     from harness.orchestration.infrastructure_retry import pinned
 
     pinned(dispatch)
     liveness = dispatch.get("liveness")
     if liveness is not None and (
         not isinstance(liveness, dict)
-        or set(liveness) != {"heartbeat_every_seconds", "stale_after_seconds"}
+        or set(liveness)
+        not in (
+            {"heartbeat_every_seconds", "stale_after_seconds"},
+            {
+                "heartbeat_every_seconds",
+                "stale_after_seconds",
+                "startup_timeout_seconds",
+            },
+        )
         or any(
             isinstance(value, bool) or not isinstance(value, int) or value < 1
             for value in liveness.values()
@@ -1276,6 +1299,13 @@ def _validate_resolver_section(dispatch: JsonObject) -> None:
 def _validate_dispatch(
     repo: Path, config: JsonObject, root: Path, batch: JsonObject, dispatch: JsonObject
 ) -> None:
+    pinned: JsonObject | None = None
+    policy = dispatch.get("orchestration_policy")
+    if isinstance(policy, dict) and "configuration" in policy:
+        from harness.orchestration.pinned_configuration import read_snapshot
+
+        pinned = read_snapshot(dispatch)
+        config = pinned["config"]
     _validate_harness_runtime_snapshot(repo, batch)
     from harness.orchestration.workflow import preserved_progress
 
@@ -1303,6 +1333,7 @@ def _validate_dispatch(
         for fields in (DISPATCH_FIELDS, pre_summary_fields, legacy_fields)
     }
     accepted |= {fields - {"report_staging_path"} for fields in set(accepted)}
+    accepted |= {fields - {"retry_reason"} for fields in set(accepted)}
     # The role tool policy and context budget were added together, so a brief holds both or neither.
     accepted |= {
         fields - {"allowed_tools", "context_budget"} for fields in set(accepted)
@@ -1319,14 +1350,48 @@ def _validate_dispatch(
     accepted |= {fields - {"runtime_access"} for fields in set(accepted)}
     # The delta-review scope of a code-review after a fix-forward (issue #625) came after that.
     accepted |= {fields - {"delta_review_scope"} for fields in set(accepted)}
-    # The conflict-resolver brief's resolver section (issue #534) is the one field added on top.
+    # The conflict-resolver brief's resolver section (issue #534) is one field added on top.
     accepted |= {fields | {"resolver"} for fields in set(accepted)}
+    # The image digests a docker brief pins (issue #704) only ever accompany its access plan.
+    accepted |= {
+        fields | {"runtime_images"}
+        for fields in set(accepted)
+        if "runtime_access" in fields
+    }
     accepted |= {fields | {"preserved_progress"} for fields in set(accepted)}
+    # The verification plan (ADR 0023) is one optional field, present only for a batch whose
+    # configuration carried `verification_plan_policy`.
+    accepted |= {fields | {"verification_plan"} for fields in set(accepted)}
+    # The pinned hook policy (issue #794) is one optional field of every new brief.
+    accepted |= {fields | {"hook_policy_sha256"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",
             remedy="the dispatch record schema is malformed -- "
             + INTERNAL_INVARIANT_REMEDY,
+        )
+    reason = dispatch.get("retry_reason")
+    if reason is not None and (
+        dispatch.get("role") != "architect"
+        or not isinstance(reason, dict)
+        or set(reason)
+        != {
+            "previous_dispatch_id",
+            "note",
+            "source",
+            "reason_category",
+            "decision_sha256",
+        }
+        or not _non_empty(reason.get("note"))
+        or reason["note"].strip().lower() == "none"
+        or reason.get("source") not in {"decision.note", "decision.routing.rationale"}
+        or not isinstance(reason.get("previous_dispatch_id"), str)
+        or not isinstance(reason.get("decision_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", reason["decision_sha256"]) is None
+    ):
+        raise CoordinatorError(
+            "dispatch retry_reason must contain a non-empty architect retry reason and its source",
+            remedy="create a new proposal from the recorded retry decision",
         )
     divergence = dispatch.get("commit_plan_divergence")
     if divergence is not None and (
@@ -1341,6 +1406,24 @@ def _validate_dispatch(
         _validate_carried_section(dispatch)
     _validate_delta_review_scope(dispatch)
     _validate_resolver_section(dispatch)
+    if "verification_plan" in dispatch and (
+        problems := verification_plan.plan_problems(dispatch["verification_plan"])
+    ):
+        raise CoordinatorError(
+            "dispatch verification_plan is malformed: " + "; ".join(problems),
+            remedy="the dispatch record's verification_plan is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
+    pinned_hook_policy = dispatch.get("hook_policy_sha256")
+    if "hook_policy_sha256" in dispatch and (
+        not isinstance(pinned_hook_policy, str)
+        or re.fullmatch(r"[0-9a-f]{64}", pinned_hook_policy) is None
+    ):
+        raise CoordinatorError(
+            "dispatch hook_policy_sha256 must be a sha256 hex digest",
+            remedy="the dispatch record's hook_policy_sha256 is malformed -- "
+            + INTERNAL_INVARIANT_REMEDY,
+        )
     target = dispatch.get("rebase_target_commit")
     if target is not None and (
         not isinstance(target, str)
@@ -1474,9 +1557,10 @@ def _validate_dispatch(
         try:
             _, assignment = validate_brief_policy(
                 dispatch,
-                _project(repo),
+                pinned["project"] if pinned is not None else _project(repo),
                 config,
                 _roles_dir(repo),
+                role_manifest=pinned["role"] if pinned is not None else None,
                 allowed_paths=cast(list[str] | None, batch.get("allowed_paths")),
             )
         except ContractError as exc:
@@ -1494,6 +1578,8 @@ def _validate_dispatch(
                 dispatch["resolved_runtime"],
                 session_model=dispatch["resolved_model"],
                 session_effort=dispatch["resolved_effort"],
+                replay=True,
+                role_manifest=pinned["role"] if pinned is not None else None,
             )
         )
         if (

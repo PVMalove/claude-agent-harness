@@ -16,6 +16,8 @@ logs.
 - `README.md` — overview and CLI usage; `CONTEXT.md` — project glossary;
   `CHANGELOG.md` — release notes and `LICENSE` — project license.
 - `harness/` — packager CLI, capability catalog, version, and target-project templates.
+- `native/harness-runtime/` — Rust workspace of the runtime process (`harness-runtime serve`); safe Rust only,
+  checked by `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test` in that directory.
 - `skills/vendor/` — pinned upstream snapshot; `skills/first-party/pvmalove/` — maintained skills.
 - `global/` — seed template for the target project's global agent profile; `global-skills/` and
   `bin/` — global entry skills and installer; `scripts/` — registry, drift, verification, and

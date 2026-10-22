@@ -20,5 +20,13 @@ upstream файлы сохраняются побайтно; их frontmatter и
 исходного skill. Project-owned integrations описаны в `.harness/integrations.json` с
 путём, SHA-256, runtime-целью и проверкой активации; значения секретов там не хранятся.
 
+Hooks проекта подключаются по тем же двум runtime, но не через ссылки на `.harness/skills/`:
+`harness init`, `adopt` и `update` сливают управляемые записи в `.claude/settings.local.json` для
+Claude Code и в `.codex/hooks.json` для Codex, не трогая записи пользователя. Для Codex
+подключены только критические guards и `require-bounded-check` на `PreToolUse` для `Bash`, а проектные hooks
+работают после того, как пользователь доверит слою `.codex/` и каждому hook по хэшу. Проверка
+`hooks.policy` в `harness health` показывает подключённые и отсутствующие hooks каждого runtime;
+подробности — в [docs/hooks/install-and-update.md](hooks/install-and-update.md).
+
 CLI и исходники могут содержать маршруты для других runtime. Они не входят в заявленную
 совместимость v1.0.0, поскольку их работа не была проверена в этом проекте.

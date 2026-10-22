@@ -31,6 +31,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_STAGES,
     INCOMPLETE_ITEM_TARGET_ROLES,
     TERMINAL_BATCH_STATES,
+    ReviewRecommendation,
 )
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -51,7 +52,7 @@ from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
-from harness.orchestration.workflow import decisions, resolver_state
+from harness.orchestration.workflow import decisions, failure_classifier, resolver_state
 from harness.orchestration.workflow.attention import _attention_findings
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
@@ -78,6 +79,12 @@ ATTENTION_STOPS = {
 # Detection order: an untrustworthy ledger or runtime first, then a spent budget, then a dead end.
 # Spelled out: the key order of ``AUTO_STOP_REASONS`` lists the budget first.
 STOP_ORDER = ("integrity-failure", "budget-exhausted", "no-automatic-route")
+QA_ENVIRONMENT_REMEDY = (
+    "the QA environment refused a write outside the candidate's code, so a developer retry cannot "
+    "fix it: give QA a writable temporary directory (run qa run outside the outer sandbox, or with "
+    "TMPDIR under .harness/.sandboxes/), then a human re-runs QA on the same candidate with "
+    "batch rewind --to qa"
+)
 CLEAN_BASIS = (
     "the report is clean: completed, no blockers, every check passed, and nothing is left "
     "uncovered, unclosed, open or outside the approved scope"
@@ -218,9 +225,9 @@ def accept_obstacles(
             obstacles.append(
                 f"the review has findings at or above the {auto_retry_min_severity} retry threshold"
             )
-        if review.get("recommendation") == "retry" or (
+        if review.get("recommendation") == ReviewRecommendation.RETRY or (
             auto_retry_min_severity != "info"
-            and review.get("recommendation") != "accept"
+            and review.get("recommendation") != ReviewRecommendation.ACCEPT
         ):
             obstacles.append("the review recommendation is not accept")
     if isinstance(review, dict) and any(
@@ -311,6 +318,45 @@ def category(
     )
 
 
+def environment_stop(stage: str, report: JsonObject, repo: Path) -> Stop | None:
+    """The stop for a QA gate that failed on its environment, not on the code (no I/O, #769).
+
+    Only the failed gate stage's recorded diagnostics are read; ``failure_classifier`` keeps every
+    code-defect sign and every other failed test on the developer-retry path.
+    """
+    stages = report.get("qa_stages")
+    if (
+        stage != "qa"
+        or not isinstance(stages, dict)
+        or stages.get("failed_stage") != "gate"
+    ):
+        return None
+    failed = next(
+        (
+            entry
+            for entry in stages.get("stages", [])
+            if isinstance(entry, dict)
+            and entry.get("stage") == "gate"
+            and entry.get("result") == "fail"
+        ),
+        None,
+    )
+    if failed is None:
+        return None
+    found = failure_classifier.classify_environment(failed.get("diagnostics"), repo)
+    if found is None:
+        return None
+    return Stop(
+        "no-automatic-route",
+        "qa-environment-failure",
+        {
+            "command": failed.get("command"),
+            "classification": found,
+            "remedy": QA_ENVIRONMENT_REMEDY,
+        },
+    )
+
+
 def finish(
     routing: JsonObject | None,
     refusal: CoordinatorError | None,
@@ -375,7 +421,9 @@ def attention_stops(batch: JsonObject, findings: list[dict[str, str]]) -> list[S
     return stops
 
 
-def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
+def _status_stops(
+    root: Path, batch: JsonObject, *, repo: Path | None = None
+) -> list[Stop]:
     """An open dispatch whose worker ran another model or another worktree than its brief
     approved; a dispatch a human already settled (abandoned on resume) is no stop."""
     stops = []
@@ -388,7 +436,16 @@ def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
             continue
         model = status.get("model_self_report")
         failure = status.get("runtime_failure", {})
-        if (
+        from harness.orchestration.workflow.startup import assess_startup
+
+        startup = assess_startup(
+            _load_dispatch(root, entry["dispatch_id"]), status, repo=repo
+        )
+        early_exit = (
+            startup["worker_state"] == "stopped"
+            and startup["classification"] == "runtime-crash"
+        )
+        if early_exit or (
             failure.get("kind") == "runtime-unavailable"
             and failure.get("worker_started") is False
         ):
@@ -396,7 +453,11 @@ def _status_stops(root: Path, batch: JsonObject) -> list[Stop]:
                 Stop(
                     "integrity-failure",
                     "runtime-unavailable",
-                    {"dispatch_id": entry["dispatch_id"], "runtime_failure": failure},
+                    {
+                        "dispatch_id": entry["dispatch_id"],
+                        "runtime_failure": failure,
+                        "startup": startup,
+                    },
                 )
             )
         if isinstance(model, dict) and model.get("match") is False:
@@ -476,7 +537,7 @@ def fact_stops(
                 {"refused": exc.message},
             )
         )
-    stops.extend(_status_stops(root, batch))
+    stops.extend(_status_stops(root, batch, repo=repo))
     findings = (
         []
         if batch.get("state") in TERMINAL_BATCH_STATES
@@ -654,6 +715,9 @@ def resolve(
     if stops:
         return Resolution(stop=stops[0])
     stage = decisions._reporting_stage(dispatch, report)
+    environment = environment_stop(stage, report, repo)
+    if environment is not None:
+        return Resolution(stop=environment)
     scope = (
         report_scope_warnings(report, dispatch)
         if report.get("role") != "architect"

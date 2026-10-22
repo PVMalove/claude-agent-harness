@@ -31,12 +31,14 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
     DEVELOPER_REASON_CATEGORIES,
+    DEVELOPER_RETRY_DECISIONS,
     INCOMPLETE_ITEM_TARGET_ROLES,
     NEXT_ACTION_DISPATCH_ROLE,
     OPERATIONAL_REASON_CATEGORIES,
     RETRY_REASON_CATEGORIES,
     RecoveryRoute,
     RetryReason,
+    ReviewRecommendation,
     TOOLING_REASON_CATEGORY,
 )
 from harness.orchestration.core.git_utils import (
@@ -59,6 +61,7 @@ from harness.orchestration.core.workspace import (
 )
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
+    read_state,
     _load_batch,
     _load_dispatch,
     _load_dispatch_status,
@@ -211,7 +214,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
+    with read_state(ledger, repo):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         entry = None
@@ -445,7 +448,7 @@ def _developer_retry_count(batch: JsonObject) -> int:
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
-        if decision.get("decision") in {"retry", "rewind-developer"}
+        if decision.get("decision") in DEVELOPER_RETRY_DECISIONS
         and decision.get("next_role") == "developer"
         and not (
             isinstance(decision.get("routing"), dict)
@@ -520,7 +523,7 @@ def _retry_evidence(
                 return (
                     RetryReason.REQUIREMENTS if axis == "spec" else RetryReason.CODE
                 ), f"the {axis} axis carries a finding or a warning/blocker severity"
-        if review.get("recommendation") == "retry":
+        if review.get("recommendation") == ReviewRecommendation.RETRY:
             return (
                 RetryReason.CODE,
                 "the reviewer explicitly recommends another developer pass",
@@ -1244,6 +1247,17 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                 remedy="drop --narrowed, or pass it with --decision retry to re-run the same "
                 "read-only role on its incomplete items only",
             )
+        note = getattr(args, "note", None)
+        if (
+            args.decision == "retry"
+            and report.get("role") == "architect"
+            and note is not None
+            and (not _non_empty(note) or note.strip().lower() == "none")
+        ):
+            raise CoordinatorError(
+                "architect retry requires a non-empty recorded reason",
+                remedy="provide an actionable --note; the report remains pending",
+            )
         pinned_plan = _pinned_commit_plan(repo, batch, report, args)
         scope_warnings = _scope_warnings(batch, dispatch, report, pinned_plan)
         developer_scope = bool(scope_warnings) and report.get("role") == "developer"
@@ -1458,6 +1472,14 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             decision["decision"] = "accept-conditional"
         if routing is not None:
             decision["routing"] = routing
+            if (
+                routing.get("reason_category") == "unknown"
+                and approver["kind"] == "human"
+                and decision["note"].strip().lower() != "none"
+            ):
+                # The human has reviewed this exact unknown route and explained the retry.
+                # Other attention reasons and policy retries still require their own evidence.
+                decision["unknown_reason_acknowledged"] = True
         elif abandon_routing is not None:
             decision["routing"] = abandon_routing
         if args.decision in {"accept", "override-warning"}:

@@ -65,6 +65,14 @@ from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
+from harness.health.checks.hooks import recorded_managed_entries
+from harness.health.hook_settings import (
+    ADAPTERS,
+    RuntimeAdapter,
+    critical_wiring,
+    merge_hooks,
+    template_digests,
+)
 from harness.health.model import JsonObject
 from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
@@ -502,8 +510,12 @@ def record_integration(
     config: Path,
     secret_refs: list[str],
     verify: str,
+    managed_entries: list[str] | None = None,
 ) -> None:
-    """Зарегистрировать или обновить запись интеграции в .harness/integrations.json."""
+    """Зарегистрировать или обновить запись интеграции в .harness/integrations.json.
+
+    `managed_entries` — отсортированные отпечатки managed hook-записей, которые harness записал
+    в `config`: по ним слияние отличает устаревшую запись от правки пользователя."""
     path = repo / INTEGRATIONS_REL
     data: object = {}
     if path.is_file():
@@ -523,17 +535,18 @@ def record_integration(
         for entry in existing
         if not (isinstance(entry, dict) and entry.get("id") == identifier)
     ]
-    entries.append(
-        {
-            "id": identifier,
-            "kind": kind,
-            "runtimes": runtimes,
-            "config": config.as_posix(),
-            "sha256": digest((repo / config).read_bytes()),
-            "secret_refs": secret_refs,
-            "verify": verify,
-        }
-    )
+    entry: JsonObject = {
+        "id": identifier,
+        "kind": kind,
+        "runtimes": runtimes,
+        "config": config.as_posix(),
+        "sha256": digest((repo / config).read_bytes()),
+        "secret_refs": secret_refs,
+        "verify": verify,
+    }
+    if managed_entries is not None:
+        entry["managed_entries"] = sorted(managed_entries)
+    entries.append(entry)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"schema": 1, "integrations": entries}, indent=2, ensure_ascii=False)
@@ -841,9 +854,8 @@ def seed_template_files(repo: Path, *, orchestration_enabled: bool) -> dict[str,
         PROJECT_TEMPLATE_DIR / "scratch/.gitignore"
     ).read_bytes()
     files[".harness/.gitignore"] = HARNESS_RUNTIME_GITIGNORE.encode("utf-8")
-    files[".claude/settings.local.json"] = (
-        PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl"
-    ).read_bytes()
+    for adapter in ADAPTERS:
+        files[adapter.config] = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
     files[".harness/project.schema.json"] = (
         PROJECT_TEMPLATE_DIR / "project.schema.json"
     ).read_bytes()
@@ -851,6 +863,20 @@ def seed_template_files(repo: Path, *, orchestration_enabled: bool) -> dict[str,
         files[".harness/orchestration.json"] = (
             PACKAGE / "orchestration.example.json"
         ).read_bytes()
+    return files
+
+
+def hook_template_files() -> dict[str, bytes]:
+    """Эталоны hooks проекта для проверки дрейфа: скрипты `.claude/hooks/` и файлы hooks runtime."""
+    files: dict[str, bytes] = {}
+    for folder, target, suffixes in SEED_FOLDERS:
+        if folder != "hooks":
+            continue
+        for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
+            if source.is_file() and source.suffix in suffixes:
+                files[f"{target}/{source.name}"] = source.read_bytes()
+    for adapter in ADAPTERS:
+        files[adapter.config] = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
     return files
 
 
@@ -865,6 +891,87 @@ def seed_differing(repo: Path) -> list[str]:
         if path.is_file() and path.read_bytes() != content:
             differing.append(relative)
     return sorted(differing)
+
+
+def _install_hook_config(
+    repo: Path, adapter: RuntimeAdapter, *, forced: bool, differing: list[Path]
+) -> list[str]:
+    """Записать или слить файл hooks runtime, напечатать отчёт и зарегистрировать интеграцию.
+
+    Нет файла или он forced — байты шаблона. Иначе managed hook-записи сливаются по пути команды
+    скрипта, записи пользователя не меняются; файл, который нельзя разобрать, остаётся как есть."""
+    config = Path(adapter.config)
+    template_bytes = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
+    template_document = json.loads(template_bytes.decode("utf-8"))
+    target = repo / config
+    written: list[str] = []
+    recorded = recorded_managed_entries(repo, adapter.integration_id)
+    baseline = set(template_digests(template_document)) | set(recorded or [])
+    if not target.exists() or forced:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(template_bytes)
+        written.append(str(target))
+        print(f"hooks merge: {adapter.config}: installed from template")
+    else:
+        try:
+            document: object = json.loads(target.read_text(encoding="utf-8"))
+        except JSON_READ_ERRORS:
+            document = None
+        merge = merge_hooks(document, template_document, baseline)
+        if merge.problem is not None or merge.document is None:
+            print(
+                f"hooks merge: {adapter.config}: cannot merge: "
+                f"{merge.problem or 'not valid JSON'}"
+            )
+        else:
+            if merge.changed:
+                if merge.document == template_document:
+                    content = template_bytes
+                else:
+                    content = (
+                        json.dumps(merge.document, indent=2, ensure_ascii=False) + "\n"
+                    ).encode("utf-8")
+                target.write_bytes(content)
+                written.append(str(target))
+            print(
+                f"hooks merge: {adapter.config}: added={merge.added} "
+                f"replaced={merge.replaced} current={merge.current} "
+                f"user={merge.user} conflicts={len(merge.conflicts)}"
+            )
+            if merge.conflicts:
+                print(
+                    "[WARNING] Managed hook-записи изменены локально и оставлены без изменений:"
+                )
+                for conflict in merge.conflicts:
+                    print(
+                        f"hooks conflict: {adapter.config}: {conflict.event} "
+                        f"[{conflict.matcher}] {conflict.script}"
+                    )
+                print(
+                    f"После просмотра: --force-seed-file {adapter.config} "
+                    "(заменит весь файл шаблоном)"
+                )
+        if target.read_bytes() != template_bytes:
+            differing.append(target)
+    try:
+        final: object = json.loads(target.read_text(encoding="utf-8"))
+    except JSON_READ_ERRORS:
+        final = None
+    if isinstance(final, dict):
+        wired, total, missing = critical_wiring(final, adapter.support)
+        gaps = f"; missing: {', '.join(missing)}" if missing else ""
+        print(f"hooks check: {adapter.config}: critical wired {wired}/{total}{gaps}")
+    record_integration(
+        repo,
+        identifier=adapter.integration_id,
+        kind="hook",
+        runtimes=[adapter.runtime],
+        config=config,
+        secret_refs=[],
+        verify=adapter.verify,
+        managed_entries=sorted(baseline),
+    )
+    return written
 
 
 def scaffold_pvmalove_extras(
@@ -933,30 +1040,15 @@ def scaffold_pvmalove_extras(
         root_gitignore.write_text(root_gitignore_text, encoding="utf-8", newline="\n")
         written.append(str(root_gitignore))
 
-    settings = repo / ".claude/settings.local.json"
-    template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(
-        encoding="utf-8"
-    )
-    if settings.exists() and not forced(settings):
-        if settings.read_text(encoding="utf-8") != template_text:
-            differing.append(settings)
-    if not settings.exists() or forced(settings):
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text(template_text, encoding="utf-8", newline="\n")
-        written.append(str(settings))
-
-    record_integration(
-        repo,
-        identifier="pvmalove-suite-hooks",
-        kind="hook",
-        runtimes=["claude"],
-        config=Path(".claude/settings.local.json"),
-        secret_refs=[],
-        verify=(
-            "Open a fresh Claude Code session and confirm a guarded action "
-            "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
-        ),
-    )
+    for adapter in ADAPTERS:
+        written.extend(
+            _install_hook_config(
+                repo,
+                adapter,
+                forced=forced(repo / adapter.config),
+                differing=differing,
+            )
+        )
     written.append(str(repo / INTEGRATIONS_REL))
 
     project_json = repo / ".harness/project.json"
@@ -1299,6 +1391,7 @@ def cmd_health(args: argparse.Namespace) -> int:
         fix=getattr(args, "fix", False),
         online=getattr(args, "online", False),
         harness_cli=HARNESS_CLI,
+        hook_templates=hook_template_files(),
     )
     if args.json:
         print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))
@@ -1523,7 +1616,8 @@ def parser() -> argparse.ArgumentParser:
     commands = root.add_subparsers(dest="command", required=True)
 
     cleanup = commands.add_parser(
-        "cleanup", help="preview or remove disposable .harness data"
+        "cleanup",
+        help="preview or remove disposable .harness data and orphaned container resources",
     )
     cleanup.add_argument("repo")
     cleanup.add_argument("--mode", choices=("soft", "hard"), default="soft")

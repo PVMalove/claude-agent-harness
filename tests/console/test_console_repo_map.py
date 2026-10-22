@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -267,3 +268,57 @@ def test_markdown_document_and_json_export(tmp_path: Path) -> None:
         / f"2026-09-27-180509-repo-map-{'f' * 12}.json"
     )
     assert json.loads(path.read_text("utf-8")) == map_payload("f" * 40)
+
+
+def test_summary_fields_carry_the_mockup_labels_and_the_real_values() -> None:
+    view = _view()
+    fields = console_repo_map.summary_fields(view)
+    assert [label for label, _ in fields] == [
+        "tier",
+        "Деградация",
+        "commit",
+        "Файлов",
+        "Рёбер",
+        "Токенов (оценка)",
+        "Источник",
+    ]
+    values = dict(fields)
+    assert values["tier"] == "full (parser: bundle)"
+    assert values["Деградация"] == "parser bundle applied"
+    assert values["commit"] == "f" * 40
+    assert (values["Файлов"], values["Рёбер"], values["Токенов (оценка)"]) == (
+        "4",
+        "4",
+        "512",
+    )
+    assert values["Источник"] == "кэш"
+
+
+def _shown(item: console_repo_map.MapFile) -> str | None:
+    status = console_repo_map.file_status(item)
+    return status.render("ru") if status else None
+
+
+def test_file_status_is_a_symbol_and_the_parser_word_and_absent_without_a_parser() -> (
+    None
+):
+    view = _view()
+    ok, _, broken, _ = view.files
+    assert _shown(ok) == "✔ ok"
+    assert _shown(broken) == "✖ syntax_error"
+    assert _shown(replace(ok, parser_status="too_large")) == "⚠ too_large"
+    assert _shown(replace(ok, parser_status="odd")) == "⚠ odd"
+    assert _shown(replace(ok, parser_status=None)) is None
+
+
+def test_relation_counts_add_up_the_paths_of_each_direction() -> None:
+    view = _view()
+    assert console_repo_map.relation_counts(view, HUB) == (2, 1)
+    assert console_repo_map.relation_counts(view, "README.md") == (0, 0)
+
+
+def test_diagnostic_rows_pair_each_code_with_a_warning_status() -> None:
+    view = _view()
+    [(status, code, path)] = console_repo_map.diagnostic_rows(view)
+    assert status.render("ru") == "⚠ syntax_error"
+    assert (code, path) == ("syntax_error", "pkg/broken.py")

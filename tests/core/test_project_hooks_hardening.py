@@ -221,3 +221,64 @@ def test_qa_gate_git_is_bounded(
     with pytest.raises(subprocess.TimeoutExpired):
         qa_gate_state.git(tmp_path, "rev-parse", "HEAD")
     assert time.monotonic() - started < 4
+
+
+def test_literal_heredoc_does_not_taint_an_unrelated_computed_command(
+    direct_commits: ModuleType, tmp_path: Path
+) -> None:
+    command = "$PY -c 'print(1)'\ncat <<'NOTE'\ngit metadata and commit plan\nNOTE\n"
+    assert direct_commits.block_reason(command, tmp_path, tmp_path) == ""
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "bash <<'EOF'\ngit commit -m forbidden\nEOF",
+        "cat <<EOF\n$(git commit -m forbidden)\nEOF",
+        "PLAN=$(cat <<'EOF'\ncommit\nEOF\n)\n$GIT $PLAN",
+        "cat <<'EOF' | $SHELL\ngit commit -m forbidden\nEOF",
+        "$SHELL <<'EOF'\ngit commit -m forbidden\nEOF",
+    ],
+)
+def test_executable_or_ambiguous_heredoc_git_stays_blocked(
+    direct_commits: ModuleType, tmp_path: Path, command: str
+) -> None:
+    repo = _repo(tmp_path, "master")
+    assert direct_commits.block_reason(command, repo, repo)
+
+
+@pytest.mark.parametrize(
+    ("session", "filename", "expected"),
+    [
+        ("session-716", "notes.md", 0),
+        ("different-session", "notes.md", 2),
+        ("session-716", "pr-body-716.md", 2),
+    ],
+)
+def test_project_scratchpad_requires_the_current_runtime_session(
+    tmp_path: Path,
+    session: str,
+    filename: str,
+    expected: int,
+) -> None:
+    import json
+    import shutil
+
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("Bash hook")
+    path = (
+        tmp_path
+        / ".harness/.sandboxes/scratch/sessions/session-716/scratchpad"
+        / filename
+    )
+    process = subprocess.run(
+        [bash, str(HOOKS / "block-scratch-outside-docs-tasks.sh")],
+        input=json.dumps(
+            {"session_id": session, "tool_input": {"file_path": str(path)}}
+        ),
+        env={**os.environ, "CLAUDE_PROJECT_DIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+    )
+    assert process.returncode == expected, process.stderr

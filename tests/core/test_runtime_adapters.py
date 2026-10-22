@@ -216,7 +216,9 @@ def test_seed_settings_drift_is_visible_and_requires_explicit_replacement(
     result = harness("update", str(repo))
     assert result.returncode == 0, result.stderr
     assert "--force-seed-file .claude/settings.local.json" in result.stdout
-    assert settings.read_text() == local
+    merged = json.loads(settings.read_text())
+    assert merged["permissions"] == {"allow": ["Bash(project-command)"]}
+    assert "hooks" in merged
     result = harness(
         "update", str(repo), "--force-seed-file", ".claude/settings.local.json"
     )

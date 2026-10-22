@@ -22,7 +22,7 @@ from harness.orchestration.ledger.recovery_chain import (
     terminal,
     writer_start,
 )
-from harness.orchestration.workflow import approval
+from harness.orchestration.workflow import approval, risk
 from harness.orchestration.workflow.recovery_events import append_event
 
 ENVIRONMENT_REASONS = frozenset(
@@ -116,6 +116,18 @@ def require_restart_contract(
         "write_paths",
         "prohibited_changes",
         "verification_commands",
+        "resolved_runtime",
+        "resolved_model",
+        "resolved_effort",
+        "resolved_provider_profile",
+        "resolved_transport",
+        "runtime_access",
+        "orchestration_policy",
+        "liveness",
+        "commit_plan",
+        "allowed_tools",
+        "context_budget",
+        "retry_reason",
         "retry_handoff",
         "retry_package",
         "resolver",
@@ -123,6 +135,12 @@ def require_restart_contract(
         "rebase_target_commit",
     )
     changed = [k for k in keys if original.get(k) != renewed.get(k)]
+    # A restart renews the brief with the current config: an original that pinned a hook policy
+    # (issue #794) must keep it; a brief approved before the pin has nothing to preserve.
+    if "hook_policy_sha256" in original and original.get(
+        "hook_policy_sha256"
+    ) != renewed.get("hook_policy_sha256"):
+        changed.append("hook_policy_sha256")
     if changed:
         raise CoordinatorError(
             "environment restart changed the approved contract: " + ", ".join(changed),
@@ -151,13 +169,18 @@ def _recoverable(batch: JsonObject) -> None:
         )
 
 
-def _no_live_worker(root: Path, batch: JsonObject) -> None:
+def _no_live_worker(root: Path, batch: JsonObject, *, repo: Path | None = None) -> None:
     from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
 
     for entry in active_dispatches(batch):
         status = _load_dispatch_status(root, entry["dispatch_id"])
-        if status.get("state") in LIVE_DISPATCH_STATES:
+        from harness.orchestration.workflow.startup import worker_process_state
+
+        if (
+            status.get("state") in LIVE_DISPATCH_STATES
+            and worker_process_state(status, repo=repo) != "stopped"
+        ):
             raise CoordinatorError(
                 "a worker may still be running",
                 remedy=f"stop the runtime worker, then dispatch cancel --dispatch {entry['dispatch_id']} --runtime-stopped --approved-by <operator> --approved-at <now> --reason <why>, and repeat recovery; timeout alone is not proof of termination",
@@ -213,7 +236,12 @@ def _stop_to_resume(batch: JsonObject) -> JsonObject | None:
 
 
 def _confirmed_failure(
-    root: Path, batch: JsonObject, entry: JsonObject, *, runtime_stopped: bool = False
+    root: Path,
+    batch: JsonObject,
+    entry: JsonObject,
+    *,
+    runtime_stopped: bool = False,
+    repo: Path | None = None,
 ) -> JsonObject:
     """Structural startup evidence of an environment failure; failing that, a conservative text
     classification of the blocked report, recorded as a heuristic for the human to approve.
@@ -232,6 +260,7 @@ def _confirmed_failure(
         _load_dispatch(root, entry["dispatch_id"]),
         status,
         runtime_stopped=runtime_stopped,
+        repo=repo,
     )
     if not assessment["restart_allowed"]:
         raise CoordinatorError(
@@ -248,9 +277,13 @@ def _confirmed_failure(
     }
     if assessment["runtime_failure"] is not None:
         evidence["classification"] = assessment["runtime_failure"]
-    # A missing self-report proves no environment failure; only a mismatch or a classified
-    # runtime failure does.
-    if assessment["classification"] not in {None, "model-self-report-missing"}:
+    # A missing self-report, or a worker that exited after one without a report, proves no
+    # environment failure; only a mismatch or a classified runtime failure does.
+    if assessment["classification"] not in {
+        None,
+        "model-self-report-missing",
+        "worker-exited-without-report",
+    }:
         return evidence
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (
@@ -306,7 +339,9 @@ def _restart_failed_dispatch(
     from harness.orchestration.core.git_utils import _git
     from harness.orchestration.workflow.decisions import _abandon_open_dispatches
 
-    failure = _confirmed_failure(root, batch, entry, runtime_stopped=runtime_stopped)
+    failure = _confirmed_failure(
+        root, batch, entry, runtime_stopped=runtime_stopped, repo=repo
+    )
     if stop and stop.get("evidence", {}).get("dispatch_id") != entry["dispatch_id"]:
         raise CoordinatorError(
             "stop and active dispatch disagree",
@@ -348,7 +383,7 @@ def _restart_failed_dispatch(
     return {**evidence, "failure": failure}, retired
 
 
-def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
+def _record_resumed_batch(args: argparse.Namespace) -> JsonObject:
     """Retire a proven environment failure and prepare a new, human-approved same-stage dispatch."""
     from harness.orchestration.core.utils import _repo
     from harness.orchestration.ledger.ledger_ops import (
@@ -374,7 +409,7 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
                 "batch has no recorded stop to resume",
                 remedy="inspect batch auto-report or use batch rewind to choose an earlier gate",
             )
-        _no_live_worker(root, batch)
+        _no_live_worker(root, batch, repo=repo)
         if batch.get("needs_attention"):
             raise CoordinatorError(
                 "unresolved attention prevents recovery",
@@ -442,6 +477,81 @@ def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
             },
         )
         return _recovery_result(batch, event)
+
+
+def resume_stopped_batch(args: argparse.Namespace) -> JsonObject:
+    """Optionally approve the same-contract successor in the one recorded human recovery."""
+    if not getattr(args, "restart", False):
+        return _record_resumed_batch(args)
+    from harness.orchestration.core.utils import _repo
+    from harness.orchestration.ledger.ledger_ops import (
+        _ledger_lock,
+        _load_batch,
+        _state_root,
+    )
+    from harness.orchestration.workflow.history import _validate_batch_integrity
+    from harness.orchestration.workflow.dispatch import create_dispatch
+
+    repo = _repo(args)
+    root = _state_root(args, repo)
+    with _ledger_lock(LifecycleLedger(root)):
+        batch = _load_batch(root, args.batch)
+        _validate_batch_integrity(root, batch)
+        stop = _stop_to_resume(batch)
+        if stop and stop.get("reason") not in ENVIRONMENT_REASONS:
+            raise CoordinatorError(
+                "this recovery has no same-stage worker to restart",
+                remedy="resume without --restart and decide the preserved pending report",
+            )
+        events = batch.get("recovery_events", [])
+        if events and events[-1]["kind"] == "resume-stop":
+            event = events[-1]
+            following = batch["dispatches"][
+                event["evidence"].get("dispatch_count", len(batch["dispatches"])) :
+            ]
+            if following:
+                first = _load_dispatch(root, following[0]["dispatch_id"])
+                if (
+                    first.get("transition", {}).get("recovery_event_sha256")
+                    == event["record_sha256"]
+                ):
+                    return {
+                        **_recovery_result(batch, event),
+                        "restart_dispatch_id": first["dispatch_id"],
+                        "already_recorded": True,
+                    }
+    result = _record_resumed_batch(args)
+    event = result["event"]
+    if not event.get("dispatch_id"):
+        raise CoordinatorError(
+            "this recovery has no same-stage worker to restart",
+            remedy="decide the pending report; use --restart only for a confirmed startup failure",
+        )
+    source = _load_dispatch(root, event["dispatch_id"])
+    successor = create_dispatch(
+        argparse.Namespace(
+            repo=str(repo),
+            state_dir=getattr(args, "state_dir", None),
+            batch=args.batch,
+            role=source["role"],
+            runtime=source["resolved_runtime"],
+            purpose=source["purpose"],
+            candidate_commit=source.get("candidate_commit"),
+            delta_review_of=source.get("delta_review_of"),
+            model=source["resolved_model"],
+            effort=source["resolved_effort"],
+            propose=False,
+            transition_digest=None,
+            approved_by=None,
+            approved_at=None,
+            _restart_recovery_sha256=event["record_sha256"],
+        )
+    )
+    return {
+        **result,
+        "restart_dispatch": successor,
+        "restart_dispatch_id": successor["dispatch_id"],
+    }
 
 
 def _stage_rank(root: Path, entry: JsonObject) -> int:
@@ -544,7 +654,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         _recoverable(batch)
-        _no_live_worker(root, batch)
+        _no_live_worker(root, batch, repo=repo)
         entries = active_dispatches(batch)
         current_rank = max(
             [
@@ -558,8 +668,11 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
                 "rewind cannot skip forward to an unreached gate",
                 remedy="choose architect or a gate this batch has reached, then pass the normal approvals and prerequisites",
             )
+        verification_candidate = None
         if target == "verification":
-            _latest_registered_verification_candidate(repo, batch)
+            verification_candidate = _latest_registered_verification_candidate(
+                repo, batch
+            )
         if target == "resolve-conflict" and not isinstance(batch.get("resolver"), dict):
             raise CoordinatorError(
                 "resolver boundary is not registered",
@@ -592,15 +705,38 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
                 or writer_start(batch)
                 or cast(str, batch.get("branch_start_commit", batch["base_commit"])),
             )
+        reassessment_before = risk.reassessment_fields(batch)
+        superseded_risks = (
+            [r["risk_assessment_id"] for r in active_risks(batch)]
+            if target_rank <= RISK_INVALIDATING_RANK
+            else []
+        )
+        # Decided and checked before the first ledger write, so a refusal leaves no record.
+        reassessment_event = (
+            risk.REWIND_CLEAR
+            if target_rank > RISK_INVALIDATING_RANK
+            else risk.REWIND_VERIFICATION
+            if target == "verification"
+            else risk.REWIND_WRITER
+        )
+        reassessment = risk.next_after_rewind(
+            risk.reassessment_state(batch),
+            event=reassessment_event,
+            superseded=bool(superseded_risks),
+            verification_candidate=verification_candidate,
+        )
+        proposed = dict(batch)
+        risk.apply_reassessment(proposed, reassessment)
+        risk.require_legal_reassessment(
+            reassessment_before, proposed, reassessment_event
+        )
         before = batch["state"]
         retired = _abandon_open_dispatches(ledger, root, batch, utils._now())
         evidence: JsonObject = {
             "superseded_dispatches": [
                 e["dispatch_id"] for e in entries if _stage_rank(root, e) >= target_rank
             ],
-            "superseded_risks": [r["risk_assessment_id"] for r in active_risks(batch)]
-            if target_rank <= RISK_INVALIDATING_RANK
-            else [],
+            "superseded_risks": superseded_risks,
             "writer_start_commit": candidate,
             "retired_dispatches": retired,
             "target": target,
@@ -624,7 +760,7 @@ def rewind_batch(args: argparse.Namespace) -> JsonObject:
         batch["manual_recovery"] = True
         if target_rank <= CANDIDATE_INVALIDATING_RANK and candidate:
             batch["rewind_writer_pending"] = True
-        batch["risk_reassessment_required"] = bool(evidence["superseded_risks"])
+        risk.apply_reassessment(batch, reassessment)
         upgrade_runtime(repo, root, batch, evidence)
         event = append_event(
             root,

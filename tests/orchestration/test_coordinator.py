@@ -40,6 +40,7 @@ from harness.orchestration import (
     coordinator,
     coordinator_cli,
     extensions,
+    hook_policy,
     operation_access,
     operational_guards,
     qa_lane,
@@ -438,7 +439,11 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         self.assertEqual(on_disk_status["state"], "approved")
         self.assertEqual(
             on_disk_dispatch["liveness"],
-            {"heartbeat_every_seconds": 300, "stale_after_seconds": 3600},
+            {
+                "heartbeat_every_seconds": 300,
+                "stale_after_seconds": 3600,
+                "startup_timeout_seconds": 120,
+            },
         )
 
     def test_clean_base_context_package_starts_with_expected_scope_file(self) -> None:
@@ -1159,6 +1164,20 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         brief = {key: value for key, value in record.items() if key not in drop}
         brief.update(replace)
+        # An older coordinator pinned no hook policy and bound neither it nor the tool list.
+        brief.pop("hook_policy_sha256", None)
+        transition = {
+            field: value
+            for field, value in brief["transition"].items()
+            if field not in {"hook_policy_sha256", "allowed_tools_sha256"}
+        }
+        digest = operational_guards.transition_digest(transition)
+        brief["transition"] = transition
+        brief["transition_digest"] = digest
+        brief["coordinator_approval"] = {
+            **brief["coordinator_approval"],
+            "transition_digest": digest,
+        }
         batch = ledger_ops._load_batch(root, batch_id)
         entry = next(
             item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id
@@ -1187,6 +1206,71 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         self.assertEqual(on_disk["allowed_tools"], expected_tools)
         self.assertEqual(on_disk["context_budget"], 150_000)
+
+    def _set_project_hook_policy(self, value: object) -> None:
+        path = self.repo / ".harness" / "project.json"
+        project = json.loads(path.read_text(encoding="utf-8"))
+        project["hook_policy"] = value
+        path.write_text(json.dumps(project), encoding="utf-8")
+
+    def test_dispatch_brief_pins_the_hook_policy_and_binds_it_with_the_tools(
+        self,
+    ) -> None:
+        self._set_project_hook_policy({"profile": "strict"})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        brief = self._create_architect_dispatch(batch["batch_id"])["brief"]
+
+        expected = hook_policy.hook_policy_sha256(
+            hook_policy.normalize_policy({"profile": "strict"})
+        )
+        self.assertEqual(brief["hook_policy_sha256"], expected)
+        self.assertEqual(brief["transition"]["hook_policy_sha256"], expected)
+        self.assertEqual(
+            brief["transition"]["allowed_tools_sha256"],
+            operational_guards.allowed_tools_digest(brief["allowed_tools"]),
+        )
+        operational_guards.validate_binding(brief, batch["batch_id"])
+
+    def test_a_project_without_hook_policy_pins_the_standard_profile(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        brief = self._create_architect_dispatch(batch["batch_id"])["brief"]
+
+        self.assertEqual(
+            brief["hook_policy_sha256"],
+            hook_policy.hook_policy_sha256(hook_policy.normalize_policy(None)),
+        )
+
+    def test_a_hook_policy_edit_after_approval_leaves_the_approved_brief_valid(
+        self,
+    ) -> None:
+        self._set_project_hook_policy({"profile": "strict"})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        brief = self._create_architect_dispatch(batch["batch_id"])["brief"]
+
+        self._set_project_hook_policy({"profile": "minimal"})
+
+        operational_guards.validate_binding(brief, batch["batch_id"])
+        tampered = {**brief, "hook_policy_sha256": "0" * 64}
+        with self.assertRaises(operational_guards.GuardError):
+            operational_guards.validate_binding(tampered, batch["batch_id"])
+        widened = {**brief, "allowed_tools": [*brief["allowed_tools"], "Write"]}
+        with self.assertRaises(operational_guards.GuardError):
+            operational_guards.validate_binding(widened, batch["batch_id"])
+
+    def test_an_invalid_hook_policy_refuses_a_new_dispatch(self) -> None:
+        self._set_project_hook_policy(
+            {"profile": "strict", "escalations": [{"profile": "minimal"}]}
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "hook_policy"):
+            self._create_architect_dispatch(batch["batch_id"])
 
     def test_dispatch_brief_takes_tool_policy_and_context_budget_from_project_config(
         self,
@@ -1588,7 +1672,15 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         parameters = inspect.signature(coordinator._persist_report).parameters
         self.assertEqual(
             list(parameters),
-            ["ledger", "root", "batch", "dispatch", "report", "auto_accept_policy"],
+            [
+                "ledger",
+                "root",
+                "batch",
+                "dispatch",
+                "report",
+                "auto_accept_policy",
+                "report_relay",
+            ],
         )
         self.assertIs(
             parameters["auto_accept_policy"].kind, inspect.Parameter.KEYWORD_ONLY
@@ -3033,6 +3125,95 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             stored["dispatches"][-1]["decision"]["approved_by"], "policy:auto"
         )
+
+    def _auto_failed_qa(self, diagnostics: str) -> tuple[str, JsonObject]:
+        """An auto batch whose QA gate failed with ``diagnostics``, as ``qa run`` records it."""
+        self._patch_config(approval_policy="auto")
+        plan = self._batch_plan()
+        plan["definition_of_done"] = ["add simple marker"]
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
+        batch = coordinator.create_batch(self._args(**plan))
+        coordinator.approve_batch(
+            self._args(batch=batch["batch_id"], **self._approval())
+        )
+        self.batch_id = batch["batch_id"]
+        architect = self._dispatch(batch["batch_id"], "architect")["brief"]
+        self._start(architect["dispatch_id"])
+        self._submit(
+            architect["dispatch_id"], self._base_report(architect, "architect")
+        )
+        developer_id = self._batch_record(batch["batch_id"])["dispatches"][-1][
+            "dispatch_id"
+        ]
+        developer = coordinator._read_object(
+            self._records() / "dispatches" / f"{developer_id}.json", "dispatch"
+        )
+        self._start(developer_id)
+        candidate, changed = self._developer_commit("x")
+        self._submit(
+            developer_id, self._developer_report(developer, candidate, changed)
+        )
+        qa_id = self._batch_record(batch["batch_id"])["dispatches"][-1]["dispatch_id"]
+        qa = coordinator._read_object(
+            self._records() / "dispatches" / f"{qa_id}.json", "dispatch"
+        )
+        first, *rest = qa["verification_commands"]
+        gate = {
+            "stage": "gate",
+            "command": first,
+            "result": "fail",
+            "exit_code": 2,
+            "diagnostics": diagnostics,
+        }
+        report = qa_lane._qa_report(
+            qa,
+            [{"command": first, "result": "fail", "evidence": "exit 2"}],
+            self._records() / "qa-artifacts" / f"{'0' * 64}.log",
+            "0" * 64,
+            {"stages": [gate], "failed_stage": "gate", "code_checks_started": "started"},
+        )
+        self._stage_report(batch["batch_id"], qa_id, report, via_qa_lane=True)
+        return batch["batch_id"], coordinator.auto_decide(
+            self._args(batch=batch["batch_id"])
+        )
+
+    def test_auto_stops_on_a_qa_gate_that_failed_on_its_environment(self) -> None:
+        batch_id, result = self._auto_failed_qa(
+            "FAILED tests/a.py::t - OSError: [Errno 30] Read-only file system: "
+            "'/tmp/harness-db-1'\n1 failed, 9 passed in 1.00s"
+        )
+
+        stored = self._batch_record(batch_id)
+        self.assertEqual(result["outcome"], "stopped")
+        self.assertEqual(
+            (stored["auto_stop"]["category"], stored["auto_stop"]["reason"]),
+            ("no-automatic-route", "qa-environment-failure"),
+        )
+        self.assertIn("batch rewind --to qa", stored["auto_stop"]["evidence"]["remedy"])
+        self.assertNotIn("decision", stored["dispatches"][-1])
+        self.assertEqual(decisions._developer_retry_count(stored), 0)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_auto_retries_the_developer_on_a_qa_gate_that_failed_on_the_code(
+        self,
+    ) -> None:
+        batch_id, result = self._auto_failed_qa(
+            "FAILED tests/a.py::t - AssertionError: assert 1 == 2\n1 failed in 1.00s"
+        )
+
+        stored = self._batch_record(batch_id)
+        self.assertEqual(result["outcome"], "decided")
+        self.assertNotIn("auto_stop", stored)
+        routing = stored["coordinator_decisions"][-1]["routing"]
+        self.assertEqual(routing["next_action"], "developer-retry")
 
     def test_low_risk_review_with_findings_still_waits_for_decision(self) -> None:
         self._patch_config(approval_policy="low_risk", low_risk_paths=["**"])
@@ -7428,6 +7609,54 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         )
 
+    def test_an_unrecognized_termination_reason_takes_the_planned_trigger_path(
+        self,
+    ) -> None:
+        batch = self._create_batch(
+            definition_of_done=["first slice", "remaining slice"]
+        )
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        first, changed = self._developer_commit("first")
+        checkpoint = self._checkpoint_writer(brief, first, changed)
+        facts = {
+            "dispatch_id": brief["dispatch_id"],
+            "remaining_definition_of_done": checkpoint["remaining_definition_of_done"],
+            "risks": checkpoint["risks"],
+            "dependencies": brief["dependencies"],
+        }
+        path = workspace._prepare_agent_inbox(self.repo) / "continuation-facts.json"
+        path.write_text(json.dumps(facts), encoding="utf-8")
+        resume = {
+            "dispatch": brief["dispatch_id"],
+            "trigger": "vertical-slice",
+            "measured_value": None,
+            "file": str(path),
+            "note": "resume the recorded green slice",
+            **self._approval(),
+        }
+        before = self._ledger_bytes()
+
+        with self.assertRaises(coordinator.CoordinatorError) as caught:
+            coordinator.resume_dispatch(
+                self._args(termination_reason="Rate_Limit", **resume)
+            )
+        self.assertIn(
+            "write exactly 'rate-limit' or 'rate_limit'", caught.exception.message
+        )
+        self.assertIn("or pass --trigger", caught.exception.remedy)
+        self.assertEqual(before, self._ledger_bytes())
+
+        resumed = coordinator.resume_dispatch(
+            self._args(termination_reason="worker-exited", **resume)
+        )
+
+        self.assertEqual(resumed["authorization"], "continue")
+        decision = self._batch_record(batch["batch_id"])["coordinator_decisions"][-1]
+        self.assertEqual(decision["decision"], "continue")
+        self.assertEqual(decision["note"], "resume the recorded green slice")
+
     def test_committed_checkpoint_continuation_attests_exact_progress_and_completes_plan(
         self,
     ) -> None:
@@ -8476,7 +8705,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256"},
+            | {
+                "runtime_access_sha256",
+                "infrastructure_retry_sha256",
+                "configuration_sha256",
+                "hook_policy_sha256",
+                "allowed_tools_sha256",
+            },
         )
         self.assertEqual(
             proposal["transition_digest"],

@@ -1,0 +1,10 @@
+{
+  "action": "immutable-artifact",
+  "at": "2026-10-22T07:19:02.544690+00:00",
+  "audit_id": "audit-fdb7fb47-bfc7-4588-bdae-ecf35b7abdc5",
+  "details": {
+    "path": "qa-lane/queue/00000000000000000001-dispatch.json",
+    "sha256": "de1ac7477263f94f04a1c3ce7db13abb0b3369abf45515f14633755e5c7aacd5"
+  },
+  "record_sha256": "c8784359afd5fe95cb5ff364006e7337bc27ca92f6f7dc5e1b5cb4eb627734db"
+}

@@ -1,6 +1,10 @@
 """Adapter updates require an explicit, fresh console preview and confirmation."""
 
 from pathlib import Path
+from typing import cast
+from textual.screen import Screen
+
+from textual.app import App
 
 import pytest
 
@@ -112,12 +116,17 @@ def test_settings_screen_shows_status_and_requires_modal_confirmation(
         app = SettingsApp()
         async with app.run_test(size=(140, 70)) as pilot:
             await pilot.pause()
-            status = str(app.screen.query_one("#adapter-status", Static).content)
+            status = " ".join(
+                str(line.content)
+                for line in app.screen.query("#adapter-status Static").results(Static)
+            )
             assert "claude_worker" in status and "codex_worker" in status
             assert "не установлен" in status
             assert not any((project / ".harness/adapters").glob("*.py"))
             await press(pilot, "#preview-adapters")
-            await wait_until(pilot, lambda: isinstance(app.screen, ConfirmConfiguration))
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+            )
             assert isinstance(app.screen, ConfirmConfiguration)
             assert ".harness/adapters/claude_worker.py" in app.screen.text
             await press(pilot, "#cancel")
@@ -126,7 +135,9 @@ def test_settings_screen_shows_status_and_requires_modal_confirmation(
             )
             assert not any((project / ".harness/adapters").glob("*.py"))
             await press(pilot, "#preview-adapters")
-            await wait_until(pilot, lambda: isinstance(app.screen, ConfirmConfiguration))
+            await wait_until(
+                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+            )
             await press(pilot, "#confirm")
             await wait_until(
                 pilot,
@@ -171,3 +182,198 @@ def test_console_updates_outdated_managed_adapter_after_confirmation(
     assert {item["status"] for item in preview_runtime_adapters(project).adapters} == {
         "current"
     }
+
+
+def _fake_preview(
+    adapters: list[dict[str, str | None]],
+    *,
+    text: str = "Обновить адаптеры runtime?\nВозможности: pvmalove-suite",
+    blocked: bool = False,
+    reason: str = "",
+) -> object:
+    from harness.console.configuration import RuntimeAdapterPreview
+
+    return RuntimeAdapterPreview(
+        adapters,  # type: ignore[arg-type]
+        ["pvmalove-suite"],
+        "fingerprint",
+        text,
+        blocked,
+        reason,
+    )
+
+
+def _configuration_host(repo: Path) -> App[None]:
+    from harness.console.screens.configuration import ConfigurationScreen
+
+    class Host(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(ConfigurationScreen(repo))
+
+    return Host()
+
+
+def test_every_adapter_is_a_block_with_a_status_symbol_a_path_and_the_problem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from textual.widgets import Static
+    from harness.console.screens import configuration
+
+    preview = _fake_preview(
+        [
+            {
+                "path": ".harness/adapters/claude_worker.py",
+                "status": "current",
+                "problem": None,
+            },
+            {
+                "path": ".harness/adapters/codex_worker.py",
+                "status": "outdated",
+                "problem": "locally changed adapter",
+            },
+            {
+                "path": ".harness/adapters/other_worker.py",
+                "status": "missing",
+                "problem": None,
+            },
+        ]
+    )
+    monkeypatch.setattr(configuration, "preview_runtime_adapters", lambda repo: preview)
+
+    async def scenario() -> list[str]:
+        app = _configuration_host(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query(".adapter-block")))
+            blocks = list(app.screen.query(".adapter-block"))
+            return [
+                " | ".join(
+                    str(line.content) for line in block.query(Static).results(Static)
+                )
+                for block in blocks
+            ]
+
+    claude, codex, other = asyncio.run(scenario())
+    assert claude.startswith(
+        "claude_worker | ✔ актуален | .harness/adapters/claude_worker.py"
+    )
+    assert "⚠ требует обновления" in codex and codex.endswith(
+        "⚠ locally changed adapter"
+    )
+    assert other.startswith("other_worker | ○ не установлен")
+
+
+def test_an_unavailable_snapshot_replaces_the_adapter_blocks_with_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from textual.widgets import Static
+    from harness.console.screens import configuration
+
+    def failing(repo: Path) -> object:
+        raise ValueError("Сначала установите харнесс проекта")
+
+    monkeypatch.setattr(configuration, "preview_runtime_adapters", failing)
+
+    async def scenario() -> tuple[str, int, int]:
+        app = _configuration_host(tmp_path)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#adapter-error")))
+            line = str(app.screen.query_one("#adapter-error", Static).content)
+            return (
+                line,
+                len(app.screen.query(".adapter-block")),
+                len(app.screen.query("#preview-adapters")),
+            )
+
+    assert asyncio.run(scenario()) == ("✖ Сначала установите харнесс проекта", 0, 0)
+
+
+def test_the_confirmation_has_a_title_a_plan_block_and_the_reason_confirm_is_off(
+    tmp_path: Path,
+) -> None:
+    import asyncio
+    from textual.app import App
+    from textual.widgets import Button, Static
+    from harness.console.screens.configuration import ConfirmConfiguration
+
+    class Host(App[None]):
+        def on_mount(self) -> None:
+            self.push_screen(
+                ConfirmConfiguration(
+                    "Обновить адаптеры runtime?\n"
+                    "Возможности: pvmalove-suite\n"
+                    "⚠ Capability backend-orchestration не выбрана. Выберите состав явно в CLI:",
+                    enabled=False,
+                    reason="⚠ Capability backend-orchestration не выбрана",
+                )
+            )
+
+    async def scenario() -> tuple[str, str, bool, str, str]:
+        app = Host()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query("#confirm-title")))
+            screen = app.screen
+            confirm = screen.query_one("#confirm", Button)
+            return (
+                str(screen.query_one("#confirm-title", Static).content),
+                str(screen.query_one("#confirm-text Static", Static).content),
+                confirm.disabled,
+                str(screen.query_one("#confirm-reason", Static).content),
+                str(confirm.tooltip),
+            )
+
+    title, plan, disabled, reason, tooltip = asyncio.run(scenario())
+    assert title == "Обновить адаптеры runtime?"
+    assert plan.startswith("Возможности: pvmalove-suite")
+    assert disabled
+    assert reason == "«Подтвердить»: ⚠ Capability backend-orchestration не выбрана"
+    assert tooltip == "⚠ Capability backend-orchestration не выбрана"
+
+
+def test_the_plan_names_changes_with_words_and_the_blocking_line_with_a_warning(
+    project: Path,
+) -> None:
+    import json
+    from harness.console.configuration import preview_runtime_adapters
+
+    preview = preview_runtime_adapters(project)
+    assert "✔ добавится  .harness/adapters/claude_worker.py" in preview.text or (
+        "⚠ восстановится  .harness/adapters/claude_worker.py" in preview.text
+    )
+    assert "package_changed:" not in preview.text and "added:" not in preview.text
+    assert not preview.blocked and preview.reason == ""
+    lock = project / ".harness/harness.lock"
+    payload = json.loads(lock.read_text())
+    payload["capabilities"] = ["project-foundation"]
+    lock.write_text(json.dumps(payload))
+    blocked = preview_runtime_adapters(project)
+    assert blocked.blocked
+    assert blocked.reason == "⚠ Capability backend-orchestration не выбрана"
+    assert (
+        "⚠ Capability backend-orchestration не выбрана. Выберите состав" in blocked.text
+    )
+    assert "--capability backend-orchestration" in blocked.text
+
+
+def test_a_long_adapter_path_wraps_and_stays_inside_the_screen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    from harness.console.screens import configuration
+    from tests.console.test_console_layout import layout_problems
+
+    long_path = ".harness/adapters/" + "very_long_adapter_name_" * 6 + "worker.py"
+    preview = _fake_preview(
+        [{"path": long_path, "status": "outdated", "problem": "p " * 40}]
+    )
+    monkeypatch.setattr(configuration, "preview_runtime_adapters", lambda repo: preview)
+
+    async def scenario() -> list[str]:
+        app = _configuration_host(tmp_path)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await wait_until(pilot, lambda: bool(app.screen.query(".adapter-block")))
+            await pilot.pause()
+            return layout_problems(cast(Screen[None], app.screen))
+
+    assert asyncio.run(scenario()) == []

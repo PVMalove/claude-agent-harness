@@ -41,6 +41,45 @@ class IntegrationCheckResult(StrEnum):
     FAILED = "failed"
 
 
+# Where the integration ref points now, compared with the target SHA an integration recorded.
+class IntegrationTargetState(StrEnum):
+    CURRENT = "current"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+
+
+# State of an integration local-QA attempt, of its result and of a request's pair observation.
+class LocalQaState(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    EXHAUSTED = "exhausted"
+
+
+# Verification mark of a local-QA result and of a linked pair check; integration collect-ci writes
+# its own marks (INTEGRATION_CI_COLLECTED, INTEGRATION_CI_COLLECTED_FAILURE) instead.
+class EvidenceVerification(StrEnum):
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+
+
+# A code-review report's optional overall recommendation (review.recommendation).
+class ReviewRecommendation(StrEnum):
+    ACCEPT = "accept"
+    RETRY = "retry"
+
+
+# Owner of a QA lane queue entry or lease; a legacy entry without owner_kind is a dispatch's.
+class QaOwnerKind(StrEnum):
+    DISPATCH = "dispatch"
+    LOCAL_QA = "local-qa"
+
+
+class ContextPackageFreshness(StrEnum):
+    FRESH = "fresh"
+    STALE = "stale"
+
+
 class RetryReason(StrEnum):
     VERIFICATION_INFRASTRUCTURE = "verification-infrastructure"
     TRANSPORT = "transport"
@@ -111,6 +150,41 @@ DECISIONS = {
 # Decisions that let the pipeline move past a reported stage. `accept-conditional` is a human
 # attestation that an infrastructure failure stopped the stage; it leaves an open condition.
 ACCEPTED_DECISIONS = frozenset({"accept", "override-warning", "accept-conditional"})
+# Every decision kind the coordinator records: `batch decide` records DECISIONS, the coordinator
+# records the others itself in coordinator_decisions, and `pause`, `startup-evidence` and
+# `report-relay` appear only as the decision detail of a batch transition audit record.
+COORDINATOR_DECISIONS = (
+    "accept",
+    "accept-conditional",
+    "override-warning",
+    "retry",
+    "block",
+    "fail",
+    "abandon",
+    "continue",
+    "continue-automatic",
+    "continue-rate-limit",
+    "cancel",
+    "rewind-developer",
+    "resume",
+    "not-required",
+    "carry-over",
+    "supersede",
+    "resume-stop",
+    "rewind",
+    "pause",
+    "startup-evidence",
+    "report-relay",
+)
+# coordinator_decisions entries the budgets count by these exact spellings: continuations and
+# rate-limit resumes per dispatch, developer retries per batch and infrastructure retries per
+# candidate.
+CONTINUATION_DECISIONS = frozenset(
+    {"continue", "continue-automatic", "continue-rate-limit"}
+)
+RATE_LIMIT_RESUME_DECISIONS = frozenset({"continue-automatic", "continue-rate-limit"})
+DEVELOPER_RETRY_DECISIONS = frozenset({"retry", "rewind-developer"})
+INFRASTRUCTURE_RETRY_DECISIONS = frozenset({"retry", "cancel"})
 TERMINAL_BATCH_STATES = {
     BatchState.COMPLETED,
     BatchState.NOT_REQUIRED,
@@ -180,10 +254,18 @@ NEXT_ACTION_DISPATCH_ROLE = {
     "resolve-conflict": "conflict-resolver",
 }
 DISPATCH_PURPOSES = {"work", "verification", "publish"}
+# The gates `batch create --required-gate` may name; a batch that names none records `none`.
+REQUIRED_GATES = ("none", "review", "qa")
+# ADR 0023 section 2: how a verification-plan stage picks its tests, and what the stage runs.
+VERIFICATION_PLAN_SELECTIONS = ("full", "focused", "failed-only")
+VERIFICATION_STAGE_KINDS = ("lint", "typecheck", "pytest", "clean-room", "custom")
 ROLE_TRANSPORTS = {"in-process", "external"}
 ACCESS_MODES = ("inherit", "sandbox", "unsandboxed")
 ACCESS_RESOURCES = ("checkout", "git_common", "shared_storage", "cache")
 ACCESS_OPERATIONS = ("qa", "git", "publish")
+# The container access component names its engine; docker is the default when it names none.
+CONTAINER_ENGINES = ("docker", "podman")
+ACCESS_PERMISSIONS = ("read", "write")
 DEFAULT_PROFILE = "session"
 # A developer can legitimately spend tens of minutes in one build, migration, or test command.
 # Keep the default long enough for that work, while the handoff still requires frequent, explicit
@@ -199,6 +281,15 @@ DEFAULT_COMMUNICATION_POLICY = {
     "coordinator_report_language": "ru",
 }
 LIVE_DISPATCH_STATES = {DispatchState.DISPATCHED, DispatchState.WORKING}
+# A dispatch in one of these states needs no worker any more: its container resources may be released.
+TERMINAL_DISPATCH_STATES = frozenset(
+    {
+        DispatchState.REPORTED,
+        DispatchState.CANCELLED,
+        DispatchState.ABANDONED,
+        DispatchState.FAILED,
+    }
+)
 # The read-only commands an operator inspects before choosing any recovery or abandon (#679).
 RECOVERY_EVIDENCE_COMMANDS = (
     "batch auto-report, batch decision-packet, dispatch status and ledger validate"
@@ -293,6 +384,7 @@ DISPATCH_FIELDS = {
     "transition",
     "transition_digest",
     "retry_idempotency_key",
+    "retry_reason",
     "orchestration_policy",
     "liveness",
     "commit_plan",
@@ -514,6 +606,7 @@ DEFAULT_CONTEXT_PACKAGE_POLICY = {
     "section_index_min_tokens": 20_000,
 }
 DEFAULT_EXECUTION_POLICY = {
+    "worker_startup_timeout_seconds": 120,
     "dispatch_wait_timeout_seconds": 60,
     "dispatch_poll_interval_seconds": 5,
     "qa_lease_seconds": 1_800,
@@ -607,6 +700,7 @@ AUTO_STOP_REASONS = {
         "tooling-retry-repeated",
     ),
     "integrity-failure": (
+        "runtime-unavailable",
         "stale",
         "model-mismatch",
         "worktree-mismatch",
@@ -614,7 +708,12 @@ AUTO_STOP_REASONS = {
         "deterministic-gate-failed",
         "ledger-validation-failed",
     ),
-    "no-automatic-route": ("unknown-reason", "abandon-dead-end", "supersede-dead-end"),
+    "no-automatic-route": (
+        "unknown-reason",
+        "abandon-dead-end",
+        "supersede-dead-end",
+        "qa-environment-failure",
+    ),
 }
 AUTO_STOP_FIELDS = frozenset(
     {"category", "reason", "detected_at", "detected_by", "evidence", "record_sha256"}
@@ -697,6 +796,7 @@ TELEMETRY_FIELDS = {
     "restart_reason",
     "recorded_at",
 }
+TELEMETRY_SESSION_KINDS = ("worker", "coordinator")
 
 
 SANDBOXES_REL = Path(".harness") / ".sandboxes"

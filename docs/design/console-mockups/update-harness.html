@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Обновить Harness — макет</title>
+<link rel="stylesheet" href="console.css">
+<style>
+.cnt-row span:nth-child(2){text-align:center}
+.cnt-row{display:grid;grid-template-columns:44px 44px 1fr;align-items:baseline;padding:5px 0}
+.cnt-row b{text-align:right;font-weight:700;font-size:16px}
+.cnt-row+.cnt-row{border-top:1px solid var(--rule)}
+.vgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px 22px}
+.vgrid .big{font-size:22px;font-weight:700;line-height:1.2}
+.verdict{margin-top:12px;display:flex;gap:10px}
+.diffbox{display:grid;grid-template-columns:500px 1fr;gap:0;border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--bg)}
+.flist{border-right:1px solid var(--rule);padding:6px}
+.fi{display:grid;grid-template-columns:104px 1fr;gap:8px;padding:6px 10px;border-radius:6px;font-size:13px;white-space:nowrap}
+.fi span:last-child{overflow:hidden;text-overflow:ellipsis}
+.fi.sel{background:var(--row);outline:1px solid var(--edge)}
+.dview{padding:14px 18px;font-size:13px;line-height:1.7;overflow:hidden}
+.dview .why{color:var(--muted);margin-bottom:12px;white-space:normal}
+.dview .h{color:var(--muted)}.dview .a{color:var(--ok)}.dview .d{color:var(--err)}.dview .c{color:#c9c2b7}
+.dview div{white-space:pre}
+.sel-row{display:grid;grid-template-columns:28px 1fr;padding:7px 10px;border-radius:6px}
+.sel-row.on{background:var(--row)}
+.warnbox{margin-top:12px;border:1px solid #6b5326;background:#2b2418;border-radius:8px;padding:10px 14px;color:var(--warn)}
+.warnbox small{display:block;color:var(--muted);font-size:13px;margin-top:2px}
+.wide.upd{height:1620px}
+.cols.g2{grid-template-columns:1fr 1fr;grid-auto-rows:auto;align-items:stretch}
+.cols.g2 .col{display:contents}
+.panel.al{display:flex;flex-direction:column}
+.panel.al .btns{margin-top:auto;padding-top:14px}
+</style>
+</head>
+<body>
+
+<div class="caption"><span><b>2 · Обновить Harness — широкий терминал (≈160×52)</b></span><span>Демонстрационные данные. Пути и diff — условные. Запуск только после подтверждения.</span></div>
+
+<div class="app wide" style="height:1500px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div>
+  </div>
+  <div class="body" style="grid-template-columns:250px 1fr">
+    <nav>
+      <h6>Главное меню</h6>
+      <a href="#"><i>0</i>Главная</a>
+      <a href="#"><i>1</i>Открыть проект</a>
+      <a class="on" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a>
+      <a href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>5</i>Оркестрация<em>3</em></a>
+      <a href="#"><i>6</i>Отчёты</a>
+      <a href="#"><i>7</i>Repo Map<em>full</em></a>
+      <a href="#"><i>8</i>Настройка</a>
+      <a href="#"><i>9</i>Справка</a>
+    </nav>
+
+    <main>
+      <div class="crumbs"><a href="#" title="Вернуться на главное меню">Главная</a><span class="sep">›</span><span class="cur">Обновить Harness</span></div>
+      <div class="strip"><span>Проект: claude-agent-harness</span><span>Команда обновления — та же, что в CLI: <b style="color:var(--fg)">harness update</b></span></div>
+      <div class="page fill">
+        <div>
+          <h1>Обновить Harness</h1>
+          <div class="sub">Сначала показываем, что изменится в управляемых файлах. Запуск — только после вашего подтверждения.</div>
+        </div>
+
+        <div class="cols g2">
+          <div class="col">
+            <div class="panel" style="grid-row:1;grid-column:1">
+              <h4>Версии</h4>
+              <div class="vgrid">
+                <div><div class="lab">Установлено</div><div class="big">1.4.6</div></div>
+                <div><div class="lab">Доступно</div><div class="big">1.4.6</div></div>
+              </div>
+              <div class="verdict e-ok"><span>✔</span><span>Версия актуальна</span></div>
+              <dl class="kv i" style="grid-template-columns:150px 1fr;margin-top:12px">
+                <dt>Состав</dt><dd>pvmalove-suite</dd>
+                <dt>Скилов</dt><dd>41</dd>
+                <dt>Управляемых файлов</dt><dd>188</dd>
+                <dt>Lock обновлён</dt><dd>2026-10-14 09:12 UTC</dd>
+              </dl>
+            </div>
+
+            <div class="panel al" style="grid-row:2;grid-column:1">
+              <h4>Что изменится в управляемых файлах <span>из harness diff</span></h4>
+              <div class="cnt-row"><b class="e-ok">3</b><span class="e-ok">✔</span><span>обновятся</span></div>
+              <div class="cnt-row"><b class="e-ok">1</b><span class="e-ok">✔</span><span>добавятся</span></div>
+              <div class="cnt-row"><b class="e-warn">2</b><span class="e-warn">⚠</span><span>с локальными правками (сохранятся)</span></div>
+              <div class="cnt-row"><b class="e-err">1</b><span class="e-err">✖</span><span>в конфликте (нужна перезапись)</span></div>
+              <div class="btns"><a class="btn" href="#">Проверить заново</a></div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="panel" style="grid-row:1;grid-column:2">
+              <h4>Режим обновления</h4>
+              <div class="opt on"><span>◉</span><div><span class="t">Обычное</span><small>Локальные правки сохраняются. Остановится на конфликтах.</small></div></div>
+              <div class="opt"><span>○</span><div><span class="t">С перезаписью управляемых файлов</span><small class="e-warn">Заменит и конфликтные файлы версией пакета: ваши правки в них пропадут.</small></div></div>
+              <div class="opt"><span>○</span><div><span class="t">С перезаписью выбранных seed-файлов</span><small>Только отмеченные seed-файлы; остальное не меняется.</small></div></div>
+            </div>
+
+            <div class="panel al" style="grid-row:2;grid-column:2">
+              <h4>План</h4>
+              <div class="code">$ harness update .</div>
+              <div class="warnbox">⚠ Обычное обновление остановится: 1 конфликт
+                <small>Выберите режим с перезаписью или разберите файл вручную (см. diff ниже).</small></div>
+              <div class="lab" style="margin:12px 0 0">Команда перезаписывает файлы харнесса в проекте (управляемые или seed) — незакоммиченные правки в них пропадут. Перед запуском будет запрошено подтверждение.</div>
+              <div class="btns"><a class="btn solid" href="#">Обновить</a></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h4>Diff — что изменится в файлах <span>↑↓ выбор файла · 7 файлов</span></h4>
+          <div class="diffbox">
+            <div class="flist">
+              <div class="fi sel"><span class="e-err">✖ конфликт</span><span>.harness/skills/pvmalove/implement/SKILL.md</span></div>
+              <div class="fi"><span class="e-ok">✔ обновится</span><span>.harness/orchestration/playbook.md</span></div>
+              <div class="fi"><span class="e-ok">✔ обновится</span><span>.harness/skills/pvmalove/to-pull-requests/SKILL.md</span></div>
+              <div class="fi"><span class="e-ok">✔ обновится</span><span>.harness/docs/technical-english.md</span></div>
+              <div class="fi"><span class="e-ok">✔ добавится</span><span>.harness/skills/pvmalove/code-review/SKILL.md</span></div>
+              <div class="fi"><span class="e-warn">⚠ ваши правки</span><span>AGENTS.md</span></div>
+              <div class="fi"><span class="e-warn">⚠ ваши правки</span><span>docs/agents/git-workflow.md</span></div>
+            </div>
+            <div class="dview">
+              <div class="why">Изменён и у вас, и в пакете: обычное обновление остановится, перезапись заменит файл версией пакета.</div>
+              <div class="h">--- проект/.harness/skills/pvmalove/implement/SKILL.md</div>
+              <div class="h">+++ после обновления/.harness/skills/pvmalove/implement/SKILL.md</div>
+              <div class="h">@@ -41,7 +41,9 @@</div>
+              <div class="c"> Language contract: agents communicate with each other</div>
+              <div class="d">-and write free-text protocol evidence in Russian.</div>
+              <div class="a">+and write free-text protocol/state evidence in English.</div>
+              <div class="a">+Every completion report addressed to this coordinator is in Russian.</div>
+              <div class="c"> ## Route</div>
+              <div class="c"> This is the opt-in backend-orchestration route.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h4>Результат <span>последний запуск</span></h4>
+          <div class="log"><span class="l-m">Результат обновления появится здесь.</span></div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Режим «С перезаписью выбранных seed-файлов»</b></span><span>Блок «Seed-файлы» появляется только в этом режиме.</span></div>
+<div class="sheet">
+  <h3>Выбор seed-файлов</h3>
+  <p>«Обновить» выключена, пока не отмечен хотя бы один файл. Текст предупреждения — из кода.</p>
+  <div class="cols" style="grid-template-columns:minmax(0,640px) 1fr;align-items:start">
+    <div class="panel">
+      <h4>Seed-файлы <span>отмечено 2 из 3</span></h4>
+      <div class="lab" style="color:var(--warn)">⚠ Отмечены файлы, которые будут перезаписаны эталоном; их правки пропадут.</div>
+      <div class="sel-row on"><span>☑</span><span>AGENTS.md</span></div>
+      <div class="sel-row on"><span>☑</span><span>CLAUDE.md</span></div>
+      <div class="sel-row"><span>☐</span><span>docs/agents/issue-tracker.md</span></div>
+      <div class="btns"><a class="btn" href="#">Выбрать все</a><a class="btn" href="#">Снять выбор</a></div>
+    </div>
+    <div class="panel">
+      <h4>План</h4>
+      <div class="code">$ harness update . --force-seed-file AGENTS.md --force-seed-file CLAUDE.md</div>
+      <div class="btns"><a class="btn solid" href="#">Обновить</a><span style="align-self:center;color:var(--muted)">с подтверждением</span></div>
+      <div class="lab" style="margin:12px 0 0">Если ничего не отмечено: кнопка «Обновить» выключена, под ней подсказка «Отметьте хотя бы один файл» (предлагаю).</div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><span><b>Состояния экрана</b></span><span>Тексты — из кода, кроме отмеченных «предлагаю».</span></div>
+<div class="sheet">
+  <h3>Что видно, пока идёт работа, и после неё</h3>
+  <p>Во время проверки и запуска режим, «Проверить заново» и выбор seed-файлов выключены; повторное нажатие игнорируется.</p>
+  <div class="states" style="grid-template-columns:210px 1fr 270px">
+    <span class="lab2">Дрейф проверяется</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>проверяется…<small>Счётчики и список файлов появятся после проверки.</small></div></div>
+    <span class="res2">«Обновить» и «Проверить заново» выключены до конца проверки</span>
+
+    <span class="lab2">Harness не установлен</span>
+    <div class="status err"><span>✖</span><div>Харнесс не установлен: нет читаемого .harness/harness.lock<small>Установите его через «Открыть проект» · <b style="color:var(--primary)">Открыть проект →</b> (предлагаю кнопку-ссылку)</small></div></div>
+    <span class="res2">«Обновить» выключена; сравнивать нечего</span>
+
+    <span class="lab2">Расхождений нет</span>
+    <div class="status ok"><span>✔</span><div>Расхождений нет<small>В списке файлов: «Расхождений нет: показывать нечего.»</small></div></div>
+    <span class="res2">«Обновить» остаётся доступной</span>
+
+    <span class="lab2">Дрейф не проверен</span>
+    <div class="status err"><span>✖</span><div>Не удалось проверить дрейф<small>Нажмите «Проверить заново». Если повторяется — «Диагностика» (3).</small></div></div>
+    <span class="res2">«Обновить» остаётся доступной, но без плана последствий</span>
+
+    <span class="lab2">Идёт обновление</span>
+    <div class="status" style="color:var(--warn)"><span>▶</span><div>$ harness update .<small>Выполняется… Дождитесь окончания: выйти нельзя.</small></div></div>
+    <span class="res2">Esc показывает «Дождитесь окончания обновления»</span>
+
+    <span class="lab2">Обновление прошло</span>
+    <div class="status ok"><span>✔</span><div>Harness обновлён<small>Счётчики и diff перечитаны автоматически.</small></div></div>
+    <span class="res2">Всплывает уведомление «Harness обновлён»</span>
+
+    <span class="lab2">Обновление не прошло</span>
+    <div class="status err"><span>✖</span><div>Обновление завершилось с ошибкой<small>Полный вывод — в блоке «Результат». Счётчики перечитаны.</small></div></div>
+    <span class="res2">Уведомление об ошибке; повтор возможен сразу</span>
+  </div>
+</div>
+
+<div class="caption"><span><b>2 · Обновить Harness — узкий терминал (≈80×24)</b></span><span>Одна колонка: вердикт, план и действие сверху; режимы, diff и результат раскрываются.</span></div>
+
+<div class="app narrow" style="height:1060px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">⎇ feature/issue-721…</div>
+  </div>
+  <div class="body">
+    <main>
+      <div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Обновить Harness</span></div>
+      <div class="page fill">
+        <div><h1>Обновить Harness</h1></div>
+        <div class="panel">
+          <h4>Версии <span class="e-ok">✔ актуальна</span></h4>
+          <dl class="kv i" style="grid-template-columns:130px 1fr"><dt>Установлено</dt><dd>1.4.6</dd><dt>Доступно</dt><dd>1.4.6</dd><dt>Состав</dt><dd>pvmalove-suite</dd></dl>
+        </div>
+        <div class="panel">
+          <h4>Что изменится</h4>
+          <div class="cnt-row"><b class="e-ok">3</b><span class="e-ok">✔</span><span>обновятся</span></div>
+          <div class="cnt-row"><b class="e-ok">1</b><span class="e-ok">✔</span><span>добавятся</span></div>
+          <div class="cnt-row"><b class="e-warn">2</b><span class="e-warn">⚠</span><span>ваши правки сохранятся</span></div>
+          <div class="cnt-row"><b class="e-err">1</b><span class="e-err">✖</span><span>конфликт</span></div>
+        </div>
+        <div class="panel">
+          <h4>План <span class="chip">Обычное</span></h4>
+          <div class="code">$ harness update .</div>
+          <div class="warnbox">⚠ Остановится: 1 конфликт<small>Смените режим или разберите файл.</small></div>
+          <div class="btns"><a class="btn solid" href="#">Обновить</a><a class="btn" href="#">Проверить заново</a></div>
+        </div>
+        <div class="card fold"><span>▸ Режим обновления</span><span>Обычное</span></div>
+        <div class="card fold"><span>▸ Diff · 7 файлов</span><span>1 конфликт</span></div>
+        <div class="card fold"><span>▸ Результат</span><span>пока пусто</span></div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="legend">
+  Из кода экрана: версии (установлено / доступно, вердикт, состав, число скилов и управляемых файлов, время lock); счётчики расхождений из <code>harness diff</code>
+  (нулевые строки не показываются); три режима обновления; план с командой и подтверждением; список файлов с тегами и diff; результат.
+  Новое в макете: единый каркас; последствия режима прямо в его подписи; предупреждение «остановится на конфликте» в плане (считается из счётчика конфликтов);
+  у состояния «не установлен» кнопка-ссылка на «Открыть проект».
+</div>
+</body>
+</html>

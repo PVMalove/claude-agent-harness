@@ -1,0 +1,530 @@
+[
+  {
+    "batch_id": "batch-41a2772f-d9d9-416a-b4d3-30183335ecac",
+    "ticket": "#438",
+    "state": "completed",
+    "created_at": "2026-10-01T10:41:15.495729+00:00",
+    "finished_at": "2026-10-01T13:27:30.755533+00:00",
+    "duration_seconds": 9975.259804,
+    "full_runs": {
+      "code-review": 3,
+      "developer": 4,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-ddb1a318-f17a-4968-9739-f80ebae75841",
+    "ticket": "#439",
+    "state": "completed",
+    "created_at": "2026-10-01T13:53:57.050577+00:00",
+    "finished_at": "2026-10-01T16:03:40.578383+00:00",
+    "duration_seconds": 7783.527806,
+    "full_runs": {
+      "developer": 4,
+      "code-review": 1,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-0e67a139-1640-4eaa-a879-06f7246d3950",
+    "ticket": "#443",
+    "state": "failed",
+    "created_at": "2026-10-01T16:58:14.133097+00:00",
+    "finished_at": "2026-10-01T18:39:25.955924+00:00",
+    "duration_seconds": 6071.822827,
+    "full_runs": {
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-fa9de5d4-6dc1-4f83-9f38-66c5f7ac2cc0",
+    "ticket": "#443",
+    "state": "failed",
+    "created_at": "2026-10-01T18:40:02.374490+00:00",
+    "finished_at": "2026-10-02T06:22:12.138118+00:00",
+    "duration_seconds": 42129.763628,
+    "full_runs": {
+      "code-review": 1,
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-ce4c4c04-8525-420c-9c45-2e69411faa07",
+    "ticket": "#477",
+    "state": "completed",
+    "created_at": "2026-10-02T07:49:03.781060+00:00",
+    "finished_at": "2026-10-02T09:29:01.993808+00:00",
+    "duration_seconds": 5998.212748,
+    "full_runs": {
+      "developer": 2,
+      "qa": 1,
+      "code-review": 1
+    }
+  },
+  {
+    "batch_id": "batch-b996958e-3fb0-426c-8d0a-c912440468d9",
+    "ticket": "#478",
+    "state": "completed",
+    "created_at": "2026-10-02T12:25:58.018849+00:00",
+    "finished_at": "2026-10-02T16:04:44.159392+00:00",
+    "duration_seconds": 13126.140543,
+    "full_runs": {
+      "developer": 4,
+      "code-review": 2,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-ffbd7f76-bd7a-4f72-8782-3d7693ba3be5",
+    "ticket": "#497",
+    "state": "completed",
+    "created_at": "2026-10-02T16:34:12.134052+00:00",
+    "finished_at": "2026-10-02T18:23:59.458916+00:00",
+    "duration_seconds": 6587.324864,
+    "full_runs": {
+      "developer": 3,
+      "qa": 1,
+      "code-review": 2
+    }
+  },
+  {
+    "batch_id": "batch-739284f7-2f93-4801-bf8f-06e6fe05fc59",
+    "ticket": "#498",
+    "state": "completed",
+    "created_at": "2026-10-03T11:03:15.746885+00:00",
+    "finished_at": "2026-10-03T15:24:48.541324+00:00",
+    "duration_seconds": 15692.794439,
+    "full_runs": {
+      "developer": 3,
+      "qa": 1,
+      "code-review": 2
+    }
+  },
+  {
+    "batch_id": "batch-b0f6b177-96d8-41b6-ab6f-9d9101a53800",
+    "ticket": "#499",
+    "state": "completed",
+    "created_at": "2026-10-03T15:40:23.479399+00:00",
+    "finished_at": "2026-10-03T17:34:28.824394+00:00",
+    "duration_seconds": 6845.344995,
+    "full_runs": {
+      "code-review": 2,
+      "developer": 3,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-eda2afac-71d9-4987-ab14-be30d556c769",
+    "ticket": "#500",
+    "state": "completed",
+    "created_at": "2026-10-05T06:41:22.930012+00:00",
+    "finished_at": "2026-10-05T08:26:18.870396+00:00",
+    "duration_seconds": 6295.940384,
+    "full_runs": {
+      "developer": 3,
+      "qa": 1,
+      "code-review": 2
+    }
+  },
+  {
+    "batch_id": "batch-bd2edd24-3fae-4ce7-bc70-b6bcdea52988",
+    "ticket": "#444",
+    "state": "completed",
+    "created_at": "2026-10-05T12:07:01.943464+00:00",
+    "finished_at": "2026-10-05T13:32:28.285748+00:00",
+    "duration_seconds": 5126.342284,
+    "full_runs": {
+      "code-review": 1,
+      "developer": 2,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-aab0c9b7-3c22-4ea0-8f8f-39020ace9118",
+    "ticket": "#447",
+    "state": "completed",
+    "created_at": "2026-10-05T13:47:32.307852+00:00",
+    "finished_at": "2026-10-05T16:37:25.620181+00:00",
+    "duration_seconds": 10193.312329,
+    "full_runs": {
+      "code-review": 2,
+      "developer": 4,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-c91b942f-8fb8-4a99-89b0-56145f6e44a6",
+    "ticket": "#448",
+    "state": "completed",
+    "created_at": "2026-10-06T05:43:08.411894+00:00",
+    "finished_at": "2026-10-06T07:18:25.197704+00:00",
+    "duration_seconds": 5716.78581,
+    "full_runs": {
+      "code-review": 2,
+      "developer": 3,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-325ac0a3-78a7-46bd-8332-d67b10b8b54d",
+    "ticket": "#501",
+    "state": "completed",
+    "created_at": "2026-10-06T16:32:32.175449+00:00",
+    "finished_at": "2026-10-06T17:39:51.309136+00:00",
+    "duration_seconds": 4039.133687,
+    "full_runs": {
+      "qa": 1,
+      "developer": 2,
+      "code-review": 1
+    }
+  },
+  {
+    "batch_id": "batch-e5032080-c536-438e-be68-3d983bf687f4",
+    "ticket": "#503",
+    "state": "completed",
+    "created_at": "2026-10-07T06:06:12.825601+00:00",
+    "finished_at": "2026-10-07T07:43:38.861837+00:00",
+    "duration_seconds": 5846.036236,
+    "full_runs": {
+      "developer": 3,
+      "code-review": 2,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-1b63373a-9929-4a48-a2ef-75bc00c1537e",
+    "ticket": "#504",
+    "state": "completed",
+    "created_at": "2026-10-07T08:03:17.664321+00:00",
+    "finished_at": "2026-10-07T10:12:47.639103+00:00",
+    "duration_seconds": 7769.974782,
+    "full_runs": {
+      "qa": 1,
+      "code-review": 2,
+      "developer": 3
+    }
+  },
+  {
+    "batch_id": "batch-6af4456b-a567-457c-9023-9a4f013fe85b",
+    "ticket": "#505",
+    "state": "failed",
+    "created_at": "2026-10-07T11:05:13.278966+00:00",
+    "finished_at": "2026-10-07T11:22:53.832241+00:00",
+    "duration_seconds": 1060.553275,
+    "full_runs": {}
+  },
+  {
+    "batch_id": "batch-3704460e-bce5-46ad-a53a-1e4234b06ca5",
+    "ticket": "#625",
+    "state": "completed",
+    "created_at": "2026-10-07T11:23:53.826746+00:00",
+    "finished_at": "2026-10-07T14:32:32.411458+00:00",
+    "duration_seconds": 11318.584712,
+    "full_runs": {
+      "developer": 4,
+      "code-review": 3,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-1771a3e7-1148-4837-99b6-5c2429aa1c27",
+    "ticket": "#625",
+    "state": "completed",
+    "created_at": "2026-10-08T05:07:51.192708+00:00",
+    "finished_at": "2026-10-08T06:01:25.604419+00:00",
+    "duration_seconds": 3214.411711,
+    "full_runs": {
+      "qa": 1,
+      "conflict-resolver": 1,
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-4e7609dc-3f5b-4da7-9186-c9dee9adaab2",
+    "ticket": "#506",
+    "state": "completed",
+    "created_at": "2026-10-08T06:19:56.585860+00:00",
+    "finished_at": "2026-10-08T08:30:44.555744+00:00",
+    "duration_seconds": 7847.969884,
+    "full_runs": {
+      "developer": 4,
+      "qa": 1,
+      "code-review": 3
+    }
+  },
+  {
+    "batch_id": "batch-a63f09e4-d41d-48c4-926d-95f33a1fd4ce",
+    "ticket": "#626",
+    "state": "abandoned",
+    "created_at": "2026-10-08T10:43:21.388922+00:00",
+    "finished_at": "2026-10-08T11:00:38.167033+00:00",
+    "duration_seconds": 1036.778111,
+    "full_runs": {}
+  },
+  {
+    "batch_id": "batch-20e94b94-4ffe-4cb9-8b84-78b65209de97",
+    "ticket": "#626",
+    "state": "completed",
+    "created_at": "2026-10-08T11:02:49.984117+00:00",
+    "finished_at": "2026-10-08T13:12:24.326636+00:00",
+    "duration_seconds": 7774.342519,
+    "full_runs": {
+      "qa": 1,
+      "developer": 3,
+      "code-review": 2
+    }
+  },
+  {
+    "batch_id": "batch-6eed537e-3ec2-4c95-a4a9-b5ebffeef9cd",
+    "ticket": "#643",
+    "state": "completed",
+    "created_at": "2026-10-08T13:36:37.158691+00:00",
+    "finished_at": "2026-10-08T17:04:05.462194+00:00",
+    "duration_seconds": 12448.303503,
+    "full_runs": {
+      "code-review": 3,
+      "developer": 4,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-2d5e539e-725c-4a80-b7f0-0a5410877811",
+    "ticket": "#553",
+    "state": "abandoned",
+    "created_at": "2026-10-13T05:32:33.444122+00:00",
+    "finished_at": "2026-10-13T08:51:41.754489+00:00",
+    "duration_seconds": 11948.310367,
+    "full_runs": {
+      "code-review": 1,
+      "developer": 4
+    }
+  },
+  {
+    "batch_id": "batch-d5ed9dbf-5e69-48fe-ae12-d44aa3bc336f",
+    "ticket": "#682",
+    "state": "completed",
+    "created_at": "2026-10-13T14:32:23.201809+00:00",
+    "finished_at": "2026-10-13T17:56:07.476484+00:00",
+    "duration_seconds": 12224.274675,
+    "full_runs": {
+      "developer": 5,
+      "code-review": 4,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-3dbbc3e7-2cf3-47f4-8103-f735d32f98a9",
+    "ticket": "#693",
+    "state": "completed",
+    "created_at": "2026-10-14T08:59:52.992986+00:00",
+    "finished_at": "2026-10-14T11:09:56.474684+00:00",
+    "duration_seconds": 7803.481698,
+    "full_runs": {
+      "developer": 4,
+      "code-review": 3,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-7bf0512c-1ef0-4738-9fb2-910bd4b8a010",
+    "ticket": "#694",
+    "state": "completed",
+    "created_at": "2026-10-14T12:53:53.403048+00:00",
+    "finished_at": "2026-10-14T14:51:24.393532+00:00",
+    "duration_seconds": 7050.990484,
+    "full_runs": {
+      "developer": 2,
+      "code-review": 1,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-e2d5479e-7699-44a9-81a7-f7a0a20f01e6",
+    "ticket": "#695",
+    "state": "completed",
+    "created_at": "2026-10-15T05:30:13.262740+00:00",
+    "finished_at": "2026-10-15T08:45:54.662993+00:00",
+    "duration_seconds": 11741.400253,
+    "full_runs": {
+      "developer": 3,
+      "code-review": 2,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-42ad65ae-f33b-41ef-a926-5a2df6100479",
+    "ticket": "#696",
+    "state": "abandoned",
+    "created_at": "2026-10-15T10:11:10.685751+00:00",
+    "finished_at": "2026-10-15T13:56:17.391664+00:00",
+    "duration_seconds": 13506.705913,
+    "full_runs": {
+      "code-review": 3,
+      "developer": 3
+    }
+  },
+  {
+    "batch_id": "batch-5c361b6d-3f88-4c15-ba64-45a4e2d264ca",
+    "ticket": "#697",
+    "state": "abandoned",
+    "created_at": "2026-10-16T05:23:10.254648+00:00",
+    "finished_at": "2026-10-16T07:02:24.960311+00:00",
+    "duration_seconds": 5954.705663,
+    "full_runs": {
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-d975b342-3bb7-41f8-b06e-3ce34528447f",
+    "ticket": "#697",
+    "state": "abandoned",
+    "created_at": "2026-10-16T07:17:21.924215+00:00",
+    "finished_at": "2026-10-16T07:35:13.183174+00:00",
+    "duration_seconds": 1071.258959,
+    "full_runs": {
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-8f49375b-b5ad-45c6-96f5-5c1ac2ff577c",
+    "ticket": "#697",
+    "state": "completed",
+    "created_at": "2026-10-16T07:40:41.407286+00:00",
+    "finished_at": "2026-10-16T12:32:45.192386+00:00",
+    "duration_seconds": 17523.7851,
+    "full_runs": {
+      "developer": 5,
+      "code-review": 4,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-f5d95b12-f6c2-4b53-b921-fe3950ee6c64",
+    "ticket": "#684",
+    "state": "abandoned",
+    "created_at": "2026-10-17T10:53:24.021546+00:00",
+    "finished_at": "2026-10-17T13:59:19.873465+00:00",
+    "duration_seconds": 11155.851919,
+    "full_runs": {
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-c5cbf35e-2c67-4d37-a45e-21a6e99ab18e",
+    "ticket": "#684",
+    "state": "completed",
+    "created_at": "2026-10-17T13:59:38.934505+00:00",
+    "finished_at": "2026-10-17T16:37:40.687890+00:00",
+    "duration_seconds": 9481.753385,
+    "full_runs": {
+      "developer": 3,
+      "code-review": 2,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-bd53f560-f0ac-4193-afcb-50af37cd45c8",
+    "ticket": "#741",
+    "state": "completed",
+    "created_at": "2026-10-17T14:14:50.338444+00:00",
+    "finished_at": "2026-10-17T16:52:39.609400+00:00",
+    "duration_seconds": 9469.270956,
+    "full_runs": {
+      "code-review": 1,
+      "developer": 2,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-9394653e-3062-4ab1-856c-615a666749f2",
+    "ticket": "#704",
+    "state": "abandoned",
+    "created_at": "2026-10-18T06:22:40.815722+00:00",
+    "finished_at": "2026-10-18T07:38:14.467977+00:00",
+    "duration_seconds": 4533.652255,
+    "full_runs": {
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-0ec62602-ba71-4e21-afda-75333b317b63",
+    "ticket": "#704",
+    "state": "abandoned",
+    "created_at": "2026-10-18T07:41:45.780466+00:00",
+    "finished_at": "2026-10-18T07:52:51.697594+00:00",
+    "duration_seconds": 665.917128,
+    "full_runs": {
+      "developer": 1
+    }
+  },
+  {
+    "batch_id": "batch-b1ee3401-1a59-4341-a0f1-33d2263eea8f",
+    "ticket": "#704",
+    "state": "completed",
+    "created_at": "2026-10-18T08:00:28.213073+00:00",
+    "finished_at": "2026-10-18T13:04:28.543381+00:00",
+    "duration_seconds": 18240.330308,
+    "full_runs": {
+      "developer": 3,
+      "qa": 1,
+      "code-review": 2
+    }
+  },
+  {
+    "batch_id": "batch-5de21508-940e-424a-8d55-8e3922d50296",
+    "ticket": "#724",
+    "state": "completed",
+    "created_at": "2026-10-18T18:28:40.388448+00:00",
+    "finished_at": "2026-10-19T09:49:23.616653+00:00",
+    "duration_seconds": 55243.228205,
+    "full_runs": {
+      "developer": 1,
+      "qa": 1
+    }
+  },
+  {
+    "batch_id": "batch-31576f2f-1b41-4706-9a92-2268f476244c",
+    "ticket": "#724",
+    "state": "abandoned",
+    "created_at": "2026-10-19T09:53:49.039426+00:00",
+    "finished_at": "2026-10-19T13:19:56.301414+00:00",
+    "duration_seconds": 12367.261988,
+    "full_runs": {}
+  },
+  {
+    "batch_id": "batch-8e8dae3a-bd5c-4ad1-bd8b-28b9534e4662",
+    "ticket": "#708",
+    "state": "abandoned",
+    "created_at": "2026-10-19T13:01:16.897656+00:00",
+    "finished_at": "2026-10-19T17:59:07.981755+00:00",
+    "duration_seconds": 17871.084099,
+    "full_runs": {}
+  },
+  {
+    "batch_id": "batch-e6101b82-3666-46d1-9278-03fc5d7a2b59",
+    "ticket": "#781",
+    "state": "completed",
+    "created_at": "2026-10-20T07:22:13.543890+00:00",
+    "finished_at": "2026-10-20T09:12:56.410924+00:00",
+    "duration_seconds": 6642.867034,
+    "full_runs": {}
+  },
+  {
+    "batch_id": "batch-c16c322a-a320-403b-888f-037bbd217e2e",
+    "ticket": "#768",
+    "state": "completed",
+    "created_at": "2026-10-20T09:50:05.027355+00:00",
+    "finished_at": "2026-10-20T10:16:36.745971+00:00",
+    "duration_seconds": 1591.718616,
+    "full_runs": {}
+  },
+  {
+    "batch_id": "batch-d93856d6-8497-469a-bc2d-d232ee89a584",
+    "ticket": "#790",
+    "state": "awaiting-approval",
+    "created_at": "2026-10-20T11:04:57.706406+00:00",
+    "finished_at": "2026-10-20T11:33:12.302836+00:00",
+    "duration_seconds": 1694.59643,
+    "full_runs": {}
+  }
+]

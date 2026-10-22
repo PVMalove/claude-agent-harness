@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Открыть проект — макет</title>
+<link rel="stylesheet" href="console.css">
+</head>
+<body>
+
+<div class="caption"><span><b>1 · Открыть проект — широкий терминал (≈160×52)</b></span><span>Демонстрационные данные. Проверка пути ничего не пишет; установка только после подтверждения.</span></div>
+
+<div class="app wide" style="height:1300px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div>
+  </div>
+  <div class="body" style="grid-template-columns:250px 1fr">
+    <nav>
+      <h6>Главное меню</h6>
+      <a href="#"><i>0</i>Главная</a>
+      <a class="on" href="#"><i>1</i>Открыть проект</a>
+      <a href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a>
+      <a href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a>
+      <a href="#"><i>5</i>Оркестрация<em>3</em></a>
+      <a href="#"><i>6</i>Отчёты</a>
+      <a href="#"><i>7</i>Repo Map<em>full</em></a>
+      <a href="#"><i>8</i>Настройка</a>
+      <a href="#"><i>9</i>Справка</a>
+    </nav>
+
+    <main>
+      <div class="crumbs"><a href="#" title="Вернуться на главное меню">Главная</a><span class="sep">›</span><span class="cur">Открыть проект</span></div>
+      <div class="strip"><span>Сейчас открыт: claude-agent-harness · ⎇ feature/issue-721-console-design-system</span><span>Выбор цели меняет проект для всех экранов</span></div>
+      <div class="page fill">
+        <div>
+          <h1>Открыть проект</h1>
+          <div class="sub">Укажите Git-проект. Проверка пути ничего не меняет; установка Harness выполняется только после вашего подтверждения.</div>
+        </div>
+
+        <div class="stepper">
+          <div class="st done"><span class="g">✔</span><b>Выбор проекта</b></div><div class="ln"></div>
+          <div class="st cur"><span class="g">▶</span><b>Предварительные проверки</b></div><div class="ln"></div>
+          <div class="st"><span class="g">○</span>Установка / внедрение</div><div class="ln"></div>
+          <div class="st"><span class="g">○</span>Настройка</div><div class="ln"></div>
+          <div class="st"><span class="g">○</span>Итоговая диагностика</div>
+          <div class="cnt">Шаг 2 из 5</div>
+        </div>
+
+        <div class="cols">
+          <div class="col">
+            <div class="panel">
+              <h4>Проект</h4>
+              <div class="lab">Путь к локальному Git-проекту</div>
+              <div class="input">/home/malove/Projects/Code/claude-agent-harness<span class="caret">▏</span></div>
+              <div class="btns">
+                <a class="btn" href="#">Обзор папок</a>
+                <a class="btn" href="#">Проверить путь</a>
+                <a class="btn p" href="#">Открыть проект →</a>
+              </div>
+              <div class="status ok"><span>✔</span><div>Git-проект найден · действие: <b>обновление</b><small>harness.lock есть · установлено: pvmalove-suite</small></div></div>
+            </div>
+
+            <div class="panel">
+              <h4>Состав Harness <span>что будет установлено</span></h4>
+              <div class="opt on"><span>◉</span><div><span class="t">Workflow<span class="rec">установлено</span></span><small>Задачи, QA и ручная настройка project.json</small></div></div>
+              <div class="opt"><span>○</span><div><span class="t">Основа</span><small>Небольшой набор инструкций и навыков</small></div></div>
+              <div class="opt"><span>○</span><div><span class="t">Upstream</span><small>Полный закреплённый набор навыков</small></div></div>
+              <div class="opt"><span>○</span><div><span class="t">Backend</span><small>Workflow и роли; добавляет orchestration.json</small></div></div>
+              <div class="lab" style="margin:12px 0 0">Workflow задач, QA и code-review; создаёт project.json. Нужен для мастера project.json; без ролей оркестрации.</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="panel">
+              <h4>План установки <span class="chip p">обновление</span></h4>
+              <dl class="kv i" style="grid-template-columns:110px 1fr">
+                <dt>Проект</dt><dd>claude-agent-harness</dd>
+                <dt>Состав</dt><dd>Workflow (pvmalove-suite)</dd>
+                <dt>Конфликты</dt><dd class="e-ok">✔ нет</dd>
+              </dl>
+              <div class="lab" style="margin:14px 0 6px">Команда</div>
+              <div class="code">harness update /home/malove/Projects/Code/claude-agent-harness --capability pvmalove-suite<span class="hint2">y — копировать · перезаписывает только управляемые файлы Harness</span></div>
+              <div class="btns"><a class="btn solid" href="#">Установить</a><span class="res" style="align-self:center;color:var(--muted)">Потребуется подтверждение</span></div>
+            </div>
+
+            <div class="panel">
+              <h4>Проверки</h4>
+              <div class="btns" style="margin-top:0">
+                <a class="btn" href="#">Офлайн</a><a class="btn" href="#">Онлайн</a><a class="btn" href="#">Исправить</a><a class="btn" href="#">Настройка</a>
+              </div>
+              <div class="sum">
+                <span class="e-ok">✔ Проверено 16 из 27</span><span class="e-warn">⚠ Требует исправления 2</span><span style="color:var(--muted)">○ Не проверено 11</span>
+              </div>
+              <div class="lab" style="margin:12px 0 0">Онлайн — отдельная проверка GitHub/GitLab и прав доступа. Проверки песочницы анализируют настройки; фактические доступы могут остаться непроверенными.</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h4>Результат <span>последняя операция</span></h4>
+          <div class="log">
+            <div class="l-m">$ harness health /home/malove/Projects/Code/claude-agent-harness --offline</div>
+            <div><span class="l-ok">✔</span> harness.lock согласован с установленным пакетом</div>
+            <div><span class="l-ok">✔</span> Discovery-ссылки .agents/skills, .claude/skills на месте</div>
+            <div><span class="l-warn">⚠</span> Скиллы отличаются от установленной версии Harness — «Как исправить»: Обновить Harness (2)</div>
+            <div><span class="l-warn">⚠</span> Нужно проверить настройки интеграций — «Как исправить»: Настройка (8)</div>
+            <div><span class="l-m">○ Пропущено 11 онлайн-проверок — не считается успешным результатом</span></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Состояния строки под путём</b></span><span>Тексты ошибок — из кода консоли; тексты успеха — предложение.</span></div>
+<div class="sheet">
+  <h3>Что видит пользователь после «Проверить путь»</h3>
+  <p>«Открыть проект», «Установить» и проверки включаются только когда путь признан годным. Любая ошибка называет причину и следующий шаг.</p>
+  <div class="states">
+    <span class="lab2">Путь не проверен</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>Укажите путь к проекту и нажмите «Проверить путь».</div></div>
+    <span class="res2"><b>Включена</b> только «Проверить путь»</span>
+
+    <span class="lab2">Каталога нет</span>
+    <div class="status err"><span>✖</span><div>Каталог проекта не существует<small>Проверьте путь или выберите папку через «Обзор папок».</small></div></div>
+    <span class="res2">Остальные кнопки выключены</span>
+
+    <span class="lab2">Не Git-проект</span>
+    <div class="status err"><span>✖</span><div>Это не Git-проект<small>Сначала выполните в каталоге: <b style="color:var(--fg)">git init</b> (y — копировать команду)</small></div></div>
+    <span class="res2">Консоль сама <b>git init</b> не запускает</span>
+
+    <span class="lab2">Git недоступен</span>
+    <div class="status err"><span>✖</span><div>Git недоступен или не отвечает<small>Проверьте, что git установлен и доступен в PATH.</small></div></div>
+    <span class="res2">Повторить: «Проверить путь»</span>
+
+    <span class="lab2">harness.lock повреждён</span>
+    <div class="status err"><span>✖</span><div>harness.lock повреждён<small>Сначала проверьте существующую установку: «Диагностика» (3).</small></div></div>
+    <span class="res2">Установка заблокирована</span>
+
+    <span class="lab2">Новый проект (init)</span>
+    <div class="status ok"><span>✔</span><div>Git-проект найден · действие: <b>новая установка</b><small>Файлов Harness в проекте нет.</small></div></div>
+    <span class="res2"><b>Включены</b> все действия</span>
+
+    <span class="lab2">Есть свои файлы (adopt)</span>
+    <div class="status warn"><span>⚠</span><div>Git-проект найден · действие: <b>внедрение</b><small>Найдено: AGENTS.md, .claude/skills — конфликты разберите до установки.</small></div></div>
+    <span class="res2">«Установить» выключена, пока есть конфликты</span>
+
+    <span class="lab2">Harness уже стоит (update)</span>
+    <div class="status ok"><span>✔</span><div>Git-проект найден · действие: <b>обновление</b><small>harness.lock есть · установлено: pvmalove-suite</small></div></div>
+    <span class="res2">Как на макете выше</span>
+  </div>
+</div>
+
+<div class="caption"><span><b>«Обзор папок» — раскрыто</b></span><span>Дерево только из каталогов; корень — текущий путь (или домашний каталог).</span></div>
+<div class="sheet">
+  <h3>Выбор папки внутри блока «Проект»</h3>
+  <p>Enter на папке подставляет путь в поле и закрывает дерево. Проверка пути запускается отдельно, поэтому выбор папки ничего не читает и не меняет.</p>
+  <div class="cols" style="grid-template-columns:minmax(0,640px) 1fr;align-items:start">
+    <div class="panel">
+      <h4>Проект</h4>
+      <div class="lab">Путь к локальному Git-проекту</div>
+      <div class="input">/home/malove/Projects/Code<span class="caret">▏</span></div>
+      <div class="btns"><a class="btn" href="#">Закрыть обзор</a><a class="btn" href="#">Проверить путь</a><a class="btn dis" href="#">Открыть проект →</a></div>
+      <div class="lab" style="margin:16px 0 6px">Папки · <span style="color:var(--fg)">/home/malove/Projects/Code</span></div>
+      <div class="tree">
+        <div>▾ Code</div>
+        <div>&nbsp;&nbsp;▸ agent-sandbox</div>
+        <div>&nbsp;&nbsp;▾ <span class="sel">claude-agent-harness</span> &nbsp;<span class="e-ok">⎇ Git</span> · <span style="color:var(--primary)">H</span> Harness установлен</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;▸ .harness</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;▸ docs</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;▸ harness</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;▸ tests</div>
+        <div>&nbsp;&nbsp;▸ notes-app &nbsp;<span class="e-ok">⎇ Git</span></div>
+        <div>&nbsp;&nbsp;▸ old-experiments</div>
+        <div>&nbsp;&nbsp;▸ website &nbsp;<span class="e-ok">⎇ Git</span></div>
+      </div>
+      <div class="lab" style="margin:10px 0 0">↑↓ выбор · → раскрыть · Enter — подставить путь · Esc — закрыть</div>
+    </div>
+    <div class="res2" style="color:var(--muted);line-height:1.8">
+      <b style="color:var(--fg)">Что видно в дереве</b><br>
+      Только каталоги, как сейчас. Выбранная папка подсвечена тем же цветом, что и пункт меню.<br><br>
+      <b style="color:var(--fg)">Предложение</b><br>
+      Помечать папки <span class="e-ok">⎇ Git</span> и <span style="color:var(--primary)">H</span> «Harness установлен». Тогда понятно, куда указывать, ещё до проверки пути. Сейчас консоль эти признаки в дереве не читает: это отдельная небольшая доработка, и она не обязательна для первого прохода.
+    </div>
+  </div>
+</div>
+
+<div class="caption"><span><b>1 · Открыть проект — узкий терминал (≈80×24)</b></span><span>Одна колонка: путь и действия первыми, состав и план — раскрывающиеся блоки.</span></div>
+
+<div class="app narrow" style="height:900px">
+  <div class="top">
+    <div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div>
+    <div class="where">⎇ feature/issue-721…</div>
+  </div>
+  <div class="body">
+    <main>
+      <div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Открыть проект</span></div>
+      <div class="page fill">
+        <div><h1>Открыть проект</h1></div>
+        <div class="stepper" style="padding:10px 14px"><div class="st cur"><span class="g">▶</span><b>Предварительные проверки</b></div><div class="cnt">Шаг 2 из 5</div></div>
+        <div class="panel">
+          <div class="lab">Путь к локальному Git-проекту</div>
+          <div class="input">…/Code/claude-agent-harness<span class="caret">▏</span></div>
+          <div class="btns"><a class="btn" href="#">Обзор</a><a class="btn" href="#">Проверить</a><a class="btn p" href="#">Открыть →</a></div>
+          <div class="status ok"><span>✔</span><div>Git-проект найден · <b>обновление</b><small>установлено: pvmalove-suite</small></div></div>
+        </div>
+        <div class="panel">
+          <h4>План установки <span class="chip p">обновление</span></h4>
+          <div class="code">harness update …/claude-agent-harness --capability pvmalove-suite<span class="hint2">y — копировать</span></div>
+          <div class="btns"><a class="btn solid" href="#">Установить</a><a class="btn" href="#">Офлайн</a><a class="btn" href="#">Онлайн</a></div>
+          <div class="sum"><span class="e-ok">✔ 16 из 27</span><span class="e-warn">⚠ 2</span><span style="color:var(--muted)">○ 11</span></div>
+        </div>
+        <div class="card fold"><span>▸ Состав Harness</span><span>Workflow</span></div>
+        <div class="card fold"><span>▸ Результат</span><span>5 строк</span></div>
+      </div>
+    </main>
+  </div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="legend">
+  Что я взял из кода экрана: пять этапов мастера; поле пути и кнопки «Обзор папок», «Проверить путь», «Открыть проект»; выбор из четырёх составов Harness с описаниями;
+  план установки с командой и блокерами; кнопки «Офлайн», «Онлайн», «Исправить», «Настройка»; область результата.
+  Новое в макете: единый каркас, видимые состояния кнопок, перенос ошибок в строку под путём с указанием следующего шага.
+</div>
+</body>
+</html>

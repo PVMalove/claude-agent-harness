@@ -243,6 +243,11 @@ Rewind не меняет Git history, но исключает старое за�
 подтверждённого сбоя окружения — отдельный infrastructure budget.
 Перед send coordinator проверяет явный каталог воркера через `--worktree`, а worker подтверждает
 фактический path/branch/HEAD через self-report. Coordinator CLI остаётся привязан к main repo/state.
+Сам coordinator никогда не делает `cd` в worktree, даже в виде `cd <worktree> && …`: рабочий каталог
+shell сохраняется между командами, поэтому один такой вызов переносит в worktree всю сессию. Файлы
+worktree читаются по абсолютным путям: `git -C <worktree> …`, `rg <шаблон> <путь в worktree>` и
+инструменты чтения файлов. Если сессия всё же сместилась, верните её в main checkout до следующей
+команды.
 Подробные ограничения задаёт `.harness/orchestration/playbook.md`, раздел Operator recovery.
 
 ### Сбой запуска worker
@@ -271,6 +276,21 @@ ledger и не заменяет model self-report.
 `batch abandon`. `dispatch cancel`
 отменяет только неотправленный dispatch, а `batch abandon` закрывает весь batch; brief, report,
 Context Package и audit в обоих случаях остаются evidence.
+
+## Обновление маршрута запуска и наблюдения (#716)
+
+Поставляется пример `.harness/orchestration/adapters/claude_code.py`, явно выбираемый через
+`--adapter`. Runtime executable выбирается отдельно; пакет не превращает `codex` в adapter.
+Проверяются доступы родителя и, перед feature work, инструментов самого worker. Глобальное
+отключение sandbox не требуется; непригодный профиль не повторяется без подготовки среды.
+
+Консоль читает существующий поток локально, без дополнительных токенов и сообщений модели.
+Receipt, процесс, exit code, ledger и сдача/приёмка отчёта показаны раздельно. Первый self-report
+имеет отдельный срок; только доказанный исход разрешает восстановление. `resume-stop --restart`
+позволяет одним человеческим подтверждением одобрить неизменный successor, сохранив manual_all
+и операционный бюджет. Готовый исходный отчёт можно передать штатным report relay с аудитом,
+сохранив fail/not_run. Причина architect-retry теперь приходит из brief.retry_reason; внешний
+extra-prompt-file и ручная строка Retry reason больше не нужны.
 
 ## Источник
 

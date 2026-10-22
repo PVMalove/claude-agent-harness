@@ -1,0 +1,13 @@
+{
+  "zeta": [1, 2.50, 1E-5, 1e16, 1e15, 100.0, -0.0, 0.0001, 0.00001, 1.5e300, 5e-324, 123456789012345678901234567890, -1180591620717411303424, 0, -0, 10000000000000000, 1.0E+2, 0.1],
+  "alpha": {"nested": {"deep": [[], {}, [[]], [{}]]}, "empty_string": "", "null": null, "t": true, "f": false},
+  "unicode": "café 漢字 😀 é 😀    ",
+  "controls": "nul:\u0000 bell:\u0007 bs:\b tab:\t lf:\n ff:\f cr:\r esc:\u001b us:\u001f del:\u007f quote:\" backslash:\\ slash:\/",
+  "keys \"quoted\"\n": 1,
+  "é": "after z",
+  "z": "before é",
+  "￿": "bmp max",
+  "😀": "astral",
+  "": "empty key",
+  "10": "a", "9": "b", "B": "c", "a": "d"
+}

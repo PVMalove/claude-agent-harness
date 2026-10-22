@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, tzinfo
+from typing import cast
 from unittest import mock
 from pathlib import Path
 from harness.orchestration import coordinator
@@ -20,6 +21,7 @@ from harness.orchestration.workflow import (
     commit_plan,
     decisions,
     recovery,
+    risk as risk_policy,
 )
 from tests.orchestration.test_coordinator import (
     _init_repo,
@@ -1952,7 +1954,7 @@ class RecoveryTests(unittest.TestCase):
                 startup["classification"],
                 startup["restart_allowed"],
             ),
-            ("live", "model-self-report-missing", False),
+            ("unknown", "model-self-report-missing", False),
         )
         coordinator.cancel_dispatch(
             self._args(
@@ -2187,7 +2189,9 @@ class RecoveryTests(unittest.TestCase):
         )
         self._accepted_architect(batch_id)
         self._blocked_developer(batch_id)
-        self._decide(batch_id, "retry", reason_category="verification-infrastructure")
+        self._decide(
+            batch_id, "retry", reason_category="verification-infrastructure"
+        )
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
         coordinator.rewind_batch(
             self._args(
@@ -2300,3 +2304,382 @@ class RecoveryTests(unittest.TestCase):
 
         self.assertEqual(conditions.open_conditions(self._batch_record(batch_id)), [])
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def _cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        """One public coordinator command in its own process, as an operator or a worker runs it."""
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ORCHESTRATION_ROOT / "coordinator.py"),
+                "--repo",
+                str(self.repo),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+    def _cli_rewind(self, batch_id: str, target: str) -> JsonObject:
+        result = self._cli(
+            "batch",
+            "rewind",
+            "--batch",
+            batch_id,
+            "--to",
+            target,
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            self.APPROVED_AT,
+            "--note",
+            "rework through a fresh writer",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return cast(JsonObject, json.loads(result.stdout))
+
+    def _cli_assess(
+        self,
+        batch_id: str,
+        candidate: str,
+        changed: list[str],
+        *triggers: str,
+    ) -> subprocess.CompletedProcess[str]:
+        flags = [item for path in changed for item in ("--changed-file", path)]
+        trigger_flags = [
+            item
+            for trigger in (triggers or ("transactions",))
+            for item in ("--developer-trigger", trigger)
+        ]
+        return self._cli(
+            "risk",
+            "assess",
+            "--batch",
+            batch_id,
+            "--candidate-commit",
+            candidate,
+            *flags,
+            *trigger_flags,
+        )
+
+    def _changed_for(self, batch_id: str, candidate: str) -> list[str]:
+        base = self._batch_record(batch_id)["base_commit"]
+        return git_utils._changed_files_between(self.repo, base, candidate)
+
+    def _accepted_review_for(self, batch_id: str, name: str) -> tuple[str, list[str]]:
+        """A review-required candidate with an accepted composite review: QA is the next handoff."""
+        self._accepted_architect(batch_id)
+        candidate = self._accepted_candidate(batch_id, name)
+        self._reported_review(batch_id, candidate)
+        self._decide(batch_id, "accept")
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "qa")
+        return candidate, self._changed_for(batch_id, candidate)
+
+    def _evidence_bytes(self) -> dict[Path, bytes]:
+        return {
+            path: path.read_bytes()
+            for folder in ("risk-assessments", "reports", "dispatches")
+            for path in (self._records() / folder).glob("*.json")
+        }
+
+    def _cli_propose_qa(
+        self, batch_id: str, candidate: str
+    ) -> subprocess.CompletedProcess[str]:
+        return self._cli(
+            "dispatch",
+            "propose",
+            "--batch",
+            batch_id,
+            "--role",
+            "qa",
+            "--candidate-commit",
+            candidate,
+            "--model",
+            "sonnet",
+            "--effort",
+            "high",
+        )
+
+    def _rewound_writer_report(
+        self, batch_id: str, name: str, **overrides: object
+    ) -> tuple[str, list[str], JsonObject]:
+        """A fresh writer after a rewind: its report is submitted but not yet accepted."""
+        brief = self._dispatch(batch_id, "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        candidate, changed = self._developer_commit(name)
+        base = self._batch_record(batch_id)["base_commit"]
+        commits = _git(
+            self.worktree, "rev-list", "--reverse", f"{base}..{candidate}"
+        ).split()
+        commit_map = [
+            {"commit_sha": sha, "plan_entry_id": entry["id"]}
+            for sha in commits
+            for entry in brief["commit_plan"]
+        ]
+        self._submit(
+            brief["dispatch_id"],
+            self._developer_report(
+                brief,
+                candidate,
+                changed,
+                commit_map=commit_map,
+                dod_coverage=[{"dod_item": 1, "commits": [candidate]}],
+                divergence_justification="the rewound writer adds a second commit",
+                **overrides,
+            ),
+        )
+        return candidate, changed, brief
+
+    def test_rewind_to_the_writer_binds_the_reassessment_until_the_new_candidate(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        pending = self._batch_record(batch_id)
+        self.assertIs(pending["risk_reassessment_required"], True)
+        self.assertIs(pending["risk_reassessment_pending_next"], True)
+        self.assertNotIn("risk_reassessment_candidate", pending)
+        second, changed, _ = self._rewound_writer_report(batch_id, "second")
+        bound = self._batch_record(batch_id)
+        self.assertIs(bound["risk_reassessment_required"], True)
+        self.assertEqual(bound["risk_reassessment_candidate"], second)
+        self.assertNotIn("risk_reassessment_pending_next", bound)
+        self._decide(batch_id, "accept")
+        blocked = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        assessed = self._cli_assess(batch_id, second, changed)
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        after = self._batch_record(batch_id)
+        self.assertIs(after["risk_reassessment_required"], False)
+        self.assertEqual(after["next_action"], "code-review")
+        self._reported_review(batch_id, second)
+        self._decide(batch_id, "accept")
+        proposal = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def _cli_accept_conditional(self, batch_id: str) -> None:
+        result = self._cli(
+            "batch",
+            "decide",
+            "--batch",
+            batch_id,
+            "--decision",
+            "accept-conditional",
+            "--infrastructure-failure",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            self.APPROVED_AT,
+            "--note",
+            "runtime restored; commits match the plan",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_blocked_writer_after_a_rewind_binds_its_candidate_through_qa(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        second, changed, _ = self._rewound_writer_report(
+            batch_id,
+            "second",
+            outcome="blocked",
+            blockers={
+                "status": "present",
+                "details": "runtime connection reset during the handoff to review",
+            },
+        )
+        bound = self._batch_record(batch_id)
+        self.assertIs(bound["risk_reassessment_required"], True)
+        self.assertEqual(bound["risk_reassessment_candidate"], second)
+        self.assertNotIn("risk_reassessment_pending_next", bound)
+        self._cli_accept_conditional(batch_id)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "risk-assessment")
+        assessed = self._cli_assess(batch_id, second, changed)
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        after = self._batch_record(batch_id)
+        self.assertIs(after["risk_reassessment_required"], False)
+        self.assertEqual(after["next_action"], "code-review")
+        self._reported_review(batch_id, second)
+        self._decide(batch_id, "accept")
+        proposal = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_repeated_assessment_after_an_accepted_review_keeps_qa_reachable(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, changed = self._accepted_review_for(batch_id, "stable")
+        evidence = self._evidence_bytes()
+        for _ in range(2):
+            replay = self._cli_assess(batch_id, candidate, changed)
+            self.assertEqual(replay.returncode, 0, replay.stderr)
+            stored = self._batch_record(batch_id)
+            self.assertEqual(stored["next_action"], "qa")
+            self.assertIs(stored["risk_reassessment_required"], False)
+        # The replays only append risk records: every earlier record is untouched.
+        after = self._evidence_bytes()
+        for path, content in evidence.items():
+            self.assertEqual(after[path], content, path.name)
+        proposal = self._cli_propose_qa(batch_id, candidate)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_an_assessment_matching_a_trigger_the_review_never_covered_returns_to_review(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, changed = self._accepted_review_for(batch_id, "wider")
+        wider = self._cli_assess(
+            batch_id, candidate, changed, "transactions", "concurrency-retry"
+        )
+        self.assertEqual(wider.returncode, 0, wider.stderr)
+        self.assertEqual(self._batch_record(batch_id)["next_action"], "code-review")
+
+    def test_qa_refusal_names_the_awaited_candidate_and_writes_nothing(self) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        second, _, _ = self._rewound_writer_report(batch_id, "second")
+        self._decide(batch_id, "accept")
+        before = self._ledger_bytes()
+        blocked = self._cli_propose_qa(batch_id, second)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        remedy = blocked.stderr.partition("REMEDY:")[2]
+        self.assertIn(second, remedy)
+        self.assertEqual(before, self._ledger_bytes())
+
+    def test_qa_refusal_while_the_writer_is_awaited_says_to_wait_for_its_report(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        before = self._ledger_bytes()
+        blocked = self._cli_propose_qa(
+            batch_id, _git(self.worktree, "rev-parse", "HEAD")
+        )
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        self.assertIn(
+            "wait for the writer report", blocked.stderr.partition("REMEDY:")[2]
+        )
+        self.assertEqual(before, self._ledger_bytes())
+
+    def test_a_second_rewind_keeps_the_pending_requirement(self) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        self._cli_rewind(batch_id, "developer")
+        self._cli_rewind(batch_id, "architect")
+        stored = self._batch_record(batch_id)
+        self.assertIs(stored["risk_reassessment_required"], True)
+        self.assertIs(stored["risk_reassessment_pending_next"], True)
+        self.assertNotIn("risk_reassessment_candidate", stored)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_rewind_to_review_clears_the_requirement_and_keeps_history(self) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, _ = self._accepted_review_for(batch_id, "reviewed")
+        evidence = self._evidence_bytes()
+        self._cli_rewind(batch_id, "code-review")
+        stored = self._batch_record(batch_id)
+        self.assertIs(stored["risk_reassessment_required"], False)
+        self.assertNotIn("risk_reassessment_pending_next", stored)
+        for path, content in evidence.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def _registered_candidate_after_verification(self, batch_id: str) -> tuple[str, list[str]]:
+        """A blocked developer candidate retried as verification-infrastructure, then verified,
+        accepted and risk-assessed: the registered candidate carries an active risk assessment."""
+        self._accepted_architect(batch_id)
+        _, candidate, changed = self._blocked_developer(batch_id)
+        self._decide(batch_id, "retry", reason_category="verification-infrastructure")
+        verification = self._dispatch(batch_id, "verification", candidate=candidate)[
+            "brief"
+        ]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"], self._base_report(verification, "verification")
+        )
+        self._decide(batch_id, "accept")
+        self._assess(batch_id, candidate, changed)
+        return candidate, changed
+
+    def test_rewind_to_verification_binds_the_registered_candidate_through_qa(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        candidate, changed = self._registered_candidate_after_verification(batch_id)
+        evidence = self._evidence_bytes()
+        self._cli_rewind(batch_id, "verification")
+        stored = self._batch_record(batch_id)
+        self.assertIs(stored["risk_reassessment_required"], True)
+        self.assertEqual(stored["risk_reassessment_candidate"], candidate)
+        self.assertNotIn("risk_reassessment_pending_next", stored)
+        # The superseded assessments and reports stay readable and unmodified.
+        for path, content in evidence.items():
+            self.assertEqual(path.read_bytes(), content, path.name)
+        before = self._ledger_bytes()
+        blocked = self._cli_propose_qa(batch_id, candidate)
+        self.assertEqual(blocked.returncode, 2, blocked.stdout)
+        remedy = blocked.stderr.partition("REMEDY:")[2]
+        self.assertIn(candidate, remedy)
+        # The awaited step is the verification dispatch and its accept, not a writer report.
+        self.assertIn("verification", remedy)
+        self.assertNotIn("writer report", remedy)
+        self.assertEqual(before, self._ledger_bytes())
+        verification = self._dispatch(batch_id, "verification", candidate=candidate)[
+            "brief"
+        ]
+        self._start(verification["dispatch_id"], checkout=self.worktree)
+        self._submit(
+            verification["dispatch_id"], self._base_report(verification, "verification")
+        )
+        self._decide(batch_id, "accept")
+        assessed = self._cli_assess(batch_id, candidate, changed)
+        self.assertEqual(assessed.returncode, 0, assessed.stderr)
+        after = self._batch_record(batch_id)
+        self.assertIs(after["risk_reassessment_required"], False)
+        self.assertEqual(after["next_action"], "code-review")
+        self._reported_review(batch_id, candidate)
+        self._decide(batch_id, "accept")
+        proposal = self._cli_propose_qa(batch_id, candidate)
+        self.assertEqual(proposal.returncode, 0, proposal.stderr)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_an_illegal_reassessment_state_is_refused_before_any_ledger_write(
+        self,
+    ) -> None:
+        batch_id = self._create_batch()["batch_id"]
+        self._accepted_architect(batch_id)
+        self._accepted_candidate(batch_id, "first")
+        before = self._ledger_bytes()
+
+        def illegal(batch: JsonObject, state: object) -> None:
+            batch["risk_reassessment_required"] = True
+
+        with (
+            mock.patch.object(risk_policy, "apply_reassessment", illegal),
+            self.assertRaisesRegex(
+                coordinator.CoordinatorError, "illegal risk reassessment"
+            ),
+        ):
+            coordinator.rewind_batch(
+                self._args(
+                    batch=batch_id,
+                    to="developer",
+                    note="return to writer",
+                    **self._approval(),
+                )
+            )
+        self.assertEqual(before, self._ledger_bytes())

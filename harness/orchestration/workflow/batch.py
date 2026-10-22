@@ -62,8 +62,10 @@ from harness.orchestration.core.workspace import (
     _validate_branch,
     _validate_worktree,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
+    read_state,
     _load_batch,
     _load_dispatch_status,
     _records_root,
@@ -98,8 +100,8 @@ from harness.orchestration.workflow.history import (
 
 def _batch_records(root: Path) -> Iterator[JsonObject]:
     """Every batch record of the ledger, in batch-id order."""
-    for path in sorted(
-        (_records_root(root) / BatchRecord.directory).glob("batch-*.json")
+    for path in state_view.glob(
+        _records_root(root) / BatchRecord.directory, "batch-*.json"
     ):
         yield _read_object(path, "batch record")
 
@@ -446,6 +448,13 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     # Frozen like the command lists, and only when configured: a legacy batch keeps its shape.
     if isinstance(config.get("retry_verification"), dict):
         record["retry_verification"] = config["retry_verification"]
+    if isinstance(config.get("verification_plan_policy"), dict):
+        record["verification_plan_policy"] = config["verification_plan_policy"]
+        # The Repo Map policy shapes the import graph behind the plan, so it is frozen beside it.
+        repo_map_policy = config.get("repo_map_policy")
+        record["repo_map_policy"] = (
+            repo_map_policy if isinstance(repo_map_policy, dict) else {}
+        )
     _reject_sensitive(record, "batch")
     _store_runtime_snapshot(
         root, _runtime_snapshot_root(repo).parent, record["harness_runtime_sha256"]
@@ -559,7 +568,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
+    with read_state(ledger, repo):
         batches = []
         for batch in _batch_records(root):
             dispatches = batch.get("dispatches", [])

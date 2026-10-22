@@ -25,6 +25,7 @@ files = [
     "tests",
     "scripts/verify.py",
     "scripts/verification",
+    "scripts/perf",
     "scripts/check_public_metadata.py",
     "scripts/check_private_terms.py",
     "scripts/diff_coverage.py",

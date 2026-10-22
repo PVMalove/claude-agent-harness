@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ from typing import cast
 from harness.orchestration import operation_access, runtime_access, runtime_probe
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
+from harness.orchestration.core import state_view
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
     _attention_policy,
@@ -52,6 +54,8 @@ from harness.orchestration.core.workspace import (
     _agent_inbox,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    read_state,
+    store_is_authority,
     LedgerBusyError,
     _ledger_lock,
     _load_batch,
@@ -72,6 +76,13 @@ from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLE
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
+    staged_report,
+)
+from harness.orchestration.workflow.container_status import (
+    MAX_ENGINE_READS,
+    STOP_PROOFS,
+    needs_engine,
+    reconcile,
 )
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
@@ -135,7 +146,7 @@ class AdapterUnavailable(CoordinatorError):
     """The OS refused to start the adapter; no worker was handed a brief."""
 
 
-def _run_adapter(command: list[str], *, cwd: Path | None = None) -> None:
+def _run_adapter(command: list[str], *, cwd: Path | None = None) -> JsonObject | None:
     """Hand the brief to a project runtime adapter.
 
     The adapter contract bounds the call: the adapter returns after it starts the worker. A worker
@@ -160,11 +171,64 @@ def _run_adapter(command: list[str], *, cwd: Path | None = None) -> None:
             "dispatch again; nothing was handed off",
         ) from exc
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise CoordinatorError(
+        detail = _sanitise((result.stderr or result.stdout).strip())
+        try:
+            refused = json.loads(result.stdout)
+        except (ValueError, TypeError):
+            refused = None
+        from harness.orchestration.worker_observation import PROTOCOL
+
+        error_type = (
+            AdapterUnavailable
+            if (
+                isinstance(refused, dict)
+                and refused.get("protocol") == PROTOCOL
+                and refused.get("worker_started") is False
+            )
+            else CoordinatorError
+        )
+        raise error_type(
             f"runtime adapter rejected dispatch: {detail}",
             remedy=f"inspect the runtime adapter's rejection above: {detail}",
         )
+
+    # Legacy adapters may print nothing or plain text. They remain usable, with no invented
+    # observation capability. Structured receipts are preserved for the local monitor.
+    try:
+        receipt = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    allowed = {
+        "protocol",
+        "dispatch_id",
+        "worker_started",
+        "launch_id",
+        "runtime_session_id",
+        "log_path",
+        "terminal_path",
+        "visibility",
+    }
+    safe: JsonObject = {
+        key: _sanitise(value)[:4096] if isinstance(value, str) else value
+        for key, value in receipt.items()
+        if key in allowed and isinstance(value, (str, bool, int))
+    }
+    if isinstance(receipt.get("process"), dict):
+        safe["process"] = {
+            key: value
+            for key, value in receipt["process"].items()
+            if key in {"pid", "host", "boot_id", "start_time", "pid_namespace"}
+            and isinstance(value, (str, int))
+        }
+    if isinstance(receipt.get("preflight"), dict):
+        safe["preflight"] = {
+            "worker_context": str(
+                receipt["preflight"].get("worker_context", "unverified")
+            )[:80]
+        }
+    return safe
 
 
 def send_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -207,6 +271,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             remedy="omit --adapter for an in-process dispatch; it runs inside this session",
         )
     ledger = LifecycleLedger(root)
+    adapter_receipt: JsonObject | None = None
     with _ledger_lock(ledger):
         dispatch = _load_dispatch(root, args.dispatch)
         batch = _load_batch(root, dispatch["batch_id"])
@@ -322,33 +387,9 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             dispatch,
             transport,
             handoff=True,
+            defer_handoff=True,
             command=tuple(command) if command is not None else None,
         )
-        if command is not None and access_evidence["status"] == "legacy-inherit":
-            try:
-                _run_adapter(command, cwd=Path(launch["worktree"]))
-            except AdapterUnavailable as exc:
-                status.update(
-                    {
-                        "state": "blocked",
-                        "updated_at": utils._now(),
-                        "runtime_failure": {
-                            "kind": "runtime-unavailable",
-                            "operation": "startup",
-                            "worker_started": False,
-                            "snapshot_commit": dispatch.get("snapshot_commit"),
-                            "error": exc.message,
-                        },
-                    }
-                )
-                entry["state"] = "blocked"
-                batch["state"] = "blocked"
-                _replace_record(ledger, DispatchStatusRecord.from_dict(status))
-                _replace_record(ledger, BatchRecord.from_dict(batch))
-                raise CoordinatorError(
-                    exc.message,
-                    remedy="fix the adapter; batch auto-report observes the failure, batch auto-decide records its pause, then batch resume-stop requires human approval",
-                ) from exc
         # The guard above proved this is the batch's own entry for the dispatch.
         entry["state"] = "dispatched"
         sent_at = utils._now()
@@ -362,7 +403,9 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
                     "state": "dispatched",
                     "updated_at": sent_at,
                     "heartbeat_at": sent_at,
+                    "sent_at": sent_at,
                     "runtime_access": access_evidence,
+                    **({"adapter_receipt": adapter_receipt} if adapter_receipt else {}),
                     "worker_worktree": launch["worktree"],
                     "worker_snapshot_commit": launch["head_commit"],
                 }
@@ -370,11 +413,81 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
+    # Reserve this handoff before launching. A concurrent send is now refused, and a worker
+    # may acquire the ledger lock for its self-report while the adapter is still returning.
+    if command is not None or access_evidence["status"] != "legacy-inherit":
+        try:
+            if access_evidence["status"] == "legacy-inherit":
+                if command is not None:
+                    adapter_receipt = _run_adapter(
+                        command, cwd=Path(launch["worktree"])
+                    )
+            else:
+                access_evidence = runtime_access.handoff_plan(
+                    dispatch,
+                    transport,
+                    tuple(command) if command else None,
+                    access_evidence,
+                )
+        except runtime_access.LaunchRefused:
+            # The provider proved that nothing started: the dispatch is approved again, so the
+            # same approval can be sent once more.
+            with _ledger_lock(ledger):
+                current = _load_dispatch_status(root, dispatch["dispatch_id"])
+                current_batch = _load_batch(root, dispatch["batch_id"])
+                if current.get("state") == "dispatched":
+                    for item in current_batch["dispatches"]:
+                        if item["dispatch_id"] == dispatch["dispatch_id"]:
+                            item["state"] = "approved"
+                    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+                    _replace_record(ledger, BatchRecord.from_dict(current_batch))
+            raise
+        except (CoordinatorError, runtime_access.AccessError) as exc:
+            with _ledger_lock(ledger):
+                current = _load_dispatch_status(root, dispatch["dispatch_id"])
+                current_batch = _load_batch(root, dispatch["batch_id"])
+                if current.get("state") == "dispatched":
+                    current.update(
+                        {
+                            "state": "blocked",
+                            "updated_at": utils._now(),
+                            "runtime_failure": {
+                                "kind": "runtime-unavailable",
+                                "operation": "startup",
+                                "worker_started": False
+                                if isinstance(exc, AdapterUnavailable)
+                                else None,
+                                "snapshot_commit": dispatch.get("snapshot_commit"),
+                                "error": exc.message,
+                            },
+                        }
+                    )
+                    for item in current_batch["dispatches"]:
+                        if item["dispatch_id"] == dispatch["dispatch_id"]:
+                            item["state"] = "blocked"
+                    current_batch["state"] = "blocked"
+                    _replace_record(ledger, DispatchStatusRecord.from_dict(current))
+                    _replace_record(ledger, BatchRecord.from_dict(current_batch))
+            raise CoordinatorError(
+                exc.message,
+                remedy="inspect dispatch status; batch auto-report observes a proven launch failure, "
+                "batch auto-decide records its pause, then batch resume-stop requires human approval; "
+                "an unknown worker outcome never permits a second launch",
+            ) from exc
+        if adapter_receipt is not None or access_evidence["status"] != "legacy-inherit":
+            with _ledger_lock(ledger):
+                current = _load_dispatch_status(root, dispatch["dispatch_id"])
+                # Merge into the latest status; never overwrite a worker's self-report/report.
+                current["runtime_access"] = access_evidence
+                if adapter_receipt is not None:
+                    current["adapter_receipt"] = adapter_receipt
+                _replace_record(ledger, DispatchStatusRecord.from_dict(current))
     return {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "dispatched",
         "runtime_access": access_evidence,
         "transport": transport,
+        **({"adapter_receipt": adapter_receipt} if adapter_receipt else {}),
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],
         "worker_worktree": launch["worktree"],
@@ -396,6 +509,11 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             ),
         },
     }
+
+
+def _worker_stopped(worker: JsonObject | None) -> bool:
+    """Whether the engine proved the container worker stopped; silence never does."""
+    return worker is not None and worker["state"] in STOP_PROOFS
 
 
 def wait_dispatch(args: argparse.Namespace) -> JsonObject:
@@ -437,8 +555,50 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
+            worker = reconcile(ledger, dispatch, status)
+            from harness.orchestration.workflow.startup import assess_startup
+
+            startup = assess_startup(dispatch, status, repo=repo)
+            if (
+                startup["classification"] == "runtime-crash"
+                and startup["worker_state"] == "stopped"
+            ):
+                batch = _load_batch(root, dispatch["batch_id"])
+                if state in LIVE_DISPATCH_STATES:
+                    status.update(
+                        {
+                            "state": "blocked",
+                            "updated_at": utils._now(),
+                            "runtime_failure": {
+                                "kind": "runtime-crash",
+                                "worker_started": True,
+                                "operation": "startup",
+                                "error": "worker exited before self-report",
+                            },
+                            "runtime_observation": startup["observation"],
+                        }
+                    )
+                    for item in batch["dispatches"]:
+                        if item["dispatch_id"] == dispatch["dispatch_id"]:
+                            item["state"] = "blocked"
+                    batch["state"] = "blocked"
+                    _replace_record(ledger, DispatchStatusRecord.from_dict(status))
+                    _replace_record(ledger, BatchRecord.from_dict(batch))
+                return {
+                    "dispatch_id": dispatch["dispatch_id"],
+                    "event": "startup_failed",
+                    "startup": startup,
+                }
             if state == "reported":
                 return {"dispatch_id": dispatch["dispatch_id"], "event": "reported"}
+            if startup["classification"] == "worker-exited-without-report":
+                # Read-only: the work may be done and its report not yet delivered, so the
+                # ledger keeps the dispatch as it is and the coordinator decides.
+                return {
+                    "dispatch_id": dispatch["dispatch_id"],
+                    "event": "worker_exited_without_report",
+                    "startup": startup,
+                }
             if state == "rate_limited":
                 return {
                     "dispatch_id": dispatch["dispatch_id"],
@@ -467,14 +627,38 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
                     "event": "failed",
                     "state": state,
                 }
-            if state in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
+            exited = _worker_stopped(worker)
+            if (
+                state in LIVE_DISPATCH_STATES
+                and startup["deadline_exceeded"]
+                and not exited
+            ):
+                return {
+                    "dispatch_id": dispatch["dispatch_id"],
+                    "event": "startup_timeout",
+                    "startup": startup,
+                }
+            if state in LIVE_DISPATCH_STATES and (
+                exited or _silent_seconds(status) >= threshold
+            ):
                 _flag_stale_dispatch(
-                    ledger, repo, root, dispatch, _silent_seconds(status)
+                    ledger,
+                    repo,
+                    root,
+                    dispatch,
+                    _silent_seconds(status),
+                    status.get("worker_exit") if exited else None,
                 )
                 return {
                     "dispatch_id": dispatch["dispatch_id"],
                     "event": "stale",
                     "silent_seconds": _silent_seconds(status),
+                    **({"worker": worker} if exited else {}),
+                    **(
+                        {"staged_report": staged}
+                        if exited and (staged := staged_report(dispatch))
+                        else {}
+                    ),
                 }
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -482,9 +666,90 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
         time.sleep(min(interval, max(1, int(remaining))))
 
 
+def observe_dispatch(args: argparse.Namespace) -> JsonObject:
+    """Read process/status/event facts locally, without running or prompting any model."""
+    from harness.orchestration.worker_observation import (
+        read_events,
+        read_terminal,
+        redact_visible,
+    )
+    from harness.orchestration.runtime_permissions import pending_requests
+    from harness.orchestration.workflow.startup import assess_startup
+
+    repo = _repo(args)
+    offset = getattr(args, "offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise CoordinatorError(
+            "observation offset must be nonnegative",
+            remedy="pass a nonnegative --offset from the previous observation",
+        )
+    root = _state_root(args, repo)
+    with _ledger_lock(LifecycleLedger(root)):
+        dispatch = _load_dispatch(root, args.dispatch)
+        status = _load_dispatch_status(root, args.dispatch)
+    startup = assess_startup(dispatch, status, repo=repo)
+    receipt = status.get("adapter_receipt")
+    if (
+        isinstance(receipt, dict)
+        and receipt.get("dispatch_id") != dispatch["dispatch_id"]
+    ):
+        receipt = None
+    return {
+        "dispatch_id": dispatch["dispatch_id"],
+        "batch_id": dispatch["batch_id"],
+        "role": dispatch["role"],
+        "ticket": dispatch["ticket"],
+        "state": status["state"],
+        "worktree": dispatch["worktree"],
+        "model": dispatch["resolved_model"],
+        "runtime": dispatch["resolved_runtime"],
+        "effort": dispatch["resolved_effort"],
+        "snapshot_commit": dispatch.get("snapshot_commit"),
+        "worktree_attestation": status.get("worktree_attestation"),
+        "startup": startup,
+        "model_self_report": status.get("model_self_report"),
+        "heartbeat_at": status.get("heartbeat_at"),
+        "report_staged": Path(dispatch.get("report_staging_path", "")).is_file(),
+        "report_recorded": status["state"] == "reported",
+        "runtime_exit": read_terminal(repo, receipt),
+        "failure": {
+            "kind": status["runtime_failure"].get("kind"),
+            "error": redact_visible(str(status["runtime_failure"].get("error", ""))),
+        }
+        if isinstance(status.get("runtime_failure"), dict)
+        else None,
+        "access_mode": dispatch.get("runtime_access", {}).get("mode", "inherit"),
+        "permission_requests": pending_requests(repo, dispatch, status),
+        "launch_id": receipt.get("launch_id") if isinstance(receipt, dict) else None,
+        "runtime_session_id": receipt.get("runtime_session_id")
+        if isinstance(receipt, dict)
+        else None,
+        **read_events(repo, receipt, offset),
+    }
+
+
+def respond_native_permission(
+    repo: Path, dispatch_id: str, request_id: str, expected_sha256: str, *, allow: bool
+) -> JsonObject:
+    """An explicit console/native operator action; never an automatic policy decision."""
+    from harness.orchestration.runtime_permissions import respond
+
+    args = argparse.Namespace(repo=str(repo), state_dir=None)
+    root = _state_root(args, repo)
+    with _ledger_lock(LifecycleLedger(root)):
+        dispatch = _load_dispatch(root, dispatch_id)
+        status = _load_dispatch_status(root, dispatch_id)
+    return respond(repo, dispatch, status, request_id, expected_sha256, allow=allow)
+
+
 def dispatch_status(args: argparse.Namespace) -> JsonObject:
     """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
-    reason for the coordinator to change state on its own."""
+    reason for the coordinator to change state on its own.
+
+    For a docker dispatch the view also asks the engine about the receipt's container and records
+    the first proof that it stopped. That evidence is the only write; it never changes the
+    lifecycle state. Without ``--dispatch`` at most ``MAX_ENGINE_READS`` dispatches reach the
+    engine per read; the rest show ``not_observed``."""
     from harness.orchestration.workflow.startup import assess_startup
 
     repo = _repo(args)
@@ -502,13 +767,15 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     entries: list[JsonObject] | None = None
+    engine_reads = 0
+    # The runtime store is read, never written, by this view: the engine is not asked, so no
+    # evidence is persisted (ADR 0020, section 2).
+    from_store = store_is_authority(root)
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
-    with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
+    with contextlib.suppress(LedgerBusyError), read_state(ledger, repo):
         entries = []
-        for path in sorted(
-            (_records_root(root) / DispatchStatusRecord.directory).glob(
-                "dispatch-*.json"
-            )
+        for path in state_view.glob(
+            _records_root(root) / DispatchStatusRecord.directory, "dispatch-*.json"
         ):
             status = _read_object(path, "dispatch status")
             if args.dispatch and status.get("dispatch_id") != args.dispatch:
@@ -530,6 +797,12 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 for item in batch.get("context_pressure", [])
                 if item.get("dispatch_id") == dispatch["dispatch_id"]
             ]
+            asks_engine = needs_engine(status)
+            observe = not from_store and (
+                bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
+            )
+            worker = reconcile(ledger, dispatch, status, observe=observe)
+            engine_reads += asks_engine and observe
             live = status.get("state") in LIVE_DISPATCH_STATES
             silent = _silent_seconds(status) if live else 0
             entries.append(
@@ -544,12 +817,14 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "transport": dispatch.get("resolved_transport"),
                     "resolved_model": dispatch["resolved_model"],
                     "model_self_report": status.get("model_self_report"),
-                    "startup": assess_startup(dispatch, status),
+                    "startup": assess_startup(dispatch, status, repo=repo),
+                    "adapter_receipt": status.get("adapter_receipt"),
                     "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
                     "silent_seconds": silent,
-                    "stale": live and silent >= threshold,
+                    "worker": worker,
+                    "stale": live and (silent >= threshold or _worker_stopped(worker)),
                     "telemetry": latest_telemetry,
                     "context_pressure": pressure[-1] if pressure else None,
                     "needs_attention": bool(batch.get("needs_attention", False)),
@@ -567,7 +842,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
             "retry_after_seconds": _execution_policy(config)[
                 "dispatch_poll_interval_seconds"
             ],
-            "lock": ledger.lock_state(),
+            "lock": None if from_store else ledger.lock_state(),
             "remedy": "repeat dispatch status: another coordinator operation holds the ledger "
             "lock. 'coordinator.py ledger lock-status' shows its holder, age and when a timeout "
             "release becomes available. If it stays held, run 'coordinator.py ledger "

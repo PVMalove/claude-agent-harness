@@ -1,0 +1,17 @@
+[package]
+name = "harness-runtime"
+description = "The harness runtime process: `harness-runtime serve`"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ctrlc = { version = "3.5.2", features = ["termination"] }
+ipc = { version = "0.1.0", path = "../ipc" }
+serde_json = "1.0.154"
+state = { version = "0.1.0", path = "../state" }

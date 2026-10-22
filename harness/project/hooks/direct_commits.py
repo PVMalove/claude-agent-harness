@@ -118,7 +118,7 @@ def calls(command: str, start: Path) -> list[Call] | None:
     parsed = pr_commands.parse(command)
     if any(CALL_TEXT.search(fragment) for fragment in parsed.opaque):
         return None
-    if _unparsed_computed(command, parsed.commands):
+    if _unparsed_computed(pr_commands.computed_analysis_text(command), parsed.commands):
         return None
     found = _calls_in(parsed.commands, start)
     if GIT_ENV.search(command):
