@@ -13,6 +13,16 @@ use crate::project::{BATCH, Spec};
 /// yet, which the policy writes as `risk_reassessment_pending_next = true`.
 pub const RULE_781: &str = "781-risk-reassessment-pending-next";
 
+/// The fields a rule may change in a record. The parity check accepts a difference between a
+/// legacy record and its imported row only inside these fields, so it does not depend on the code
+/// that applied the rule.
+pub fn rule_fields(rule: &str) -> Option<&'static [&'static str]> {
+    match rule {
+        RULE_781 => Some(&["risk_reassessment_pending_next"]),
+        _ => None,
+    }
+}
+
 /// One applied repair.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Repair {

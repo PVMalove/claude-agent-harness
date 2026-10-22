@@ -191,3 +191,76 @@ fn a_repaired_row_that_lost_its_marker_fails_the_parity() {
         4
     );
 }
+
+/// Import the broken batch, then let `tamper` change the store before the parity check.
+fn parity_after(name: &str, tamper: impl FnOnce(&Connection)) -> state::Result<()> {
+    let scratch = Scratch::new(name);
+    edit_batch(&scratch, broken);
+    let connection = run(&scratch);
+    tamper(&connection);
+    parity::check(&scratch.read(), &scratch.db())
+}
+
+#[test]
+fn a_repaired_row_without_its_repair_record_fails_the_parity() {
+    let error = parity_after("no-record", |connection| {
+        connection
+            .execute("DELETE FROM audit WHERE action = 'migration-repair'", [])
+            .unwrap();
+    })
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 4, "{error}");
+    assert!(
+        error.to_string().contains("differs: generations/"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_repair_record_that_names_an_unknown_rule_does_not_excuse_the_difference() {
+    let error = parity_after("unknown-rule", |connection| {
+        connection
+            .execute(
+                "UPDATE audit SET details_json = replace(details_json, \
+                 '781-risk-reassessment-pending-next', 'invented-rule') \
+                 WHERE action = 'migration-repair'",
+                [],
+            )
+            .unwrap();
+    })
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 4, "{error}");
+}
+
+#[test]
+fn a_repair_record_with_another_before_hash_does_not_excuse_the_difference() {
+    let error = parity_after("other-hash", |connection| {
+        connection
+            .execute(
+                "UPDATE audit SET details_json = json_set(details_json, '$.before_sha256', ?1) \
+                 WHERE action = 'migration-repair'",
+                [sha256_hex(b"another record")],
+            )
+            .unwrap();
+    })
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 4, "{error}");
+}
+
+#[test]
+fn a_repaired_row_that_also_changed_another_field_fails_the_parity() {
+    let error = parity_after("both-changed", |connection| {
+        connection
+            .execute(
+                "UPDATE batch SET body_json = json_set(body_json, '$.ticket', '#999')",
+                [],
+            )
+            .unwrap();
+    })
+    .unwrap_err();
+
+    assert_eq!(error.exit_code(), 4, "{error}");
+}
