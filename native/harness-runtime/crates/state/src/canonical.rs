@@ -6,7 +6,7 @@
 //! writes the same bytes, so a hash computed in either language holds in the other. The golden
 //! fixture in `tests/fixtures` is checked by both languages.
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 /// The canonical text of `value`, with the final line feed.
@@ -150,6 +150,12 @@ fn python_float(float: f64) -> String {
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The SHA-256 of the canonical JSON of a record: the hash a ledger writes as `record_sha256`,
+/// `brief_sha256` or `report_sha256`.
+pub fn object_sha256(record: &Map<String, Value>) -> String {
+    sha256_hex(canonical_json(&Value::Object(record.clone())).as_bytes())
 }
 
 #[cfg(test)]

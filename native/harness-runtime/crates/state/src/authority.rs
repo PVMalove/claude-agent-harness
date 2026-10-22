@@ -2,8 +2,8 @@
 //!
 //! Before the cutover the file ledger is: `ledger.json` has `version = 3`. After it the runtime
 //! store is: `ledger.json` has `version = 4`, `state/AUTHORITY.json` says `runtime-store`, and the
-//! `store_id` and `manifest_sha256` in that file are the ones in `runtime.db`. `migrate` and `serve`
-//! both ask `store_authority`, so they cannot disagree about it.
+//! `store_id` and `manifest_sha256` in that file are the ones in `runtime.db`. `migrate` and the
+//! `state.read` of the runtime both ask `epoch`, so they cannot disagree about it.
 
 use std::fs;
 use std::io;
@@ -23,7 +23,7 @@ pub const RUNTIME_STORE: &str = "runtime-store";
 pub const STORE_VERSION: i64 = 4;
 
 /// `state/AUTHORITY.json`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Authority {
     pub store_id: String,
     pub manifest_sha256: String,
@@ -69,7 +69,7 @@ pub fn read(state: &Path) -> io::Result<Option<(String, Authority)>> {
         Err(err) => return Err(err),
     };
     let Ok(Value::Object(record)) = serde_json::from_slice(&bytes) else {
-        return Ok(Some((String::new(), Authority::default_invalid())));
+        return Ok(Some((String::new(), Authority::default())));
     };
     let authority = (
         text(&record, "authority").unwrap_or_default(),
@@ -81,17 +81,6 @@ pub fn read(state: &Path) -> io::Result<Option<(String, Authority)>> {
         },
     );
     Ok(Some(authority))
-}
-
-impl Authority {
-    fn default_invalid() -> Self {
-        Self {
-            store_id: String::new(),
-            manifest_sha256: String::new(),
-            snapshot: String::new(),
-            cutover_at: String::new(),
-        }
-    }
 }
 
 fn meta(connection: &Connection, key: &str) -> Option<String> {

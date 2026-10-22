@@ -5,7 +5,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::canonical::{canonical_json, sha256_hex};
+use crate::canonical::object_sha256;
 use crate::project::{BATCH, Spec};
 
 /// The rule of issue #781: a batch that owes a risk reassessment (`risk_reassessment_required` is
@@ -21,10 +21,6 @@ pub struct Repair {
     pub rule: &'static str,
     pub before_sha256: String,
     pub after_sha256: String,
-}
-
-fn digest(record: &Map<String, Value>) -> String {
-    sha256_hex(canonical_json(&Value::Object(record.clone())).as_bytes())
 }
 
 fn names_a_candidate(batch: &Map<String, Value>) -> bool {
@@ -44,7 +40,7 @@ pub fn apply(spec: &Spec, path: &str, record: &mut Map<String, Value>) -> Option
     {
         return None;
     }
-    let before_sha256 = digest(record);
+    let before_sha256 = object_sha256(record);
     record.insert(
         "risk_reassessment_pending_next".to_owned(),
         Value::Bool(true),
@@ -53,6 +49,6 @@ pub fn apply(spec: &Spec, path: &str, record: &mut Map<String, Value>) -> Option
         path: path.to_owned(),
         rule: RULE_781,
         before_sha256,
-        after_sha256: digest(record),
+        after_sha256: object_sha256(record),
     })
 }

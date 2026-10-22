@@ -12,8 +12,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::canonical::{canonical_json, sha256_hex};
+use crate::canonical::object_sha256;
 use crate::error::{Error, Result};
+use crate::read::valid_path;
 use crate::vocabulary::{BATCH_STATES, DISPATCH_STATES};
 
 pub const POINTER_NAME: &str = "ledger.json";
@@ -270,8 +271,7 @@ pub fn audit_record_is_valid(bytes: &[u8]) -> bool {
     let Some(checksum) = record.remove("record_sha256") else {
         return false;
     };
-    checksum.as_str()
-        == Some(sha256_hex(canonical_json(&Value::Object(record)).as_bytes()).as_str())
+    checksum.as_str() == Some(object_sha256(&record).as_str())
 }
 
 fn is_json(path: &str) -> bool {
@@ -282,6 +282,13 @@ fn is_json(path: &str) -> bool {
 
 fn first_component(path: &str) -> &str {
     path.split('/').next().unwrap_or("")
+}
+
+/// Whether `path` names a file directly inside `directory` (`directory/<name>`).
+fn is_direct(path: &str, directory: &str) -> bool {
+    path.strip_prefix(directory)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .is_some_and(|name| !name.contains('/'))
 }
 
 fn stem(path: &str) -> &str {
@@ -367,11 +374,11 @@ impl LegacyState {
             }
             records.insert(&file.path, record);
         }
-        for file in self.files.iter().filter(|file| {
-            file.path.starts_with("audit/")
-                && file.path.matches('/').count() == 1
-                && is_json(&file.path)
-        }) {
+        for file in self
+            .files
+            .iter()
+            .filter(|file| is_direct(&file.path, "audit") && is_json(&file.path))
+        {
             if !audit_record_is_valid(&file.bytes) {
                 return Err(invalid(
                     format!(
@@ -383,7 +390,7 @@ impl LegacyState {
             }
         }
         for file in &self.lock_audit {
-            if !is_json(&file.path) || file.path.matches('/').count() != 1 {
+            if !is_json(&file.path) || !is_direct(&file.path, LOCK_AUDIT) {
                 return Err(invalid(
                     format!("the lock audit holds an unsupported entry: {}", file.path),
                     "remove or rename it; lock-audit holds only <audit-id>.json records",
@@ -406,7 +413,7 @@ impl LegacyState {
     fn validate_plans(&self, records: &BTreeMap<&str, Map<String, Value>>) -> Result<()> {
         for (path, batch) in records
             .iter()
-            .filter(|(path, _)| path.starts_with("batches/") && path.matches('/').count() == 1)
+            .filter(|(path, _)| is_direct(path, "batches"))
         {
             let plan_path = format!("plans/{}.json", stem(path));
             let Some(plan) = records.get(plan_path.as_str()) else {
@@ -432,9 +439,7 @@ impl LegacyState {
         let direct = |directory: &str| -> BTreeSet<String> {
             records
                 .keys()
-                .filter(|path| {
-                    path.starts_with(&format!("{directory}/")) && path.matches('/').count() == 1
-                })
+                .filter(|path| is_direct(path, directory))
                 .map(|path| stem(path).to_owned())
                 .collect()
         };
@@ -443,7 +448,7 @@ impl LegacyState {
         let mut referenced = BTreeSet::new();
         for (path, batch) in records
             .iter()
-            .filter(|(path, _)| path.starts_with("batches/") && path.matches('/').count() == 1)
+            .filter(|(path, _)| is_direct(path, "batches"))
         {
             let batch_id = stem(path);
             let entries = match batch.get("dispatches") {
@@ -489,7 +494,7 @@ impl LegacyState {
                         format!("fix the dispatch_id field of {status_path}"),
                     ));
                 }
-                let brief = sha256_hex(canonical_json(&Value::Object(dispatch.clone())).as_bytes());
+                let brief = object_sha256(dispatch);
                 if entry.get("brief_sha256").and_then(Value::as_str) != Some(brief.as_str()) {
                     return Err(invalid(
                         format!(
@@ -519,12 +524,10 @@ impl LegacyState {
         dispatch_id: &str,
         entry: &Value,
     ) -> Result<()> {
-        let report_name = entry.get("report").and_then(Value::as_str).filter(|name| {
-            !name.is_empty()
-                && !name.starts_with('/')
-                && !name.contains('\\')
-                && !name.split('/').any(|part| part == ".." || part.is_empty())
-        });
+        let report_name = entry
+            .get("report")
+            .and_then(Value::as_str)
+            .filter(|name| valid_path(name));
         let Some(report_name) = report_name else {
             return Err(invalid(
                 format!("the reported dispatch has an invalid report path: {dispatch_id}"),
@@ -537,7 +540,7 @@ impl LegacyState {
                 format!("restore {report_name}"),
             ));
         };
-        let checksum = sha256_hex(canonical_json(&Value::Object(report.clone())).as_bytes());
+        let checksum = object_sha256(report);
         if entry.get("report_sha256").and_then(Value::as_str) != Some(checksum.as_str()) {
             return Err(invalid(
                 format!("the completion report failed its integrity check: {dispatch_id}"),

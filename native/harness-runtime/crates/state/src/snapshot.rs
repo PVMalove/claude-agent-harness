@@ -10,10 +10,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::{Error, Result};
+use crate::lock::{LOCK_DIRECTORY, LOCK_RELEASE_GUARD};
 use crate::platform;
 use crate::time::iso_now;
 
@@ -25,14 +26,12 @@ pub const COPY_NAME: &str = "state";
 /// Whether an entry of the state root belongs to neither the snapshot nor the change check: the
 /// runtime directory of the IPC socket, the lock being held, and the stores.
 pub fn is_excluded(name: &str) -> bool {
-    matches!(
-        name,
-        "runtime" | ".coordinator.lock" | ".coordinator.lock.release"
-    ) || name.starts_with("runtime.db")
+    matches!(name, "runtime" | LOCK_DIRECTORY | LOCK_RELEASE_GUARD)
+        || name.starts_with("runtime.db")
 }
 
 /// The SHA-256 of every file below `state`, keyed by its `/` path relative to `state`.
-fn hash_tree(state: &Path) -> io::Result<BTreeMap<String, (String, u64)>> {
+fn hash_tree(state: &Path) -> io::Result<BTreeMap<String, String>> {
     let mut found = BTreeMap::new();
     let mut pending = vec![(state.to_path_buf(), String::new())];
     while let Some((directory, prefix)) = pending.pop() {
@@ -52,7 +51,7 @@ fn hash_tree(state: &Path) -> io::Result<BTreeMap<String, (String, u64)>> {
                 pending.push((entry.path(), relative));
             } else if kind.is_file() {
                 let bytes = fs::read(entry.path())?;
-                found.insert(relative, (sha256_hex(&bytes), bytes.len() as u64));
+                found.insert(relative, sha256_hex(&bytes));
             } else {
                 return Err(io::Error::other(format!(
                     "{} is neither a file nor a directory",
@@ -185,7 +184,7 @@ pub fn verify_unchanged(state: &Path, snapshot: &Snapshot) -> Result<()> {
     for (path, sha256) in &snapshot.files {
         match now.get(path) {
             None => changed.push(format!("removed: {path}")),
-            Some((current, _)) if current != sha256 => changed.push(format!("changed: {path}")),
+            Some(current) if current != sha256 => changed.push(format!("changed: {path}")),
             Some(_) => {}
         }
     }
@@ -204,10 +203,4 @@ pub fn verify_unchanged(state: &Path, snapshot: &Snapshot) -> Result<()> {
         "the legacy state changed while the migration ran ({total} file(s)): {}",
         changed.join("; ")
     )))
-}
-
-/// The manifest of a snapshot, for the tests and for the operator.
-pub fn read_manifest(dir: &Path) -> Result<Value> {
-    let bytes = fs::read(dir.join(MANIFEST_NAME))?;
-    serde_json::from_slice(&bytes).map_err(|err| Error::Interrupted(err.to_string()))
 }

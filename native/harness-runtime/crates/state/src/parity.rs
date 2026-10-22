@@ -13,7 +13,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value};
 
-use crate::canonical::{canonical_json, sha256_hex};
+use crate::canonical::{object_sha256, sha256_hex};
 use crate::error::{Error, Result};
 use crate::import::manifest;
 use crate::legacy::LegacyState;
@@ -23,10 +23,6 @@ use crate::route::{Target, classify};
 
 /// The most differences the error text names.
 const REPORTED: usize = 10;
-
-fn digest_record(record: &Map<String, Value>) -> String {
-    sha256_hex(canonical_json(&Value::Object(record.clone())).as_bytes())
-}
 
 /// The SHA-256 of every legacy file, keyed by its path relative to the state root.
 fn legacy_side(legacy: &LegacyState) -> BTreeMap<String, String> {
@@ -40,11 +36,11 @@ fn legacy_side(legacy: &LegacyState) -> BTreeMap<String, String> {
             } => {
                 // The store holds the repaired record, so the legacy record is repaired first.
                 repair::apply(spec, "", &mut record);
-                digest_record(&record)
+                object_sha256(&record)
             }
             Target::QaLease(record)
             | Target::QaQueue { record, .. }
-            | Target::Record { record, .. } => digest_record(&record),
+            | Target::Record { record, .. } => object_sha256(&record),
             Target::Artifact => sha256_hex(&file.bytes),
         };
         found.insert(format!("{selected}/{}", file.path), digest);
@@ -97,7 +93,7 @@ fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<Stri
         for (id, record) in rows(connection, &spec.select_sql(), |row| spec.join(row))? {
             found.insert(
                 format!("{selected}/{}/{id}.json", spec.directory),
-                digest_record(&record),
+                object_sha256(&record),
             );
         }
     }
@@ -106,7 +102,7 @@ fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<Stri
     })? {
         found.insert(
             format!("{selected}/qa-lane/lease.json"),
-            digest_record(&json_record(&body)?),
+            object_sha256(&json_record(&body)?),
         );
     }
     for (id, body) in rows(connection, "SELECT id, body_json FROM qa_queue", |row| {
@@ -114,7 +110,7 @@ fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<Stri
     })? {
         found.insert(
             format!("{selected}/qa-lane/queue/{id}.json"),
-            digest_record(&json_record(&body)?),
+            object_sha256(&json_record(&body)?),
         );
     }
     for (path, body) in rows(connection, "SELECT path, body_json FROM record", |row| {
@@ -122,7 +118,7 @@ fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<Stri
     })? {
         found.insert(
             format!("{selected}/{path}"),
-            digest_record(&json_record(&body)?),
+            object_sha256(&json_record(&body)?),
         );
     }
     for (path, bytes) in rows(connection, "SELECT path, bytes FROM artifact", |row| {

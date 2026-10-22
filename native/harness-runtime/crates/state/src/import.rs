@@ -22,9 +22,6 @@ use crate::schema;
 /// What the import knows once it is done.
 #[derive(Debug)]
 pub struct Imported {
-    pub store_id: String,
-    /// The repairs applied to the imported records, in path order.
-    pub repairs: Vec<Repair>,
     /// The canonical bytes of the import manifest (`import-manifest.json` next to the snapshot).
     pub manifest_json: String,
     pub manifest_sha256: String,
@@ -162,7 +159,6 @@ fn insert_audit(connection: &Connection, legacy: &LegacyState) -> Result<()> {
 pub fn import(legacy: &LegacyState, db_path: &Path, store_id: &str, at: &str) -> Result<Imported> {
     let mut connection = schema::create(db_path)?;
     let (manifest_json, manifest_sha256) = manifest(legacy);
-    let imported_repairs;
     {
         let transaction = connection.transaction()?;
         // The files come in path order, so a status can precede its dispatch: the foreign keys
@@ -206,12 +202,9 @@ pub fn import(legacy: &LegacyState, db_path: &Path, store_id: &str, at: &str) ->
         }
         hooks::reach("import")?;
         transaction.commit()?;
-        imported_repairs = repairs;
     }
     schema::seal(connection)?;
     Ok(Imported {
-        repairs: imported_repairs,
-        store_id: store_id.to_owned(),
         manifest_json,
         manifest_sha256,
     })

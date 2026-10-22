@@ -78,7 +78,7 @@ fn names(payload: &Value, key: &str) -> Result<Vec<String>, ReadError> {
     }
 }
 
-fn valid_path(path: &str) -> bool {
+pub(crate) fn valid_path(path: &str) -> bool {
     !path.is_empty()
         && !path.starts_with('/')
         && !path.contains('\\')
