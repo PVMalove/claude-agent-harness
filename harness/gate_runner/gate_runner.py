@@ -233,6 +233,8 @@ class StageCommand:
     stderr: str = ""
     duration_ms: int = 0
     failed_nodeids: tuple[str, ...] = ()
+    # The command ran but selected nothing (pytest exit 5): never a pass, never a failure.
+    not_run: bool = False
 
 
 # The environment a gate command sees (ADR 0023, sections 4 and 5): where it may write the JUnit
@@ -323,7 +325,7 @@ def build_stage_evidence(
     files: dict[str, str] = {}
     stages: list[StageEvidence] = []
     for stage_id, item in entries:
-        failed = item is not None and item.exit_code != 0
+        failed = item is not None and item.exit_code != 0 and not item.not_run
         stages.append(
             StageEvidence(
                 stage_id=stage_id,
@@ -333,7 +335,11 @@ def build_stage_evidence(
                 plan_sha256=context.plan_sha256,
                 image_digest=context.image_digest,
                 environment_fingerprint=context.environment_fingerprint,
-                result="not_run" if item is None else "fail" if failed else "pass",
+                result="not_run"
+                if item is None or item.not_run
+                else "fail"
+                if failed
+                else "pass",
                 exit_code=None if item is None else item.exit_code,
                 stdout=None
                 if item is None

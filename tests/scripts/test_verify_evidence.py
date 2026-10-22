@@ -5,8 +5,6 @@ commands (ADR 0023, sections 4 and 5)."""
 from __future__ import annotations
 
 import hashlib
-import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -14,57 +12,28 @@ import pytest
 from harness.gate_runner import stage_evidence
 from scripts import verify
 from scripts.verification import cache
-from tests.scripts.verify_project import BAD_TEST, GOOD_TEST, make_repo
-
-# Each fake stage writes to both streams and records the mypy cache directory it was given.
-_FAKE_STAGE = (
-    "import os, sys; print('{name}-out'); print('{name}-err', file=sys.stderr); "
-    "print('MYPY_CACHE_DIR=' + os.environ.get('MYPY_CACHE_DIR', ''))"
+from tests.scripts.verify_project import (
+    BAD_TEST,
+    fake_stage,
+    install,
+    read_document,
+    run_verify,
+    stream,
 )
-
-
-def _fake(name: str, exit_code: int = 0) -> list[str]:
-    return [
-        sys.executable,
-        "-c",
-        _FAKE_STAGE.format(name=name) + f"; sys.exit({exit_code})",
-    ]
 
 
 @pytest.fixture
 def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A committed project that ``verify`` verifies instead of this repository."""
-    root = make_repo(tmp_path / "project", {"test_a.py": GOOD_TEST})
-    for name in (cache.COLD_ENV, cache.JUNIT_ENV):
-        monkeypatch.delenv(name, raising=False)
-    outer = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
-    run_tmp = tmp_path / "run"
-    run_tmp.mkdir()
-    monkeypatch.setattr(verify, "ROOT", root)
-    monkeypatch.setattr(verify, "_static_checks", lambda env: None)
-    monkeypatch.setattr(
-        verify,
-        "_prepare_run_root",
-        lambda: (run_tmp, verify.isolated_temp_env(outer, run_tmp)),
-    )
-    monkeypatch.setattr(verify, "mypy_command", lambda: _fake("mypy"))
-    monkeypatch.setattr(verify, "clean_room_command", lambda: _fake("clean-room"))
-    monkeypatch.setattr(os, "cpu_count", lambda: 1)
-    return root
-
-
-def _run(*argv: str) -> int:
-    try:
-        verify.main(list(argv))
-    except SystemExit as stop:
-        return stop.code if isinstance(stop.code, int) else 1
-    return 0
+    return install(monkeypatch, tmp_path)
 
 
 def _document(directory: Path) -> stage_evidence.StageEvidenceDocument:
-    return stage_evidence.parse(
-        (directory / cache.EVIDENCE_FILE).read_text(encoding="utf-8")
-    )
+    return read_document(directory)
+
+
+def _run(*argv: str) -> int:
+    return run_verify(*argv)
 
 
 def _use_tests(project: Path, **files: str) -> None:
@@ -150,7 +119,7 @@ def test_a_failed_pytest_stage_lists_its_exact_nodeids_and_the_rest_is_not_run(
 def test_a_failed_mypy_stage_leaves_pytest_and_clean_room_not_run(
     project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(verify, "mypy_command", lambda: _fake("mypy", 3))
+    monkeypatch.setattr(verify, "mypy_command", lambda: fake_stage("mypy", 3))
     evidence = tmp_path / "evidence"
 
     assert _run("--evidence-dir", str(evidence)) == 3
@@ -173,9 +142,7 @@ def test_only_limits_the_recorded_stages(project: Path, tmp_path: Path) -> None:
 
 
 def _seen(evidence: Path, stage: int) -> str:
-    ref = _document(evidence).stages[stage].stdout
-    assert ref is not None
-    return (evidence / ref.path).read_text(encoding="utf-8")
+    return stream(evidence, stage)
 
 
 def test_the_worktree_cache_holds_the_pytest_and_mypy_caches_and_the_junit_report(
