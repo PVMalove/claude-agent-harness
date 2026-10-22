@@ -323,3 +323,17 @@ def test_standalone_run_says_that_drift_was_not_checked(repo: Path) -> None:
 
     result = next(c for c in report.checks if c.id == "hooks.policy")
     assert re.search(r"дрейф не проверен", result.message)
+
+
+def test_console_route_of_the_policy_warn_does_not_promise_that_update_fixes_it() -> None:
+    from harness.console import i18n
+    from harness.console.shell import check_route
+
+    route = check_route("hooks.policy")
+
+    # The warn stays after `harness update` (the second runtime lacks some hooks), so the console
+    # neither calls it a wiring error nor sends the user to Update Harness.
+    assert route.section == "Diagnostics"
+    assert "неверно" not in route.title
+    assert route.title != check_route("environment.hook_bash").title
+    assert i18n.tr("en", route.title) != route.title
