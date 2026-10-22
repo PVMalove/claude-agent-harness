@@ -853,9 +853,8 @@ def seed_template_files(repo: Path, *, orchestration_enabled: bool) -> dict[str,
         PROJECT_TEMPLATE_DIR / "scratch/.gitignore"
     ).read_bytes()
     files[".harness/.gitignore"] = HARNESS_RUNTIME_GITIGNORE.encode("utf-8")
-    files[".claude/settings.local.json"] = (
-        PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl"
-    ).read_bytes()
+    for adapter in ADAPTERS:
+        files[adapter.config] = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
     files[".harness/project.schema.json"] = (
         PROJECT_TEMPLATE_DIR / "project.schema.json"
     ).read_bytes()

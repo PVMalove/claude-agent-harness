@@ -80,6 +80,8 @@ class UninstallTests(unittest.TestCase):
         """Проверить, что удаление возвращает проект к исходному виду и сохраняет его изменения."""
         rule = next((self.repo / ".claude" / "rules").glob("*.md"))
         rule.write_text("project edit\n", encoding="utf-8")
+        second_runtime_hooks = self.repo / ".codex" / "hooks.json"
+        second_runtime_hooks.write_text('{"hooks": {}}\n', encoding="utf-8")
         own_skill = self.repo / ".harness" / "skills" / "my-skill" / "SKILL.md"
         own_skill.parent.mkdir(parents=True)
         own_skill.write_text("# mine\n", encoding="utf-8")
@@ -88,6 +90,7 @@ class UninstallTests(unittest.TestCase):
         self.assertIsNone(plan["blocked"])
         self.assertIn(rule.relative_to(self.repo).as_posix(), plan["backup"])
         self.assertIn(".harness/skills/my-skill/SKILL.md", plan["backup"])
+        self.assertIn(".codex/hooks.json", plan["backup"])
         self.assertIn(".harness/project.json", plan["backup"])
         self.assertNotIn("CLAUDE.md", plan["backup"])
         self.assertTrue((self.repo / ".harness").exists())
@@ -103,6 +106,10 @@ class UninstallTests(unittest.TestCase):
         self.assertEqual(
             (backup / rule.relative_to(self.repo)).read_text(encoding="utf-8"),
             "project edit\n",
+        )
+        self.assertEqual(
+            (backup / ".codex/hooks.json").read_text(encoding="utf-8"),
+            '{"hooks": {}}\n',
         )
         self.assertEqual(
             (backup / ".harness/skills/my-skill/SKILL.md").read_text(encoding="utf-8"),

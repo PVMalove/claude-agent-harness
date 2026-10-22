@@ -812,6 +812,32 @@ def check_hook_settings_merge(pv_project) -> None:
         HARNESS + ["update", str(pv_project), "--force-seed-file", config], quiet=True
     )
 
+    second_config = ".codex/hooks.json"
+    second = pv_project / second_config
+    second_document = json.loads(second.read_text(encoding="utf-8"))
+    for group in second_document["hooks"]["PreToolUse"]:
+        group["hooks"] = [
+            hook
+            for hook in group["hooks"]
+            if "block-pr-merge.sh" not in hook["command"]
+        ]
+    second.write_text(json.dumps(second_document, indent=2) + "\n", encoding="utf-8")
+    output = capture(HARNESS + ["update", str(pv_project)])
+    restored = second.read_text(encoding="utf-8")
+    if restored.count("block-pr-merge.sh") != 1:
+        sys.exit(
+            "update did not restore the removed managed entry of the second runtime"
+        )
+    if f"hooks merge: {second_config}: added=1 replaced=0" not in output:
+        sys.exit("update did not report the second runtime hook merge")
+    inventory = json.loads(
+        (pv_project / ".harness/integrations.json").read_text(encoding="utf-8")
+    )
+    if "pvmalove-suite-codex-hooks" not in {
+        entry["id"] for entry in inventory["integrations"]
+    }:
+        sys.exit("the second runtime hook adapter is not recorded in the integrations")
+
 
 def check_tracker_field(pv_project) -> None:
     """Поле tracker в установленном проекте (docs/adr/0011): discovery обоих runtime и health.

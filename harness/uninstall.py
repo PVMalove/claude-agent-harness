@@ -18,6 +18,7 @@ from typing import TypedDict
 
 from harness.cleanup import _active_worktrees, _clear_read_only, _git
 from harness.runtime_adapters import ADAPTER_ROOT, adapter_problem
+from harness.health.hook_settings import ADAPTERS
 from harness.health.project_files import (
     DISCOVERY_LINKS,
     LOCK_REL,
@@ -56,6 +57,7 @@ _PRUNE_DIRS = (
     ".claude/rules",
     ".claude/agents",
     ".claude",
+    ".codex",
     ".agents",
     "docs/agents",
     "docs",
@@ -99,9 +101,8 @@ def seed_templates() -> dict[str, bytes | None]:
         for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
             if source.is_file() and source.suffix in suffixes:
                 seeds[f"{target}/{source.name}"] = source.read_bytes()
-    seeds[".claude/settings.local.json"] = (
-        PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl"
-    ).read_bytes()
+    for adapter in ADAPTERS:
+        seeds[adapter.config] = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
     seeds["CLAUDE.md"] = CLAUDE_MD_SEED.encode("utf-8")
     seeds["AGENTS.md"] = None
     return seeds

@@ -363,6 +363,17 @@ class RuntimeAdapter:
     support: frozenset[EventTool] | None
 
 
+# Второй runtime: формат подтверждён официальной документацией hooks
+# (https://developers.openai.com/codex/hooks, 2026-10-22). Файл `<repo>/.codex/hooks.json` той же
+# формы `{"hooks": {<событие>: [{matcher, hooks: [handler]}]}}`; stdin shell-инструмента `Bash`
+# содержит `tool_name`, `tool_input.command`, `cwd`; код 2 блокирует. Правки файлов приходят как
+# `apply_patch` с патчем в `tool_input.command` и без `file_path`, поэтому hooks на Write и Edit
+# (адаптер payload — отдельная задача) не подключаются. События EnterWorktree и Skill в runtime
+# нет. Проектные hooks работают только после доверия слою `.codex/` и каждому hook по хэшу.
+CODEX_SUPPORT: frozenset[EventTool] = frozenset(
+    {("PreToolUse", "Bash"), ("PostToolUse", "Bash")}
+)
+
 ADAPTERS: tuple[RuntimeAdapter, ...] = (
     RuntimeAdapter(
         runtime="claude",
@@ -374,6 +385,17 @@ ADAPTERS: tuple[RuntimeAdapter, ...] = (
             "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
         ),
         support=CLAUDE_SUPPORT,
+    ),
+    RuntimeAdapter(
+        runtime="codex",
+        config=".codex/hooks.json",
+        template="codex-hooks.json.tmpl",
+        integration_id="pvmalove-suite-codex-hooks",
+        verify=(
+            "Trust the project hooks layer in the second coding runtime, open a fresh session "
+            "and confirm a guarded action (e.g. a direct commit to the base branch) is blocked."
+        ),
+        support=CODEX_SUPPORT,
     ),
 )
 

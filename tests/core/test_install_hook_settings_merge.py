@@ -285,3 +285,124 @@ def test_report_names_the_critical_hook_that_a_conflict_leaves_unwired(
         "hooks check: .claude/settings.local.json: critical wired 8/9; "
         "missing: block-dangerous-git"
     ) in result.stdout
+
+
+CODEX_CONFIG = ".codex/hooks.json"
+CODEX_COMMAND = re.compile(
+    r'cd "\$\(git rev-parse --show-toplevel\)" && bash "\.claude/hooks/([\w.-]+)"'
+)
+
+
+def load_codex(repo: Path) -> JsonObject:
+    document: JsonObject = json.loads((repo / CODEX_CONFIG).read_text(encoding="utf-8"))
+    return document
+
+
+def codex_triples(document: JsonObject) -> list[tuple[str, str, str]]:
+    """(event, matcher, script) of every handler of the second runtime's file."""
+    triples = []
+    for event, groups in document["hooks"].items():
+        for group in groups:
+            for handler in group["hooks"]:
+                match = CODEX_COMMAND.fullmatch(handler["command"])
+                assert match, handler["command"]
+                triples.append((event, group["matcher"], match.group(1)))
+    return triples
+
+
+def test_init_installs_the_second_runtime_adapter_from_the_same_scripts(
+    repo: Path,
+) -> None:
+    install(repo)
+
+    expected = sorted(
+        (event, group["matcher"], script)
+        for event, groups in template_document()["hooks"].items()
+        for group in groups
+        for handler in group["hooks"]
+        if (script := script_of(handler)) and "Bash" in group["matcher"].split("|")
+    )
+    assert sorted(codex_triples(load_codex(repo))) == expected
+    inventory = json.loads((repo / INTEGRATIONS).read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in inventory["integrations"]
+        if item["id"] == "pvmalove-suite-codex-hooks"
+    )
+    assert entry["kind"] == "hook"
+    assert entry["runtimes"] == ["codex"]
+    assert entry["config"] == CODEX_CONFIG
+    assert entry["managed_entries"] == sorted(set(entry["managed_entries"]))
+    assert len(entry["managed_entries"]) == len(expected)
+
+
+def test_second_runtime_adapter_skips_hooks_whose_payload_it_cannot_deliver(
+    repo: Path,
+) -> None:
+    install(repo)
+
+    scripts = {script for _, _, script in codex_triples(load_codex(repo))}
+
+    assert scripts.isdisjoint(
+        {
+            "block-scratch-outside-docs-tasks.sh",
+            "check-worktree-branch-name.sh",
+            "count-skill-usage.sh",
+        }
+    )
+    assert "protect-hook-policy.sh" in scripts
+    assert "mark-qa-gate-passed.sh" in scripts
+
+
+def test_second_runtime_file_follows_the_same_merge_rules(repo: Path) -> None:
+    install(repo)
+    document = load_codex(repo)
+    drop = "block-pr-merge.sh"
+    for group in document["hooks"]["PreToolUse"]:
+        group["hooks"] = [h for h in group["hooks"] if drop not in h["command"]]
+        if any("block-dangerous-git.sh" in h["command"] for h in group["hooks"]):
+            group["hooks"].append(USER_HOOK)
+            for h in group["hooks"]:
+                if "block-dangerous-git.sh" in h["command"]:
+                    h["timeout"] = 5
+    (repo / CODEX_CONFIG).write_text(json.dumps(document, indent=2), encoding="utf-8")
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    merged = load_codex(repo)
+    commands = [h["command"] for g in merged["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert sum(drop in command for command in commands) == 1
+    assert commands.count(USER_HOOK["command"]) == 1
+    assert (
+        f"hooks conflict: {CODEX_CONFIG}: PreToolUse [Bash] block-dangerous-git.sh"
+        in result.stdout
+    )
+    assert f"hooks merge: {CODEX_CONFIG}: added=1" in result.stdout
+
+
+def test_force_seed_file_replaces_the_second_runtime_file_with_the_template(
+    repo: Path,
+) -> None:
+    install(repo)
+    template = (
+        Path(__file__).resolve().parents[2] / "harness/project/codex-hooks.json.tmpl"
+    ).read_bytes()
+    (repo / CODEX_CONFIG).write_text('{"hooks": {}}\n', encoding="utf-8")
+
+    result = harness("update", str(repo), "--force-seed-file", CODEX_CONFIG)
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / CODEX_CONFIG).read_bytes() == template
+
+
+def test_second_runtime_update_is_idempotent(repo: Path) -> None:
+    install(repo)
+    first = (repo / CODEX_CONFIG).read_bytes()
+    inventory = (repo / INTEGRATIONS).read_bytes()
+
+    result = harness("update", str(repo))
+
+    assert (repo / CODEX_CONFIG).read_bytes() == first
+    assert (repo / INTEGRATIONS).read_bytes() == inventory
+    assert f"hooks merge: {CODEX_CONFIG}: added=0 replaced=0" in result.stdout
