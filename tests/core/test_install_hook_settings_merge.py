@@ -342,7 +342,9 @@ def test_init_installs_the_second_runtime_adapter_from_the_same_scripts(
         for event, groups in template_document()["hooks"].items()
         for group in groups
         for handler in group["hooks"]
-        if (script := script_of(handler)) and "Bash" in group["matcher"].split("|")
+        if (script := script_of(handler))
+        and event == "PreToolUse"
+        and "Bash" in group["matcher"].split("|")
     )
     assert sorted(codex_triples(load_codex(repo))) == expected
     inventory = json.loads((repo / INTEGRATIONS).read_text(encoding="utf-8"))
@@ -373,7 +375,27 @@ def test_second_runtime_adapter_skips_hooks_whose_payload_it_cannot_deliver(
         }
     )
     assert "protect-hook-policy.sh" in scripts
-    assert "mark-qa-gate-passed.sh" in scripts
+
+
+def test_second_runtime_adapter_does_not_wire_the_qa_marker_hook(repo: Path) -> None:
+    # The second runtime fires PostToolUse after a Bash command that exited non-zero, and its
+    # payload has no exit status: `mark-qa-gate-passed` would record a marker for a failed QA run.
+    install(repo)
+
+    def marker_triples() -> list[tuple[str, str, str]]:
+        return [
+            triple
+            for triple in codex_triples(load_codex(repo))
+            if triple[2] == "mark-qa-gate-passed.sh" or triple[0] == "PostToolUse"
+        ]
+
+    assert marker_triples() == []
+    assert handlers(load(repo), "mark-qa-gate-passed.sh")
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert marker_triples() == []
 
 
 def test_second_runtime_file_follows_the_same_merge_rules(repo: Path) -> None:

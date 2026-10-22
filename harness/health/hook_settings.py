@@ -370,9 +370,10 @@ class RuntimeAdapter:
 # `apply_patch` с патчем в `tool_input.command` и без `file_path`, поэтому hooks на Write и Edit
 # (адаптер payload — отдельная задача) не подключаются. События EnterWorktree и Skill в runtime
 # нет. Проектные hooks работают только после доверия слою `.codex/` и каждому hook по хэшу.
-CODEX_SUPPORT: frozenset[EventTool] = frozenset(
-    {("PreToolUse", "Bash"), ("PostToolUse", "Bash")}
-)
+# `mark-qa-gate-passed` на `PostToolUse` не подключается: runtime вызывает `PostToolUse` и после
+# команды Bash с ненулевым кодом выхода, а в payload нет поля с кодом выхода. Hook записал бы
+# маркер `.claude/.qa-gate/passed` для упавшего QA-прогона, и `require-qa-gate` разрешил бы PR.
+CODEX_SUPPORT: frozenset[EventTool] = frozenset({("PreToolUse", "Bash")})
 
 ADAPTERS: tuple[RuntimeAdapter, ...] = (
     RuntimeAdapter(

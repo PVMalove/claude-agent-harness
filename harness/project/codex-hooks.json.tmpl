@@ -14,14 +14,6 @@
           { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/block-dangerous-git.sh\"" }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/mark-qa-gate-passed.sh\"" }
-        ]
-      }
     ]
   }
 }
