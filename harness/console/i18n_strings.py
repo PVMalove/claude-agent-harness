@@ -69,6 +69,7 @@ EN: dict[str, str] = {
     "Временный каталог pytest недоступен": "The pytest temporary directory is unavailable",
     "Символические ссылки недоступны": "Symbolic links are unavailable",
     "Bash для hooks не найден": "Bash for hooks is not found",
+    "Политика hooks проекта требует внимания": "The project hook policy needs attention",
     "Каталог .sandboxes настроен неверно": "The .sandboxes directory is misconfigured",
     "Каталог Harness недоступен": "A Harness directory is unavailable",
     "НАБЛЮДЕНИЕ · БЕЗ LLM\n\nОткрытие сессии подключает локальный монитор. Новый worker не запускается.": "OBSERVATION · NO LLM\n\nOpening a session attaches a local monitor. No new worker is started.",

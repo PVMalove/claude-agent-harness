@@ -320,6 +320,34 @@ def test_an_escalation_applies_to_every_hook_decision_for_every_role(
         assert _decision(done) == (2, "block", reason), f"{hook_id}: {done.stderr}"
 
 
+@pytest.mark.parametrize("role", ROLES)
+def test_a_legacy_project_without_hook_policy_keeps_the_standard_decisions(
+    tmp_path: Path, projects: dict[str, Path], role: str
+) -> None:
+    """A project installed before `hook_policy` has no key: the profile is `standard` from the
+    default source and the blocking hook set is the one of an explicit `standard` project."""
+    legacy = tmp_path / "project"
+    shutil.copytree(
+        projects["standard"], legacy, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    config = legacy / ".harness" / "project.json"
+    document = json.loads(config.read_text(encoding="utf-8"))
+    del document["hook_policy"]
+    config.write_text(json.dumps(document), encoding="utf-8")
+
+    for hook_id, (block, reason, allow) in CRITICAL_GUARDS.items():
+        denied = _run(legacy, hook_id, _fill(block, legacy), role, "standard")
+        allowed = _run(legacy, hook_id, _fill(allow, legacy), role, "standard")
+        assert _decision(denied) == (2, "block", reason), f"{hook_id}: {denied.stderr}"
+        assert _decision(allowed) == (0, "allow", "ok"), f"{hook_id}: {allowed.stderr}"
+        assert parse_hook_response(denied.stderr)["profile"] == "standard"
+    behavioural = _run(
+        legacy, "require-bounded-check", _UNBOUNDED_CHECK, role, "standard"
+    )
+    assert _decision(behavioural) == (2, "block", "unbounded-check"), behavioural.stderr
+    assert parse_hook_response(behavioural.stderr)["profile"] == "standard"
+
+
 def test_the_scoped_test_author_guard_stays_outside_the_envelope_by_decision() -> None:
     """ADR 0024 section 2a lists it as critical, but it answers with its own soft refusal (ADR 0014)
     inside the agent description, so it is wired outside the envelope; the matrix above proves it

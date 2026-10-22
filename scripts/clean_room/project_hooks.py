@@ -22,6 +22,9 @@ from scripts.clean_room.merge_corpus import (
 from scripts.clean_room.support import (
     BASH,
     HARNESS,
+    capture_json,
+    fail_json,
+    find_check,
     run_hook,
     run_ok,
     run_step,
@@ -74,6 +77,8 @@ def run(ctx: SimpleNamespace) -> None:
         "profile": "standard"
     }:
         sys.exit("pvmalove-suite init did not set hook_policy.profile standard")
+    check_hooks_policy_health(pv_project)
+    check_legacy_hook_policy(test_root / "legacy-hook-policy")
     for command, code, decision in (
         ("gh pr merge 1", 2, "block"),
         ("echo done", 0, "allow"),
@@ -2006,6 +2011,84 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"require-qa-gate.sh with pr_commands.py {label} allowed a PR")
     if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
         sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
+
+
+def check_hooks_policy_health(project: Path) -> None:
+    """`harness health` отчитывается о hooks.policy: профиль, проводка и потерянный критический hook."""
+    policy = find_check(
+        capture_json(HARNESS + ["health", str(project), "--json"]), "hooks.policy"
+    )
+    message = policy["message"]
+    if (
+        policy["status"] != "warn"
+        or "профиль standard (.harness/project.json)" not in message
+    ):
+        sys.exit(f"hooks.policy did not report the standard profile: {policy}")
+    if "claude: критических hooks подключено 9/9" not in message:
+        sys.exit(f"hooks.policy did not report the wired critical hooks: {message}")
+    script = project / ".claude" / "hooks" / "block-dangerous-git.sh"
+    content = script.read_bytes()
+    script.unlink()
+    try:
+        broken = find_check(
+            fail_json(HARNESS + ["health", str(project), "--json"]), "hooks.policy"
+        )
+    finally:
+        script.write_bytes(content)
+        script.chmod(script.stat().st_mode | 0o111)
+    if (
+        broken["status"] != "fail"
+        or "block-dangerous-git.sh: файл отсутствует" not in broken["message"]
+    ):
+        sys.exit(f"hooks.policy did not fail on a missing critical hook: {broken}")
+
+
+def check_legacy_hook_policy(legacy: Path) -> None:
+    """Проект без ключа hook_policy: профиль standard по умолчанию, тот же блокирующий набор.
+
+    `harness update` не создаёт ключ и не меняет `.harness/project.json`.
+    """
+    legacy.mkdir(parents=True)
+    run_step(["git", "init", "-q"], cwd=legacy, check=True)
+    run_ok(
+        HARNESS + ["init", str(legacy), "--capability", "pvmalove-suite"], quiet=True
+    )
+    config = legacy / ".harness" / "project.json"
+    document = json.loads(config.read_text(encoding="utf-8"))
+    del document["hook_policy"]
+    config.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+    before = config.read_bytes()
+    run_ok(HARNESS + ["update", str(legacy)], quiet=True)
+    if config.read_bytes() != before:
+        sys.exit("harness update changed .harness/project.json of a legacy project")
+    # A bare install has unfilled project files, so the exit code of `health` is not the signal.
+    report = run_step(
+        HARNESS + ["health", str(legacy), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    message = find_check(json.loads(report.stdout), "hooks.policy")["message"]
+    if "профиль standard (по умолчанию)" not in message:
+        sys.exit(
+            f"a legacy project did not get the default standard profile: {message}"
+        )
+    merge_hook = legacy / ".claude" / "hooks" / "block-pr-merge.sh"
+    answered = run_hook(merge_hook, legacy, "gh pr merge 1")
+    verdict = json.loads(answered.stderr.strip().splitlines()[-1])
+    if (answered.returncode, verdict.get("decision"), verdict.get("profile")) != (
+        2,
+        "block",
+        "standard",
+    ):
+        sys.exit(f"a legacy project did not keep the blocking hook set: {answered}")
+    bounded = run_hook(
+        legacy / ".claude" / "hooks" / "require-bounded-check.sh",
+        legacy,
+        "python -m pytest -q tests",
+    )
+    if bounded.returncode != 2:
+        sys.exit("a legacy project did not block the unbounded check like standard")
 
 
 def check_publication_forms(metadata_hook: Path, project: Path) -> None:

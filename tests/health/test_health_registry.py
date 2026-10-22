@@ -39,6 +39,7 @@ def test_run_wires_every_registered_group(tmp_path: Path) -> None:
         "repo_map",
         "memory",
         "environment",
+        "hooks",
         "tracker",
         "orchestration",
     }
