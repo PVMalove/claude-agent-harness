@@ -42,6 +42,7 @@ from harness.orchestration.core.git_utils import (
     _git,
     _remote_branch_tip,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -352,7 +353,7 @@ def _verify_unmoved(repo: Path, identity: JsonObject) -> JsonObject:
 def _evidence_links(root: Path, record_id: str) -> list[JsonObject]:
     directory = _records_root(root) / IntegrationEvidenceRecord.directory
     links = []
-    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+    for path in state_view.glob(directory, "*.json"):
         link = _read_object(path, "integration evidence record")
         if link.get("integration_record_id") == record_id:
             link["result"] = _integration_result(link.get("result"))
@@ -418,7 +419,7 @@ def integration_prepare(args: argparse.Namespace) -> JsonObject:
         }
         record_id = IntegrationRecord.derive_id(identity)
         path = _record_path(root, record_id)
-        if path.is_file():
+        if state_view.is_file(path):
             record = _read_object(path, "integration record")
             if record.get("source_sha256") != _sha256(facts):
                 raise CoordinatorError(
@@ -464,7 +465,7 @@ def _load_record(root: Path, record_id: object) -> JsonObject:
             remedy="pass the integration_record_id that 'integration prepare' returned",
         )
     path = _record_path(root, record_id)
-    if not path.is_file():
+    if not state_view.is_file(path):
         raise CoordinatorError(
             f"no integration record {record_id}",
             remedy="run 'integration prepare' for the ticket branch to create the record",
@@ -572,7 +573,7 @@ def _store_evidence(
         / IntegrationEvidenceRecord.directory
         / f"{evidence_id}.json"
     )
-    if path.is_file():
+    if state_view.is_file(path):
         existing = _read_object(path, "integration evidence record")
         existing["result"] = _integration_result(existing.get("result"))
         return {
@@ -612,7 +613,7 @@ def _resolve_record(root: Path, args: argparse.Namespace) -> JsonObject:
     directory = _records_root(root) / IntegrationRecord.directory
     requested = getattr(args, "batch", None)
     matches = []
-    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+    for path in state_view.glob(directory, "*.json"):
         identity = _read_object(path, "integration record").get("identity") or {}
         if (
             identity.get("ticket") == ticket

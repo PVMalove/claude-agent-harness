@@ -1,9 +1,10 @@
 //! One connection's conversation: `hello`, then requests (ADR 0021, section 3).
 //!
 //! A session turns one request frame into one response and says whether the connection must
-//! close afterwards. It does no I/O, so every rule is tested without a socket.
+//! close afterwards. It does no socket I/O: it only reads the state directory that `hello` and
+//! `state.read` answer from, so every rule is tested against a scratch state without a socket.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use contracts::{
     ErrorBody, ErrorCode, FailureDomain, HelloPayload, HelloResult, PROTOCOL_VERSION,
@@ -20,6 +21,9 @@ pub struct Shared {
     pub token: String,
     pub repo_id: String,
     pub server_version: String,
+    /// The state directory whose runtime store this runtime serves once the store is the
+    /// authority (ADR 0020, section 1); `None` for a runtime that serves no state.
+    pub state_dir: Option<PathBuf>,
 }
 
 /// The answer to one frame.
@@ -117,6 +121,7 @@ impl Session {
                 ),
                 close: false,
             },
+            "state.read" => state_read(shared, &request),
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -182,16 +187,119 @@ impl Session {
             );
         };
         self.negotiated = Some(version);
+        // The store is the authority only after a cutover, which can happen while this runtime
+        // lives, so every `hello` asks again.
+        let store_id = shared.state_dir.as_deref().and_then(state::read::store_id);
+        let mut features = vec!["status".to_owned()];
+        if store_id.is_some() {
+            features.push("state.read".to_owned());
+        }
         let result = HelloResult {
             protocol: version,
             server_version: shared.server_version.clone(),
-            store_id: None,
-            features: vec!["status".to_owned()],
+            store_id,
+            features,
         };
         Reply {
             response: Response::ok(id, json!(result)),
             close: false,
         }
+    }
+}
+
+/// `state.read`: records of the runtime store in the form of the legacy ledger files.
+fn state_read(shared: &Shared, request: &Request) -> Reply {
+    use state::read::ReadError;
+
+    let id = &request.operation_id;
+    let refusal = |code, domain, retryable, message: String, remedy: &str| {
+        failure(
+            id,
+            ErrorBody::new(code, domain, retryable, message, remedy),
+            false,
+        )
+    };
+    let Some(state_dir) = shared.state_dir.as_deref() else {
+        return refusal(
+            ErrorCode::NotFound,
+            FailureDomain::Policy,
+            false,
+            "this runtime serves no state".to_owned(),
+            "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
+        );
+    };
+    match state::read::read(
+        state_dir,
+        request.payload.as_ref(),
+        request.expected_revision,
+    ) {
+        Ok(answer) => {
+            let mut response = Response::ok(id, json!({"records": answer.records}));
+            response.revision = Some(answer.revision);
+            Reply {
+                response,
+                close: false,
+            }
+        }
+        Err(ReadError::NotAttached(reason)) => refusal(
+            ErrorCode::NotFound,
+            FailureDomain::Policy,
+            false,
+            format!("the runtime store is not the authority of this repository: {reason}"),
+            "run `harness-runtime migrate --repo <repo>`, or use the installation that matches the state",
+        ),
+        Err(ReadError::Malformed(detail)) => {
+            let Reply { response, .. } = malformed(id, &detail);
+            Reply {
+                response,
+                close: false,
+            }
+        }
+        Err(ReadError::RevisionConflict { expected, actual }) => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::RevisionConflict,
+                FailureDomain::Infrastructure,
+                true,
+                "the store changed since the revision the request expected",
+                "read again",
+            )
+            .with_fact("expected_revision", expected)
+            .with_fact("actual_revision", actual),
+            false,
+        ),
+        Err(ReadError::TooLarge) => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::MalformedRequest,
+                FailureDomain::Tooling,
+                false,
+                "the answer would not fit one frame",
+                "ask for fewer collections or paths in one request",
+            )
+            .with_fact("reason", "answer_too_large"),
+            false,
+        ),
+        Err(ReadError::Store {
+            message,
+            busy: true,
+        }) => refusal(
+            ErrorCode::StoreBusy,
+            FailureDomain::Infrastructure,
+            true,
+            format!("the store is busy: {message}"),
+            "repeat the command",
+        ),
+        Err(ReadError::Store {
+            message,
+            busy: false,
+        }) => refusal(
+            ErrorCode::Internal,
+            FailureDomain::Infrastructure,
+            false,
+            format!("the store cannot be read: {message}"),
+            "repeat the command; if the store stays unreadable, restore the state directory from the snapshot named in AUTHORITY.json",
+        ),
     }
 }
 
@@ -247,6 +355,7 @@ mod tests {
             token: "secret".to_owned(),
             repo_id: id,
             server_version: "9.9.9".to_owned(),
+            state_dir: None,
         }
     }
 
@@ -458,5 +567,130 @@ mod tests {
         let reply = Session::new().handle(&setup().0, &body, NOW);
 
         assert_eq!(code(&reply), ErrorCode::MalformedRequest);
+    }
+
+    fn read_body(payload: Value, expected_revision: Option<u64>) -> Vec<u8> {
+        let mut request = json!({
+            "protocol_version": {"major": 1, "minor": 0},
+            "operation_id": "r",
+            "operation": "state.read",
+            "request_deadline": NOW + 1,
+            "payload": payload,
+        });
+        if let Some(revision) = expected_revision {
+            request["expected_revision"] = json!(revision);
+        }
+        serde_json::to_vec(&request).unwrap()
+    }
+
+    /// A runtime that serves the state directory of a repository whose state was cut over to the
+    /// store: the fixture state of the Python 1.x ledger, migrated.
+    fn serving_a_store() -> (Shared, PathBuf, String) {
+        let root = scratch_repository("store");
+        let state_dir = root.join(".harness/orchestration/state");
+        let fixture =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../state/tests/fixtures/legacy_v3");
+        copy_tree(&fixture, &state_dir);
+        let generation = fs::read_dir(state_dir.join("generations"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.join("qa-lane/lease.json").exists())
+            .unwrap();
+        fs::remove_file(generation.join("qa-lane/lease.json")).unwrap();
+        for entry in fs::read_dir(generation.join("qa-lane/queue")).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        let outcome = state::migrate::run(&root).unwrap();
+        let mut shared = shared_for(&root);
+        shared.state_dir = Some(state_dir);
+        (shared, root, outcome.authority.store_id)
+    }
+
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let target = to.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn a_runtime_that_serves_no_state_does_not_know_state_read() {
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
+
+        let reply = session.handle(&shared, &read_body(json!({}), None), NOW);
+
+        assert_eq!(code(&reply), ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn before_the_cutover_hello_names_no_store_and_state_read_is_not_found() {
+        let (mut shared, root) = setup();
+        shared.state_dir = Some(root.join(".harness/orchestration/state"));
+        let mut session = Session::new();
+
+        let hello = session.handle(&shared, &hello_body(&root, "secret", 1, 1), NOW);
+        let reply = session.handle(
+            &shared,
+            &read_body(json!({"collections": ["batches"]}), None),
+            NOW,
+        );
+
+        let result = hello.response.result.unwrap();
+        assert_eq!(result["store_id"], Value::Null);
+        assert_eq!(result["features"], json!(["status"]));
+        assert_eq!(code(&reply), ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn after_the_cutover_hello_names_the_store_and_state_read_answers_records_and_the_revision() {
+        let (shared, root, store_id) = serving_a_store();
+        let mut session = Session::new();
+
+        let hello = session.handle(&shared, &hello_body(&root, "secret", 1, 1), NOW);
+        let reply = session.handle(
+            &shared,
+            &read_body(
+                json!({"collections": ["batches"], "paths": ["plans/nobody.json"]}),
+                Some(1),
+            ),
+            NOW,
+        );
+
+        let result = hello.response.result.unwrap();
+        assert_eq!(result["store_id"], store_id.as_str());
+        assert_eq!(result["features"], json!(["status", "state.read"]));
+        assert_eq!(reply.response.status, Status::Ok);
+        assert_eq!(reply.response.revision, Some(1));
+        let records = &reply.response.result.unwrap()["records"];
+        assert_eq!(records.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_stale_revision_is_a_retryable_revision_conflict() {
+        let (shared, root, _) = serving_a_store();
+        let mut session = authenticated(&shared, &root);
+
+        let reply = session.handle(&shared, &read_body(json!({}), Some(9)), NOW);
+
+        assert_eq!(code(&reply), ErrorCode::RevisionConflict);
+        assert!(reply.response.error.unwrap().retryable);
+    }
+
+    #[test]
+    fn an_unknown_payload_field_of_state_read_is_malformed() {
+        let (shared, root, _) = serving_a_store();
+        let mut session = authenticated(&shared, &root);
+
+        let reply = session.handle(&shared, &read_body(json!({"surprise": true}), None), NOW);
+
+        assert_eq!(code(&reply), ErrorCode::MalformedRequest);
+        assert!(!reply.close);
     }
 }

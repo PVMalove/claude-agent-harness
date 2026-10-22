@@ -14,6 +14,7 @@ from harness.orchestration.worker_observation import (
     STARTUP_TIMEOUT_SECONDS,
 )
 
+from harness.orchestration.core import state_view
 from harness.orchestration.core import utils
 from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
 from harness.orchestration.core.git_utils import _git
@@ -229,7 +230,7 @@ def validate(root: Path, batch: JsonObject) -> None:
         )
     records = _records_root(root)
     audits = (
-        [_read_object(p, "audit") for p in (records / "audit").glob("*.json")]
+        [_read_object(p, "audit") for p in state_view.glob(records / "audit", "*.json")]
         if points
         else []
     )

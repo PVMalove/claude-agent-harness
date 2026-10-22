@@ -35,6 +35,15 @@ impl Server {
     /// Take the lock, write the private token, then create the pipe. The lock holder is the only
     /// runtime of the repository, so it alone touches the token file.
     pub fn bind(paths: RuntimePaths) -> Result<Self, StartError> {
+        Self::bind_serving(paths, None)
+    }
+
+    /// Like [`Server::bind`], and the runtime answers `state.read` from the runtime store of
+    /// `state_dir` once that store is the authority of the repository (ADR 0020, section 1).
+    pub fn bind_serving(
+        paths: RuntimePaths,
+        state_dir: Option<std::path::PathBuf>,
+    ) -> Result<Self, StartError> {
         fs::create_dir_all(&paths.dir)
             .map_err(io_context(format!("cannot create {}", paths.dir.display())))?;
         let lock = take_lock(&paths)?;
@@ -54,6 +63,7 @@ impl Server {
             token,
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
+            state_dir,
         });
         Ok(Self {
             listener: Mutex::new(listener),

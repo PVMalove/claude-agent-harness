@@ -23,6 +23,7 @@ from harness.orchestration.core.git_utils import (
     _git,
     _remote_branch_tip,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -139,7 +140,7 @@ def _plan_requirements(root: Path, ticket: str) -> list[str] | None:
     directory = _records_root(root) / "plans"
     plans = [
         _read_object(path, "batch plan")
-        for path in sorted(directory.glob("*.json") if directory.is_dir() else [])
+        for path in state_view.glob(directory, "*.json")
     ]
     plans = [item for item in plans if item.get("ticket") == ticket]
     if not plans:
@@ -390,7 +391,7 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
         _replace_record(ledger, BatchRecord.from_dict(batch))
         record_path = _records_root(root) / ResolverRecord.directory
         resolver_id = ResolverRecord.derive_id(record_id)
-        if not (record_path / f"{resolver_id}.json").is_file():
+        if not state_view.is_file(record_path / f"{resolver_id}.json"):
             _write_record(
                 ledger,
                 ResolverRecord.from_dict(

@@ -61,6 +61,7 @@ from harness.orchestration.core.workspace import (
 )
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
+    read_state,
     _load_batch,
     _load_dispatch,
     _load_dispatch_status,
@@ -213,7 +214,7 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
+    with read_state(ledger, repo):
         batch = _load_batch(root, args.batch)
         _validate_batch_integrity(root, batch)
         entry = None

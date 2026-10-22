@@ -530,6 +530,7 @@ class RuntimeClient:
         *,
         operation_id: str,
         payload: JsonObject | None = None,
+        expected_revision: int | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> RuntimeReply:
         """Send one request until it is answered or its ``request_deadline`` passes.
@@ -550,6 +551,8 @@ class RuntimeClient:
         }
         if payload is not None:
             request["payload"] = payload
+        if expected_revision is not None:
+            request["expected_revision"] = expected_revision
         delay = BACKOFF_START_SECONDS
         while True:
             try:

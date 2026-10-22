@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..core import state_view
 from ..core.constants import BatchState, DispatchState
 from ..core.utils import sealed
 from .recovery_chain import event_audit, terminal
@@ -940,7 +941,13 @@ class LifecycleLedger:
         return generation
 
     def records_root(self) -> Path:
-        """Return the selected generation; legacy state is readable only by ``migrate``."""
+        """Return the selected generation; legacy state is readable only by ``migrate``.
+
+        While a read view of the runtime store is bound for this state root (ADR 0020), the records
+        root is the virtual root of that view: the file ledger is not the authority any more."""
+        view = state_view.current_view()
+        if view is not None and view.root == self.root:
+            return view.virtual_root
         pointer = self.pointer()
         if pointer is None:
             if self._legacy_records_present():

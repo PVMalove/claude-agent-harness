@@ -20,6 +20,7 @@ from typing import cast
 from harness.orchestration import operation_access, runtime_access, runtime_probe
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
+from harness.orchestration.core import state_view
 from harness.orchestration.core import utils
 from harness.orchestration.core.config import (
     _attention_policy,
@@ -53,6 +54,8 @@ from harness.orchestration.core.workspace import (
     _agent_inbox,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    read_state,
+    store_is_authority,
     LedgerBusyError,
     _ledger_lock,
     _load_batch,
@@ -765,13 +768,14 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     entries: list[JsonObject] | None = None
     engine_reads = 0
+    # The runtime store is read, never written, by this view: the engine is not asked, so no
+    # evidence is persisted (ADR 0020, section 2).
+    from_store = store_is_authority(root)
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
-    with contextlib.suppress(LedgerBusyError), _ledger_lock(ledger):
+    with contextlib.suppress(LedgerBusyError), read_state(ledger, repo):
         entries = []
-        for path in sorted(
-            (_records_root(root) / DispatchStatusRecord.directory).glob(
-                "dispatch-*.json"
-            )
+        for path in state_view.glob(
+            _records_root(root) / DispatchStatusRecord.directory, "dispatch-*.json"
         ):
             status = _read_object(path, "dispatch status")
             if args.dispatch and status.get("dispatch_id") != args.dispatch:
@@ -794,7 +798,9 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 if item.get("dispatch_id") == dispatch["dispatch_id"]
             ]
             asks_engine = needs_engine(status)
-            observe = bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
+            observe = not from_store and (
+                bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
+            )
             worker = reconcile(ledger, dispatch, status, observe=observe)
             engine_reads += asks_engine and observe
             live = status.get("state") in LIVE_DISPATCH_STATES
@@ -836,7 +842,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
             "retry_after_seconds": _execution_policy(config)[
                 "dispatch_poll_interval_seconds"
             ],
-            "lock": ledger.lock_state(),
+            "lock": None if from_store else ledger.lock_state(),
             "remedy": "repeat dispatch status: another coordinator operation holds the ledger "
             "lock. 'coordinator.py ledger lock-status' shows its holder, age and when a timeout "
             "release becomes available. If it stays held, run 'coordinator.py ledger "

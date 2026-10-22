@@ -21,6 +21,7 @@ from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import utils
 from harness.orchestration.core.constants import ACCEPTED_DECISIONS
 from harness.orchestration.core.git_utils import _candidate_commit, _git_is_ancestor
+from harness.orchestration.core import state_view
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -82,7 +83,7 @@ def request(args: argparse.Namespace) -> tuple[str, JsonObject] | None:
 
 def _load_source(root: Path, source_id: str) -> JsonObject:
     path = _records_root(root) / "batches" / f"{_safe_id(source_id, 'batch')}.json"
-    if not path.is_file():
+    if not state_view.is_file(path):
         raise CoordinatorError(
             f"batch {source_id} to supersede does not exist in the current ledger generation",
             remedy="pass --supersedes the batch_id of an abandoned batch of this ticket "

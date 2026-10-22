@@ -1,0 +1,52 @@
+{
+  "": "empty key",
+  "10": "a",
+  "9": "b",
+  "B": "c",
+  "a": "d",
+  "alpha": {
+    "empty_string": "",
+    "f": false,
+    "nested": {
+      "deep": [
+        [],
+        {},
+        [
+          []
+        ],
+        [
+          {}
+        ]
+      ]
+    },
+    "null": null,
+    "t": true
+  },
+  "controls": "nul:\u0000 bell:\u0007 bs:\b tab:\t lf:\n ff:\f cr:\r esc:\u001b us:\u001f del: quote:\" backslash:\\ slash:/",
+  "keys \"quoted\"\n": 1,
+  "unicode": "café 漢字 😀 é 😀    ",
+  "z": "before é",
+  "zeta": [
+    1,
+    2.5,
+    1e-05,
+    1e+16,
+    1000000000000000.0,
+    100.0,
+    -0.0,
+    0.0001,
+    1e-05,
+    1.5e+300,
+    5e-324,
+    123456789012345678901234567890,
+    -1180591620717411303424,
+    0,
+    0,
+    10000000000000000,
+    100.0,
+    0.1
+  ],
+  "é": "after z",
+  "￿": "bmp max",
+  "😀": "astral"
+}

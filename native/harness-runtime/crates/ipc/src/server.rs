@@ -198,6 +198,7 @@ mod tests {
             token: "t".repeat(64),
             repo_id: "0123456789abcdef".to_owned(),
             server_version: "test".to_owned(),
+            state_dir: None,
         }
     }
 

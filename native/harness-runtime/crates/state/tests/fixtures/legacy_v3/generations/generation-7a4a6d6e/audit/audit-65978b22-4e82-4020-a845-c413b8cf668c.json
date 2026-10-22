@@ -1,0 +1,10 @@
+{
+  "action": "immutable-record",
+  "at": "2026-10-22T07:19:02.536950+00:00",
+  "audit_id": "audit-65978b22-4e82-4020-a845-c413b8cf668c",
+  "details": {
+    "path": "checkpoints/checkpoint-0001.json",
+    "sha256": "5c08c8a12cf214465f153678623cba6d3dcef156db5c35395f237b7fe88d551c"
+  },
+  "record_sha256": "f062cf718045ea38e86b3f0d07528e8baaec935017358d8d4c527827b132d859"
+}

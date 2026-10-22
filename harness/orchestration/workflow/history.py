@@ -89,6 +89,7 @@ from harness.orchestration.core.workspace import (
     _validate_branch,
     _validate_harness_runtime_snapshot,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.ledger import JsonValue
 from harness.orchestration.ledger.ledger_ops import (
     _load_checkpoint,
@@ -1033,13 +1034,13 @@ def _batches_for_ticket_branch(
     they are audit evidence, so this lists them all and leaves the choice to the caller.
     """
     batches_dir = _records_root(root) / "batches"
-    if not batches_dir.is_dir():
+    if not state_view.is_dir(batches_dir):
         raise CoordinatorError(
             "no orchestration batches exist for the ticket branch",
             remedy="verify the ticket/branch and that a batch exists for it",
         )
     matches = []
-    for path in sorted(batches_dir.glob("*.json")):
+    for path in state_view.glob(batches_dir, "*.json"):
         batch = _read_object(path, "batch record")
         if batch.get("ticket") == ticket and batch.get("branch") == branch:
             _validate_batch_integrity(root, batch)

@@ -25,6 +25,7 @@ from harness.orchestration.core.git_utils import (
     git_environment,
     git_failure,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -58,7 +59,7 @@ def refresh_records(root: Path, record_id: str) -> list[JsonObject]:
     directory = _records_root(root) / IntegrationRefreshRecord.directory
     found = [
         _read_object(path, "integration refresh record")
-        for path in sorted(directory.glob("*.json") if directory.is_dir() else [])
+        for path in state_view.glob(directory, "*.json")
     ]
     found = [item for item in found if item.get("integration_record_id") == record_id]
     identity = integration._load_record(root, record_id)["identity"]
