@@ -95,6 +95,22 @@ def test_profile_without_hook_policy_key_comes_from_the_default_source(
     assert "профиль standard (по умолчанию)" in message
 
 
+def test_legacy_project_keeps_the_standard_wiring_after_update(repo: Path) -> None:
+    project_json = repo / ".harness/project.json"
+    data = json.loads(project_json.read_text(encoding="utf-8"))
+    del data["hook_policy"]
+    project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    updated = harness("update", str(repo))
+    assert updated.returncode == 0, updated.stderr
+
+    result = check(repo)
+
+    assert result["status"] == "warn"
+    assert "профиль standard (по умолчанию)" in result["message"]
+    assert "claude: критических hooks подключено 9/9" in result["message"]
+    assert "hook_policy" not in json.loads(project_json.read_text(encoding="utf-8"))
+
+
 def test_escalations_are_listed_with_the_effective_profile(repo: Path) -> None:
     project_json = repo / ".harness/project.json"
     data = json.loads(project_json.read_text(encoding="utf-8"))

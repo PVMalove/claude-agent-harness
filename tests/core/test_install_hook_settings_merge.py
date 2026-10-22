@@ -287,6 +287,28 @@ def test_report_names_the_critical_hook_that_a_conflict_leaves_unwired(
     ) in result.stdout
 
 
+def test_update_of_a_legacy_project_leaves_project_json_without_hook_policy(
+    repo: Path,
+) -> None:
+    install(repo)
+    project_json = repo / ".harness/project.json"
+    data = json.loads(project_json.read_text(encoding="utf-8"))
+    del data["hook_policy"]
+    project_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    legacy = project_json.read_bytes()
+    document = load(repo)
+    drop_script(document, "block-pr-merge.sh")
+    save(repo, document)
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert "added=1 replaced=0" in result.stdout
+    assert project_json.read_bytes() == legacy
+    assert "hook_policy" not in json.loads(project_json.read_text(encoding="utf-8"))
+    assert len(handlers(load(repo), "block-pr-merge.sh")) == 1
+
+
 CODEX_CONFIG = ".codex/hooks.json"
 CODEX_COMMAND = re.compile(
     r'cd "\$\(git rev-parse --show-toplevel\)" && bash "\.claude/hooks/([\w.-]+)"'
