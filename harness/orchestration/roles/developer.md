@@ -180,7 +180,8 @@ After a failure, rerun what failed, with your own worktree cache, instead of the
 - `scripts/verify.py --worktree-cache --only tests` keeps the mypy and pytest caches and the previous
   JUnit report in `.harness/.sandboxes/cache/<worktree-id>/<environment_fingerprint>/`. The cache of
   another worktree or of another `environment_fingerprint` is never read, and the clean-room QA run
-  starts cold: `HARNESS_VERIFY_COLD` refuses `--worktree-cache`.
+  starts cold: only a clean-room run sets `HARNESS_VERIFY_COLD`, which refuses `--worktree-cache`; the
+  bounded wrapper runs locally, is not cold and accepts the flag.
 - `scripts/verify.py --worktree-cache --failed-only` reruns the pytest stage alone, with the exact
   failed nodeids of that previous JUnit report. A renamed or vanished nodeid switches the run to
   `focused`: the surviving test files of the failed tests run whole. An empty selection (no previous
