@@ -65,7 +65,13 @@ from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
-from harness.health.hook_settings import merge_hooks, template_digests
+from harness.health.hook_settings import (
+    ADAPTERS,
+    RuntimeAdapter,
+    critical_wiring,
+    merge_hooks,
+    template_digests,
+)
 from harness.health.model import JsonObject
 from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
@@ -891,31 +897,24 @@ def _recorded_managed_entries(repo: Path, identifier: str) -> list[str] | None:
 
 
 def _install_hook_config(
-    repo: Path,
-    *,
-    config: Path,
-    template: Path,
-    identifier: str,
-    runtime: str,
-    verify: str,
-    forced: bool,
-    differing: list[Path],
+    repo: Path, adapter: RuntimeAdapter, *, forced: bool, differing: list[Path]
 ) -> list[str]:
-    """Записать или слить файл hooks runtime и зарегистрировать его в каталоге интеграций.
+    """Записать или слить файл hooks runtime, напечатать отчёт и зарегистрировать интеграцию.
 
     Нет файла или он forced — байты шаблона. Иначе managed hook-записи сливаются по пути команды
     скрипта, записи пользователя не меняются; файл, который нельзя разобрать, остаётся как есть."""
-    template_bytes = template.read_bytes()
+    config = Path(adapter.config)
+    template_bytes = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
     template_document = json.loads(template_bytes.decode("utf-8"))
     target = repo / config
     written: list[str] = []
-    recorded = _recorded_managed_entries(repo, identifier)
-    managed = set(template_digests(template_document))
-    baseline = managed | set(recorded or [])
+    recorded = _recorded_managed_entries(repo, adapter.integration_id)
+    baseline = set(template_digests(template_document)) | set(recorded or [])
     if not target.exists() or forced:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(template_bytes)
         written.append(str(target))
+        print(f"hooks merge: {adapter.config}: installed from template")
     else:
         try:
             document: object = json.loads(target.read_text(encoding="utf-8"))
@@ -924,28 +923,55 @@ def _install_hook_config(
         merge = merge_hooks(document, template_document, baseline)
         if merge.problem is not None or merge.document is None:
             print(
-                f"hooks merge: {config.as_posix()}: cannot merge: "
+                f"hooks merge: {adapter.config}: cannot merge: "
                 f"{merge.problem or 'not valid JSON'}"
             )
-        elif merge.changed:
-            if merge.document == template_document:
-                content = template_bytes
-            else:
-                content = (
-                    json.dumps(merge.document, indent=2, ensure_ascii=False) + "\n"
-                ).encode("utf-8")
-            target.write_bytes(content)
-            written.append(str(target))
+        else:
+            if merge.changed:
+                if merge.document == template_document:
+                    content = template_bytes
+                else:
+                    content = (
+                        json.dumps(merge.document, indent=2, ensure_ascii=False) + "\n"
+                    ).encode("utf-8")
+                target.write_bytes(content)
+                written.append(str(target))
+            print(
+                f"hooks merge: {adapter.config}: added={merge.added} "
+                f"replaced={merge.replaced} current={merge.current} "
+                f"user={merge.user} conflicts={len(merge.conflicts)}"
+            )
+            if merge.conflicts:
+                print(
+                    "[WARNING] Managed hook-записи изменены локально и оставлены без изменений:"
+                )
+                for conflict in merge.conflicts:
+                    print(
+                        f"hooks conflict: {adapter.config}: {conflict.event} "
+                        f"[{conflict.matcher}] {conflict.script}"
+                    )
+                print(
+                    f"После просмотра: --force-seed-file {adapter.config} "
+                    "(заменит весь файл шаблоном)"
+                )
         if target.read_bytes() != template_bytes:
             differing.append(target)
+    try:
+        final: object = json.loads(target.read_text(encoding="utf-8"))
+    except JSON_READ_ERRORS:
+        final = None
+    if isinstance(final, dict):
+        wired, total, missing = critical_wiring(final, adapter.support)
+        gaps = f"; missing: {', '.join(missing)}" if missing else ""
+        print(f"hooks check: {adapter.config}: critical wired {wired}/{total}{gaps}")
     record_integration(
         repo,
-        identifier=identifier,
+        identifier=adapter.integration_id,
         kind="hook",
-        runtimes=[runtime],
+        runtimes=[adapter.runtime],
         config=config,
         secret_refs=[],
-        verify=verify,
+        verify=adapter.verify,
         managed_entries=sorted(baseline),
     )
     return written
@@ -1017,21 +1043,15 @@ def scaffold_pvmalove_extras(
         root_gitignore.write_text(root_gitignore_text, encoding="utf-8", newline="\n")
         written.append(str(root_gitignore))
 
-    written.extend(
-        _install_hook_config(
-            repo,
-            config=Path(".claude/settings.local.json"),
-            template=PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl",
-            identifier="pvmalove-suite-hooks",
-            runtime="claude",
-            verify=(
-                "Open a fresh Claude Code session and confirm a guarded action "
-                "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
-            ),
-            forced=forced(repo / ".claude/settings.local.json"),
-            differing=differing,
+    for adapter in ADAPTERS:
+        written.extend(
+            _install_hook_config(
+                repo,
+                adapter,
+                forced=forced(repo / adapter.config),
+                differing=differing,
+            )
         )
-    )
     written.append(str(repo / INTEGRATIONS_REL))
 
     project_json = repo / ".harness/project.json"

@@ -200,3 +200,88 @@ def test_unreadable_settings_file_is_left_unchanged(repo: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert path.read_text(encoding="utf-8") == "{not json"
+
+
+def test_conflict_is_reported_with_the_entry_and_left_unchanged(repo: Path) -> None:
+    install(repo)
+    document = load(repo)
+    ((_, _, handler),) = handlers(document, "block-dangerous-git.sh")
+    handler["timeout"] = 5
+    save(repo, document)
+    before = (repo / SETTINGS).read_bytes()
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / SETTINGS).read_bytes() == before
+    assert (
+        "hooks conflict: .claude/settings.local.json: PreToolUse [Bash] "
+        "block-dangerous-git.sh"
+    ) in result.stdout
+    assert "conflicts=1" in result.stdout
+    assert "--force-seed-file .claude/settings.local.json" in result.stdout
+    assert len(handlers(load(repo), "block-dangerous-git.sh")) == 1
+
+
+def test_conflict_is_not_adopted_into_the_recorded_baseline(repo: Path) -> None:
+    install(repo)
+    document = load(repo)
+    ((event, matcher, handler),) = handlers(document, "block-dangerous-git.sh")
+    handler["timeout"] = 5
+    save(repo, document)
+    harness("update", str(repo))
+
+    inventory = json.loads((repo / INTEGRATIONS).read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in inventory["integrations"]
+        if item["id"] == "pvmalove-suite-hooks"
+    )
+
+    assert entry_digest(event, matcher, handler) not in entry["managed_entries"]
+    again = harness("update", str(repo))
+    assert "conflicts=1" in again.stdout
+
+
+def test_repeated_update_is_idempotent_and_prints_the_report(repo: Path) -> None:
+    install(repo)
+    document = load(repo)
+    drop_script(document, "block-pr-merge.sh")
+    save(repo, document)
+    first = harness("update", str(repo))
+    assert "added=1 replaced=0" in first.stdout
+    settings = (repo / SETTINGS).read_bytes()
+    inventory = (repo / INTEGRATIONS).read_bytes()
+
+    second = harness("update", str(repo))
+
+    assert second.returncode == 0, second.stderr
+    assert (repo / SETTINGS).read_bytes() == settings
+    assert (repo / INTEGRATIONS).read_bytes() == inventory
+    assert (
+        "hooks merge: .claude/settings.local.json: added=0 replaced=0" in second.stdout
+    )
+    assert "conflicts=0" in second.stdout
+    assert (
+        "hooks check: .claude/settings.local.json: critical wired 9/9" in second.stdout
+    )
+    assert len(handlers(load(repo), "block-pr-merge.sh")) == 1
+
+
+def test_report_names_the_critical_hook_that_a_conflict_leaves_unwired(
+    repo: Path,
+) -> None:
+    install(repo)
+    document = load(repo)
+    ((_, _, handler),) = handlers(document, "block-dangerous-git.sh")
+    drop_script(document, "block-dangerous-git.sh")
+    document["hooks"]["PreToolUse"].append({"matcher": "Edit", "hooks": [handler]})
+    save(repo, document)
+
+    result = harness("update", str(repo))
+
+    assert "conflicts=" in result.stdout
+    assert (
+        "hooks check: .claude/settings.local.json: critical wired 8/9; "
+        "missing: block-dangerous-git"
+    ) in result.stdout

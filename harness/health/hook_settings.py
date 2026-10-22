@@ -14,6 +14,7 @@ import re
 from collections import Counter
 from collections.abc import Collection
 from dataclasses import dataclass
+from typing import Literal
 
 from harness.json_types import JsonObject
 
@@ -229,3 +230,203 @@ def _template_group(
                 if key != "hooks"
             } | {"hooks": []}
     return {"matcher": matcher, "hooks": []}
+
+
+@dataclass(frozen=True)
+class HookSpec:
+    """Строка матрицы hooks (ADR 0024, раздел 2a): какой скрипт, на каком событии и инструментах.
+
+    `out_of_hook` — проверка вне hook, которая защищает, если runtime не доставляет событие;
+    None — столбец «Проверка вне hook» равен «нет». `wiring` — где hook подключён: в файле
+    настроек runtime или во frontmatter агента.
+    """
+
+    hook_id: str
+    script: str
+    event: str
+    tools: tuple[str, ...]
+    critical: bool
+    out_of_hook: str | None = None
+    wiring: Literal["settings", "agent"] = "settings"
+
+
+# Критичность каждой строки сверяет tests/core/test_install_hook_settings_merge.py с `HOOKS`
+# из harness/project/hooks/hook_response.py; проводку — с шаблоном файла настроек.
+HOOK_CATALOG: tuple[HookSpec, ...] = (
+    HookSpec(
+        "protect-hook-policy",
+        "protect-hook-policy.sh",
+        "PreToolUse",
+        ("Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"),
+        True,
+        "hook_policy_sha256 в brief",
+    ),
+    HookSpec(
+        "block-public-attribution",
+        "block-public-attribution.sh",
+        "PreToolUse",
+        ("Bash",),
+        True,
+        "CI check_public_metadata.py",
+    ),
+    HookSpec(
+        "block-direct-master",
+        "block-direct-master.sh",
+        "PreToolUse",
+        ("Bash",),
+        True,
+        "dispatch publish пушит только ветку batch",
+    ),
+    HookSpec("block-pr-merge", "block-pr-merge.sh", "PreToolUse", ("Bash",), True),
+    HookSpec(
+        "check-branch-name",
+        "check-branch-name.sh",
+        "PreToolUse",
+        ("Bash",),
+        True,
+        "batch create по branch_pattern",
+    ),
+    HookSpec(
+        "require-qa-gate",
+        "require-qa-gate.sh",
+        "PreToolUse",
+        ("Bash",),
+        True,
+        "qa_evidence_verify",
+    ),
+    HookSpec(
+        "block-dangerous-git",
+        "block-dangerous-git.sh",
+        "PreToolUse",
+        ("Bash",),
+        True,
+    ),
+    HookSpec(
+        "block-scratch-outside-docs-tasks",
+        "block-scratch-outside-docs-tasks.sh",
+        "PreToolUse",
+        ("Write", "Edit"),
+        True,
+    ),
+    HookSpec(
+        "check-worktree-branch-name",
+        "check-worktree-branch-name.sh",
+        "PreToolUse",
+        ("EnterWorktree",),
+        True,
+        "batch create по branch_pattern",
+    ),
+    HookSpec(
+        "test-author-guard",
+        "test-author-guard.py",
+        "PreToolUse",
+        ("Write", "Edit", "Bash"),
+        True,
+        wiring="agent",
+    ),
+    HookSpec(
+        "require-bounded-check",
+        "require-bounded-check.sh",
+        "PreToolUse",
+        ("Bash",),
+        False,
+        "VerificationPlan",
+    ),
+    HookSpec(
+        "count-skill-usage", "count-skill-usage.sh", "PreToolUse", ("Skill",), False
+    ),
+    HookSpec(
+        "mark-qa-gate-passed", "mark-qa-gate-passed.sh", "PostToolUse", ("Bash",), False
+    ),
+)
+
+EventTool = tuple[str, str]
+# События и инструменты, которые доставляет runtime: все строки каталога.
+CLAUDE_SUPPORT: frozenset[EventTool] = frozenset(
+    (spec.event, tool) for spec in HOOK_CATALOG for tool in spec.tools
+)
+
+
+@dataclass(frozen=True)
+class RuntimeAdapter:
+    """Адаптер runtime: файл hooks, его шаблон и запись в каталоге интеграций.
+
+    `support` — пары (событие, инструмент), которые runtime доставляет hooks; None — не
+    подтверждено по первичному источнику.
+    """
+
+    runtime: str
+    config: str
+    template: str
+    integration_id: str
+    verify: str
+    support: frozenset[EventTool] | None
+
+
+ADAPTERS: tuple[RuntimeAdapter, ...] = (
+    RuntimeAdapter(
+        runtime="claude",
+        config=".claude/settings.local.json",
+        template="settings.local.json.tmpl",
+        integration_id="pvmalove-suite-hooks",
+        verify=(
+            "Open a fresh Claude Code session and confirm a guarded action "
+            "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
+        ),
+        support=CLAUDE_SUPPORT,
+    ),
+)
+
+
+def matcher_covers(matcher: str, tool: str) -> bool:
+    """Покрывает ли matcher группы инструмент: пустой и `*` — все, иначе regex целиком."""
+    if matcher in ("", "*"):
+        return True
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return False
+
+
+def is_wired(document: JsonObject, spec: HookSpec, tool: str) -> bool:
+    """Подключён ли скрипт `spec` на событии для инструмента `tool` в документе настроек."""
+    groups = _groups(document)
+    if isinstance(groups, str):
+        return False
+    return any(
+        matcher_covers(matcher, tool) and script_name(handler) == spec.script
+        for event, matcher, handler in _triples(groups)
+        if event == spec.event
+    )
+
+
+def supported_tools(
+    spec: HookSpec, support: frozenset[EventTool] | None
+) -> tuple[str, ...]:
+    """Инструменты `spec`, на которых runtime доставляет событие hook-а."""
+    if support is None:
+        return ()
+    return tuple(tool for tool in spec.tools if (spec.event, tool) in support)
+
+
+def critical_wiring(
+    document: JsonObject, support: frozenset[EventTool] | None
+) -> tuple[int, int, tuple[str, ...]]:
+    """(подключено, всего, id неподключённых) среди критических hooks файла настроек.
+
+    Считаются критические hooks, подключаемые в файле настроек, у которых runtime доставляет
+    хотя бы один инструмент. Hook подключён, когда покрыт каждый такой инструмент.
+    """
+    specs = [
+        (spec, tools)
+        for spec in HOOK_CATALOG
+        if spec.critical
+        and spec.wiring == "settings"
+        and (tools := supported_tools(spec, support))
+    ]
+    missing = tuple(
+        spec.hook_id
+        for spec, tools in specs
+        if not all(is_wired(document, spec, tool) for tool in tools)
+    )
+    return len(specs) - len(missing), len(specs), missing

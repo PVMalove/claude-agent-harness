@@ -554,6 +554,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("update did not remove an empty retired skill directory")
     run_health(pv_project)
     check_tracker_field(pv_project)
+    check_hook_settings_merge(pv_project)
     check_tracker_from_origin(test_root)
     check_package_root_without_init(test_root)
     if not filecmp.cmp(
@@ -752,6 +753,64 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pytest summary wrapper did not save a sanitized failure log")
     ctx.pv_project = pv_project
     ctx.target_home = target_home
+
+
+def check_hook_settings_merge(pv_project) -> None:
+    """`update` сливает managed hook-записи: добавляет недостающую, сохраняет запись пользователя,
+    не трогает правку managed-записи и при повторном запуске ничего не меняет."""
+    config = ".claude/settings.local.json"
+    settings = pv_project / config
+    document = json.loads(settings.read_text(encoding="utf-8"))
+    bash_group = next(
+        group for group in document["hooks"]["PreToolUse"] if group["matcher"] == "Bash"
+    )
+    user_hook = {"type": "command", "command": "bash scripts/user-guard.sh"}
+    bash_group["hooks"] = [
+        hook
+        for hook in bash_group["hooks"]
+        if "block-pr-merge.sh" not in hook["command"]
+    ] + [user_hook]
+    settings.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+    first = capture(HARNESS + ["update", str(pv_project)])
+    merged = json.loads(settings.read_text(encoding="utf-8"))
+    commands = [
+        hook["command"]
+        for group in merged["hooks"]["PreToolUse"]
+        for hook in group["hooks"]
+    ]
+    if sum("block-pr-merge.sh" in command for command in commands) != 1:
+        sys.exit("update did not restore the removed managed hook entry once")
+    if commands.count(user_hook["command"]) != 1:
+        sys.exit("update dropped or duplicated a user hook entry")
+    if "added=1 replaced=0" not in first:
+        sys.exit("update did not report the added managed hook entry")
+
+    settings_before = settings.read_bytes()
+    second = capture(HARNESS + ["update", str(pv_project)])
+    if settings.read_bytes() != settings_before:
+        sys.exit("a repeated update changed the merged hook settings")
+    if "added=0 replaced=0" not in second or "hooks check:" not in second:
+        sys.exit("a repeated update did not print the hooks migration and check report")
+
+    changed = json.loads(settings.read_text(encoding="utf-8"))
+    for group in changed["hooks"]["PreToolUse"]:
+        for hook in group["hooks"]:
+            if "block-dangerous-git.sh" in hook["command"]:
+                hook["timeout"] = 5
+    settings.write_text(json.dumps(changed, indent=2) + "\n", encoding="utf-8")
+    conflicted = settings.read_bytes()
+    output = capture(HARNESS + ["update", str(pv_project)])
+    if (
+        f"hooks conflict: {config}: PreToolUse [Bash] block-dangerous-git.sh"
+        not in output
+    ):
+        sys.exit("update did not list the changed managed hook entry as a conflict")
+    if settings.read_bytes() != conflicted:
+        sys.exit("update overwrote a managed hook entry changed by the user")
+    run_ok(
+        HARNESS + ["update", str(pv_project), "--force-seed-file", config], quiet=True
+    )
 
 
 def check_tracker_field(pv_project) -> None:
