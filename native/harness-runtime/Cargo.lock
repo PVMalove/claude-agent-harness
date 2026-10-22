@@ -157,6 +157,7 @@ dependencies = [
  "ctrlc",
  "ipc",
  "serde_json",
+ "state",
 ]
 
 [[package]]
@@ -432,6 +433,8 @@ dependencies = [
 name = "state"
 version = "0.1.0"
 dependencies = [
+ "nix",
+ "platform-ffi",
  "rusqlite",
  "serde_json",
  "sha2",

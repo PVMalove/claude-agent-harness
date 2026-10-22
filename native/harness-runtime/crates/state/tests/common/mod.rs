@@ -62,3 +62,71 @@ impl Drop for Scratch {
         let _ = fs::remove_dir_all(&self.base);
     }
 }
+
+/// A repository root whose `.harness/orchestration/state` is the fixture, with no QA lease and no
+/// queued QA run, which is the state `migrate` accepts.
+pub struct Repo {
+    pub root: PathBuf,
+}
+
+impl Repo {
+    pub fn new(name: &str) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("hr-repo-{name}-{}-{n}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        copy_tree(
+            Path::new(FIXTURE),
+            &root.join(".harness/orchestration/state"),
+        );
+        let repo = Self { root };
+        let generation = repo.generation();
+        fs::remove_file(generation.join("qa-lane/lease.json")).unwrap();
+        fs::remove_file(generation.join("qa-lane/queue/00000000000000000001-dispatch.json"))
+            .unwrap();
+        repo
+    }
+
+    pub fn state(&self) -> PathBuf {
+        self.root.join(".harness/orchestration/state")
+    }
+
+    pub fn snapshots(&self) -> PathBuf {
+        self.root.join(".harness/orchestration/state-snapshots")
+    }
+
+    pub fn generation(&self) -> PathBuf {
+        let pointer = legacy::read_pointer(&self.state()).unwrap().unwrap();
+        self.state().join("generations").join(pointer.generation)
+    }
+
+    /// Every file of the state directory and its bytes, keyed by relative path, without the
+    /// files `migrate` is allowed to create next to the legacy records.
+    pub fn tree(&self) -> std::collections::BTreeMap<String, Vec<u8>> {
+        let mut found = std::collections::BTreeMap::new();
+        let mut pending = vec![(self.state(), String::new())];
+        while let Some((dir, prefix)) = pending.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let relative = if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                };
+                if entry.file_type().unwrap().is_dir() {
+                    pending.push((entry.path(), relative));
+                } else {
+                    found.insert(relative, fs::read(entry.path()).unwrap());
+                }
+            }
+        }
+        found
+    }
+}
+
+impl Drop for Repo {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}

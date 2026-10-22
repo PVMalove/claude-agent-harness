@@ -252,14 +252,6 @@ impl LegacyState {
         found.sort_by(|a, b| a.0.cmp(&b.0));
         found
     }
-
-    /// The selected generation holds no record at all: nothing to migrate.
-    pub fn is_empty(&self) -> bool {
-        self.files
-            .iter()
-            .all(|file| file.path.starts_with("audit/"))
-            && self.lock_audit.is_empty()
-    }
 }
 
 /// The JSON object a record file holds, or `None` when it does not hold one.
