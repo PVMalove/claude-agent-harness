@@ -6,7 +6,9 @@ use std::fs;
 
 use serde_json::{Value, json};
 use state::authority::{Epoch, epoch};
-use state::canonical::{canonical_json, sha256_hex};
+#[cfg(target_os = "linux")]
+use state::canonical::canonical_json;
+use state::canonical::sha256_hex;
 use state::error::Error;
 use state::legacy::{self, LegacyState};
 use state::migrate::run;
