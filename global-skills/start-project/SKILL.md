@@ -84,8 +84,15 @@ explicitly requests one.
    `.harness/skills`; run `harness lock-project-skills` for their versioned hash lock, then
    `harness registry` after composing all packages. Use relative discovery links, never links back
    to a machine-local catalog.
+
+   Install `hook_policy` with the `standard` profile explicitly: name the profile in the manifest
+   and, after `harness init`, verify that `.harness/project.json` holds
+   `"hook_policy": {"profile": "standard"}` and that `harness health` reports `hooks.policy` with
+   profile `standard`. Do not pick `minimal` or `strict` unless the owner asked for it.
 6. For an existing harness run `harness diff` before `harness update`. Use `harness adopt
    --replace-conflicts` only for an explicit migration after reviewing same-name conflicts.
+   `harness update` does not write `hook_policy`; leave the `hook_policy` of an existing project to
+   its owner.
 7. Keep MCP servers, plugins, hooks, and runtime settings in their native project files. When such
    files exist, inventory their relative paths, hashes, runtimes, verification action, and secret
    environment-variable names in `.harness/integrations.json`; never copy credentials into Git.
@@ -200,8 +207,13 @@ description: Начать новый проект с идеи или созда�
    `.harness/skills`; запустите `harness lock-project-skills` для блокировки их версионированного хэша, затем
    `harness registry` после компоновки всех пакетов. Используйте относительные ссылки для обнаружения (discovery links), никогда не делайте ссылки обратно
    на локальный каталог машины.
+
+   Установите `hook_policy` с профилем `standard` явно: назовите профиль в манифесте и после `harness init`
+   проверьте, что `.harness/project.json` содержит `"hook_policy": {"profile": "standard"}`, а `harness health`
+   показывает `hooks.policy` с профилем `standard`. Не выбирайте `minimal` или `strict`, если владелец об этом не просил.
 6. Для существующей обвязки выполните `harness diff` перед `harness update`. Используйте `harness adopt
    --replace-conflicts` только для явной миграции после проверки конфликтов одинаковых имен.
+   `harness update` не записывает `hook_policy`; `hook_policy` существующего проекта оставьте его владельцу.
 7. Храните MCP-серверы, плагины, хуки и настройки среды выполнения в их родных файлах проекта. Когда такие
    файлы существуют, внесите их относительные пути, хэши, среды выполнения, действия по проверке и имена секретных
    переменных среды в инвентарь `.harness/integrations.json`; никогда не копируйте учетные данные в Git.
