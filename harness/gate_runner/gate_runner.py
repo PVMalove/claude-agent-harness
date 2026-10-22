@@ -310,13 +310,15 @@ def build_stage_evidence(
     entries: Sequence[tuple[str, StageCommand | None]],
     *,
     directory: str = QA_ARTIFACTS_DIRECTORY,
-    selection: str = "full",
+    kinds: Mapping[str, str] | None = None,
+    selections: Mapping[str, str] | None = None,
 ) -> EvidenceBundle:
     """The ``stage-evidence.v1`` document of a run, in execution order.
 
     ``entries`` pair a stage id with the command that ran, or with ``None`` for a command the run
     never reached, which is ``not_run`` whatever the reason. Output streams are stored apart, each
-    under its own sha256.
+    under its own sha256. ``kinds`` and ``selections`` name a stage's kind and test selection by
+    stage id; a stage they do not name is a ``custom`` command with the ``full`` selection.
     """
     files: dict[str, str] = {}
     stages: list[StageEvidence] = []
@@ -325,8 +327,8 @@ def build_stage_evidence(
         stages.append(
             StageEvidence(
                 stage_id=stage_id,
-                kind="custom",
-                selection=selection,
+                kind=(kinds or {}).get(stage_id, "custom"),
+                selection=(selections or {}).get(stage_id, "full"),
                 candidate_sha=context.candidate_sha,
                 plan_sha256=context.plan_sha256,
                 image_digest=context.image_digest,

@@ -45,9 +45,20 @@ def environment_fingerprint(
     files = blob_contents(
         repo, commit, ["uv.lock", "pyproject.toml"], _GIT_TIMEOUT_SECONDS
     )
-    lock = files["uv.lock"] or b""
+    return fingerprint_of(files["uv.lock"], files["pyproject.toml"], runtime_images)
+
+
+def fingerprint_of(
+    lock: bytes | None,
+    pyproject: bytes | None,
+    runtime_images: Mapping[str, str | None] | None = None,
+) -> str:
+    """The fingerprint of already read manifests: the same digest for a commit and a worktree.
+
+    ``environment_fingerprint`` reads the manifests from a commit; a verification run in a worktree
+    reads its own files and gets the same digest for the same contents.
+    """
     tool: object = {}
-    pyproject = files["pyproject.toml"]
     if pyproject is not None:
         try:
             tool = tomllib.loads(pyproject.decode("utf-8")).get("tool", {})
@@ -55,7 +66,7 @@ def environment_fingerprint(
             tool = {"unparsed": hashlib.sha256(pyproject).hexdigest()}
     parts: dict[str, object] = {
         "interpreter": platform.python_version(),
-        "uv_lock": hashlib.sha256(lock).hexdigest(),
+        "uv_lock": hashlib.sha256(lock or b"").hexdigest(),
         "pyproject_tool": tool,
     }
     if runtime_images is not None:
