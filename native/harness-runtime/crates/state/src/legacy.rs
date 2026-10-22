@@ -14,6 +14,7 @@ use serde_json::{Map, Value};
 
 use crate::canonical::object_sha256;
 use crate::error::{Error, Result};
+use crate::policy;
 use crate::read::valid_path;
 use crate::vocabulary::{BATCH_STATES, DISPATCH_STATES};
 
@@ -285,7 +286,7 @@ fn first_component(path: &str) -> &str {
 }
 
 /// Whether `path` names a file directly inside `directory` (`directory/<name>`).
-fn is_direct(path: &str, directory: &str) -> bool {
+pub(crate) fn is_direct(path: &str, directory: &str) -> bool {
     path.strip_prefix(directory)
         .and_then(|rest| rest.strip_prefix('/'))
         .is_some_and(|name| !name.contains('/'))
@@ -306,8 +307,8 @@ fn state_is_known(record: &Map<String, Value>, known: &[&str]) -> bool {
 impl LegacyState {
     /// Repeat the checks of Python `ledger validate` for a version-3 generation: its directories
     /// and files, the checksums of its audit records and of `lock-audit/`, the immutable plan of
-    /// every batch, and the graph of batches, dispatches, statuses and reports. A failure
-    /// refuses: the state is not changed and the operator fixes it first.
+    /// every batch, the graph of batches, dispatches, statuses and reports, and the batch contract
+    /// of `policy`. A failure refuses: the state is not changed and the operator fixes it first.
     pub fn validate(&self) -> Result<()> {
         for directory in RECORD_DIRECTORIES {
             if !self.directories.contains(directory) {
@@ -407,7 +408,8 @@ impl LegacyState {
             }
         }
         self.validate_plans(&records)?;
-        self.validate_graph(&records)
+        self.validate_graph(&records)?;
+        policy::validate_batches(&records)
     }
 
     fn validate_plans(&self, records: &BTreeMap<&str, Map<String, Value>>) -> Result<()> {

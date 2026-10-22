@@ -278,6 +278,30 @@ fn a_dispatch_changed_after_its_brief_hash_was_recorded_is_refused() {
 }
 
 #[test]
+fn a_batch_that_breaks_the_batch_contract_is_refused_with_the_python_wording() {
+    let scratch = Scratch::new("contract");
+    let batch = scratch
+        .generation()
+        .join("batches/batch-aaaaaaaa-0000-4000-8000-000000000001.json");
+    let text = fs::read_to_string(&batch).unwrap();
+    fs::write(
+        &batch,
+        text.replacen("{\n", "{\n  \"needs_attention\": \"yes\",\n", 1),
+    )
+    .unwrap();
+
+    let error = scratch.read().validate().unwrap_err();
+
+    assert_eq!(error.exit_code(), 2, "{error}");
+    assert!(
+        error
+            .to_string()
+            .starts_with("batch needs_attention must be a boolean: batches/batch-"),
+        "{error}"
+    );
+}
+
+#[test]
 fn an_orphaned_dispatch_is_refused() {
     let scratch = Scratch::new("orphan");
     let generation = scratch.generation();

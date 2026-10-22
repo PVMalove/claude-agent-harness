@@ -32,6 +32,7 @@ from harness.orchestration.ledger.lifecycle import (
 ROOT = Path(__file__).resolve().parents[2]
 STATE_REL = Path(".harness/orchestration/state")
 BATCH_ID = "batch-aaaaaaaa-0000-4000-8000-000000000001"
+SNAPSHOT_COMMIT = "4" * 40
 DISPATCH_IDS = (
     "dispatch-11111111-0000-4000-8000-000000000001",
     "dispatch-22222222-0000-4000-8000-000000000002",
@@ -56,6 +57,37 @@ def runtime_binary() -> Path:
     pytest.skip(message)
 
 
+def plan_fields(batch_id: str = BATCH_ID) -> JsonObject:
+    """The fields a batch and its immutable plan share, as the coordinator writes them: a state
+    that lacks one is a batch ``ledger validate`` rejects."""
+    return {
+        "batch_id": batch_id,
+        "created_at": "2026-10-01T00:00:00+00:00",
+        "base_commit": "1" * 40,
+        "integration_ref": "integration/example",
+        "branch_start_commit": "2" * 40,
+        "ticket": "#1",
+        "branch": "feature/issue-1-example",
+        "worktree": "/var/projects/example/.harness/.sandboxes/worktrees/issue-1-example",
+        "zone": None,
+        "allowed_paths": ["a/**"],
+        "definition_of_done": ["The example is done."],
+        "prohibited_changes": [],
+        "developer_verification_commands": ["make test"],
+        "verification_commands": ["make test"],
+        "required_gates": ["review", "qa"],
+        "dependencies": [],
+        "approval_policy": "manual",
+        "communication_policy": {
+            "agent_to_agent_language": "en",
+            "coordinator_report_language": "ru",
+        },
+        "scope_preflight": {"status": "clean", "outside_allowed_paths": []},
+        "harness_runtime_sha256": "3" * 64,
+        "write_paths": ["a/**"],
+    }
+
+
 def _digest(value: JsonObject) -> str:
     return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
 
@@ -78,7 +110,17 @@ def build_state(
             BATCH_ID,
             DispatchState.APPROVED,
             {"approved_at": "2026-10-01T00:00:00+00:00"},
-            {"role": role, "note": "café \U0001f600", "ratio": 1e-05},
+            {
+                "role": role,
+                "purpose": "work",
+                "note": "café \U0001f600",
+                "ratio": 1e-05,
+                "snapshot_commit": SNAPSHOT_COMMIT,
+                "definition_of_done": ["The example is done."],
+                "dependencies": [],
+                "write_paths": ["a/**"],
+                "prohibited_changes": [],
+            },
         )
         for dispatch_id, role in ((first, "developer"), (second, "qa"))
     ]
@@ -98,7 +140,7 @@ def build_state(
             "brief_sha256": _digest(dispatches[1].to_dict()),
         },
     ]
-    batch_fields: JsonObject = {"ticket": "#1", "write_paths": ["a/**"]}
+    batch_fields = plan_fields()
     reassessment: JsonObject = (
         {"risk_reassessment_required": True}
         if owes_reassessment_without_candidate

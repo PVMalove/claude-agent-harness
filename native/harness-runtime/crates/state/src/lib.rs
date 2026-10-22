@@ -12,6 +12,7 @@ pub mod lock;
 pub mod migrate;
 pub mod parity;
 pub mod platform;
+pub mod policy;
 pub mod project;
 pub mod read;
 pub mod repair;
