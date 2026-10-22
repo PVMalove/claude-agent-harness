@@ -23,7 +23,7 @@ from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
-from . import operation_access
+from . import operation_access, operational_guards, verification_plan
 from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _qa_preparation_commands
@@ -46,7 +46,10 @@ from .core.utils import (
 )
 from ..gate_runner.gate_runner import (
     CleanRoomPolicy,
+    EvidenceBundle,
+    EvidenceContext,
     GateRunnerError,
+    format_evidence_trailer,
     parse_command_log,
     run_gate,
     run_qa_stages,
@@ -241,6 +244,56 @@ def _counter_path(ledger: LifecycleLedger) -> Path:
 
 def _artifact_path(ledger: LifecycleLedger, checksum: str) -> Path:
     return _records_root(ledger) / "qa-artifacts" / f"{checksum}.log"
+
+
+def evidence_context(
+    repo: Path, candidate: str, dispatch: JsonObject | None = None
+) -> EvidenceContext:
+    """The identity a QA run's stage evidence carries: candidate, plan, image and environment.
+
+    A dispatch brief supplies its verification plan and pinned images; without one (a local QA
+    run) only the candidate and the environment fingerprint of that commit are known.
+    """
+    brief = dispatch or {}
+    plan = brief.get("verification_plan")
+    images = brief.get("runtime_images")
+    fingerprint: str | None = None
+    if isinstance(plan, dict) and plan.get("stages"):
+        fingerprint = plan["stages"][0]["environment_fingerprint"]
+    else:
+        try:
+            fingerprint = verification_plan.environment_fingerprint(
+                repo, candidate, images if isinstance(images, dict) else None
+            )
+        except HarnessError:
+            # The fingerprint is optional evidence: an unreadable manifest must not stop QA.
+            fingerprint = None
+    return EvidenceContext(
+        candidate_sha=candidate,
+        plan_sha256=verification_plan.plan_sha256(plan)
+        if isinstance(plan, dict)
+        else None,
+        image_digest=operational_guards.runtime_images_digest(images)
+        if isinstance(images, dict)
+        else None,
+        environment_fingerprint=fingerprint,
+    )
+
+
+def persist_stage_evidence(ledger: LifecycleLedger, bundle: EvidenceBundle) -> str:
+    """Store the run's output streams and its stage-evidence document as immutable qa-artifacts.
+
+    Returns the trailer line that links the QA log to the document: the log, the document and the
+    streams then form one chain of sha256 references.
+    """
+    root = _records_root(ledger)
+    for relative, text in bundle.files.items():
+        _write_artifact(ledger, root / relative, text)
+    document = bundle.document.dumps()
+    checksum = hashlib.sha256(document.encode("utf-8")).hexdigest()
+    relative = f"qa-artifacts/{checksum}.stage-evidence.json"
+    _write_artifact(ledger, root / relative, document)
+    return format_evidence_trailer(relative, checksum)
 
 
 def _attempt_path(ledger: LifecycleLedger) -> Path:
@@ -544,8 +597,9 @@ def _qa_report(
 ) -> JsonObject:
     """The QA completion report.
 
-    Without ``stages`` (a verification-only configuration) it is the historical report. With them,
-    the failing stage decides the outcome: a failed gate or a confirmed project-file defect is a
+    ``checks_run`` always lists every approved command: one the run never reached is ``not_run``.
+    Without ``stages`` (a verification-only configuration) a failed gate command fails the report.
+    With them, the failing stage decides the outcome: a failed gate or a confirmed project-file defect is a
     ``failed`` report for the developer; an infrastructure or unknown preparation failure is a
     ``blocked`` one, whose ``checks_run`` records the commands never reached as ``not_run`` rather
     than as failed code checks.
@@ -578,9 +632,8 @@ def _qa_report(
         else "accept or continue",
         "report_language": "ru",
     }
-    if stages is None:
-        return report
-    reached = [check["command"] for check in checks]
+    # A command the run never reached is not_run, with or without a preparation stage: the report
+    # must list every approved command (ADR 0023, section 5).
     report["checks_run"] = [
         *checks,
         *(
@@ -589,10 +642,11 @@ def _qa_report(
                 "result": QA_NOT_RUN_RESULT,
                 "evidence": "not run: an earlier QA stage failed before this command",
             }
-            for command in dispatch["verification_commands"]
-            if command not in reached
+            for command in dispatch["verification_commands"][len(checks) :]
         ),
     ]
+    if stages is None:
+        return report
     report["qa_stages"] = stages
     if stages["failed_stage"] != "preparation":
         return report
@@ -973,6 +1027,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
         if pinned_commands is not None:
             config = {**config, **pinned_commands}
         preparation = _qa_preparation_commands(config)
+        context = evidence_context(repo, dispatch["candidate_commit"], dispatch)
         if preparation:
             staged = run_qa_stages(
                 preparation,
@@ -984,14 +1039,20 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
                 project_file_checks=_qa_preparation_commands(
                     config, "qa_project_file_checks"
                 ),
+                evidence=context,
             )
             artifact_text, checks = staged.artifact, staged.gate_checks
+            bundle = staged.evidence
         else:
             staged = None
             gate = run_gate(
-                dispatch["verification_commands"], policy, stop_on_failure=True
+                dispatch["verification_commands"],
+                policy,
+                stop_on_failure=True,
+                evidence=context,
             )
             artifact_text, checks = gate.artifact, gate.checks
+            bundle = gate.evidence
     except GateRunnerError as exc:
         failure = CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
@@ -1003,8 +1064,10 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             ledger, root, dispatch, queue_path, lease, exc, "gate-run", ops
         )
         raise
-    checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
     try:
+        if bundle is not None:
+            artifact_text += persist_stage_evidence(ledger, bundle)
+        checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
         artifact = _artifact_path(ledger, checksum)
         _write_artifact(ledger, artifact, artifact_text)
     except CoordinatorError as exc:
