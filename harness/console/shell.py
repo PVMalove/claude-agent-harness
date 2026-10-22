@@ -160,6 +160,7 @@ CHECK_ROUTES: dict[str, CheckRoute] = {
         "Символические ссылки недоступны", "Diagnostics"
     ),
     "environment.hook_bash": CheckRoute("Bash для hooks не найден", "Diagnostics"),
+    "hooks.policy": CheckRoute("Hooks проекта подключены неверно", "Update Harness"),
     "files.sandboxes": CheckRoute("Каталог .sandboxes настроен неверно", "Diagnostics"),
     "directories.harness": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
     "directories.sandboxes": CheckRoute("Каталог Harness недоступен", "Diagnostics"),

@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .checks import directories as directory_checks
 from .checks import environment as environment_checks
 from .checks import files as files_checks
+from .checks import hooks as hooks_checks
 from .checks import memory as memory_checks
 from .checks import orchestration as orchestration_checks
 from .checks import repo_map as repo_map_checks
@@ -76,6 +77,7 @@ REGISTRY: list[tuple[str, CheckFn]] = [
     ("environment.pytest_temp", windows_checks.check_pytest_temp),
     ("environment.symlinks", windows_checks.check_symlinks),
     ("environment.hook_bash", windows_checks.check_hook_bash),
+    ("hooks.policy", hooks_checks.check_policy),
     ("tracker.project", tracker_checks.check_project),
     ("tracker.auth", tracker_checks.check_auth),
     ("tracker.reachability", tracker_checks.check_reachability),
@@ -127,6 +129,7 @@ def run(
     output_encoding: str | None = None,
     fix: bool = False,
     harness_cli: tuple[str, ...] = ("harness",),
+    hook_templates: Mapping[str, bytes] | None = None,
 ) -> Report:
     """Создать HealthContext и выполнить все зарегистрированные проверки без преждевременного выхода.
 
@@ -134,7 +137,7 @@ def run(
     сразу после выполнения; описание выполненного действия добавляется в `report.fixes_applied`,
     а проверка запускается повторно, чтобы отчёт отражал состояние после исправления.
 
-    Параметры `snapshot_diff`, `output_encoding` и `harness_cli` передаются в `HealthContext`
+    Параметры `snapshot_diff`, `output_encoding`, `harness_cli` и `hook_templates` передаются в `HealthContext`
     без изменений (см. docstring класса — их передают только `cmd_health` в `harness/bin/harness.py` и консоль).
     """
     lock, lock_error = _load_lock(repo)
@@ -146,6 +149,7 @@ def run(
         snapshot_diff=snapshot_diff,
         output_encoding=output_encoding,
         harness_cli=harness_cli,
+        hook_templates=hook_templates,
     )
     report = Report(schema_version=1, repo=str(repo), online=online)
     for check_id, check_fn in REGISTRY:

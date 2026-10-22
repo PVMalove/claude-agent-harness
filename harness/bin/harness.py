@@ -65,6 +65,7 @@ from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
+from harness.health.checks.hooks import recorded_managed_entries
 from harness.health.hook_settings import (
     ADAPTERS,
     RuntimeAdapter,
@@ -865,6 +866,20 @@ def seed_template_files(repo: Path, *, orchestration_enabled: bool) -> dict[str,
     return files
 
 
+def hook_template_files() -> dict[str, bytes]:
+    """Эталоны hooks проекта для проверки дрейфа: скрипты `.claude/hooks/` и файлы hooks runtime."""
+    files: dict[str, bytes] = {}
+    for folder, target, suffixes in SEED_FOLDERS:
+        if folder != "hooks":
+            continue
+        for source in sorted((PROJECT_TEMPLATE_DIR / folder).iterdir()):
+            if source.is_file() and source.suffix in suffixes:
+                files[f"{target}/{source.name}"] = source.read_bytes()
+    for adapter in ADAPTERS:
+        files[adapter.config] = (PROJECT_TEMPLATE_DIR / adapter.template).read_bytes()
+    return files
+
+
 def seed_differing(repo: Path) -> list[str]:
     """Существующие seed-файлы проекта, которые отличаются от шаблона."""
     templates = seed_template_files(
@@ -876,23 +891,6 @@ def seed_differing(repo: Path) -> list[str]:
         if path.is_file() and path.read_bytes() != content:
             differing.append(relative)
     return sorted(differing)
-
-
-def _recorded_managed_entries(repo: Path, identifier: str) -> list[str] | None:
-    """Отпечатки managed hook-записей из .harness/integrations.json; None — поля нет или файл не читается."""
-    try:
-        data = json.loads((repo / INTEGRATIONS_REL).read_text(encoding="utf-8"))
-    except JSON_READ_ERRORS:
-        return None
-    entries = data.get("integrations") if isinstance(data, dict) else None
-    for entry in entries if isinstance(entries, list) else []:
-        if isinstance(entry, dict) and entry.get("id") == identifier:
-            recorded = entry.get("managed_entries")
-            if isinstance(recorded, list) and all(
-                isinstance(item, str) for item in recorded
-            ):
-                return recorded
-    return None
 
 
 def _install_hook_config(
@@ -907,7 +905,7 @@ def _install_hook_config(
     template_document = json.loads(template_bytes.decode("utf-8"))
     target = repo / config
     written: list[str] = []
-    recorded = _recorded_managed_entries(repo, adapter.integration_id)
+    recorded = recorded_managed_entries(repo, adapter.integration_id)
     baseline = set(template_digests(template_document)) | set(recorded or [])
     if not target.exists() or forced:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1393,6 +1391,7 @@ def cmd_health(args: argparse.Namespace) -> int:
         fix=getattr(args, "fix", False),
         online=getattr(args, "online", False),
         harness_cli=HARNESS_CLI,
+        hook_templates=hook_template_files(),
     )
     if args.json:
         print(json.dumps(health_report_json.to_json(report), ensure_ascii=False))

@@ -22,6 +22,9 @@ from scripts.clean_room.merge_corpus import (
 from scripts.clean_room.support import (
     BASH,
     HARNESS,
+    capture_json,
+    fail_json,
+    find_check,
     run_hook,
     run_ok,
     run_step,
@@ -74,6 +77,7 @@ def run(ctx: SimpleNamespace) -> None:
         "profile": "standard"
     }:
         sys.exit("pvmalove-suite init did not set hook_policy.profile standard")
+    check_hooks_policy_health(pv_project)
     for command, code, decision in (
         ("gh pr merge 1", 2, "block"),
         ("echo done", 0, "allow"),
@@ -2006,6 +2010,36 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"require-qa-gate.sh with pr_commands.py {label} allowed a PR")
     if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
         sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
+
+
+def check_hooks_policy_health(project: Path) -> None:
+    """`harness health` отчитывается о hooks.policy: профиль, проводка и потерянный критический hook."""
+    policy = find_check(
+        capture_json(HARNESS + ["health", str(project), "--json"]), "hooks.policy"
+    )
+    message = policy["message"]
+    if (
+        policy["status"] != "warn"
+        or "профиль standard (.harness/project.json)" not in message
+    ):
+        sys.exit(f"hooks.policy did not report the standard profile: {policy}")
+    if "claude: критических hooks подключено 9/9" not in message:
+        sys.exit(f"hooks.policy did not report the wired critical hooks: {message}")
+    script = project / ".claude" / "hooks" / "block-dangerous-git.sh"
+    content = script.read_bytes()
+    script.unlink()
+    try:
+        broken = find_check(
+            fail_json(HARNESS + ["health", str(project), "--json"]), "hooks.policy"
+        )
+    finally:
+        script.write_bytes(content)
+        script.chmod(script.stat().st_mode | 0o111)
+    if (
+        broken["status"] != "fail"
+        or "block-dangerous-git.sh: файл отсутствует" not in broken["message"]
+    ):
+        sys.exit(f"hooks.policy did not fail on a missing critical hook: {broken}")
 
 
 def check_publication_forms(metadata_hook: Path, project: Path) -> None:

@@ -29,6 +29,7 @@ GROUP_LABELS_RU: dict[str, str] = {
     "repo_map": "Repo Map",
     "memory": "Память проекта",
     "environment": "Окружение",
+    "hooks": "Hooks проекта",
     "directories": "Каталоги харнесса",
     "tracker": "Трекер задач",
     "orchestration": "Оркестрация",
