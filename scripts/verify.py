@@ -36,6 +36,7 @@ from harness.gate_runner.gate_runner import (
     sanitise,
 )
 from harness.gate_runner.junit import failed_nodeids
+from harness.gate_runner.stage_evidence import StageEvidenceError
 from harness.storage import storage_path
 from scripts.verification.cache import (
     COLD_ENV,
@@ -318,6 +319,10 @@ class _EvidenceRecorder:
         junit: Path | None = None,
     ) -> None:
         """Run one stage, report its duration like ``run_stage`` and keep its evidence."""
+        if junit is not None:
+            # A report left by an earlier run must never stand in for this one: pytest that stops
+            # before its session starts (a conftest import error) writes none.
+            junit.unlink(missing_ok=True)
         captured = run_captured(cmd, env=env, cwd=cwd)
         state = "passed" if captured.exit_code == 0 else "failed"
         print(f"[verify] {name}: {state} in {captured.duration_ms / 1000:.2f}s")
@@ -333,7 +338,7 @@ class _EvidenceRecorder:
         ):
             try:
                 failed = failed_nodeids(junit.read_text(encoding="utf-8"), ROOT).nodeids
-            except (OSError, UnicodeDecodeError, ValueError):
+            except (OSError, UnicodeDecodeError, StageEvidenceError):
                 failed = ()
         command = subprocess.list2cmdline(cmd)
         self._runs[name] = StageCommand(
@@ -443,15 +448,12 @@ def _run_stages(
                 if junit_xml is not None:
                     _mirror_junit(junit_xml, junit_mirrors or [])
         if only != "tests":
-            cold = {} if cache is None else {"MYPY_CACHE_DIR": str(run_tmp / "mypy")}
             _stage(
                 recorder,
                 "clean-room",
                 clean_room_command(),
                 # UTF-8 mode: the harness CLI writes UTF-8, and a cp1252 runner locale cannot decode it.
-                env=dict(
-                    test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp), PYTHONUTF8="1", **cold
-                ),
+                env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp), PYTHONUTF8="1"),
             )
     finally:
         try:

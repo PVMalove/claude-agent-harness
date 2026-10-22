@@ -232,3 +232,45 @@ def test_a_static_check_failure_still_leaves_evidence_with_every_stage_not_run(
         ("pytest", "not_run"),
         ("clean-room", "not_run"),
     ]
+
+
+_CORRUPT_JUNIT = (
+    "import pytest\n"
+    "\n"
+    "@pytest.hookimpl(trylast=True)\n"
+    "def pytest_sessionfinish(session):\n"
+    "    open(session.config.option.xmlpath, 'w').write('not a JUnit report')\n"
+)
+
+
+def test_a_failed_pytest_stage_with_a_broken_junit_report_keeps_its_exit_code(
+    project: Path, tmp_path: Path
+) -> None:
+    _use_tests(project, **{"test_bad.py": BAD_TEST})
+    (project / "tests" / "conftest.py").write_text(_CORRUPT_JUNIT, encoding="utf-8")
+    evidence = tmp_path / "evidence"
+
+    assert _run("--evidence-dir", str(evidence)) == 1
+
+    pytest_stage = _document(evidence).stages[1]
+    assert (pytest_stage.result, pytest_stage.exit_code) == ("fail", 1)
+    assert pytest_stage.failed_nodeids == ()
+
+
+def test_a_previous_junit_report_never_supplies_the_nodeids_of_a_run_that_wrote_none(
+    project: Path, tmp_path: Path
+) -> None:
+    _use_tests(project, **{"test_bad.py": BAD_TEST})
+    evidence = tmp_path / "evidence"
+    assert _run("--evidence-dir", str(evidence)) == 1
+    assert _document(evidence).stages[1].failed_nodeids
+    # pytest now stops before its session starts, so it writes no report of its own.
+    (project / "tests" / "conftest.py").write_text(
+        "import nonexistent_module_xyz\n", encoding="utf-8"
+    )
+
+    assert _run("--evidence-dir", str(evidence)) == 4
+
+    pytest_stage = _document(evidence).stages[1]
+    assert (pytest_stage.result, pytest_stage.exit_code) == ("fail", 4)
+    assert pytest_stage.failed_nodeids == ()
