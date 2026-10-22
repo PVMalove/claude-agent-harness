@@ -14,11 +14,13 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
 
+from harness.json_types import JsonObject
+from harness.orchestration.core import state_view
 from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.runtime_client import RuntimeClientError
 from harness.orchestration.workflow import batch
@@ -211,3 +213,75 @@ def test_without_a_runtime_a_read_is_runtime_unavailable_and_falls_back_to_nothi
     assert refused.value.code == "runtime_unavailable"
     assert tree(repo / STATE_REL, skip=("runtime.db-",)) == files
     assert not (repo / STATE_REL / ".coordinator.lock").exists()
+
+
+# -- the view asks for a whole collection once it is read record by record --------------------------
+
+
+class _CountingStore:
+    """A store of ``count`` dispatches that counts the requests a view makes."""
+
+    def __init__(self, count: int, *, too_large: bool = False) -> None:
+        self.records = {
+            f"dispatches/dispatch-{number}.json": {"dispatch_id": f"dispatch-{number}"}
+            for number in range(count)
+        }
+        self.too_large = too_large
+        self.requests: list[tuple[list[str], list[str]]] = []
+
+    def fetch(
+        self, collections: Sequence[str], paths: Sequence[str], revision: int | None
+    ) -> tuple[dict[str, JsonObject], int | None]:
+        self.requests.append((list(collections), list(paths)))
+        if collections and self.too_large:
+            raise state_view.AnswerTooLarge("the answer would not fit one frame")
+        found = {
+            path: record
+            for path, record in self.records.items()
+            if path in paths or path.split("/")[0] in collections
+        }
+        return found, 7
+
+
+def _view(store: _CountingStore, tmp_path: Path) -> state_view.StateView:
+    return state_view.StateView(tmp_path, store.fetch)
+
+
+def test_a_view_asks_for_a_whole_collection_after_a_few_point_reads(tmp_path: Path) -> None:
+    store = _CountingStore(50)
+    view = _view(store, tmp_path)
+
+    found = [view.read(f"dispatches/dispatch-{number}.json") for number in range(50)]
+
+    assert all(record is not None for record in found)
+    assert store.requests == [
+        ([], ["dispatches/dispatch-0.json"]),
+        ([], ["dispatches/dispatch-1.json"]),
+        ([], ["dispatches/dispatch-2.json"]),
+        (["dispatches"], []),
+    ]
+    assert view.revision == 7
+    assert view.read("dispatches/dispatch-none.json") is None
+
+
+def test_a_view_that_is_refused_a_whole_collection_goes_on_with_point_reads(
+    tmp_path: Path,
+) -> None:
+    store = _CountingStore(8, too_large=True)
+    view = _view(store, tmp_path)
+
+    found = [view.read(f"dispatches/dispatch-{number}.json") for number in range(8)]
+
+    assert all(record is not None for record in found)
+    assert [request for request in store.requests if request[0]] == [(["dispatches"], [])]
+    assert len([request for request in store.requests if request[1]]) == 8
+
+
+def test_a_read_of_a_record_outside_a_bulk_collection_stays_a_point_read(tmp_path: Path) -> None:
+    store = _CountingStore(0)
+    view = _view(store, tmp_path)
+
+    for number in range(6):
+        assert view.read(f"reports/dispatch-{number}.json") is None
+
+    assert all(not collections for collections, _ in store.requests)

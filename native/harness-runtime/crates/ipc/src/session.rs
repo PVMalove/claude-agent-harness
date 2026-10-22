@@ -267,12 +267,17 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
             .with_fact("actual_revision", actual),
             false,
         ),
-        Err(ReadError::TooLarge) => refusal(
-            ErrorCode::MalformedRequest,
-            FailureDomain::Tooling,
+        Err(ReadError::TooLarge) => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::MalformedRequest,
+                FailureDomain::Tooling,
+                false,
+                "the answer would not fit one frame",
+                "ask for fewer collections or paths in one request",
+            )
+            .with_fact("reason", "answer_too_large"),
             false,
-            "the answer would not fit one frame".to_owned(),
-            "ask for fewer collections or paths in one request",
         ),
         Err(ReadError::Store {
             message,

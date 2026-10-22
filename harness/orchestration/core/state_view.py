@@ -43,6 +43,27 @@ RECORD_DIRECTORIES = frozenset(
     }
 )
 
+# The collections of records a command may read one by one. After ``BULK_AFTER`` point reads in
+# one of them the view asks for the whole collection once: a call costs milliseconds, and a status
+# of hundreds of dispatches would otherwise make hundreds of calls.
+BULK_COLLECTIONS = frozenset(
+    {
+        "batches",
+        "plans",
+        "dispatches",
+        "dispatch-status",
+        "risk-assessments",
+        "context-packages",
+        "checkpoints",
+    }
+)
+BULK_AFTER = 3
+
+
+class AnswerTooLarge(Exception):
+    """The runtime refused an answer that would not fit one frame."""
+
+
 # One ``state.read`` request: the collections and the paths it asks for, and the revision of the
 # store the view already saw. The answer holds the records by path, and the revision.
 type Fetch = Callable[
@@ -60,6 +81,8 @@ class StateView:
         self._records: dict[str, JsonObject] = {}
         self._collections: set[str] = set()
         self._asked: set[str] = set()
+        self._point_reads: dict[str, int] = {}
+        self._too_large: set[str] = set()
         self.revision: int | None = None
 
     def relative(self, path: Path | str) -> str | None:
@@ -85,8 +108,20 @@ class StateView:
         """The record at ``relative``, or ``None`` when the store holds none."""
         head = relative.split("/", 1)[0]
         if head not in self._collections and relative not in self._asked:
-            self._load([], [relative])
-            self._asked.add(relative)
+            count = self._point_reads.get(head, 0) + 1
+            self._point_reads[head] = count
+            if (
+                head in BULK_COLLECTIONS
+                and head not in self._too_large
+                and count > BULK_AFTER
+            ):
+                try:
+                    self._collection(head)
+                except AnswerTooLarge:
+                    self._too_large.add(head)
+            if head not in self._collections:
+                self._load([], [relative])
+                self._asked.add(relative)
         return self._records.get(relative)
 
     def names(self, relative_dir: str) -> list[str]:

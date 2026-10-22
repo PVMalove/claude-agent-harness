@@ -147,6 +147,8 @@ def _runtime_fetch(repo: Path) -> state_view.Fetch:
         except RuntimeClientError as exc:
             if exc.code in {"store_busy", "revision_conflict"}:
                 raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
+            if exc.facts.get("reason") == "answer_too_large":
+                raise state_view.AnswerTooLarge(exc.message) from exc
             raise
         records = reply.result.get("records")
         return (records if isinstance(records, dict) else {}), reply.revision
