@@ -1,0 +1,202 @@
+"""`harness init|adopt|update` merge managed hook entries into the runtime settings file."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+import pytest
+
+from harness.health.hook_settings import entry_digest
+from harness.json_types import JsonObject
+from tests.core.test_uninstall import git, harness
+
+SETTINGS = ".claude/settings.local.json"
+INTEGRATIONS = ".harness/integrations.json"
+USER_HOOK = {"type": "command", "command": "bash scripts/user-guard.sh"}
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    root = tmp_path / "project"
+    root.mkdir()
+    git(root, "init", "-b", "main")
+    return root
+
+
+def install(repo: Path) -> None:
+    result = harness("init", str(repo), "--capability", "pvmalove-suite")
+    assert result.returncode == 0, result.stderr
+
+
+def script_of(handler: JsonObject) -> str | None:
+    match = re.search(r"\.claude/hooks/([\w.-]+)", str(handler.get("command", "")))
+    return match.group(1) if match else None
+
+
+def load(repo: Path) -> JsonObject:
+    document: JsonObject = json.loads((repo / SETTINGS).read_text(encoding="utf-8"))
+    return document
+
+
+def save(repo: Path, document: JsonObject) -> None:
+    (repo / SETTINGS).write_text(
+        json.dumps(document, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+def handlers(document: JsonObject, script: str) -> list[tuple[str, str, JsonObject]]:
+    """(event, matcher, handler) of every handler that runs `script`."""
+    found = []
+    for event, groups in document["hooks"].items():
+        for group in groups:
+            for handler in group["hooks"]:
+                if script_of(handler) == script:
+                    found.append((event, group.get("matcher", ""), handler))
+    return found
+
+
+def drop_script(document: JsonObject, script: str) -> None:
+    """Remove every handler of `script` and the groups that it leaves empty."""
+    for event in list(document["hooks"]):
+        groups = document["hooks"][event]
+        for group in groups:
+            group["hooks"] = [h for h in group["hooks"] if script_of(h) != script]
+        document["hooks"][event] = [g for g in groups if g["hooks"]]
+
+
+def template_document() -> JsonObject:
+    from harness.bin.harness import PROJECT_TEMPLATE_DIR
+
+    document: JsonObject = json.loads(
+        (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(encoding="utf-8")
+    )
+    return document
+
+
+def test_update_restores_removed_managed_entries_and_keeps_user_hook(
+    repo: Path,
+) -> None:
+    install(repo)
+    document = load(repo)
+    drop_script(document, "protect-hook-policy.sh")
+    bash_group = next(
+        group for group in document["hooks"]["PreToolUse"] if group["matcher"] == "Bash"
+    )
+    bash_group["hooks"].append(USER_HOOK)
+    save(repo, document)
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    merged = load(repo)
+    restored = handlers(merged, "protect-hook-policy.sh")
+    assert sorted(matcher for _, matcher, _ in restored) == [
+        "Bash",
+        "Write|Edit|MultiEdit|NotebookEdit",
+    ]
+    user_commands = [
+        h["command"]
+        for group in merged["hooks"]["PreToolUse"]
+        for h in group["hooks"]
+        if h["command"] == USER_HOOK["command"]
+    ]
+    assert user_commands == [USER_HOOK["command"]]
+    assert merged["permissions"] == document["permissions"]
+
+
+def test_update_replaces_outdated_managed_entry_recorded_in_baseline(
+    repo: Path,
+) -> None:
+    install(repo)
+    document = load(repo)
+    ((event, matcher, handler),) = handlers(document, "block-dangerous-git.sh")
+    outdated = dict(handler, command=str(handler["command"]).replace("bash ", "sh "))
+    handler.update(outdated)
+    save(repo, document)
+    inventory = json.loads((repo / INTEGRATIONS).read_text(encoding="utf-8"))
+    entry = next(
+        item
+        for item in inventory["integrations"]
+        if item["id"] == "pvmalove-suite-hooks"
+    )
+    entry["managed_entries"] = sorted(
+        [*entry.get("managed_entries", []), entry_digest(event, matcher, outdated)]
+    )
+    (repo / INTEGRATIONS).write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    ((_, _, current),) = handlers(load(repo), "block-dangerous-git.sh")
+    assert current["command"].startswith("bash ")
+
+
+def test_update_leaves_user_modified_managed_entry_untouched(repo: Path) -> None:
+    install(repo)
+    document = load(repo)
+    ((_, _, handler),) = handlers(document, "block-dangerous-git.sh")
+    handler["timeout"] = 5
+    save(repo, document)
+    before = (repo / SETTINGS).read_bytes()
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert (repo / SETTINGS).read_bytes() == before
+
+
+def test_force_seed_file_and_force_seed_files_write_the_template_bytes(
+    repo: Path,
+) -> None:
+    install(repo)
+    template = (
+        Path(__file__).resolve().parents[2] / "harness/project/settings.local.json.tmpl"
+    ).read_bytes()
+    for flag in (["--force-seed-file", SETTINGS], ["--force-seed-files"]):
+        save(repo, {"hooks": {}, "permissions": {"allow": ["Bash(own)"]}})
+        result = harness("update", str(repo), *flag)
+        assert result.returncode == 0, result.stderr
+        assert (repo / SETTINGS).read_bytes() == template
+
+
+@pytest.mark.parametrize("command", ["init", "adopt"])
+def test_install_merges_into_existing_user_settings(repo: Path, command: str) -> None:
+    path = repo / SETTINGS
+    path.parent.mkdir(parents=True)
+    user = {
+        "permissions": {"allow": ["Bash(own)"]},
+        "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [USER_HOOK]}]},
+    }
+    path.write_text(json.dumps(user), encoding="utf-8")
+
+    result = harness(command, str(repo), "--capability", "pvmalove-suite")
+
+    assert result.returncode == 0, result.stderr
+    merged = load(repo)
+    assert merged["permissions"] == user["permissions"]
+    first_group = merged["hooks"]["PreToolUse"][0]
+    assert first_group["hooks"][0] == USER_HOOK
+    expected = {
+        script
+        for groups in template_document()["hooks"].values()
+        for group in groups
+        for h in group["hooks"]
+        if (script := script_of(h))
+    }
+    for script in expected:
+        assert len(handlers(merged, script)) == len(
+            handlers(template_document(), script)
+        ), script
+
+
+def test_unreadable_settings_file_is_left_unchanged(repo: Path) -> None:
+    install(repo)
+    path = repo / SETTINGS
+    path.write_text("{not json", encoding="utf-8")
+
+    result = harness("update", str(repo))
+
+    assert result.returncode == 0, result.stderr
+    assert path.read_text(encoding="utf-8") == "{not json"

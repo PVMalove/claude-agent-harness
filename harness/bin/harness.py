@@ -65,6 +65,7 @@ from harness.seed_links import propose_contract_links, print_contract_proposals
 from harness.health import registry as health_registry
 from harness.health import render as health_render
 from harness.health import report_json as health_report_json
+from harness.health.hook_settings import merge_hooks, template_digests
 from harness.health.model import JsonObject
 from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
@@ -502,8 +503,12 @@ def record_integration(
     config: Path,
     secret_refs: list[str],
     verify: str,
+    managed_entries: list[str] | None = None,
 ) -> None:
-    """Зарегистрировать или обновить запись интеграции в .harness/integrations.json."""
+    """Зарегистрировать или обновить запись интеграции в .harness/integrations.json.
+
+    `managed_entries` — отсортированные отпечатки managed hook-записей, которые harness записал
+    в `config`: по ним слияние отличает устаревшую запись от правки пользователя."""
     path = repo / INTEGRATIONS_REL
     data: object = {}
     if path.is_file():
@@ -523,17 +528,18 @@ def record_integration(
         for entry in existing
         if not (isinstance(entry, dict) and entry.get("id") == identifier)
     ]
-    entries.append(
-        {
-            "id": identifier,
-            "kind": kind,
-            "runtimes": runtimes,
-            "config": config.as_posix(),
-            "sha256": digest((repo / config).read_bytes()),
-            "secret_refs": secret_refs,
-            "verify": verify,
-        }
-    )
+    entry: JsonObject = {
+        "id": identifier,
+        "kind": kind,
+        "runtimes": runtimes,
+        "config": config.as_posix(),
+        "sha256": digest((repo / config).read_bytes()),
+        "secret_refs": secret_refs,
+        "verify": verify,
+    }
+    if managed_entries is not None:
+        entry["managed_entries"] = sorted(managed_entries)
+    entries.append(entry)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"schema": 1, "integrations": entries}, indent=2, ensure_ascii=False)
@@ -867,6 +873,84 @@ def seed_differing(repo: Path) -> list[str]:
     return sorted(differing)
 
 
+def _recorded_managed_entries(repo: Path, identifier: str) -> list[str] | None:
+    """Отпечатки managed hook-записей из .harness/integrations.json; None — поля нет или файл не читается."""
+    try:
+        data = json.loads((repo / INTEGRATIONS_REL).read_text(encoding="utf-8"))
+    except JSON_READ_ERRORS:
+        return None
+    entries = data.get("integrations") if isinstance(data, dict) else None
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict) and entry.get("id") == identifier:
+            recorded = entry.get("managed_entries")
+            if isinstance(recorded, list) and all(
+                isinstance(item, str) for item in recorded
+            ):
+                return recorded
+    return None
+
+
+def _install_hook_config(
+    repo: Path,
+    *,
+    config: Path,
+    template: Path,
+    identifier: str,
+    runtime: str,
+    verify: str,
+    forced: bool,
+    differing: list[Path],
+) -> list[str]:
+    """Записать или слить файл hooks runtime и зарегистрировать его в каталоге интеграций.
+
+    Нет файла или он forced — байты шаблона. Иначе managed hook-записи сливаются по пути команды
+    скрипта, записи пользователя не меняются; файл, который нельзя разобрать, остаётся как есть."""
+    template_bytes = template.read_bytes()
+    template_document = json.loads(template_bytes.decode("utf-8"))
+    target = repo / config
+    written: list[str] = []
+    recorded = _recorded_managed_entries(repo, identifier)
+    managed = set(template_digests(template_document))
+    baseline = managed | set(recorded or [])
+    if not target.exists() or forced:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(template_bytes)
+        written.append(str(target))
+    else:
+        try:
+            document: object = json.loads(target.read_text(encoding="utf-8"))
+        except JSON_READ_ERRORS:
+            document = None
+        merge = merge_hooks(document, template_document, baseline)
+        if merge.problem is not None or merge.document is None:
+            print(
+                f"hooks merge: {config.as_posix()}: cannot merge: "
+                f"{merge.problem or 'not valid JSON'}"
+            )
+        elif merge.changed:
+            if merge.document == template_document:
+                content = template_bytes
+            else:
+                content = (
+                    json.dumps(merge.document, indent=2, ensure_ascii=False) + "\n"
+                ).encode("utf-8")
+            target.write_bytes(content)
+            written.append(str(target))
+        if target.read_bytes() != template_bytes:
+            differing.append(target)
+    record_integration(
+        repo,
+        identifier=identifier,
+        kind="hook",
+        runtimes=[runtime],
+        config=config,
+        secret_refs=[],
+        verify=verify,
+        managed_entries=sorted(baseline),
+    )
+    return written
+
+
 def scaffold_pvmalove_extras(
     repo: Path, args: argparse.Namespace, *, orchestration_enabled: bool = False
 ) -> list[str]:
@@ -933,29 +1017,20 @@ def scaffold_pvmalove_extras(
         root_gitignore.write_text(root_gitignore_text, encoding="utf-8", newline="\n")
         written.append(str(root_gitignore))
 
-    settings = repo / ".claude/settings.local.json"
-    template_text = (PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl").read_text(
-        encoding="utf-8"
-    )
-    if settings.exists() and not forced(settings):
-        if settings.read_text(encoding="utf-8") != template_text:
-            differing.append(settings)
-    if not settings.exists() or forced(settings):
-        settings.parent.mkdir(parents=True, exist_ok=True)
-        settings.write_text(template_text, encoding="utf-8", newline="\n")
-        written.append(str(settings))
-
-    record_integration(
-        repo,
-        identifier="pvmalove-suite-hooks",
-        kind="hook",
-        runtimes=["claude"],
-        config=Path(".claude/settings.local.json"),
-        secret_refs=[],
-        verify=(
-            "Open a fresh Claude Code session and confirm a guarded action "
-            "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
-        ),
+    written.extend(
+        _install_hook_config(
+            repo,
+            config=Path(".claude/settings.local.json"),
+            template=PROJECT_TEMPLATE_DIR / "settings.local.json.tmpl",
+            identifier="pvmalove-suite-hooks",
+            runtime="claude",
+            verify=(
+                "Open a fresh Claude Code session and confirm a guarded action "
+                "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
+            ),
+            forced=forced(repo / ".claude/settings.local.json"),
+            differing=differing,
+        )
     )
     written.append(str(repo / INTEGRATIONS_REL))
 

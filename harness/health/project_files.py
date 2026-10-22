@@ -523,6 +523,18 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
             problems.append(
                 f"integration {identifier!r} secret_refs must contain environment variable names only"
             )
+        managed = entry.get("managed_entries")
+        if managed is not None and not (
+            isinstance(managed, list)
+            and len(set(managed)) == len(managed)
+            and all(
+                isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+                for item in managed
+            )
+        ):
+            problems.append(
+                f"integration {identifier!r} managed_entries must be unique sha256 digests"
+            )
         try:
             config = relative_path(
                 entry.get("config"), label=f"integration {identifier!r} config"
