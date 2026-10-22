@@ -466,12 +466,13 @@ def _command_environment(checkout: Path) -> Iterator[dict[str, str]]:
 
 
 def _stage_environment(
-    env: Mapping[str, str] | None, group: str, index: int
+    env: Mapping[str, str] | None, group: str, index: int, *, cold: bool
 ) -> dict[str, str]:
-    """The environment of one command: cold, and with its own JUnit report path when it has a
-    temporary directory (ADR 0023, sections 4 and 5)."""
+    """The environment of one command: cold for a clean-room run, and with its own JUnit report
+    path when it has a temporary directory (ADR 0023, sections 4 and 5)."""
     command_env = dict(os.environ if env is None else env)
-    command_env[STAGE_ENV_COLD] = "1"
+    if cold:
+        command_env[STAGE_ENV_COLD] = "1"
     temporary = command_env.get("TMPDIR")
     if temporary:
         command_env[STAGE_ENV_JUNIT] = str(
@@ -504,6 +505,7 @@ def _execute_commands(
     env: Mapping[str, str] | None = None,
     group: str = "gate",
     unreached: list[str] | None = None,
+    cold: bool = False,
 ) -> None:
     """Run commands in one checkout, appending each check, artifact block and optional stage record.
 
@@ -519,7 +521,7 @@ def _execute_commands(
             prepared if isinstance(prepared, str) else subprocess.list2cmdline(prepared)
         )
         approved_text = _approved_text(command)
-        command_env = _stage_environment(env, group, index)
+        command_env = _stage_environment(env, group, index, cold=cold)
         began = time.monotonic()
         try:
             result: subprocess.CompletedProcess[str] = subprocess.run(
@@ -637,6 +639,7 @@ def run_gate(
             started=started,
             stage=ran,
             unreached=unreached,
+            cold=isinstance(policy, CleanRoomPolicy),
         )
     context = _context(policy, evidence)
     return GateResult(
@@ -936,6 +939,7 @@ def run_qa_stages(
     stages: list[dict[str, object]] = []
     entries: list[tuple[str, StageCommand | None]] = []
     context = _context(policy, evidence)
+    cold = isinstance(policy, CleanRoomPolicy)
     with policy.checkout() as checkout, _command_environment(checkout) as env:
         prepared: list[StageCommand] = []
         prepared_unreached: list[str] = []
@@ -950,6 +954,7 @@ def run_qa_stages(
             stage=prepared,
             group=QA_STAGE_PREPARATION,
             unreached=prepared_unreached,
+            cold=cold,
         )
         stages.extend(_stage_record(QA_STAGE_PREPARATION, item) for item in prepared)
         entries.extend(
@@ -973,6 +978,7 @@ def run_qa_stages(
                     started=started,
                     stage=found,
                     group=group,
+                    cold=cold,
                 )
                 entries.extend(_gate_entries(group, found, ()))
             stages.extend(_stage_record(QA_STAGE_ENVIRONMENT_PROBE, i) for i in probed)
@@ -1014,6 +1020,7 @@ def run_qa_stages(
             stage=ran,
             group=QA_STAGE_GATE,
             unreached=gate_unreached,
+            cold=cold,
         )
         stages.extend(_stage_record(QA_STAGE_GATE, item) for item in ran)
         entries.extend(_gate_entries(QA_STAGE_GATE, ran, gate_unreached))

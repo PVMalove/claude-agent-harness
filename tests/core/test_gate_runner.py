@@ -845,21 +845,46 @@ def test_failed_nodeids_come_from_the_junit_report_the_command_wrote(
     )
 
 
-def test_the_gate_environment_is_marked_cold_and_each_command_has_its_own_junit_path(
+_RECORD_ENV = (
+    "import os,sys; open(sys.argv[1],'a').write("
+    "os.environ.get('HARNESS_VERIFY_COLD','-')+'|'+os.environ['HARNESS_STAGE_JUNIT_XML']+'\\n')"
+)
+
+
+def test_the_clean_room_gate_is_marked_cold_and_each_command_has_its_own_junit_path(
     tmp_path: Path,
 ) -> None:
+    repo, head = _committed_repo(tmp_path)
     seen = tmp_path / "seen"
-    record = (
-        "import os,sys; open(sys.argv[1],'a').write("
-        "os.environ['HARNESS_VERIFY_COLD']+'|'+os.environ['HARNESS_STAGE_JUNIT_XML']+'\\n')"
-    )
-    command = [sys.executable, "-c", record, str(seen)]
+    command = [sys.executable, "-c", _RECORD_ENV, str(seen)]
 
-    run_gate([command, command], LocalPolicy(tmp_path), stop_on_failure=True)
+    run_gate([command, command], CleanRoomPolicy(repo, head), stop_on_failure=True)
 
     first, second = (line.split("|") for line in seen.read_text().splitlines())
     assert first[0] == second[0] == "1"
     assert first[1] != second[1] and first[1].endswith(".junit.xml")
+
+
+def test_a_local_run_through_the_bounded_wrapper_is_not_cold_and_may_use_the_worktree_cache(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _committed_repo(tmp_path)
+    seen = tmp_path / "seen"
+    source = Path(__file__).resolve().parents[2]
+    open_cache = (
+        "import os,sys; sys.path.insert(0, sys.argv[2]); from pathlib import Path; "
+        "from scripts.verification.cache import open_cache; "
+        "open(sys.argv[1],'w').write(str(open_cache(Path(sys.argv[3]), os.environ).directory))"
+    )
+
+    result = run_gate(
+        [[sys.executable, "-c", open_cache, str(seen), str(source), str(repo)]],
+        LocalPolicy(repo),
+        stop_on_failure=True,
+    )
+
+    assert result.passed, result.checks
+    assert Path(seen.read_text()).is_dir()
 
 
 def test_a_local_run_without_an_evidence_context_has_no_stage_evidence(
