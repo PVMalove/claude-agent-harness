@@ -133,6 +133,25 @@ def test_a_not_run_stage_may_carry_the_exit_code_of_a_run_that_selected_nothing(
     assert parsed.stages[1].result == "not_run" and parsed.stages[1].exit_code == 5
 
 
+@pytest.mark.parametrize("code", [-(2**31), -1, 3221225477, 2**32 - 1])
+def test_an_exit_code_within_the_shared_32_bit_range_is_accepted(code: int) -> None:
+    document = copy.deepcopy(_golden())
+    _stages(document)[1]["exit_code"] = code
+
+    parsed = stage_evidence.StageEvidenceDocument.from_json(document)
+
+    assert parsed.stages[1].exit_code == code
+
+
+@pytest.mark.parametrize("code", [-(2**31) - 1, 2**32, 2**63])
+def test_an_exit_code_outside_the_shared_32_bit_range_is_refused(code: int) -> None:
+    document = copy.deepcopy(_golden())
+    _stages(document)[1]["exit_code"] = code
+
+    with pytest.raises(stage_evidence.StageEvidenceError, match="exit_code"):
+        stage_evidence.StageEvidenceDocument.from_json(document)
+
+
 def test_an_unknown_schema_name_and_bad_json_are_refused() -> None:
     with pytest.raises(stage_evidence.StageEvidenceError, match="schema"):
         stage_evidence.StageEvidenceDocument.from_json(

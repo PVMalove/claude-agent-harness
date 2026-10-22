@@ -175,3 +175,18 @@ fn a_not_run_stage_may_carry_the_exit_code_of_a_run_that_selected_nothing() {
 
     assert_eq!(parsed.expect("valid").stages[1].exit_code, Some(5));
 }
+
+#[test]
+fn an_exit_code_follows_the_shared_32_bit_range_of_the_python_writer() {
+    for code in [-(1_i64 << 31), -1, 3_221_225_477, (1_i64 << 32) - 1] {
+        let mut document: Value = serde_json::from_str(&golden()).expect("the fixture is JSON");
+        document["stages"][1]["exit_code"] = json!(code);
+
+        let parsed = StageEvidenceDocument::from_json_str(&document.to_string());
+
+        assert_eq!(parsed.expect("in range").stages[1].exit_code, Some(code));
+    }
+    for code in [-(1_i64 << 31) - 1, 1_i64 << 32, i64::MAX] {
+        assert!(refused(|d| d["stages"][1]["exit_code"] = json!(code)));
+    }
+}

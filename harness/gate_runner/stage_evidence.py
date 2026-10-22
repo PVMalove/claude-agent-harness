@@ -47,6 +47,10 @@ STAGE_KEYS = frozenset(
     }
 )
 REF_KEYS = frozenset({"path", "sha256"})
+# A process exit status: signed (POSIX, Rust ``i32``) or unsigned (a Windows NTSTATUS such as
+# 0xC0000005) 32-bit; the Rust twin enforces the same range.
+EXIT_CODE_MIN = -(2**31)
+EXIT_CODE_MAX = 2**32 - 1
 _COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -155,6 +159,11 @@ class StageEvidence:
             if data["exit_code"] is None
             else _integer(data["exit_code"], f"{where}.exit_code")
         )
+        if exit_code is not None and not EXIT_CODE_MIN <= exit_code <= EXIT_CODE_MAX:
+            raise _refuse(
+                f"{where}.exit_code",
+                f"must lie in {EXIT_CODE_MIN}..{EXIT_CODE_MAX} (a 32-bit exit status)",
+            )
         duration = _integer(data["duration_ms"], f"{where}.duration_ms")
         if duration < 0:
             raise _refuse(f"{where}.duration_ms", "must not be negative")

@@ -12,6 +12,10 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// The `schema` value of a document.
 pub const SCHEMA: &str = "stage-evidence.v1";
 
+/// The exit status range shared with the Python writer: signed (POSIX) or unsigned (a Windows
+/// NTSTATUS such as `0xC0000005`) 32-bit.
+const EXIT_CODE_RANGE: std::ops::RangeInclusive<i64> = -(1_i64 << 31)..=(1_i64 << 32) - 1;
+
 vocabulary! {
     /// Result of a stage; the registry field `report.check_result`.
     StageResult {
@@ -88,7 +92,7 @@ pub struct StageEvidence {
     pub environment_fingerprint: Option<String>,
     pub result: StageResult,
     #[serde(deserialize_with = "required")]
-    pub exit_code: Option<i32>,
+    pub exit_code: Option<i64>,
     #[serde(deserialize_with = "required")]
     pub stdout: Option<FileRef>,
     #[serde(deserialize_with = "required")]
@@ -138,6 +142,12 @@ impl StageEvidence {
             if stream.path.is_empty() || !is_lower_hex(&stream.sha256, &[64]) {
                 return refuse("a stream needs a path and a lower-case sha256");
             }
+        }
+        if self
+            .exit_code
+            .is_some_and(|code| !EXIT_CODE_RANGE.contains(&code))
+        {
+            return refuse("exit_code must lie in -2147483648..4294967295 (a 32-bit exit status)");
         }
         let ran = self.exit_code.is_some();
         if ran != self.stdout.is_some() || ran != self.stderr.is_some() {
