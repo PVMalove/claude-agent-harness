@@ -1,7 +1,8 @@
 """Слияние managed hook-записей файла настроек runtime с записями пользователя.
 
 Модуль чистый: без файлового ввода-вывода и печати, только стандартная библиотека. Он
-поставляется вместе с пакетом `harness/health/`, поэтому не импортирует остальной `harness`.
+поставляется вместе с пакетом `harness/health/`, поэтому из остального `harness` импортирует
+только `harness.json_types`.
 Чтение и запись файлов, шаблоны и отчёт установки остаются в `harness/bin/harness.py`.
 """
 
@@ -250,8 +251,10 @@ class HookSpec:
     wiring: Literal["settings", "agent"] = "settings"
 
 
-# Критичность каждой строки сверяет tests/core/test_install_hook_settings_merge.py с `HOOKS`
-# из harness/project/hooks/hook_response.py; проводку — с шаблоном файла настроек.
+# Критичность каждой строки сверяет tests/health/test_hooks_policy_check.py
+# (test_hook_catalog_agrees_with_the_response_envelope) с `HOOKS` из
+# harness/project/hooks/hook_response.py; проводку и состав второго runtime —
+# test_hook_catalog_agrees_with_the_templates с шаблонами и `CODEX_SUPPORT`.
 HOOK_CATALOG: tuple[HookSpec, ...] = (
     HookSpec(
         "protect-hook-policy",

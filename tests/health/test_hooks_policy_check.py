@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
+from harness.health.hook_settings import (
+    CODEX_SUPPORT,
+    HOOK_CATALOG,
+    is_wired,
+    script_name,
+)
 from harness.json_types import JsonObject
 from tests.core.test_uninstall import git, harness
+
+PROJECT_TEMPLATES = Path(__file__).resolve().parents[2] / "harness" / "project"
 
 SETTINGS = ".claude/settings.local.json"
 CODEX = ".codex/hooks.json"
@@ -80,6 +90,76 @@ def test_events_the_second_runtime_lacks_are_listed_and_a_missing_out_of_hook_ch
         in message
     )
     assert "count-skill-usage" in message
+
+
+def test_qa_marker_hook_is_missing_for_the_second_runtime_only(repo: Path) -> None:
+    second = load(repo, CODEX)
+    assert not [
+        handler
+        for groups in second["hooks"].values()
+        for group in groups
+        for handler in group["hooks"]
+        if script_name(handler) == "mark-qa-gate-passed.sh"
+    ]
+
+    message = check(repo)["message"]
+
+    assert re.search(r"codex: нет события или payload: .*mark-qa-gate-passed", message)
+    assert "claude: нет события" not in message
+    assert "не подключён hook mark-qa-gate-passed" not in message
+
+
+def load_hook_response() -> object:
+    spec = importlib.util.spec_from_file_location(
+        "hook_response_catalog", PROJECT_TEMPLATES / "hooks" / "hook_response.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_hook_catalog_agrees_with_the_response_envelope() -> None:
+    hooks: dict[str, tuple[str, bool]] = getattr(load_hook_response(), "HOOKS")
+    catalog = {spec.hook_id: spec for spec in HOOK_CATALOG}
+
+    # `test-author-guard` is wired in the agent frontmatter and runs outside the envelope.
+    assert set(catalog) - set(hooks) == {"test-author-guard"}
+    assert set(hooks) <= set(catalog)
+    assert {hook_id: catalog[hook_id].critical for hook_id in hooks} == {
+        hook_id: critical for hook_id, (_, critical) in hooks.items()
+    }
+    assert catalog["test-author-guard"].critical
+    for spec in HOOK_CATALOG:
+        assert (PROJECT_TEMPLATES / "hooks" / spec.script).is_file(), spec.script
+
+
+def test_hook_catalog_agrees_with_the_templates() -> None:
+    first = json.loads((PROJECT_TEMPLATES / "settings.local.json.tmpl").read_text("utf-8"))
+    second = json.loads((PROJECT_TEMPLATES / "codex-hooks.json.tmpl").read_text("utf-8"))
+    agent = (PROJECT_TEMPLATES / "agents" / "test-author.md").read_text("utf-8")
+    frontmatter = agent.split("---", 2)[1]
+
+    settings_specs = [spec for spec in HOOK_CATALOG if spec.wiring == "settings"]
+    wired_scripts = {
+        script_name(handler)
+        for groups in first["hooks"].values()
+        for group in groups
+        for handler in group["hooks"]
+    }
+    assert wired_scripts == {spec.script for spec in settings_specs}
+    for spec in HOOK_CATALOG:
+        if spec.wiring == "agent":
+            assert spec.script in frontmatter
+    for spec in settings_specs:
+        for tool in spec.tools:
+            assert is_wired(first, spec, tool), (spec.hook_id, tool)
+            # The second runtime wires exactly what it delivers.
+            assert is_wired(second, spec, tool) == ((spec.event, tool) in CODEX_SUPPORT), (
+                spec.hook_id,
+                tool,
+            )
 
 
 def test_profile_without_hook_policy_key_comes_from_the_default_source(
