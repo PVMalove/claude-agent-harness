@@ -58,6 +58,9 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            # A diff may hold any bytes (a non-UTF-8 fixture is still text to Git); only the
+            # *.py hunks are read, so undecodable bytes elsewhere must not stop the gate.
+            errors="surrogateescape",
             check=False,
             timeout=HELPER_TIMEOUT_SECONDS,
         )

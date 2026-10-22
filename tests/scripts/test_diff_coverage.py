@@ -258,6 +258,25 @@ class ChangedLinesTests(unittest.TestCase):
 
         self.assertEqual(changed, {"tool.py": {2}})
 
+    def test_a_changed_file_that_is_not_utf8_does_not_stop_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._git(root, "init", "-q")
+            (root / "tool.py").write_text("a = 1\n", encoding="utf-8")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "base")
+            base = self._git(root, "rev-parse", "HEAD")
+            (root / "tool.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+            # Text to Git (no NUL byte), but not UTF-8: a fixture kept byte for byte.
+            (root / "artifact.log").write_bytes(b"line one\n\xff\xfe not utf-8\n")
+            self._git(root, "add", "-A")
+            self._git(root, "commit", "-q", "-m", "fixture")
+
+            with mock.patch.object(diff_coverage, "ROOT", root):
+                changed = diff_coverage._changed_lines(base)
+
+        self.assertEqual(changed, {"tool.py": {2}})
+
     def test_clean_room_verified_files_are_not_gated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
