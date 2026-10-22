@@ -1,7 +1,7 @@
 //! What the migrator asks of the operating system: random bytes, the identity of this process,
 //! whether another process lives, and durable writes.
 
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -11,7 +11,7 @@ pub fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
     {
         use std::io::Read;
 
-        File::open("/dev/urandom")?.read_exact(bytes)
+        fs::File::open("/dev/urandom")?.read_exact(bytes)
     }
     #[cfg(windows)]
     {
@@ -106,7 +106,7 @@ pub fn process_alive(pid: i64) -> Option<bool> {
 pub fn sync_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
-        File::open(path)?.sync_all()
+        fs::File::open(path)?.sync_all()
     }
     #[cfg(windows)]
     {

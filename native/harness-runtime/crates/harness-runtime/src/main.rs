@@ -85,7 +85,8 @@ fn serve(args: &Args) -> Result<(), Failure> {
     let signalled = Arc::clone(&stop);
     ctrlc::set_handler(move || signalled.store(true, Ordering::Relaxed))
         .map_err(|err| Failure::Refused(format!("cannot install the signal handler: {err}")))?;
-    let server = Server::bind(paths).map_err(|err| refused(&err))?;
+    let state_dir = args.repo.join(state::migrate::STATE_REL);
+    let server = Server::bind_serving(paths, Some(state_dir)).map_err(|err| refused(&err))?;
     let ready = json!({
         "status": "ready",
         "socket": server.paths().socket,

@@ -8,10 +8,13 @@ layer can leak a ledger error into the CLI boundary, which only catches the coor
 from __future__ import annotations
 
 import argparse
-from collections.abc import Iterator
+import json
+import uuid
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+from harness.orchestration.core import state_view
 from harness.orchestration.core.constants import STATE_REL
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -104,6 +107,71 @@ def _ledger_lock(ledger: LifecycleLedger) -> Iterator[None]:
         raise SandboxDeniedError(exc.message, remedy=exc.remedy) from exc
     except LedgerError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+
+
+# The version of ``ledger.json`` that says the runtime store is the authority (ADR 0020).
+STORE_LEDGER_VERSION = 4
+# How long a read waits for the runtime to answer before it is `runtime_unavailable`.
+READ_TIMEOUT_SECONDS = 30.0
+
+
+def store_is_authority(root: Path) -> bool:
+    """Whether ``ledger.json`` selects the runtime store epoch.
+
+    The pointer is the epoch selector of ADR 0020, section 1, not operational state: this is the
+    one read of the file ledger that a store-backed read makes."""
+    try:
+        pointer = json.loads((root / "ledger.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(pointer, dict) and pointer.get("version") == STORE_LEDGER_VERSION
+
+
+def _runtime_fetch(repo: Path) -> state_view.Fetch:
+    """``state.read`` through ``runtime_client``; a busy or moving store reads as a busy ledger."""
+    from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
+
+    client = RuntimeClient(repo)
+
+    def fetch(
+        collections: Sequence[str], paths: Sequence[str], revision: int | None
+    ) -> tuple[dict[str, JsonObject], int | None]:
+        try:
+            reply = client.call(
+                "state.read",
+                operation_id=f"state.read-{uuid.uuid4().hex}",
+                payload={"collections": list(collections), "paths": list(paths)},
+                expected_revision=revision,
+                timeout_seconds=READ_TIMEOUT_SECONDS,
+            )
+        except RuntimeClientError as exc:
+            if exc.code in {"store_busy", "revision_conflict"}:
+                raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
+            raise
+        records = reply.result.get("records")
+        return (records if isinstance(records, dict) else {}), reply.revision
+
+    return fetch
+
+
+@contextmanager
+def read_state(ledger: LifecycleLedger, repo: Path) -> Iterator[None]:
+    """Read operational state for one command (ADR 0020, sections 1 and 3).
+
+    In the file-ledger epoch this is ``_ledger_lock``. In the runtime-store epoch there is no
+    lock: the commands that read bind a view that asks the runtime (``state.read``), so they never
+    open the file ledger or ``runtime.db``, and the records they read come from one store revision."""
+    if not store_is_authority(ledger.root):
+        with _ledger_lock(ledger):
+            yield
+        return
+    if ledger.root != (repo / STATE_REL).resolve():
+        raise CoordinatorError(
+            "the runtime store serves only the state directory of its own repository",
+            remedy="repeat the command without --state-dir",
+        )
+    with state_view.bind(state_view.StateView(ledger.root, _runtime_fetch(repo))):
+        yield
 
 
 def _load_batch(root: Path, batch_id: str) -> JsonObject:

@@ -6,8 +6,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import queue
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -230,3 +233,191 @@ def authorities(repo: Path) -> dict[str, bool]:
         and load(marker)["authority"] == "runtime-store"
         and (state / "runtime.db").is_file(),
     }
+
+
+# -- a repository whose state the real coordinator wrote ---------------------------------------------
+
+ORCHESTRATION_ROOT = ROOT / "harness" / "orchestration"
+APPROVAL = {"approved_by": "Malove", "approved_at": "2026-09-17T00:00:00+00:00"}
+
+
+def _git(repo: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments], cwd=repo, capture_output=True, text=True, check=True
+    )
+    return result.stdout.strip()
+
+
+def coordinator_repository(tmp: Path) -> Path:
+    """A git repository with an origin, a project config and the architect role manifest: what
+    ``create_batch`` and ``create_dispatch`` touch for real."""
+    origin = tmp / "origin.git"
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    repo = tmp / "work"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    _git(repo, "config", "user.name", "Test")
+    (repo / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    (repo / "README.md").write_text("# Readme\n", encoding="utf-8")
+    (repo / ".harness").mkdir()
+    (repo / ".harness" / "project.json").write_text(
+        json.dumps({"qa_gate_commands": ["true"]}), encoding="utf-8"
+    )
+    roles = repo / ".harness" / "orchestration" / "roles"
+    roles.mkdir(parents=True)
+    for name in ("architect", "developer"):
+        (roles / f"{name}.md").write_text(
+            (ORCHESTRATION_ROOT / "roles" / f"{name}.md").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    (repo / ".gitignore").write_text(".harness/orchestration/state/\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-m", "seed")
+    _git(repo, "branch", "-M", "master")
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "origin", "master")
+    return repo
+
+
+def write_coordinator_state(tmp: Path) -> tuple[Path, dict[str, str]]:
+    """The state of a real batch: planned, approved, one architect dispatch created, sent,
+    self-reported and reported. Returns the repository and the ids."""
+    import argparse
+
+    from harness.orchestration import coordinator
+    from harness.orchestration.core import workspace
+
+    repo = coordinator_repository(tmp)
+    worktree = tmp / "worktree"
+    branch = "feature/issue-797-seam"
+    _git(repo, "worktree", "add", "-b", branch, str(worktree), "master")
+
+    def args(**values: object) -> argparse.Namespace:
+        return argparse.Namespace(repo=str(repo), state_dir=None, **values)
+
+    batch = coordinator.create_batch(
+        args(
+            ticket="#797",
+            goal=None,
+            branch=branch,
+            worktree=str(worktree),
+            allowed_path=["**"],
+            integration_ref="master",
+            definition_of_done=["read from the store"],
+            prohibited_change=["secrets"],
+            required_gate=None,
+            dependency=None,
+            expected_file=["services/x.py"],
+            expected_service=["core"],
+            expected_changed_lines=10,
+            expected_context_tokens=None,
+        )
+    )
+    batch_id = str(batch["batch_id"])
+    coordinator.approve_batch(args(batch=batch_id, **APPROVAL))
+    fields = {
+        "batch": batch_id,
+        "role": "architect",
+        "runtime": "claude",
+        "purpose": "work",
+        "candidate_commit": None,
+        "delta_review_of": None,
+        "model": "sonnet",
+        "effort": "high",
+    }
+    proposal = coordinator.create_dispatch(args(propose=True, **fields))
+    created = coordinator.create_dispatch(
+        args(transition_digest=proposal["transition_digest"], **fields, **APPROVAL)
+    )
+    brief = created["brief"]
+    dispatch_id = str(brief["dispatch_id"])
+    launched = coordinator.send_dispatch(
+        args(dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None)
+    )
+    coordinator.self_report_dispatch(
+        args(dispatch=dispatch_id, model="sonnet", worktree=launched["worker_worktree"])
+    )
+    report = {
+        "dispatch_id": dispatch_id,
+        "ticket": brief["ticket"],
+        "role": "architect",
+        "outcome": "completed",
+        "output": "done — café",
+        "commit_sha": "not applicable — read-only role",
+        "changed_files": [],
+        "checks_run": [
+            {"command": command, "result": "pass", "evidence": "n/a"}
+            for command in brief["verification_commands"]
+        ],
+        "risks": {"status": "none", "details": ""},
+        "blockers": {"status": "none", "details": ""},
+        "next_coordinator_action": "decide",
+        "report_language": "ru",
+    }
+    path = workspace._prepare_agent_inbox(repo) / f"{dispatch_id}.json"
+    path.write_text(json.dumps(report), encoding="utf-8")
+    coordinator.submit_report(args(file=str(path)))
+    return repo, {"batch_id": batch_id, "dispatch_id": dispatch_id}
+
+
+# -- a real runtime process serving one repository ----------------------------------------------------
+
+SHORT_TMP = (
+    "/tmp"
+    if sys.platform != "win32" and os.access("/tmp", os.W_OK | os.X_OK)
+    else tempfile.gettempdir()
+)
+
+
+class ServingRuntime:
+    """``harness-runtime serve --repo <repo>``, with a runtime directory short enough for a socket."""
+
+    def __init__(self, repo: Path) -> None:
+        self.xdg = Path(tempfile.mkdtemp(prefix="hr", dir=SHORT_TMP)).resolve()
+        self.environ = {"XDG_RUNTIME_DIR": str(self.xdg)}
+        self.process = subprocess.Popen(
+            [str(runtime_binary()), "serve", "--repo", str(repo)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, **self.environ},
+        )
+        stdout = self.process.stdout
+        assert stdout is not None
+        lines: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=lambda: lines.put(stdout.readline()), daemon=True).start()
+        try:
+            text = lines.get(timeout=30)
+        except queue.Empty:
+            self.stop()
+            pytest.fail("harness-runtime printed no readiness line within 30 seconds")
+        assert json.loads(text)["status"] == "ready"
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.kill()
+        self.process.wait(timeout=30)
+        for stream in (self.process.stdout, self.process.stderr):
+            if stream:
+                stream.close()
+        shutil.rmtree(self.xdg, ignore_errors=True)
+
+
+def coordinator_with(
+    repo: Path, runtime: ServingRuntime | None, *args: str, python: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """The coordinator CLI against ``repo``, reaching the runtime of ``runtime``."""
+    environ = {"XDG_RUNTIME_DIR": str(runtime.xdg)} if runtime else {}
+    command = (
+        [sys.executable, "-c", python]
+        if python
+        else [sys.executable, str(ROOT / "harness/orchestration/coordinator.py")]
+    )
+    return subprocess.run(
+        [*command, "--repo", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(ROOT), **environ},
+    )

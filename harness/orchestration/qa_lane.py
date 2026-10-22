@@ -24,6 +24,7 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import operation_access
+from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _qa_preparation_commands
 from .core.constants import (
@@ -58,7 +59,7 @@ from .ledger import (
     LedgerRecordVO,
     LifecycleLedger,
 )
-from .ledger.ledger_ops import LedgerBusyError, _ledger_lock
+from .ledger.ledger_ops import LedgerBusyError, _ledger_lock, read_state
 
 
 class QaWorkflowOps(Protocol):
@@ -248,7 +249,7 @@ def _attempt_path(ledger: LifecycleLedger) -> Path:
 
 def _queue_entries(ledger: LifecycleLedger) -> list[tuple[Path, JsonObject]]:
     entries: list[tuple[Path, JsonObject]] = []
-    for path in _queue_root(ledger).glob("*.json"):
+    for path in state_view.glob(_queue_root(ledger), "*.json"):
         entry = _read_object(path, "QA queue entry")
         if (
             not _valid_owner_schema(entry, QA_QUEUE_FIELDS)
@@ -481,7 +482,7 @@ def release_queue(ledger: LifecycleLedger, dispatch_ids: list[str]) -> list[str]
 
 def _lease(ledger: LifecycleLedger) -> JsonObject | None:
     path = _lane_path(ledger)
-    if not path.exists():
+    if not state_view.exists(path):
         return None
     lease = _read_object(path, "QA lease")
     if (
@@ -1084,7 +1085,7 @@ def status(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _lock(ledger):
+    with read_state(ledger, repo):
         queue, lease = _queue_entries(ledger), _lease(ledger)
         return {
             "lease": lease,

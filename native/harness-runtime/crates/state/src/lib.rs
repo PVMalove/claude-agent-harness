@@ -13,6 +13,7 @@ pub mod migrate;
 pub mod parity;
 pub mod platform;
 pub mod project;
+pub mod read;
 pub mod repair;
 pub mod route;
 pub mod schema;

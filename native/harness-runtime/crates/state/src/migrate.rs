@@ -215,7 +215,11 @@ fn commit(state: &Path, legacy: &LegacyState, authority: &Authority) -> Result<(
             )));
         }
     }
-    fs::File::open(&importing)?.sync_all()?;
+    // Write access: on Windows a flush needs it.
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&importing)?
+        .sync_all()?;
     fs::rename(&importing, state.join(STORE_NAME))?;
     platform::sync_dir(state)?;
     hooks::reach("renamed")?;

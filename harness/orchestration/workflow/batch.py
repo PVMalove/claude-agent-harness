@@ -62,8 +62,10 @@ from harness.orchestration.core.workspace import (
     _validate_branch,
     _validate_worktree,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.ledger.ledger_ops import (
     _ledger_lock,
+    read_state,
     _load_batch,
     _load_dispatch_status,
     _records_root,
@@ -98,8 +100,8 @@ from harness.orchestration.workflow.history import (
 
 def _batch_records(root: Path) -> Iterator[JsonObject]:
     """Every batch record of the ledger, in batch-id order."""
-    for path in sorted(
-        (_records_root(root) / BatchRecord.directory).glob("batch-*.json")
+    for path in state_view.glob(
+        _records_root(root) / BatchRecord.directory, "batch-*.json"
     ):
         yield _read_object(path, "batch record")
 
@@ -566,7 +568,7 @@ def list_batches(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger):
+    with read_state(ledger, repo):
         batches = []
         for batch in _batch_records(root):
             dispatches = batch.get("dispatches", [])

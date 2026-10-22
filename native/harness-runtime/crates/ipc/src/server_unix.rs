@@ -36,6 +36,15 @@ impl Server {
     /// socket. The lock holder is the only runtime of the repository, so it alone touches the
     /// socket and the token files.
     pub fn bind(paths: RuntimePaths) -> Result<Self, StartError> {
+        Self::bind_serving(paths, None)
+    }
+
+    /// Like [`Server::bind`], and the runtime answers `state.read` from the runtime store of
+    /// `state_dir` once that store is the authority of the repository (ADR 0020, section 1).
+    pub fn bind_serving(
+        paths: RuntimePaths,
+        state_dir: Option<std::path::PathBuf>,
+    ) -> Result<Self, StartError> {
         prepare_directory(&paths.dir, own_uid())?;
         let lock = take_lock(&paths)?;
         remove_stale_socket(&paths.socket)?;
@@ -54,6 +63,7 @@ impl Server {
             token,
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
+            state_dir,
         });
         Ok(Self {
             listener,

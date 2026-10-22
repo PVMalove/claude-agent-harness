@@ -38,6 +38,7 @@ from harness.orchestration.core.git_utils import (
     _git_is_ancestor,
     _remote_branch_tip,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -176,7 +177,8 @@ def _verified_generated(root: Path, link: JsonObject) -> bool:
 def _attempts(root: Path, request_id: str) -> list[JsonObject]:
     directory = _records_root(root) / IntegrationLocalQaRecord.directory
     found = [
-        _read_object(path, "local QA attempt") for path in directory.glob("*.json")
+        _read_object(path, "local QA attempt")
+        for path in state_view.glob(directory, "*.json")
     ]
     return sorted(
         (
@@ -327,7 +329,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
                 remedy="use the original pair, CI assertion and command configuration, or create a new request",
             )
         path = _path(root, request_id)
-        if path.exists():
+        if state_view.exists(path):
             request = _read_object(path, "local QA request")
             if request.get("members") != members:
                 raise CoordinatorError(
@@ -354,7 +356,7 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
     result_id = _result_id(request_id)
     with _ledger_lock(ledger):
         result_path = _path(root, result_id)
-        if result_path.exists():
+        if state_view.exists(result_path):
             existing = _read_object(result_path, "local QA result")
             try:
                 _observe_pair(repo, root, record, pair)

@@ -3,7 +3,6 @@
 mod common;
 
 use std::fs;
-use std::process::Command;
 
 use serde_json::{Value, json};
 use state::authority::{Epoch, epoch};
@@ -291,7 +290,7 @@ fn a_lock_of_another_host_or_boot_is_not_removed_either() {
 #[test]
 fn a_dead_owner_is_removed_with_a_lock_audit_record_and_the_migration_goes_on() {
     let repo = Repo::new("dead");
-    let mut child = Command::new("true").spawn().unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
     let pid = child.id();
     child.wait().unwrap();
     let environment = platform::environment();
