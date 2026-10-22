@@ -8,6 +8,7 @@ pub mod import;
 pub mod legacy;
 pub mod parity;
 pub mod project;
+pub mod repair;
 pub mod route;
 pub mod schema;
 pub mod time;

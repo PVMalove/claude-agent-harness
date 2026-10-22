@@ -14,6 +14,7 @@ use crate::audit;
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::Result;
 use crate::legacy::{LegacyState, audit_record_is_valid};
+use crate::repair::{self, Repair};
 use crate::route::{Target, classify};
 use crate::schema;
 
@@ -21,6 +22,8 @@ use crate::schema;
 #[derive(Debug)]
 pub struct Imported {
     pub store_id: String,
+    /// The repairs applied to the imported records, in path order.
+    pub repairs: Vec<Repair>,
     /// The canonical bytes of the import manifest (`import-manifest.json` next to the snapshot).
     pub manifest_json: String,
     pub manifest_sha256: String,
@@ -46,9 +49,19 @@ pub fn manifest(legacy: &LegacyState) -> (String, String) {
     (text, checksum)
 }
 
-fn insert_typed(connection: &Connection, target: Target) -> Result<()> {
+fn insert_typed(
+    connection: &Connection,
+    target: Target,
+    path: &str,
+    repairs: &mut Vec<Repair>,
+) -> Result<()> {
     match target {
-        Target::Typed { spec, id, record } => {
+        Target::Typed {
+            spec,
+            id,
+            mut record,
+        } => {
+            repairs.extend(repair::apply(spec, path, &mut record));
             let params = spec.split(&id, record);
             connection.execute(&spec.insert_sql(), rusqlite::params_from_iter(params))?;
         }
@@ -69,7 +82,9 @@ fn insert_typed(connection: &Connection, target: Target) -> Result<()> {
     Ok(())
 }
 
-fn insert_files(connection: &Connection, legacy: &LegacyState) -> Result<()> {
+fn insert_files(connection: &Connection, legacy: &LegacyState) -> Result<Vec<Repair>> {
+    let selected = format!("generations/{}", legacy.pointer.generation);
+    let mut repairs = Vec::new();
     for file in &legacy.files {
         match classify(&file.path, &file.bytes) {
             Target::Audit => {}
@@ -85,10 +100,15 @@ fn insert_files(connection: &Connection, legacy: &LegacyState) -> Result<()> {
                     params![file.path, file.bytes, sha256_hex(&file.bytes)],
                 )?;
             }
-            typed => insert_typed(connection, typed)?,
+            typed => insert_typed(
+                connection,
+                typed,
+                &format!("{selected}/{}", file.path),
+                &mut repairs,
+            )?,
         }
     }
-    Ok(())
+    Ok(repairs)
 }
 
 fn insert_other_generations(connection: &Connection, legacy: &LegacyState) -> Result<()> {
@@ -141,6 +161,7 @@ fn insert_audit(connection: &Connection, legacy: &LegacyState) -> Result<()> {
 pub fn import(legacy: &LegacyState, db_path: &Path, store_id: &str, at: &str) -> Result<Imported> {
     let mut connection = schema::create(db_path)?;
     let (manifest_json, manifest_sha256) = manifest(legacy);
+    let imported_repairs;
     {
         let transaction = connection.transaction()?;
         // The files come in path order, so a status can precede its dispatch: the foreign keys
@@ -156,7 +177,7 @@ pub fn import(legacy: &LegacyState, db_path: &Path, store_id: &str, at: &str) ->
                 params![key, value],
             )?;
         }
-        insert_files(&transaction, legacy)?;
+        let repairs = insert_files(&transaction, legacy)?;
         insert_other_generations(&transaction, legacy)?;
         insert_audit(&transaction, legacy)?;
         audit::append(
@@ -169,10 +190,25 @@ pub fn import(legacy: &LegacyState, db_path: &Path, store_id: &str, at: &str) ->
                 "files": manifest_entries(legacy).len(),
             }),
         )?;
+        for repair in &repairs {
+            audit::append(
+                &transaction,
+                at,
+                "migration-repair",
+                &json!({
+                    "path": repair.path,
+                    "rule": repair.rule,
+                    "before_sha256": repair.before_sha256,
+                    "after_sha256": repair.after_sha256,
+                }),
+            )?;
+        }
         transaction.commit()?;
+        imported_repairs = repairs;
     }
     schema::seal(connection)?;
     Ok(Imported {
+        repairs: imported_repairs,
         store_id: store_id.to_owned(),
         manifest_json,
         manifest_sha256,

@@ -27,7 +27,13 @@ CREATE TABLE batch (
     risk_reassessment_required     INTEGER,
     risk_reassessment_candidate    TEXT,
     risk_reassessment_pending_next INTEGER,
-    body_json                      TEXT NOT NULL
+    body_json                      TEXT NOT NULL,
+    -- Issue #781: a batch that owes a risk reassessment names its candidate or is pending.
+    CHECK (NOT (
+        risk_reassessment_required = 1
+        AND COALESCE(risk_reassessment_candidate, '') = ''
+        AND COALESCE(risk_reassessment_pending_next, 0) != 1
+    ))
 ) STRICT;
 
 CREATE TABLE plan (

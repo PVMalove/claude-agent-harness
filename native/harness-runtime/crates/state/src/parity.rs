@@ -18,6 +18,7 @@ use crate::error::{Error, Result};
 use crate::import::manifest;
 use crate::legacy::LegacyState;
 use crate::project::SPECS;
+use crate::repair;
 use crate::route::{Target, classify};
 
 /// The most differences the error text names.
@@ -34,8 +35,14 @@ fn legacy_side(legacy: &LegacyState) -> BTreeMap<String, String> {
     for file in &legacy.files {
         let digest = match classify(&file.path, &file.bytes) {
             Target::Audit => continue,
-            Target::Typed { record, .. }
-            | Target::QaLease(record)
+            Target::Typed {
+                spec, mut record, ..
+            } => {
+                // The store holds the repaired record, so the legacy record is repaired first.
+                repair::apply(spec, "", &mut record);
+                digest_record(&record)
+            }
+            Target::QaLease(record)
             | Target::QaQueue { record, .. }
             | Target::Record { record, .. } => digest_record(&record),
             Target::Artifact => sha256_hex(&file.bytes),
