@@ -40,6 +40,7 @@ from harness.orchestration import (
     coordinator,
     coordinator_cli,
     extensions,
+    hook_policy,
     operation_access,
     operational_guards,
     qa_lane,
@@ -1163,6 +1164,20 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         brief = {key: value for key, value in record.items() if key not in drop}
         brief.update(replace)
+        # An older coordinator pinned no hook policy and bound neither it nor the tool list.
+        brief.pop("hook_policy_sha256", None)
+        transition = {
+            field: value
+            for field, value in brief["transition"].items()
+            if field not in {"hook_policy_sha256", "allowed_tools_sha256"}
+        }
+        digest = operational_guards.transition_digest(transition)
+        brief["transition"] = transition
+        brief["transition_digest"] = digest
+        brief["coordinator_approval"] = {
+            **brief["coordinator_approval"],
+            "transition_digest": digest,
+        }
         batch = ledger_ops._load_batch(root, batch_id)
         entry = next(
             item for item in batch["dispatches"] if item["dispatch_id"] == dispatch_id
@@ -1191,6 +1206,71 @@ class CoordinatorLedgerMigrationTests(unittest.TestCase):
         )
         self.assertEqual(on_disk["allowed_tools"], expected_tools)
         self.assertEqual(on_disk["context_budget"], 150_000)
+
+    def _set_project_hook_policy(self, value: object) -> None:
+        path = self.repo / ".harness" / "project.json"
+        project = json.loads(path.read_text(encoding="utf-8"))
+        project["hook_policy"] = value
+        path.write_text(json.dumps(project), encoding="utf-8")
+
+    def test_dispatch_brief_pins_the_hook_policy_and_binds_it_with_the_tools(
+        self,
+    ) -> None:
+        self._set_project_hook_policy({"profile": "strict"})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        brief = self._create_architect_dispatch(batch["batch_id"])["brief"]
+
+        expected = hook_policy.hook_policy_sha256(
+            hook_policy.normalize_policy({"profile": "strict"})
+        )
+        self.assertEqual(brief["hook_policy_sha256"], expected)
+        self.assertEqual(brief["transition"]["hook_policy_sha256"], expected)
+        self.assertEqual(
+            brief["transition"]["allowed_tools_sha256"],
+            operational_guards.allowed_tools_digest(brief["allowed_tools"]),
+        )
+        operational_guards.validate_binding(brief, batch["batch_id"])
+
+    def test_a_project_without_hook_policy_pins_the_standard_profile(self) -> None:
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        brief = self._create_architect_dispatch(batch["batch_id"])["brief"]
+
+        self.assertEqual(
+            brief["hook_policy_sha256"],
+            hook_policy.hook_policy_sha256(hook_policy.normalize_policy(None)),
+        )
+
+    def test_a_hook_policy_edit_after_approval_leaves_the_approved_brief_valid(
+        self,
+    ) -> None:
+        self._set_project_hook_policy({"profile": "strict"})
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+        brief = self._create_architect_dispatch(batch["batch_id"])["brief"]
+
+        self._set_project_hook_policy({"profile": "minimal"})
+
+        operational_guards.validate_binding(brief, batch["batch_id"])
+        tampered = {**brief, "hook_policy_sha256": "0" * 64}
+        with self.assertRaises(operational_guards.GuardError):
+            operational_guards.validate_binding(tampered, batch["batch_id"])
+        widened = {**brief, "allowed_tools": [*brief["allowed_tools"], "Write"]}
+        with self.assertRaises(operational_guards.GuardError):
+            operational_guards.validate_binding(widened, batch["batch_id"])
+
+    def test_an_invalid_hook_policy_refuses_a_new_dispatch(self) -> None:
+        self._set_project_hook_policy(
+            {"profile": "strict", "escalations": [{"profile": "minimal"}]}
+        )
+        batch = self._create_batch()
+        self._approve_batch(batch["batch_id"])
+
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "hook_policy"):
+            self._create_architect_dispatch(batch["batch_id"])
 
     def test_dispatch_brief_takes_tool_policy_and_context_budget_from_project_config(
         self,
@@ -8625,7 +8705,13 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(
             set(transition),
             set(operational_guards.TRANSITION_FIELDS)
-            | {"runtime_access_sha256", "infrastructure_retry_sha256", "configuration_sha256"},
+            | {
+                "runtime_access_sha256",
+                "infrastructure_retry_sha256",
+                "configuration_sha256",
+                "hook_policy_sha256",
+                "allowed_tools_sha256",
+            },
         )
         self.assertEqual(
             proposal["transition_digest"],

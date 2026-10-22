@@ -135,6 +135,12 @@ def require_restart_contract(
         "rebase_target_commit",
     )
     changed = [k for k in keys if original.get(k) != renewed.get(k)]
+    # A restart renews the brief with the current config: an original that pinned a hook policy
+    # (issue #794) must keep it; a brief approved before the pin has nothing to preserve.
+    if "hook_policy_sha256" in original and original.get(
+        "hook_policy_sha256"
+    ) != renewed.get("hook_policy_sha256"):
+        changed.append("hook_policy_sha256")
     if changed:
         raise CoordinatorError(
             "environment restart changed the approved contract: " + ", ".join(changed),

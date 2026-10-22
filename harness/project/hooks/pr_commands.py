@@ -540,6 +540,8 @@ class StrictLexer:
         self.heredocs: list[tuple[str, bool, bool]] = []
         # Separators before each command `commands()` returns, joined: "", "&&", "|", ";\n", ...
         self.links: list[str] = []
+        # (operator, target word) of every redirection read so far, heredoc operators included.
+        self.redirects: list[tuple[str, str]] = []
 
     def commands(self) -> list[list[str]]:
         """argv каждой simple command текста по порядку."""
@@ -616,6 +618,7 @@ class StrictLexer:
             raise OutsideSubset  # no target word, as in `<(…)` and `>(…)`
         start = self.index
         word = self._word()
+        self.redirects.append((operator, word))
         if operator in ("<<", "<<-"):
             literal = any(char in self.text[start : self.index] for char in "'\"\\")
             self.heredocs.append((word, operator == "<<-", literal))
@@ -708,6 +711,16 @@ def strict_steps(command: str) -> list[tuple[str, list[str]]] | None:
     except OutsideSubset:
         return None
     return list(zip(lexer.links, commands))
+
+
+def strict_redirections(command: str) -> list[tuple[str, str]] | None:
+    """(оператор, цель) каждого перенаправления строгого лексера; None — команда вне подмножества."""
+    lexer = StrictLexer(command)
+    try:
+        lexer.commands()
+    except OutsideSubset:
+        return None
+    return lexer.redirects
 
 
 def fully_inert(command: str) -> bool:

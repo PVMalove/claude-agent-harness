@@ -68,6 +68,90 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pvmalove-suite init did not scaffold block-pr-merge.sh")
     if not (pv_project / ".claude" / "hooks" / "pr_commands.py").is_file():
         sys.exit("pvmalove-suite init did not scaffold the pr_commands.py hook helper")
+    if not (pv_project / ".claude" / "hooks" / "hook_response.py").is_file():
+        sys.exit("pvmalove-suite init did not scaffold the hook_response.py envelope")
+    if json.loads(project_json.read_text(encoding="utf-8")).get("hook_policy") != {
+        "profile": "standard"
+    }:
+        sys.exit("pvmalove-suite init did not set hook_policy.profile standard")
+    for command, code, decision in (
+        ("gh pr merge 1", 2, "block"),
+        ("echo done", 0, "allow"),
+    ):
+        answered = run_hook(merge_hook, pv_project, command)
+        verdict = json.loads(answered.stderr.strip().splitlines()[-1])
+        if (answered.returncode, verdict.get("decision"), verdict.get("hook_id")) != (
+            code,
+            decision,
+            "block-pr-merge",
+        ):
+            sys.exit(
+                f"block-pr-merge.sh did not answer {decision} in JSON: {command!r}"
+            )
+
+    protect_hook = pv_project / ".claude" / "hooks" / "protect-hook-policy.sh"
+    for name in ("protect-hook-policy.sh", "protect_hook_policy.py"):
+        if not (pv_project / ".claude" / "hooks" / name).is_file():
+            sys.exit(f"pvmalove-suite init did not scaffold {name}")
+    settings_template = json.loads(
+        (pv_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+    )
+    wired = [
+        entry["matcher"]
+        for entry in settings_template["hooks"]["PreToolUse"]
+        if "protect-hook-policy.sh" in json.dumps(entry)
+    ]
+    if wired != ["Bash", "Write|Edit|MultiEdit|NotebookEdit"]:
+        sys.exit(f"protect-hook-policy.sh is wired for {wired!r}")
+    config_path = str(project_json)
+    protect_cases = (
+        ("Bash", {"command": "sed -i s/a/b/ .harness/project.json"}, 2),
+        ("Bash", {"command": "echo x > .harness/project.json"}, 2),
+        ("Bash", {"command": "cat .harness/project.json"}, 0),
+        (
+            "Write",
+            {
+                "file_path": str(pv_project / ".claude" / "settings.json"),
+                "content": "{}",
+            },
+            2,
+        ),
+        (
+            "Write",
+            {
+                "file_path": config_path,
+                "content": json.dumps({"hook_policy": {"profile": "minimal"}}),
+            },
+            2,
+        ),
+        (
+            "Edit",
+            {
+                "file_path": config_path,
+                "old_string": '"ci_required_checks": []',
+                "new_string": '"ci_required_checks": ["lint"]',
+            },
+            0,
+        ),
+    )
+    for tool, tool_input, code in protect_cases:
+        payload = json.dumps(
+            {"tool_name": tool, "tool_input": tool_input, "cwd": str(pv_project)}
+        )
+        for profile in (None, "minimal"):
+            answered = run_hook(
+                protect_hook,
+                pv_project,
+                "",
+                raw_payload=payload,
+                env_overrides={"HOOK_PROFILE": profile} if profile else None,
+            )
+            if answered.returncode != code:
+                sys.exit(
+                    f"protect-hook-policy.sh answered {answered.returncode} instead of "
+                    f"{code} for {tool} {tool_input!r} (HOOK_PROFILE={profile}): "
+                    f"{answered.stderr}"
+                )
 
     # A PR launched from the primary checkout can explicitly target a tested linked worktree.
     # Its QA marker must belong to that checkout, even when the primary checkout is dirty.

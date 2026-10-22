@@ -130,6 +130,8 @@ class TransitionDigestTests(unittest.TestCase):
                 "infrastructure_attempt_sha256",
                 "runtime_images_sha256",
                 "verification_plan_sha256",
+                "hook_policy_sha256",
+                "allowed_tools_sha256",
             ),
         )
         self.assertNotEqual(
@@ -384,6 +386,48 @@ def test_a_verification_plan_is_bound_only_when_the_brief_carries_one() -> None:
         _transition(), {"verification_plan": {**plan, "role": "code-review"}}
     )
     assert guards.transition_digest(changed) != guards.transition_digest(bound)
+
+
+def test_a_pinned_hook_policy_binds_the_allowed_tools_to_the_transition() -> None:
+    brief = {"hook_policy_sha256": "c" * 64, "allowed_tools": ["Read", "Grep"]}
+    bound = guards.bind_transition(_transition(), brief)
+
+    assert bound["hook_policy_sha256"] == "c" * 64
+    assert bound["allowed_tools_sha256"] == guards.allowed_tools_digest(
+        ["Read", "Grep"]
+    )
+    digest = guards.transition_digest(bound)
+    assert digest != guards.transition_digest(_transition())
+    for changed in (
+        {**brief, "hook_policy_sha256": "d" * 64},
+        {**brief, "allowed_tools": ["Read", "Grep", "Bash"]},
+    ):
+        other = guards.bind_transition(_transition(), changed)
+        assert guards.transition_digest(other) != digest
+
+
+def test_the_allowed_tools_digest_binds_the_list_itself_not_only_its_size() -> None:
+    """The transition carries the digest of the exact list, so any widened, narrowed, reordered or
+    replaced list breaks the approval, as binding the list itself would."""
+    tools = ["Read", "Grep", "Bash"]
+    digest = guards.allowed_tools_digest(tools)
+
+    assert guards.allowed_tools_digest(list(tools)) == digest
+    for other in (
+        [*tools, "Write"],
+        tools[:-1],
+        list(reversed(tools)),
+        ["Read", "Grep", "Edit"],
+        [],
+    ):
+        assert guards.allowed_tools_digest(other) != digest
+
+
+def test_a_brief_without_a_pinned_hook_policy_keeps_its_legacy_digest() -> None:
+    legacy = guards.bind_transition(_transition(), {"allowed_tools": ["Read"]})
+
+    assert legacy == _transition()
+    assert guards.transition_digest(legacy) == guards.transition_digest(_transition())
 
 
 def test_the_transition_field_remedy_names_every_optional_field() -> None:

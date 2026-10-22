@@ -15,8 +15,9 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.errors import INTERNAL_INVARIANT_REMEDY, PolicyError
 from harness.orchestration import (
+    hook_policy,
     infrastructure_retry,
     operational_guards,
     runtime_access,
@@ -1316,6 +1317,19 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         project_snapshot = getattr(config, "project_snapshot", None)
         if not isinstance(project_snapshot, dict):
             project_snapshot = core_config._project(repo)
+        # The hook policy and the tool list are pinned with the approval (issue #794): a later
+        # edit of hook_policy or of the role tool policy does not change an approved dispatch.
+        allowed_tools = resolve_allowed_tools(config, role_name, role["mode"])
+        try:
+            hook_policy_sha256 = hook_policy.hook_policy_sha256(
+                hook_policy.normalize_policy(project_snapshot.get("hook_policy"))
+            )
+        except PolicyError as exc:
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        transition = operational_guards.bind_transition(
+            transition,
+            {"hook_policy_sha256": hook_policy_sha256, "allowed_tools": allowed_tools},
+        )
         pinned_config = pinned_configuration.snapshot(config, project_snapshot, role)
         orchestration_policy["configuration"] = pinned_config
         transition[pinned_configuration.TRANSITION_FIELD] = pinned_config[
@@ -1419,7 +1433,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "resolved_model": model,
             "resolved_effort": effort,
             "resolved_transport": transport,
-            "allowed_tools": resolve_allowed_tools(config, role_name, role["mode"]),
+            "allowed_tools": allowed_tools,
+            "hook_policy_sha256": hook_policy_sha256,
             "context_budget": _adaptive_continuation_policy(config)["context_limit"],
             "coordinator_approval": approval,
             "candidate_commit": candidate,
