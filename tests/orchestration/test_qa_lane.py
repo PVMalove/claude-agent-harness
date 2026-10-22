@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import tempfile
 import threading
 import unittest
@@ -14,14 +15,25 @@ from pathlib import Path
 from typing import cast
 from unittest import mock
 
+from harness.gate_runner import stage_evidence
 from harness.gate_runner.gate_runner import (
     Diagnosis,
+    EvidenceContext,
     GateResult,
     GateRunnerError,
     QAStagesResult,
+    StageCommand,
+    build_stage_evidence,
     format_command_log,
+    parse_evidence_trailer,
 )
-from harness.orchestration import coordinator, operation_access, qa_lane
+from harness.orchestration import (
+    coordinator,
+    operation_access,
+    operational_guards,
+    qa_lane,
+    verification_plan,
+)
 from harness.storage import storage_path
 from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import (
@@ -711,6 +723,117 @@ class QaLaneRunTests(QaLaneTestCase):
             result = qa_lane.run(self.args, self._ops())
 
         self.assertEqual(result["state"], "reported")
+
+    def _evidence_gate(self, commands: list[str]) -> GateResult:
+        """A gate result for ``commands`` whose last command failed and whose rest never ran."""
+        ran = [
+            StageCommand(command, command, 0, "", f"{command} out\n", "", 7)
+            for command in commands[:1]
+        ]
+        failed = StageCommand(
+            commands[1], commands[1], 1, "x", "bad out\n", "bad err\n", 9, ("t.py::x",)
+        )
+        entries: list[tuple[str, StageCommand | None]] = [
+            ("gate-1", ran[0]),
+            ("gate-2", failed),
+            *((f"gate-{n + 3}", None) for n in range(len(commands) - 2)),
+        ]
+        checks = [
+            {"command": commands[0], "result": "pass", "evidence": "exit 0"},
+            {"command": commands[1], "result": "fail", "evidence": "exit 1"},
+        ]
+        return GateResult(
+            checks=checks,
+            artifact=format_command_log(commands[0], 0, "ok")
+            + format_command_log(commands[1], 1, "bad"),
+            duration_seconds=0.0,
+            evidence=build_stage_evidence(EvidenceContext("a" * 40), entries),
+        )
+
+    def test_the_log_trailer_links_the_persisted_stage_evidence_and_streams(
+        self,
+    ) -> None:
+        self.dispatch["verification_commands"] = ["first", "second", "third"]
+        self._seed()
+        persisted: list[dict[str, object]] = []
+
+        with mock.patch.object(
+            qa_lane,
+            "run_gate",
+            return_value=self._evidence_gate(["first", "second", "third"]),
+        ):
+            result = qa_lane.run(self.args, self._ops(persisted))
+
+        log = Path(result["artifact"])
+        text = log.read_text(encoding="utf-8")
+        self.assertEqual(result["sha256"], hashlib.sha256(text.encode()).hexdigest())
+        linked = parse_evidence_trailer(text.splitlines())
+        assert linked is not None
+        relative, checksum = linked
+        records = log.parent.parent
+        document_text = (records / relative).read_text(encoding="utf-8")
+        self.assertEqual(
+            hashlib.sha256(document_text.encode("utf-8")).hexdigest(), checksum
+        )
+        stages = stage_evidence.parse(document_text).stages
+        self.assertEqual(
+            [(s.stage_id, s.result) for s in stages],
+            [("gate-1", "pass"), ("gate-2", "fail"), ("gate-3", "not_run")],
+        )
+        self.assertEqual(stages[1].failed_nodeids, ("t.py::x",))
+        for stage in stages[:2]:
+            for ref in (stage.stdout, stage.stderr):
+                assert ref is not None
+                data = (records / ref.path).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), ref.sha256)
+
+    def test_the_run_identifies_the_stage_evidence_by_candidate_plan_and_image(
+        self,
+    ) -> None:
+        plan: JsonObject = {
+            "stages": [{"stage_id": "p", "environment_fingerprint": "f" * 64}],
+            "role": "qa",
+        }
+        self.dispatch["verification_commands"] = ["first", "second"]
+        self.dispatch["candidate_commit"] = "c" * 40
+        self.dispatch["verification_plan"] = plan
+        images: JsonObject = {"worker": "sha256:" + "1" * 64}
+        self.dispatch["runtime_images"] = images
+        self._seed()
+
+        with mock.patch.object(
+            qa_lane, "run_gate", return_value=self._evidence_gate(["first", "second"])
+        ) as gate:
+            qa_lane.run(self.args, self._ops([]))
+
+        context = gate.call_args.kwargs["evidence"]
+        self.assertEqual(context.candidate_sha, "c" * 40)
+        self.assertEqual(context.environment_fingerprint, "f" * 64)
+        self.assertEqual(context.plan_sha256, verification_plan.plan_sha256(plan))
+        self.assertEqual(
+            context.image_digest,
+            operational_guards.runtime_images_digest(images),
+        )
+
+    def test_a_command_the_gate_never_reached_is_not_run_in_the_report(self) -> None:
+        self.dispatch["verification_commands"] = ["first", "second", "third"]
+        self._seed()
+        persisted: list[dict[str, object]] = []
+
+        with mock.patch.object(
+            qa_lane,
+            "run_gate",
+            return_value=self._evidence_gate(["first", "second", "third"]),
+        ):
+            qa_lane.run(self.args, self._ops(persisted))
+
+        checks = persisted[0]["checks_run"]
+        assert isinstance(checks, list)
+        self.assertEqual(
+            [(c["command"], c["result"]) for c in checks],
+            [("first", "pass"), ("second", "fail"), ("third", "not_run")],
+        )
+        self.assertEqual(persisted[0]["outcome"], "failed")
 
     def test_report_persist_failure_releases_the_dispatch_for_retry(self) -> None:
         self._seed()

@@ -7,9 +7,12 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TextIO
 
 
 def run_ok(
@@ -44,6 +47,64 @@ def run_stage(
         print(f"[verify] {name}: failed in {time.perf_counter() - started:.2f}s")
         raise
     print(f"[verify] {name}: passed in {time.perf_counter() - started:.2f}s")
+
+
+@dataclass(frozen=True)
+class CapturedRun:
+    """One finished command: its exit code, both output streams kept apart, and its duration."""
+
+    exit_code: int
+    stdout: str
+    stderr: str
+    duration_ms: int
+
+
+def _tee(source: TextIO, sink: TextIO, kept: list[str]) -> None:
+    """Pass each line on to ``sink`` as it arrives and keep it."""
+    for line in iter(source.readline, ""):
+        kept.append(line)
+        sink.write(line)
+        sink.flush()
+
+
+def run_captured(
+    cmd: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> CapturedRun:
+    """Run a command, echoing stdout and stderr live while keeping each stream separately.
+
+    The stage evidence stores the two streams apart, so they cannot share one pipe.
+    """
+    started = time.perf_counter()
+    process = subprocess.Popen(
+        cmd,
+        env=env,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert process.stdout is not None and process.stderr is not None
+    kept: tuple[list[str], list[str]] = ([], [])
+    threads = [
+        threading.Thread(target=_tee, args=(process.stdout, sys.stdout, kept[0])),
+        threading.Thread(target=_tee, args=(process.stderr, sys.stderr, kept[1])),
+    ]
+    for thread in threads:
+        thread.start()
+    exit_code = process.wait()
+    for thread in threads:
+        thread.join()
+    return CapturedRun(
+        exit_code,
+        "".join(kept[0]),
+        "".join(kept[1]),
+        round((time.perf_counter() - started) * 1000),
+    )
 
 
 def isolated_temp_env(base: Mapping[str, str], run_tmp: Path) -> dict[str, str]:

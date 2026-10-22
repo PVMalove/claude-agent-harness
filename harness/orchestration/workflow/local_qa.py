@@ -447,11 +447,15 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             [command for command in commands],
             CleanRoomPolicy(repo, pair["candidate_sha"]),
             stop_on_failure=True,
+            evidence=qa_lane.evidence_context(repo, pair["candidate_sha"]),
         )
         stage = "artifact-persistence"
-        checksum = hashlib.sha256(gate.artifact.encode("utf-8")).hexdigest()
+        log = gate.artifact
+        if gate.evidence is not None:
+            log += qa_lane.persist_stage_evidence(ledger, gate.evidence)
+        checksum = hashlib.sha256(log.encode("utf-8")).hexdigest()
         artifact = _records_root(root) / "qa-artifacts" / f"{checksum}.log"
-        ledger.write_artifact(artifact, gate.artifact)
+        ledger.write_artifact(artifact, log)
         result: JsonObject = {
             "local_qa_id": result_id,
             "event": "result",
