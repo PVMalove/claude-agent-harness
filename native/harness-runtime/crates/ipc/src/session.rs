@@ -1,7 +1,8 @@
 //! One connection's conversation: `hello`, then requests (ADR 0021, section 3).
 //!
 //! A session turns one request frame into one response and says whether the connection must
-//! close afterwards. It does no I/O, so every rule is tested without a socket.
+//! close afterwards. It does no socket I/O: it only reads the state directory that `hello` and
+//! `state.read` answer from, so every rule is tested against a scratch state without a socket.
 
 use std::path::{Path, PathBuf};
 
@@ -297,7 +298,7 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
             FailureDomain::Infrastructure,
             false,
             format!("the store cannot be read: {message}"),
-            "run `harness-runtime migrate --repo <repo>` again, or restore the snapshot",
+            "repeat the command; if the store stays unreadable, restore the state directory from the snapshot named in AUTHORITY.json",
         ),
     }
 }

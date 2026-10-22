@@ -120,9 +120,7 @@ fn migrate(args: &Args) -> ExitCode {
         }
         Err(error) => {
             eprintln!("ERROR: {error}");
-            if let state::Error::Refused { remedy, .. } = &error {
-                eprintln!("REMEDY: {remedy}");
-            }
+            eprintln!("REMEDY: {}", error.remedy());
             ExitCode::from(error.exit_code())
         }
     }

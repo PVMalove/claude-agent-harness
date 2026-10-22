@@ -41,6 +41,23 @@ impl Error {
         }
     }
 
+    /// What the operator does next. Every failure of `harness-runtime migrate` names it.
+    pub fn remedy(&self) -> &str {
+        match self {
+            Self::Refused { remedy, .. } => remedy,
+            Self::Interrupted(_) => {
+                "repeat `harness-runtime migrate --repo <repo>`: the file ledger is the authority \
+                 until the commit point, the next run finishes a stopped one, and a repeat after \
+                 the commit point answers already_cut_over"
+            }
+            Self::Invariant(_) => {
+                "stop every writer of the state directory and read the differences above; then \
+                 repeat `harness-runtime migrate --repo <repo>`, or, for a state that is cut over \
+                 but inconsistent, restore it from the snapshot named in AUTHORITY.json"
+            }
+        }
+    }
+
     /// An I/O failure while the legacy state is only read: nothing changed, so it refuses.
     pub fn unreadable(path: &Path, source: &io::Error) -> Self {
         Self::refused(

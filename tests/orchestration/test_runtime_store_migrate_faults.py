@@ -159,6 +159,7 @@ def test_an_injected_failure_exits_3_and_leaves_the_file_ledger_the_authority(
 
     assert failed.returncode == 3, failed.stderr
     assert f"injected failure at the step {step}" in failed.stderr
+    assert "REMEDY: repeat `harness-runtime migrate --repo <repo>`" in failed.stderr
     assert authorities(tmp_path) == {"file-ledger": True, "runtime-store": False}
     assert _store_files(tmp_path) == []
     assert not (tmp_path / STATE_REL / ".coordinator.lock").exists()
@@ -211,6 +212,7 @@ def test_a_legacy_write_during_the_import_exits_4_and_commits_no_cutover(
     assert code == 4, stderr
     assert stdout == ""
     assert "the legacy state changed while the migration ran" in stderr
+    assert "REMEDY: stop every writer of the state directory" in stderr
     assert authorities(tmp_path) == {"file-ledger": True, "runtime-store": False}
     assert _store_files(tmp_path) == []
     assert not (tmp_path / STATE_REL / ".coordinator.lock").exists()
