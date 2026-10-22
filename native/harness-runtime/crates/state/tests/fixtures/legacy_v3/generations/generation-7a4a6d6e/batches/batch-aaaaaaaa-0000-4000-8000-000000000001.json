@@ -1,0 +1,28 @@
+{
+  "batch_id": "batch-aaaaaaaa-0000-4000-8000-000000000001",
+  "coordinator_approval": null,
+  "dispatches": [
+    {
+      "brief_sha256": "7ce4f6e92b7f3e8a115ff8bce0ecdbfe214144135db167781a84a487fba75076",
+      "dispatch_id": "dispatch-11111111-0000-4000-8000-000000000001",
+      "report": "reports/dispatch-11111111-0000-4000-8000-000000000001.json",
+      "report_sha256": "8e088e42b49ad21068858f4664240a892b0ac598ad7fd3dfb80f293a1e0016e8",
+      "state": "reported"
+    },
+    {
+      "brief_sha256": "2bb46447e0d78d7dc3c51a2cf12839e3c0f9f2a7e1f3fe1a49f74bb6bb6e59ad",
+      "dispatch_id": "dispatch-22222222-0000-4000-8000-000000000002",
+      "state": "approved"
+    }
+  ],
+  "risk_reassessment_candidate": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "risk_reassessment_required": true,
+  "risk_reassessment_triggers": [
+    "transactions"
+  ],
+  "state": "active",
+  "ticket": "#1",
+  "write_paths": [
+    "a/**"
+  ]
+}

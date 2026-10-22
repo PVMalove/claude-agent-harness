@@ -1,0 +1,10 @@
+{
+  "action": "immutable-record",
+  "at": "2026-10-22T07:19:02.532721+00:00",
+  "audit_id": "audit-6593bcf4-6a4c-4128-81a5-88d0283712b7",
+  "details": {
+    "path": "context-packages/context-package-0001.json",
+    "sha256": "d63eb8f78be6c68c783003b5518c9fe41c6f66761fb2baf559583dae717f11a6"
+  },
+  "record_sha256": "71819aedb179255b820b20c2ecf254ce3324410f5f6ed7ec69ef98bdd53bc72d"
+}

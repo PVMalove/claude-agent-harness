@@ -5,6 +5,7 @@ members = [
     "crates/ipc",
     "crates/harness-runtime",
     "crates/platform-ffi",
+    "crates/state",
 ]
 
 [workspace.package]

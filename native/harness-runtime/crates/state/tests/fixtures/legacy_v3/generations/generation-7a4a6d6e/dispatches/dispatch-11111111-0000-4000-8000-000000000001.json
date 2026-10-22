@@ -1,0 +1,12 @@
+{
+  "batch_id": "batch-aaaaaaaa-0000-4000-8000-000000000001",
+  "big": 1180591620717411303424,
+  "coordinator_approval": {
+    "approved_at": "2026-10-01T00:00:00+00:00"
+  },
+  "dispatch_id": "dispatch-11111111-0000-4000-8000-000000000001",
+  "role": "developer",
+  "score": 1e-05,
+  "state": "approved",
+  "title": "café 漢字 😀"
+}
