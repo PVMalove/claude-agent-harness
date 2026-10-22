@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -158,3 +159,74 @@ def coordinator(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def load(path: Path) -> JsonObject:
     loaded: JsonObject = json.loads(path.read_text(encoding="utf-8"))
     return loaded
+
+
+class PausedMigrate:
+    """A debug-build ``harness-runtime migrate`` that waits at one step boundary.
+
+    ``HARNESS_RUNTIME_TEST_PAUSE_AT`` makes the process print ``PAUSED:<step>`` and wait for a line
+    on stdin; a test kills it there, or changes the state first and then resumes it."""
+
+    def __init__(self, repo: Path, step: str, *, env: dict[str, str] | None = None) -> None:
+        self.step = step
+        self.process = subprocess.Popen(
+            [str(runtime_binary()), "migrate", "--repo", str(repo)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={**os.environ, "HARNESS_RUNTIME_TEST_PAUSE_AT": step, **(env or {})},
+        )
+        self._lines: list[str] = []
+        self._paused = threading.Event()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        stderr = self.process.stderr
+        assert stderr is not None
+        for line in stderr:
+            self._lines.append(line)
+            if line.strip() == f"PAUSED:{self.step}":
+                self._paused.set()
+
+    def wait_paused(self, timeout: float = 60.0) -> None:
+        if not self._paused.wait(timeout):
+            self.process.kill()
+            pytest.fail(
+                f"migrate did not pause at {self.step!r}: {''.join(self._lines)!r}"
+            )
+
+    def kill(self) -> None:
+        """SIGKILL: the process cannot clean up anything."""
+        self.process.kill()
+        self.process.wait(timeout=30)
+        self._reader.join(timeout=30)
+
+    def resume(self) -> tuple[int, str, str]:
+        """Let the process go on and return its exit code, stdout and stderr."""
+        stdin = self.process.stdin
+        assert stdin is not None
+        stdin.write("\n")
+        stdin.flush()
+        stdin.close()
+        stdout = self.process.stdout
+        assert stdout is not None
+        text = stdout.read()
+        code = self.process.wait(timeout=60)
+        self._reader.join(timeout=30)
+        return code, text, "".join(self._lines)
+
+
+def authorities(repo: Path) -> dict[str, bool]:
+    """Which store is the authority of the state directory: the pointer decides."""
+    state = repo / STATE_REL
+    pointer = load(state / "ledger.json")
+    marker = state / "AUTHORITY.json"
+    return {
+        "file-ledger": pointer["version"] == 3,
+        "runtime-store": pointer["version"] == 4
+        and marker.is_file()
+        and load(marker)["authority"] == "runtime-store"
+        and (state / "runtime.db").is_file(),
+    }

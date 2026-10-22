@@ -25,6 +25,7 @@ use crate::authority::{
 };
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::{Error, Result};
+use crate::hooks;
 use crate::import::{Imported, import};
 use crate::legacy::{
     LEGACY_VERSION, LegacyState, POINTER_NAME, RECORD_DIRECTORIES, parse_object, read_pointer,
@@ -217,7 +218,9 @@ fn commit(state: &Path, legacy: &LegacyState, authority: &Authority) -> Result<(
     fs::File::open(&importing)?.sync_all()?;
     fs::rename(&importing, state.join(STORE_NAME))?;
     platform::sync_dir(state)?;
+    hooks::reach("renamed")?;
     platform::replace_durable(&state.join(AUTHORITY_NAME), authority.to_json().as_bytes())?;
+    hooks::reach("authority")?;
     let pointer = canonical_json(&json!({
         "version": STORE_VERSION,
         "generation": legacy.pointer.generation,
@@ -226,11 +229,14 @@ fn commit(state: &Path, legacy: &LegacyState, authority: &Authority) -> Result<(
     // The rename of the pointer is the commit point. Whatever fails after it cannot be undone.
     let temporary = state.join(format!(".{POINTER_NAME}.{}.tmp", platform::random_hex()?));
     platform::write_durable(&temporary, pointer.as_bytes())?;
-    if let Err(err) = fs::rename(&temporary, state.join(POINTER_NAME)) {
+    let replaced = hooks::reach("pointer-replace")
+        .and_then(|()| fs::rename(&temporary, state.join(POINTER_NAME)).map_err(Error::from));
+    if let Err(err) = replaced {
         let _ = fs::remove_file(&temporary);
-        return Err(err.into());
+        return Err(err);
     }
     let _ = platform::sync_dir(state);
+    hooks::pause("pointer");
     Ok(())
 }
 
@@ -251,6 +257,7 @@ fn import_and_commit(repo: &Path, state: &Path) -> Result<Authority> {
     let legacy = preconditions(state)?;
     let snapshot = snapshot::create(&repo.join(SNAPSHOTS_REL), state)?;
     legacy_matches_snapshot(&legacy, &snapshot)?;
+    hooks::reach("snapshot")?;
     let store_id = platform::random_hex()?;
     let at = iso_now();
     let importing = state.join(IMPORTING_NAME);
@@ -262,6 +269,7 @@ fn import_and_commit(repo: &Path, state: &Path) -> Result<Authority> {
     snapshot::write_import_manifest(&snapshot, &manifest_json)?;
     parity::check(&legacy, &importing)?;
     snapshot::verify_unchanged(state, &snapshot)?;
+    hooks::reach("parity")?;
     let authority = Authority {
         store_id,
         manifest_sha256,
@@ -308,8 +316,9 @@ pub fn run(repo: &Path) -> Result<Outcome> {
         Epoch::FileLedger => {}
     }
     preconditions(&state)?;
+    hooks::reach("preconditions")?;
     let held: LegacyLock = lock::acquire(&state)?;
-    let outcome = locked(repo, &state);
+    let outcome = hooks::reach("locked").and_then(|()| locked(repo, &state));
     let released = held.release();
     let authority = outcome?;
     // A lock that cannot be removed after the commit point is no failure: the next migrate

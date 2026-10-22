@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use crate::audit;
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::Result;
+use crate::hooks;
 use crate::legacy::{LegacyState, audit_record_is_valid};
 use crate::repair::{self, Repair};
 use crate::route::{Target, classify};
@@ -203,6 +204,7 @@ pub fn import(legacy: &LegacyState, db_path: &Path, store_id: &str, at: &str) ->
                 }),
             )?;
         }
+        hooks::reach("import")?;
         transaction.commit()?;
         imported_repairs = repairs;
     }

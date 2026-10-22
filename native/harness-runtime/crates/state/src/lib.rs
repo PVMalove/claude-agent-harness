@@ -5,6 +5,7 @@ pub mod audit;
 pub mod authority;
 pub mod canonical;
 pub mod error;
+pub mod hooks;
 pub mod import;
 pub mod legacy;
 pub mod lock;
