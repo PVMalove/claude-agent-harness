@@ -3767,6 +3767,15 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         )
         self.assertEqual(batch["next_action"], action)
         self.assertTrue(routing["rationale"].strip())
+        # Every retry names exactly one ADR 0019 domain and the evidence that shows it.
+        failure = routing["failure"]
+        self.assertEqual(set(failure), {"domain", "method", "matched", "source"})
+        self.assertIn(failure["domain"], [str(d) for d in constants.FailureDomain])
+        self.assertTrue(failure["matched"].strip() and failure["source"].strip())
+        self.assertEqual(failure["method"] == "fallback", failure["domain"] == "unknown")
+        self.assertNotEqual(
+            (failure["domain"], failure["method"]), ("code_test", "heuristic")
+        )
         return routing
 
     # -- code-review ---------------------------------------------------------------------------

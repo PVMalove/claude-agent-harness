@@ -10,8 +10,9 @@ import contextlib
 import uuid
 
 from . import operational_guards
-from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS
+from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS, FailureDomain
 from .core.utils import CoordinatorError, JsonObject
+from .workflow.failure_domains import Failure
 
 TRANSITION_FIELD = "infrastructure_retry_sha256"
 COMMAND_FIELDS = ("qa_preparation", "qa_environment_probes", "qa_project_file_checks")
@@ -22,9 +23,19 @@ _ATTEMPTS_DIRECTORY = "qa-lane/operation-attempts/"
 
 
 class _RetryRefusal(CoordinatorError):
-    def __init__(self, message: str, *, remedy: str, attention_reason: str | None):
+    """A refused policy retry: ``failure`` is the one failure domain that shows why."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        remedy: str,
+        attention_reason: str | None,
+        failure: Failure,
+    ):
         super().__init__(message, remedy=remedy)
         self.attention_reason = attention_reason
+        self.failure = failure
 
 
 def _remote_url_sha256(repo: Path, remote: str) -> str:
@@ -78,6 +89,12 @@ def _retry_budget(batch: JsonObject, brief: JsonObject, policy: JsonObject) -> i
             "infrastructure retry budget exhausted",
             remedy="inspect and resolve attention; policy cannot authorize another retry",
             attention_reason="infrastructure-retry-repeated",
+            failure=Failure(
+                FailureDomain.POLICY,
+                "structured",
+                f"max_infrastructure_retries={policy['max_infrastructure_retries']} reached",
+                "orchestration_policy",
+            ),
         )
     if batch.get("needs_attention"):
         raise CoordinatorError(
@@ -259,6 +276,15 @@ def authorize(
             "infrastructure environment is still not ready",
             remedy="restore the previously approved environment, then run report complete again",
             attention_reason=None,
+            failure=Failure(
+                FailureDomain.ENVIRONMENT_PREPARATION,
+                "structured",
+                "readiness check failed: "
+                + ", ".join(
+                    check["command"] for check in ready.checks if check["result"] != "pass"
+                ),
+                "readiness gate",
+            ),
         )
     return {
         "source": "infrastructure-retry",

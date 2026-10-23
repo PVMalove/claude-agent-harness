@@ -997,7 +997,8 @@ BINDINGS.update(
             "runtime_client.RUNTIME_ERROR_CODES": runtime_client.RUNTIME_ERROR_CODES
         },
         "runtime.failure_domain": {
-            "runtime_client.FAILURE_DOMAINS": runtime_client.FAILURE_DOMAINS
+            "FailureDomain": constants.FailureDomain,
+            "runtime_client.FAILURE_DOMAINS": runtime_client.FAILURE_DOMAINS,
         },
         "hook.id": {"hook_response.HOOKS": hook_response.HOOKS},  # type: ignore[attr-defined]
         "hook.profile": {

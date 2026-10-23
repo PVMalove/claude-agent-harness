@@ -52,7 +52,12 @@ from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
-from harness.orchestration.workflow import decisions, failure_classifier, resolver_state
+from harness.orchestration.workflow import (
+    decisions,
+    failure_classifier,
+    failure_domains,
+    resolver_state,
+)
 from harness.orchestration.workflow.attention import _attention_findings
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
@@ -346,6 +351,7 @@ def environment_stop(stage: str, report: JsonObject, repo: Path) -> Stop | None:
     found = failure_classifier.classify_environment(failed.get("diagnostics"), repo)
     if found is None:
         return None
+    failure = failure_domains.of_qa_stages(stages, repo=repo)
     return Stop(
         "no-automatic-route",
         "qa-environment-failure",
@@ -353,6 +359,11 @@ def environment_stop(stage: str, report: JsonObject, repo: Path) -> Stop | None:
             "command": failed.get("command"),
             "classification": found,
             "remedy": QA_ENVIRONMENT_REMEDY,
+            "failure": failure.to_json()
+            if failure is not None
+            else failure_domains.unrecognised(
+                "the failed gate stage is not in qa_stages", "qa_stages"
+            ).to_json(),
         },
     )
 
@@ -380,7 +391,11 @@ def finish(
             },
         )
     if routing.get("reason_category") == "unknown":
-        return Stop("no-automatic-route", "unknown-reason", {"route_preview": routing})
+        return Stop(
+            "no-automatic-route",
+            "unknown-reason",
+            {"route_preview": routing, "failure": routing.get("failure")},
+        )
     if routing["route"] == "tooling-retry" and bug_ticket is None:
         raise CoordinatorError(
             "a tooling-retry under approval_policy auto needs a bug ticket for the blocking tool",
@@ -791,6 +806,7 @@ def resolve(
                 reason_category=choice.reason_category,
                 narrowed=choice.narrowed,
                 retry_role=None,
+                approved_by=approvals.AUTO_APPROVER,
             ),
         )
     except CoordinatorError as exc:

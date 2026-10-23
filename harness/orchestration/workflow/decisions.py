@@ -28,6 +28,7 @@ from harness.orchestration.core.config import (
 from harness.orchestration.core.check_results import check_counts_as_success
 from harness.orchestration.core.report_evidence import evidence_is_none
 from harness.orchestration.core.constants import (
+    FailureDomain,
     BLOCK_BYPASS_REASON_CATEGORY,
     BLOCK_BYPASS_STAGES,
     DEVELOPER_REASON_CATEGORIES,
@@ -79,7 +80,8 @@ from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
 )
-from harness.orchestration.workflow import carried_items, conditions
+from harness.orchestration.workflow import carried_items, conditions, failure_domains
+from harness.orchestration.workflow.failure_domains import Failure
 from harness.orchestration.workflow import commit_plan as plan_rules
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow import resolver_state
@@ -470,43 +472,24 @@ def _review_severity(review: JsonObject) -> dict[str, str]:
 QA_INFRASTRUCTURE_CATEGORY = RetryReason.VERIFICATION_INFRASTRUCTURE
 
 
-def _independent_infrastructure_facts(stages: JsonObject) -> bool:
-    """Whether ``qa_stages`` itself records a failed environment probe and only passing project-file
-    checks: an infrastructure diagnosis is never taken on trust from the category alone."""
-    entries = [e for e in stages.get("stages", []) if isinstance(e, dict)]
-    probes = [e for e in entries if e.get("stage") == "environment-probe"]
-    checks = [e for e in entries if e.get("stage") == "project-file-check"]
-    return (
-        any(e.get("result") == "fail" for e in probes)
-        and bool(checks)
-        and all(e.get("result") == "pass" for e in checks)
-    )
+def _qa_preparation_failure(report: JsonObject) -> Failure | None:
+    """The failure domain of a QA report whose preparation stage failed (issue #618); ``None`` for
+    any other report.
 
-
-def _qa_preparation_diagnosis(report: JsonObject) -> tuple[str, bool] | None:
-    """The confirmed diagnosis category of a QA report whose preparation stage failed, and whether
-    the report confirms that no code check started (issue #618); ``None`` for any other report.
-
-    Both facts come from the structured ``qa_stages`` the clean-room runner recorded. The stage
-    alone proves nothing: a category other than ``unknown`` counts only with that confirmation.
+    The facts come from the structured ``qa_stages`` the clean-room runner recorded, never from
+    the stage alone (``failure_domains.of_qa_stages`` holds the rules).
     """
     stages = report.get("qa_stages")
     if not isinstance(stages, dict) or stages.get("failed_stage") != "preparation":
         return None
-    diagnosis = stages.get("diagnosis")
-    category = diagnosis.get("category") if isinstance(diagnosis, dict) else None
-    confirmed = stages.get("code_checks_started") == "not_started"
-    if category not in {"infrastructure", "project-defect"} or not confirmed:
-        return "unknown", confirmed
-    if category == "infrastructure" and not _independent_infrastructure_facts(stages):
-        return "unknown", confirmed
-    return cast(str, category), confirmed
+    return failure_domains.of_qa_stages(stages)
 
 
 def _retry_evidence(
     report: JsonObject, candidate_moved: bool
-) -> tuple[RetryReason, str] | None:
-    """The reason category a report's structured data dictates by itself, and what showed it.
+) -> tuple[RetryReason, str, Failure] | None:
+    """The reason category a report's structured data dictates by itself, what showed it and the
+    failure domain it proves.
 
     Findings, an explicit reviewer retry, a warning/blocker severity, a failed check and a moved
     candidate all mean the work itself has to change. Free text (``blockers``, ``output``) is never
@@ -520,31 +503,67 @@ def _retry_evidence(
                 evidence.get("findings")
                 or evidence.get("severity") in {"warning", "blocker"}
             ):
+                field = "findings" if evidence.get("findings") else "severity"
                 return (
-                    RetryReason.REQUIREMENTS if axis == "spec" else RetryReason.CODE
-                ), f"the {axis} axis carries a finding or a warning/blocker severity"
+                    (RetryReason.REQUIREMENTS if axis == "spec" else RetryReason.CODE),
+                    f"the {axis} axis carries a finding or a warning/blocker severity",
+                    Failure(
+                        FailureDomain.CODE_TEST,
+                        "structured",
+                        f"review.{axis}.{field}",
+                        "report",
+                    ),
+                )
         if review.get("recommendation") == ReviewRecommendation.RETRY:
             return (
                 RetryReason.CODE,
                 "the reviewer explicitly recommends another developer pass",
+                Failure(
+                    FailureDomain.CODE_TEST,
+                    "structured",
+                    f"review.recommendation={ReviewRecommendation.RETRY}",
+                    "report",
+                ),
             )
     if carried_items.marks_open(report):
-        return RetryReason.CODE, "the review confirms a carried item is still open"
+        return (
+            RetryReason.CODE,
+            "the review confirms a carried item is still open",
+            Failure(
+                FailureDomain.CODE_TEST, "structured", "carried item still open", "report"
+            ),
+        )
     checks = report.get("checks_run")
-    if isinstance(checks, list) and any(
-        isinstance(check, dict) and check.get("result") == "fail" for check in checks
-    ):
-        return RetryReason.CODE, "a verification check failed"
-    preparation = _qa_preparation_diagnosis(report)
-    if preparation is not None and preparation[0] == "project-defect":
+    if isinstance(checks, list):
+        for index, check in enumerate(checks):
+            if isinstance(check, dict) and check.get("result") == "fail":
+                return (
+                    RetryReason.CODE,
+                    "a verification check failed",
+                    Failure(
+                        FailureDomain.CODE_TEST,
+                        "structured",
+                        f"checks_run[{index}].result=fail",
+                        "report",
+                    ),
+                )
+    preparation = _qa_preparation_failure(report)
+    if preparation is not None and preparation.domain == FailureDomain.CODE_TEST:
         return (
             RetryReason.CODE,
             "QA preparation failed on a confirmed defect in the project files and no code check started",
+            preparation,
         )
     if candidate_moved:
         return (
             RetryReason.CANDIDATE_CHANGE,
             "the candidate changed after the dispatch was pinned",
+            Failure(
+                FailureDomain.CODE_TEST,
+                "structured",
+                "candidate_commit moved after the dispatch was pinned",
+                "ledger",
+            ),
         )
     return None
 
@@ -558,8 +577,13 @@ def _retry_routing(
     explicit_category: object,
     pressure_recorded: bool = False,
     narrowed: bool = False,
+    explicit_by: str = "approver",
 ) -> JsonObject:
     """Decide where a ``retry`` goes, from structured report data only (no I/O).
+
+    The routing record carries ``failure``: the one ADR 0019 failure domain with its structured
+    evidence (``failure_domains.Failure``). ``explicit_by`` names who gave ``explicit_category``:
+    the approver, or ``classifier:<name>`` for a classifier hint, which never proves a code defect.
 
     ``stage`` is the pipeline stage that reported: architect, developer, code-review, qa or
     publish. A read-only stage (or the publish boundary) is re-run on the *same* candidate only
@@ -605,26 +629,41 @@ def _retry_routing(
     structured = _retry_evidence(
         {} if bypass_named else report, candidate_bound and not unchanged
     )
+    by_classifier = explicit_by.startswith("classifier:")
     if explicit_category in DEVELOPER_REASON_CATEGORIES:
         category, basis = explicit_category, "the approver named this reason category"
+        failure = (
+            failure_domains.unrecognised(
+                f"classifier hint {explicit_category} is no proof of a code defect",
+                explicit_by,
+            )
+            if by_classifier
+            else Failure(
+                FailureDomain.CODE_TEST,
+                "approver",
+                f"--reason-category {explicit_category}",
+                explicit_by,
+            )
+        )
     elif structured is not None:
-        category, basis = structured
+        category, basis, failure = structured
     elif (
         stage == "qa"
         and not bypass_named
         and explicit_category in {None, QA_INFRASTRUCTURE_CATEGORY}
         and outcome == "blocked"
-        and (preparation := _qa_preparation_diagnosis(report)) is not None
-        and preparation[0] == "infrastructure"
+        and (preparation := _qa_preparation_failure(report)) is not None
+        and preparation.domain == FailureDomain.ENVIRONMENT_PREPARATION
     ):
         category = QA_INFRASTRUCTURE_CATEGORY
         basis = "QA preparation failed on a confirmed infrastructure cause and no code check started, so the candidate code was not verified"
+        failure = preparation
     elif (
         stage == "qa"
         and explicit_category is None
         and not bypass_named
         and outcome == "blocked"
-        and _qa_preparation_diagnosis(report) is not None
+        and _qa_preparation_failure(report) is not None
     ):
         raise CoordinatorError(
             "QA preparation failed with a cause the coordinator could not confirm, so the report needs triage before any retry",
@@ -635,6 +674,12 @@ def _retry_routing(
     elif bypass_named:
         category = BLOCK_BYPASS_REASON_CATEGORY
         basis = "the approver found that the role worked around a hook or tool block, so its findings, checks and outcome are no evidence"
+        failure = Failure(
+            FailureDomain.POLICY,
+            "approver",
+            f"--reason-category {BLOCK_BYPASS_REASON_CATEGORY}",
+            explicit_by,
+        )
     elif (
         explicit_category in {None, TOOLING_REASON_CATEGORY}
         and outcome == "blocked"
@@ -642,22 +687,56 @@ def _retry_routing(
     ):
         category = TOOLING_REASON_CATEGORY
         basis = "the blocked report carries a structured tooling_blocker (tool, command, message)"
+        failure = Failure(FailureDomain.TOOLING, "structured", "tooling_blocker", "report")
     elif explicit_category == TOOLING_REASON_CATEGORY:
         category = RetryReason.UNKNOWN
         basis = f"the approver named tooling, but outcome={outcome} carries no structured tooling_blocker"
+        failure = failure_domains.unrecognised(
+            f"--reason-category tooling without a tooling_blocker (outcome={outcome})",
+            explicit_by,
+        )
     elif explicit_category == "context-pressure" and not pressure_recorded:
         category = RetryReason.UNKNOWN
         basis = "context-pressure was named, but no critical context_pressure observation exists for the reported dispatch"
+        failure = failure_domains.unrecognised(
+            "--reason-category context-pressure without a critical context_pressure observation",
+            explicit_by,
+        )
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES and outcome == "blocked":
         category = explicit_category
         basis = f"the report is blocked with no finding, no failed check and an unchanged candidate, and the approver named {category}"
+        failure = (
+            Failure(
+                FailureDomain.INFRASTRUCTURE,
+                "structured",
+                "context_pressure.level=critical",
+                "ledger",
+            )
+            if category == RetryReason.CONTEXT_PRESSURE
+            else failure_domains.unrecognised(
+                f"{category} named by a classifier hint", explicit_by
+            )
+            if by_classifier
+            else Failure(
+                FailureDomain.INFRASTRUCTURE,
+                "approver",
+                f"--reason-category {category}; outcome=blocked",
+                explicit_by,
+            )
+        )
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES:
         category = RetryReason.UNKNOWN
         basis = f"the approver named {explicit_category}, but outcome={outcome} does not show a blocked run"
+        failure = failure_domains.unrecognised(
+            f"--reason-category {explicit_category} with outcome={outcome}", explicit_by
+        )
     else:
         category, basis = (
             RetryReason.UNKNOWN,
             "no structured evidence classifies the cause",
+        )
+        failure = failure_domains.unrecognised(
+            "no structured evidence classifies the cause", "report"
         )
     if category == TOOLING_REASON_CATEGORY:
         next_action = "developer-retry" if stage == "developer" else stage
@@ -714,6 +793,7 @@ def _retry_routing(
         "next_action": next_action,
         "rationale": f"{stage} reported outcome={outcome}: {basis}; {outcome_sentence}.",
         "candidate_commit": dispatch_candidate if unchanged else None,
+        "failure": failure.to_json(),
     }
 
 
@@ -767,9 +847,15 @@ def _narrowed_routing(
         category: RetryReason | None = TOOLING_REASON_CATEGORY
         route = RecoveryRoute.TOOLING_RETRY
         basis = f"{tooled} of its {len(items)} incomplete items carry a tooling_blocker"
+        failure = Failure(
+            FailureDomain.TOOLING, "structured", "incomplete_items[].tooling_blocker", "report"
+        )
     else:
         category, route = None, RecoveryRoute.NARROWED_RETRY
         basis = f"it lists {len(items)} incomplete items"
+        failure = failure_domains.unrecognised(
+            "incomplete_items carry no proof of a cause", "report"
+        )
     return {
         "route": route,
         "previous_role": stage,
@@ -780,6 +866,7 @@ def _narrowed_routing(
         "dispatch on the same SHA carries only those items and spends no developer retry; the "
         "earlier brief and report stay as audit evidence.",
         "candidate_commit": dispatch_candidate if unchanged else None,
+        "failure": failure.to_json(),
     }
 
 
@@ -1684,6 +1771,16 @@ def _decision_audit(
     }
 
 
+def _approver_source(approved_by: object) -> str:
+    """Who named a reason category: ``approver`` (the decision records the human), or the policy.
+
+    The routing record is also the preview a packet shows before anyone is named, so a human's
+    name never enters it; ``decision.approved_by`` keeps that."""
+    if isinstance(approved_by, str) and approved_by.startswith("policy:"):
+        return approved_by
+    return "approver"
+
+
 def _decide_retry_route(
     repo: Path,
     root: Path,
@@ -1724,6 +1821,11 @@ def _decide_retry_route(
         dispatch_candidate=dispatch.get("candidate_commit"),
         current_candidate=current_candidate,
         explicit_category=hint.category if hint is not None else explicit_category,
+        explicit_by=(
+            f"classifier:{_extension_names(core_config._config(repo))['retry_reason_classifier']}"
+            if hint is not None
+            else _approver_source(getattr(args, "approved_by", None))
+        ),
         pressure_recorded=any(
             item.get("dispatch_id") == dispatch["dispatch_id"]
             and item.get("level") == "critical"

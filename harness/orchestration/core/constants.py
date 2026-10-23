@@ -92,6 +92,19 @@ class RetryReason(StrEnum):
     UNKNOWN = "unknown"
 
 
+class FailureDomain(StrEnum):
+    """The failure-domain taxonomy of ADR 0019; ``runtime.failure_domain`` in the registry."""
+
+    ENVIRONMENT_PREPARATION = "environment_preparation"
+    INFRASTRUCTURE = "infrastructure"
+    POLICY = "policy"
+    TOOLING = "tooling"
+    CODE_TEST = "code_test"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
 class RecoveryRoute(StrEnum):
     DEVELOPER_RETRY = "developer-retry"
     SAME_CANDIDATE_RERUN = "same-candidate-rerun"
