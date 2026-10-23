@@ -34,7 +34,7 @@ from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.decisions import decide_batch
 from harness.orchestration.workflow.dispatch import create_dispatch
-from harness.orchestration.workflow.failure_domains import Failure
+from harness.orchestration.workflow.failure_domains import FailureRefusal
 from harness.orchestration.workflow.history import (
     _require_route,
     _validate_batch_integrity,
@@ -363,10 +363,9 @@ def _run_policy_chain(
         steps[step] = ChainStepStatus.FAILED
         result["failed_step"] = step
         error: JsonObject = {"message": exc.message, "remedy": exc.remedy}
-        failure = getattr(exc, "failure", None)
-        if isinstance(failure, Failure):
+        if isinstance(exc, FailureRefusal):
             # A refusal that carries its ADR 0019 failure domain keeps it for the human.
-            error["failure"] = failure.to_json()
+            error["failure"] = exc.failure.to_json()
         result["error"] = error
     return result
 

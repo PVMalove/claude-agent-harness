@@ -13,7 +13,7 @@ from . import operational_guards
 from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS, FailureDomain
 from .core.utils import CoordinatorError, JsonObject
 from .workflow import failure_domains
-from .workflow.failure_domains import Failure
+from .workflow.failure_domains import Failure, FailureRefusal
 
 TRANSITION_FIELD = "infrastructure_retry_sha256"
 COMMAND_FIELDS = ("qa_preparation", "qa_environment_probes", "qa_project_file_checks")
@@ -23,7 +23,7 @@ ATTEMPT_TRANSITION_FIELD = "infrastructure_attempt_sha256"
 _ATTEMPTS_DIRECTORY = "qa-lane/operation-attempts/"
 
 
-class _RetryRefusal(CoordinatorError):
+class _RetryRefusal(FailureRefusal):
     """A refused policy retry: ``failure`` is the one failure domain that shows why."""
 
     def __init__(
@@ -34,9 +34,8 @@ class _RetryRefusal(CoordinatorError):
         attention_reason: str | None,
         failure: Failure,
     ):
-        super().__init__(message, remedy=remedy)
+        super().__init__(message, remedy=remedy, failure=failure)
         self.attention_reason = attention_reason
-        self.failure = failure
 
 
 def _remote_url_sha256(repo: Path, remote: str) -> str:
@@ -90,9 +89,8 @@ def _retry_budget(batch: JsonObject, brief: JsonObject, policy: JsonObject) -> i
             "infrastructure retry budget exhausted",
             remedy="inspect and resolve attention; policy cannot authorize another retry",
             attention_reason="infrastructure-retry-repeated",
-            failure=Failure(
+            failure=failure_domains.structured(
                 FailureDomain.POLICY,
-                "structured",
                 f"max_infrastructure_retries={policy['max_infrastructure_retries']} reached",
                 "orchestration_policy",
             ),
@@ -229,7 +227,7 @@ def authorize(
         brief["role"] != "qa"
         or routing["route"] != "same-candidate-rerun"
         or routing["reason_category"] != "verification-infrastructure"
-        or routing["failure"]["domain"] != FailureDomain.ENVIRONMENT_PREPARATION
+        or failure_domains.domain_of(routing) != FailureDomain.ENVIRONMENT_PREPARATION
     ):
         raise CoordinatorError(
             "the report is not confirmed infrastructure eligible for policy retry",
@@ -275,9 +273,8 @@ def authorize(
             "infrastructure environment is still not ready",
             remedy="restore the previously approved environment, then run report complete again",
             attention_reason=None,
-            failure=Failure(
+            failure=failure_domains.structured(
                 FailureDomain.ENVIRONMENT_PREPARATION,
-                "structured",
                 "readiness check failed: "
                 + ", ".join(
                     check["command"] for check in ready.checks if check["result"] != "pass"

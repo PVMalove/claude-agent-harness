@@ -803,3 +803,35 @@ def test_the_auto_policy_stops_on_the_budget_for_a_code_test_retry() -> None:
     stop = auto_policy.finish(routing, None, budget_exhausted=True, bug_ticket=None)
 
     assert stop is not None and stop.category == "budget-exhausted"
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        ({"failure": {"domain": "code_test"}}, FailureDomain.CODE_TEST),
+        ({"failure": {"domain": "tooling"}}, FailureDomain.TOOLING),
+        ({"failure": {"domain": "nonsense"}}, None),
+        ({"failure": "code_test"}, None),
+        ({"failure": None}, None),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_domain_of_reads_the_failure_domain_of_a_record(
+    record: object, expected: FailureDomain | None
+) -> None:
+    assert failure_domains.domain_of(record) == expected
+
+
+def test_every_refusal_that_carries_a_failure_shares_one_base() -> None:
+    from harness.orchestration import infrastructure_retry
+
+    failure = failure_domains.unrecognised("m", "s")
+    unproven = decisions.UnprovenFailureError("m", remedy="r", failure=failure)
+    refused = infrastructure_retry._RetryRefusal(
+        "m", remedy="r", attention_reason=None, failure=failure
+    )
+
+    assert isinstance(unproven, failure_domains.FailureRefusal)
+    assert isinstance(refused, failure_domains.FailureRefusal)
+    assert unproven.failure is failure and refused.failure is failure

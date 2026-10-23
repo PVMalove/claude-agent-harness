@@ -22,7 +22,7 @@ from pathlib import Path
 
 from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.orchestration.core.constants import FailureDomain
-from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.workflow import failure_classifier
 
 # The evidence methods. A method is a plain string, not a ``StrEnum``: the registry binds every
@@ -91,6 +91,30 @@ class Failure:
             "matched": self.matched,
             "source": self.source,
         }
+
+
+class FailureRefusal(CoordinatorError):
+    """A refusal that names the one failure domain that shows why (``failure``).
+
+    The shared base of the refusals that carry a ``Failure``, so a caller tests the type instead
+    of probing for the attribute."""
+
+    def __init__(self, message: str, *, remedy: str, failure: Failure) -> None:
+        super().__init__(message, remedy=remedy)
+        self.failure = failure
+
+
+def domain_of(record: object) -> FailureDomain | None:
+    """The failure domain of a routing or stop record's ``failure``, or ``None`` when it has none.
+
+    The one reader of the ``failure.domain`` key; a record written before failure domains
+    existed, or one whose ``failure`` is malformed, answers ``None``."""
+    failure = record.get("failure") if isinstance(record, Mapping) else None
+    domain = failure.get("domain") if isinstance(failure, Mapping) else None
+    try:
+        return FailureDomain(domain) if isinstance(domain, str) else None
+    except ValueError:
+        return None
 
 
 def structured(domain: FailureDomain, matched: str, source: str = "report") -> Failure:

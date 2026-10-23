@@ -406,11 +406,9 @@ def finish(
                 "remedy": refusal.remedy if refusal else None,
             },
         )
-    failure = routing.get("failure")
     if routing.get("reason_category") == "unknown" or (
         routing.get("next_action") == "developer-retry"
-        and isinstance(failure, dict)
-        and failure.get("domain") == FailureDomain.UNKNOWN
+        and failure_domains.domain_of(routing) == FailureDomain.UNKNOWN
     ):
         return Stop(
             "no-automatic-route",

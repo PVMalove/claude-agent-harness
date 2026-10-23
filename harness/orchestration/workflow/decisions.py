@@ -446,14 +446,10 @@ def _carry_over_preview(
         return {"route": None, "refused": exc.message, "remedy": exc.remedy}
 
 
-class UnprovenFailureError(CoordinatorError):
+class UnprovenFailureError(failure_domains.FailureRefusal):
     """A retry that would send a developer back to fix code although no code defect is proven.
 
     ``failure`` is the one failure domain the report shows; the refusal writes nothing."""
-
-    def __init__(self, message: str, *, remedy: str, failure: Failure) -> None:
-        super().__init__(message, remedy=remedy)
-        self.failure = failure
 
 
 # A read-only stage (and the publish boundary) never sends a developer back on its own say.
@@ -467,8 +463,7 @@ def _spends_developer_retry(routing: object) -> bool:
     failure domains existed has no ``failure`` and counts as it always did."""
     if not isinstance(routing, dict) or "failure" not in routing:
         return True
-    failure = routing["failure"]
-    return isinstance(failure, dict) and failure.get("domain") == FailureDomain.CODE_TEST
+    return failure_domains.domain_of(routing) == FailureDomain.CODE_TEST
 
 
 def spends_developer_budget(routing: JsonObject) -> bool:
@@ -1903,7 +1898,7 @@ def _decide_retry_route(
     if (
         forced == "developer"
         and routing["route"] != RecoveryRoute.TOOLING_RETRY
-        and (routing.get("failure") or {}).get("domain") != FailureDomain.CODE_TEST
+        and failure_domains.domain_of(routing) != FailureDomain.CODE_TEST
     ):
         # A human who takes the developer retry on their own decision is the proof of it. A
         # developer's tooling-retry stays one, with its tooling failure: it spends no budget.
