@@ -28,6 +28,14 @@ LOCK_SYNC_ERROR = (
     "package-lock.json are in sync"
 )
 OUTAGE_ERROR = "npm ERR! network request failed: getaddrinfo EAI_AGAIN registry.example"
+# What `uv sync` prints when there is no network to the package index (uv 0.x, offline).
+UV_OFFLINE_ERROR = (
+    "  x No solution found when resolving dependencies:\n"
+    "  `-> Because pytest was not found in the cache and your project depends on pytest>=8, "
+    "we can conclude that your project's requirements are unsatisfiable.\n\n"
+    "      hint: Packages were unavailable because the network was disabled. When the network "
+    "is disabled, registry packages may only be read from the cache."
+)
 
 
 def _git(repo: Path, *arguments: str) -> None:
@@ -116,6 +124,17 @@ class PreparationFixture(unittest.TestCase):
         path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
         # A bare `python` is always the launcher the gate runner pins; `python.exe` is not.
         return f'python "{path}"'
+
+    def uv_offline_prepare(self) -> str:
+        """A preparation command that fails the way ``uv sync`` fails without a network."""
+        return self._script(
+            "uv_sync",
+            f"""
+            import sys
+            print({UV_OFFLINE_ERROR!r}, file=sys.stderr)
+            sys.exit(2)
+            """,
+        )
 
     def configure(self, *, preparation: list[str] | None, facts: bool = True) -> None:
         config: JsonObject = {
@@ -223,6 +242,8 @@ class QaPreparationE2ETests(PreparationFixture):
                 self.candidate,
             ),
         )
+        self.assertEqual(routing["failure"]["domain"], "environment_preparation")
+        self.assertEqual(routing["failure"]["method"], "structured")
         self.assertEqual(self.developer_retries(), 0)
         self.registry_down.unlink()
         second = self.qa_brief()
@@ -286,6 +307,8 @@ class QaPreparationE2ETests(PreparationFixture):
             (routing["route"], routing["reason_category"], routing["next_role"]),
             ("developer-retry", "code", "developer"),
         )
+        self.assertEqual(routing["failure"]["domain"], "code_test")
+        self.assertEqual(routing["failure"]["method"], "structured")
         self.assertEqual(self.developer_retries(), 1)
 
     def test_an_outage_log_without_independent_facts_waits_for_triage(self) -> None:
@@ -381,6 +404,119 @@ class QaPreparationE2ETests(PreparationFixture):
         report = self.report_of(self.run_qa(brief))
         self.assertEqual(report["outcome"], "completed")
         self.assert_lane_free_and_dispatch(brief, "reported")
+
+
+class OfflineUvSyncTests(PreparationFixture):
+    """``uv sync`` with no network to the package index is the environment, not the code (#800).
+
+    The preparation script prints what uv really prints when the network is disabled; the
+    environment probe and the offline lock check are the independent facts. The runner's own
+    diagnosis names no category for this log, so the failure domain has to come from the stages.
+    """
+
+    def failure_of(self, decided: JsonObject) -> JsonObject:
+        routing = decided["coordinator_decisions"][-1]["routing"]
+        failure: JsonObject = routing["failure"]
+        return failure
+
+    def test_an_offline_uv_sync_is_environment_preparation_and_spends_no_developer_retry(
+        self,
+    ) -> None:
+        self.configure(preparation=[self.uv_offline_prepare()])
+        brief = self.qa_brief()
+        self.registry_down.write_text("down", encoding="utf-8")
+
+        report = self.report_of(self.run_qa(brief))
+
+        self.assertEqual(report["outcome"], "blocked")
+        stages = report["qa_stages"]
+        self.assertEqual(stages["failed_stage"], "preparation")
+        self.assertEqual(stages["code_checks_started"], "not_started")
+        self.assertIn("network was disabled", stages["stages"][0]["diagnostics"])
+        # The log alone is no project defect, and the runner names no environment category.
+        self.assertNotEqual(stages["diagnosis"]["category"], "project-defect")
+        self.assertFalse(self.gate_ran.exists())
+
+        decided = self.fx._decide(self.batch_id, "retry")
+
+        routing = decided["coordinator_decisions"][-1]["routing"]
+        self.assertEqual(
+            (routing["route"], routing["reason_category"], routing["next_role"]),
+            ("same-candidate-rerun", "verification-infrastructure", "qa"),
+        )
+        failure = self.failure_of(decided)
+        self.assertEqual(
+            (failure["domain"], failure["method"], failure["source"]),
+            ("environment_preparation", "structured", "qa_stages"),
+        )
+        self.assertEqual(self.developer_retries(), 0)
+
+    def test_the_same_log_with_a_failing_lock_check_is_a_code_defect(self) -> None:
+        self.configure(preparation=[self.uv_offline_prepare()])
+        brief = self.qa_brief()
+        # The offline lock check fails while the package index answers: the project files are wrong.
+        self.lock_broken.write_text("broken", encoding="utf-8")
+
+        report = self.report_of(self.run_qa(brief))
+
+        self.assertEqual(report["qa_stages"]["diagnosis"]["category"], "project-defect")
+        decided = self.fx._decide(self.batch_id, "retry")
+        routing = decided["coordinator_decisions"][-1]["routing"]
+        self.assertEqual(
+            (routing["route"], routing["reason_category"]),
+            ("developer-retry", "code"),
+        )
+        self.assertEqual(self.failure_of(decided)["domain"], "code_test")
+        self.assertEqual(self.developer_retries(), 1)
+
+    def test_the_same_log_without_independent_facts_is_unknown_and_retried_by_nobody(
+        self,
+    ) -> None:
+        self.configure(preparation=[self.uv_offline_prepare()], facts=False)
+        brief = self.qa_brief()
+        self.registry_down.write_text("down", encoding="utf-8")
+
+        report = self.report_of(self.run_qa(brief))
+
+        self.assertEqual(report["outcome"], "blocked")
+        before = self.fx._batch_record(self.batch_id)
+        with self.assertRaises(CoordinatorError) as refused:
+            self.fx._decide(self.batch_id, "retry")
+        self.assertIn("needs triage", refused.exception.message)
+        self.assertEqual(self.fx._batch_record(self.batch_id), before)
+        self.assertEqual(self.developer_retries(), 0)
+
+    def test_the_same_log_with_contradicting_facts_is_unknown(self) -> None:
+        self.configure(preparation=[self.uv_offline_prepare()])
+        brief = self.qa_brief()
+        # The index is down and the lock check fails too: the facts do not confirm either cause.
+        self.registry_down.write_text("down", encoding="utf-8")
+        self.lock_broken.write_text("broken", encoding="utf-8")
+
+        report = self.report_of(self.run_qa(brief))
+
+        self.assertEqual(report["outcome"], "blocked")
+        with self.assertRaises(CoordinatorError) as refused:
+            self.fx._decide(self.batch_id, "retry")
+        self.assertIn("needs triage", refused.exception.message)
+        self.assertEqual(self.developer_retries(), 0)
+
+    def test_an_approver_naming_the_code_proves_it_even_for_the_offline_failure(
+        self,
+    ) -> None:
+        self.configure(preparation=[self.uv_offline_prepare()])
+        brief = self.qa_brief()
+        self.registry_down.write_text("down", encoding="utf-8")
+        self.report_of(self.run_qa(brief))
+
+        decided = self.fx._decide(self.batch_id, "retry", reason_category="code")
+
+        failure = self.failure_of(decided)
+        self.assertEqual(
+            (failure["domain"], failure["method"], failure["matched"]),
+            ("code_test", "approver", "--reason-category code"),
+        )
+        self.assertEqual(self.developer_retries(), 1)
 
 
 if __name__ == "__main__":

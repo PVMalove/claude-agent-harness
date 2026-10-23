@@ -152,18 +152,21 @@ def _preparation(stages: Mapping[str, object]) -> Failure:
     category = diagnosis.get("category") if isinstance(diagnosis, Mapping) else None
     if stages.get("code_checks_started") != "not_started":
         return unrecognised("preparation failed and code_checks_started is not not_started", source)
+    # The stages decide, not the runner's category: a failed environment probe with every
+    # project-file check passing proves the environment even when the log (an offline ``uv sync``,
+    # for one) names no category the runner knows.
+    if independent_infrastructure_facts(stages):
+        return Failure(
+            FailureDomain.ENVIRONMENT_PREPARATION,
+            "structured",
+            "failed environment-probe; every project-file-check passed; code_checks_started=not_started",
+            source,
+        )
     if category == "project-defect":
         return Failure(
             FailureDomain.CODE_TEST,
             "structured",
             "diagnosis.category=project-defect; code_checks_started=not_started",
-            source,
-        )
-    if category == "infrastructure" and independent_infrastructure_facts(stages):
-        return Failure(
-            FailureDomain.ENVIRONMENT_PREPARATION,
-            "structured",
-            "diagnosis.category=infrastructure; failed environment-probe; every project-file-check passed",
             source,
         )
     return unrecognised(f"diagnosis.category={category!r} without independent proof", source)

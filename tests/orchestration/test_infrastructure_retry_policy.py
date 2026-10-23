@@ -10,10 +10,31 @@ from unittest import mock
 
 import pytest
 
-from harness.orchestration import contract, coordinator
+from harness.orchestration import contract, coordinator, infrastructure_retry
 from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from tests.orchestration import test_qa_preparation_e2e as preparation
 from tests.orchestration import test_coordinator as fixtures
+
+
+def test_an_exhausted_infrastructure_budget_refuses_with_a_policy_failure() -> None:
+    brief: JsonObject = {"dispatch_id": "dispatch-2", "candidate_commit": "c" * 40}
+    spent: JsonObject = {
+        "dispatch_id": "dispatch-1",
+        "decision": "retry",
+        "routing": {
+            "reason_category": "verification-infrastructure",
+            "candidate_commit": "c" * 40,
+        },
+    }
+
+    with pytest.raises(infrastructure_retry._RetryRefusal) as refused:
+        infrastructure_retry._retry_budget(
+            {"coordinator_decisions": [spent]}, brief, {"max_infrastructure_retries": 1}
+        )
+
+    assert refused.value.failure.domain == "policy"
+    assert refused.value.failure.method == "structured"
+    assert refused.value.attention_reason == "infrastructure-retry-repeated"
 
 
 def test_a_standalone_retry_opt_in_is_a_valid_project_config(tmp_path: Path) -> None:
@@ -37,8 +58,14 @@ def test_malformed_retry_policy_is_rejected(tmp_path: Path, value: object) -> No
 
 
 class InfrastructureRetryTests(preparation.PreparationFixture):
-    def configure_policy(self, *, enabled: bool = True, budget: int = 2) -> None:
-        self.configure(preparation=[self.prepare])
+    def configure_policy(
+        self,
+        *,
+        enabled: bool = True,
+        budget: int = 2,
+        preparation: str | None = None,
+    ) -> None:
+        self.configure(preparation=[preparation or self.prepare])
         path = self.repo / ".harness/orchestration.json"
         config = json.loads(path.read_text())
         config.update(
@@ -157,6 +184,39 @@ class InfrastructureRetryTests(preparation.PreparationFixture):
         self.assertEqual(self.developer_retries(), 0)
         self.assertEqual(self.report_of(self.run_qa(second))["outcome"], "completed")
         self.assertTrue(Path(original["report"]).exists())
+
+    def test_an_offline_uv_sync_is_retried_by_policy_once_the_environment_is_ready(
+        self,
+    ) -> None:
+        """The runner names no category for the offline log; the stages prove the environment."""
+        self.configure_policy(preparation=self.uv_offline_prepare())
+        first = self.qa_brief()
+        self.registry_down.touch()
+        original = self.run_qa(first)
+        self.assertEqual(self.report_of(original)["outcome"], "blocked")
+        self.assertNotEqual(
+            self.report_of(original)["qa_stages"]["diagnosis"]["category"],
+            "project-defect",
+        )
+        # While the index is unreachable the readiness gate refuses; nothing is retried yet.
+        with self.assertRaises(CoordinatorError):
+            self.complete(first)
+        self.registry_down.unlink()
+        resumed = self.complete(first)
+        self.assertIsNotNone(resumed["next_dispatch_id"])
+        self.assertEqual(self.developer_retries(), 0)
+
+    def test_an_offline_uv_sync_with_a_failing_lock_check_is_not_a_policy_retry(
+        self,
+    ) -> None:
+        self.configure_policy(preparation=self.uv_offline_prepare())
+        brief = self.qa_brief()
+        self.lock_broken.touch()
+        result = self.run_qa(brief)
+        self.assertEqual(self.report_of(result)["outcome"], "failed")
+        self.assertIsNone(result.get("next_dispatch_id"))
+        self.assertIsNone(self.complete(brief)["next_dispatch_id"])
+        self.assertEqual(self.developer_retries(), 0)
 
     def test_interruption_after_policy_decision_replays_without_resetting_budget(
         self,

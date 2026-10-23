@@ -213,18 +213,52 @@ def test_qa_preparation_on_a_confirmed_project_defect_is_code_test() -> None:
 @pytest.mark.parametrize(
     "stages",
     [
-        _stages(category="unknown"),
-        _stages(category=None),
+        _stages(category="unknown", probe=None),
+        _stages(category=None, probe=None),
         _stages(category="infrastructure", probe=None),
         _stages(category="infrastructure", probe="pass"),
         _stages(category="infrastructure", checks=()),
         _stages(category="infrastructure", checks=("pass", "fail")),
         _stages(category="infrastructure", started="started"),
         _stages(category="project-defect", started="started"),
-        _stages(category="something-new"),
+        _stages(category="something-new", probe=None),
     ],
 )
 def test_qa_preparation_without_independent_proof_is_unknown(stages: dict[str, object]) -> None:
+    failure = failure_domains.of_qa_stages(stages)
+
+    assert failure is not None
+    assert (failure.domain, failure.method) == (FailureDomain.UNKNOWN, "fallback")
+
+
+@pytest.mark.parametrize("category", ["infrastructure", "unknown", None, "something-new"])
+def test_the_independent_facts_decide_whatever_category_the_runner_named(
+    category: str | None,
+) -> None:
+    """An offline ``uv sync`` log names no category the runner knows (#800)."""
+    failure = failure_domains.of_qa_stages(_stages(category=category))
+
+    assert failure is not None
+    assert (failure.domain, failure.method) == (
+        FailureDomain.ENVIRONMENT_PREPARATION,
+        "structured",
+    )
+    assert failure.source == "qa_stages"
+
+
+@pytest.mark.parametrize(
+    "stages",
+    [
+        _stages(category="unknown", probe="pass"),
+        _stages(category="unknown", checks=()),
+        _stages(category="unknown", checks=("pass", "fail")),
+        _stages(category="unknown", started="started"),
+        _stages(category="unknown", started="unknown"),
+    ],
+)
+def test_a_missing_or_contradicting_fact_keeps_the_offline_failure_unknown(
+    stages: dict[str, object],
+) -> None:
     failure = failure_domains.of_qa_stages(stages)
 
     assert failure is not None

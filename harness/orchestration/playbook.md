@@ -148,6 +148,15 @@ proves no infrastructure cause; log signatures are only corroboration.
   no code check started): the report is `blocked` and says the code was not verified. A `retry` needs no `--reason-category`: it routes `same-candidate-rerun` with
   `verification-infrastructure`, a new qa dispatch on the same SHA, and spends no
   `retry_policy.max_developer_retries`. The coordinator decides it by hand once the environment is ready.
+  The stages decide, not the runner's category: the routing record's `failure` is
+  `environment_preparation` (method `structured`, source `qa_stages`) whenever the probe failed, every
+  project-file check passed and no code check started, even when the log names no cause the runner
+  knows and its `diagnosis.category` is `unknown`. An offline `uv sync` (`No solution found when
+  resolving dependencies`, `Packages were unavailable because the network was disabled`) is exactly
+  that case. The same log with a failing offline lock check, or with no probe and no project-file
+  check, is not: the first is a `project-defect` (`code_test`), the second needs triage (`unknown`).
+  The runner's own `diagnosis.category` stays in the report unchanged, so it can differ from the
+  recorded domain.
 - `project-defect` (a failing project-file check, or a defect log signature such as an incompatible
   lock file that agrees with a tracked project file the output names): the report is `failed`; a `retry` routes `developer-retry` with `code`.
 - `unknown` (no probe or project-file check configured, contradicting facts, or no confirmation):
