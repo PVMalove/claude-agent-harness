@@ -56,6 +56,34 @@ impl fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
+impl StartError {
+    /// The protocol error code that the first `REMEDY:` line of `harness-runtime serve` shows.
+    pub const fn code(&self) -> ErrorCode {
+        match self {
+            Self::Paths(err) => err.code(),
+            Self::AlreadyRunning(_) => ErrorCode::LeaseHeld,
+            Self::ForeignDirectory(_) => ErrorCode::UnauthorizedPeer,
+            Self::Io { .. } => ErrorCode::Internal,
+        }
+    }
+
+    /// What the operator does next.
+    pub const fn remedy(&self) -> &'static str {
+        match self {
+            Self::Paths(err) => err.remedy(),
+            Self::AlreadyRunning(_) => {
+                "use the runtime that already serves the repository, or stop it first"
+            }
+            Self::ForeignDirectory(_) => {
+                "set XDG_RUNTIME_DIR to a directory that this user owns, then repeat the command"
+            }
+            Self::Io { .. } => {
+                "check the permissions of the runtime directory, then repeat the command"
+            }
+        }
+    }
+}
+
 impl From<PathError> for StartError {
     fn from(err: PathError) -> Self {
         Self::Paths(err)

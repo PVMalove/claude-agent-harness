@@ -205,12 +205,9 @@ fn an_empty_state_has_nothing_to_migrate() {
     let result = run(&repo.root);
 
     assert_eq!(code(&result), 2);
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("nothing_to_migrate")
-    );
+    let error = result.unwrap_err();
+    assert!(error.to_string().contains("nothing_to_migrate"));
+    assert_eq!(error.code(), contracts::ErrorCode::NotFound);
     assert!(!repo.state().join(".coordinator.lock").exists());
 }
 

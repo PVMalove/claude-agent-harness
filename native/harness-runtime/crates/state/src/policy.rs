@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use contracts::ErrorCode;
 use serde_json::{Map, Value, json};
 
 use crate::canonical::object_sha256;
@@ -884,7 +885,11 @@ pub fn validate_batches(records: &Records<'_>) -> Result<()> {
             .and_then(|()| operational_fields(batch))
             .and_then(|()| immutable_plan(records, batch));
         if let Err(reason) = checked {
-            return Err(Error::refused(format!("{reason}: {path}"), REMEDY));
+            return Err(Error::refused(
+                ErrorCode::InvariantViolation,
+                format!("{reason}: {path}"),
+                REMEDY,
+            ));
         }
     }
     Ok(())
