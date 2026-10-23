@@ -277,7 +277,9 @@ def _confirmed_failure(
     }
     if assessment["runtime_failure"] is not None:
         evidence["classification"] = assessment["runtime_failure"]
-    evidence["failure_domain"] = assessment["failure"]
+    # The domain of this stop is one ``failure_domains.Failure`` record under one key: the
+    # startup assessment's own, or, when only the blocked report names the cause, that report's.
+    # The key is ``failure_domain`` because the whole dict is already the event's ``failure``.
     # A missing self-report, or a worker that exited after one without a report, proves no
     # environment failure; only a mismatch or a classified runtime failure does.
     if assessment["classification"] not in {
@@ -285,7 +287,7 @@ def _confirmed_failure(
         "model-self-report-missing",
         "worker-exited-without-report",
     }:
-        return evidence
+        return {**evidence, "failure_domain": assessment["failure"]}
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (
         failure_classifier.classify(

@@ -9,6 +9,7 @@ from typing import cast
 
 import pytest
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import runtime_client
 from harness.orchestration.core.constants import FailureDomain
 from harness.orchestration.core.utils import JsonObject
@@ -49,7 +50,17 @@ def test_the_domains_are_the_registry_vocabulary() -> None:
     values = registry["fields"]["runtime.failure_domain"]["values"]
 
     assert [str(domain) for domain in FailureDomain] == list(values)
-    assert runtime_client.FAILURE_DOMAINS == tuple(FailureDomain)
+    assert [str(domain) for domain in runtime_client.FAILURE_DOMAINS] == list(values)
+    assert list(values) == [
+        "environment_preparation",
+        "infrastructure",
+        "policy",
+        "tooling",
+        "code_test",
+        "timeout",
+        "cancelled",
+        "unknown",
+    ]
 
 
 def test_a_failure_serialises_to_its_four_evidence_keys() -> None:
@@ -80,6 +91,26 @@ def test_the_invariants_refuse_an_unproven_or_inconsistent_failure(
 ) -> None:
     with pytest.raises(ValueError):
         Failure(domain, method, "x", "y")
+
+
+def test_a_broken_invariant_names_the_implementation_in_its_remedy() -> None:
+    with pytest.raises(failure_domains.FailureEvidenceError) as raised:
+        Failure(FailureDomain.CODE_TEST, "heuristic", "x", "y")
+
+    assert raised.value.remedy == INTERNAL_INVARIANT_REMEDY
+    assert "code_test needs structured or approver evidence" in raised.value.message
+
+
+def test_the_evidence_constructors_fix_the_method() -> None:
+    assert failure_domains.structured(FailureDomain.TOOLING, "tooling_blocker") == Failure(
+        FailureDomain.TOOLING, "structured", "tooling_blocker", "report"
+    )
+    assert failure_domains.approver(
+        FailureDomain.CODE_TEST, "--reason-category code", "policy:auto"
+    ) == Failure(FailureDomain.CODE_TEST, "approver", "--reason-category code", "policy:auto")
+    assert failure_domains.unrecognised("x", "report") == Failure(
+        FailureDomain.UNKNOWN, "fallback", "x", "report"
+    )
 
 
 @pytest.mark.parametrize(("matched", "source"), [("", "report"), ("x", ""), ("  ", "r")])

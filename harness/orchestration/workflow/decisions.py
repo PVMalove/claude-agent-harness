@@ -537,31 +537,24 @@ def _retry_evidence(
                 return (
                     (RetryReason.REQUIREMENTS if axis == "spec" else RetryReason.CODE),
                     f"the {axis} axis carries a finding or a warning/blocker severity",
-                    Failure(
-                        FailureDomain.CODE_TEST,
-                        "structured",
-                        f"review.{axis}.{field}",
-                        "report",
+                    failure_domains.structured(
+                        FailureDomain.CODE_TEST, f"review.{axis}.{field}"
                     ),
                 )
         if review.get("recommendation") == ReviewRecommendation.RETRY:
             return (
                 RetryReason.CODE,
                 "the reviewer explicitly recommends another developer pass",
-                Failure(
+                failure_domains.structured(
                     FailureDomain.CODE_TEST,
-                    "structured",
                     f"review.recommendation={ReviewRecommendation.RETRY}",
-                    "report",
                 ),
             )
     if carried_items.marks_open(report):
         return (
             RetryReason.CODE,
             "the review confirms a carried item is still open",
-            Failure(
-                FailureDomain.CODE_TEST, "structured", "carried item still open", "report"
-            ),
+            failure_domains.structured(FailureDomain.CODE_TEST, "carried item still open"),
         )
     checks = report.get("checks_run")
     if isinstance(checks, list):
@@ -570,11 +563,8 @@ def _retry_evidence(
                 return (
                     RetryReason.CODE,
                     "a verification check failed",
-                    Failure(
-                        FailureDomain.CODE_TEST,
-                        "structured",
-                        f"checks_run[{index}].result=fail",
-                        "report",
+                    failure_domains.structured(
+                        FailureDomain.CODE_TEST, f"checks_run[{index}].result=fail"
                     ),
                 )
     preparation = _qa_preparation_failure(report)
@@ -588,14 +578,35 @@ def _retry_evidence(
         return (
             RetryReason.CANDIDATE_CHANGE,
             "the candidate changed after the dispatch was pinned",
-            Failure(
+            failure_domains.structured(
                 FailureDomain.CODE_TEST,
-                "structured",
                 "candidate_commit moved after the dispatch was pinned",
                 "ledger",
             ),
         )
     return None
+
+
+def _operational_failure(
+    category: RetryReason, by_classifier: bool, explicit_by: str
+) -> Failure:
+    """The failure of a blocked report whose operational category was named.
+
+    A critical ``context_pressure`` observation shows itself; a classifier hint proves nothing; any
+    other named category is the approver's own evidence."""
+    if category == RetryReason.CONTEXT_PRESSURE:
+        return failure_domains.structured(
+            FailureDomain.INFRASTRUCTURE, "context_pressure.level=critical", "ledger"
+        )
+    if by_classifier:
+        return failure_domains.unrecognised(
+            f"{category} named by a classifier hint", explicit_by
+        )
+    return failure_domains.approver(
+        FailureDomain.INFRASTRUCTURE,
+        f"--reason-category {category}; outcome=blocked",
+        explicit_by,
+    )
 
 
 def _retry_routing(
@@ -672,9 +683,8 @@ def _retry_routing(
                 explicit_by,
             )
             if by_classifier
-            else Failure(
+            else failure_domains.approver(
                 FailureDomain.CODE_TEST,
-                "approver",
                 f"--reason-category {explicit_category}",
                 explicit_by,
             )
@@ -708,9 +718,8 @@ def _retry_routing(
     elif bypass_named:
         category = BLOCK_BYPASS_REASON_CATEGORY
         basis = "the approver found that the role worked around a hook or tool block, so its findings, checks and outcome are no evidence"
-        failure = Failure(
+        failure = failure_domains.approver(
             FailureDomain.POLICY,
-            "approver",
             f"--reason-category {BLOCK_BYPASS_REASON_CATEGORY}",
             explicit_by,
         )
@@ -721,7 +730,7 @@ def _retry_routing(
     ):
         category = TOOLING_REASON_CATEGORY
         basis = "the blocked report carries a structured tooling_blocker (tool, command, message)"
-        failure = Failure(FailureDomain.TOOLING, "structured", "tooling_blocker", "report")
+        failure = failure_domains.structured(FailureDomain.TOOLING, "tooling_blocker")
     elif explicit_category == TOOLING_REASON_CATEGORY:
         category = RetryReason.UNKNOWN
         basis = f"the approver named tooling, but outcome={outcome} carries no structured tooling_blocker"
@@ -739,25 +748,7 @@ def _retry_routing(
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES and outcome == "blocked":
         category = explicit_category
         basis = f"the report is blocked with no finding, no failed check and an unchanged candidate, and the approver named {category}"
-        failure = (
-            Failure(
-                FailureDomain.INFRASTRUCTURE,
-                "structured",
-                "context_pressure.level=critical",
-                "ledger",
-            )
-            if category == RetryReason.CONTEXT_PRESSURE
-            else failure_domains.unrecognised(
-                f"{category} named by a classifier hint", explicit_by
-            )
-            if by_classifier
-            else Failure(
-                FailureDomain.INFRASTRUCTURE,
-                "approver",
-                f"--reason-category {category}; outcome=blocked",
-                explicit_by,
-            )
-        )
+        failure = _operational_failure(category, by_classifier, explicit_by)
     elif explicit_category in OPERATIONAL_REASON_CATEGORIES:
         category = RetryReason.UNKNOWN
         basis = f"the approver named {explicit_category}, but outcome={outcome} does not show a blocked run"
@@ -896,8 +887,8 @@ def _narrowed_routing(
         category: RetryReason | None = TOOLING_REASON_CATEGORY
         route = RecoveryRoute.TOOLING_RETRY
         basis = f"{tooled} of its {len(items)} incomplete items carry a tooling_blocker"
-        failure = Failure(
-            FailureDomain.TOOLING, "structured", "incomplete_items[].tooling_blocker", "report"
+        failure = failure_domains.structured(
+            FailureDomain.TOOLING, "incomplete_items[].tooling_blocker"
         )
     else:
         category, route = None, RecoveryRoute.NARROWED_RETRY
@@ -1891,9 +1882,8 @@ def _decide_retry_route(
         # A human who takes the developer retry on their own decision is the proof of it.
         routing = {
             **routing,
-            "failure": Failure(
+            "failure": failure_domains.approver(
                 FailureDomain.CODE_TEST,
-                "approver",
                 "--retry-role developer",
                 _approver_source(getattr(args, "approved_by", None)),
             ).to_json(),

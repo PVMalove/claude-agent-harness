@@ -16,13 +16,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from harness.errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from harness.orchestration.core.constants import FailureDomain
 from harness.orchestration.core.utils import JsonObject
 from harness.orchestration.workflow import failure_classifier
 
-METHODS = ("structured", "heuristic", "approver", "fallback")
+# The evidence methods. A method is a plain string, not a ``StrEnum``: the registry binds every
+# orchestration ``StrEnum`` to a field, and these four words are no protocol vocabulary.
+STRUCTURED = "structured"
+HEURISTIC = "heuristic"
+APPROVER = "approver"
+FALLBACK = "fallback"
+METHODS = (STRUCTURED, HEURISTIC, APPROVER, FALLBACK)
 # Methods that may prove a code or test defect.
-_PROVING_METHODS = frozenset({"structured", "approver"})
+_PROVING_METHODS = frozenset({STRUCTURED, APPROVER})
 
 # A category of ``failure_classifier`` (the runtime, #771, and the environment, #769) and its domain.
 _CATEGORY_DOMAINS: dict[str, FailureDomain] = {
@@ -39,6 +46,15 @@ _CATEGORY_DOMAINS: dict[str, FailureDomain] = {
 _STARTUP_ENVIRONMENT = frozenset({"worktree-mismatch", "model-mismatch"})
 
 
+class FailureEvidenceError(HarnessError, ValueError):
+    """A ``Failure`` that breaks an invariant: a defect in the code that built it.
+
+    No user input reaches it, so the remedy points at the implementation, not at the operator."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, remedy=INTERNAL_INVARIANT_REMEDY)
+
+
 @dataclass(frozen=True)
 class Failure:
     """One failure domain and the evidence that shows it."""
@@ -51,13 +67,17 @@ class Failure:
     def __post_init__(self) -> None:
         """Refuse an unproven ``code_test``, a ``fallback`` that is not ``unknown`` and empty evidence."""
         if self.method not in METHODS:
-            raise ValueError(f"unknown failure evidence method {self.method!r}")
-        if (self.method == "fallback") != (self.domain == FailureDomain.UNKNOWN):
-            raise ValueError("the fallback method and the unknown domain go together")
+            raise FailureEvidenceError(f"unknown failure evidence method {self.method!r}")
+        if (self.method == FALLBACK) != (self.domain == FailureDomain.UNKNOWN):
+            raise FailureEvidenceError(
+                "the fallback method and the unknown domain go together"
+            )
         if self.domain == FailureDomain.CODE_TEST and self.method not in _PROVING_METHODS:
-            raise ValueError("code_test needs structured or approver evidence")
+            raise FailureEvidenceError("code_test needs structured or approver evidence")
         if not self.matched.strip() or not self.source.strip():
-            raise ValueError("failure evidence names what matched and where it was read")
+            raise FailureEvidenceError(
+                "failure evidence names what matched and where it was read"
+            )
 
     def to_json(self) -> JsonObject:
         """The record kept in routing records, stop evidence and startup assessments."""
@@ -69,9 +89,19 @@ class Failure:
         }
 
 
+def structured(domain: FailureDomain, matched: str, source: str = "report") -> Failure:
+    """A domain shown by a structured field of a report, a stage, the runtime or the ledger."""
+    return Failure(domain, STRUCTURED, matched, source)
+
+
+def approver(domain: FailureDomain, matched: str, source: str) -> Failure:
+    """A domain an approver (a human, or ``policy:*``) named; ``source`` says who."""
+    return Failure(domain, APPROVER, matched, source)
+
+
 def unrecognised(matched: str, source: str) -> Failure:
     """The fail-closed answer: the cause is not proven, so it is ``unknown``."""
-    return Failure(FailureDomain.UNKNOWN, "fallback", matched, source)
+    return Failure(FailureDomain.UNKNOWN, FALLBACK, matched, source)
 
 
 def of_runtime_error(error: object) -> Failure:
@@ -80,9 +110,8 @@ def of_runtime_error(error: object) -> Failure:
     code = getattr(error, "code", None)
     known = {str(item) for item in FailureDomain} - {str(FailureDomain.UNKNOWN)}
     if isinstance(domain, str) and domain in known:
-        return Failure(
+        return structured(
             FailureDomain(domain),
-            "structured",
             f"error.domain={domain} error.code={code}",
             "runtime",
         )
@@ -94,11 +123,11 @@ def of_classification(found: Mapping[str, object], source: str) -> Failure:
     category = str(found.get("category"))
     domain = _CATEGORY_DOMAINS.get(category)
     method = found.get("method")
-    if domain is None or method not in {"structured", "heuristic"}:
+    if domain is None or method not in {STRUCTURED, HEURISTIC}:
         return unrecognised(f"category={category}", source)
     matched = (
         f"{found.get('field')}={found.get('value')}"
-        if method == "structured" and "field" in found
+        if method == STRUCTURED and "field" in found
         else str(found.get("matched") or f"category={category}")
     )
     return Failure(domain, str(method), matched, source)
@@ -120,14 +149,14 @@ def of_startup(classification: str | None, runtime_failure: object) -> Failure:
     source = "startup_assessment"
     matched = f"classification={classification}"
     if classification in _STARTUP_ENVIRONMENT:
-        return Failure(FailureDomain.ENVIRONMENT_PREPARATION, "structured", matched, source)
+        return structured(FailureDomain.ENVIRONMENT_PREPARATION, matched, source)
     if isinstance(runtime_failure, Mapping) and runtime_failure.get("category") == classification:
         failure = of_classification(runtime_failure, source)
         if failure.domain != FailureDomain.UNKNOWN:
             return failure
     domain = _CATEGORY_DOMAINS.get(classification or "")
     if domain is not None:
-        return Failure(domain, "structured", matched, source)
+        return structured(domain, matched, source)
     return unrecognised(matched, source)
 
 
@@ -156,16 +185,14 @@ def _preparation(stages: Mapping[str, object]) -> Failure:
     # project-file check passing proves the environment even when the log (an offline ``uv sync``,
     # for one) names no category the runner knows.
     if independent_infrastructure_facts(stages):
-        return Failure(
+        return structured(
             FailureDomain.ENVIRONMENT_PREPARATION,
-            "structured",
             "failed environment-probe; every project-file-check passed; code_checks_started=not_started",
             source,
         )
     if category == "project-defect":
-        return Failure(
+        return structured(
             FailureDomain.CODE_TEST,
-            "structured",
             "diagnosis.category=project-defect; code_checks_started=not_started",
             source,
         )
@@ -195,11 +222,8 @@ def _gate(stages: Mapping[str, object], repo: Path | None) -> Failure:
     )
     if found is not None:
         return of_classification(found, source)
-    return Failure(
-        FailureDomain.CODE_TEST,
-        "structured",
-        "failed_stage=gate; stage gate result=fail",
-        source,
+    return structured(
+        FailureDomain.CODE_TEST, "failed_stage=gate; stage gate result=fail", source
     )
 
 

@@ -182,6 +182,9 @@ def test_preflight_refusal_is_recorded_as_no_worker_started(
         external_worker, "dispatch", "observe", "--dispatch", brief["dispatch_id"]
     )
     assert "visible" in observed["failure"]["error"]
+    domain = observed["failure"]["failure_domain"]
+    assert set(domain) == {"domain", "method", "matched", "source"}
+    assert domain["source"] == "runtime_failure"
     assert status["startup"]["worker_state"] == "absent"
     assert status["startup"]["restart_allowed"] is True
 

@@ -73,7 +73,7 @@ from harness.orchestration.ledger.lifecycle import (
     LifecycleLedger,
 )
 from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
-from harness.orchestration.workflow import rebase
+from harness.orchestration.workflow import failure_domains, rebase
 from harness.orchestration.workflow.attention import (
     _flag_stale_dispatch,
     staged_report,
@@ -715,6 +715,9 @@ def observe_dispatch(args: argparse.Namespace) -> JsonObject:
         "failure": {
             "kind": status["runtime_failure"].get("kind"),
             "error": redact_visible(str(status["runtime_failure"].get("error", ""))),
+            "failure_domain": failure_domains.of_runtime_failure(
+                status["runtime_failure"]
+            ).to_json(),
         }
         if isinstance(status.get("runtime_failure"), dict)
         else None,
