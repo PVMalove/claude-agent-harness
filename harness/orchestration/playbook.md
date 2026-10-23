@@ -112,25 +112,38 @@ In this table and the Recovery route table, an operational reason is one of thes
 `cancelled`, `unknown`) with its evidence (`domain`, `method`, `matched`, `source`). The `method` is
 `structured` (a field of the report, a stage or the runtime), `heuristic` (a text pattern that never
 proves `code_test`), `approver` (the human or policy named it) or `fallback`, which is always the
-domain `unknown`. A review finding or a warning/blocker severity, an explicit reviewer retry, a
-failed check, an open carried item, a confirmed project defect in QA preparation, a conflict-resolver
-report with `resolver.cause` `task-defect` and a moved candidate are `code_test`. A moved candidate
-is `code_test` by decision: the ledger proves that the work itself changed, so the route stays a
-developer retry that spends the budget, as before failure domains existed. A hint of the
-`retry_reason_classifier` plugin is no proof: it never replaces a structured fact of the report,
-and a hint alone leaves the domain `unknown`. A structured `tooling_blocker` is `tooling`, a confirmed QA environment failure is
-`environment_preparation`, a recorded critical `context_pressure` is `infrastructure`, and
-`block-bypass` is `policy`. Whatever nothing structured proves is `unknown`, never `code_test`.
-Only a `code_test` retry spends `retry_policy.max_developer_retries`: an `infrastructure`,
+domain `unknown`.
+
+These sources are `code_test`: a review finding, a warning or blocker severity, an explicit reviewer
+retry, a failed check, an open carried item, a confirmed project defect in QA preparation, a
+conflict-resolver report with `resolver.cause` `task-defect`, and a moved candidate. The coordinator
+treats a moved candidate as `code_test` by decision. The ledger proves that the work itself changed,
+so the route stays a developer retry that spends the budget, as before failure domains existed.
+
+A hint of the `retry_reason_classifier` plugin is no proof. It never replaces a structured fact of
+the report, and a hint alone leaves the domain `unknown`.
+
+The other domains come from these facts. A structured `tooling_blocker` is `tooling`. A confirmed QA
+environment failure is `environment_preparation`. A recorded critical `context_pressure` is
+`infrastructure`. `block-bypass` is `policy`. Whatever nothing structured proves is `unknown`, never
+`code_test`.
+
+Only a `code_test` retry spends `retry_policy.max_developer_retries`. An `infrastructure`,
 `environment_preparation`, `policy`, `tooling`, `timeout`, `cancelled` or `unknown` retry never does.
-A code-review, qa, verification or publish report whose domain is not `code_test` is refused a
-developer retry: `batch decide --decision retry` answers with the failure and its remedy and writes
-nothing (under `approval_policy: auto` it is the stop `no-automatic-route`/`unknown-reason`, whose
-evidence keeps the `failure`; the same stop ends an automatic developer retry whose domain is
-`unknown`, because that retry spends no budget that would bound it). The
-approver proves a code defect by `--reason-category code`, `requirements` or `candidate-change`, or
-takes the developer retry by `--retry-role developer`; either is `approver` evidence and spends the
-budget. A decision recorded before failure domains existed has no `failure` and counts as before.
+
+The coordinator refuses a developer retry of a code-review, qa, verification or publish report whose
+domain is not `code_test`. `batch decide --decision retry` answers with the failure and its remedy
+and writes nothing. Under `approval_policy: auto` the refusal is the stop
+`no-automatic-route`/`unknown-reason`, and its evidence keeps the `failure`. The same stop ends an
+automatic developer retry whose domain is `unknown`, because that retry spends no budget that would
+bound it.
+
+The approver proves a code defect with `--reason-category code`, `requirements` or
+`candidate-change`. The approver can also take the developer retry with `--retry-role developer`,
+including for a tooling-blocked code-review, qa or verification report. Both are `approver` evidence
+and spend the budget. Only the `tooling-retry` of a developer stage keeps the domain `tooling` and
+spends nothing. A decision recorded before failure domains existed has no `failure` and counts as
+before.
 
 | Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
