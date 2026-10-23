@@ -8,6 +8,10 @@ Two invariants keep the classification fail-closed. ``unknown`` and ``fallback``
 failure nothing recognises is ``unknown``, and a recognised one is never ``fallback``. ``code_test``
 needs a proven code or test defect, so only a ``structured`` field of a report, a stage or the
 runtime, or an ``approver``, may name it; a text ``heuristic`` never does.
+
+By decision a ``candidate-change`` (the candidate moved after the dispatch was pinned) is
+``code_test`` with ``structured`` evidence from the ledger: the work itself changed, so the route
+stays a developer retry that spends the budget, as before failure domains existed.
 """
 
 from __future__ import annotations

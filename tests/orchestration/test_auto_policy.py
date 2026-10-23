@@ -782,7 +782,6 @@ class AutoDecisionTableTests(unittest.TestCase):
             ("infrastructure", "structured"),
             ("environment_preparation", "structured"),
             ("policy", "approver"),
-            ("unknown", "fallback"),
         ):
             routing = {
                 "route": "developer-retry",
@@ -795,6 +794,25 @@ class AutoDecisionTableTests(unittest.TestCase):
                     auto_policy.finish(
                         routing, None, budget_exhausted=True, bug_ticket=None
                     )
+                )
+        # An unknown domain spends no budget, so nothing else would bound the automatic retry:
+        # it is the unknown-reason stop, with or without an exhausted budget.
+        unproven = {
+            "route": "developer-retry",
+            "next_action": "developer-retry",
+            "reason_category": "code",
+            "failure": {**proven, "domain": "unknown", "method": "fallback"},
+        }
+        for exhausted in (True, False):
+            with self.subTest(unknown_exhausted=exhausted):
+                stop = auto_policy.finish(
+                    unproven, None, budget_exhausted=exhausted, bug_ticket=None
+                )
+                self.assertIsNotNone(stop)
+                assert stop is not None
+                self.assertEqual(
+                    (stop.category, stop.reason),
+                    ("no-automatic-route", "unknown-reason"),
                 )
         stop = auto_policy.finish(
             {

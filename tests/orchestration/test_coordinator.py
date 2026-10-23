@@ -5078,6 +5078,35 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             brief["dispatch_id"],
         )
 
+    def test_a_forced_developer_retry_keeps_the_tooling_retry_and_its_failure(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        developer = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("tooled")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers={
+                    "status": "present",
+                    "details": "a hook blocked a legitimate check command",
+                },
+                checks_run=self._checks(developer, "not_run"),
+                tooling_blocker=dict(TOOLING_BLOCKER),
+            ),
+        )
+
+        decided = self._decide(batch["batch_id"], "retry", retry_role="developer")
+
+        routing = self._routing(decided)
+        self.assertEqual(routing["route"], "tooling-retry")
+        self.assertEqual(routing["failure"]["domain"], "tooling")
+        self.assertEqual(decisions._developer_retry_count(decided), 0)
+
     def test_a_tooling_blocked_developer_restarts_from_its_last_commit(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])

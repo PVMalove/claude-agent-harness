@@ -12,7 +12,7 @@ import pytest
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration import runtime_client
 from harness.orchestration.core.constants import FailureDomain
-from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.core.utils import CoordinatorError, JsonObject
 from harness.orchestration.workflow import auto_policy, decisions, failure_domains
 from harness.orchestration.workflow.failure_domains import Failure
 from harness.orchestration.workflow.startup import assess_startup
@@ -652,13 +652,131 @@ def test_many_non_code_retries_never_exhaust_the_budget() -> None:
     )
 
 
-@pytest.mark.parametrize("domain", [d for d in FailureDomain if d != FailureDomain.CODE_TEST])
+_PROVEN_NOT_CODE = [
+    d for d in FailureDomain if d not in {FailureDomain.CODE_TEST, FailureDomain.UNKNOWN}
+]
+
+
+@pytest.mark.parametrize("domain", _PROVEN_NOT_CODE)
 def test_the_auto_policy_stops_on_the_budget_only_for_a_code_test_retry(
     domain: FailureDomain,
 ) -> None:
     routing = {**_retry(str(domain)), "next_action": "developer-retry", "reason_category": "code"}
 
     assert auto_policy.finish(routing, None, budget_exhausted=True, bug_ticket=None) is None
+
+
+def test_the_auto_policy_never_retries_a_developer_for_an_unknown_domain() -> None:
+    # A classifier hint names ``code``, but it proves nothing: the domain stays ``unknown``. Such a
+    # retry spends no developer retry, so only this stop bounds it.
+    routing = {
+        **_retry("unknown"),
+        "next_action": "developer-retry",
+        "reason_category": "code",
+    }
+
+    stop = auto_policy.finish(routing, None, budget_exhausted=False, bug_ticket=None)
+
+    assert stop is not None
+    assert (stop.category, stop.reason) == ("no-automatic-route", "unknown-reason")
+    assert stop.evidence["failure"]["domain"] == "unknown"
+
+
+def test_the_auto_policy_still_runs_a_narrowed_retry_whose_domain_is_unknown() -> None:
+    routing = {
+        **_retry("unknown", route="narrowed-retry"),
+        "next_action": "qa",
+        "reason_category": None,
+    }
+
+    assert auto_policy.finish(routing, None, budget_exhausted=False, bug_ticket=None) is None
+
+
+def test_the_auto_policy_keeps_the_failure_domain_of_an_unproven_refusal() -> None:
+    failure = failure_domains.unrecognised("no structured evidence classifies the cause", "report")
+    refusal = decisions.UnprovenFailureError("m", remedy="r", failure=failure)
+
+    stop = auto_policy.finish(None, refusal, budget_exhausted=False, bug_ticket=None)
+
+    assert stop is not None
+    assert (stop.category, stop.reason) == ("no-automatic-route", "unknown-reason")
+    assert stop.evidence == {"refused": "m", "remedy": "r", "failure": failure.to_json()}
+
+
+def test_another_refusal_stays_an_abandon_dead_end() -> None:
+    refusal = CoordinatorError("m", remedy="r")
+
+    stop = auto_policy.finish(None, refusal, budget_exhausted=False, bug_ticket=None)
+
+    assert stop is not None and stop.reason == "abandon-dead-end"
+
+
+def test_the_budget_predicate_is_one_for_batch_decide_and_the_auto_policy() -> None:
+    def routing(action: str, route: str, domain: str | None) -> JsonObject:
+        return {**_retry(domain, route=route), "next_action": action}
+
+    assert decisions.spends_developer_budget(routing("developer-retry", "developer-retry", "code_test"))
+    assert decisions.spends_developer_budget(routing("developer-retry", "fix-forward", None))
+    assert not decisions.spends_developer_budget(routing("developer-retry", "tooling-retry", "code_test"))
+    assert not decisions.spends_developer_budget(routing("developer-retry", "developer-retry", "unknown"))
+    assert not decisions.spends_developer_budget(routing("qa", "same-candidate-rerun", "code_test"))
+
+
+def test_a_classifier_hint_never_replaces_a_structured_code_defect() -> None:
+    review = {**_CLEAN_REVIEW, "standards": {"severity": "error", "findings": [{"id": 1}]}}
+
+    for hint in ("code", "requirements"):
+        routing = _route(
+            "code-review",
+            {"outcome": "completed", "review": review},
+            explicit_category=hint,
+            explicit_by="classifier:plugin",
+        )
+
+        assert routing["reason_category"] == "code"
+        assert routing["failure"] == {
+            "domain": "code_test",
+            "method": "structured",
+            "matched": "review.standards.findings",
+            "source": "report",
+        }
+
+
+def test_a_resolver_reporting_the_tickets_own_defect_is_a_structured_code_defect() -> None:
+    report = {"outcome": "blocked", "checks_run": [], "resolver": {"cause": "task-defect"}}
+
+    routing = _route("conflict-resolver", report)
+
+    assert routing["route"] == "developer-retry"
+    assert routing["failure"] == {
+        "domain": "code_test",
+        "method": "structured",
+        "matched": "resolver.cause=task-defect",
+        "source": "report",
+    }
+    assert decisions.spends_developer_budget(routing)
+
+
+def test_a_moved_candidate_is_code_test_by_decision_with_ledger_evidence() -> None:
+    routing = cast(
+        dict[str, object],
+        decisions._retry_routing(
+            "code-review",
+            {"outcome": "blocked", "checks_run": []},
+            dispatch_candidate="a" * 40,
+            current_candidate="b" * 40,
+            explicit_category=None,
+        ),
+    )
+
+    assert routing["reason_category"] == "candidate-change"
+    assert routing["route"] == "developer-retry"
+    assert routing["failure"] == {
+        "domain": "code_test",
+        "method": "structured",
+        "matched": "candidate_commit moved after the dispatch was pinned",
+        "source": "ledger",
+    }
 
 
 def test_the_auto_policy_stops_on_the_budget_for_a_code_test_retry() -> None:

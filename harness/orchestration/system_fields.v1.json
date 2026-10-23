@@ -192,7 +192,7 @@
         "code": "The code needs a change; route developer-retry.",
         "requirements": "The requirements need a change; route developer-retry.",
         "candidate-change": "The candidate changed; route developer-retry.",
-        "unknown": "Sentinel: the cause is not established. No automatic route exists: attention unknown-reason and stop no-automatic-route; a human names the cause. A read-only stage with an unknown cause is refused a developer retry; a developer stage re-runs without spending retry_policy.max_developer_retries; a human names a code cause with --reason-category or takes the retry with --retry-role developer."
+        "unknown": "Sentinel: the coordinator has not established the cause. No automatic route exists. The coordinator sets attention unknown-reason and stops with no-automatic-route. A human names the cause. The coordinator refuses a developer retry for a read-only stage with this cause. A developer stage runs again and spends no retry_policy.max_developer_retries. A human names a code cause with --reason-category, or takes the retry with --retry-role developer."
       },
       "groups": {
         "operational": [
@@ -304,8 +304,8 @@
         "harness-snapshot-changed": "The installed harness runtime differs from the pinned snapshot.",
         "deterministic-gate-failed": "A deterministic gate of the policy failed.",
         "ledger-validation-failed": "Ledger validation failed.",
-        "unknown-reason": "The retry reason is unknown.",
-        "abandon-dead-end": "The only remaining route is an abandon, which needs a human.",
+        "unknown-reason": "The retry reason is unknown, or the coordinator refuses a developer retry because no code defect is proven. A human names the cause with --reason-category.",
+        "abandon-dead-end": "The coordinator refuses the retry for another reason, or only an abandon remains. A human decides.",
         "supersede-dead-end": "The only remaining route is a supersede, which needs a human.",
         "qa-environment-failure": "The QA gate failed on its environment with no code-defect sign."
       },

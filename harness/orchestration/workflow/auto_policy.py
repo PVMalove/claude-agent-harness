@@ -31,6 +31,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_STAGES,
     INCOMPLETE_ITEM_TARGET_ROLES,
     TERMINAL_BATCH_STATES,
+    FailureDomain,
     ReviewRecommendation,
 )
 from harness.orchestration.core.utils import (
@@ -378,9 +379,24 @@ def finish(
     """The second half of the table: ``None`` retries with ``routing`` (no I/O).
 
     A route the coordinator refuses and an unknown reason are dead ends a human resolves; an
-    exhausted developer-retry budget stops too. A tooling-retry without a bug ticket for the
-    blocking tool is refused instead: the session can create one and run the command again.
+    exhausted developer-retry budget stops too. A refusal because no code defect is proven
+    (``UnprovenFailureError``) is the ``unknown-reason`` stop and keeps its failure domain, so the
+    human sees that naming the cause (``--reason-category``) is the way on. A developer-retry whose
+    failure domain is ``unknown`` stops the same way even when a classifier hint named a category:
+    it would spend no developer retry, so nothing else would bound it. A tooling-retry without a
+    bug ticket for the blocking tool is refused instead: the session can create one and run the
+    command again.
     """
+    if isinstance(refusal, decisions.UnprovenFailureError):
+        return Stop(
+            "no-automatic-route",
+            "unknown-reason",
+            {
+                "refused": refusal.message,
+                "remedy": refusal.remedy,
+                "failure": refusal.failure.to_json(),
+            },
+        )
     if refusal is not None or routing is None:
         return Stop(
             "no-automatic-route",
@@ -390,7 +406,12 @@ def finish(
                 "remedy": refusal.remedy if refusal else None,
             },
         )
-    if routing.get("reason_category") == "unknown":
+    failure = routing.get("failure")
+    if routing.get("reason_category") == "unknown" or (
+        routing.get("next_action") == "developer-retry"
+        and isinstance(failure, dict)
+        and failure.get("domain") == FailureDomain.UNKNOWN
+    ):
         return Stop(
             "no-automatic-route",
             "unknown-reason",
@@ -402,12 +423,7 @@ def finish(
             remedy="create or reuse a bug ticket for the tool named in the tooling_blocker "
             "through the tracker CLI, then run batch auto-decide again with --bug-ticket",
         )
-    if (
-        routing["next_action"] == "developer-retry"
-        and routing["route"] != "tooling-retry"
-        and decisions._spends_developer_retry(routing)
-        and budget_exhausted
-    ):
+    if decisions.spends_developer_budget(routing) and budget_exhausted:
         return Stop(
             "budget-exhausted",
             "retry_policy.max_developer_retries",

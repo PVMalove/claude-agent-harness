@@ -471,6 +471,18 @@ def _spends_developer_retry(routing: object) -> bool:
     return isinstance(failure, dict) and failure.get("domain") == FailureDomain.CODE_TEST
 
 
+def spends_developer_budget(routing: JsonObject) -> bool:
+    """Whether a retry's routing spends ``retry_policy.max_developer_retries``: a developer-retry
+    that is not a ``tooling-retry`` and whose failure domain is ``code_test`` (or has none).
+
+    The one predicate ``batch decide`` and the auto policy share, so the budget stops agree."""
+    return (
+        routing["next_action"] == "developer-retry"
+        and routing["route"] != "tooling-retry"
+        and _spends_developer_retry(routing)
+    )
+
+
 def _developer_retry_count(batch: JsonObject) -> int:
     """Count approved retry decisions that spend the developer budget, not ordinary initial
     developer dispatches. A ``tooling-retry`` re-runs work a tool blocked, so it spends no
@@ -567,6 +579,13 @@ def _retry_evidence(
                         FailureDomain.CODE_TEST, f"checks_run[{index}].result=fail"
                     ),
                 )
+    resolver = report.get("resolver")
+    if isinstance(resolver, dict) and resolver.get("cause") == "task-defect":
+        return (
+            RetryReason.CODE,
+            "the conflict resolver found a defect in the ticket's own change",
+            failure_domains.structured(FailureDomain.CODE_TEST, "resolver.cause=task-defect"),
+        )
     preparation = _qa_preparation_failure(report)
     if preparation is not None and preparation.domain == FailureDomain.CODE_TEST:
         return (
@@ -575,6 +594,9 @@ def _retry_evidence(
             preparation,
         )
     if candidate_moved:
+        # By decision (accepted architect risk 4) a moved candidate maps to ``code_test``: the
+        # work itself changed, the route stays a developer retry and spends the budget as before.
+        # It is the one ``code_test`` the ledger proves, not a defect a report names.
         return (
             RetryReason.CANDIDATE_CHANGE,
             "the candidate changed after the dispatch was pinned",
@@ -628,13 +650,16 @@ def _retry_routing(
     the approver, or ``classifier:<name>`` for a classifier hint, which never proves a code defect.
     A route that sends a developer back from a read-only stage needs ``code_test`` evidence: with
     any other domain it raises ``UnprovenFailureError``, unless ``developer_forced`` says the
-    approver took the developer retry on their own decision (``--retry-role developer``).
+    approver took the developer retry on their own decision (``--retry-role developer``). A
+    blocked developer whose cause is unproven runs again without spending the budget (its domain
+    is ``unknown``, so the auto policy stops there).
 
     ``stage`` is the pipeline stage that reported: architect, developer, code-review, qa or
     publish. A read-only stage (or the publish boundary) is re-run on the *same* candidate only
     when the report was blocked and nothing but an operational reason -- verification
-    infrastructure or transport -- explains it. Any finding, failed check, moved candidate or
-    unclear reason routes to a developer retry, which is always the safe route. ``context-pressure``
+    infrastructure or transport -- explains it. Any finding, failed check or moved candidate
+    routes to a developer retry; an unclear reason routes there only from a developer stage and
+    is refused from a read-only one (see above). ``context-pressure``
     is operational only when a critical ``context_pressure`` observation was recorded for the reported
     dispatch (``pressure_recorded``); a claim without that observation is ``unknown``. ``tooling``
     comes only from a blocked report's structured ``tooling_blocker`` (an approver may name it, never
@@ -675,7 +700,10 @@ def _retry_routing(
         {} if bypass_named else report, candidate_bound and not unchanged
     )
     by_classifier = explicit_by.startswith("classifier:")
-    if explicit_category in DEVELOPER_REASON_CATEGORIES:
+    # A classifier hint is no proof, so a structured fact of the report outranks it.
+    if explicit_category in DEVELOPER_REASON_CATEGORIES and not (
+        by_classifier and structured is not None
+    ):
         category, basis = explicit_category, "the approver named this reason category"
         failure = (
             failure_domains.unrecognised(
@@ -1510,11 +1538,8 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
                         "registered_at": routing["decided_at"],
                     }
                 )
-            if (
-                routing["next_action"] == "developer-retry"
-                and routing["route"] != "tooling-retry"
-                and _spends_developer_retry(routing)
-                and _developer_retry_budget_exhausted(config, batch)
+            if spends_developer_budget(routing) and _developer_retry_budget_exhausted(
+                config, batch
             ):
                 raise CoordinatorError(
                     "developer retry budget is exhausted for this batch; block, fail, or abandon it instead of starting another worker",
@@ -1877,9 +1902,11 @@ def _decide_retry_route(
     )
     if (
         forced == "developer"
+        and routing["route"] != RecoveryRoute.TOOLING_RETRY
         and (routing.get("failure") or {}).get("domain") != FailureDomain.CODE_TEST
     ):
-        # A human who takes the developer retry on their own decision is the proof of it.
+        # A human who takes the developer retry on their own decision is the proof of it. A
+        # developer's tooling-retry stays one, with its tooling failure: it spends no budget.
         routing = {
             **routing,
             "failure": failure_domains.approver(

@@ -259,6 +259,8 @@ class InfrastructureRetryTests(preparation.PreparationFixture):
         with self.assertRaises(CoordinatorError) as refused:
             self.complete(second)
         self.assertIn("budget exhausted", refused.exception.message)
+        # The refusal's failure domain (ADR 0019) reaches the human in the message.
+        self.assertIn("(failure domain policy)", refused.exception.message)
         view = coordinator.attention_check(self.fx._args(batch=self.batch_id))
         self.assertTrue(view["needs_attention"])
         self.assertEqual(view["attention_reason"], "infrastructure-retry-repeated")
