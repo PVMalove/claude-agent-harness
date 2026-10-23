@@ -12,6 +12,7 @@ import uuid
 from . import operational_guards
 from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS, FailureDomain
 from .core.utils import CoordinatorError, JsonObject
+from .workflow import failure_domains
 from .workflow.failure_domains import Failure
 
 TRANSITION_FIELD = "infrastructure_retry_sha256"
@@ -214,12 +215,9 @@ def authorize(
     from .workflow.decisions import _decide_retry_route
 
     policy = _enabled_policy(brief)
-    stages = report.get("qa_stages", {})
-    if (
-        stages.get("failed_stage") != "preparation"
-        or stages.get("code_checks_started") != "not_started"
-        or stages.get("diagnosis", {}).get("category") != "infrastructure"
-    ):
+    # The failure domain of the recorded stages decides, not the runner's diagnosis category.
+    proven = failure_domains.of_qa_stages(report.get("qa_stages"))
+    if proven is None or proven.domain != FailureDomain.ENVIRONMENT_PREPARATION:
         raise CoordinatorError(
             "the report is not confirmed infrastructure",
             remedy="inspect the evidence and use a manual decision",
@@ -231,6 +229,7 @@ def authorize(
         brief["role"] != "qa"
         or routing["route"] != "same-candidate-rerun"
         or routing["reason_category"] != "verification-infrastructure"
+        or routing["failure"]["domain"] != FailureDomain.ENVIRONMENT_PREPARATION
     ):
         raise CoordinatorError(
             "the report is not confirmed infrastructure eligible for policy retry",

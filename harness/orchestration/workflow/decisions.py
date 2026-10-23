@@ -298,6 +298,8 @@ def decision_packet(args: argparse.Namespace) -> JsonObject:
                     "refused": exc.message,
                     "remedy": exc.remedy,
                 }
+                if isinstance(exc, UnprovenFailureError):
+                    retry_preview["failure"] = exc.failure.to_json()
             route_preview = {"retry": retry_preview, "abandon": {"route": "abandon"}}
         if getattr(args, "findings_file", None) is not None:
             route_preview = {
@@ -444,9 +446,36 @@ def _carry_over_preview(
         return {"route": None, "refused": exc.message, "remedy": exc.remedy}
 
 
+class UnprovenFailureError(CoordinatorError):
+    """A retry that would send a developer back to fix code although no code defect is proven.
+
+    ``failure`` is the one failure domain the report shows; the refusal writes nothing."""
+
+    def __init__(self, message: str, *, remedy: str, failure: Failure) -> None:
+        super().__init__(message, remedy=remedy)
+        self.failure = failure
+
+
+# A read-only stage (and the publish boundary) never sends a developer back on its own say.
+UNPROVEN_REFUSAL_STAGES = frozenset({*BLOCK_BYPASS_STAGES, "publish"})
+
+
+def _spends_developer_retry(routing: object) -> bool:
+    """Whether a retry's routing record spends ``retry_policy.max_developer_retries``.
+
+    Only a proven code defect (``failure.domain == code_test``) does. A record written before
+    failure domains existed has no ``failure`` and counts as it always did."""
+    if not isinstance(routing, dict) or "failure" not in routing:
+        return True
+    failure = routing["failure"]
+    return isinstance(failure, dict) and failure.get("domain") == FailureDomain.CODE_TEST
+
+
 def _developer_retry_count(batch: JsonObject) -> int:
-    """Count approved retry decisions, not ordinary initial developer dispatches. A
-    ``tooling-retry`` re-runs work a tool blocked, so it spends no developer retry (issue #500)."""
+    """Count approved retry decisions that spend the developer budget, not ordinary initial
+    developer dispatches. A ``tooling-retry`` re-runs work a tool blocked, so it spends no
+    developer retry (issue #500); neither does a retry whose failure domain is not ``code_test``
+    (infrastructure, environment_preparation, policy, tooling, timeout, cancelled, unknown)."""
     return sum(
         1
         for decision in batch.get("coordinator_decisions", [])
@@ -456,6 +485,7 @@ def _developer_retry_count(batch: JsonObject) -> int:
             isinstance(decision.get("routing"), dict)
             and decision["routing"].get("route") == "tooling-retry"
         )
+        and _spends_developer_retry(decision.get("routing"))
     )
 
 
@@ -578,12 +608,16 @@ def _retry_routing(
     pressure_recorded: bool = False,
     narrowed: bool = False,
     explicit_by: str = "approver",
+    developer_forced: bool = False,
 ) -> JsonObject:
     """Decide where a ``retry`` goes, from structured report data only (no I/O).
 
     The routing record carries ``failure``: the one ADR 0019 failure domain with its structured
     evidence (``failure_domains.Failure``). ``explicit_by`` names who gave ``explicit_category``:
     the approver, or ``classifier:<name>`` for a classifier hint, which never proves a code defect.
+    A route that sends a developer back from a read-only stage needs ``code_test`` evidence: with
+    any other domain it raises ``UnprovenFailureError``, unless ``developer_forced`` says the
+    approver took the developer retry on their own decision (``--retry-role developer``).
 
     ``stage`` is the pipeline stage that reported: architect, developer, code-review, qa or
     publish. A read-only stage (or the publish boundary) is re-run on the *same* candidate only
@@ -777,6 +811,21 @@ def _retry_routing(
             "the earlier brief, report and blocker stay as audit evidence"
         )
     else:
+        if (
+            stage in UNPROVEN_REFUSAL_STAGES
+            and failure.domain != FailureDomain.CODE_TEST
+            and not developer_forced
+        ):
+            raise UnprovenFailureError(
+                f"the {stage} report proves no code defect (failure domain {failure.domain}: "
+                f"{failure.matched}), so a developer retry would spend the retry budget without a cause",
+                remedy="name the cause with --reason-category: one of "
+                f"{', '.join(DEVELOPER_REASON_CATEGORIES)} when the code is at fault, or an "
+                "operational one (verification-infrastructure, transport, tooling) with its "
+                "structured evidence; pass --retry-role developer to take a developer retry on your "
+                "own approval; or block the batch",
+                failure=failure,
+            )
         next_action, route = (
             "developer-retry",
             RecoveryRoute.DEVELOPER_RETRY,
@@ -1473,6 +1522,7 @@ def decide_batch(args: argparse.Namespace) -> JsonObject:
             if (
                 routing["next_action"] == "developer-retry"
                 and routing["route"] != "tooling-retry"
+                and _spends_developer_retry(routing)
                 and _developer_retry_budget_exhausted(config, batch)
             ):
                 raise CoordinatorError(
@@ -1832,7 +1882,22 @@ def _decide_retry_route(
             for item in batch.get("context_pressure", [])
         ),
         narrowed=narrowed,
+        developer_forced=forced == "developer",
     )
+    if (
+        forced == "developer"
+        and (routing.get("failure") or {}).get("domain") != FailureDomain.CODE_TEST
+    ):
+        # A human who takes the developer retry on their own decision is the proof of it.
+        routing = {
+            **routing,
+            "failure": Failure(
+                FailureDomain.CODE_TEST,
+                "approver",
+                "--retry-role developer",
+                _approver_source(getattr(args, "approved_by", None)),
+            ).to_json(),
+        }
     if narrowed:
         # The ids the new brief carries the items under; the items stay in the immutable report.
         routing = {

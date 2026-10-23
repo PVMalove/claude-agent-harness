@@ -3646,6 +3646,24 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             spec=("none", []),
         )
 
+    def _blocked_developer_without_evidence(self, batch_id: str) -> JsonObject:
+        """A blocked developer report with no tooling_blocker, finding or failed check: nothing
+        structured names its cause, so its failure domain is the fail-closed ``unknown``."""
+        developer: JsonObject = self._dispatch(batch_id, "developer")["brief"]
+        self._start(developer["dispatch_id"])
+        candidate, changed = self._developer_commit("unproven")
+        self._submit(
+            developer["dispatch_id"],
+            self._developer_report(
+                developer,
+                candidate,
+                changed,
+                outcome="blocked",
+                blockers={"status": "present", "details": "the worker stopped"},
+            ),
+        )
+        return developer
+
     def _stage_report(
         self, batch_id: str, dispatch_id: str, report: JsonObject, *, via_qa_lane: bool
     ) -> None:
@@ -4084,7 +4102,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 self.assertIn(routing["reason_category"], {"code", "requirements"})
                 self.assertTrue(decided["retry_candidate_required"])
 
-    def test_unknown_reason_cannot_bypass_developer_retry(self) -> None:
+    def test_unknown_reason_is_refused_and_spends_no_developer_retry(self) -> None:
         for explicit in (None, "unknown"):
             with self.subTest(explicit=explicit):
                 self._reset()
@@ -4092,21 +4110,75 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                 self._accepted_architect(batch["batch_id"])
                 candidate = self._accepted_candidate(batch["batch_id"])
                 self._infra_review(batch["batch_id"], candidate)
+                before = self._batch_record(batch["batch_id"])
 
-                decided = self._decide(
-                    batch["batch_id"], "retry", reason_category=explicit
-                )
+                with self.assertRaises(decisions.UnprovenFailureError) as refused:
+                    self._decide(batch["batch_id"], "retry", reason_category=explicit)
 
-                routing = self._assert_route(
-                    decided,
-                    role="developer",
-                    action="developer-retry",
-                    category="unknown",
-                    candidate=candidate,
-                    route="developer-retry",
-                )
-                self.assertEqual(routing["previous_role"], "code-review")
-                self.assertTrue(decided["retry_candidate_required"])
+                self.assertEqual(refused.exception.failure.domain, "unknown")
+                self.assertEqual(self._batch_record(batch["batch_id"]), before)
+                self.assertEqual(decisions._developer_retry_count(before), 0)
+
+    def test_an_approver_naming_the_defect_takes_the_developer_retry_and_spends_it(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+
+        decided = self._decide(batch["batch_id"], "retry", reason_category="code")
+
+        routing = self._assert_route(
+            decided,
+            role="developer",
+            action="developer-retry",
+            category="code",
+            candidate=candidate,
+            route="developer-retry",
+        )
+        self.assertEqual(routing["previous_role"], "code-review")
+        self.assertEqual(routing["failure"]["domain"], "code_test")
+        self.assertEqual(routing["failure"]["method"], "approver")
+        self.assertEqual(routing["failure"]["matched"], "--reason-category code")
+        self.assertTrue(decided["retry_candidate_required"])
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+
+    def test_a_forced_developer_retry_is_approver_evidence_and_spends_the_budget(
+        self,
+    ) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._infra_review(batch["batch_id"], candidate)
+
+        decided = self._decide(batch["batch_id"], "retry", retry_role="developer")
+
+        routing = self._routing(decided)
+        self.assertEqual(routing["route"], "developer-retry")
+        self.assertEqual(
+            (routing["failure"]["domain"], routing["failure"]["method"]),
+            ("code_test", "approver"),
+        )
+        self.assertEqual(routing["failure"]["matched"], "--retry-role developer")
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+
+    def test_infrastructure_retries_never_exhaust_the_developer_budget(self) -> None:
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        spent = 0
+        for _ in range(3):
+            self._infra_review(batch["batch_id"], candidate)
+            decided = self._decide(
+                batch["batch_id"], "retry", reason_category="verification-infrastructure"
+            )
+            spent = decisions._developer_retry_count(decided)
+            self.assertEqual(self._routing(decided)["route"], "same-candidate-rerun")
+            self.assertEqual(
+                self._routing(decided)["failure"]["domain"], "infrastructure"
+            )
+        self.assertEqual(spent, 0)
 
     def test_infrastructure_category_is_ignored_when_the_report_is_not_blocked(
         self,
@@ -4117,16 +4189,20 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._reported_review(
             batch["batch_id"], candidate
         )  # completed and clean: nothing was blocked
+        before = self._batch_record(batch["batch_id"])
 
-        decided = self._decide(
-            batch["batch_id"], "retry", reason_category="verification-infrastructure"
-        )
+        # The named category is ignored, so no cause is proven and a code-review is refused a
+        # developer retry; the refusal writes nothing.
+        with self.assertRaises(decisions.UnprovenFailureError) as refused:
+            self._decide(
+                batch["batch_id"],
+                "retry",
+                reason_category="verification-infrastructure",
+            )
 
-        routing = self._routing(decided)
-        self.assertEqual(
-            (routing["reason_category"], routing["next_action"]),
-            ("unknown", "developer-retry"),
-        )
+        self.assertEqual(refused.exception.failure.domain, "unknown")
+        self.assertEqual(self._batch_record(batch["batch_id"]), before)
+        self.assertEqual(decisions._developer_retry_count(before), 0)
 
     def test_changed_candidate_cannot_reuse_prior_review_evidence(self) -> None:
         batch = self._create_batch()
@@ -4656,18 +4732,19 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         self.assertIn("needs triage", raised.exception.message)
 
-    def test_a_qa_report_without_stages_keeps_its_unknown_route(self) -> None:
-        routing = decisions._retry_routing(
-            "qa",
-            {"outcome": "blocked", "checks_run": []},
-            dispatch_candidate="a",
-            current_candidate="a",
-            explicit_category=None,
-        )
-        self.assertEqual(
-            (routing["reason_category"], routing["route"]),
-            ("unknown", "developer-retry"),
-        )
+    def test_a_qa_report_without_stages_is_refused_a_developer_retry_as_unknown(
+        self,
+    ) -> None:
+        with self.assertRaises(decisions.UnprovenFailureError) as refused:
+            decisions._retry_routing(
+                "qa",
+                {"outcome": "blocked", "checks_run": []},
+                dispatch_candidate="a",
+                current_candidate="a",
+                explicit_category=None,
+            )
+        self.assertEqual(refused.exception.failure.domain, "unknown")
+        self.assertEqual(refused.exception.failure.method, "fallback")
 
     def test_a_failing_gate_stage_keeps_its_findings_and_the_fix_route(self) -> None:
         report: JsonObject = {
@@ -5689,11 +5766,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
     def test_an_exhausted_budget_never_refuses_a_developer_tooling_retry(
         self,
     ) -> None:
-        for blocker, expected in (
-            (dict(TOOLING_BLOCKER), "tooling-retry"),
-            (None, None),
+        # The second case is a code defect the approver proves: it spends the (exhausted) budget
+        # and is refused. The third proves none (``unknown``): it spends nothing, so it is not.
+        for blocker, category, expected in (
+            (dict(TOOLING_BLOCKER), None, "tooling-retry"),
+            (None, "code", None),
+            (None, None, "developer-retry"),
         ):
-            with self.subTest(route=expected):
+            with self.subTest(route=expected, category=category):
                 self._reset()
                 batch = self._create_batch()
                 self._accepted_architect(batch["batch_id"])
@@ -5722,7 +5802,9 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
                         with self.assertRaisesRegex(
                             coordinator.CoordinatorError, "budget is exhausted"
                         ):
-                            self._decide(batch["batch_id"], "retry")
+                            self._decide(
+                                batch["batch_id"], "retry", reason_category=category
+                            )
                         continue
                     decided = self._decide(batch["batch_id"], "retry")
                 self.assertEqual(self._routing(decided)["route"], expected)
@@ -6850,11 +6932,16 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         preview = packet(reason_category="verification-infrastructure")
 
         self.assertEqual(unflagged["action"], "decide completion report")
+        # No proven code defect: the unflagged preview shows the refusal ``batch decide`` gives.
+        self.assertIsNone(unflagged["route_preview"]["retry"]["route"])
         self.assertEqual(
-            unflagged["route_preview"]["retry"]["route"], "developer-retry"
+            unflagged["route_preview"]["retry"]["failure"]["domain"], "unknown"
         )
         self.assertEqual(unflagged["route_preview"]["abandon"], {"route": "abandon"})
         self.assertEqual(forced["route_preview"]["retry"]["route"], "developer-retry")
+        self.assertEqual(
+            forced["route_preview"]["retry"]["failure"]["method"], "approver"
+        )
         retry = preview["route_preview"]["retry"]
         self.assertEqual(retry["route"], "same-candidate-rerun")
         self.assertNotIn("decided_at", retry)
@@ -8138,19 +8225,21 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._patch_config(extensions={"human_notifier": "test-recorder"})
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
-        candidate = self._accepted_candidate(batch["batch_id"])
-        self._infra_review(batch["batch_id"], candidate)
+        # A read-only stage is refused an unknown retry (no proven code defect); a blocked
+        # developer with no structured evidence is the unknown retry that stays.
+        self._blocked_developer_without_evidence(batch["batch_id"])
 
         decided = self._decide(batch["batch_id"], "retry")
 
-        self._assert_route(
+        routing = self._assert_route(
             decided,
             role="developer",
             action="developer-retry",
             category="unknown",
-            candidate=candidate,
+            candidate=None,
             route="developer-retry",
         )
+        self.assertEqual(routing["failure"]["domain"], "unknown")
         self.assertTrue(decided["needs_attention"])
         self.assertEqual(decided["attention_reason"], "unknown-reason")
         self.assertEqual(
@@ -8176,8 +8265,7 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self._patch_config(extensions={"human_notifier": "test-broken"})
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])
-        candidate = self._accepted_candidate(batch["batch_id"])
-        self._infra_review(batch["batch_id"], candidate)
+        self._blocked_developer_without_evidence(batch["batch_id"])
 
         decided = self._decide(batch["batch_id"], "retry")
 
@@ -13992,7 +14080,11 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
 
         decided = self._decide(self.batch_id, "retry", narrowed=True)
 
-        self.assertEqual(plain["route"], "developer-retry", "unflagged, as before")
+        # Unflagged, the incomplete items prove no code defect, so the retry is refused a
+        # developer instead of routing to one; narrowing is the route that stays.
+        self.assertIsNone(plain["route"])
+        self.assertEqual(plain["failure"]["domain"], "unknown")
+        self.assertIn("proves no code defect", plain["refused"])
         routing = self._routing(decided)
         self.assertEqual(
             (
@@ -15098,6 +15190,14 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertIn("approval_policy auto", refused.exception.message)
 
 
+# A routing-table row the coordinator refuses: a read-only stage whose report proves no code
+# defect never sends a developer back (``UnprovenFailureError``). The first element is the failure
+# domain the refusal carries.
+REFUSED = "refused"
+REFUSED_UNKNOWN = ("unknown", None, None, REFUSED)
+REFUSED_NOT_CODE = ("infrastructure", None, None, REFUSED)
+
+
 class CoordinatorRetryRoutingTableTests(unittest.TestCase):
     """The pure routing table: structured evidence in, one routing record out (no I/O)."""
 
@@ -15151,10 +15251,30 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             explicit_category=category,
         )
 
+    def _route_or_refusal(
+        self,
+        stage: str,
+        report: JsonObject,
+        category: str | None,
+        *,
+        moved: bool = False,
+    ) -> JsonObject:
+        """The routing record, or ``{"route": "refused", "failure": ...}`` when no code defect is
+        proven and a read-only stage is refused a developer retry."""
+        try:
+            return self._route(stage, report, category, moved=moved)
+        except decisions.UnprovenFailureError as refusal:
+            return {"route": REFUSED, "failure": refusal.failure.to_json()}
+
     def _routing_cases(
         self,
-    ) -> list[tuple[str, JsonObject, str | None, bool, tuple[str, str, str, str]]]:
-        """Every routing-table row: stage, report, explicit category, candidate moved -> expectation."""
+    ) -> list[
+        tuple[str, JsonObject, str | None, bool, tuple[str, str | None, str | None, str]]
+    ]:
+        """Every routing-table row: stage, report, explicit category, candidate moved -> expectation.
+
+        A refused row names the failure domain in place of the reason category, then no role and
+        no action, and ``REFUSED`` as its route."""
         finding = [{"severity": "warning", "summary": "s", "evidence": "e"}]
         infra, transport = "verification-infrastructure", "transport"
         review = self._report()
@@ -15208,13 +15328,14 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 True,
                 ("candidate-change", "developer", "developer-retry", "developer-retry"),
             ),
-            # tooling named without the structured field stays unknown.
+            # tooling named without the structured field stays unknown: a read-only stage is
+            # refused a developer retry (no proven code defect), a developer re-runs unspent.
             (
                 "code-review",
                 review,
                 "tooling",
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "developer",
@@ -15228,7 +15349,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 self._report("completed", tooling=True),
                 None,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             # Structured evidence and a developer category outrank the tooling blocker.
             (
@@ -15286,14 +15407,14 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 review,
                 None,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "code-review",
                 review,
                 "unknown",
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "code-review",
@@ -15342,14 +15463,14 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 self._report("completed"),
                 transport,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "code-review",
                 self._report("failed"),
                 transport,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "code-review",
@@ -15370,7 +15491,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 no_review,
                 None,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "qa",
@@ -15405,7 +15526,7 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 no_review,
                 None,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "developer",
@@ -15421,26 +15542,28 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                 False,
                 ("unknown", "developer", "developer-retry", "developer-retry"),
             ),
+            # A verification run has no same-candidate rerun of its own: an operational cause
+            # (named by the approver, so not code) or an unknown one is refused a developer retry.
             (
                 "verification",
                 no_review,
                 transport,
                 False,
-                (transport, "developer", "developer-retry", "developer-retry"),
+                REFUSED_NOT_CODE,
             ),
             (
                 "verification",
                 self._report("completed", standards=None),
                 infra,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "verification",
                 no_review,
                 None,
                 False,
-                ("unknown", "developer", "developer-retry", "developer-retry"),
+                REFUSED_UNKNOWN,
             ),
             (
                 "architect",
@@ -15468,6 +15591,14 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             with self.subTest(
                 stage=stage, category=category, moved=moved, outcome=report["outcome"]
             ):
+                if route == REFUSED:
+                    refused = self._route_or_refusal(
+                        stage, report, category, moved=moved
+                    )
+                    self.assertEqual(refused["route"], REFUSED)
+                    self.assertEqual(refused["failure"]["domain"], reason)
+                    self.assertNotEqual(refused["failure"]["domain"], "code_test")
+                    continue
                 routing = self._route(stage, report, category, moved=moved)
                 self.assertEqual(
                     (
@@ -15599,14 +15730,6 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     explicit_category="context-pressure",
                     pressure_recorded=True,
                 )
-                unproven = decisions._retry_routing(
-                    stage,
-                    report,
-                    dispatch_candidate=self.CANDIDATE,
-                    current_candidate=self.CANDIDATE,
-                    explicit_category="context-pressure",
-                    pressure_recorded=False,
-                )
                 self.assertEqual(
                     (
                         proven["reason_category"],
@@ -15615,14 +15738,19 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
                     ),
                     ("context-pressure", stage, stage),
                 )
-                self.assertEqual(
-                    (
-                        unproven["reason_category"],
-                        unproven["next_role"],
-                        unproven["next_action"],
-                    ),
-                    ("unknown", "developer", "developer-retry"),
-                )
+                self.assertEqual(proven["failure"]["domain"], "infrastructure")
+                # The claim alone is ``unknown``: no observation, no proven code defect, so a
+                # read-only stage is refused a developer retry.
+                with self.assertRaises(decisions.UnprovenFailureError) as refused:
+                    decisions._retry_routing(
+                        stage,
+                        report,
+                        dispatch_candidate=self.CANDIDATE,
+                        current_candidate=self.CANDIDATE,
+                        explicit_category="context-pressure",
+                        pressure_recorded=False,
+                    )
+                self.assertEqual(refused.exception.failure.domain, "unknown")
         flagged = decisions._retry_routing(
             "code-review",
             self._report(standards=("warning", finding)),
@@ -15659,12 +15787,13 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
             "details": "verification-infrastructure: the wrapper is down",
         }
 
-        routing = self._route("code-review", report, None)
+        # The text proves nothing, so it is neither an operational route nor a code defect: a
+        # read-only stage is refused a developer retry with the fail-closed unknown domain.
+        with self.assertRaises(decisions.UnprovenFailureError) as refused:
+            self._route("code-review", report, None)
 
-        self.assertEqual(
-            (routing["reason_category"], routing["next_action"]),
-            ("unknown", "developer-retry"),
-        )
+        self.assertEqual(refused.exception.failure.domain, "unknown")
+        self.assertEqual(refused.exception.failure.method, "fallback")
 
     def test_free_text_wording_never_changes_the_route(self) -> None:
         wordings = (
@@ -15686,7 +15815,9 @@ class CoordinatorRetryRoutingTableTests(unittest.TestCase):
         )
         for stage, report, category, moved, expected in self._routing_cases():
             routes = [
-                self._route(stage, {**report, **wording}, category, moved=moved)
+                self._route_or_refusal(
+                    stage, {**report, **wording}, category, moved=moved
+                )
                 for wording in wordings
             ]
             with self.subTest(stage=stage, category=category, moved=moved):

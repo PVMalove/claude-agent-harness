@@ -405,6 +405,7 @@ def finish(
     if (
         routing["next_action"] == "developer-retry"
         and routing["route"] != "tooling-retry"
+        and decisions._spends_developer_retry(routing)
         and budget_exhausted
     ):
         return Stop(

@@ -12,7 +12,7 @@ import pytest
 from harness.orchestration import runtime_client
 from harness.orchestration.core.constants import FailureDomain
 from harness.orchestration.core.utils import JsonObject
-from harness.orchestration.workflow import decisions, failure_domains
+from harness.orchestration.workflow import auto_policy, decisions, failure_domains
 from harness.orchestration.workflow.failure_domains import Failure
 from harness.orchestration.workflow.startup import assess_startup
 
@@ -502,3 +502,107 @@ def test_an_approver_naming_an_operational_cause_of_a_blocked_run_is_infrastruct
 
     assert routing["failure"]["domain"] == "infrastructure"  # type: ignore[index]
     assert routing["failure"]["method"] == "approver"  # type: ignore[index]
+
+
+# -- only a proven code defect sends a developer back, and only it spends the budget -------------
+
+READ_ONLY_STAGES = ("code-review", "qa", "verification", "publish")
+_UNPROVEN: dict[str, JsonObject] = {
+    "no evidence": {"outcome": "blocked", "checks_run": []},
+    "completed and clean": {"outcome": "completed", "checks_run": []},
+    "failure text only": {
+        "outcome": "blocked",
+        "checks_run": [],
+        "blockers": {"status": "present", "details": "tests failed, assertion error"},
+    },
+}
+
+
+@pytest.mark.parametrize("stage", READ_ONLY_STAGES)
+@pytest.mark.parametrize("case", sorted(_UNPROVEN))
+def test_a_read_only_stage_with_no_proven_code_defect_is_refused_a_developer_retry(
+    stage: str, case: str
+) -> None:
+    with pytest.raises(decisions.UnprovenFailureError) as caught:
+        _route(stage, _UNPROVEN[case])
+
+    assert caught.value.failure.domain == FailureDomain.UNKNOWN
+    assert "--reason-category" in caught.value.remedy
+    assert "--retry-role developer" in caught.value.remedy
+
+
+@pytest.mark.parametrize("stage", READ_ONLY_STAGES)
+@pytest.mark.parametrize("category", ["code", "requirements", "candidate-change"])
+def test_an_approver_naming_a_developer_category_proves_the_defect(
+    stage: str, category: str
+) -> None:
+    routing = _route(stage, _UNPROVEN["no evidence"], explicit_category=category)
+
+    assert routing["route"] == "developer-retry"
+    assert routing["failure"]["domain"] == "code_test"  # type: ignore[index]
+    assert routing["failure"]["method"] == "approver"  # type: ignore[index]
+
+
+def test_a_blocked_developer_with_no_evidence_retries_the_developer_as_unknown() -> None:
+    routing = _route("developer", _UNPROVEN["no evidence"])
+
+    assert routing["route"] == "developer-retry"
+    assert routing["failure"]["domain"] == "unknown"  # type: ignore[index]
+
+
+def _batch_with(*routings: JsonObject) -> JsonObject:
+    return {
+        "coordinator_decisions": [
+            {"decision": "retry", "next_role": "developer", "routing": routing}
+            for routing in routings
+        ]
+    }
+
+
+def _retry(domain: str | None, route: str = "developer-retry") -> JsonObject:
+    routing: JsonObject = {"route": route}
+    if domain is not None:
+        method = "fallback" if domain == "unknown" else "structured"
+        routing["failure"] = {"domain": domain, "method": method, "matched": "m", "source": "s"}
+    return routing
+
+
+def test_only_a_code_test_retry_spends_the_developer_budget() -> None:
+    for domain in FailureDomain:
+        counted = decisions._developer_retry_count(_batch_with(_retry(str(domain))))
+
+        assert counted == (1 if domain == FailureDomain.CODE_TEST else 0), domain
+
+
+def test_a_decision_recorded_before_failure_domains_still_spends_the_budget() -> None:
+    assert decisions._developer_retry_count(_batch_with(_retry(None))) == 1
+
+
+def test_many_non_code_retries_never_exhaust_the_budget() -> None:
+    batch = _batch_with(*(_retry("infrastructure") for _ in range(5)), _retry("unknown"))
+
+    assert decisions._developer_retry_count(batch) == 0
+    assert not decisions._developer_retry_budget_exhausted(
+        {"retry_policy": {"max_developer_retries": 1}}, batch
+    )
+
+
+@pytest.mark.parametrize("domain", [d for d in FailureDomain if d != FailureDomain.CODE_TEST])
+def test_the_auto_policy_stops_on_the_budget_only_for_a_code_test_retry(
+    domain: FailureDomain,
+) -> None:
+    routing = {**_retry(str(domain)), "next_action": "developer-retry", "reason_category": "code"}
+
+    assert auto_policy.finish(routing, None, budget_exhausted=True, bug_ticket=None) is None
+
+
+def test_the_auto_policy_stops_on_the_budget_for_a_code_test_retry() -> None:
+    routing = {
+        **_retry("code_test"),
+        "next_action": "developer-retry",
+        "reason_category": "code",
+    }
+
+    stop = auto_policy.finish(routing, None, budget_exhausted=True, bug_ticket=None)
+
+    assert stop is not None and stop.category == "budget-exhausted"
