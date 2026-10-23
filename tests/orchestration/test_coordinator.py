@@ -5107,6 +5107,36 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
         self.assertEqual(routing["failure"]["domain"], "tooling")
         self.assertEqual(decisions._developer_retry_count(decided), 0)
 
+    def test_a_forced_developer_retry_of_a_tooling_blocked_review_spends_the_budget(
+        self,
+    ) -> None:
+        # Only a developer's own tooling-retry spends nothing. A human who sends a tooling-blocked
+        # read-only stage back to the developer takes a developer retry: it is approver evidence
+        # of a code defect, spends the budget and is refused once the budget is exhausted.
+        batch = self._create_batch()
+        self._accepted_architect(batch["batch_id"])
+        candidate = self._accepted_candidate(batch["batch_id"])
+        self._tooling_review(batch["batch_id"], candidate)
+
+        with mock.patch.object(
+            decisions, "_retry_policy", return_value={"max_developer_retries": 0}
+        ):
+            with self.assertRaisesRegex(
+                coordinator.CoordinatorError, "budget is exhausted"
+            ):
+                self._decide(batch["batch_id"], "retry", retry_role="developer")
+
+        decided = self._decide(batch["batch_id"], "retry", retry_role="developer")
+
+        routing = self._routing(decided)
+        self.assertEqual(routing["route"], "developer-retry")
+        self.assertEqual(
+            (routing["failure"]["domain"], routing["failure"]["method"]),
+            ("code_test", "approver"),
+        )
+        self.assertEqual(routing["failure"]["matched"], "--retry-role developer")
+        self.assertEqual(decisions._developer_retry_count(decided), 1)
+
     def test_a_tooling_blocked_developer_restarts_from_its_last_commit(self) -> None:
         batch = self._create_batch()
         self._accepted_architect(batch["batch_id"])

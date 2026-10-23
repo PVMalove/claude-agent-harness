@@ -512,6 +512,33 @@ def test_a_block_bypass_is_a_policy_failure_named_by_the_approver() -> None:
     }
 
 
+def test_a_classifier_hint_of_a_block_bypass_is_no_approver_evidence() -> None:
+    routing = _route(
+        "qa",
+        {"outcome": "completed", "checks_run": []},
+        explicit_category="block-bypass",
+        explicit_by="classifier:triage",
+    )
+
+    assert routing["route"] == "bypass-rerun"
+    assert routing["failure"] == {
+        "domain": "unknown",
+        "method": "fallback",
+        "matched": "classifier hint block-bypass is no proof that the role worked around a block",
+        "source": "classifier:triage",
+    }
+
+
+def test_the_playbook_says_a_rebase_fix_forward_spends_the_budget_only_for_code_test() -> None:
+    playbook = (Path(__file__).resolve().parents[2] / "harness/orchestration/playbook.md").read_text(
+        encoding="utf-8"
+    )
+    start = playbook.index("the route is `rebase-fix-forward`:")
+    paragraph = playbook[start : playbook.index("The decision only proposes", start)]
+
+    assert "when its failure domain is `code_test`" in paragraph
+
+
 def test_context_pressure_needs_its_critical_observation() -> None:
     report = {"outcome": "blocked", "checks_run": []}
 

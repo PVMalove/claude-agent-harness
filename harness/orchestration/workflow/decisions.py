@@ -741,10 +741,18 @@ def _retry_routing(
     elif bypass_named:
         category = BLOCK_BYPASS_REASON_CATEGORY
         basis = "the approver found that the role worked around a hook or tool block, so its findings, checks and outcome are no evidence"
-        failure = failure_domains.approver(
-            FailureDomain.POLICY,
-            f"--reason-category {BLOCK_BYPASS_REASON_CATEGORY}",
-            explicit_by,
+        failure = (
+            failure_domains.unrecognised(
+                f"classifier hint {BLOCK_BYPASS_REASON_CATEGORY} is no proof that the role "
+                "worked around a block",
+                explicit_by,
+            )
+            if by_classifier
+            else failure_domains.approver(
+                FailureDomain.POLICY,
+                f"--reason-category {BLOCK_BYPASS_REASON_CATEGORY}",
+                explicit_by,
+            )
         )
     elif (
         explicit_category in {None, TOOLING_REASON_CATEGORY}
@@ -1897,11 +1905,12 @@ def _decide_retry_route(
     )
     if (
         forced == "developer"
-        and routing["route"] != RecoveryRoute.TOOLING_RETRY
+        and not (stage == "developer" and routing["route"] == RecoveryRoute.TOOLING_RETRY)
         and failure_domains.domain_of(routing) != FailureDomain.CODE_TEST
     ):
-        # A human who takes the developer retry on their own decision is the proof of it. A
-        # developer's tooling-retry stays one, with its tooling failure: it spends no budget.
+        # A human who takes the developer retry on their own decision is the proof of it. Only a
+        # developer's own tooling-retry stays one, with its tooling failure: it spends no budget.
+        # A tooling-blocked read-only stage sent to a developer is a developer retry and spends it.
         routing = {
             **routing,
             "failure": failure_domains.approver(

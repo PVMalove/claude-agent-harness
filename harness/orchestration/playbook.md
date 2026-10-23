@@ -195,7 +195,8 @@ A `developer-retry` or `fix-forward` route also checks the integration base: `ba
 else the latest accepted one) does not contain it yet, the route is `rebase-fix-forward`: the
 routing record adds `rebase_target_commit` (that tip) and `integration_base_commit` (the base it
 moved from), and keeps `retry_item_ids`. It is still a developer-retry: `next_action` is
-`developer-retry` and it spends one `retry_policy.max_developer_retries`. The decision only proposes
+`developer-retry` and, when its failure domain is `code_test`, it spends one
+`retry_policy.max_developer_retries`. The decision only proposes
 the target. The developer-retry brief carries it as `rebase_target_commit`, bound into the
 transition as `rebase_target_sha`, and that dispatch always needs an explicit approval with the
 transition digest, under every `approval_policy` except `auto`; no policy except `auto` approves a
