@@ -757,6 +757,20 @@ def test_a_resolver_reporting_the_tickets_own_defect_is_a_structured_code_defect
     assert decisions.spends_developer_budget(routing)
 
 
+def test_the_recovery_table_row_of_a_qa_preparation_follows_the_stages_not_the_runner_category() -> None:
+    playbook = (Path(__file__).resolve().parents[2] / "harness/orchestration/playbook.md").read_text(
+        encoding="utf-8"
+    )
+    [row] = [
+        line
+        for line in playbook.splitlines()
+        if line.startswith("| A qa report is `blocked` because its `qa_stages` show a failed preparation")
+    ]
+
+    assert "`environment_preparation`" in row
+    assert "confirmed `infrastructure` diagnosis" not in row
+
+
 def test_a_moved_candidate_is_code_test_by_decision_with_ledger_evidence() -> None:
     routing = cast(
         dict[str, object],
