@@ -8,6 +8,11 @@ is not listed: it comes from the CLI and stays as it is."""
 from __future__ import annotations
 
 EN: dict[str, str] = {
+    "Подтвердить фиксы": "Confirm fixes",
+    "нечего экспортировать: отчёт ещё строится": "Nothing to export: the report is still building",
+    "нечего экспортировать: отчёт не построен": "Nothing to export: no report was built",
+    "Исправление недоступно: дождитесь отчёта": "Fix is unavailable: wait for the report",
+    "Исправление недоступно: повторите проверку": "Fix is unavailable: run the checks again",
     "Дождитесь окончания операции": "Wait for the operation to finish",
     "Рабочее пространство": "Workspace",
     "Продолжите работу в выбранной сессии или откройте другой проект.": "Continue a session or open another project.",
@@ -359,6 +364,11 @@ EN: dict[str, str] = {
 # Labels of the facts in the home screen's context cards. Kept apart from `EN`: a label such as
 # `Состояние` reads differently here than as a frame title.
 FACT_LABELS_EN: dict[str, str] = {
+    "Подтвердить фиксы": "Confirm fixes",
+    "нечего экспортировать: отчёт ещё строится": "Nothing to export: the report is still building",
+    "нечего экспортировать: отчёт не построен": "Nothing to export: no report was built",
+    "Исправление недоступно: дождитесь отчёта": "Fix is unavailable: wait for the report",
+    "Исправление недоступно: повторите проверку": "Fix is unavailable: run the checks again",
     "Проект": "Project",
     "Ветка": "Branch",
     "Установлен": "Installed",
@@ -392,6 +402,11 @@ EN_PREFIXES: dict[str, str] = {
 }
 
 RU_FROM_EN: dict[str, str] = {
+    "Подтвердить фиксы": "Confirm fixes",
+    "нечего экспортировать: отчёт ещё строится": "Nothing to export: the report is still building",
+    "нечего экспортировать: отчёт не построен": "Nothing to export: no report was built",
+    "Исправление недоступно: дождитесь отчёта": "Fix is unavailable: wait for the report",
+    "Исправление недоступно: повторите проверку": "Fix is unavailable: run the checks again",
     "Both files": "Оба файла",
     "Save version": "Сохранить версию",
     "Versions / restore": "Версии и откат",

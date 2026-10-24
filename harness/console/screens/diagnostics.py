@@ -10,15 +10,19 @@
 from __future__ import annotations
 
 import re
+import threading
 from pathlib import Path
 from typing import Callable, Protocol
 
 from rich.text import Text
+from textual import events
+from textual.message import Message
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Static
 
+from ..crumbs import Crumb
 from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
 from ..logtext import colorize_log
 from .. import brand, i18n
@@ -33,6 +37,7 @@ _APPLY_LABEL = "Исправить"
 _CONFIRM_LABEL = "Подтвердить фиксы"
 _MANUAL_NOTE = "Команды «Как исправить» пульт не выполняет — запустите их вручную."
 _RUNNING = "health выполняется…"
+_CORE_LOCK = threading.Lock()
 
 
 def render_report(report: Report) -> str:
@@ -195,6 +200,11 @@ class DiagnosticsScreen(ConsoleShell):
         self._apply_local_fixes = apply_local_fixes
         self._report: Report | None = None
         self._confirming_apply = False
+        self._generation = 0
+        self._cancel = threading.Event()
+        self._disposed = False
+        self._state = "running"
+        self._language = "ru"
 
     def compose_strip(self) -> ComposeResult:
         yield WrappedValue(str(self.repo))
@@ -235,10 +245,29 @@ class DiagnosticsScreen(ConsoleShell):
 
     def on_mount(self) -> None:
         """Запускает первичное построение отчёта проверок при монтировании экрана."""
+        self._language = getattr(self.app, "language", "ru")
+        self.app.message_signal.subscribe(self, self._observe_input, immediate=True)
         self._run_health(lambda: self._collect_diagnostics(self.repo))
+
+    def _observe_input(self, message: Message) -> None:
+        if not self._confirming_apply:
+            return
+        button = self._apply_button()
+        if isinstance(message, events.Key):
+            if message.key in ("enter", "space") and button.has_focus:
+                return
+            self._reset_apply()
+        elif isinstance(message, events.MouseDown):
+            if button.region.contains(message.screen_x, message.screen_y):
+                return
+            self._reset_apply()
+        elif isinstance(message, (events.MouseScrollUp, events.MouseScrollDown)):
+            self._reset_apply()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Обрабатывает нажатия кнопок экрана (онлайн-проверки, применение фиксов, экспорт)."""
+        if event.button.id != "apply-fixes":
+            self._reset_apply()
         if event.button.id == "offline-checks":
             self._reset_apply()
             self._run_health(lambda: self._collect_diagnostics(self.repo))
@@ -249,21 +278,53 @@ class DiagnosticsScreen(ConsoleShell):
             self._on_apply_fixes_pressed()
         elif event.button.id == "export":
             self.action_export()
+        else:
+            ConsoleShell.on_button_pressed(self, event)
+
+    async def action_section(self, index: int) -> None:
+        self._reset_apply()
+        await ConsoleShell.action_section(self, index)
+
+    async def navigate_crumb(self, crumb: Crumb) -> None:
+        self._reset_apply()
+        await ConsoleShell.navigate_crumb(self, crumb)
+
+    async def action_back(self) -> None:
+        self._reset_apply()
+        await ConsoleShell.action_back(self)
 
     def action_export(self) -> None:
         """Выполняет экспорт текущего отчёта health в файл Markdown."""
+        self._reset_apply()
         if self._report is None:
-            self.notify("нечего экспортировать: отчёт ещё строится", severity="warning")
+            text = (
+                "нечего экспортировать: отчёт ещё строится"
+                if self._state == "running"
+                else "нечего экспортировать: отчёт не построен"
+            )
+            self.notify(
+                i18n.tr(getattr(self.app, "language", "ru"), text), severity="warning"
+            )
             return
         export_document(self, self.repo, health_document(self._report))
 
     def _on_apply_fixes_pressed(self) -> None:
         """Обрабатывает нажатие кнопки применения фиксов с запросом подтверждения."""
         if self._report is None:
+            text = (
+                "Исправление недоступно: дождитесь отчёта"
+                if self._state == "running"
+                else "Исправление недоступно: повторите проверку"
+            )
+            self.notify(
+                i18n.tr(getattr(self.app, "language", "ru"), text), severity="warning"
+            )
             return
         if not self._confirming_apply:
             self._confirming_apply = True
-            self._apply_button().label = _CONFIRM_LABEL
+            self._apply_button().label = i18n.tr(
+                getattr(self.app, "language", "ru"), _CONFIRM_LABEL
+            )
             return
         self._reset_apply()
         online = self._report.online
@@ -272,11 +333,17 @@ class DiagnosticsScreen(ConsoleShell):
     def _reset_apply(self) -> None:
         """Сбрасывает состояние подтверждения кнопки применения фиксов к исходному."""
         self._confirming_apply = False
-        self._apply_button().label = _APPLY_LABEL
+        self._apply_button().label = i18n.tr(
+            getattr(self.app, "language", "ru"), _APPLY_LABEL
+        )
 
     def sync_language(self) -> None:
         """Show the finished report in the current language."""
         ConsoleShell.sync_language(self)
+        language = getattr(self.app, "language", "ru")
+        if language != self._language:
+            self._language = language
+            self._reset_apply()
         if self._report is not None:
             self.query_one("#diagnostics-report", Static).update(
                 _styled_report(self._report, getattr(self.app, "language", "ru"))
@@ -284,31 +351,69 @@ class DiagnosticsScreen(ConsoleShell):
 
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
-        self.workers.cancel_all()
+        self._disposed = True
+        self._generation += 1
+        self._cancel.set()
+        self.app.message_signal.unsubscribe(self)
+        self.workers.cancel_node(self)
 
     def _run_health(self, run: Callable[[], Report]) -> None:
         """Запускает процедуру проверки health в фоновом потоке worker."""
+        self._cancel.set()
+        self._cancel = cancel = threading.Event()
+        self._generation += 1
+        generation = self._generation
+        self._state = "running"
+        self._report = None
+        self._reset_apply()
         self.query_one("#diagnostics-report", Static).update(_RUNNING)
 
+        def current() -> bool:
+            return (
+                not (cancel.is_set() or self._disposed)
+                and generation == self._generation
+                and self.is_mounted
+            )
+
+        def publish(report: Report | None, failure: str = "") -> None:
+            if current():
+                if report is None:
+                    self._show_failure(failure)
+                else:
+                    self._show(report)
+
         def work() -> None:
-            """Фоновая задача выполнения проверки health и передачи отчёта в основной поток UI."""
+            while not cancel.is_set():
+                if _CORE_LOCK.acquire(timeout=0.05):
+                    break
+            else:
+                return
+            report = None
+            failure = ""
             try:
+                if cancel.is_set():
+                    return
                 report = run()
             except Exception as exc:
-                # An unhandled worker error would exit the whole TUI; show it in the report instead.
-                failure = f"health не выполнен: {exc!r}"
-                call_from_worker(self, lambda: self._show_failure(failure))
-                return
-            call_from_worker(self, lambda: self._show(report))
+                failure = repr(exc)
+            finally:
+                _CORE_LOCK.release()
+            if current():
+                call_from_worker(self, lambda: publish(report, failure))
 
         self.run_worker(work, thread=True, exclusive=True, group="diagnostics")
 
     def _show_failure(self, text: str) -> None:
         """Отображает причину, по которой отчёт health не построен."""
-        self.query_one("#diagnostics-report", Static).update(text)
+        self._state = "failed"
+        self._report = None
+        self.query_one("#diagnostics-report", Static).update(
+            f"health не выполнен: {text}"
+        )
 
     def _show(self, report: Report) -> None:
         """Отображает готовый отчёт health и обновляет строку эквивалента CLI на экране."""
+        self._state = "ready"
         self._report = report
         self.query_one("#diagnostics-report", Static).update(
             _styled_report(report, getattr(self.app, "language", "ru"))
