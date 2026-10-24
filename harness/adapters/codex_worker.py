@@ -146,6 +146,8 @@ def worker_command(
         str(worktree): "write" if access == "write" else "read",
         str(repo / ".harness/orchestration/state"): "write",
         str(Path(brief["report_staging_path"]).parent): "write",
+        str(repo / ".harness/.sandboxes/runs/qa"): "write",
+        str(repo / ".harness/.sandboxes/logs"): "write",
     }
     if access == "write":
         filesystem.update({":tmpdir": "write", ":slash_tmp": "write"})

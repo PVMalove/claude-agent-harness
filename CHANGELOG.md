@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- **[Проверки внешнего worker]:** Native profile адаптера разрешает обеим ролям служебные `.harness/.sandboxes/runs/qa` и `.harness/.sandboxes/logs`: обязательная bounded-wrapper теперь может подготовить временное окружение и сохранить лог, не получая запись в другие issue worktree (#836).
+
 - **[Lifecycle внешнего Codex worker]:** Адаптер запускает `app-server` с native permission profile: read-only роль сохраняет исходники на чтение, но может записать self-report, heartbeat и completion report. Роль с записью получает доступ к Git-метаданным для коммитов в связанном worktree; общие config и hooks остаются на чтение. Перед передачей задачи адаптер сверяет модель, effort, CWD и профиль прав ответа `thread/start`; worker получает native identity своей сессии и сам регистрирует self-report. Несовместимый runtime или несовпадение параметров останавливают запуск без расширения прав (#836).
 
 - **[Тест-автор в полном маршруте `/implement`]:** `test-author-preflight.sh` принимает необязательный `--worktree <путь>` и отвечает `checkout_mismatch`, если путь не совпадает с checkout скрипта или аргументы неверны, поэтому in-process developer отдельного worktree больше не получает `{"status":"ok"}` для основного checkout. Внешний transport автора не включает (`transport_unsupported`); любой отказ оставляет обычный TDD с названной причиной, не blocker. Новый clean-room сценарий `full_route_worktree` проверяет, что тест не попадает в основной checkout (#768).

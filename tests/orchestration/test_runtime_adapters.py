@@ -301,6 +301,31 @@ def test_codex_writer_keeps_runtime_metadata_read_only(
         assert filesystem[str(worker / name)] == "read"
 
 
+@pytest.mark.parametrize("access", ["write", "read-only"])
+def test_codex_bounded_checks_can_write_shared_temporary_data_and_logs(
+    dispatch: tuple[Path, Path, dict[str, object]], access: str
+) -> None:
+    repo, worker, _ = dispatch
+    result = invoke(dispatch, "--dry-run", runtime="codex", changes={"access": access})
+    assert result.returncode == 0, result.stderr
+    command = json.loads(result.stdout)["command"]
+    configs = [
+        tomllib.loads(command[i + 1])
+        for i, value in enumerate(command)
+        if value == "--config"
+    ]
+    filesystem = next(
+        c["permissions"]["harness-worker"]["filesystem"]
+        for c in configs
+        if "permissions" in c
+    )
+    assert filesystem[str(repo / ".harness/.sandboxes/runs/qa")] == "write"
+    assert filesystem[str(repo / ".harness/.sandboxes/logs")] == "write"
+    assert filesystem[str(worker)] == ("write" if access == "write" else "read")
+    assert str(repo / ".harness/.sandboxes") not in filesystem
+    assert str(repo / ".harness/.sandboxes/worktrees") not in filesystem
+
+
 @pytest.mark.parametrize("linked", [False, True])
 def test_codex_writer_can_commit_without_editing_git_config_or_hooks(
     dispatch: tuple[Path, Path, dict[str, object]], linked: bool
