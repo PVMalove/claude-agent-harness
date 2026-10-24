@@ -132,7 +132,12 @@ def git_commit_permissions(worktree: Path) -> dict[str, str]:
 
 
 def worker_command(
-    brief: Brief, repo: Path, worktree: Path, binary: str = "codex"
+    brief: Brief,
+    repo: Path,
+    worktree: Path,
+    binary: str = "codex",
+    *,
+    network_access: bool = False,
 ) -> list[str]:
     access = brief.get("access")
     if access not in ("write", "read-only"):
@@ -165,7 +170,11 @@ def worker_command(
         "--config",
         'default_permissions="harness-worker"',
         "--config",
-        'permissions={"harness-worker"={filesystem={' + entries + "}}}",
+        'permissions={"harness-worker"={filesystem={'
+        + entries
+        + "},network={enabled="
+        + str(network_access).lower()
+        + "}}}",
     ]
     effort = brief.get("resolved_effort")
     if effort:
@@ -404,7 +413,13 @@ def start(args: argparse.Namespace) -> int:
     prompt = build_prompt(brief, brief_path, repo, worktree, sha)
     if args.extra_prompt_file:
         prompt += "\n" + Path(args.extra_prompt_file).read_text(encoding="utf-8")
-    command = worker_command(brief, repo, worktree, args.codex_bin)
+    command = worker_command(
+        brief,
+        repo,
+        worktree,
+        args.codex_bin,
+        network_access=args.network_access == "enabled",
+    )
     if args.dry_run:
         print(
             json.dumps(
@@ -483,6 +498,12 @@ def main(argv: list[str]) -> int:
     dispatch.add_argument("--repo", required=True, help="main project root")
     dispatch.add_argument("--brief", required=True, help="immutable dispatch brief")
     dispatch.add_argument("--codex-bin", default="codex", help="Codex executable")
+    dispatch.add_argument(
+        "--network-access",
+        choices=("disabled", "enabled"),
+        default="disabled",
+        help="native command network policy; enabled also permits local socketpair IPC",
+    )
     dispatch.add_argument(
         "--extra-prompt-file",
         help="text appended to the prompt (retry handoff lines)",

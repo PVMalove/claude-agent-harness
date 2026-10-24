@@ -857,6 +857,11 @@ that session's native identity to the worker, which still performs its own model
 Codex versions without named permission-profile support refuse startup; there is no broader-access
 fallback. Its prompt carries the tool allowlist; this is not a native Codex tool filter.
 Neither adapter grants `danger-full-access`.
+Codex command network access defaults to disabled. Use `--adapter-arg=--network-access=enabled`
+only under the operator's permitted network policy; this also permits local socketpair IPC needed
+by asyncio executor shutdown. It is not an IPC-only grant: without an active native network proxy,
+enabled commands have direct network access. Legacy `sandbox_workspace_write.network_access`
+does not configure the adapter's named profile. Source filesystem permissions stay the same.
 The worker still must self-report, send heartbeats and submit its report. An adapter does not
 accept reports or select the next role. QA and publish keep their coordinator boundaries.
 

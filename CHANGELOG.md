@@ -6,6 +6,8 @@
 
 ### Fixed
 
+- **[IPC внешнего worker]:** Codex adapter принимает явный `--network-access=enabled` для согласованной сетевой политики и локального socketpair IPC, необходимого asyncio; прежняя network-настройка workspace-write не переносится в named profile. По умолчанию сеть выключена, права исходников не меняются (#836).
+
 - **[Проверки внешнего worker]:** Native profile адаптера разрешает обеим ролям служебные `.harness/.sandboxes/runs/qa` и `.harness/.sandboxes/logs`: обязательная bounded-wrapper теперь может подготовить временное окружение и сохранить лог, не получая запись в другие issue worktree (#836).
 
 - **[Lifecycle внешнего Codex worker]:** Адаптер запускает `app-server` с native permission profile: read-only роль сохраняет исходники на чтение, но может записать self-report, heartbeat и completion report. Роль с записью получает доступ к Git-метаданным для коммитов в связанном worktree; общие config и hooks остаются на чтение. Перед передачей задачи адаптер сверяет модель, effort, CWD и профиль прав ответа `thread/start`; worker получает native identity своей сессии и сам регистрирует self-report. Несовместимый runtime или несовпадение параметров останавливают запуск без расширения прав (#836).

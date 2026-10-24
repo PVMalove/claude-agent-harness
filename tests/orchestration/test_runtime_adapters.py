@@ -272,6 +272,7 @@ def test_codex_read_only_worker_can_write_lifecycle_evidence_without_source_writ
     assert isinstance(permissions, dict)
     profile = permissions[profile_name]
     filesystem = profile["filesystem"]
+    assert profile["network"] == {"enabled": False}
     assert filesystem[str(worker)] == "read"
     assert filesystem[str(repo / ".harness/orchestration/state")] == "write"
     assert filesystem[str(Path(str(brief["report_staging_path"])).parent)] == "write"
@@ -324,6 +325,26 @@ def test_codex_bounded_checks_can_write_shared_temporary_data_and_logs(
     assert filesystem[str(worker)] == ("write" if access == "write" else "read")
     assert str(repo / ".harness/.sandboxes") not in filesystem
     assert str(repo / ".harness/.sandboxes/worktrees") not in filesystem
+
+
+@pytest.mark.parametrize("mode", ["enabled", "disabled"])
+def test_codex_network_policy_requires_an_explicit_adapter_choice(
+    dispatch: tuple[Path, Path, dict[str, object]], mode: str
+) -> None:
+    result = invoke(dispatch, "--dry-run", "--network-access", mode, runtime="codex")
+    assert result.returncode == 0, result.stderr
+    command = json.loads(result.stdout)["command"]
+    configs = [
+        tomllib.loads(command[i + 1])
+        for i, value in enumerate(command)
+        if value == "--config"
+    ]
+    network = next(
+        c["permissions"]["harness-worker"]["network"]
+        for c in configs
+        if "permissions" in c
+    )
+    assert network["enabled"] is (mode == "enabled")
 
 
 @pytest.mark.parametrize("linked", [False, True])
@@ -549,5 +570,11 @@ def test_codex_dispatch_help_exposes_adapter_arguments(
 ) -> None:
     result = invoke(dispatch, "--help", runtime="codex")
     assert result.returncode == 0
-    for flag in ("--repo", "--brief", "--extra-prompt-file", "--codex-bin"):
+    for flag in (
+        "--repo",
+        "--brief",
+        "--extra-prompt-file",
+        "--codex-bin",
+        "--network-access",
+    ):
         assert flag in result.stdout
