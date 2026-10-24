@@ -109,6 +109,28 @@ def build_prompt(
     )
 
 
+def git_commit_permissions(worktree: Path) -> dict[str, str]:
+    """Allow Git commits without opening shared hooks or repository configuration."""
+
+    def git(*arguments: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(worktree), *arguments], text=True
+        ).strip()
+
+    gitdir = Path(git("rev-parse", "--absolute-git-dir"))
+    common = (worktree / git("rev-parse", "--git-common-dir")).resolve()
+    if not git("symbolic-ref", "--quiet", "HEAD").startswith("refs/heads/"):
+        raise ValueError("a write-role worker requires a local branch")
+    # Native writable roots must be directories (file roots fail bubblewrap setup).
+    # Git locks and atomically renames refs, so shared refs need directory access.
+    permissions = {
+        str(path): "write"
+        for path in (gitdir, common / "objects", common / "refs", common / "logs/refs")
+    }
+    permissions.update({str(common / name): "read" for name in ("config", "hooks")})
+    return permissions
+
+
 def worker_command(
     brief: Brief, repo: Path, worktree: Path, binary: str = "codex"
 ) -> list[str]:
@@ -133,6 +155,7 @@ def worker_command(
                 for name in (".git", ".agents", ".codex", ".aws")
             }
         )
+        filesystem.update(git_commit_permissions(worktree))
     entries = ", ".join(
         json.dumps(path) + " = " + json.dumps(mode) for path, mode in filesystem.items()
     )

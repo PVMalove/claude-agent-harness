@@ -297,8 +297,83 @@ def test_codex_writer_keeps_runtime_metadata_read_only(
     )
     filesystem = permissions["harness-worker"]["filesystem"]
     assert filesystem[str(worker)] == "write"
-    for name in (".git", ".agents", ".codex", ".aws"):
+    for name in (".agents", ".codex", ".aws"):
         assert filesystem[str(worker / name)] == "read"
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_codex_writer_can_commit_without_editing_git_config_or_hooks(
+    dispatch: tuple[Path, Path, dict[str, object]], linked: bool
+) -> None:
+    repo, original, brief = dispatch
+    worker = original
+    if linked:
+        worker = original.parent / "linked-worker"
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(original),
+                "worktree",
+                "add",
+                "-b",
+                "feature/issue-836-writer",
+                str(worker),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    result = invoke((repo, worker, brief), "--dry-run", runtime="codex")
+    assert result.returncode == 0, result.stderr
+    command = json.loads(result.stdout)["command"]
+    configs = [
+        tomllib.loads(command[i + 1])
+        for i, value in enumerate(command)
+        if value == "--config"
+    ]
+    filesystem = next(
+        c["permissions"]["harness-worker"]["filesystem"]
+        for c in configs
+        if "permissions" in c
+    )
+
+    def mode(path: Path) -> str:
+        matches = [
+            (len(Path(key).parts), value)
+            for key, value in filesystem.items()
+            if not key.startswith(":")
+            and (path == Path(key) or Path(key) in path.parents)
+        ]
+        return str(max(matches, default=(0, filesystem[":root"]))[1])
+
+    gitdir = Path(
+        subprocess.check_output(
+            ["git", "-C", str(worker), "rev-parse", "--absolute-git-dir"], text=True
+        ).strip()
+    )
+    common = original / ".git"
+    branch = subprocess.check_output(
+        ["git", "-C", str(worker), "symbolic-ref", "HEAD"], text=True
+    ).strip()
+    for path in (
+        gitdir / "index",
+        gitdir / "index.lock",
+        gitdir / "COMMIT_EDITMSG",
+        gitdir / "logs/HEAD",
+        common / "objects/ab/new-object",
+        common / branch,
+        Path(str(common / branch) + ".lock"),
+        common / "logs" / branch,
+    ):
+        assert mode(path) == "write", path
+    for path in (
+        common / "config",
+        common / "hooks/pre-commit",
+        worker / ".codex/config.toml",
+    ):
+        assert mode(path) == "read", path
+    if linked:
+        assert mode(worker / ".git") == "read"
 
 
 def fake_app_server(

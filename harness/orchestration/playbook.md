@@ -845,8 +845,12 @@ exit, including exit zero, is a launch failure with a bounded log tail. They rej
 Claude uses the brief's model, effort and native tool allowlist; its only additional directory is
 the incoming reports directory. Codex uses a detached `app-server` connection and a native named
 permission profile. The checkout has the brief's source access; the main coordinator state and
-incoming report directory remain writable for lifecycle evidence. The adapter verifies the actual
-worker's `thread/start` model, effort, CWD and permission profile before sending its task. It gives
+incoming report directory remain writable for lifecycle evidence.
+Write roles additionally receive their Git admin directory, shared objects, refs and ref logs so
+they can create commits in a linked worktree. Shared repository config and hooks remain read-only;
+branch restrictions remain a workflow contract, since Git ref locks need directory access.
+The adapter verifies the actual worker's `thread/start` model, effort, CWD and permission profile
+before sending its task. It gives
 that session's native identity to the worker, which still performs its own model/Git self-report.
 Codex versions without named permission-profile support refuse startup; there is no broader-access
 fallback. Its prompt carries the tool allowlist; this is not a native Codex tool filter.
