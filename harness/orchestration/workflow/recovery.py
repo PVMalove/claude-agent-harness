@@ -489,7 +489,8 @@ def _require_known_checkout(repo: Path, batch: JsonObject, snapshot: str) -> Non
 
     checkout = Path(batch["worktree"]).resolve()
     preservation = (
-        "for a writer cancelled with --runtime-stopped and no completion report, repeat human-approved "
+        "for a writer cancelled with --runtime-stopped and no completion report, or the latest "
+        "writer with an unaccepted blocked report at its exact commit, repeat human-approved "
         "batch rewind to its writer gate with --preserved-commit <full-HEAD-SHA> and "
         "--preserved-file <path> for every pending file; otherwise register known progress; "
         "never reset or stash to pass recovery"

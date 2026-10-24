@@ -256,21 +256,24 @@ def _check_restart_worktree(
     if not (outside or extra or missing):
         return
     discrepancies = [
-        (label, fix, group)
-        for label, fix, group in (
-            (f"outside {scope}", "revert or move out", outside),
-            ("not listed in the blocked report", "revert", extra),
-            ("missing from the worktree", "restore from the blocked session", missing),
+        (label, group)
+        for label, group in (
+            (f"outside {scope}", outside),
+            ("not listed in the blocked report", extra),
+            ("missing from the worktree", missing),
         )
         if group
     ]
-    found = [f"{label}: {', '.join(group)}" for label, _, group in discrepancies]
-    fixes = [f"{fix} {', '.join(group)}" for _, fix, group in discrepancies]
+    found = [f"{label}: {', '.join(group)}" for label, group in discrepancies]
     raise PreflightError(
         "tooling restart worktree does not match the blocked developer report's "
         f"uncommitted files ({'; '.join(found)})",
-        remedy=f"{'; '.join(fixes)}, so the uncommitted files equal the blocked report's "
-        "tooling_blocker uncommitted_files, or decide the batch again",
+        remedy="inspect and preserve the checkout; for an incomplete recorded blocked report, "
+        "use human-approved batch rewind --to developer --preserved-commit <reported-full-HEAD-SHA> "
+        "with --preserved-file <path> for every pending file, then approve a fresh dispatch "
+        "(ordinary rewind spends developer retry budget); every file must remain inside allowed_paths. "
+        "Keep the immutable report unchanged; never reset or stash work to pass preflight. "
+        f"Inspect discrepancies against the original report: {'; '.join(found)}",
     )
 
 

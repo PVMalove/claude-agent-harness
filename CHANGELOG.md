@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- **[Восстановление незавершённого writer после blocked-отчёта]:** `batch rewind --preserved-commit --preserved-file` принимает также последний непринятый `blocked`-отчёт writer на его точном SHA. Человек подтверждает полный список файлов, recovery связывает их хэши с новым dispatch, а исходный отчёт остаётся неизменным. Это устраняет тупик tooling-retry при пропущенном `tooling_blocker.uncommitted_files`; обычный бюджет rewind, scope и независимые review/QA сохраняются (#837).
 - **[Тест-автор в полном маршруте `/implement`]:** `test-author-preflight.sh` принимает необязательный `--worktree <путь>` и отвечает `checkout_mismatch`, если путь не совпадает с checkout скрипта или аргументы неверны, поэтому in-process developer отдельного worktree больше не получает `{"status":"ok"}` для основного checkout. Внешний transport автора не включает (`transport_unsupported`); любой отказ оставляет обычный TDD с названной причиной, не blocker. Новый clean-room сценарий `full_route_worktree` проверяет, что тест не попадает в основной checkout (#768).
 
 ## [1.5.1] - 2026-10-18

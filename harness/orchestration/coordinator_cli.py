@@ -249,7 +249,8 @@ def build_parser(
     rewind.add_argument("--note", required=True)
     rewind.add_argument(
         "--preserved-commit",
-        help="explicitly preserve the full HEAD SHA of the latest writer cancelled with --runtime-stopped",
+        help="preserve the latest writer's full HEAD SHA: cancelled with --runtime-stopped, "
+        "or the exact commit of its unaccepted blocked report",
     )
     rewind.add_argument(
         "--preserved-file",

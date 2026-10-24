@@ -123,6 +123,35 @@ def _checkout_state(checkout: Path, scope: list[str]) -> JsonObject:
     }
 
 
+def _source_matches(
+    root: Path,
+    batch: JsonObject,
+    entry: JsonObject,
+    commit: object,
+    *,
+    retired: bool = False,
+) -> bool:
+    """A cancelled writer or immutable blocked report proves a finished source boundary."""
+    if entry.get("report"):
+        from harness.orchestration.workflow.history import _pending_report
+
+        report = _pending_report(root, batch, entry)
+        return (
+            (
+                entry.get("state") == "reported"
+                or (retired and entry.get("state") == "abandoned")
+            )
+            and report.get("outcome") == "blocked"
+            and report.get("commit_sha") == commit
+            and entry.get("decision", {}).get("decision")
+            not in {"accept", "accept-conditional", "override-warning"}
+        )
+    return (
+        entry.get("state") == "cancelled"
+        and entry.get("cancellation", {}).get("runtime_stopped") is True
+    )
+
+
 def capture(
     repo: Path,
     root: Path,
@@ -142,19 +171,21 @@ def capture(
     if (
         role is None
         or entry.get("role") != role
-        or entry.get("state") != "cancelled"
-        or entry.get("report")
-        or not entry.get("cancellation", {}).get("runtime_stopped")
+        or not _source_matches(root, batch, entry, commit)
     ):
         _refuse(
-            "preserved progress requires the latest writer cancelled with --runtime-stopped"
+            "preserved progress requires the latest writer cancelled with --runtime-stopped "
+            "or an unaccepted blocked report at its exact commit"
         )
     brief = _load_dispatch(root, entry["dispatch_id"])
     status = _load_dispatch_status(root, entry["dispatch_id"])
     if (
         brief.get("purpose") != "work"
-        or status.get("state") != "cancelled"
-        or status.get("cancellation") != entry["cancellation"]
+        or status.get("state") != entry["state"]
+        or (
+            entry["state"] == "cancelled"
+            and status.get("cancellation") != entry["cancellation"]
+        )
     ):
         _refuse("preserved progress has no matching stopped writer evidence")
     if (
@@ -272,9 +303,13 @@ def validate_event(root: Path, batch: JsonObject, event: JsonObject) -> None:
             event["next_action"]
         )
         or brief.get("purpose") != "work"
-        or entry.get("report")
-        or entry.get("state") != "cancelled"
-        or not entry.get("cancellation", {}).get("runtime_stopped")
+        or not _source_matches(
+            root,
+            batch,
+            entry,
+            progress.get("head_commit"),
+            retired=source in event["evidence"].get("retired_dispatches", []),
+        )
         or progress.get("snapshot_commit") != brief.get("snapshot_commit")
         or progress.get("head_commit") != event["evidence"].get("writer_start_commit")
         or not isinstance(progress.get("head_commit"), str)
