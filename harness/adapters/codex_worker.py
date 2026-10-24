@@ -122,11 +122,23 @@ def git_commit_permissions(worktree: Path) -> dict[str, str]:
     if not git("symbolic-ref", "--quiet", "HEAD").startswith("refs/heads/"):
         raise ValueError("a write-role worker requires a local branch")
     # Native writable roots must be directories (file roots fail bubblewrap setup).
-    # Git locks and atomically renames refs, so shared refs need directory access.
+    # Git locks and atomically renames refs, including packed-refs in the common root.
     permissions = {
         str(path): "write"
-        for path in (gitdir, common / "objects", common / "refs", common / "logs/refs")
+        for path in (common, common / "objects", common / "refs", common / "logs/refs")
     }
+    if gitdir != common:
+        # Protect existing shared metadata and sibling worktree administration, then reopen
+        # the selected worktree's own administration and the shared ref logs.
+        permissions.update(
+            {
+                str(path): "read"
+                for path in common.iterdir()
+                if path.name not in {"objects", "refs", "packed-refs"}
+            }
+        )
+        permissions[str(gitdir)] = "write"
+        permissions[str(common / "logs/refs")] = "write"
     permissions.update({str(common / name): "read" for name in ("config", "hooks")})
     return permissions
 

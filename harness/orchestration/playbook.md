@@ -849,8 +849,11 @@ incoming report directory remain writable for lifecycle evidence. Both source-ac
 can write shared `.harness/.sandboxes/runs/qa` temporary data and `.sandboxes/logs` for the
 mandatory bounded check wrapper; this does not grant access to other issue worktrees.
 Write roles additionally receive their Git admin directory, shared objects, refs and ref logs so
-they can create commits in a linked worktree. Shared repository config and hooks remain read-only;
-branch restrictions remain a workflow contract, since Git ref locks need directory access.
+they can create commits in a linked worktree. The common Git directory permits creating
+`packed-refs.lock` and atomically replacing `packed-refs`; existing other shared metadata stays
+read-only, including the primary HEAD/index and sibling worktree administration. The selected
+worktree's own Git admin directory remains writable. Shared repository config and hooks remain
+read-only; branch restrictions remain a workflow contract, since Git ref locks need directory access.
 The adapter verifies the actual worker's `thread/start` model, effort, CWD and permission profile
 before sending its task. It gives
 that session's native identity to the worker, which still performs its own model/Git self-report.

@@ -410,6 +410,8 @@ def test_codex_writer_can_commit_without_editing_git_config_or_hooks(
         common / branch,
         Path(str(common / branch) + ".lock"),
         common / "logs" / branch,
+        common / "packed-refs",
+        common / "packed-refs.lock",
     ):
         assert mode(path) == "write", path
     for path in (
@@ -420,6 +422,8 @@ def test_codex_writer_can_commit_without_editing_git_config_or_hooks(
         assert mode(path) == "read", path
     if linked:
         assert mode(worker / ".git") == "read"
+        for path in (common / "index", common / "HEAD", common / "worktrees/other/index"):
+            assert mode(path) == "read", path
 
 
 def fake_app_server(

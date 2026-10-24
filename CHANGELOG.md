@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- **[Git refs внешнего worker]:** Native profile разрешает `packed-refs.lock` в общем Git-каталоге, чтобы обычный commit в связанном worktree не печатал отказ записи. Существующие остальные shared metadata, основной HEAD/index, config/hooks и служебные каталоги других worktree защищены; права исходников не расширены (#836).
 - **[IPC внешнего worker]:** Codex adapter принимает явный `--network-access=enabled` для согласованной сетевой политики и локального socketpair IPC, необходимого asyncio; прежняя network-настройка workspace-write не переносится в named profile. По умолчанию сеть выключена, права исходников не меняются (#836).
 
 - **[Проверки внешнего worker]:** Native profile адаптера разрешает обеим ролям служебные `.harness/.sandboxes/runs/qa` и `.harness/.sandboxes/logs`: обязательная bounded-wrapper теперь может подготовить временное окружение и сохранить лог, не получая запись в другие issue worktree (#836).
