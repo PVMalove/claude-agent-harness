@@ -843,9 +843,14 @@ Adapters pass the lifecycle prompt through stdin and return after detached start
 exit, including exit zero, is a launch failure with a bounded log tail. They reject `qa`,
 `purpose: publish`, a transport other than `external`, and absent or empty `allowed_tools`.
 Claude uses the brief's model, effort and native tool allowlist; its only additional directory is
-the incoming reports directory. Codex uses `codex exec` with the brief's model and effort,
-`read-only` for read-only roles and `workspace-write` for writers. Its prompt carries the tool
-allowlist; this is not a native Codex tool filter. Neither adapter grants `danger-full-access`.
+the incoming reports directory. Codex uses a detached `app-server` connection and a native named
+permission profile. The checkout has the brief's source access; the main coordinator state and
+incoming report directory remain writable for lifecycle evidence. The adapter verifies the actual
+worker's `thread/start` model, effort, CWD and permission profile before sending its task. It gives
+that session's native identity to the worker, which still performs its own model/Git self-report.
+Codex versions without named permission-profile support refuse startup; there is no broader-access
+fallback. Its prompt carries the tool allowlist; this is not a native Codex tool filter.
+Neither adapter grants `danger-full-access`.
 The worker still must self-report, send heartbeats and submit its report. An adapter does not
 accept reports or select the next role. QA and publish keep their coordinator boundaries.
 

@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tomllib
 
 import pytest
 
@@ -205,11 +206,9 @@ def test_claude_dispatch_help_lists_entrypoint_arguments(
     assert "--extra-prompt-file" in result.stdout and "--claude-bin" in result.stdout
 
 
-@pytest.mark.parametrize(
-    "access,sandbox", [("write", "workspace-write"), ("read-only", "read-only")]
-)
+@pytest.mark.parametrize("access", ["write", "read-only"])
 def test_codex_dry_run_uses_brief_sandbox_and_retry_prompt(
-    dispatch: tuple[Path, Path, dict[str, object]], access: str, sandbox: str
+    dispatch: tuple[Path, Path, dict[str, object]], access: str
 ) -> None:
     repo, worker, brief = dispatch
     extra = repo / "retry.txt"
@@ -227,17 +226,15 @@ def test_codex_dry_run_uses_brief_sandbox_and_retry_prompt(
     assert result.returncode == 0, result.stderr
     data = json.loads(result.stdout)
     command = data["command"]
-    assert command[:2] == ["/fake/codex", "exec"]
-    assert command[command.index("--model") + 1] == "test-model"
-    assert command[command.index("--sandbox") + 1] == sandbox
-    assert command[command.index("--config") + 1] == 'model_reasoning_effort="high"'
+    assert command[:2] == ["/fake/codex", "app-server"]
+    assert data["thread_start"]["model"] == "test-model"
+    assert data["thread_start"]["config"] == {"model_reasoning_effort": "high"}
+    assert data["thread_start"]["permissions"] == "harness-worker"
+    assert data["thread_start"]["approvalPolicy"] == "never"
+    assert data["thread_start"]["cwd"] == str(worker)
+    assert "--sandbox" not in command
     assert "danger-full-access" not in command
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
-    assert command[command.index("--cd") + 1] == str(worker)
-    assert command[command.index("--add-dir") + 1] == str(
-        Path(str(brief["report_staging_path"])).parent
-    )
-    assert command[-1] == "-"
     for text in (
         "dispatch self-report",
         "dispatch heartbeat",
@@ -247,6 +244,147 @@ def test_codex_dry_run_uses_brief_sandbox_and_retry_prompt(
         "Allowed tools: Read, Bash, Edit",
     ):
         assert text in data["prompt"]
+
+
+def test_codex_read_only_worker_can_write_lifecycle_evidence_without_source_writes(
+    dispatch: tuple[Path, Path, dict[str, object]],
+) -> None:
+    repo, worker, brief = dispatch
+
+    result = invoke(
+        dispatch, "--dry-run", runtime="codex", changes={"access": "read-only"}
+    )
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    command = data["command"]
+    assert "--sandbox" not in command, "legacy read-only disables lifecycle writes"
+    overrides = [
+        command[index + 1] for index, value in enumerate(command) if value == "--config"
+    ]
+    config: dict[str, object] = {}
+    for override in overrides:
+        parsed = tomllib.loads(override)
+        config.update(parsed)
+    profile_name = config["default_permissions"]
+    assert isinstance(profile_name, str)
+    permissions = config["permissions"]
+    assert isinstance(permissions, dict)
+    profile = permissions[profile_name]
+    filesystem = profile["filesystem"]
+    assert filesystem[str(worker)] == "read"
+    assert filesystem[str(repo / ".harness/orchestration/state")] == "write"
+    assert filesystem[str(Path(str(brief["report_staging_path"])).parent)] == "write"
+    assert filesystem[":root"] == "read"
+
+
+def test_codex_writer_keeps_runtime_metadata_read_only(
+    dispatch: tuple[Path, Path, dict[str, object]],
+) -> None:
+    _, worker, _ = dispatch
+
+    result = invoke(dispatch, "--dry-run", runtime="codex")
+
+    assert result.returncode == 0, result.stderr
+    command = json.loads(result.stdout)["command"]
+    configs = [
+        tomllib.loads(command[i + 1])
+        for i, value in enumerate(command)
+        if value == "--config"
+    ]
+    permissions = next(
+        config["permissions"] for config in configs if "permissions" in config
+    )
+    filesystem = permissions["harness-worker"]["filesystem"]
+    assert filesystem[str(worker)] == "write"
+    for name in (".git", ".agents", ".codex", ".aws"):
+        assert filesystem[str(worker / name)] == "read"
+
+
+def fake_app_server(
+    repo: Path, worker: Path, *, changes: dict[str, object] | None = None
+) -> Path:
+    return fake_runtime(
+        repo,
+        f"""import json, os, sys, time
+from pathlib import Path
+evidence = Path({str(repo / 'native-session.json')!r})
+if sys.argv[1] != 'app-server':
+    print('legacy exec cannot expose native thread identity', flush=True)
+    sys.exit(9)
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    if method == 'initialize':
+        result = {{}}
+    elif method == 'thread/start':
+        result = {{'thread': {{'id': 'thread-observed'}}, 'model': 'test-model',
+                   'cwd': {str(worker)!r}, 'reasoningEffort': 'high',
+                   'activePermissionProfile': {{'id': 'harness-worker'}}}}
+        result.update({changes or {}!r})
+    elif method == 'turn/start':
+        evidence.write_text(json.dumps({{'pid': os.getpid(), 'session': os.getsid(0),
+            'cwd': os.getcwd(), 'thread': request['params']['threadId'],
+            'prompt': request['params']['input'][0]['text']}}))
+        result = {{'turn': {{'id': 'turn-worker', 'status': 'inProgress'}}}}
+    else:
+        continue
+    print(json.dumps({{'id': request['id'], 'result': result}}), flush=True)
+    if method == 'turn/start':
+        time.sleep(30)
+        print(json.dumps({{'method': 'turn/completed', 'params': {{'turn': {{'status': 'completed'}}}}}}), flush=True)
+""",
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable and process session")
+def test_codex_worker_receives_native_identity_for_its_own_thread(
+    dispatch: tuple[Path, Path, dict[str, object]],
+) -> None:
+    repo, worker, _ = dispatch
+    binary = fake_app_server(repo, worker)
+    evidence = repo / "native-session.json"
+    try:
+        result = invoke(dispatch, "--codex-bin", str(binary), runtime="codex")
+
+        assert result.returncode == 0, result.stderr
+        data = json.loads(evidence.read_text())
+        assert data["cwd"] == str(worker)
+        assert data["thread"] == "thread-observed"
+        assert "thread/start" in data["prompt"]
+        assert "thread-observed" in data["prompt"]
+        assert '"model": "test-model"' in data["prompt"]
+        assert "dispatch self-report" in data["prompt"]
+    finally:
+        if evidence.exists():
+            os.kill(json.loads(evidence.read_text())["pid"], 15)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable and process session")
+@pytest.mark.parametrize(
+    "changes,reason",
+    [
+        ({"model": "different-model"}, "model"),
+        ({"model": None}, "model"),
+        ({"cwd": "/other-checkout"}, "cwd"),
+        ({"reasoningEffort": "low"}, "reasoningEffort"),
+        ({"activePermissionProfile": {"id": ":workspace"}}, "permission profile"),
+        ({"thread": {}}, "thread identity"),
+    ],
+)
+def test_codex_rejects_native_mismatch_before_sending_worker_task(
+    dispatch: tuple[Path, Path, dict[str, object]],
+    changes: dict[str, object],
+    reason: str,
+) -> None:
+    repo, worker, _ = dispatch
+    binary = fake_app_server(repo, worker, changes=changes)
+
+    result = invoke(dispatch, "--codex-bin", str(binary), runtime="codex")
+
+    assert result.returncode == 1
+    assert reason in result.stderr
+    assert not (repo / "native-session.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -277,7 +415,7 @@ def test_codex_reports_early_exit_with_log_tail(
 ) -> None:
     binary = fake_runtime(
         dispatch[0],
-        f"import sys\nsys.stdin.read()\nprint('fake codex failure', flush=True)\nsys.exit({code})\n",
+        f"import sys\nsys.stdin.readline()\nprint('fake codex failure', flush=True)\nsys.exit({code})\n",
     )
     result = invoke(dispatch, "--codex-bin", str(binary), runtime="codex")
     assert result.returncode == 1
@@ -291,19 +429,16 @@ def test_codex_starts_detached_in_worker_with_stdin(
     dispatch: tuple[Path, Path, dict[str, object]],
 ) -> None:
     repo, worker, _ = dispatch
-    evidence = repo / "started.json"
-    binary = fake_runtime(
-        repo,
-        f"import json, os, sys, time\nfrom pathlib import Path\nprompt = sys.stdin.read()\nPath({str(evidence)!r}).write_text(json.dumps(dict(pid=os.getpid(), session=os.getsid(0), cwd=os.getcwd(), prompt=prompt, args=sys.argv[1:])))\ntime.sleep(30)\n",
-    )
+    evidence = repo / "native-session.json"
+    binary = fake_app_server(repo, worker)
     try:
         result = invoke(dispatch, "--codex-bin", str(binary), runtime="codex")
         assert result.returncode == 0, result.stderr
         data = json.loads(evidence.read_text())
-        assert data["pid"] == data["session"]
+        assert data["session"] != os.getsid(0)
         assert data["cwd"] == str(worker)
         assert "report submit" in data["prompt"]
-        assert data["args"][0] == "exec"
+        assert data["thread"] == "thread-observed"
     finally:
         if evidence.exists():
             os.kill(json.loads(evidence.read_text())["pid"], 15)

@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""Standalone external adapter for a detached ``codex exec`` worker.
+"""Standalone external adapter for a detached Codex app-server worker.
 
 Install through harness init/adopt/update with backend-orchestration. The coordinator invokes
 ``codex_worker.py dispatch --repo <main repo> --brief <immutable brief>`` in the worker checkout.
-Only stdlib is required. Model and effort come from the brief; access selects read-only or
-workspace-write. Flags were checked against the installed ``codex exec --help``.
+Only stdlib is required. Native permissions separate source access from lifecycle writes.
+The worker receives its own thread/start identity and still submits its own self-report.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import queue
 import shlex
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import NotRequired, TypedDict, cast
 
-STARTUP_CHECK_SECONDS = 3
+STARTUP_CHECK_SECONDS = 10
+PERMISSION_PROFILE = "harness-worker"
 
 
 class Liveness(TypedDict):
@@ -104,27 +109,239 @@ def build_prompt(
     )
 
 
-def worker_command(brief: Brief, worktree: Path, binary: str = "codex") -> list[str]:
+def worker_command(
+    brief: Brief, repo: Path, worktree: Path, binary: str = "codex"
+) -> list[str]:
     access = brief.get("access")
     if access not in ("write", "read-only"):
         raise ValueError("access must be write or read-only")
     command = [
         binary,
-        "exec",
-        "--model",
-        brief["resolved_model"],
-        "--sandbox",
-        "workspace-write" if access == "write" else "read-only",
-        "--cd",
-        str(worktree),
-        "--add-dir",
-        str(Path(brief["report_staging_path"]).parent),
-        "--ephemeral",
+        "app-server",
+    ]
+    filesystem = {
+        ":root": "read",
+        str(worktree): "write" if access == "write" else "read",
+        str(repo / ".harness/orchestration/state"): "write",
+        str(Path(brief["report_staging_path"]).parent): "write",
+    }
+    if access == "write":
+        filesystem.update({":tmpdir": "write", ":slash_tmp": "write"})
+        filesystem.update(
+            {
+                str(worktree / name): "read"
+                for name in (".git", ".agents", ".codex", ".aws")
+            }
+        )
+    entries = ", ".join(
+        json.dumps(path) + " = " + json.dumps(mode) for path, mode in filesystem.items()
+    )
+    command += [
+        "--config",
+        'default_permissions="harness-worker"',
+        "--config",
+        'permissions={"harness-worker"={filesystem={' + entries + "}}}",
     ]
     effort = brief.get("resolved_effort")
     if effort:
         command += ["--config", "model_reasoning_effort=" + json.dumps(effort)]
-    return command + ["-"]
+    return command
+
+
+class AppServer:
+    """One native worker connection; observations never replace ledger approval."""
+
+    def __init__(self, command: list[str], cwd: Path) -> None:
+        self.process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=sys.stderr,
+            text=True,
+            encoding="utf-8",
+        )
+        self.messages: queue.Queue[str | None] = queue.Queue()
+        self.notifications: list[dict[str, object]] = []
+        self.sequence = 0
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        assert self.process.stdout is not None
+        for line in self.process.stdout:
+            self.messages.put(line)
+        self.messages.put(None)
+
+    def send(self, message: dict[str, object]) -> None:
+        assert self.process.stdin is not None
+        self.process.stdin.write(json.dumps(message) + "\n")
+        self.process.stdin.flush()
+
+    def receive(self, timeout: float | None = None) -> dict[str, object]:
+        try:
+            line = self.messages.get(timeout=timeout)
+        except queue.Empty as exc:
+            raise ValueError("native runtime startup timed out") from exc
+        if line is None:
+            code = self.process.wait(timeout=2)
+            raise ValueError(f"native runtime exited with {code}")
+        try:
+            message = json.loads(line)
+        except ValueError as exc:
+            try:
+                code = self.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                raise ValueError(
+                    "native runtime returned invalid JSON: " + line[:500]
+                ) from exc
+            raise ValueError(
+                f"native runtime exited with {code}: {line[:500]}"
+            ) from exc
+        if not isinstance(message, dict):
+            raise ValueError("native runtime message must be an object")
+        if "method" in message and "id" in message:
+            self.send(
+                {
+                    "id": message["id"],
+                    "error": {
+                        "code": -32601,
+                        "message": "Unattended worker grants no additional permissions",
+                    },
+                }
+            )
+        return cast(dict[str, object], message)
+
+    def request(self, method: str, params: dict[str, object]) -> dict[str, object]:
+        self.sequence += 1
+        request_id = self.sequence
+        self.send({"id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + STARTUP_CHECK_SECONDS
+        while True:
+            message = self.receive(max(0, deadline - time.monotonic()))
+            if message.get("id") != request_id:
+                self.notifications.append(message)
+                continue
+            if "error" in message:
+                raise ValueError(f"{method} refused: {message['error']}")
+            result = message.get("result")
+            if not isinstance(result, dict):
+                raise ValueError(f"{method} returned no result object")
+            return cast(dict[str, object], result)
+
+    def close(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+
+
+def thread_params(brief: Brief, worktree: Path) -> dict[str, object]:
+    params: dict[str, object] = {
+        "model": brief["resolved_model"],
+        "cwd": str(worktree),
+        "approvalPolicy": "never",
+        "permissions": PERMISSION_PROFILE,
+        "ephemeral": True,
+    }
+    effort = brief.get("resolved_effort")
+    if effort:
+        params["config"] = {"model_reasoning_effort": effort}
+    return params
+
+
+def run_worker(args: argparse.Namespace) -> int:
+    job = json.load(sys.stdin)
+    receipt = Path(job["receipt"])
+    server: AppServer | None = None
+    try:
+        brief = cast(Brief, job["brief"])
+        worktree = Path(job["worktree"])
+        server = AppServer(job["command"], worktree)
+        server.request(
+            "initialize",
+            {
+                "clientInfo": {"name": "harness-worker", "version": "1"},
+                "capabilities": {"experimentalApi": True},
+            },
+        )
+        server.send({"method": "initialized", "params": {}})
+        effort = brief.get("resolved_effort")
+        started = server.request("thread/start", thread_params(brief, worktree))
+        expected = {"model": brief["resolved_model"], "cwd": str(worktree)}
+        if effort:
+            expected["reasoningEffort"] = effort
+        for field, value in expected.items():
+            if started.get(field) != value:
+                raise ValueError(
+                    f"native thread/start {field} mismatch: {started.get(field)!r}"
+                )
+        profile = started.get("activePermissionProfile")
+        if not isinstance(profile, dict) or profile.get("id") != PERMISSION_PROFILE:
+            raise ValueError(
+                "native thread/start did not apply the worker permission profile"
+            )
+        thread = started.get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            raise ValueError("native thread/start returned no thread identity")
+        evidence = {
+            "source": "thread/start",
+            "thread_id": thread["id"],
+            **{field: started[field] for field in expected},
+        }
+        prompt = job["prompt"] + (
+            "\nNative runtime evidence for THIS worker session (not a separate probe):\n"
+            + json.dumps(evidence)
+            + "\nUse this observed model identity for your own mandatory "
+            "self-report. Still probe Git in your actual CWD and stop on any mismatch.\n"
+        )
+        server.request(
+            "turn/start",
+            {
+                "threadId": thread["id"],
+                "input": [{"type": "text", "text": prompt}],
+            },
+        )
+        receipt.write_text(
+            json.dumps({"ready": True, "evidence": evidence}), encoding="utf-8"
+        )
+        while True:
+            message = (
+                server.notifications.pop(0)
+                if server.notifications
+                else server.receive()
+            )
+            method = message.get("method")
+            payload = message.get("params")
+            if not isinstance(payload, dict):
+                continue
+            if method == "item/agentMessage/delta":
+                print(payload.get("delta", ""), end="", flush=True)
+            elif method == "error":
+                raise ValueError(f"native worker error: {payload}")
+            elif method == "turn/completed":
+                turn = payload.get("turn")
+                if not isinstance(turn, dict) or turn.get("status") != "completed":
+                    raise ValueError(f"native worker turn did not complete: {turn}")
+                return 0
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        if not receipt.exists():
+            receipt.write_text(
+                json.dumps({"ready": False, "error": str(exc)}), encoding="utf-8"
+            )
+        print(f"codex worker failed: {exc}", file=sys.stderr, flush=True)
+        return 1
+    finally:
+        if server is not None:
+            server.close()
 
 
 def start(args: argparse.Namespace) -> int:
@@ -162,16 +379,27 @@ def start(args: argparse.Namespace) -> int:
     prompt = build_prompt(brief, brief_path, repo, worktree, sha)
     if args.extra_prompt_file:
         prompt += "\n" + Path(args.extra_prompt_file).read_text(encoding="utf-8")
-    command = worker_command(brief, worktree, args.codex_bin)
+    command = worker_command(brief, repo, worktree, args.codex_bin)
     if args.dry_run:
-        print(json.dumps({"cwd": str(worktree), "command": command, "prompt": prompt}))
+        print(
+            json.dumps(
+                {
+                    "cwd": str(worktree),
+                    "command": command,
+                    "prompt": prompt,
+                    "thread_start": thread_params(brief, worktree),
+                }
+            )
+        )
         return 0
     log = Path(brief["report_staging_path"]).parent.parent / "worker-logs"
     log.mkdir(parents=True, exist_ok=True)
     log_path = log / f"{brief['dispatch_id']}.log"
+    receipt = log / f"{brief['dispatch_id']}.ready.json"
+    receipt.unlink(missing_ok=True)
     with log_path.open("ab") as sink:
         process = subprocess.Popen(
-            command,
+            [sys.executable, str(Path(__file__).resolve()), "_run"],
             cwd=worktree,
             stdin=subprocess.PIPE,
             stdout=sink,
@@ -180,17 +408,45 @@ def start(args: argparse.Namespace) -> int:
         )
     assert process.stdin is not None
     try:
-        process.stdin.write(prompt.encode("utf-8"))
+        process.stdin.write(
+            json.dumps(
+                {
+                    "command": command,
+                    "prompt": prompt,
+                    "brief": brief,
+                    "worktree": str(worktree),
+                    "receipt": str(receipt),
+                }
+            ).encode("utf-8")
+        )
         process.stdin.close()
     except BrokenPipeError:
         process.wait(timeout=STARTUP_CHECK_SECONDS)
-    time.sleep(STARTUP_CHECK_SECONDS)
-    code = process.poll()
-    if code is not None:
-        tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
-        print(f"codex worker exited with {code} at startup: {tail}", file=sys.stderr)
-        return 1
-    return 0
+    deadline = time.monotonic() + STARTUP_CHECK_SECONDS + 2
+    while time.monotonic() < deadline:
+        if receipt.exists():
+            try:
+                result = json.loads(receipt.read_text(encoding="utf-8"))
+            except ValueError:
+                time.sleep(0.02)
+                continue
+            if result.get("ready") is True:
+                return 0
+            process.wait(timeout=3)
+            print(result.get("error", "worker startup failed"), file=sys.stderr)
+            return 1
+        if process.poll() is not None:
+            break
+        time.sleep(0.02)
+    if process.poll() is None:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=3)
+    tail = log_path.read_text(encoding="utf-8", errors="replace")[-500:]
+    print(f"codex worker failed before native readiness: {tail}", file=sys.stderr)
+    return 1
 
 
 def main(argv: list[str]) -> int:
@@ -212,6 +468,8 @@ def main(argv: list[str]) -> int:
         help="print the command and prompt; start nothing",
     )
     dispatch.set_defaults(handler=start)
+    worker = sub.add_parser("_run", help=argparse.SUPPRESS)
+    worker.set_defaults(handler=run_worker)
     args = parser.parse_args(argv)
     try:
         return int(args.handler(args))
