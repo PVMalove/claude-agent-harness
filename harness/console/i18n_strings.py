@@ -863,6 +863,7 @@ EN.update(
 # Diagnostics owns these service labels; health messages and remedies remain report data.
 EN.update(
     {
+        "Все": "All",
         "health выполняется…": "health is running…",
         "Как исправить:": "How to fix:",
         "Применённые фиксы:": "Applied fixes:",
