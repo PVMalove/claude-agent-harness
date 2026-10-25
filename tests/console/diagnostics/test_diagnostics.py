@@ -271,3 +271,64 @@ def test_an_intervening_key_resets_confirmation(tmp_path: Path, key: str) -> Non
             return str(screen.query_one("#apply-fixes", Button).label)
 
     assert asyncio.run(scenario()) == "Исправить"
+
+
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+def test_summary_actions_and_first_group_fit_the_viewport(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    from harness.health.model import Fix
+    from harness.console.shell import Fold, JumpLink
+
+    data = Report(
+        1,
+        "/project",
+        False,
+        [
+            CheckResult(
+                "files.skill_snapshot",
+                "files",
+                "fail",
+                "literal [bold] issue " * 20,
+                Fix("inspect diff", "harness update ."),
+            ),
+            CheckResult("environment.uv", "environment", "ok", "available"),
+            CheckResult("tracker.auth", "tracker", "skipped", "not checked"),
+        ],
+    )
+
+    async def scenario() -> None:
+        screen = DiagnosticsScreen(
+            tmp_path, collect_diagnostics=lambda repo, **kw: data
+        )
+        app = Host(screen)
+        async with app.run_test(size=size) as pilot:
+            await wait_until(pilot, lambda: "files.skill_snapshot" in visible(screen))
+            summary = screen.query_one("#diagnostics-summary", Static)
+            assert "1" in str(summary.content)
+            for selector in (
+                "#diagnostics-summary",
+                "#offline-checks",
+                "#online-checks",
+                "#apply-fixes",
+                "#export",
+                "#check-group-0",
+            ):
+                region = screen.query_one(selector).region
+                assert region.height > 0
+                assert region.y >= 0 and region.bottom <= size[1] - 1, (
+                    selector,
+                    region,
+                )
+            assert screen.query_one("#check-group-0", Fold).collapsed
+            assert screen.query_one(JumpLink).section == "Update Harness"
+            assert "literal [bold] issue" in visible(screen)
+            await pilot.click("#filter-skipped")
+            await pilot.pause()
+            assert "tracker.auth" in visible(screen)
+            assert not screen.query("#check-group-0")
+            await pilot.click("#filter-warn")
+            await pilot.pause()
+            assert "Нет проверок для этого фильтра" in visible(screen)
+
+    asyncio.run(scenario())

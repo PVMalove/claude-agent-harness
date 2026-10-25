@@ -168,7 +168,9 @@ def test_dashboard_menu_opens_a_section_by_its_number(
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.press("4")
-            await wait_until(pilot, lambda: type(app.screen).__name__ == "HarnessScreen")
+            await wait_until(
+                pilot, lambda: type(app.screen).__name__ == "HarnessScreen"
+            )
             return type(app.screen).__name__
 
     assert asyncio.run(scenario()) == "HarnessScreen"
@@ -544,8 +546,7 @@ def test_diagnostics_screen_renders_the_full_report(tmp_path: Path) -> None:
         app = _HostApp()
         async with app.run_test() as pilot:
             await _settle(pilot)
-            report_widget = app.screen.query_one("#diagnostics-report", Static)
-            return str(report_widget.content)
+            return "\n".join(str(widget.content) for widget in screen.query(Static))
 
     rendered = asyncio.run(scenario())
     assert "environment.uv" in rendered
@@ -650,8 +651,9 @@ def test_diagnostics_apply_fixes_never_runs_remedy_commands(
             await _settle(pilot, 0.4)
             await pilot.click("#apply-fixes")
             await _settle(pilot, 0.4)
-            report_widget = app.screen.query_one("#diagnostics-report", Static)
-            return str(report_widget.content), spawned
+            return "\n".join(
+                str(widget.content) for widget in screen.query(Static)
+            ), spawned
 
     rendered, calls = asyncio.run(scenario())
     assert calls == []
@@ -1495,14 +1497,14 @@ def test_diagnostics_switches_language_and_goes_back_with_escape(
             await pilot.press("f2")
             await _settle(pilot)
             crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
-            report = str(screen.query_one("#diagnostics-report", Static).content)
+            report = str(screen.query_one("#diagnostics-summary", Static).content)
             await pilot.press("escape")
             await _settle(pilot)
             return crumbs, report, app.screen is not screen
 
     crumbs, report, went_back = asyncio.run(scenario())
     assert crumbs == "Home  ›  Diagnostics"
-    assert report.startswith("Total: ✔ ok=1")
+    assert report.startswith("✔ 1")
     assert went_back
 
 

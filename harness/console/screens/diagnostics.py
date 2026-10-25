@@ -17,17 +17,27 @@ from typing import Callable, Protocol
 from rich.text import Text
 from textual import events
 from textual.message import Message
+from textual.widget import Widget
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Static
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+from textual.widgets import Button, Collapsible, Static
 
 from ..crumbs import Crumb
-from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
+from ..shell import (
+    SHELL_CSS,
+    ConsoleShell,
+    Fold,
+    JumpLink,
+    SectionCard,
+    WrappedValue,
+    check_route,
+)
 from ..logtext import colorize_log
 from .. import brand, i18n
 from .. import data as console_data
-from ...health.model import Report
+from ...health.model import CheckResult, Report
+from ...health.render import GROUP_LABELS_RU
 from ..export import MarkdownDocument, MarkdownSection
 from .commands import call_from_worker
 from .export import EXPORT_BINDING_KEY, export_document
@@ -169,6 +179,51 @@ class _ApplyLocalFixes(Protocol):
         ...
 
 
+class _CheckCard(SectionCard):
+    """Real health data stays literal; only labels belong to the interface."""
+
+    def __init__(self, check: CheckResult, index: int) -> None:
+        self.check = check
+        super().__init__(title=check.id, id=f"attention-{index}", classes="check-card")
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            _icon(self.check.status) + Text(f"{self.check.id} · {self.check.message}"),
+            classes="check-message no-i18n",
+        )
+        yield Static("", classes="check-remedy no-i18n", markup=False)
+        yield Static(
+            self.check.fix.command if self.check.fix and self.check.fix.command else "",
+            classes="check-command no-i18n",
+            markup=False,
+        )
+        with Horizontal(classes="check-links"):
+            if self.check.fix and self.check.fix.command:
+                yield Button(
+                    "Копировать команду", id=f"copy-command-{self.id}", compact=True
+                )
+            yield JumpLink(check_route(self.check.id).section)
+
+    def relabel(self) -> None:
+        language = getattr(self.app, "language", "ru")
+        # IDs, fixes and commands are report data, never translated by the shell.
+        self.border_title = self.check.id
+        if not self.query(".check-remedy"):
+            return
+        fix = self.check.fix
+        text = (
+            i18n.tr(language, "Как исправить:") + " " + fix.text
+            if fix
+            else i18n.tr(language, "Рекомендация отсутствует")
+        )
+        self.query_one(".check-remedy", Static).update(text)
+        self.query_one(".check-command", Static).update(
+            fix.command
+            if fix and fix.command
+            else i18n.tr(language, "Команда отсутствует — проверьте настройки вручную")
+        )
+
+
 class DiagnosticsScreen(ConsoleShell):
     """Экран диагностики состояния репозитория с возможностью запуска онлайн-проверок и применения исправлений."""
 
@@ -177,11 +232,33 @@ class DiagnosticsScreen(ConsoleShell):
     NARROW_FOOTER_KEYS = ("escape", "e", "f2")
     AUTO_FOCUS = "#diagnostics-scroll"
     CSS = SHELL_CSS + brand.shell_css("""
-    DiagnosticsScreen #diagnostics-scroll { height: 1fr; }
-    DiagnosticsScreen #diagnostics-actions { height: auto; }
-    DiagnosticsScreen .action-row { height: auto; }
-    DiagnosticsScreen .action-row Button { width: 20; }
-    DiagnosticsScreen .action-cli { width: 1fr; padding: 0 0 0 2; color: $text-muted; }
+    DiagnosticsScreen #diagnostics-scroll { height: 1fr; padding: 0 1; }
+    DiagnosticsScreen #diagnostics-heading { height: 1; text-style: bold; }
+    DiagnosticsScreen #diagnostics-manual { height: auto; color: $text-muted; }
+    DiagnosticsScreen #diagnostics-overview { height: auto; }
+    DiagnosticsScreen #diagnostics-summary { height: 1; }
+    DiagnosticsScreen #diagnostics-actions { height: 1; }
+    DiagnosticsScreen #diagnostics-actions Button { width: auto; min-width: 10; height: 1; margin-right: 1; }
+    DiagnosticsScreen .action-cli { height: auto; color: $text-muted; }
+    DiagnosticsScreen #diagnostics-report { height: auto; }
+    DiagnosticsScreen #diagnostics-attention { height: auto; max-height: 17; }
+    DiagnosticsScreen #attention-cards { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: auto; height: auto; }
+    DiagnosticsScreen .check-card { height: auto; }
+    DiagnosticsScreen .check-card Static { height: auto; }
+    DiagnosticsScreen .check-links { height: 1; }
+    DiagnosticsScreen .check-links Button { height: 1; width: auto; min-width: 0; margin-right: 1; }
+    DiagnosticsScreen #diagnostics-filters { height: 1; }
+    DiagnosticsScreen #groups-heading { width: 1fr; }
+    DiagnosticsScreen #diagnostics-filters Button { height: 1; min-width: 7; width: auto; margin-right: 1; }
+    DiagnosticsScreen #diagnostics-groups { height: auto; }
+    DiagnosticsScreen #remaining-groups { border: none; padding: 0; }
+    DiagnosticsScreen #remaining-groups > Contents { padding: 0; }
+    DiagnosticsScreen #remaining-groups > CollapsibleTitle { display: none; }
+    DiagnosticsScreen.-narrow #diagnostics-manual, DiagnosticsScreen.-narrow .action-cli { display: none; }
+    DiagnosticsScreen.-narrow #diagnostics-attention { max-height: 6; }
+    DiagnosticsScreen.-narrow #attention-cards { grid-size: 1; grid-columns: 1fr; }
+    DiagnosticsScreen.-narrow #remaining-groups { border: round $border-subtle; padding: 0 1; }
+    DiagnosticsScreen.-narrow #remaining-groups > CollapsibleTitle { display: block; }
     """)
 
     BINDINGS = [Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown")]
@@ -205,43 +282,57 @@ class DiagnosticsScreen(ConsoleShell):
         self._disposed = False
         self._state = "running"
         self._language = "ru"
+        self._filter = "all"
+        self._failure = ""
 
     def compose_strip(self) -> ComposeResult:
         yield WrappedValue(str(self.repo))
 
     def compose_content(self) -> ComposeResult:
-        """Формирует структуру виджетов экрана диагностики: отчёт и действия в рамках."""
-        with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
-            report.border_title = brand.section_title("Health-отчёт")
-            yield Static(_RUNNING, id="diagnostics-report", markup=False)
-        with Vertical(id="diagnostics-actions", classes="frame") as actions:
-            actions.border_title = brand.section_title("Действия")
-            with Horizontal(classes="action-row"):
-                yield Button("Офлайн", id="offline-checks", compact=True)
+        """Summary, actions, attention cards and all checks in report order."""
+        with VerticalScroll(id="diagnostics-scroll"):
+            yield Static("Диагностика", id="diagnostics-heading")
+            yield Static(_MANUAL_NOTE, id="diagnostics-manual")
+            with SectionCard(title="Health-отчёт", id="diagnostics-overview"):
+                yield Static("", id="diagnostics-summary", classes="no-i18n")
+                with Horizontal(id="diagnostics-actions"):
+                    yield Button("Офлайн", id="offline-checks", compact=True)
+                    yield Button("Онлайн", id="online-checks", compact=True)
+                    yield Button(_APPLY_LABEL, id="apply-fixes", compact=True)
+                    yield Button("Экспорт", id="export", compact=True)
                 yield Static(
-                    f"$ {console_data.health_cli_line(self.repo)}",
+                    "",
                     id="offline-checks-cli",
-                    classes="action-cli",
+                    classes="action-cli no-i18n",
                     markup=False,
                 )
-            with Horizontal(classes="action-row"):
-                yield Button("Онлайн", id="online-checks", compact=True)
                 yield Static(
-                    f"$ {console_data.health_cli_line(self.repo, '--online')}",
+                    "",
                     id="online-checks-cli",
-                    classes="action-cli",
+                    classes="action-cli no-i18n",
                     markup=False,
                 )
-            with Horizontal(classes="action-row"):
-                yield Button(_APPLY_LABEL, id="apply-fixes", compact=True)
                 yield Static(
-                    f"$ {console_data.health_cli_line(self.repo, '--fix')}",
-                    id="apply-fixes-cli",
-                    classes="action-cli",
-                    markup=False,
+                    "", id="apply-fixes-cli", classes="action-cli no-i18n", markup=False
                 )
-            with Horizontal(classes="action-row"):
-                yield Button("Экспорт", id="export", compact=True)
+            yield Static(
+                _RUNNING, id="diagnostics-report", classes="no-i18n", markup=False
+            )
+            with VerticalScroll(id="diagnostics-attention"):
+                yield Static("Требует исправления", id="attention-heading")
+                yield Grid(id="attention-cards")
+            with Horizontal(id="diagnostics-filters"):
+                yield Static("Проверки по группам", id="groups-heading")
+                for status, label in (
+                    ("all", "Все"),
+                    ("fail", "✖"),
+                    ("warn", "⚠"),
+                    ("skipped", "○"),
+                ):
+                    yield Button(
+                        label, id=f"filter-{status}", compact=True, classes="no-i18n"
+                    )
+            yield Vertical(id="diagnostics-groups")
 
     def on_mount(self) -> None:
         """Запускает первичное построение отчёта проверок при монтировании экрана."""
@@ -268,6 +359,24 @@ class DiagnosticsScreen(ConsoleShell):
         """Обрабатывает нажатия кнопок экрана (онлайн-проверки, применение фиксов, экспорт)."""
         if event.button.id != "apply-fixes":
             self._reset_apply()
+        button_id = event.button.id or ""
+        if button_id.startswith("filter-"):
+            self._filter = button_id.removeprefix("filter-")
+            self._render_groups()
+            return
+        if button_id.startswith("copy-command-"):
+            card = next(
+                (
+                    item
+                    for item in self.query(_CheckCard)
+                    if f"copy-command-{item.id}" == button_id
+                ),
+                None,
+            )
+            if card is not None and card.check.fix and card.check.fix.command:
+                self.app.copy_to_clipboard(card.check.fix.command)
+                self.notify(i18n.tr(self._language, "Команда скопирована"))
+            return
         if event.button.id == "offline-checks":
             self._reset_apply()
             self._run_health(lambda: self._collect_diagnostics(self.repo))
@@ -344,10 +453,11 @@ class DiagnosticsScreen(ConsoleShell):
         if language != self._language:
             self._language = language
             self._reset_apply()
-        if self._report is not None:
-            self.query_one("#diagnostics-report", Static).update(
-                _styled_report(self._report, getattr(self.app, "language", "ru"))
-            )
+        self._render_overview()
+        self._render_state()
+        for card in self.query(_CheckCard):
+            card.relabel()
+        self._relabel_groups()
 
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
@@ -366,7 +476,10 @@ class DiagnosticsScreen(ConsoleShell):
         self._state = "running"
         self._report = None
         self._reset_apply()
-        self.query_one("#diagnostics-report", Static).update(_RUNNING)
+        self.query_one("#attention-cards").remove_children()
+        self.query_one("#diagnostics-groups").remove_children()
+        self._render_overview()
+        self._render_state()
 
         def current() -> bool:
             return (
@@ -407,21 +520,166 @@ class DiagnosticsScreen(ConsoleShell):
         """Отображает причину, по которой отчёт health не построен."""
         self._state = "failed"
         self._report = None
-        self.query_one("#diagnostics-report", Static).update(
-            f"health не выполнен: {text}"
-        )
+        self._failure = text
+        self._render_overview()
+        self._render_state()
 
     def _show(self, report: Report) -> None:
-        """Отображает готовый отчёт health и обновляет строку эквивалента CLI на экране."""
+        """Publish only actual health facts, with separate cards and complete groups."""
         self._state = "ready"
         self._report = report
-        self.query_one("#diagnostics-report", Static).update(
-            _styled_report(report, getattr(self.app, "language", "ru"))
+        self._render_overview()
+        self._render_state()
+        attention = [
+            check for check in report.checks if check.status in ("fail", "warn")
+        ]
+        self._replace_contents(
+            "#attention-cards",
+            *(_CheckCard(check, index) for index, check in enumerate(attention)),
         )
-        flags = ("--online", "--fix") if report.online else ("--fix",)
+        self.query_one("#diagnostics-attention").display = bool(attention)
+        self._render_groups()
+
+    def _render_state(self) -> None:
+        text = _RUNNING if self._state == "running" else ""
+        if self._state == "failed":
+            text = f"health не выполнен: {self._failure}\nОтчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9)."
+        elif self._report and self._report.fixes_applied:
+            text = "Применённые фиксы:\n" + "\n".join(self._report.fixes_applied)
+        self.query_one("#diagnostics-report", Static).update(text)
+        self.query_one("#diagnostics-report").display = bool(text)
+        if self._report is None:
+            self.query_one("#diagnostics-attention").display = False
+
+    def _render_overview(self) -> None:
+        report = self._report
+        summary = Text()
+        if report is not None:
+            counts = report.summary()
+            for status, label in (
+                ("ok", "успешно"),
+                ("warn", "предупреждения"),
+                ("fail", "ошибки"),
+                ("skipped", "не проверено"),
+            ):
+                summary.append_text(_icon(status, muted=counts[status] == 0))
+                summary.append(f"{counts[status]} {label}  ")
+            total = len(report.checks)
+            summary.append(f"· проверено {total - counts['skipped']} из {total}")
+        self.query_one("#diagnostics-summary", Static).update(summary)
+        self.query_one("#diagnostics-summary").display = report is not None
+        self.query_one("#offline-checks-cli", Static).update(
+            f"$ {console_data.health_cli_line(self.repo)} · ○ не проверено ≠ успешно"
+        )
+        self.query_one("#online-checks-cli", Static).update(
+            f"$ {console_data.health_cli_line(self.repo, '--online')}"
+        )
+        flags = ("--online", "--fix") if report and report.online else ("--fix",)
         self.query_one("#apply-fixes-cli", Static).update(
             f"$ {console_data.health_cli_line(self.repo, *flags)}"
         )
+        for status in ("all", "fail", "warn", "skipped"):
+            label = (
+                "Все"
+                if status == "all"
+                else f"{brand.STATUS_ICONS[status]} {report.summary()[status] if report else 0}"
+            )
+            button = self.query_one(f"#filter-{status}", Button)
+            button.label = label
+            button.variant = "primary" if self._filter == status else "default"
+        mode = "онлайн" if report and report.online else "офлайн"
+        self.query_one(WrappedValue).set_value(f"{self.repo} · режим: {mode}")
+
+    def _group_text(self, checks: list[CheckResult]) -> Text:
+        text = Text()
+        for check in checks:
+            text.append_text(_icon(check.status))
+            text.append(f"{check.id}: {check.message}\n")
+            if check.fix:
+                text.append(f"Как исправить: {check.fix.text}\n")
+                if check.fix.command:
+                    text.append(f"{check.fix.command}\n")
+        return text
+
+    def _replace_contents(self, selector: str, *widgets: Widget) -> None:
+        async def replace() -> None:
+            container = self.query_one(selector)
+            await container.remove_children()
+            if self.is_mounted and not self._disposed:
+                await container.mount(*widgets)
+
+        self.run_worker(replace(), group=f"render-{selector}", exclusive=True)
+
+    def _render_groups(self) -> None:
+        self._render_overview()
+        if self._report is None:
+            return
+        groups: dict[str, list[CheckResult]] = {}
+        indices: dict[str, int] = {}
+        for check in self._report.checks:
+            indices.setdefault(check.group, len(indices))
+            if self._filter == "all" or check.status == self._filter:
+                groups.setdefault(check.group, []).append(check)
+        folds = []
+        for group, checks in groups.items():
+            counts = Report(1, "", False, checks).summary()
+            summary = " · ".join(
+                f"{brand.STATUS_ICONS[status]} {count}"
+                for status, count in counts.items()
+                if count
+            )
+            fold = Fold(
+                Static(self._group_text(checks), classes="group-checks no-i18n"),
+                title=GROUP_LABELS_RU.get(group, group),
+                summary=summary,
+                id=f"check-group-{indices[group]}",
+            )
+            folds.append(fold)
+        if not folds:
+            self._replace_contents(
+                "#diagnostics-groups",
+                Static(
+                    "Нет проверок для этого фильтра", classes="no-i18n", markup=False
+                ),
+            )
+            return
+        remaining = Fold(
+            *folds[1:],
+            title="Остальные группы",
+            summary=str(len(folds) - 1),
+            collapsed=self.app.size.width < brand.NARROW_WIDTH,
+            id="remaining-groups",
+        )
+        remaining.display = len(folds) > 1
+        self._replace_contents("#diagnostics-groups", folds[0], remaining)
+
+    def _relabel_groups(self) -> None:
+        if self._report is None:
+            return
+        groups: dict[str, list[CheckResult]] = {}
+        for check in self._report.checks:
+            groups.setdefault(check.group, []).append(check)
+        for index, checks in enumerate(groups.values()):
+            matches = self.query(f"#check-group-{index} .group-checks")
+            if matches:
+                matches.first(Static).update(
+                    self._group_text(
+                        [
+                            check
+                            for check in checks
+                            if self._filter == "all" or check.status == self._filter
+                        ]
+                    )
+                )
+
+    def on_collapsible_toggled(self, event: Collapsible.Toggled) -> None:
+        self._reset_apply()
+
+    def on_resize(self, event: events.Resize) -> None:
+        ConsoleShell.on_resize(self, event)
+        matches = self.query("#remaining-groups")
+        if matches:
+            matches.first(Fold).collapsed = event.size.width < brand.NARROW_WIDTH
 
     def _apply_button(self) -> Button:
         """Возвращает кнопку применения фиксов экрана."""
