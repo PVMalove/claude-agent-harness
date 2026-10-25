@@ -16,7 +16,7 @@ from typing import Callable, Protocol
 
 from rich.text import Text
 from rich.markup import escape
-from textual import events
+from textual import events, on
 from textual.message import Message
 from textual.widget import Widget
 from textual.app import ComposeResult
@@ -247,8 +247,10 @@ class DiagnosticsScreen(ConsoleShell):
     DiagnosticsScreen #diagnostics-summary { height: 1; }
     DiagnosticsScreen #diagnostics-actions { height: 1; }
     DiagnosticsScreen #diagnostics-actions Button { width: auto; min-width: 10; height: 1; margin-right: 1; }
+    DiagnosticsScreen #diagnostics-actions #apply-fixes { width: 21; }
     DiagnosticsScreen .action-cli { height: auto; color: $text-muted; }
     DiagnosticsScreen #diagnostics-report { height: auto; }
+    DiagnosticsScreen #diagnostics-confirmation { height: 2; color: $text-muted; }
     DiagnosticsScreen #diagnostics-attention { height: auto; max-height: 17; }
     DiagnosticsScreen #attention-cards { layout: grid; grid-size: 2; grid-columns: 1fr 1fr; grid-rows: auto; height: auto; }
     DiagnosticsScreen .check-card { height: auto; }
@@ -326,6 +328,9 @@ class DiagnosticsScreen(ConsoleShell):
                 )
             yield Static(
                 _RUNNING, id="diagnostics-report", classes="no-i18n", markup=False
+            )
+            yield Static(
+                "", id="diagnostics-confirmation", classes="no-i18n", markup=False
             )
             with VerticalScroll(id="diagnostics-attention"):
                 yield Static("Требует исправления", id="attention-heading")
@@ -580,10 +585,13 @@ class DiagnosticsScreen(ConsoleShell):
             text = (
                 tr("Применённые фиксы:") + "\n" + "\n".join(self._report.fixes_applied)
             )
-        if self._confirming_apply:
-            text = tr(
+        self.query_one("#diagnostics-confirmation", Static).update(
+            tr(
                 "Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными."
             )
+            if self._confirming_apply
+            else ""
+        )
         self.query_one("#diagnostics-report", Static).update(text)
         self.query_one("#diagnostics-report").display = bool(text)
         if self._report is None:
@@ -741,6 +749,7 @@ class DiagnosticsScreen(ConsoleShell):
                     )
                 )
 
+    @on(Collapsible.Toggled)
     def on_collapsible_toggled(self, event: Collapsible.Toggled) -> None:
         self._reset_apply()
 
