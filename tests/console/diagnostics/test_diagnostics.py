@@ -439,3 +439,262 @@ def test_running_failure_and_fix_explanations_follow_the_current_language(
             release.set()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_bilingual_viewport_and_filters_keep_actual_totals(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from harness.console.shell import Fold
+    from tests.console.diagnostics.snapshots import SnapshotHost, fixture_report
+
+    async def scenario() -> None:
+        data = fixture_report()
+        screen = DiagnosticsScreen(
+            tmp_path, collect_diagnostics=lambda repo, **kw: data
+        )
+        # The snapshot host uses real F1/F2 and the console theme.
+        from typing import cast
+        from textual.screen import Screen
+
+        app = SnapshotHost(tmp_path, lambda repo: cast(Screen[object], screen))
+        async with app.run_test(size=size) as pilot:
+            await wait_until(pilot, lambda: "files.skill_snapshot" in visible(screen))
+            if language == "en":
+                await pilot.press("f2")
+                await pilot.pause()
+            summary = str(screen.query_one("#diagnostics-summary", Static).content)
+            assert (
+                "✔ 5" in summary
+                and "✖ 2" in summary
+                and "○ 2" in summary
+                and "⚠ 0" in summary
+            )
+            for selector in (
+                "#diagnostics-summary",
+                "#offline-checks",
+                "#online-checks",
+                "#apply-fixes",
+                "#export",
+                "#check-group-0",
+            ):
+                region = screen.query_one(selector).region
+                assert 0 <= region.y < region.bottom <= size[1] - 1
+                assert region.x >= 0 and region.right <= size[0]
+            assert (
+                screen.query_one("#diagnostics-summary").region.y
+                < screen.query_one("#diagnostics-actions").region.y
+                < screen.query_one("#attention-cards").region.y
+                < screen.query_one("#diagnostics-groups").region.y
+            )
+            await pilot.click("#filter-skipped")
+            await pilot.pause()
+            assert (
+                str(screen.query_one("#diagnostics-summary", Static).content) == summary
+            )
+            assert "tracker.auth" in visible(screen)
+            assert "files.skill_snapshot" not in "\n".join(
+                str(item.content)
+                for item in screen.query(".group-checks").results(Static)
+            )
+            await pilot.click("#filter-warn")
+            await pilot.pause()
+            expected = (
+                "No checks match this filter"
+                if language == "en"
+                else "Нет проверок для этого фильтра"
+            )
+            assert expected in visible(screen)
+            await pilot.click("#filter-all")
+            await pilot.pause()
+            first = screen.query_one("#check-group-0", Fold)
+            assert first.collapsed
+            first.collapsed = False
+            await pilot.pause()
+            assert "files.integrations" in visible(screen)
+            # Resize preserves the selected filter and keeps groups keyboard accessible.
+            await pilot.resize_terminal(80, 24)
+            await pilot.resize_terminal(160, 52)
+            screen.query_one("#filter-all", Button).focus()
+            await pilot.press("tab")
+            assert app.focused is not None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "action", ["filter", "group", "copy", "menu", "scroll", "mouse-export"]
+)
+def test_visible_actions_reset_confirmation_and_only_consecutive_fix_applies(
+    tmp_path: Path, action: str
+) -> None:
+    from typing import cast
+    from textual import events
+    from textual.screen import Screen
+    from harness.console.shell import Fold
+    from tests.console.diagnostics.snapshots import SnapshotHost, fixture_report
+
+    applied: list[bool] = []
+
+    def fix(repo: Path, *, online: bool = False) -> Report:
+        applied.append(online)
+        return fixture_report(online=online, applied=True)
+
+    async def scenario() -> None:
+        screen = DiagnosticsScreen(
+            tmp_path,
+            collect_diagnostics=lambda repo, **kw: fixture_report(online=True),
+            apply_local_fixes=fix,
+        )
+        app = SnapshotHost(tmp_path, lambda repo: cast(Screen[object], screen))
+        async with app.run_test(size=(160, 52)) as pilot:
+            await wait_until(pilot, lambda: "files.skill_snapshot" in visible(screen))
+            await app.workers.wait_for_complete()
+            if action == "copy":
+                screen.query_one("#copy-command-attention-0", Button).scroll_visible(
+                    animate=False
+                )
+                await pilot.pause()
+            await wait_until(
+                pilot,
+                lambda: not screen.query_one("#apply-fixes", Button).has_class(
+                    "-active"
+                ),
+            )
+            assert await pilot.click("#apply-fixes")
+            assert (
+                str(screen.query_one("#apply-fixes", Button).label)
+                == "Подтвердить фиксы"
+            )
+            if action == "filter":
+                await pilot.click("#filter-fail")
+            elif action == "group":
+                screen.query_one("#check-group-0", Fold).collapsed = False
+            elif action == "copy":
+                button = screen.query_one("#copy-command-attention-0", Button)
+                button.scroll_visible(animate=False)
+                await pilot.pause()
+                assert await pilot.click("#copy-command-attention-0"), (
+                    button.region,
+                    screen.query_one("#diagnostics-attention").region,
+                    screen.query_one("#diagnostics-attention").scroll_y,
+                )
+                await pilot.pause()
+                assert app.clipboard == "harness update .", (
+                    button.region,
+                    screen.query_one("#diagnostics-attention").region,
+                    screen.query_one("#diagnostics-attention").scroll_y,
+                )
+            elif action == "menu":
+                await screen.action_section(3)
+            elif action == "scroll":
+                screen.post_message(
+                    events.MouseScrollDown(screen, 1, 1, 0, 1, 0, False, False, False)
+                )
+            else:
+                await pilot.click("#export")
+                assert len(list(tmp_path.rglob("*health-report.md"))) == 1
+            await pilot.pause()
+            assert str(screen.query_one("#apply-fixes", Button).label) == "Исправить"
+            await wait_until(
+                pilot,
+                lambda: not screen.query_one("#apply-fixes", Button).has_class(
+                    "-active"
+                ),
+            )
+            assert await pilot.click("#apply-fixes")
+            assert not applied
+            assert (
+                str(screen.query_one("#apply-fixes", Button).label)
+                == "Подтвердить фиксы"
+            )
+            await wait_until(
+                pilot,
+                lambda: not screen.query_one("#apply-fixes", Button).has_class(
+                    "-active"
+                ),
+            )
+            assert await pilot.click("#apply-fixes")
+            await wait_until(pilot, lambda: bool(applied))
+            assert applied == [True]
+            assert "--online --fix" in str(
+                screen.query_one("#apply-fixes-cli", Static).content
+            )
+
+    asyncio.run(scenario())
+
+
+def test_queued_cancelled_check_is_never_executed(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    calls: list[bool] = []
+
+    def collect(repo: Path, *, online: bool = False) -> Report:
+        calls.append(online)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(10)
+        return report("online" if online else "offline", online=online)
+
+    async def scenario() -> None:
+        screen = DiagnosticsScreen(tmp_path, collect_diagnostics=collect)
+        app = Host(screen)
+        try:
+            async with app.run_test(size=(160, 52)) as pilot:
+                assert await asyncio.to_thread(entered.wait, 5)
+                activate(screen, "online-checks")
+                await pilot.pause()
+                activate(screen, "offline-checks")
+                release.set()
+                await wait_until(
+                    pilot, lambda: "files.lock: offline" in visible(screen)
+                )
+                await app.workers.wait_for_complete()
+                assert calls == [False, False]
+        finally:
+            release.set()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("size", [(160, 52), (80, 24)])
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_two_consecutive_keyboard_fix_actions_apply_once(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    from typing import cast
+
+    from textual.screen import Screen
+
+    from tests.console.diagnostics.snapshots import SnapshotHost, fixture_report
+
+    applied: list[bool] = []
+
+    def fix(repo: Path, *, online: bool = False) -> Report:
+        applied.append(online)
+        return fixture_report(online=online, applied=True)
+
+    async def scenario() -> None:
+        screen = DiagnosticsScreen(
+            tmp_path,
+            collect_diagnostics=lambda repo, **kw: fixture_report(online=True),
+            apply_local_fixes=fix,
+        )
+        app = SnapshotHost(tmp_path, lambda repo: cast(Screen[object], screen))
+        async with app.run_test(size=size) as pilot:
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            if language == "en":
+                await pilot.press("f2")
+            button = screen.query_one("#apply-fixes", Button)
+            button.focus()
+            await pilot.press("enter")
+            assert not applied
+            await wait_until(pilot, lambda: not button.has_class("-active"))
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: applied == [True])
+            await app.workers.wait_for_complete()
+            assert "Создан каталог .harness/logs" in visible(screen)
+
+    asyncio.run(scenario())
