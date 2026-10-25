@@ -544,8 +544,7 @@ def test_diagnostics_screen_renders_the_full_report(tmp_path: Path) -> None:
         app = _HostApp()
         async with app.run_test() as pilot:
             await _settle(pilot)
-            report_widget = app.screen.query_one("#diagnostics-report", Static)
-            return str(report_widget.content)
+            return "\n".join(str(widget.content) for widget in screen.query(Static))
 
     rendered = asyncio.run(scenario())
     assert "environment.uv" in rendered
@@ -650,8 +649,9 @@ def test_diagnostics_apply_fixes_never_runs_remedy_commands(
             await _settle(pilot, 0.4)
             await pilot.click("#apply-fixes")
             await _settle(pilot, 0.4)
-            report_widget = app.screen.query_one("#diagnostics-report", Static)
-            return str(report_widget.content), spawned
+            return "\n".join(
+                str(widget.content) for widget in screen.query(Static)
+            ), spawned
 
     rendered, calls = asyncio.run(scenario())
     assert calls == []
@@ -776,7 +776,7 @@ def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
 ) -> None:
     """Проверить, что экран диагностики отображает эквиваленты CLI и экспортирует отчёт."""
 
-    async def scenario() -> tuple[str, str]:
+    async def scenario() -> str:
         """Сценарий проверки строк CLI и экспорта отчёта диагностики."""
         from textual.app import App
         from textual.widgets import Static
@@ -795,15 +795,14 @@ def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
         app = _HostApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            online_cli = str(app.screen.query_one("#online-checks-cli", Static).content)
-            fix_cli = str(app.screen.query_one("#apply-fixes-cli", Static).content)
+            cli = str(app.screen.query_one("#diagnostics-cli", Static).content)
             await pilot.click("#export")
             await _settle(pilot)
-        return online_cli, fix_cli
+        return cli
 
-    online_cli, fix_cli = asyncio.run(scenario())
-    assert online_cli.endswith("--online")
-    assert fix_cli.endswith("--fix")
+    cli = asyncio.run(scenario())
+    assert cli.startswith("$ harness health $REPO · --online для «Онлайн» · --fix для")
+    assert str(tmp_path) not in cli
     exported = list(
         (tmp_path / "docs" / "tasks" / "console-exports").glob("*health-report.md")
     )
@@ -1105,7 +1104,8 @@ def test_diagnostics_shows_why_health_failed_instead_of_running_forever(
 
     rendered = asyncio.run(scenario())
     assert "health не выполнен" in rendered
-    assert "ValueError('broken check')" in rendered
+    assert "broken check" in rendered
+    assert "ValueError(" not in rendered
 
 
 def test_switching_the_project_shows_its_head_commit_in_the_banner(
@@ -1495,14 +1495,14 @@ def test_diagnostics_switches_language_and_goes_back_with_escape(
             await pilot.press("f2")
             await _settle(pilot)
             crumbs = crumb_text(screen.query_one("#shell-breadcrumbs", Breadcrumbs))
-            report = str(screen.query_one("#diagnostics-report", Static).content)
+            report = str(screen.query_one("#diagnostics-summary", Static).content)
             await pilot.press("escape")
             await _settle(pilot)
             return crumbs, report, app.screen is not screen
 
     crumbs, report, went_back = asyncio.run(scenario())
     assert crumbs == "Home  ›  Diagnostics"
-    assert report.startswith("Total: ✔ ok=1")
+    assert report.startswith("✔ 1")
     assert went_back
 
 

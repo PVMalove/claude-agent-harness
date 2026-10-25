@@ -8,6 +8,11 @@ is not listed: it comes from the CLI and stays as it is."""
 from __future__ import annotations
 
 EN: dict[str, str] = {
+    "Подтвердить фиксы": "Confirm fixes",
+    "нечего экспортировать: отчёт ещё строится": "Nothing to export: the report is still building",
+    "нечего экспортировать: отчёт не построен": "Nothing to export: no report was built",
+    "Исправление недоступно: дождитесь отчёта": "Fix is unavailable: wait for the report",
+    "Исправление недоступно: повторите проверку": "Fix is unavailable: run the checks again",
     "Дождитесь окончания операции": "Wait for the operation to finish",
     "Рабочее пространство": "Workspace",
     "Продолжите работу в выбранной сессии или откройте другой проект.": "Continue a session or open another project.",
@@ -359,6 +364,11 @@ EN: dict[str, str] = {
 # Labels of the facts in the home screen's context cards. Kept apart from `EN`: a label such as
 # `Состояние` reads differently here than as a frame title.
 FACT_LABELS_EN: dict[str, str] = {
+    "Подтвердить фиксы": "Confirm fixes",
+    "нечего экспортировать: отчёт ещё строится": "Nothing to export: the report is still building",
+    "нечего экспортировать: отчёт не построен": "Nothing to export: no report was built",
+    "Исправление недоступно: дождитесь отчёта": "Fix is unavailable: wait for the report",
+    "Исправление недоступно: повторите проверку": "Fix is unavailable: run the checks again",
     "Проект": "Project",
     "Ветка": "Branch",
     "Установлен": "Installed",
@@ -392,6 +402,11 @@ EN_PREFIXES: dict[str, str] = {
 }
 
 RU_FROM_EN: dict[str, str] = {
+    "Confirm fixes": "Подтвердить фиксы",
+    "Nothing to export: the report is still building": "нечего экспортировать: отчёт ещё строится",
+    "Nothing to export: no report was built": "нечего экспортировать: отчёт не построен",
+    "Fix is unavailable: wait for the report": "Исправление недоступно: дождитесь отчёта",
+    "Fix is unavailable: run the checks again": "Исправление недоступно: повторите проверку",
     "Both files": "Оба файла",
     "Save version": "Сохранить версию",
     "Versions / restore": "Версии и откат",
@@ -513,7 +528,7 @@ EN_PHRASES: dict[str, str] = {
     "карта HEAD": "map of HEAD",
     "из кэша": "from cache",
     "Итого:": "Total:",
-    "Команды «Как исправить» пульт не выполняет — запустите их вручную.": "The console does not run the “How to fix” commands — run them manually.",
+    "Команды «Как исправить» консоль не выполняет — запустите их вручную.": "The console does not run the “How to fix” commands — run them manually.",
     "Как исправить:": "How to fix:",
     "Применённые фиксы:": "Applied fixes:",
     "дрейф: есть": "drift: yes",
@@ -844,3 +859,51 @@ EN.update(
         "Путь изменился; проверьте его ещё раз": "The path changed; check it again",
     }
 )
+
+# Diagnostics owns these service labels; health messages and remedies remain report data.
+EN.update(
+    {
+        "Все": "All",
+        "health выполняется…": "health is running…",
+        "Как исправить:": "How to fix:",
+        "Применённые фиксы:": "Applied fixes:",
+        "Файлы харнесса": "Harness files",
+        "Память проекта": "Project memory",
+        "Окружение": "Environment",
+        "Hooks проекта": "Project hooks",
+        "Каталоги харнесса": "Harness directories",
+        "Трекер задач": "Issue tracker",
+        "Остальные группы": "Remaining groups",
+        "Проверки по группам": "Checks by group",
+        "Требует исправления": "Needs attention",
+        "успешно": "passed",
+        "предупреждения": "warnings",
+        "ошибки": "errors",
+        "не проверено": "not checked",
+        "ок": "ok",
+        "предупр.": "warn",
+        "не пров.": "unchecked",
+        "проверено {checked} из {total}": "checked {checked} of {total}",
+        "офлайн": "offline",
+        "онлайн": "online",
+        "○ не проверено ≠ успешно": "○ not checked ≠ passed",
+        "Нет проверок для этого фильтра": "No checks match this filter",
+        "Рекомендация отсутствует": "No recommendation available",
+        "Команда отсутствует — проверьте настройки вручную": "No command — inspect settings manually",
+        "Копировать команду": "Copy command",
+        "Команда скопирована": "Command copied",
+        "health не выполнен:": "health failed:",
+        "Сводка и список появятся после завершения.": "Summary and checks appear when finished.",
+        "Отчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9).": "No report. Retry: Offline. If it persists, open Help (9).",
+        "Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными.": "Only internal fixes are applied. How to fix commands remain manual.",
+        "для «Онлайн»": "for Online",
+        "для «Исправить» (два шага)": "for Fix (two steps)",
+        "Отчёт harness health. Команды «Как исправить» консоль не выполняет — запустите их вручную.": "The harness health report. The console does not run the “How to fix” commands — run them manually.",
+        "Экспорт — клавиша e": "Export — key e",
+        "Проект: {name} · режим: {mode} · отчёт построен {when}": "Project: {name} · mode: {mode} · report built {when}",
+        "Проект: {name} · режим: {mode} · отчёт строится": "Project: {name} · mode: {mode} · report is building",
+        "Проект: {name} · режим: {mode} · отчёт не построен": "Project: {name} · mode: {mode} · no report",
+        "групп:": "groups:",
+    }
+)
+EN_PHRASES.update({"нужна «Онлайн»": "needs Online"})
