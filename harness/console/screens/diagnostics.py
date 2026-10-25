@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -40,15 +41,21 @@ from .. import data as console_data
 from ...health.model import CheckResult, Report
 from ...health.render import GROUP_LABELS_RU
 from ..export import MarkdownDocument, MarkdownSection
-from .commands import call_from_worker
+from .commands import call_from_worker, short_repo
 from .export import EXPORT_BINDING_KEY, export_document
 
 _STATUS_MARKERS = {"ok": "[OK]", "warn": "[WARN]", "fail": "[FAIL]", "skipped": "-"}
 _APPLY_LABEL = "Исправить"
 _CONFIRM_LABEL = "Подтвердить фиксы"
-_MANUAL_NOTE = "Команды «Как исправить» пульт не выполняет — запустите их вручную."
+_MANUAL_NOTE = "Команды «Как исправить» консоль не выполняет — запустите их вручную."
+_SUBTITLE = "Отчёт harness health. " + _MANUAL_NOTE
 _RUNNING = "health выполняется…"
 _CORE_LOCK = threading.Lock()
+
+
+def _now() -> datetime:
+    """The clock of the screen (patched in the snapshot generator for stable pictures)."""
+    return datetime.now()
 
 
 def render_report(report: Report) -> str:
@@ -248,6 +255,7 @@ class DiagnosticsScreen(ConsoleShell):
     DiagnosticsScreen #diagnostics-actions { height: 1; }
     DiagnosticsScreen #diagnostics-actions Button { width: auto; min-width: 10; height: 1; margin-right: 1; }
     DiagnosticsScreen #diagnostics-actions #apply-fixes { width: 21; }
+    DiagnosticsScreen #diagnostics-export-hint { width: auto; text-align: right; }
     DiagnosticsScreen .action-cli { height: auto; color: $text-muted; }
     DiagnosticsScreen #diagnostics-report { height: auto; }
     DiagnosticsScreen #diagnostics-confirmation { height: 2; color: $text-muted; }
@@ -265,13 +273,14 @@ class DiagnosticsScreen(ConsoleShell):
     DiagnosticsScreen #remaining-groups > Contents { padding: 0; }
     DiagnosticsScreen #remaining-groups > CollapsibleTitle { display: none; }
     DiagnosticsScreen.-narrow #diagnostics-manual, DiagnosticsScreen.-narrow .action-cli { display: none; }
+    DiagnosticsScreen.-narrow .context-strip { display: none; }
     DiagnosticsScreen.-narrow #diagnostics-attention { max-height: 4; }
     DiagnosticsScreen.-narrow #attention-cards { grid-size: 1; grid-columns: 1fr; }
     DiagnosticsScreen.-narrow #remaining-groups { border: round $border-subtle; padding: 0 1; }
     DiagnosticsScreen.-narrow #remaining-groups > CollapsibleTitle { display: block; }
     """)
 
-    BINDINGS = [Binding(EXPORT_BINDING_KEY, "export", "Экспорт в Markdown")]
+    BINDINGS = [Binding(EXPORT_BINDING_KEY, "export", "Экспорт")]
 
     def __init__(
         self,
@@ -295,16 +304,18 @@ class DiagnosticsScreen(ConsoleShell):
         self._filter = "all"
         self._failure = ""
         self._requested_online = False
+        self._built_at: datetime | None = None
 
     def compose_strip(self) -> ComposeResult:
-        yield WrappedValue(str(self.repo))
+        yield WrappedValue(self._strip_text())
+        yield Static("Экспорт — клавиша e", id="diagnostics-export-hint")
 
     def compose_content(self) -> ComposeResult:
         """Summary, actions, attention cards and all checks in report order."""
         with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
             report.border_title = brand.section_title("Health-отчёт")
             yield Static("Диагностика", id="diagnostics-heading")
-            yield Static(_MANUAL_NOTE, id="diagnostics-manual")
+            yield Static(_SUBTITLE, id="diagnostics-manual")
             with SectionCard(title="Health-отчёт", id="diagnostics-overview"):
                 yield Static("", id="diagnostics-summary", classes="no-i18n")
                 with Horizontal(id="diagnostics-actions"):
@@ -313,19 +324,7 @@ class DiagnosticsScreen(ConsoleShell):
                     yield Button(_APPLY_LABEL, id="apply-fixes", compact=True)
                     yield Button("Экспорт", id="export", compact=True)
                 yield Static(
-                    "",
-                    id="offline-checks-cli",
-                    classes="action-cli no-i18n",
-                    markup=False,
-                )
-                yield Static(
-                    "",
-                    id="online-checks-cli",
-                    classes="action-cli no-i18n",
-                    markup=False,
-                )
-                yield Static(
-                    "", id="apply-fixes-cli", classes="action-cli no-i18n", markup=False
+                    "", id="diagnostics-cli", classes="action-cli no-i18n", markup=False
                 )
             yield Static(
                 _RUNNING, id="diagnostics-report", classes="no-i18n", markup=False
@@ -337,7 +336,7 @@ class DiagnosticsScreen(ConsoleShell):
                 yield Static("Требует исправления", id="attention-heading")
                 yield Grid(id="attention-cards")
             with Horizontal(id="diagnostics-filters"):
-                yield Static("Проверки по группам", id="groups-heading")
+                yield Static("Проверки по группам", id="groups-heading", classes="no-i18n")
                 for status, label in (
                     ("all", "Все"),
                     ("fail", "✖"),
@@ -498,6 +497,7 @@ class DiagnosticsScreen(ConsoleShell):
         self._state = "running"
         self._requested_online = online
         self._report = None
+        self._built_at = None
         self._reset_apply()
         self.query_one("#attention-cards").remove_children()
         self.query_one("#diagnostics-groups").remove_children()
@@ -531,7 +531,7 @@ class DiagnosticsScreen(ConsoleShell):
                     return
                 report = run()
             except Exception as exc:
-                failure = repr(exc)
+                failure = str(exc) or type(exc).__name__
             finally:
                 _CORE_LOCK.release()
             if current():
@@ -543,6 +543,7 @@ class DiagnosticsScreen(ConsoleShell):
         """Отображает причину, по которой отчёт health не построен."""
         self._state = "failed"
         self._report = None
+        self._built_at = None
         self._failure = text
         self._render_overview()
         self._render_state()
@@ -551,6 +552,7 @@ class DiagnosticsScreen(ConsoleShell):
         """Publish only actual health facts, with separate cards and complete groups."""
         self._state = "ready"
         self._report = report
+        self._built_at = _now()
         self._render_overview()
         self._render_state()
         attention = [
@@ -567,36 +569,79 @@ class DiagnosticsScreen(ConsoleShell):
         def tr(text: str) -> str:
             return i18n.tr(self._language, text)
 
-        text = (
-            tr(_RUNNING) + " " + tr("Сводка и список появятся после завершения.")
-            if self._state == "running"
-            else ""
-        )
-        if self._state == "failed":
+        text = Text()
+        if self._state == "running":
+            text = _icon("skipped", muted=True) + Text(
+                tr(_RUNNING) + " " + tr("Сводка и список появятся после завершения."),
+                style=brand.PALETTE["muted"],
+            )
+        elif self._state == "failed":
             text = (
-                tr("health не выполнен:")
-                + " "
-                + self._failure
-                + "\n"
-                + tr(
-                    "Отчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9)."
+                _icon("fail")
+                + Text(
+                    tr("health не выполнен:") + " " + self._failure,
+                    style=brand.STATUS_COLORS["fail"],
+                )
+                + Text(
+                    "\n"
+                    + tr(
+                        "Отчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9)."
+                    ),
+                    style=brand.PALETTE["muted"],
                 )
             )
         elif self._report and self._report.fixes_applied:
             text = (
-                tr("Применённые фиксы:") + "\n" + "\n".join(self._report.fixes_applied)
+                _icon("ok")
+                + Text(tr("Применённые фиксы:") + "\n")
+                + Text("\n".join(self._report.fixes_applied))
             )
-        self.query_one("#diagnostics-confirmation", Static).update(
-            tr(
-                "Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными."
+        confirmation = Text()
+        if self._confirming_apply:
+            confirmation = _icon("warn") + Text(
+                tr(
+                    "Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными."
+                )
             )
-            if self._confirming_apply
-            else ""
-        )
+        self.query_one("#diagnostics-confirmation", Static).update(confirmation)
         self.query_one("#diagnostics-report", Static).update(text)
         self.query_one("#diagnostics-report").display = bool(text)
         if self._report is None:
             self.query_one("#diagnostics-attention").display = False
+
+    def _strip_text(self) -> str:
+        """`Project: <name> · mode: <mode> · report built <time>`; the time is the screen's own,
+        taken when the report arrived (`Report` carries none)."""
+        language = getattr(self.app, "language", "ru")
+        online = self._report.online if self._report else self._requested_online
+        mode = i18n.tr(language, "онлайн" if online else "офлайн")
+        if self._built_at is not None:
+            template = "Проект: {name} · режим: {mode} · отчёт построен {when}"
+        elif self._state == "failed":
+            template = "Проект: {name} · режим: {mode} · отчёт не построен"
+        else:
+            template = "Проект: {name} · режим: {mode} · отчёт строится"
+        when = self._built_at.strftime("%H:%M") if self._built_at else ""
+        return i18n.tr(language, template).format(
+            name=self.repo.name, mode=mode, when=when
+        )
+
+    def _cli_line(self) -> str:
+        """One muted line: the health command with the flags of the three actions."""
+        language = self._language
+
+        def tr(text: str) -> str:
+            return i18n.tr(language, text)
+
+        def short(*flags: str) -> str:
+            return short_repo(console_data.health_cli_line(self.repo, *flags), self.repo)
+
+        fix = ("--online", "--fix") if self._report and self._report.online else ("--fix",)
+        return (
+            f"$ {short()} · --online {tr('для «Онлайн»')} · "
+            f"{' '.join(fix)} {tr('для «Исправить» (два шага)')} · "
+            f"{tr('○ не проверено ≠ успешно')}"
+        )
 
     def _render_overview(self) -> None:
         report = self._report
@@ -606,6 +651,8 @@ class DiagnosticsScreen(ConsoleShell):
             return i18n.tr(self._language, text)
 
         narrow = self.app.size.width < brand.NARROW_WIDTH
+        total = 0
+        group_count = 0
         if report is not None:
             counts = report.summary()
             for status, label in (
@@ -625,6 +672,7 @@ class DiagnosticsScreen(ConsoleShell):
                     f"{counts[status]} {tr(short[status] if narrow else label)}  "
                 )
             total = len(report.checks)
+            group_count = len({check.group for check in report.checks})
             if not narrow:
                 summary.append(
                     "· "
@@ -634,16 +682,11 @@ class DiagnosticsScreen(ConsoleShell):
                 )
         self.query_one("#diagnostics-summary", Static).update(summary)
         self.query_one("#diagnostics-summary").display = report is not None
-        self.query_one("#offline-checks-cli", Static).update(
-            f"$ {console_data.health_cli_line(self.repo)} · {tr('○ не проверено ≠ успешно')}"
-        )
-        self.query_one("#online-checks-cli", Static).update(
-            f"$ {console_data.health_cli_line(self.repo, '--online')}"
-        )
-        flags = ("--online", "--fix") if report and report.online else ("--fix",)
-        self.query_one("#apply-fixes-cli", Static).update(
-            f"$ {console_data.health_cli_line(self.repo, *flags)}"
-        )
+        self.query_one("#diagnostics-cli", Static).update(self._cli_line())
+        heading = tr("Проверки по группам")
+        if report is not None:
+            heading += f"  {total} · {tr('групп:')} {group_count}"
+        self.query_one("#groups-heading", Static).update(heading)
         for status in ("all", "fail", "warn", "skipped"):
             label = (
                 tr("Все")
@@ -653,11 +696,7 @@ class DiagnosticsScreen(ConsoleShell):
             button = self.query_one(f"#filter-{status}", Button)
             button.label = label
             button.variant = "primary" if self._filter == status else "default"
-        online = report.online if report else self._requested_online
-        mode = "онлайн" if online else "офлайн"
-        self.query_one(WrappedValue).set_value(
-            f"{self.repo} · " + tr("режим: {mode}").format(mode=tr(mode))
-        )
+        self.query_one(WrappedValue).set_value(self._strip_text())
 
     def _group_text(self, checks: list[CheckResult]) -> Text:
         text = Text()
@@ -687,8 +726,10 @@ class DiagnosticsScreen(ConsoleShell):
             return
         groups: dict[str, list[CheckResult]] = {}
         indices: dict[str, int] = {}
+        sizes: dict[str, int] = {}
         for check in self._report.checks:
             indices.setdefault(check.group, len(indices))
+            sizes[check.group] = sizes.get(check.group, 0) + 1
             if self._filter == "all" or check.status == self._filter:
                 groups.setdefault(check.group, []).append(check)
         folds = []
@@ -699,6 +740,9 @@ class DiagnosticsScreen(ConsoleShell):
                 for status, count in counts.items()
                 if count
             )
+            summary = f"{sizes[group]}  {summary}"
+            if group == "tracker" and not self._report.online and counts["skipped"]:
+                summary += " · нужна «Онлайн»"
             fold = Fold(
                 Static(self._group_text(checks), classes="group-checks no-i18n"),
                 title=GROUP_LABELS_RU.get(group, group),

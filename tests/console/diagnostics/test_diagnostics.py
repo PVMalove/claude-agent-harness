@@ -618,8 +618,8 @@ def test_visible_actions_reset_confirmation_and_only_consecutive_fix_applies(
             assert await pilot.click("#apply-fixes")
             await wait_until(pilot, lambda: bool(applied))
             assert applied == [True]
-            assert "--online --fix" in str(
-                screen.query_one("#apply-fixes-cli", Static).content
+            assert "--online --fix для" in str(
+                screen.query_one("#diagnostics-cli", Static).content
             )
 
     asyncio.run(scenario())
@@ -696,5 +696,59 @@ def test_two_consecutive_keyboard_fix_actions_apply_once(
             await wait_until(pilot, lambda: applied == [True])
             await app.workers.wait_for_complete()
             assert "Создан каталог .harness/logs" in visible(screen)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+def test_strip_cli_line_and_tracker_note_follow_the_mockup(
+    tmp_path: Path, language: str
+) -> None:
+    from datetime import datetime
+    from unittest.mock import patch
+
+    from harness.console.screens import diagnostics
+    from harness.console.shell import Fold, WrappedValue
+
+    data = Report(
+        1,
+        str(tmp_path),
+        False,
+        [
+            CheckResult("environment.uv", "environment", "ok", "available"),
+            CheckResult("tracker.auth", "tracker", "skipped", "not checked"),
+        ],
+    )
+    release = threading.Event()
+
+    def collect(repo: Path, *, online: bool = False) -> Report:
+        assert release.wait(10)
+        return data
+
+    async def scenario() -> None:
+        screen = DiagnosticsScreen(tmp_path, collect_diagnostics=collect)
+        app = Host(screen)
+        app.language = language  # type: ignore[attr-defined]
+        with patch.object(diagnostics, "_now", lambda: datetime(2026, 1, 1, 9, 5)):
+            async with app.run_test(size=(160, 52)) as pilot:
+                await pilot.pause()
+                strip = str(screen.query_one(WrappedValue).content)
+                assert strip.startswith(
+                    f"{'Проект' if language == 'ru' else 'Project'}: {tmp_path.name} · "
+                )
+                assert str(tmp_path.parent) not in strip
+                assert ("отчёт строится" if language == "ru" else "building") in strip
+                release.set()
+                await wait_until(pilot, lambda: "environment.uv" in visible(screen))
+                strip = str(screen.query_one(WrappedValue).content)
+                assert strip.endswith("09:05")
+                cli = str(screen.query_one("#diagnostics-cli", Static).content)
+                assert cli.startswith("$ harness health $REPO · --online ")
+                assert str(tmp_path) not in cli
+                hint = "Экспорт — клавиша e" if language == "ru" else "Export — key e"
+                assert hint in visible(screen)
+                note = "нужна «Онлайн»" if language == "ru" else "needs Online"
+                assert note in str(screen.query_one("#check-group-1", Fold).title)
+        release.set()
 
     asyncio.run(scenario())

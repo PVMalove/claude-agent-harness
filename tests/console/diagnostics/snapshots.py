@@ -6,6 +6,7 @@ import asyncio
 import json
 import subprocess
 import threading
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 from typing import cast
@@ -15,6 +16,7 @@ from textual.widgets import Button
 from harness.console import brand
 from harness.console import data as console_data
 from harness.console.app import HarnessConsoleApp
+from harness.console.screens import diagnostics
 from harness.console.screens.diagnostics import DiagnosticsScreen
 from harness.health.model import CheckResult, Fix, Report
 from tests.console._pilot_wait import wait_until
@@ -106,6 +108,7 @@ async def capture(state: str, size: tuple[int, int], language: str) -> str:
     with (
         patch.object(console_data, "harness_version", lambda: VERSION),
         patch.object(brand, "current_branch", lambda _repo, **_kw: BRANCH),
+        patch.object(diagnostics, "_now", lambda: datetime(2026, 1, 1, 12, 0)),
     ):
         app = SnapshotHost(Path("/project"), lambda repo: cast(Screen[object], screen))
         try:

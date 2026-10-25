@@ -168,9 +168,7 @@ def test_dashboard_menu_opens_a_section_by_its_number(
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.press("4")
-            await wait_until(
-                pilot, lambda: type(app.screen).__name__ == "HarnessScreen"
-            )
+            await wait_until(pilot, lambda: type(app.screen).__name__ == "HarnessScreen")
             return type(app.screen).__name__
 
     assert asyncio.run(scenario()) == "HarnessScreen"
@@ -778,7 +776,7 @@ def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
 ) -> None:
     """Проверить, что экран диагностики отображает эквиваленты CLI и экспортирует отчёт."""
 
-    async def scenario() -> tuple[str, str]:
+    async def scenario() -> str:
         """Сценарий проверки строк CLI и экспорта отчёта диагностики."""
         from textual.app import App
         from textual.widgets import Static
@@ -797,15 +795,14 @@ def test_diagnostics_shows_cli_equivalents_and_exports_the_report(
         app = _HostApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await _settle(pilot)
-            online_cli = str(app.screen.query_one("#online-checks-cli", Static).content)
-            fix_cli = str(app.screen.query_one("#apply-fixes-cli", Static).content)
+            cli = str(app.screen.query_one("#diagnostics-cli", Static).content)
             await pilot.click("#export")
             await _settle(pilot)
-        return online_cli, fix_cli
+        return cli
 
-    online_cli, fix_cli = asyncio.run(scenario())
-    assert online_cli.endswith("--online")
-    assert fix_cli.endswith("--fix")
+    cli = asyncio.run(scenario())
+    assert cli.startswith("$ harness health $REPO · --online для «Онлайн» · --fix для")
+    assert str(tmp_path) not in cli
     exported = list(
         (tmp_path / "docs" / "tasks" / "console-exports").glob("*health-report.md")
     )
@@ -1107,7 +1104,8 @@ def test_diagnostics_shows_why_health_failed_instead_of_running_forever(
 
     rendered = asyncio.run(scenario())
     assert "health не выполнен" in rendered
-    assert "ValueError('broken check')" in rendered
+    assert "broken check" in rendered
+    assert "ValueError(" not in rendered
 
 
 def test_switching_the_project_shows_its_head_commit_in_the_banner(

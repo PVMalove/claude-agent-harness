@@ -528,7 +528,7 @@ EN_PHRASES: dict[str, str] = {
     "карта HEAD": "map of HEAD",
     "из кэша": "from cache",
     "Итого:": "Total:",
-    "Команды «Как исправить» пульт не выполняет — запустите их вручную.": "The console does not run the “How to fix” commands — run them manually.",
+    "Команды «Как исправить» консоль не выполняет — запустите их вручную.": "The console does not run the “How to fix” commands — run them manually.",
     "Как исправить:": "How to fix:",
     "Применённые фиксы:": "Applied fixes:",
     "дрейф: есть": "drift: yes",
@@ -884,7 +884,6 @@ EN.update(
         "предупр.": "warn",
         "не пров.": "unchecked",
         "проверено {checked} из {total}": "checked {checked} of {total}",
-        "режим: {mode}": "mode: {mode}",
         "офлайн": "offline",
         "онлайн": "online",
         "○ не проверено ≠ успешно": "○ not checked ≠ passed",
@@ -899,5 +898,12 @@ EN.update(
         "Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными.": "Only internal fixes are applied. How to fix commands remain manual.",
         "для «Онлайн»": "for Online",
         "для «Исправить» (два шага)": "for Fix (two steps)",
+        "Отчёт harness health. Команды «Как исправить» консоль не выполняет — запустите их вручную.": "The harness health report. The console does not run the “How to fix” commands — run them manually.",
+        "Экспорт — клавиша e": "Export — key e",
+        "Проект: {name} · режим: {mode} · отчёт построен {when}": "Project: {name} · mode: {mode} · report built {when}",
+        "Проект: {name} · режим: {mode} · отчёт строится": "Project: {name} · mode: {mode} · report is building",
+        "Проект: {name} · режим: {mode} · отчёт не построен": "Project: {name} · mode: {mode} · no report",
+        "групп:": "groups:",
     }
 )
+EN_PHRASES.update({"нужна «Онлайн»": "needs Online"})
