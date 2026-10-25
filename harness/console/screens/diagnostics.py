@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from rich.text import Text
+from rich.markup import escape
 from textual import events
 from textual.message import Message
 from textual.widget import Widget
@@ -148,17 +149,24 @@ def _styled_report(report: Report, language: str = "ru") -> Text:
     return styled_log(_translated_report(report, language))
 
 
-def health_document(report: Report) -> MarkdownDocument:
+def health_document(report: Report, language: str = "ru") -> MarkdownDocument:
     """Формирует структурированный Markdown-документ отчёта health для экспорта в папку артефактов."""
     return MarkdownDocument(
-        title="Health-отчёт",
+        title=i18n.tr(language, "Health-отчёт"),
         slug="health-report",
         meta=[
-            ("Репозиторий", report.repo),
-            ("Онлайн-проверки", "да" if report.online else "нет"),
+            (i18n.tr(language, "Репозиторий"), report.repo),
+            (
+                i18n.tr(language, "Онлайн-проверки"),
+                i18n.tr(language, "да" if report.online else "нет"),
+            ),
         ],
         sections=[
-            MarkdownSection("Проверки", render_report(report), preformatted=True)
+            MarkdownSection(
+                i18n.tr(language, "Проверки"),
+                _translated_report(report, language),
+                preformatted=True,
+            )
         ],
     )
 
@@ -207,7 +215,7 @@ class _CheckCard(SectionCard):
     def relabel(self) -> None:
         language = getattr(self.app, "language", "ru")
         # IDs, fixes and commands are report data, never translated by the shell.
-        self.border_title = self.check.id
+        self.border_title = escape(self.check.id)
         if not self.query(".check-remedy"):
             return
         fix = self.check.fix
@@ -284,6 +292,7 @@ class DiagnosticsScreen(ConsoleShell):
         self._language = "ru"
         self._filter = "all"
         self._failure = ""
+        self._requested_online = False
 
     def compose_strip(self) -> ComposeResult:
         yield WrappedValue(str(self.repo))
@@ -382,7 +391,9 @@ class DiagnosticsScreen(ConsoleShell):
             self._run_health(lambda: self._collect_diagnostics(self.repo))
         elif event.button.id == "online-checks":
             self._reset_apply()
-            self._run_health(lambda: self._collect_diagnostics(self.repo, online=True))
+            self._run_health(
+                lambda: self._collect_diagnostics(self.repo, online=True), online=True
+            )
         elif event.button.id == "apply-fixes":
             self._on_apply_fixes_pressed()
         elif event.button.id == "export":
@@ -415,7 +426,7 @@ class DiagnosticsScreen(ConsoleShell):
                 i18n.tr(getattr(self.app, "language", "ru"), text), severity="warning"
             )
             return
-        export_document(self, self.repo, health_document(self._report))
+        export_document(self, self.repo, health_document(self._report, self._language))
 
     def _on_apply_fixes_pressed(self) -> None:
         """Обрабатывает нажатие кнопки применения фиксов с запросом подтверждения."""
@@ -434,14 +445,19 @@ class DiagnosticsScreen(ConsoleShell):
             self._apply_button().label = i18n.tr(
                 getattr(self.app, "language", "ru"), _CONFIRM_LABEL
             )
+            self._render_state()
             return
         self._reset_apply()
         online = self._report.online
-        self._run_health(lambda: self._apply_local_fixes(self.repo, online=online))
+        self._run_health(
+            lambda: self._apply_local_fixes(self.repo, online=online), online=online
+        )
 
     def _reset_apply(self) -> None:
         """Сбрасывает состояние подтверждения кнопки применения фиксов к исходному."""
         self._confirming_apply = False
+        if self.query("#diagnostics-report"):
+            self._render_state()
         self._apply_button().label = i18n.tr(
             getattr(self.app, "language", "ru"), _APPLY_LABEL
         )
@@ -467,13 +483,14 @@ class DiagnosticsScreen(ConsoleShell):
         self.app.message_signal.unsubscribe(self)
         self.workers.cancel_node(self)
 
-    def _run_health(self, run: Callable[[], Report]) -> None:
+    def _run_health(self, run: Callable[[], Report], *, online: bool = False) -> None:
         """Запускает процедуру проверки health в фоновом потоке worker."""
         self._cancel.set()
         self._cancel = cancel = threading.Event()
         self._generation += 1
         generation = self._generation
         self._state = "running"
+        self._requested_online = online
         self._report = None
         self._reset_apply()
         self.query_one("#attention-cards").remove_children()
@@ -541,11 +558,32 @@ class DiagnosticsScreen(ConsoleShell):
         self._render_groups()
 
     def _render_state(self) -> None:
-        text = _RUNNING if self._state == "running" else ""
+        def tr(text: str) -> str:
+            return i18n.tr(self._language, text)
+
+        text = (
+            tr(_RUNNING) + " " + tr("Сводка и список появятся после завершения.")
+            if self._state == "running"
+            else ""
+        )
         if self._state == "failed":
-            text = f"health не выполнен: {self._failure}\nОтчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9)."
+            text = (
+                tr("health не выполнен:")
+                + " "
+                + self._failure
+                + "\n"
+                + tr(
+                    "Отчёт не построен. Повторить: «Офлайн». Если повторяется — «Справка» (9)."
+                )
+            )
         elif self._report and self._report.fixes_applied:
-            text = "Применённые фиксы:\n" + "\n".join(self._report.fixes_applied)
+            text = (
+                tr("Применённые фиксы:") + "\n" + "\n".join(self._report.fixes_applied)
+            )
+        if self._confirming_apply:
+            text = tr(
+                "Применяются только внутренние фиксы. Команды «Как исправить» остаются ручными."
+            )
         self.query_one("#diagnostics-report", Static).update(text)
         self.query_one("#diagnostics-report").display = bool(text)
         if self._report is None:
@@ -554,6 +592,11 @@ class DiagnosticsScreen(ConsoleShell):
     def _render_overview(self) -> None:
         report = self._report
         summary = Text()
+
+        def tr(text: str) -> str:
+            return i18n.tr(self._language, text)
+
+        narrow = self.app.size.width < brand.NARROW_WIDTH
         if report is not None:
             counts = report.summary()
             for status, label in (
@@ -563,13 +606,27 @@ class DiagnosticsScreen(ConsoleShell):
                 ("skipped", "не проверено"),
             ):
                 summary.append_text(_icon(status, muted=counts[status] == 0))
-                summary.append(f"{counts[status]} {label}  ")
+                short = {
+                    "ok": "ок",
+                    "warn": "предупр.",
+                    "fail": "ошибки",
+                    "skipped": "не пров.",
+                }
+                summary.append(
+                    f"{counts[status]} {tr(short[status] if narrow else label)}  "
+                )
             total = len(report.checks)
-            summary.append(f"· проверено {total - counts['skipped']} из {total}")
+            if not narrow:
+                summary.append(
+                    "· "
+                    + tr("проверено {checked} из {total}").format(
+                        checked=total - counts["skipped"], total=total
+                    )
+                )
         self.query_one("#diagnostics-summary", Static).update(summary)
         self.query_one("#diagnostics-summary").display = report is not None
         self.query_one("#offline-checks-cli", Static).update(
-            f"$ {console_data.health_cli_line(self.repo)} · ○ не проверено ≠ успешно"
+            f"$ {console_data.health_cli_line(self.repo)} · {tr('○ не проверено ≠ успешно')}"
         )
         self.query_one("#online-checks-cli", Static).update(
             f"$ {console_data.health_cli_line(self.repo, '--online')}"
@@ -580,15 +637,18 @@ class DiagnosticsScreen(ConsoleShell):
         )
         for status in ("all", "fail", "warn", "skipped"):
             label = (
-                "Все"
+                tr("Все")
                 if status == "all"
                 else f"{brand.STATUS_ICONS[status]} {report.summary()[status] if report else 0}"
             )
             button = self.query_one(f"#filter-{status}", Button)
             button.label = label
             button.variant = "primary" if self._filter == status else "default"
-        mode = "онлайн" if report and report.online else "офлайн"
-        self.query_one(WrappedValue).set_value(f"{self.repo} · режим: {mode}")
+        online = report.online if report else self._requested_online
+        mode = "онлайн" if online else "офлайн"
+        self.query_one(WrappedValue).set_value(
+            f"{self.repo} · " + tr("режим: {mode}").format(mode=tr(mode))
+        )
 
     def _group_text(self, checks: list[CheckResult]) -> Text:
         text = Text()
@@ -596,7 +656,9 @@ class DiagnosticsScreen(ConsoleShell):
             text.append_text(_icon(check.status))
             text.append(f"{check.id}: {check.message}\n")
             if check.fix:
-                text.append(f"Как исправить: {check.fix.text}\n")
+                text.append(
+                    i18n.tr(self._language, "Как исправить:") + f" {check.fix.text}\n"
+                )
                 if check.fix.command:
                     text.append(f"{check.fix.command}\n")
         return text
@@ -639,7 +701,10 @@ class DiagnosticsScreen(ConsoleShell):
             self._replace_contents(
                 "#diagnostics-groups",
                 Static(
-                    "Нет проверок для этого фильтра", classes="no-i18n", markup=False
+                    i18n.tr(self._language, "Нет проверок для этого фильтра"),
+                    id="diagnostics-empty",
+                    classes="no-i18n",
+                    markup=False,
                 ),
             )
             return
@@ -654,6 +719,10 @@ class DiagnosticsScreen(ConsoleShell):
         self._replace_contents("#diagnostics-groups", folds[0], remaining)
 
     def _relabel_groups(self) -> None:
+        if self.query("#diagnostics-empty"):
+            self.query_one("#diagnostics-empty", Static).update(
+                i18n.tr(self._language, "Нет проверок для этого фильтра")
+            )
         if self._report is None:
             return
         groups: dict[str, list[CheckResult]] = {}
@@ -680,6 +749,8 @@ class DiagnosticsScreen(ConsoleShell):
         matches = self.query("#remaining-groups")
         if matches:
             matches.first(Fold).collapsed = event.size.width < brand.NARROW_WIDTH
+        if self.query("#diagnostics-summary"):
+            self._render_overview()
 
     def _apply_button(self) -> Button:
         """Возвращает кнопку применения фиксов экрана."""

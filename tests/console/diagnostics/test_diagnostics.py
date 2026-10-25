@@ -332,3 +332,110 @@ def test_summary_actions_and_first_group_fit_the_viewport(
             assert "Нет проверок для этого фильтра" in visible(screen)
 
     asyncio.run(scenario())
+
+
+def test_language_round_trip_translates_labels_but_preserves_report_facts(
+    tmp_path: Path,
+) -> None:
+    from harness.console.app import HarnessConsoleApp
+    from harness.console.shell import Fold
+    from harness.health.model import Fix
+
+    data = Report(
+        1,
+        "/project",
+        False,
+        [
+            CheckResult(
+                "files.skill_snapshot",
+                "files",
+                "fail",
+                "Как исправить: [red]не задан[/red]",
+                Fix("нет — literal", "echo '[bold]нет'"),
+            ),
+            CheckResult("hooks.test", "hooks", "warn", "нет"),
+            CheckResult("directories.test", "directories", "skipped", "не задан"),
+            CheckResult("future.test", "future.group", "ok", "Все"),
+        ],
+    )
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            screen = DiagnosticsScreen(
+                tmp_path, collect_diagnostics=lambda repo, **kw: data
+            )
+            await app.push_screen(screen)
+            await wait_until(pilot, lambda: "files.skill_snapshot" in visible(screen))
+            await pilot.press("f2")
+            await pilot.pause()
+            assert "not checked" in str(
+                screen.query_one("#diagnostics-summary", Static).content
+            )
+            assert "Harness files" in screen.query_one("#check-group-0", Fold).title
+            assert "Project hooks" in screen.query_one("#check-group-1", Fold).title
+            assert (
+                "Harness directories" in screen.query_one("#check-group-2", Fold).title
+            )
+            assert "future.group" in screen.query_one("#check-group-3", Fold).title
+            assert "How to fix: нет — literal" in visible(screen)
+            assert "Как исправить: [red]не задан[/red]" in visible(screen)
+            assert "echo '[bold]нет'" in visible(screen)
+            await pilot.press("f2")
+            await pilot.pause()
+            assert "не проверено" in str(
+                screen.query_one("#diagnostics-summary", Static).content
+            )
+            assert "Файлы харнесса" in screen.query_one("#check-group-0", Fold).title
+
+    asyncio.run(scenario())
+
+
+def test_running_failure_and_fix_explanations_follow_the_current_language(
+    tmp_path: Path,
+) -> None:
+    from harness.console.app import HarnessConsoleApp
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def collect(repo: Path, *, online: bool = False) -> Report:
+        entered.set()
+        assert release.wait(10)
+        raise ValueError("literal [red]не задан[/red]")
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        messages: list[str] = []
+        try:
+            async with app.run_test(size=(160, 52)) as pilot:
+                screen = DiagnosticsScreen(tmp_path, collect_diagnostics=collect)
+                screen.notify = lambda message, **kwargs: messages.append(str(message))  # type: ignore[method-assign]
+                await app.push_screen(screen)
+                assert await asyncio.to_thread(entered.wait, 5)
+                await pilot.press("f2")
+                await pilot.pause()
+                assert "health is running" in visible(screen)
+                screen.action_export()
+                activate(screen, "apply-fixes")
+                assert messages == [
+                    "Nothing to export: the report is still building",
+                    "Fix is unavailable: wait for the report",
+                ]
+                release.set()
+                await wait_until(pilot, lambda: "health failed:" in visible(screen))
+                assert "literal [red]не задан[/red]" in visible(screen)
+                screen.action_export()
+                activate(screen, "apply-fixes")
+                assert messages[-2:] == [
+                    "Nothing to export: no report was built",
+                    "Fix is unavailable: run the checks again",
+                ]
+                assert not list(tmp_path.rglob("*health-report.md"))
+                await pilot.press("f2")
+                await pilot.pause()
+                assert "health не выполнен:" in visible(screen)
+        finally:
+            release.set()
+
+    asyncio.run(scenario())
