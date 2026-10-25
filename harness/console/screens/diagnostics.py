@@ -265,7 +265,7 @@ class DiagnosticsScreen(ConsoleShell):
     DiagnosticsScreen #remaining-groups > Contents { padding: 0; }
     DiagnosticsScreen #remaining-groups > CollapsibleTitle { display: none; }
     DiagnosticsScreen.-narrow #diagnostics-manual, DiagnosticsScreen.-narrow .action-cli { display: none; }
-    DiagnosticsScreen.-narrow #diagnostics-attention { max-height: 6; }
+    DiagnosticsScreen.-narrow #diagnostics-attention { max-height: 4; }
     DiagnosticsScreen.-narrow #attention-cards { grid-size: 1; grid-columns: 1fr; }
     DiagnosticsScreen.-narrow #remaining-groups { border: round $border-subtle; padding: 0 1; }
     DiagnosticsScreen.-narrow #remaining-groups > CollapsibleTitle { display: block; }
@@ -301,7 +301,8 @@ class DiagnosticsScreen(ConsoleShell):
 
     def compose_content(self) -> ComposeResult:
         """Summary, actions, attention cards and all checks in report order."""
-        with VerticalScroll(id="diagnostics-scroll"):
+        with VerticalScroll(id="diagnostics-scroll", classes="frame") as report:
+            report.border_title = brand.section_title("Health-отчёт")
             yield Static("Диагностика", id="diagnostics-heading")
             yield Static(_MANUAL_NOTE, id="diagnostics-manual")
             with SectionCard(title="Health-отчёт", id="diagnostics-overview"):
