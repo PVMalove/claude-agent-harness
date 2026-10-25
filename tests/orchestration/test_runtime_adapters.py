@@ -321,6 +321,8 @@ def test_codex_bounded_checks_can_write_shared_temporary_data_and_logs(
         if "permissions" in c
     )
     assert filesystem[str(repo / ".harness/.sandboxes/runs/qa")] == "write"
+    assert filesystem[str(repo / ".harness/.sandboxes/runs/tests")] == "write"
+    assert str(repo / ".harness/.sandboxes/runs") not in filesystem
     assert filesystem[str(repo / ".harness/.sandboxes/logs")] == "write"
     assert filesystem[str(worker)] == ("write" if access == "write" else "read")
     assert str(repo / ".harness/.sandboxes") not in filesystem

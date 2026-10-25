@@ -164,6 +164,7 @@ def worker_command(
         str(repo / ".harness/orchestration/state"): "write",
         str(Path(brief["report_staging_path"]).parent): "write",
         str(repo / ".harness/.sandboxes/runs/qa"): "write",
+        str(repo / ".harness/.sandboxes/runs/tests"): "write",
         str(repo / ".harness/.sandboxes/logs"): "write",
     }
     if access == "write":
