@@ -201,14 +201,31 @@ async def reveal(
     screen: HarnessScreen, pilot: Pilot[None], key: str, *, detail: bool = True
 ) -> None:
     screen.select_command(key)
-    await pilot.pause()
     menu = screen.query_one("#command-menu", ListView)
+    # Group replacement runs in a worker. Wait for its selection before expanding details,
+    # otherwise the arriving Highlighted message may collapse them again.
+    await until(
+        pilot,
+        lambda: menu.highlighted_child is not None
+        and menu.highlighted_child.name == key
+        and screen._selected_key == key,
+    )
     menu.focus()
     if detail:
         screen.query_one("#detail-fold", Fold).collapsed = False
+    # Expanding the narrow detail shrinks the list, then its after-refresh callback scrolls
+    # the selected row. The compositor updates its region on the following refresh.
+    await until(
+        pilot,
+        lambda: (not detail or screen.query_one("#detail-fold", Fold).region.height > 1)
+        and menu.highlighted_child is not None
+        and menu.content_region.y
+        <= menu.highlighted_child.region.y
+        < menu.content_region.bottom,
+    )
     await pilot.pause()
     selected = menu.highlighted_child
-    assert selected is not None
+    assert selected is not None and selected.name == key
     assert menu.content_region.y <= selected.region.y < menu.content_region.bottom
 
 
