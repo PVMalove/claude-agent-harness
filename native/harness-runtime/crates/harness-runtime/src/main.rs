@@ -21,6 +21,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use contracts::ErrorCode;
 use ipc::{Server, resolve_paths};
 use serde_json::json;
 
@@ -68,25 +69,57 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     Ok(Args { command, repo })
 }
 
+/// What an error line and its `REMEDY:` line say. The remedy line starts with the protocol error
+/// code in brackets (ADR 0021, section 8).
+#[derive(Debug)]
+struct Report {
+    code: ErrorCode,
+    message: String,
+    remedy: String,
+}
+
+impl Report {
+    fn new(code: ErrorCode, message: impl ToString, remedy: impl ToString) -> Self {
+        Self {
+            code,
+            message: message.to_string(),
+            remedy: remedy.to_string(),
+        }
+    }
+
+    /// Print the `ERROR:` line and its `REMEDY:` line, and give back the exit code.
+    fn print(&self, exit: u8) -> ExitCode {
+        eprintln!("ERROR: {}", self.message);
+        eprintln!("REMEDY: [{}] {}", self.code.as_str(), self.remedy);
+        ExitCode::from(exit)
+    }
+}
+
 /// Why `serve` ended with an error: it never reported ready, or it failed after it was ready.
 #[derive(Debug)]
 enum Failure {
-    Refused(String),
-    Failed(String),
+    Refused(Report),
+    Failed(Report),
 }
 
 fn serve(args: &Args) -> Result<(), Failure> {
-    let refused = |err: &dyn ToString| Failure::Refused(err.to_string());
     let xdg = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    let paths = resolve_paths(&args.repo, xdg.as_deref()).map_err(|err| refused(&err))?;
+    let paths = resolve_paths(&args.repo, xdg.as_deref())
+        .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
     // The handler comes before the bind: a signal then never kills a bound server without
     // `Drop` removing its socket and token.
     let stop = Arc::new(AtomicBool::new(false));
     let signalled = Arc::clone(&stop);
-    ctrlc::set_handler(move || signalled.store(true, Ordering::Relaxed))
-        .map_err(|err| Failure::Refused(format!("cannot install the signal handler: {err}")))?;
+    ctrlc::set_handler(move || signalled.store(true, Ordering::Relaxed)).map_err(|err| {
+        Failure::Refused(Report::new(
+            ErrorCode::Internal,
+            format!("cannot install the signal handler: {err}"),
+            "run the runtime in a process that may handle SIGINT and SIGTERM",
+        ))
+    })?;
     let state_dir = args.repo.join(state::migrate::STATE_REL);
-    let server = Server::bind_serving(paths, Some(state_dir)).map_err(|err| refused(&err))?;
+    let server = Server::bind_serving(paths, Some(state_dir))
+        .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
     let ready = json!({
         "status": "ready",
         "socket": server.paths().socket,
@@ -96,11 +129,21 @@ fn serve(args: &Args) -> Result<(), Failure> {
     let mut stdout = std::io::stdout().lock();
     writeln!(stdout, "{ready}")
         .and_then(|()| stdout.flush())
-        .map_err(|err| Failure::Refused(format!("cannot report readiness: {err}")))?;
+        .map_err(|err| {
+            Failure::Refused(Report::new(
+                ErrorCode::Internal,
+                format!("cannot report readiness: {err}"),
+                "keep the standard output of the runtime open, then repeat the command",
+            ))
+        })?;
     drop(stdout);
-    server
-        .serve_until(&stop)
-        .map_err(|err| Failure::Failed(format!("the accept loop failed: {err}")))
+    server.serve_until(&stop).map_err(|err| {
+        Failure::Failed(Report::new(
+            ErrorCode::Internal,
+            format!("the accept loop failed: {err}"),
+            "start `harness-runtime serve --repo <repo>` again",
+        ))
+    })
 }
 
 /// Run the migration and print its outcome as one JSON line.
@@ -110,19 +153,16 @@ fn migrate(args: &Args) -> ExitCode {
             let mut stdout = std::io::stdout().lock();
             match writeln!(stdout, "{}", outcome.to_json()).and_then(|()| stdout.flush()) {
                 Ok(()) => ExitCode::SUCCESS,
-                Err(err) => {
-                    eprintln!(
-                        "ERROR: the migration is done but its result cannot be written: {err}"
-                    );
-                    ExitCode::from(EXIT_FAILED)
-                }
+                Err(err) => Report::new(
+                    ErrorCode::Internal,
+                    format!("the migration is done but its result cannot be written: {err}"),
+                    "repeat `harness-runtime migrate --repo <repo>`: a repeat after the commit \
+                     point answers already_cut_over",
+                )
+                .print(EXIT_FAILED),
             }
         }
-        Err(error) => {
-            eprintln!("ERROR: {error}");
-            eprintln!("REMEDY: {}", error.remedy());
-            ExitCode::from(error.exit_code())
-        }
+        Err(error) => Report::new(error.code(), &error, error.remedy()).print(error.exit_code()),
     }
 }
 
@@ -130,24 +170,21 @@ fn main() -> ExitCode {
     let args = match parse_args(env::args_os().skip(1)) {
         Ok(args) => args,
         Err(message) => {
-            eprintln!("ERROR: {message}");
-            return ExitCode::from(EXIT_REFUSED);
+            return Report::new(
+                ErrorCode::MalformedRequest,
+                message,
+                "pass `serve` or `migrate`, with an optional `--repo <path>`",
+            )
+            .print(EXIT_REFUSED);
         }
     };
     if args.command == Command::Migrate {
         return migrate(&args);
     }
-    let outcome = serve(&args);
-    match outcome {
+    match serve(&args) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(Failure::Refused(message)) => {
-            eprintln!("ERROR: {message}");
-            ExitCode::from(EXIT_REFUSED)
-        }
-        Err(Failure::Failed(message)) => {
-            eprintln!("ERROR: {message}");
-            ExitCode::from(EXIT_FAILED)
-        }
+        Err(Failure::Refused(report)) => report.print(EXIT_REFUSED),
+        Err(Failure::Failed(report)) => report.print(EXIT_FAILED),
     }
 }
 

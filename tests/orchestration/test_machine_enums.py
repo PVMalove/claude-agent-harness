@@ -162,8 +162,21 @@ class RetryVocabularyBoundaryTests(unittest.TestCase):
             "risks": {"status": "none", "details": ""},
             "blockers": {"status": "none", "details": ""},
         }
+        # Named without their structured proof, these reach no route of their own: nothing proves a
+        # code defect, so a code-review is refused a developer retry (an unproven failure).
+        unproven = {RetryReason.UNKNOWN, RetryReason.TOOLING, RetryReason.CONTEXT_PRESSURE}
         for reason in RetryReason:
             with self.subTest(reason=reason):
+                if reason in unproven:
+                    with self.assertRaises(decisions.UnprovenFailureError):
+                        decisions._retry_routing(
+                            "code-review",
+                            report,
+                            dispatch_candidate="a" * 40,
+                            current_candidate="a" * 40,
+                            explicit_category=reason.value,
+                        )
+                    continue
                 routed = decisions._retry_routing(
                     "code-review",
                     report,

@@ -31,6 +31,7 @@ from harness.orchestration.core.constants import (
     BLOCK_BYPASS_STAGES,
     INCOMPLETE_ITEM_TARGET_ROLES,
     TERMINAL_BATCH_STATES,
+    FailureDomain,
     ReviewRecommendation,
 )
 from harness.orchestration.core.utils import (
@@ -52,7 +53,12 @@ from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow import carried_items
 from harness.orchestration.workflow import commit_plan as plan_rules
-from harness.orchestration.workflow import decisions, failure_classifier, resolver_state
+from harness.orchestration.workflow import (
+    decisions,
+    failure_classifier,
+    failure_domains,
+    resolver_state,
+)
 from harness.orchestration.workflow.attention import _attention_findings
 from harness.orchestration.workflow.history import (
     _latest_developer_candidate,
@@ -346,6 +352,7 @@ def environment_stop(stage: str, report: JsonObject, repo: Path) -> Stop | None:
     found = failure_classifier.classify_environment(failed.get("diagnostics"), repo)
     if found is None:
         return None
+    failure = failure_domains.of_qa_stages(stages, repo=repo)
     return Stop(
         "no-automatic-route",
         "qa-environment-failure",
@@ -353,6 +360,11 @@ def environment_stop(stage: str, report: JsonObject, repo: Path) -> Stop | None:
             "command": failed.get("command"),
             "classification": found,
             "remedy": QA_ENVIRONMENT_REMEDY,
+            "failure": failure.to_json()
+            if failure is not None
+            else failure_domains.unrecognised(
+                "the failed gate stage is not in qa_stages", "qa_stages"
+            ).to_json(),
         },
     )
 
@@ -367,9 +379,24 @@ def finish(
     """The second half of the table: ``None`` retries with ``routing`` (no I/O).
 
     A route the coordinator refuses and an unknown reason are dead ends a human resolves; an
-    exhausted developer-retry budget stops too. A tooling-retry without a bug ticket for the
-    blocking tool is refused instead: the session can create one and run the command again.
+    exhausted developer-retry budget stops too. A refusal because no code defect is proven
+    (``UnprovenFailureError``) is the ``unknown-reason`` stop and keeps its failure domain, so the
+    human sees that naming the cause (``--reason-category``) is the way on. A developer-retry whose
+    failure domain is ``unknown`` stops the same way even when a classifier hint named a category:
+    it would spend no developer retry, so nothing else would bound it. A tooling-retry without a
+    bug ticket for the blocking tool is refused instead: the session can create one and run the
+    command again.
     """
+    if isinstance(refusal, decisions.UnprovenFailureError):
+        return Stop(
+            "no-automatic-route",
+            "unknown-reason",
+            {
+                "refused": refusal.message,
+                "remedy": refusal.remedy,
+                "failure": refusal.failure.to_json(),
+            },
+        )
     if refusal is not None or routing is None:
         return Stop(
             "no-automatic-route",
@@ -379,19 +406,22 @@ def finish(
                 "remedy": refusal.remedy if refusal else None,
             },
         )
-    if routing.get("reason_category") == "unknown":
-        return Stop("no-automatic-route", "unknown-reason", {"route_preview": routing})
+    if routing.get("reason_category") == "unknown" or (
+        routing.get("next_action") == "developer-retry"
+        and failure_domains.domain_of(routing) == FailureDomain.UNKNOWN
+    ):
+        return Stop(
+            "no-automatic-route",
+            "unknown-reason",
+            {"route_preview": routing, "failure": routing.get("failure")},
+        )
     if routing["route"] == "tooling-retry" and bug_ticket is None:
         raise CoordinatorError(
             "a tooling-retry under approval_policy auto needs a bug ticket for the blocking tool",
             remedy="create or reuse a bug ticket for the tool named in the tooling_blocker "
             "through the tracker CLI, then run batch auto-decide again with --bug-ticket",
         )
-    if (
-        routing["next_action"] == "developer-retry"
-        and routing["route"] != "tooling-retry"
-        and budget_exhausted
-    ):
+    if decisions.spends_developer_budget(routing) and budget_exhausted:
         return Stop(
             "budget-exhausted",
             "retry_policy.max_developer_retries",
@@ -791,6 +821,7 @@ def resolve(
                 reason_category=choice.reason_category,
                 narrowed=choice.narrowed,
                 retry_role=None,
+                approved_by=approvals.AUTO_APPROVER,
             ),
         )
     except CoordinatorError as exc:

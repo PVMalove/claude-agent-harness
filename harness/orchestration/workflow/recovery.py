@@ -250,7 +250,7 @@ def _confirmed_failure(
     so a restart waits for it or for the operator's ``--runtime-stopped``."""
     from harness.orchestration.core.constants import RECOVERY_EVIDENCE_COMMANDS
     from harness.orchestration.ledger.ledger_ops import _load_dispatch_status
-    from harness.orchestration.workflow import failure_classifier
+    from harness.orchestration.workflow import failure_classifier, failure_domains
     from harness.orchestration.workflow.history import _pending_report
     from harness.orchestration.workflow.startup import assess_startup
 
@@ -277,6 +277,9 @@ def _confirmed_failure(
     }
     if assessment["runtime_failure"] is not None:
         evidence["classification"] = assessment["runtime_failure"]
+    # The domain of this stop is one ``failure_domains.Failure`` record under one key: the
+    # startup assessment's own, or, when only the blocked report names the cause, that report's.
+    # The key is ``failure_domain`` because the whole dict is already the event's ``failure``.
     # A missing self-report, or a worker that exited after one without a report, proves no
     # environment failure; only a mismatch or a classified runtime failure does.
     if assessment["classification"] not in {
@@ -284,7 +287,7 @@ def _confirmed_failure(
         "model-self-report-missing",
         "worker-exited-without-report",
     }:
-        return evidence
+        return {**evidence, "failure_domain": assessment["failure"]}
     report = _pending_report(root, batch, entry) if entry.get("report") else {}
     classification = (
         failure_classifier.classify(
@@ -300,7 +303,13 @@ def _confirmed_failure(
             f"blockers; inspect {RECOVERY_EVIDENCE_COMMANDS}, then choose an ordinary decision, "
             "a human rewind or a separate human abandon decision",
         )
-    return {**evidence, "classification": classification}
+    return {
+        **evidence,
+        "classification": classification,
+        "failure_domain": failure_domains.of_classification(
+            classification, "blocked report"
+        ).to_json(),
+    }
 
 
 def _require_codeless_report(root: Path, batch: JsonObject, entry: JsonObject) -> None:

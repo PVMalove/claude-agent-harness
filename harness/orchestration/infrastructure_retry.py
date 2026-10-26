@@ -10,8 +10,10 @@ import contextlib
 import uuid
 
 from . import operational_guards
-from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS
+from .core.constants import INFRASTRUCTURE_RETRY_DECISIONS, FailureDomain
 from .core.utils import CoordinatorError, JsonObject
+from .workflow import failure_domains
+from .workflow.failure_domains import Failure, FailureRefusal
 
 TRANSITION_FIELD = "infrastructure_retry_sha256"
 COMMAND_FIELDS = ("qa_preparation", "qa_environment_probes", "qa_project_file_checks")
@@ -21,9 +23,18 @@ ATTEMPT_TRANSITION_FIELD = "infrastructure_attempt_sha256"
 _ATTEMPTS_DIRECTORY = "qa-lane/operation-attempts/"
 
 
-class _RetryRefusal(CoordinatorError):
-    def __init__(self, message: str, *, remedy: str, attention_reason: str | None):
-        super().__init__(message, remedy=remedy)
+class _RetryRefusal(FailureRefusal):
+    """A refused policy retry: ``failure`` is the one failure domain that shows why."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        remedy: str,
+        attention_reason: str | None,
+        failure: Failure,
+    ):
+        super().__init__(message, remedy=remedy, failure=failure)
         self.attention_reason = attention_reason
 
 
@@ -78,6 +89,11 @@ def _retry_budget(batch: JsonObject, brief: JsonObject, policy: JsonObject) -> i
             "infrastructure retry budget exhausted",
             remedy="inspect and resolve attention; policy cannot authorize another retry",
             attention_reason="infrastructure-retry-repeated",
+            failure=failure_domains.structured(
+                FailureDomain.POLICY,
+                f"max_infrastructure_retries={policy['max_infrastructure_retries']} reached",
+                "orchestration_policy",
+            ),
         )
     if batch.get("needs_attention"):
         raise CoordinatorError(
@@ -197,12 +213,9 @@ def authorize(
     from .workflow.decisions import _decide_retry_route
 
     policy = _enabled_policy(brief)
-    stages = report.get("qa_stages", {})
-    if (
-        stages.get("failed_stage") != "preparation"
-        or stages.get("code_checks_started") != "not_started"
-        or stages.get("diagnosis", {}).get("category") != "infrastructure"
-    ):
+    # The failure domain of the recorded stages decides, not the runner's diagnosis category.
+    proven = failure_domains.of_qa_stages(report.get("qa_stages"))
+    if proven is None or proven.domain != FailureDomain.ENVIRONMENT_PREPARATION:
         raise CoordinatorError(
             "the report is not confirmed infrastructure",
             remedy="inspect the evidence and use a manual decision",
@@ -214,6 +227,7 @@ def authorize(
         brief["role"] != "qa"
         or routing["route"] != "same-candidate-rerun"
         or routing["reason_category"] != "verification-infrastructure"
+        or failure_domains.domain_of(routing) != FailureDomain.ENVIRONMENT_PREPARATION
     ):
         raise CoordinatorError(
             "the report is not confirmed infrastructure eligible for policy retry",
@@ -259,6 +273,14 @@ def authorize(
             "infrastructure environment is still not ready",
             remedy="restore the previously approved environment, then run report complete again",
             attention_reason=None,
+            failure=failure_domains.structured(
+                FailureDomain.ENVIRONMENT_PREPARATION,
+                "readiness check failed: "
+                + ", ".join(
+                    check["command"] for check in ready.checks if check["result"] != "pass"
+                ),
+                "readiness gate",
+            ),
         )
     return {
         "source": "infrastructure-retry",

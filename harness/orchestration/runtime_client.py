@@ -30,6 +30,7 @@ from types import TracebackType
 from typing import Protocol, cast
 
 from ..errors import HarnessError
+from .core.constants import FailureDomain
 from .core.utils import JsonObject, _repo
 
 # ADR 0021, section 3: the error codes the runtime answers with, then the client-side code for a
@@ -54,16 +55,7 @@ RUNTIME_ERROR_CODES = (
     "runtime_unavailable",
 )
 # The failure-domain taxonomy of ADR 0019.
-FAILURE_DOMAINS = (
-    "environment_preparation",
-    "infrastructure",
-    "policy",
-    "tooling",
-    "code_test",
-    "timeout",
-    "cancelled",
-    "unknown",
-)
+FAILURE_DOMAINS = tuple(FailureDomain)
 
 # The protocol version this client speaks; the runtime accepts a common major (ADR 0021).
 PROTOCOL_VERSION = (1, 0)
@@ -95,7 +87,7 @@ class RuntimeClientError(HarnessError):
         message: str,
         *,
         remedy: str,
-        domain: str = "tooling",
+        domain: str,
         retryable: bool = False,
         facts: JsonObject | None = None,
     ) -> None:
@@ -244,6 +236,7 @@ def _exchange(connection: _Transport, request: JsonObject) -> JsonObject:
             "internal",
             f"the runtime announced a frame of {length} bytes",
             remedy="update harness and harness-runtime to the same release",
+            domain=FailureDomain.UNKNOWN,
         )
     try:
         answer = json.loads(_read_exactly(connection, length).decode("utf-8"))
@@ -252,12 +245,14 @@ def _exchange(connection: _Transport, request: JsonObject) -> JsonObject:
             "internal",
             "the runtime sent a response that is not JSON",
             remedy="update harness and harness-runtime to the same release",
+            domain=FailureDomain.UNKNOWN,
         ) from exc
     if not isinstance(answer, dict):
         raise RuntimeClientError(
             "internal",
             "the runtime sent a response that is not a JSON object",
             remedy="update harness and harness-runtime to the same release",
+            domain=FailureDomain.UNKNOWN,
         )
     return cast(JsonObject, answer)
 
@@ -501,7 +496,7 @@ def _typed_error(response: Mapping[str, object]) -> RuntimeClientError:
         str(code),
         message,
         remedy=remedy,
-        domain=str(domain) if domain in FAILURE_DOMAINS else "unknown",
+        domain=str(domain) if domain in FAILURE_DOMAINS else FailureDomain.UNKNOWN,
         retryable=error.get("retryable") is True,
         facts=cast(JsonObject, facts) if isinstance(facts, dict) else None,
     )

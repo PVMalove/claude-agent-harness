@@ -30,8 +30,10 @@ from typing import Protocol, cast
 
 import pytest
 
+from harness import errors
 from harness.orchestration import coordinator, runtime_client
 from harness.orchestration.core.utils import JsonObject
+from harness.orchestration.ledger import ledger_ops
 from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 
 if sys.platform == "win32":
@@ -1244,6 +1246,32 @@ def test_an_error_of_the_runtime_exits_2_with_its_code_in_the_remedy(
     assert (
         err.splitlines()[1] == "REMEDY: [protocol_unsupported] fix protocol_unsupported"
     )
+
+
+def test_a_busy_store_read_prints_the_store_busy_code_first(
+    dirs: Directories,
+    runtimes: list[ScriptedRuntime],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(dirs.xdg))
+    runtimes.append(
+        ScriptedRuntime(
+            dirs,
+            answer=lambda request: _error(request["operation_id"], "store_busy"),
+        )
+    )
+    fetch = ledger_ops._runtime_fetch(dirs.repo)
+
+    with pytest.raises(ledger_ops.LedgerBusyError) as busy:
+        fetch(["batches"], [], None)
+
+    code = errors.print_and_exit(busy.value)
+
+    assert code == 2
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0] == "ERROR: store_busy happened"
+    assert lines[1] == "REMEDY: [store_busy] fix store_busy"
 
 
 # -- seam 1: the coordinator CLI against a real ``harness-runtime serve`` -------------------------

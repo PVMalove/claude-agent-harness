@@ -17,6 +17,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use contracts::ErrorCode;
 use serde_json::json;
 
 use crate::authority::{
@@ -69,8 +70,8 @@ impl Outcome {
     }
 }
 
-fn refused(message: impl Into<String>, remedy: impl Into<String>) -> Error {
-    Error::refused(message, remedy)
+fn refused(code: ErrorCode, message: impl Into<String>, remedy: impl Into<String>) -> Error {
+    Error::refused(code, message, remedy)
 }
 
 /// Step 1: whether the state directory can be migrated, and the state it holds.
@@ -81,11 +82,13 @@ fn preconditions(state: &Path) -> Result<LegacyState> {
             .any(|directory| state.join(directory).exists());
         return Err(if records {
             refused(
+                ErrorCode::ProtocolUnsupported,
                 "the state directory holds records of a layout older than the ledger",
                 LEDGER_MIGRATE_REMEDY,
             )
         } else {
             refused(
+                ErrorCode::NotFound,
                 "nothing_to_migrate: the state directory holds no ledger",
                 "run the migration on a repository that has orchestration state",
             )
@@ -93,6 +96,7 @@ fn preconditions(state: &Path) -> Result<LegacyState> {
     };
     if pointer.version < LEGACY_VERSION {
         return Err(refused(
+            ErrorCode::ProtocolUnsupported,
             format!(
                 "the ledger is version {}, and migrate imports version {LEGACY_VERSION}",
                 pointer.version
@@ -102,6 +106,7 @@ fn preconditions(state: &Path) -> Result<LegacyState> {
     }
     if pointer.version != LEGACY_VERSION {
         return Err(refused(
+            ErrorCode::ProtocolUnsupported,
             format!(
                 "the ledger version {} is newer than this runtime knows",
                 pointer.version
@@ -113,6 +118,7 @@ fn preconditions(state: &Path) -> Result<LegacyState> {
     legacy.validate()?;
     if legacy.file("qa-lane/lease.json").is_some() {
         return Err(refused(
+            ErrorCode::LeaseHeld,
             "the QA lane holds a lease",
             "finish the QA run, or clear the lease with 'coordinator.py qa clear-stale-lease' of installation 1.x, then repeat the command",
         ));
@@ -123,6 +129,7 @@ fn preconditions(state: &Path) -> Result<LegacyState> {
         .any(|file| file.path.starts_with("qa-lane/queue/") && file.path.ends_with(".json"))
     {
         return Err(refused(
+            ErrorCode::LeaseHeld,
             "the QA lane has queued runs",
             "let the queued QA runs finish, then repeat the command",
         ));
@@ -141,6 +148,7 @@ fn preconditions(state: &Path) -> Result<LegacyState> {
         .collect();
     if !live.is_empty() {
         return Err(refused(
+            ErrorCode::LeaseHeld,
             format!("dispatches are sent or working: {}", live.join(", ")),
             "wait until their workers report, or abandon them, then repeat the command",
         ));
@@ -182,6 +190,7 @@ fn refuse_a_rolled_back_store(state: &Path) -> Result<()> {
         && authority != String::new()
     {
         return Err(refused(
+            ErrorCode::InvariantViolation,
             format!(
                 "AUTHORITY.json names {authority:?}, the mark of a store kept after a rollback"
             ),

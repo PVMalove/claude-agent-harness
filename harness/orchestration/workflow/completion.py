@@ -34,6 +34,7 @@ from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.decisions import decide_batch
 from harness.orchestration.workflow.dispatch import create_dispatch
+from harness.orchestration.workflow.failure_domains import FailureRefusal
 from harness.orchestration.workflow.history import (
     _require_route,
     _validate_batch_integrity,
@@ -361,7 +362,11 @@ def _run_policy_chain(
             stop_attention(repo, root, dispatch_id, exc)
         steps[step] = ChainStepStatus.FAILED
         result["failed_step"] = step
-        result["error"] = {"message": exc.message, "remedy": exc.remedy}
+        error: JsonObject = {"message": exc.message, "remedy": exc.remedy}
+        if isinstance(exc, FailureRefusal):
+            # A refusal that carries its ADR 0019 failure domain keeps it for the human.
+            error["failure"] = exc.failure.to_json()
+        result["error"] = error
     return result
 
 
@@ -391,8 +396,10 @@ def complete_report(args: argparse.Namespace) -> JsonObject:
     chain = _run_policy_chain(repo, state_dir, args.dispatch)
     if chain["failed_step"] is not None:
         error = chain["error"]
+        failure = error.get("failure")
+        domain = f" (failure domain {failure['domain']})" if failure else ""
         raise CoordinatorError(
-            f"report complete stopped at step {chain['failed_step']}: {error['message']}",
+            f"report complete stopped at step {chain['failed_step']}: {error['message']}{domain}",
             remedy=f"{error['remedy']}; then run "
             f"{_completion_command(args.dispatch, state_dir)} again",
         )

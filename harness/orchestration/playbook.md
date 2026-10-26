@@ -107,14 +107,53 @@ never as a code finding. A context limit is `context-pressure` only when a criti
 In this table and the Recovery route table, an operational reason is one of these three categories;
 `tooling` and `block-bypass` have their own routes.
 
+**Failure domains.** Every retry routing record also carries `failure`: exactly one ADR 0019 domain
+(`environment_preparation`, `infrastructure`, `policy`, `tooling`, `code_test`, `timeout`,
+`cancelled`, `unknown`) with its evidence (`domain`, `method`, `matched`, `source`). The `method` is
+`structured` (a field of the report, a stage or the runtime), `heuristic` (a text pattern that never
+proves `code_test`), `approver` (the human or policy named it) or `fallback`, which is always the
+domain `unknown`.
+
+These sources are `code_test`: a review finding, a warning or blocker severity, an explicit reviewer
+retry, a failed check, an open carried item, a confirmed project defect in QA preparation, a
+conflict-resolver report with `resolver.cause` `task-defect`, and a moved candidate. The coordinator
+treats a moved candidate as `code_test` by decision. The ledger proves that the work itself changed,
+so the route stays a developer retry that spends the budget, as before failure domains existed.
+
+A hint of the `retry_reason_classifier` plugin is no proof. It never replaces a structured fact of
+the report, and a hint alone leaves the domain `unknown`.
+
+The other domains come from these facts. A structured `tooling_blocker` is `tooling`. A confirmed QA
+environment failure is `environment_preparation`. A recorded critical `context_pressure` is
+`infrastructure`. `block-bypass` is `policy`. Whatever nothing structured proves is `unknown`, never
+`code_test`.
+
+Only a `code_test` retry spends `retry_policy.max_developer_retries`. An `infrastructure`,
+`environment_preparation`, `policy`, `tooling`, `timeout`, `cancelled` or `unknown` retry never does.
+
+The coordinator refuses a developer retry of a code-review, qa, verification or publish report whose
+domain is not `code_test`. `batch decide --decision retry` answers with the failure and its remedy
+and writes nothing. Under `approval_policy: auto` the refusal is the stop
+`no-automatic-route`/`unknown-reason`, and its evidence keeps the `failure`. The same stop ends an
+automatic developer retry whose domain is `unknown`, because that retry spends no budget that would
+bound it.
+
+The approver proves a code defect with `--reason-category code`, `requirements` or
+`candidate-change`. The approver can also take the developer retry with `--retry-role developer`,
+including for a tooling-blocked code-review, qa or verification report. Both are `approver` evidence
+and spend the budget. With `--retry-role developer`, only the `tooling-retry` of a developer stage
+keeps the domain `tooling` and spends nothing. Every other `tooling-retry` spends nothing too, as
+the route table says. A decision recorded before failure domains existed has no `failure` and counts as
+before.
+
 | Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
 | --- | --- | --- | --- | --- |
 | architect | developer | new architect | terminal | `abandoned` |
-| developer | risk assessment | `verification` on the registered candidate when the report is `blocked` with an operational reason; otherwise `developer-retry` (new candidate, then a new risk assessment) | terminal | `abandoned` |
-| verification | risk assessment | `developer-retry` | terminal | `abandoned` |
-| code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure`, `transport` or `context-pressure`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` | terminal | `abandoned` |
-| qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry`; a preparation failure follows the QA preparation rules below | terminal | `abandoned` |
-| publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change | terminal | `abandoned` |
+| developer | risk assessment | `verification` on the registered candidate when the report is `blocked` with an operational reason; otherwise `developer-retry` (new candidate, then a new risk assessment; it spends the budget only for a `code_test` domain) | terminal | `abandoned` |
+| verification | risk assessment | `developer-retry` for a `code_test` domain; otherwise refused | terminal | `abandoned` |
+| code-review | qa | new code-review on the same candidate only if the report is `blocked`, the reason is `verification-infrastructure`, `transport` or `context-pressure`, there is no finding on either axis, no failed check and the candidate is unchanged; otherwise `developer-retry` for a `code_test` domain, else refused | terminal | `abandoned` |
+| qa | publish | new qa on the same candidate under the same conditions (QA stays read-only); a defect or a new candidate means `developer-retry`; a preparation failure follows the QA preparation rules below; a cause that is not `code_test` is refused a developer | terminal | `abandoned` |
+| publish | completed | new publish on the same accepted SHA for `verification-infrastructure`, `transport` or `context-pressure`; `developer-retry` when the candidate must change for a `code_test` domain, else refused | terminal | `abandoned` |
 
 **QA preparation failures.** When the project declares `qa_preparation`, the QA report carries `qa_stages`
 (per-stage command, result, exit code, sanitised diagnostics, `failed_stage`, `code_checks_started`
@@ -129,6 +168,15 @@ proves no infrastructure cause; log signatures are only corroboration.
   no code check started): the report is `blocked` and says the code was not verified. A `retry` needs no `--reason-category`: it routes `same-candidate-rerun` with
   `verification-infrastructure`, a new qa dispatch on the same SHA, and spends no
   `retry_policy.max_developer_retries`. The coordinator decides it by hand once the environment is ready.
+  The stages decide, not the runner's category: the routing record's `failure` is
+  `environment_preparation` (method `structured`, source `qa_stages`) whenever the probe failed, every
+  project-file check passed and no code check started, even when the log names no cause the runner
+  knows and its `diagnosis.category` is `unknown`. An offline `uv sync` (`No solution found when
+  resolving dependencies`, `Packages were unavailable because the network was disabled`) is exactly
+  that case. The same log with a failing offline lock check, or with no probe and no project-file
+  check, is not: the first is a `project-defect` (`code_test`), the second needs triage (`unknown`).
+  The runner's own `diagnosis.category` stays in the report unchanged, so it can differ from the
+  recorded domain.
 - `project-defect` (a failing project-file check, or a defect log signature such as an incompatible
   lock file that agrees with a tracked project file the output names): the report is `failed`; a `retry` routes `developer-retry` with `code`.
 - `unknown` (no probe or project-file check configured, contradicting facts, or no confirmation):
@@ -137,11 +185,12 @@ proves no infrastructure cause; log signatures are only corroboration.
   (`verification-infrastructure` for a same-SHA rerun, or a developer category) or blocks the batch.
 - A failing gate stage is an ordinary code-check failure: findings kept, route `developer-retry`.
 
-`code`, `requirements`, `candidate-change` and `unknown` always route to `developer-retry`; only the
-three operational categories, besides `tooling` and `block-bypass` below, may re-run a read-only
-stage on the same SHA, and only with empty findings, an unchanged candidate and no scope or
-requirement blocker. A contradictory or unsupported reason always takes the safe route,
-`developer-retry`.
+`code`, `requirements` and `candidate-change` route to `developer-retry`; only the three operational
+categories, besides `tooling` and `block-bypass` below, may re-run a read-only stage on the same SHA,
+and only with empty findings, an unchanged candidate and no scope or requirement blocker. An
+`unknown` reason, and a contradictory or unsupported one, never proves a code defect: a developer
+stage re-runs `developer-retry` without spending the budget, and a code-review, qa, verification or
+publish stage is refused (see "Failure domains").
 
 A retry that routes to `developer-retry` records, as `retry_item_ids`, the closed list of carried
 items its developer brief will carry, possibly empty. For a retried code-review report, the list
@@ -149,8 +198,8 @@ holds the open coordinator findings, that review's Standards and Spec findings, 
 incomplete items handed to the developer; for a retried qa, publish or verification report, the same
 without review findings. For a retried developer work report, it holds its own brief's items, none
 of which was accepted. A non-empty list records the route `fix-forward`. A fix-forward is still a
-developer-retry: `next_action` is `developer-retry` and it spends one
-`retry_policy.max_developer_retries`. The developer adds new commits on top of the brief's
+developer-retry: `next_action` is `developer-retry` and, when its failure domain is `code_test`, it
+spends one `retry_policy.max_developer_retries`. The developer adds new commits on top of the brief's
 `snapshot_commit` and rewrites none of them. A developer `tooling-retry` keeps its own route and
 records the same list.
 
@@ -160,7 +209,8 @@ A `developer-retry` or `fix-forward` route also checks the integration base: `ba
 else the latest accepted one) does not contain it yet, the route is `rebase-fix-forward`: the
 routing record adds `rebase_target_commit` (that tip) and `integration_base_commit` (the base it
 moved from), and keeps `retry_item_ids`. It is still a developer-retry: `next_action` is
-`developer-retry` and it spends one `retry_policy.max_developer_retries`. The decision only proposes
+`developer-retry` and, when its failure domain is `code_test`, it spends one
+`retry_policy.max_developer_retries`. The decision only proposes
 the target. The developer-retry brief carries it as `rebase_target_commit`, bound into the
 transition as `rebase_target_sha`, and that dispatch always needs an explicit approval with the
 transition digest, under every `approval_policy` except `auto`; no policy except `auto` approves a
@@ -312,12 +362,12 @@ that stage. The coordinator chooses a route by this table:
 | An architect report is retried without `--narrowed`, whatever the reason category except `tooling` | `architect-retry` | A human decides the retry with `batch decide`; the new architect dispatch is approved under `approval_policy` | Dispatch ID and `report_sha256` of the architect report. Not `same-candidate-rerun`: it is not conditioned on a reason category and pins no candidate |
 | A developer report is `blocked` with an operational reason, no finding and no failed check | `verification` | A human decides the retry; the read-only verification dispatch is approved under `approval_policy` | Dispatch ID, `report_sha256`, the `candidate_registrations` entry with its `source_report_sha256`, and for `context-pressure` the critical `context_pressure` record |
 | A code-review, qa or publish report is `blocked` with an operational reason, no finding on either axis, no failed check and an unchanged candidate | `same-candidate-rerun` | A human decides the retry; the new dispatch on the same SHA needs its own approval under `approval_policy` | Dispatch ID, `report_sha256`, the unchanged `candidate_commit`, and for `context-pressure` the critical `context_pressure` record |
-| A qa report is `blocked` because its `qa_stages` show a failed preparation with a confirmed `infrastructure` diagnosis and `code_checks_started: not_started` | `same-candidate-rerun` | A human decides the retry once the environment is confirmed ready; the new qa dispatch on the same SHA needs its own approval under `approval_policy`; it spends no `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the report's `qa_stages` with its diagnosis signals, the unchanged `candidate_commit`; the earlier brief, report and artifact stay as audit evidence |
-| A verification report is retried without `--narrowed`, whatever its outcome or reason category except `tooling` and `block-bypass` | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry`, `bypass-rerun` or `narrowed-retry` |
+| A qa report is `blocked` because its `qa_stages` show a failed preparation that the stages themselves prove to be the environment (a failed `environment-probe`, every `project-file-check` passed, so the routing record's failure domain is `environment_preparation`, whatever the runner's `diagnosis.category`) and `code_checks_started: not_started` | `same-candidate-rerun` | A human decides the retry once the environment is confirmed ready; the new qa dispatch on the same SHA needs its own approval under `approval_policy`; it spends no `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the report's `qa_stages` with its stage results and diagnosis signals, the unchanged `candidate_commit`; the earlier brief, report and artifact stay as audit evidence |
+| A verification report is retried without `--narrowed`, whatever its outcome or reason category except `tooling` and `block-bypass`, and its failure domain is `code_test` (a failed check, or an approver's `--reason-category code`, `requirements` or `candidate-change`, or `--retry-role developer`) | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries`. Any other failure domain is refused and spends nothing | Dispatch ID and `report_sha256` of the verification report. A verification report is never re-run on the same SHA, except by `tooling-retry`, `bypass-rerun` or `narrowed-retry` |
 | A conflict-resolver report is retried and its `resolver.cause` is not `task-defect` | `same-candidate-rerun` | A human decides the retry; the new resolver dispatch is a fix on the same target and is bounded by `retry_policy.max_developer_retries` | Dispatch ID and `report_sha256` of the resolver report and its `resolver` block |
-| A warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements`, `candidate-change` or `unknown` reason, a contradictory reason, or `--retry-role developer`, and the closed list of carried items is empty: no review finding, no open coordinator finding, no open incomplete item for the developer and no item of a retried developer brief | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the axis, check or candidate change that decided it, and an empty `retry_item_ids` |
-| An additional commit is needed: a retry routes to a developer-retry whose closed list of carried items is not empty (the retried review's Standards and Spec findings, open coordinator findings, open incomplete items for the developer, or the items of a retried developer brief); a `tooling-retry` keeps its own route and carries the same list | `fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch is approved under `approval_policy`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the `retry_item_ids` the brief carries, and the brief's `snapshot_commit` as the candidate the new commits continue |
-| The integration base moved ahead: a retry routes to a developer-retry (`developer-retry` or `fix-forward`) of a developer, verification, code-review, qa or publish report while `origin/<integration_ref>` has moved past the pinned `integration_base_commit` and the candidate the retry continues does not contain that tip yet | `rebase-fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch that carries the proposed tip as `rebase_target_commit` always needs an explicit approval (`--approved-by` with the transition digest), under every `approval_policy` except `auto`; it spends one `retry_policy.max_developer_retries` | Dispatch ID, `report_sha256`, the routing record's `rebase_target_commit` and `integration_base_commit`, the `retry_item_ids` the brief carries, and the `rebase_check` of the retry report |
+| A warning/blocker severity, a failed check, a moved candidate, a `code`, `requirements` or `candidate-change` reason, or `--retry-role developer` (the failure domain is `code_test`), and the closed list of carried items is empty: no review finding, no open coordinator finding, no open incomplete item for the developer and no item of a retried developer brief | `developer-retry` | A human decides the retry; it spends one `retry_policy.max_developer_retries`. A developer report with an `unknown` or operational reason also routes `developer-retry` but spends no budget; a read-only report with such a reason is refused | Dispatch ID, `report_sha256`, the axis, check or candidate change that decided it, and an empty `retry_item_ids` |
+| An additional commit is needed: a retry routes to a developer-retry whose closed list of carried items is not empty (the retried review's Standards and Spec findings, open coordinator findings, open incomplete items for the developer, or the items of a retried developer brief); a `tooling-retry` keeps its own route and carries the same list | `fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch is approved under `approval_policy`; it spends one `retry_policy.max_developer_retries` when its failure domain is `code_test` | Dispatch ID, `report_sha256`, the `retry_item_ids` the brief carries, and the brief's `snapshot_commit` as the candidate the new commits continue |
+| The integration base moved ahead: a retry routes to a developer-retry (`developer-retry` or `fix-forward`) of a developer, verification, code-review, qa or publish report while `origin/<integration_ref>` has moved past the pinned `integration_base_commit` and the candidate the retry continues does not contain that tip yet | `rebase-fix-forward` | A human decides the retry with `batch decide`; the developer-retry dispatch that carries the proposed tip as `rebase_target_commit` always needs an explicit approval (`--approved-by` with the transition digest), under every `approval_policy` except `auto`; it spends one `retry_policy.max_developer_retries` when its failure domain is `code_test` | Dispatch ID, `report_sha256`, the routing record's `rebase_target_commit` and `integration_base_commit`, the `retry_item_ids` the brief carries, and the `rebase_check` of the retry report |
 | After fix-forward: a code-review is dispatched for the candidate of an accepted `fix-forward` or `rebase-fix-forward` developer-retry that continued a candidate an earlier code-review of the batch judged (the review was accepted, or retried to a developer) | `fix-forward` | No separate decision: `dispatch create --role code-review` without `--delta-review-of` chooses a delta or a full review itself, and the code-review dispatch is approved under `approval_policy` with that choice bound into its transition | The brief's `delta_review_scope`: `prior_review` (dispatch ID, `report_sha256`, reviewed candidate), `developer_dispatch_id`, `delta_base`, `delta_commits`, `reviewed_copies`, `closure` and the `escalations` that make it `full`; the transition's `delta_review_sha256`; the QA dispatch's `candidate_commit`, the new SHA |
 | A hook, the safety classifier or the ledger blocked a legitimate command: a `blocked` report carries `tooling_blocker` (tool, exact command, message), with no finding, no failed check and an unchanged candidate | `tooling-retry` | A human decides the retry after confirming the false positive and filing a bug ticket against the tool; the new dispatch of the same stage (same SHA; a developer continues its last commit) is approved under `approval_policy`; no `retry_policy.max_developer_retries` is spent | Dispatch ID, `report_sha256`, the `tooling_blocker`, and the `candidate_commit` (for a developer, its last commit) |
 | A code-review, qa or verification role worked around a hook or tool block (another command form, tool, script file, `eval`, interpreter or a split command): the approver names `block-bypass`, and the candidate is unchanged | `bypass-rerun` | A human decides the retry with a `--note` naming the violation and never accepts or warning-overrides the report; the new dispatch of the same stage on the same SHA always needs an explicit approval (`--approved-by`), under every `approval_policy` except `auto`; no `retry_policy.max_developer_retries` is spent | Dispatch ID and `report_sha256` (evidence of the violation only, never of its findings or checks), the `--note`, and the unchanged `candidate_commit` |
@@ -486,7 +536,7 @@ detect them in this order: integrity, budget, route.
 | `budget-exhausted` | `retry_policy.max_developer_retries` | A developer-retry beyond the budget |
 | `budget-exhausted` | `continuation_policy.max_continuations`, `continuation_policy.max_rate_limit_resumes` | A checkpointed or rate-limited dispatch with a spent budget |
 | `budget-exhausted` | `attention_policy.max_infrastructure_retries`, `tooling-retry-repeated` | Attention `infrastructure-retry-repeated` or `tooling-retry-repeated` |
-| `no-automatic-route` | `unknown-reason` | The route has reason category `unknown`, or attention `unknown-reason` |
+| `no-automatic-route` | `unknown-reason` | The route has reason category `unknown`, or is a developer-retry whose failure domain is `unknown`, or the coordinator refuses a developer retry because no code defect is proven (the stop keeps the `failure`), or attention `unknown-reason` |
 | `no-automatic-route` | `abandon-dead-end` | The coordinator refuses the retry route, or the batch is `blocked` or `failed` |
 | `no-automatic-route` | `supersede-dead-end` | The batch is `abandoned`; only a human continues with `batch create --supersedes` |
 | `no-automatic-route` | `qa-environment-failure` | The QA gate failed on its environment (a read-only file system, or permission denied outside the repository) with no code-defect sign; the evidence names the remedy: a writable temporary directory, then `batch rewind --to qa` |

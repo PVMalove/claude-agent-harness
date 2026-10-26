@@ -11,6 +11,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use contracts::ErrorCode;
 use sha2::{Digest, Sha256};
 
 /// A Unix socket path longer than this does not fit `sockaddr_un` on every platform.
@@ -56,6 +57,28 @@ impl fmt::Display for PathError {
 }
 
 impl std::error::Error for PathError {}
+
+impl PathError {
+    /// The protocol error code that the first `REMEDY:` line of `harness-runtime serve` shows.
+    pub const fn code(&self) -> ErrorCode {
+        match self {
+            Self::NotARepository(_) => ErrorCode::NotFound,
+            Self::SocketPathTooLong { .. } => ErrorCode::MalformedRequest,
+            Self::Io { .. } => ErrorCode::Internal,
+        }
+    }
+
+    /// What the operator does next.
+    pub const fn remedy(&self) -> &'static str {
+        match self {
+            Self::NotARepository(_) => "pass the root of a git working tree with --repo <path>",
+            Self::SocketPathTooLong { .. } => {
+                "use a shorter repository path, or set XDG_RUNTIME_DIR to a shorter directory"
+            }
+            Self::Io { .. } => "make the path readable for this user, then repeat the command",
+        }
+    }
+}
 
 fn io_error(path: &Path) -> impl FnOnce(io::Error) -> PathError + '_ {
     move |source| PathError::Io {

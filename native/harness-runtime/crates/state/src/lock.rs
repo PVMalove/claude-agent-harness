@@ -14,6 +14,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use contracts::ErrorCode;
 use serde_json::{Map, Value, json};
 
 use crate::canonical::{canonical_json, sha256_hex};
@@ -41,7 +42,11 @@ pub struct LegacyLock {
 }
 
 fn busy(detail: &str) -> Error {
-    Error::refused(format!("the ledger is locked: {detail}"), BUSY_REMEDY)
+    Error::refused(
+        ErrorCode::StoreBusy,
+        format!("the ledger is locked: {detail}"),
+        BUSY_REMEDY,
+    )
 }
 
 fn read_owner(lock_dir: &Path) -> Option<Map<String, Value>> {
@@ -179,6 +184,7 @@ pub fn acquire(state: &Path) -> Result<LegacyLock> {
             }
             Err(err) => {
                 return Err(Error::refused(
+                    ErrorCode::Internal,
                     format!("cannot create {}: {err}", lock_dir.display()),
                     "let this process write the state directory, then repeat the command",
                 ));
@@ -208,6 +214,7 @@ pub fn acquire(state: &Path) -> Result<LegacyLock> {
                 busy("another operation recorded its owner first")
             } else {
                 Error::refused(
+                    ErrorCode::Internal,
                     format!("cannot record the lock owner: {err}"),
                     "let this process write the state directory, then repeat the command",
                 )
@@ -223,6 +230,7 @@ pub fn acquire(state: &Path) -> Result<LegacyLock> {
         let _ = fs::remove_file(&owner);
         let _ = fs::remove_dir(&lock_dir);
         return Err(Error::refused(
+            ErrorCode::Internal,
             format!("cannot hold the lock owner record: {err}"),
             "make the state directory support file locks, then repeat the command",
         ));

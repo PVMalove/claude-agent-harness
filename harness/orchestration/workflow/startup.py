@@ -25,6 +25,7 @@ from harness.orchestration.core.utils import (
     _read_object,
 )
 from harness.orchestration.ledger.ledger_ops import _load_dispatch, _records_root
+from harness.orchestration.workflow import failure_domains
 from harness.orchestration.workflow.recovery import verified_checkout
 from harness.orchestration.workflow.approval import sealed
 
@@ -194,6 +195,9 @@ def assess_startup(
         "model_match": model_match,
         "worktree_match": tree_match,
         "runtime_failure": runtime_failure,
+        "failure": failure_domains.of_startup(
+            classification, runtime_failure
+        ).to_json(),
         "unknowns": unknowns,
     }
 

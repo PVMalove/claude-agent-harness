@@ -5,11 +5,18 @@ use std::fmt;
 use std::io;
 use std::path::Path;
 
+use contracts::ErrorCode;
+
 /// Why an operation did not complete.
 #[derive(Debug)]
 pub enum Error {
-    /// A precondition refused the operation before it changed anything (exit code 2).
-    Refused { message: String, remedy: String },
+    /// A precondition refused the operation before it changed anything (exit code 2). `code` is
+    /// the protocol error code that names the refusal (ADR 0021, section 3).
+    Refused {
+        code: ErrorCode,
+        message: String,
+        remedy: String,
+    },
     /// An I/O or store failure after the operation began; the partial store is discarded and
     /// the authority is the one it was (exit code 3).
     Interrupted(String),
@@ -21,10 +28,20 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    pub fn refused(message: impl Into<String>, remedy: impl Into<String>) -> Self {
+    pub fn refused(code: ErrorCode, message: impl Into<String>, remedy: impl Into<String>) -> Self {
         Self::Refused {
+            code,
             message: message.into(),
             remedy: remedy.into(),
+        }
+    }
+
+    /// The protocol error code that the first `REMEDY:` line of `harness-runtime migrate` shows.
+    pub const fn code(&self) -> ErrorCode {
+        match self {
+            Self::Refused { code, .. } => *code,
+            Self::Interrupted(_) => ErrorCode::Internal,
+            Self::Invariant(_) => ErrorCode::InvariantViolation,
         }
     }
 
@@ -61,6 +78,7 @@ impl Error {
     /// An I/O failure while the legacy state is only read: nothing changed, so it refuses.
     pub fn unreadable(path: &Path, source: &io::Error) -> Self {
         Self::refused(
+            ErrorCode::Internal,
             format!("cannot read {}: {source}", path.display()),
             "make the state directory readable, then repeat the command",
         )
@@ -87,5 +105,27 @@ impl From<io::Error> for Error {
 impl From<rusqlite::Error> for Error {
     fn from(err: rusqlite::Error) -> Self {
         Self::Interrupted(format!("the store failed: {err}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_kind_names_its_protocol_error_code() {
+        assert_eq!(
+            Error::refused(ErrorCode::StoreBusy, "m", "r").code(),
+            ErrorCode::StoreBusy
+        );
+        assert_eq!(
+            Error::Interrupted("x".to_owned()).code(),
+            ErrorCode::Internal
+        );
+        assert_eq!(Error::invariant("x").code(), ErrorCode::InvariantViolation);
+        assert_eq!(
+            Error::unreadable(Path::new("/p"), &io::Error::other("x")).code(),
+            ErrorCode::Internal
+        );
     }
 }

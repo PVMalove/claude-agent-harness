@@ -10,6 +10,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use contracts::ErrorCode;
 use serde_json::{Map, Value};
 
 use crate::canonical::object_sha256;
@@ -76,7 +77,7 @@ pub struct LegacyState {
 }
 
 fn invalid(message: impl Into<String>, remedy: impl Into<String>) -> Error {
-    Error::refused(message, remedy)
+    Error::refused(ErrorCode::InvariantViolation, message, remedy)
 }
 
 /// Read `ledger.json`. `Ok(None)` when the file does not exist.
