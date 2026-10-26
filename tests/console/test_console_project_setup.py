@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from dataclasses import dataclass
 
 import pytest
 from pathlib import Path
@@ -22,6 +23,7 @@ from textual.widgets import (
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
 from harness.console.screens.project_setup import ProjectSetupScreen
+from harness.console.shell import Fold
 
 from tests.console._pilot_wait import press, wait_until
 
@@ -1035,3 +1037,235 @@ def test_stage_three_is_current_while_installing_and_the_stage_follows_the_outco
     assert "▶ Установка / внедрение" in during_failure
     assert after_success == 3
     assert after_failure == 1
+
+
+# -- The screen at 160x52, 120x40 and 80x24, in Russian and English ----------------------------
+
+_SIZES = [(160, 52), (120, 40), (80, 24)]
+_BLOCKS = (
+    "project-frame",
+    "capability-frame",
+    "plan-frame",
+    "checks-frame",
+    "output-frame",
+)
+_WORDS: dict[str, dict[str, tuple[str, ...]]] = {
+    "ru": {
+        "title": ("Открыть проект",),
+        "wide": ("Обзор папок", "Проверить путь", "Открыть проект →"),
+        "narrow": ("Обзор", "Проверить", "Открыть →"),
+        "cards": (
+            "ПРОЕКТ",
+            "СОСТАВ HARNESS",
+            "ПЛАН УСТАНОВКИ",
+            "ПРОВЕРКИ",
+            "РЕЗУЛЬТАТ",
+        ),
+        "status": ("Git-проект найден · действие: новая установка",),
+        "summary": ("Проверено",),
+    },
+    "en": {
+        "title": ("Open project",),
+        "wide": ("Browse folders", "Check path", "Open project →"),
+        "narrow": ("Browse", "Check", "Open →"),
+        "cards": ("PROJECT", "HARNESS SET", "INSTALL PLAN", "CHECKS", "RESULT"),
+        "status": ("Git project found · action: new installation",),
+        "summary": ("Checked",),
+    },
+}
+
+
+def _shown(widget: object) -> bool:
+    """On the screen: itself and everything around it displayed, and it has an area."""
+    from textual.widget import Widget
+
+    assert isinstance(widget, Widget)
+    return widget.region.area > 0 and all(
+        node.display for node in [widget, *widget.ancestors] if isinstance(node, Widget)
+    )
+
+
+@dataclass
+class _Seen:
+    """What a user sees of the screen: texts, labels, the places of the blocks."""
+
+    title: str
+    subtitle: bool
+    strip: bool
+    labels: tuple[str, ...]
+    status: str
+    stage: str
+    cards: list[str]
+    y: list[int]
+    x: list[int]
+    open_folds: list[bool]
+    install: bool
+    command: str
+    summary: str
+    footer: set[str]
+    chrome: list[str]
+
+
+async def _look(
+    app: HarnessConsoleApp, pilot: Pilot[None], project: Path, language: str
+) -> _Seen:
+    screen = await _open_setup(app, pilot)
+    if language != app.language:
+        app.action_toggle_language()
+    await pilot.pause()
+    await app.workers.wait_for_complete()
+    screen.query_one("#project-path", Input).value = str(project)
+    await press(pilot, "#inspect-project")
+    await app.workers.wait_for_complete()
+    await wait_until(
+        pilot,
+        lambda: not screen.busy
+        and screen._summary is not None
+        and screen._blocked is not None,
+    )
+    await pilot.pause()
+
+    def text(selector: str) -> str:
+        return str(screen.query_one(selector, Static).content)
+
+    labels = tuple(
+        str(screen.query_one("#" + name, Button).label)
+        for name in ("browse-project", "inspect-project", "activate-project")
+    )
+    cards = [str(screen.query_one("#" + name).border_title) for name in _BLOCKS]
+    return _Seen(
+        title=text("#setup-title"),
+        subtitle=_shown(screen.query_one("#setup-subtitle")),
+        strip=_shown(screen.query_one("#setup-open")),
+        labels=labels,
+        status=text("#target-status").splitlines()[0],
+        stage=text("#setup-stage"),
+        cards=cards,
+        y=[screen.query_one("#" + name).region.y for name in _BLOCKS],
+        x=[screen.query_one("#" + name).region.x for name in _BLOCKS],
+        open_folds=[
+            not screen.query_one("#" + name, Fold).collapsed
+            for name in ("capability-frame", "output-frame")
+        ],
+        install=_shown(screen.query_one("#install-project")),
+        command=text("#plan-command"),
+        summary=text("#checks-summary"),
+        footer={
+            key for key, active in screen.active_bindings.items() if active.binding.show
+        },
+        chrome=[
+            text("#setup-title"),
+            text("#setup-subtitle"),
+            text("#setup-open"),
+            text("#setup-stage"),
+            text("#target-status"),
+            text("#plan-command-label"),
+            text("#plan-hint"),
+            text("#capability-detail"),
+            text("#checks-summary"),
+            *labels,
+            *cards,
+        ],
+    )
+
+
+@pytest.mark.parametrize("language", ["ru", "en"])
+@pytest.mark.parametrize("size", _SIZES, ids=[f"{w}x{h}" for w, h in _SIZES])
+def test_the_screen_follows_the_mockup_composition_at_every_size(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    import re
+    import shlex
+
+    project = _git_project(tmp_path / "backend")
+    words = _WORDS[language]
+    narrow = size[0] < 100
+
+    async def scenario() -> _Seen:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            return await _look(app, pilot, project, language)
+
+    seen = asyncio.run(scenario())
+    assert seen.title == words["title"][0]
+    assert seen.labels == (words["narrow"] if narrow else words["wide"])
+    assert seen.status == "✔ " + words["status"][0]
+    assert "▶" in seen.stage
+    assert seen.command == shlex.join(
+        ["harness", "init", str(project.resolve()), "--capability", "pvmalove-suite"]
+    )
+    assert seen.summary.startswith(f"✔ {words['summary'][0]}")
+    assert seen.install
+    # Narrow: no subtitle and no strip, the set and the result are folded, the cards have no
+    # titles. Wide: all of them shown, open.
+    assert seen.subtitle is not narrow and seen.strip is not narrow
+    assert seen.open_folds == [not narrow, not narrow]
+    if not narrow:
+        for title, card in zip(seen.cards, words["cards"]):
+            assert card in title
+    # The footer holds the mockup's keys and nothing else: Esc, F1, F2 and the palette.
+    assert {"escape", "f1", "f2"} <= seen.footer
+    assert "y" not in seen.footer
+    # Block order: the project, the set, the plan, the checks, the result. Two columns only on a
+    # spacious terminal (the plan beside the project), otherwise one under another.
+    ys, xs = seen.y, seen.x
+    assert ys[0] < ys[1] and ys[2] < ys[3] < ys[4]
+    if size[0] >= 140:
+        assert ys[0] == ys[2] and xs[0] < xs[2]
+    else:
+        assert ys[1] < ys[2] and xs[0] == xs[2]
+    if language == "en":
+        # Everything fixed on the screen has an English text (the report lines are data).
+        assert [line for line in seen.chrome if re.search("[А-Яа-я]", line)] == []
+
+
+def test_the_screen_shows_no_demo_data_from_the_mockup() -> None:
+    """The mockup's sample values (branch, counts, paths, version) are not in the sources: the
+    screen shows only what the console receives."""
+    root = Path(__file__).resolve().parents[2] / "harness" / "console"
+    for source in (root / "screens" / "project_setup.py", root / "project_target.py"):
+        text = source.read_text(encoding="utf-8")
+        for demo in (
+            "feature/issue-721",
+            "16 из 27",
+            "11 онлайн",
+            "/home/malove",
+            "1.4.6",
+        ):
+            assert demo not in text, f"{source.name}: {demo}"
+
+
+def test_y_copies_the_git_init_hint_and_then_the_installation_command(
+    tmp_path: Path,
+) -> None:
+    import shlex
+
+    plain = tmp_path / "notes"
+    plain.mkdir()
+    project = _git_project(tmp_path / "backend")
+
+    async def scenario() -> tuple[str, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(140, 60)) as pilot:
+            screen = await _open_setup(app, pilot)
+            screen.query_one("#project-path", Input).value = str(plain)
+            await press(pilot, "#inspect-project")
+            await wait_until(pilot, lambda: _status(screen).startswith("✖"))
+            screen.set_focus(None)  # `y` is a letter: in the path field it is typed
+            await pilot.press("y")
+            hint = app.clipboard
+            screen.query_one("#project-path", Input).value = str(project)
+            await press(pilot, "#inspect-project")
+            await app.workers.wait_for_complete()
+            await wait_until(
+                pilot, lambda: not screen.busy and screen._blocked is not None
+            )
+            screen.set_focus(None)
+            await pilot.press("y")
+            return hint, app.clipboard
+
+    hint, command = asyncio.run(scenario())
+    assert hint == "git init"
+    assert command == shlex.join(
+        ["harness", "init", str(project.resolve()), "--capability", "pvmalove-suite"]
+    )
