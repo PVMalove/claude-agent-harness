@@ -3,7 +3,8 @@ state of the accepted mockup docs/design/console-mockups/open-project.html. The 
 branch and the health report are fixed, so a snapshot changes only when the screen does; see
 tests/console/_svg_snapshot.py to regenerate them.
 
-The snapshots show POSIX paths (`/srv/projects/...`), so they are compared on POSIX systems only."""
+The snapshots show POSIX paths (`/srv/projects/...`), so they are compared on POSIX systems only; the
+check that every mockup caption and state has its snapshot files reads no path and runs everywhere."""
 
 from __future__ import annotations
 
@@ -38,10 +39,6 @@ from tests.console._svg_snapshot import (
     mockup_states,
     snapshot_path,
     until,
-)
-
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="the snapshots show POSIX paths"
 )
 
 MOCKUP = "open-project.html"
@@ -346,6 +343,7 @@ def test_every_mockup_caption_and_state_has_a_snapshot_pair() -> None:
             ).is_file(), f"{case.name} {size[0]}x{size[1]}: no snapshot"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="the snapshots show POSIX paths")
 @pytest.mark.parametrize("size", SIZES, ids=[f"{w}x{h}" for w, h in SIZES])
 @pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
 def test_screen_matches_its_snapshot(
