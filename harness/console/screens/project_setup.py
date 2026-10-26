@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from rich.text import Text
+from textual import on
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
 from textual.widgets import (
     Button,
     DirectoryTree,
@@ -93,8 +96,31 @@ def _full_report(report: Report) -> str:
 
 
 class _DirectoryOnlyTree(DirectoryTree):
+    """Folders only. A click or Space opens and closes a folder, Right opens it, Enter chooses it:
+    only Enter puts the folder into the path."""
+
+    BINDINGS = [
+        Binding("right", "expand", "Раскрыть", show=False),
+        Binding("enter", "choose", "Подставить путь", show=False),
+    ]
+
+    class Chosen(Message):
+        def __init__(self, path: Path) -> None:
+            super().__init__()
+            self.path = path
+
     def filter_paths(self, paths: Iterable[Path]) -> Iterable[Path]:
         return [path for path in paths if path.is_dir()]
+
+    def action_expand(self) -> None:
+        node = self.cursor_node
+        if node is not None and node.allow_expand:
+            node.expand()
+
+    def action_choose(self) -> None:
+        node = self.cursor_node
+        if node is not None and node.data is not None:
+            self.post_message(self.Chosen(node.data.path))
 
 
 class ProjectSetupScreen(ConsoleShell[Path | None]):
@@ -365,8 +391,16 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     def on_directory_tree_directory_selected(
         self, event: DirectoryTree.DirectorySelected
     ) -> None:
-        self.query_one("#project-path", Input).value = str(event.path)
+        # A click on a folder only highlights and opens it; Enter chooses (`_DirectoryOnlyTree.Chosen`).
+        event.stop()
+
+    @on(_DirectoryOnlyTree.Chosen)
+    def _folder_chosen(self, event: _DirectoryOnlyTree.Chosen) -> None:
+        event.stop()
+        field = self.query_one("#project-path", Input)
+        field.value = str(event.path)
         self._toggle_browser()
+        field.focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if self.busy:
@@ -401,10 +435,11 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             return
         start = Path(self.query_one("#project-path", Input).value).expanduser()
         root = start if start.is_dir() else Path.home()
+        tree = _DirectoryOnlyTree(root, id="directory-browser")
         self.query_one("#project-frame").mount(
-            _DirectoryOnlyTree(root, id="directory-browser"),
-            after=self.query_one("#target-status"),
+            tree, after=self.query_one("#target-status")
         )
+        self.call_after_refresh(tree.focus)
 
     def _relayout(self) -> None:
         for identifier in (
@@ -576,7 +611,11 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     async def action_back(self) -> None:
         # Not `ConsoleShell.action_back` (`pop_screen`): it would drop the push callback, which
         # receives None when the screen is closed without a choice.
-        if not self._wait_for_operation():
+        if self.query("#directory-browser"):
+            # Esc closes the folder browser first; leaving the screen is the next press.
+            self._toggle_browser()
+            self.query_one("#browse-project", Button).focus()
+        elif not self._wait_for_operation():
             self.dismiss(None)
 
     def on_unmount(self) -> None:

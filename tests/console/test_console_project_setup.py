@@ -9,7 +9,14 @@ import pytest
 from pathlib import Path
 from typing import Mapping, Sequence
 
-from textual.widgets import Button, Input, RadioButton, RadioSet, Static
+from textual.widgets import (
+    Button,
+    DirectoryTree,
+    Input,
+    RadioButton,
+    RadioSet,
+    Static,
+)
 
 from harness.console.app import HarnessConsoleApp
 from harness.console.screens.dashboard import DashboardScreen
@@ -818,3 +825,95 @@ def test_editing_the_path_clears_the_previous_target_status_plan_and_result(
     assert en == "Enter the project path and press “Check path”."
     assert blank["plan"] == "The plan appears after the path is checked."
     assert blank["output"] == "Check and install results appear here."
+
+
+async def _open_browser(
+    app: HarnessConsoleApp, pilot: object, screen: ProjectSetupScreen, root: Path
+) -> DirectoryTree:
+    screen.query_one("#project-path", Input).value = str(root)
+    await press(pilot, "#browse-project")
+    await wait_until(pilot, lambda: len(screen.query("#directory-browser")) == 1)  # type: ignore[arg-type]
+    tree = screen.query_one("#directory-browser", DirectoryTree)
+    await wait_until(pilot, lambda: tree.has_focus and tree.root.children)  # type: ignore[arg-type]
+    return tree
+
+
+def test_escape_in_the_folder_browser_closes_only_the_tree(tmp_path: Path) -> None:
+    (tmp_path / "projects" / "app").mkdir(parents=True)
+    results: list[object] = []
+
+    async def scenario() -> tuple[bool, int, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = ProjectSetupScreen(tmp_path, command_runner=lambda *a, **k: None)  # type: ignore[arg-type]
+            await app.push_screen(screen, results.append)
+            await wait_until(pilot, lambda: app.screen is screen)
+            await _open_browser(app, pilot, screen, tmp_path / "projects")
+            await pilot.press("escape")
+            await wait_until(pilot, lambda: not screen.query("#directory-browser"))
+            stayed = app.screen is screen and results == []
+            # The next Esc leaves the screen as before.
+            await pilot.press("escape")
+            await wait_until(pilot, lambda: app.screen is not screen)
+            return stayed, len(results), True
+
+    stayed, closed, _ = asyncio.run(scenario())
+    assert stayed and closed == 1 and results == [None]
+
+
+def test_right_arrow_expands_a_folder_and_enter_puts_it_in_the_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "projects"
+    (root / "app" / "inner").mkdir(parents=True)
+
+    async def scenario() -> tuple[list[str], str, int, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_setup(app, pilot)
+            tree = await _open_browser(app, pilot, screen, root)
+            await pilot.press("down")  # the root's only child: `app`
+            await pilot.press("right")
+            node = tree.cursor_node
+            assert node is not None
+            await wait_until(pilot, lambda: node.is_expanded and node.children)
+            inner = [str(child.label) for child in node.children]
+            # Enter selects the highlighted folder as the project path and closes the tree.
+            await pilot.press("enter")
+            await wait_until(pilot, lambda: not screen.query("#directory-browser"))
+            value = screen.query_one("#project-path", Input).value
+            return inner, value, len(app.screen_stack), app.screen is screen
+
+    inner, value, _, on_screen = asyncio.run(scenario())
+    assert inner == ["inner"]
+    assert value == str(root / "app")
+    assert on_screen
+
+
+def test_a_click_on_a_folder_name_highlights_it_but_does_not_select_it(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "projects"
+    (root / "app").mkdir(parents=True)
+
+    async def scenario() -> tuple[str, str, bool, str | None]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_setup(app, pilot)
+            tree = await _open_browser(app, pilot, screen, root)
+            field = screen.query_one("#project-path", Input)
+            before = field.value
+            # Line 0 is the root, line 1 the folder `app`; the click lands on its name.
+            await pilot.click(tree, offset=(8, 1))
+            await pilot.pause(0.3)
+            node = tree.cursor_node
+            return (
+                before,
+                field.value,
+                bool(screen.query("#directory-browser")),
+                str(node.label) if node else None,
+            )
+
+    before, after, still_open, highlighted = asyncio.run(scenario())
+    assert before == str(root) and after == before
+    assert still_open and highlighted == "app"
