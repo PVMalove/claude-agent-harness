@@ -5,15 +5,12 @@
 ## [Unreleased]
 
 ### Fixed
-
+- **[Восстановление незавершённого writer после blocked-отчёта]:** `batch rewind --preserved-commit --preserved-file` принимает также последний непринятый `blocked`-отчёт writer на его точном SHA. Человек подтверждает полный список файлов, recovery связывает их хэши с новым dispatch, а исходный отчёт остаётся неизменным. Это устраняет тупик tooling-retry при пропущенном `tooling_blocker.uncommitted_files`; обычный бюджет rewind, scope и независимые review/QA сохраняются (#837).
 - **[Полная проверка внешнего worker]:** Native profile разрешает обеим ролям общий каталог `.harness/.sandboxes/runs/tests`, куда `make verify` создаёт временное окружение из связанного worktree. Остальные каталоги `runs` и соседние worktree остаются защищены (#836).
 - **[Git refs внешнего worker]:** Native profile разрешает `packed-refs.lock` в общем Git-каталоге, чтобы обычный commit в связанном worktree не печатал отказ записи. Существующие остальные shared metadata, основной HEAD/index, config/hooks и служебные каталоги других worktree защищены; права исходников не расширены (#836).
 - **[IPC внешнего worker]:** Codex adapter принимает явный `--network-access=enabled` для согласованной сетевой политики и локального socketpair IPC, необходимого asyncio; прежняя network-настройка workspace-write не переносится в named profile. По умолчанию сеть выключена, права исходников не меняются (#836).
-
 - **[Проверки внешнего worker]:** Native profile адаптера разрешает обеим ролям служебные `.harness/.sandboxes/runs/qa` и `.harness/.sandboxes/logs`: обязательная bounded-wrapper теперь может подготовить временное окружение и сохранить лог, не получая запись в другие issue worktree (#836).
-
 - **[Lifecycle внешнего Codex worker]:** Адаптер запускает `app-server` с native permission profile: read-only роль сохраняет исходники на чтение, но может записать self-report, heartbeat и completion report. Роль с записью получает доступ к Git-метаданным для коммитов в связанном worktree; общие config и hooks остаются на чтение. Перед передачей задачи адаптер сверяет модель, effort, CWD и профиль прав ответа `thread/start`; worker получает native identity своей сессии и сам регистрирует self-report. Несовместимый runtime или несовпадение параметров останавливают запуск без расширения прав (#836).
-
 - **[Тест-автор в полном маршруте `/implement`]:** `test-author-preflight.sh` принимает необязательный `--worktree <путь>` и отвечает `checkout_mismatch`, если путь не совпадает с checkout скрипта или аргументы неверны, поэтому in-process developer отдельного worktree больше не получает `{"status":"ok"}` для основного checkout. Внешний transport автора не включает (`transport_unsupported`); любой отказ оставляет обычный TDD с названной причиной, не blocker. Новый clean-room сценарий `full_route_worktree` проверяет, что тест не попадает в основной checkout (#768).
 
 ## [1.5.1] - 2026-10-18
