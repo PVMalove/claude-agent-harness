@@ -239,6 +239,7 @@ def test_sentinels_name_their_safe_handling() -> None:
         "operation_access.check_state": ("unsupported",),
         "operation_access.status": ("unsupported",),
         "runtime.failure_domain": ("unknown",),
+        "runtime.execution_state": ("unknown",),
     }
     registry = load_registry()
     for field_id, names in sentinels.items():
@@ -999,6 +1000,12 @@ BINDINGS.update(
         "runtime.failure_domain": {
             "FailureDomain": constants.FailureDomain,
             "runtime_client.FAILURE_DOMAINS": runtime_client.FAILURE_DOMAINS,
+        },
+        "runtime.operation_state": {
+            "runtime_client.OPERATION_STATES": runtime_client.OPERATION_STATES
+        },
+        "runtime.execution_state": {
+            "runtime_client.EXECUTION_STATES": runtime_client.EXECUTION_STATES
         },
         "hook.id": {"hook_response.HOOKS": hook_response.HOOKS},  # type: ignore[attr-defined]
         "hook.profile": {

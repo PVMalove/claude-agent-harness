@@ -157,6 +157,7 @@ dependencies = [
  "contracts",
  "ctrlc",
  "ipc",
+ "rusqlite",
  "serde_json",
  "state",
 ]

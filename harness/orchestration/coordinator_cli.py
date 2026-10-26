@@ -76,6 +76,14 @@ def build_parser(
     ):
         command = ledger_commands.add_parser(name, help=help_text)
         _common(command)
+        if name == "validate":
+            command.add_argument(
+                "--full",
+                action="store_true",
+                help="Recompute the whole audit chain from its genesis and compare every row "
+                "with its audit records, without the checkpoint (the runtime-store epoch; a "
+                "file ledger keeps no checkpoint, so its check is always full)",
+            )
         command.set_defaults(handler=handler)
     release_lock = ledger_commands.add_parser(
         "release-lock",

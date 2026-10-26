@@ -62,7 +62,12 @@ from .ledger import (
     LedgerRecordVO,
     LifecycleLedger,
 )
-from .ledger.ledger_ops import LedgerBusyError, _ledger_lock, read_state
+from .ledger.ledger_ops import (
+    LedgerBusyError,
+    _ledger_lock,
+    persist_writes,
+    read_state,
+)
 
 
 class QaWorkflowOps(Protocol):
@@ -151,8 +156,9 @@ def _ledger_errors() -> Iterator[None]:
 
 @contextmanager
 def _lock(ledger: LifecycleLedger) -> Iterator[None]:
-    """Exclusive ledger lock; a ``LedgerError`` inside it becomes ``CoordinatorError``."""
-    with _ledger_errors(), ledger.lock():
+    """Exclusive ledger lock, or in the runtime-store epoch the store unit of the command; a
+    ``LedgerError`` inside it becomes ``CoordinatorError``."""
+    with _ledger_lock(ledger):
         yield
 
 
@@ -940,6 +946,8 @@ def _verify_access(
                 "evidence": exc.evidence,
             },
         )
+        # The attempt outlives the refusal that follows, as it did on the file ledger.
+        persist_writes(ledger)
         raise
 
 

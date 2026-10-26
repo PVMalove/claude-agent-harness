@@ -64,6 +64,57 @@ pub fn reach(_step: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether a test asked for the pause or the failure at `step`, and this is the first time the
+/// process reaches it. A serving runtime handles many requests, and a test wants the hook at one.
+#[cfg(debug_assertions)]
+fn first_asked(step: &str, variables: &[&str]) -> bool {
+    use std::sync::{Mutex, PoisonError};
+
+    static FIRED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    if !variables.iter().any(|variable| selected(variable, step)) {
+        return false;
+    }
+    let mut fired = FIRED.lock().unwrap_or_else(PoisonError::into_inner);
+    if fired.iter().any(|done| done == step) {
+        return false;
+    }
+    fired.push(step.to_owned());
+    true
+}
+
+/// Like `reach`, for a step of the serving runtime (`state.write:before-begin`,
+/// `state.write:in-transaction`): the pause and the failure happen once per process.
+#[cfg(debug_assertions)]
+pub fn reach_once(step: &str) -> Result<()> {
+    if !first_asked(
+        step,
+        &[
+            "HARNESS_RUNTIME_TEST_PAUSE_AT",
+            "HARNESS_RUNTIME_TEST_FAIL_AT",
+        ],
+    ) {
+        return Ok(());
+    }
+    reach(step)
+}
+
+#[cfg(not(debug_assertions))]
+pub fn reach_once(_step: &str) -> Result<()> {
+    Ok(())
+}
+
+/// Whether a test asked, once, for the failure at `step` that has no error to return: the
+/// response of `state.write` is dropped after the commit (`state.write:respond`).
+#[cfg(debug_assertions)]
+pub fn fail_once(step: &str) -> bool {
+    first_asked(step, &["HARNESS_RUNTIME_TEST_FAIL_AT"])
+}
+
+#[cfg(not(debug_assertions))]
+pub fn fail_once(_step: &str) -> bool {
+    false
+}
+
 #[cfg(all(test, debug_assertions))]
 mod tests {
     use super::*;

@@ -60,6 +60,27 @@ vocabulary! {
 }
 
 vocabulary! {
+    /// State of a row of the `operations` table (ADR 0021, section 4).
+    OperationState {
+        Intent => "intent",
+        Committed => "committed",
+        Failed => "failed",
+    }
+}
+
+vocabulary! {
+    /// State of the execution of a dispatch (ADR 0021, section 6; ADR 0022, section 2).
+    ExecutionState {
+        Launching => "launching",
+        Running => "running",
+        Stopping => "stopping",
+        Exited => "exited",
+        Lost => "lost",
+        Unknown => "unknown",
+    }
+}
+
+vocabulary! {
     /// Failure domain of an error: the taxonomy of ADR 0019.
     FailureDomain {
         EnvironmentPreparation => "environment_preparation",

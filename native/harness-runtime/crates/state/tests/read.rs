@@ -70,11 +70,16 @@ fn the_audit_collection_answers_the_legacy_audit_records_of_the_selected_generat
     )
     .unwrap();
 
-    assert_eq!(answer.records.len(), 17);
+    // The 17 legacy records, then the audit chain of the store: the record of the import.
+    assert_eq!(answer.records.len(), 18);
+    let chain = "audit/audit-chain-000000000001.json";
     for (path, record) in &answer.records {
         assert!(path.starts_with("audit/audit-"), "{path}");
-        assert_eq!(record, &legacy_record(&repo, &outcome, path), "{path}");
+        if path != chain {
+            assert_eq!(record, &legacy_record(&repo, &outcome, path), "{path}");
+        }
     }
+    assert_eq!(answer.records[chain]["action"], "legacy-import");
 }
 
 #[test]

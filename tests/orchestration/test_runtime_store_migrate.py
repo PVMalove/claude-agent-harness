@@ -64,8 +64,10 @@ def test_a_1x_installation_refuses_the_state_after_the_cutover(tmp_path: Path) -
 
     result = coordinator(tmp_path, "ledger", "validate")
 
+    # The coordinator of the store epoch asks the runtime to verify the store; the scratch
+    # directory is no git working tree, so no runtime address exists and nothing is written.
     assert result.returncode == 2
-    assert "unsupported version" in result.stderr
+    assert "[runtime_unavailable]" in result.stderr
     assert tree(tmp_path / STATE_REL) == legacy_files
 
 

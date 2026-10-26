@@ -35,7 +35,9 @@ from harness.orchestration.core.utils import (
 MODULE_ROOT = Path(__file__).resolve().parents[1]
 # Under the coordinator state root: one immutable runtime snapshot per pinned hash.
 RUNTIMES_DIR = "runtimes"
-RUNTIME_VOLATILE_PARTS = frozenset({"state", "__pycache__"})
+# ``state-snapshots`` is the copy of the state directory that the cutover to the runtime store
+# takes (ADR 0020, section 5): state, like ``state``, so it never changes a pinned runtime hash.
+RUNTIME_VOLATILE_PARTS = frozenset({"state", "state-snapshots", "__pycache__"})
 
 
 def _agent_inbox(repo: Path) -> Path:

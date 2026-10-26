@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -26,9 +24,9 @@ from harness.orchestration.runtime_client import RuntimeClientError
 from harness.orchestration.workflow import batch
 
 from .runtime_store_support import (
-    ROOT,
     STATE_REL,
     ServingRuntime,
+    audited as _audited,
     coordinator_with,
     migrate,
     tree,
@@ -110,63 +108,6 @@ def test_the_decision_packet_names_the_report_inside_the_store_not_a_file(
     assert not Path(report).exists()
 
 
-AUDITING = """
-import json, os, runpy, sys
-FORBIDDEN = (".coordinator.lock", "runtime.db", "/generations/")
-CALLS = {"open", "os.scandir", "os.listdir", "os.mkdir", "os.rmdir", "os.remove", "os.rename", "os.replace", "os.stat"}
-seen = []
-
-def hook(event, arguments):
-    if event not in CALLS:
-        return
-    text = " ".join(str(a) for a in arguments if isinstance(a, (str, bytes, os.PathLike)))
-    if any(marker in text for marker in FORBIDDEN):
-        seen.append([event, text])
-
-sys.addaudithook(hook)
-script = sys.argv[1]
-sys.argv = [script] + sys.argv[2:]
-code = 0
-try:
-    runpy.run_path(script, run_name="__main__")
-except SystemExit as exit_:
-    code = exit_.code or 0
-finally:
-    with open(os.environ["AUDIT_LOG"], "w", encoding="utf-8") as out:
-        json.dump(seen, out)
-sys.exit(code)
-"""
-
-
-def _audited(
-    repo: Path, runtime: ServingRuntime | None, command: list[str], log: Path
-) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
-    """Run one coordinator command with an audit hook that logs every use of the file ledger."""
-    environ = {"XDG_RUNTIME_DIR": str(runtime.xdg)} if runtime else {}
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            AUDITING,
-            str(ROOT / "harness/orchestration/coordinator.py"),
-            "--repo",
-            str(repo),
-            *command,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env={
-            **os.environ,
-            "PYTHONPATH": str(ROOT),
-            "AUDIT_LOG": str(log),
-            **environ,
-        },
-    )
-    events: list[list[str]] = json.loads(log.read_text(encoding="utf-8"))
-    return result, events
-
-
 def test_the_audit_hook_does_see_a_read_of_the_file_ledger(tmp_path: Path) -> None:
     repo, ids = write_coordinator_state(tmp_path)
 
@@ -231,7 +172,7 @@ class _CountingStore:
 
     def fetch(
         self, collections: Sequence[str], paths: Sequence[str], revision: int | None
-    ) -> tuple[dict[str, JsonObject], int | None]:
+    ) -> tuple[dict[str, JsonObject], int | None, dict[str, int]]:
         self.requests.append((list(collections), list(paths)))
         if collections and self.too_large:
             raise state_view.AnswerTooLarge("the answer would not fit one frame")
@@ -240,7 +181,7 @@ class _CountingStore:
             for path, record in self.records.items()
             if path in paths or path.split("/")[0] in collections
         }
-        return found, 7
+        return found, 7, {}
 
 
 def _view(store: _CountingStore, tmp_path: Path) -> state_view.StateView:

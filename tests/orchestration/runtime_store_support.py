@@ -313,7 +313,10 @@ def coordinator_repository(tmp: Path) -> Path:
             (ORCHESTRATION_ROOT / "roles" / f"{name}.md").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
-    (repo / ".gitignore").write_text(".harness/orchestration/state/\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(
+        ".harness/orchestration/state/\n.harness/orchestration/state-snapshots/\n",
+        encoding="utf-8",
+    )
     _git(repo, "add", "-A")
     _git(repo, "commit", "-m", "seed")
     _git(repo, "branch", "-M", "master")
@@ -322,17 +325,40 @@ def coordinator_repository(tmp: Path) -> Path:
     return repo
 
 
-def write_coordinator_state(tmp: Path) -> tuple[Path, dict[str, str]]:
-    """The state of a real batch: planned, approved, one architect dispatch created, sent,
-    self-reported and reported. Returns the repository and the ids."""
+def write_coordinator_state(
+    tmp: Path,
+    *,
+    report: bool = True,
+    ticket: str = "#797",
+    state_from: Path | None = None,
+) -> tuple[Path, dict[str, str]]:
+    """The state of a real batch: planned, approved, one architect dispatch created and, unless
+    ``report`` is false, sent, self-reported and reported (with ``report`` false it stays approved,
+    which the cutover accepts). Returns the repository and the ids.
+
+    ``state_from`` is a state directory the batch is added to, such as a copy of the state of a
+    real repository: the measurement runs on a ledger of that size."""
     import argparse
 
     from harness.orchestration import coordinator
-    from harness.orchestration.core import workspace
 
     repo = coordinator_repository(tmp)
+    if state_from is not None:
+        shutil.copytree(state_from, repo / STATE_REL)
+        # The copied ledger holds the batch that is open there; a new batch needs room beside it.
+        (repo / ".harness" / "orchestration.json").write_text(
+            json.dumps(
+                {
+                    "provider_profiles": {},
+                    "assignment_plans": {},
+                    "concurrency_budget": 99,
+                    "verification_commands": [],
+                }
+            ),
+            encoding="utf-8",
+        )
     worktree = tmp / "worktree"
-    branch = "feature/issue-797-seam"
+    branch = f"feature/issue-{ticket.removeprefix('#')}-seam"
     _git(repo, "worktree", "add", "-b", branch, str(worktree), "master")
 
     def args(**values: object) -> argparse.Namespace:
@@ -340,7 +366,7 @@ def write_coordinator_state(tmp: Path) -> tuple[Path, dict[str, str]]:
 
     batch = coordinator.create_batch(
         args(
-            ticket="#797",
+            ticket=ticket,
             goal=None,
             branch=branch,
             worktree=str(worktree),
@@ -374,12 +400,27 @@ def write_coordinator_state(tmp: Path) -> tuple[Path, dict[str, str]]:
     )
     brief = created["brief"]
     dispatch_id = str(brief["dispatch_id"])
+    ids = {"batch_id": batch_id, "dispatch_id": dispatch_id}
+    if not report:
+        # An approved dispatch is no live worker: the cutover accepts this state.
+        return repo, ids
     launched = coordinator.send_dispatch(
         args(dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None)
     )
     coordinator.self_report_dispatch(
         args(dispatch=dispatch_id, model="sonnet", worktree=launched["worker_worktree"])
     )
+    path = architect_report_file(repo, dispatch_id, brief)
+    coordinator.submit_report(args(file=str(path)))
+    return repo, ids
+
+
+def architect_report_file(repo: Path, dispatch_id: str, brief: JsonObject) -> Path:
+    """The completion report of an architect dispatch, staged in the agent inbox."""
+    from harness.orchestration.core import workspace
+
+    commands = brief["verification_commands"]
+    assert isinstance(commands, list)
     report = {
         "dispatch_id": dispatch_id,
         "ticket": brief["ticket"],
@@ -390,7 +431,7 @@ def write_coordinator_state(tmp: Path) -> tuple[Path, dict[str, str]]:
         "changed_files": [],
         "checks_run": [
             {"command": command, "result": "pass", "evidence": "n/a"}
-            for command in brief["verification_commands"]
+            for command in commands
         ],
         "risks": {"status": "none", "details": ""},
         "blockers": {"status": "none", "details": ""},
@@ -399,8 +440,64 @@ def write_coordinator_state(tmp: Path) -> tuple[Path, dict[str, str]]:
     }
     path = workspace._prepare_agent_inbox(repo) / f"{dispatch_id}.json"
     path.write_text(json.dumps(report), encoding="utf-8")
-    coordinator.submit_report(args(file=str(path)))
-    return repo, {"batch_id": batch_id, "dispatch_id": dispatch_id}
+    return path
+
+
+AUDITING = """
+import json, os, runpy, sys
+FORBIDDEN = (".coordinator.lock", "runtime.db", "/generations/")
+CALLS = {"open", "os.scandir", "os.listdir", "os.mkdir", "os.rmdir", "os.remove", "os.rename", "os.replace", "os.stat"}
+seen = []
+
+def hook(event, arguments):
+    if event not in CALLS:
+        return
+    text = " ".join(str(a) for a in arguments if isinstance(a, (str, bytes, os.PathLike)))
+    if any(marker in text for marker in FORBIDDEN):
+        seen.append([event, text])
+
+sys.addaudithook(hook)
+script = sys.argv[1]
+sys.argv = [script] + sys.argv[2:]
+code = 0
+try:
+    runpy.run_path(script, run_name="__main__")
+except SystemExit as exit_:
+    code = exit_.code or 0
+finally:
+    with open(os.environ["AUDIT_LOG"], "w", encoding="utf-8") as out:
+        json.dump(seen, out)
+sys.exit(code)
+"""
+
+
+def audited(
+    repo: Path, runtime: ServingRuntime | None, command: list[str], log: Path
+) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
+    """Run one coordinator command with an audit hook that logs every use of the file ledger."""
+    environ = {"XDG_RUNTIME_DIR": str(runtime.xdg)} if runtime else {}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            AUDITING,
+            str(ROOT / "harness/orchestration/coordinator.py"),
+            "--repo",
+            str(repo),
+            *command,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(ROOT),
+            "AUDIT_LOG": str(log),
+            **environ,
+        },
+    )
+    events: list[list[str]] = json.loads(log.read_text(encoding="utf-8"))
+    return result, events
 
 
 # -- a real runtime process serving one repository ----------------------------------------------------
@@ -415,20 +512,31 @@ SHORT_TMP = (
 class ServingRuntime:
     """``harness-runtime serve --repo <repo>``, with a runtime directory short enough for a socket."""
 
-    def __init__(self, repo: Path) -> None:
-        self.xdg = Path(tempfile.mkdtemp(prefix="hr", dir=SHORT_TMP)).resolve()
+    def __init__(
+        self,
+        repo: Path,
+        *,
+        env: dict[str, str] | None = None,
+        xdg: Path | None = None,
+    ) -> None:
+        """``env`` sets the debug hooks of the runtime (``HARNESS_RUNTIME_TEST_*``); ``xdg`` is
+        the runtime directory of an earlier runtime that a new one takes over after a kill."""
+        self.xdg = xdg or Path(tempfile.mkdtemp(prefix="hr", dir=SHORT_TMP)).resolve()
         self.environ = {"XDG_RUNTIME_DIR": str(self.xdg)}
         self.process = subprocess.Popen(
             [str(runtime_binary()), "serve", "--repo", str(repo)],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, **self.environ},
+            env={**os.environ, **self.environ, **(env or {})},
         )
         stdout = self.process.stdout
         assert stdout is not None
         lines: queue.Queue[str] = queue.Queue()
         threading.Thread(target=lambda: lines.put(stdout.readline()), daemon=True).start()
+        self._paused: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
         try:
             text = lines.get(timeout=30)
         except queue.Empty:
@@ -436,14 +544,191 @@ class ServingRuntime:
             pytest.fail("harness-runtime printed no readiness line within 30 seconds")
         assert json.loads(text)["status"] == "ready"
 
+    def _read_stderr(self) -> None:
+        stderr = self.process.stderr
+        assert stderr is not None
+        for line in stderr:
+            if line.startswith("PAUSED:"):
+                self._paused.put(line.strip().removeprefix("PAUSED:"))
+
+    def wait_paused(self, step: str, timeout: float = 30.0) -> None:
+        """Wait until the runtime stops at the debug hook ``step`` (``HARNESS_RUNTIME_TEST_PAUSE_AT``)."""
+        try:
+            reached = self._paused.get(timeout=timeout)
+        except queue.Empty:
+            self.stop()
+            pytest.fail(f"the runtime did not pause at {step!r} within {timeout} seconds")
+        assert reached == step
+
+    def resume(self) -> None:
+        """Let the paused request go on."""
+        stdin = self.process.stdin
+        assert stdin is not None
+        stdin.write("\n")
+        stdin.flush()
+
+    def kill(self) -> None:
+        """SIGKILL: the runtime cannot clean up anything; its directory stays for a successor."""
+        self.process.kill()
+        self.process.wait(timeout=30)
+
     def stop(self) -> None:
         if self.process.poll() is None:
             self.process.kill()
         self.process.wait(timeout=30)
-        for stream in (self.process.stdout, self.process.stderr):
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             if stream:
-                stream.close()
+                try:
+                    stream.close()
+                except OSError:
+                    pass
         shutil.rmtree(self.xdg, ignore_errors=True)
+
+
+def store_call(
+    repo: Path,
+    runtime: ServingRuntime,
+    operation: str,
+    payload: JsonObject | None = None,
+    *,
+    operation_id: str | None = None,
+    batch_id: str | None = None,
+    expected_revision: int | None = None,
+) -> JsonObject:
+    """One request of a test to the runtime of ``repo``; the answer is the result of the call.
+
+    A refusal is raised as ``RuntimeClientError``."""
+    import uuid
+
+    from harness.orchestration.runtime_client import RuntimeClient
+
+    reply = RuntimeClient(repo, environ=runtime.environ).call(
+        operation,
+        operation_id=operation_id or f"{operation}-{uuid.uuid4().hex}",
+        payload=payload,
+        batch_id=batch_id,
+        expected_revision=expected_revision,
+        timeout_seconds=30.0,
+    )
+    return {**reply.result, "_revision": reply.revision}
+
+
+def store_records(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[str, JsonObject]:
+    """The records of the runtime store at ``paths``."""
+    answer = store_call(repo, runtime, "state.read", {"paths": list(paths)})
+    records = answer["records"]
+    assert isinstance(records, dict)
+    return {path: record for path, record in records.items() if isinstance(record, dict)}
+
+
+def store_revisions(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[str, int]:
+    answer = store_call(repo, runtime, "state.read", {"paths": list(paths)})
+    revisions = answer["revisions"]
+    assert isinstance(revisions, dict)
+    found: dict[str, int] = {}
+    for path, revision in revisions.items():
+        assert isinstance(revision, int)
+        found[path] = revision
+    return found
+
+
+class Store:
+    """A cut-over repository with a working dispatch and the runtime that serves it."""
+
+    def __init__(self, tmp: Path) -> None:
+        self.repo, ids = write_coordinator_state(tmp, report=False)
+        self.batch = ids["batch_id"]
+        self.dispatch = ids["dispatch_id"]
+        result = migrate(self.repo)
+        assert result.returncode == 0, result.stderr
+        self.runtime = ServingRuntime(self.repo)
+        # Both commands write through the runtime: the dispatch becomes dispatched, then working.
+        sent = self.run("dispatch", "send", "--dispatch", self.dispatch)
+        assert sent.returncode == 0, sent.stderr
+        worktree = json.loads(sent.stdout)["worker_worktree"]
+        reported = self.run(
+            "dispatch",
+            "self-report",
+            "--dispatch",
+            self.dispatch,
+            "--model",
+            "sonnet",
+            "--worktree",
+            worktree,
+        )
+        assert reported.returncode == 0, reported.stderr
+
+    @property
+    def batch_path(self) -> str:
+        return f"batches/{self.batch}.json"
+
+    @property
+    def status_path(self) -> str:
+        return f"dispatch-status/{self.dispatch}.json"
+
+    @property
+    def database(self) -> Path:
+        return self.repo / STATE_REL / "runtime.db"
+
+    def run(self, *command: str) -> subprocess.CompletedProcess[str]:
+        return coordinator_with(self.repo, self.runtime, *command)
+
+    def heartbeat(self) -> subprocess.CompletedProcess[str]:
+        return self.run("dispatch", "heartbeat", "--dispatch", self.dispatch)
+
+    def revisions(self, *paths: str) -> dict[str, int]:
+        return store_revisions(self.repo, self.runtime, *paths)
+
+    def audit_records(self) -> int:
+        """The revision of the store: the sequence number of the last audit record."""
+        revision = store_call(self.repo, self.runtime, "state.read")["_revision"]
+        assert isinstance(revision, int)
+        return revision
+
+    def validate(self, *, full: bool = True) -> JsonObject:
+        return store_call(self.repo, self.runtime, "state.validate", {"full": full})
+
+    def report_file(self) -> Path:
+        path = f"dispatches/{self.dispatch}.json"
+        brief = store_records(self.repo, self.runtime, path)[path]
+        return architect_report_file(self.repo, self.dispatch, brief)
+
+    def submit_report(self) -> subprocess.CompletedProcess[str]:
+        return self.run("report", "submit", "--file", str(self.report_file()))
+
+    def stop_runtime(self) -> None:
+        """Stop the runtime and remove its directory."""
+        self.runtime.stop()
+
+    def restart_runtime(self, env: dict[str, str] | None = None) -> None:
+        """Kill the runtime and start another in the same runtime directory, with debug hooks
+        ``env``: the hooks fire once for each process, so a setup that wrote already is past them."""
+        xdg = self.runtime.xdg
+        self.runtime.kill()
+        self.runtime = ServingRuntime(self.repo, env=env, xdg=xdg)
+
+    def start(self, *command: str) -> subprocess.Popen[str]:
+        """A coordinator command that runs while the test goes on."""
+        return coordinator_popen(self.repo, self.runtime, *command)
+
+
+def coordinator_popen(
+    repo: Path, runtime: ServingRuntime, *args: str
+) -> subprocess.Popen[str]:
+    """The coordinator CLI against ``repo`` as a process that the test waits for later."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            str(ROOT / "harness/orchestration/coordinator.py"),
+            "--repo",
+            str(repo),
+            *args,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT), **runtime.environ},
+    )
 
 
 def coordinator_with(

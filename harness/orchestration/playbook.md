@@ -892,6 +892,20 @@ serialised. Only a human operator may run `ledger release-lock --force --approve
 record to `lock-audit/` in the state directory; no policy, `auto` included, ever runs it. Nobody
 removes the lock or any state file by hand.
 
+In the runtime-store epoch (`ledger.json` version 4, after `harness-runtime migrate`) the
+coordinator takes no file lock and writes no state file. The block of a command that changes state
+is one write unit: the ledger primitives stage their writes, the command reads its own writes, and
+a clean exit sends them to the runtime as one `state.write` for each batch. Each outer block reads
+a fresh snapshot of the store, so a polling command such as `dispatch wait` sees later writes. The runtime checks the
+`revision` that the command read (`revision_conflict` on a stale one), applies the rows in the order
+`batch`, `qa_lane`, `generation` in one `BEGIN IMMEDIATE` transaction, appends one audit record for
+each mutation and stores the operation, so a repeat with the same `operation_id` returns the stored
+result. A command that is killed and run again builds a new `operation_id`, because its payload
+holds times, and gets `revision_conflict`; the remedy is to run the command again. `store_busy`,
+`revision_conflict` and `runtime_unavailable` are different errors: exit code 2 and the code in
+brackets on the first `REMEDY:` line. `coordinator.py ledger validate --full` recomputes the whole
+audit chain without the checkpoint; the details are in `docs/backend-orchestration.md`.
+
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
 chosen action, and author/time. The original brief remains immutable. If the fact changes the
