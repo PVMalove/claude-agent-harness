@@ -102,6 +102,11 @@ def test_f2_translates_screens_that_are_already_open_below(tmp_path: Path) -> No
 
 
 def test_command_menus_translate_groups_titles_and_footer(tmp_path: Path) -> None:
+    # Ledger commands are available only when the target has the coordinator script.
+    coordinator = tmp_path / ".harness/orchestration/coordinator.py"
+    coordinator.parent.mkdir(parents=True)
+    coordinator.touch()
+
     async def scenario() -> str:
         app = HarnessConsoleApp(tmp_path)
         async with app.run_test(size=(130, 50)) as pilot:
@@ -113,8 +118,10 @@ def test_command_menus_translate_groups_titles_and_footer(tmp_path: Path) -> Non
             return _dump(app)
 
     screen = asyncio.run(scenario())
-    assert "INSTALL & UPDATE" in screen
-    assert "Install Harness" in screen and "Update Harness" in screen
+    for heading in ("Checks", "Skills", "Repo Map", "Cleanup & removal", "Ledger"):
+        assert heading in screen
+    assert "Managed-file drift" in screen
+    assert "INSTALL & UPDATE" not in screen
     assert "Back" in screen and "Copy CLI" in screen
 
 
