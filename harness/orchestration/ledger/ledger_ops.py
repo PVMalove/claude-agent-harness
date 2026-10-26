@@ -226,6 +226,10 @@ def _store_unit(ledger: LifecycleLedger) -> Iterator[None]:
     owned = view is None
     if view is None:
         view = state_view.StateView(ledger.root, _runtime_fetch(repo))
+    else:
+        # The view of the whole command (``command_state``) answered the reads before this
+        # block. Each block starts on a fresh snapshot, as a ``read_state`` does.
+        view.refresh()
     unit = view.begin_unit(_runtime_commit(repo))
     with state_view.bind(view) if owned else nullcontext():
         try:
@@ -234,6 +238,18 @@ def _store_unit(ledger: LifecycleLedger) -> Iterator[None]:
             unit.abort()
             raise
         unit.flush()
+
+
+def persist_writes(ledger: LifecycleLedger) -> None:
+    """Keep what the running ``_ledger_lock`` block wrote when the block raises next.
+
+    In the file epoch the writes are on disk already and this does nothing. In the store epoch a
+    block that raises sends nothing, so a refusal that must leave its evidence behind (the
+    attempt record of a QA access refusal, the attention flag of a refused dispatch) calls this
+    right before it raises."""
+    unit = state_view.current_unit()
+    if unit is not None and unit.view.root == ledger.root:
+        unit.persist()
 
 
 def _runtime_fetch(repo: Path) -> state_view.Fetch:
@@ -315,6 +331,9 @@ def read_state(ledger: LifecycleLedger, repo: Path) -> Iterator[None]:
         )
     view = state_view.current_view()
     if view is not None and view.root == ledger.root:
+        if view.unit is None:
+            # A poll that reads again and again sees the store as it is at each read.
+            view.refresh()
         yield
         return
     with state_view.bind(state_view.StateView(ledger.root, _runtime_fetch(repo))):

@@ -113,6 +113,20 @@ class StateView:
             return None
         return "/".join(parts)
 
+    def refresh(self) -> None:
+        """Forget everything the view read, so that the next read asks the runtime again.
+
+        A command that waits or runs for long takes a fresh snapshot for each block of its own
+        (``_ledger_lock``, ``read_state``), as the file ledger did at every lock: a view that
+        kept its first answer would show a poll the state of the command's start. Call it only
+        while no store unit is open."""
+        self._records.clear()
+        self._collections.clear()
+        self._asked.clear()
+        self._point_reads.clear()
+        self.revisions.clear()
+        self.revision = None
+
     def _load(self, collections: Sequence[str], paths: Sequence[str]) -> None:
         records, revision, revisions = self._fetch(collections, paths, self.revision)
         if revision is not None:
@@ -316,16 +330,47 @@ class StoreUnit:
             return 0
         return self.view.revisions.get(path)
 
+    def _carry_revisions(self, mutations: list[JsonObject]) -> None:
+        """The first touch of a row in a request carries the revision the view holds for it.
+
+        ``_expect`` marks a row as touched once for the whole unit, so a row that two requests of
+        one flush write (the batches go A, B, A) reaches the second request without a revision,
+        and the runtime refuses it. By then the first request has returned the new revision."""
+        seen: set[str] = set()
+        for mutation in mutations:
+            path = str(mutation["path"])
+            if (
+                path not in seen
+                and mutation["op"] in {"replace", "delete"}
+                and "expected_revision" not in mutation
+            ):
+                revision = self.view.revisions.get(path)
+                if revision is not None:
+                    mutation["expected_revision"] = revision
+            seen.add(path)
+
+    def persist(self) -> None:
+        """Send the staged mutations now, one ``state.write`` for each batch, and keep the unit open.
+
+        A block that writes evidence and then raises on purpose (a refusal that records its
+        attempt) calls this before the raise: the file ledger kept such a write, and a unit that
+        aborts would drop it."""
+        for batch, mutations in self._segments():
+            self._carry_revisions(mutations)
+            revisions = self._commit(batch, self._guard(batch, mutations), mutations)
+            for mutation in mutations:
+                if mutation["op"] == "delete":
+                    self.view.revisions.pop(str(mutation["path"]), None)
+            self.view.revisions.update(revisions)
+        self.view._settle()
+        self._mutations = []
+        self._created.clear()
+        self._touched.clear()
+
     def flush(self) -> None:
         """Send the staged mutations, one ``state.write`` for each batch, and settle the view."""
         try:
-            for batch, mutations in self._segments():
-                revisions = self._commit(batch, self._guard(batch, mutations), mutations)
-                for mutation in mutations:
-                    if mutation["op"] == "delete":
-                        self.view.revisions.pop(str(mutation["path"]), None)
-                self.view.revisions.update(revisions)
-            self.view._settle()
+            self.persist()
         finally:
             self.view.unit = None
             self._mutations = []

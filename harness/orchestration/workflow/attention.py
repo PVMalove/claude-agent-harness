@@ -51,6 +51,7 @@ from harness.orchestration.ledger.ledger_ops import (
     _load_dispatch_status,
     _replace_record,
     _state_root,
+    persist_writes,
 )
 from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.workflow.approval import _approval
@@ -307,6 +308,8 @@ def _require_no_attention(
         _safe_id(batch["batch_id"], "batch")
         _replace_record(ledger, BatchRecord.from_dict(batch))
     if batch.get("needs_attention") is True:
+        # The flag outlives the refusal that follows, as it did on the file ledger.
+        persist_writes(ledger)
         raise CoordinatorError(
             f"the batch needs human attention ({batch['attention_reason']}); no next dispatch is created until it is resolved",
             remedy=str(batch["recommended_human_action"])

@@ -62,7 +62,12 @@ from .ledger import (
     LedgerRecordVO,
     LifecycleLedger,
 )
-from .ledger.ledger_ops import LedgerBusyError, _ledger_lock, read_state
+from .ledger.ledger_ops import (
+    LedgerBusyError,
+    _ledger_lock,
+    persist_writes,
+    read_state,
+)
 
 
 class QaWorkflowOps(Protocol):
@@ -941,6 +946,8 @@ def _verify_access(
                 "evidence": exc.evidence,
             },
         )
+        # The attempt outlives the refusal that follows, as it did on the file ledger.
+        persist_writes(ledger)
         raise
 
 

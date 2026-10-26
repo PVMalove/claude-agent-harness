@@ -13,6 +13,7 @@ import argparse
 import json
 import subprocess
 import sys
+import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,10 +22,13 @@ from typing import ClassVar
 import pytest
 
 from harness.json_types import JsonObject
+from harness.orchestration import operation_access, qa_lane
 from harness.orchestration.core import state_view
+from harness.orchestration.core.utils import CoordinatorError
 from harness.orchestration.ledger import ledger_ops
+from harness.orchestration.ledger.lifecycle import BatchRecord, LifecycleLedger
 from harness.orchestration.runtime_client import RuntimeClientError
-from harness.orchestration.workflow import reports
+from harness.orchestration.workflow import attention, reports
 
 from .runtime_store_support import (
     ROOT,
@@ -421,3 +425,161 @@ def test_a_busy_store_is_the_ledger_busy_marker_and_a_stale_revision_is_its_own_
     assert busy.value.remedy == "[store_busy] fix store_busy"
     assert not isinstance(conflict.value, ledger_ops.LedgerBusyError)
     assert conflict.value.remedy == "[revision_conflict] fix revision_conflict"
+
+
+# -- one fresh snapshot for each block of a command, writes that outlive a refusal ---------------------
+
+
+def test_a_refreshed_view_reads_the_store_again_with_its_new_revisions(tmp_path: Path) -> None:
+    path = "dispatch-status/d.json"
+    store = _FakeStore({path: {"n": 1}}, {path: 1})
+    view = state_view.StateView(tmp_path, store.fetch)
+    assert view.read(path) == {"n": 1}
+    store.records[path], store.revisions[path] = {"n": 2}, 2
+
+    assert view.read(path) == {"n": 1}, "one snapshot until the view is refreshed"
+    view.refresh()
+
+    assert view.read(path) == {"n": 2}
+    assert view.revisions[path] == 2
+
+
+def test_a_row_written_by_two_requests_of_one_flush_carries_the_revision_the_first_returned(
+    tmp_path: Path,
+) -> None:
+    a, b = "batches/batch-a.json", "batches/batch-b.json"
+    store = _FakeStore(
+        {a: {"batch_id": "batch-a"}, b: {"batch_id": "batch-b"}}, {a: 3, b: 7}
+    )
+    unit = _unit(tmp_path, store)
+    assert unit.view.read(a) is not None and unit.view.read(b) is not None
+    unit.replace(a, {"batch_id": "batch-a", "n": 1}, "a1\n")
+    unit.replace(b, {"batch_id": "batch-b", "n": 1}, "b1\n")
+    unit.replace(a, {"batch_id": "batch-a", "n": 2}, "a2\n")
+
+    unit.flush()
+
+    assert [(batch, expected) for batch, expected, _ in store.commits] == [
+        ("batch-a", 3),
+        ("batch-b", 7),
+        ("batch-a", 4),
+    ]
+    assert store.commits[2][2][0]["expected_revision"] == 4
+
+
+def test_persisted_writes_outlive_a_later_abort_and_the_unit_stays_open(tmp_path: Path) -> None:
+    store = _FakeStore({}, {})
+    unit = _unit(tmp_path, store)
+    unit.create("reports/a.json", {"a": 1}, '{"a": 1}\n')
+
+    unit.persist()
+    unit.create("reports/b.json", {"b": 1}, '{"b": 1}\n')
+    unit.abort()
+
+    assert [m["path"] for _, _, mutations in store.commits for m in mutations] == [
+        "reports/a.json"
+    ]
+    assert unit.view.read("reports/a.json") == {"a": 1}
+    assert unit.view.revisions["reports/a.json"] == 1
+
+
+def _wait(store: Store, *options: str) -> subprocess.Popen[str]:
+    return store.start(
+        "dispatch", "wait", "--dispatch", store.dispatch, "--poll-interval", "1", *options
+    )
+
+
+def test_a_dispatch_wait_poll_sees_the_report_written_while_it_waits(store: Store) -> None:
+    waiting = _wait(store, "--timeout", "40", "--stale-after", "3600")
+    time.sleep(3)
+    assert waiting.poll() is None, "the wait ends before any report exists"
+
+    assert store.submit_report().returncode == 0
+    stdout, stderr = waiting.communicate(timeout=60)
+
+    assert waiting.returncode == 0, stderr
+    assert json.loads(stdout)["event"] == "reported"
+
+
+def test_a_dispatch_wait_poll_sees_the_heartbeats_written_while_it_waits(store: Store) -> None:
+    waiting = _wait(store, "--timeout", "14", "--stale-after", "6")
+    for _ in range(5):
+        time.sleep(2)
+        assert store.heartbeat().returncode == 0
+    stdout, stderr = waiting.communicate(timeout=60)
+
+    assert waiting.returncode == 0, stderr
+    assert json.loads(stdout)["event"] == "timeout", "a live dispatch is no stale dispatch"
+    status = store_records(store.repo, store.runtime, store.status_path)[store.status_path]
+    assert "stale" not in json.dumps(status)
+
+
+def test_a_qa_access_refusal_keeps_its_attempt_record(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(store.runtime.xdg))
+    ledger = LifecycleLedger(store.repo / STATE_REL)
+
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise operation_access.OperationAccessError(
+            "no access", remedy="grant it", evidence={"why": "test"}
+        )
+
+    monkeypatch.setattr(operation_access, "require", refuse)
+    ops = SimpleNamespace(_config=lambda repo: {})
+
+    with pytest.raises(operation_access.OperationAccessError), ledger_ops._ledger_lock(ledger):
+        qa_lane._verify_access(ledger, store.repo, {"dispatch_id": store.dispatch}, ops)
+
+    answer = store_call(store.repo, store.runtime, "state.read", {"collections": ["qa-lane"]})
+    records = answer["records"]
+    assert isinstance(records, dict)
+    attempts = [
+        record
+        for path, record in records.items()
+        if path.startswith("qa-lane/attempts/") and isinstance(record, dict)
+    ]
+    assert [(a["stage"], a["dispatch_id"]) for a in attempts] == [("access", store.dispatch)]
+
+
+def test_a_batch_flagged_for_attention_keeps_the_flag_when_the_dispatch_is_refused(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(store.runtime.xdg))
+    root = store.repo / STATE_REL
+    ledger = LifecycleLedger(root)
+
+    def flag(config: JsonObject, batch: JsonObject, findings: object, moment: str) -> bool:
+        batch.update(
+            needs_attention=True, attention_reason="test", recommended_human_action="look"
+        )
+        return True
+
+    monkeypatch.setattr(attention, "_apply_attention", flag)
+    monkeypatch.setattr(attention, "_attention_findings", lambda *args: [])
+
+    with pytest.raises(CoordinatorError, match="needs human attention"), ledger_ops._ledger_lock(
+        ledger
+    ):
+        batch = ledger_ops._load_batch(root, store.batch)
+        attention._require_no_attention(ledger, store.repo, root, {}, batch)
+
+    stored = store_records(store.repo, store.runtime, store.batch_path)[store.batch_path]
+    assert stored["needs_attention"] is True
+
+
+def test_a_block_that_raises_without_persisting_writes_nothing(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(store.runtime.xdg))
+    root = store.repo / STATE_REL
+    ledger = LifecycleLedger(root)
+    chain = store.audit_records()
+
+    with pytest.raises(CoordinatorError), ledger_ops._ledger_lock(ledger):
+        batch = ledger_ops._load_batch(root, store.batch)
+        batch["needs_attention"] = True
+        ledger_ops._replace_record(ledger, BatchRecord.from_dict(batch))
+        raise CoordinatorError("refused", remedy="none")
+
+    assert store.audit_records() == chain
