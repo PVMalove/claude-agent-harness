@@ -81,7 +81,8 @@ def inspect_target(value: str) -> ProjectTarget:
             capabilities = lock["capabilities"]
             known = dict(capability_options())
             if (
-                not isinstance(capabilities, list)
+                not isinstance(lock.get("files", {}), dict)
+                or not isinstance(capabilities, list)
                 or not all(isinstance(x, str) for x in capabilities)
                 or any(name not in known for name in capabilities)
             ):

@@ -55,3 +55,16 @@ def test_a_corrupt_lock_is_an_error_with_a_next_step_not_a_process_exit(
     with pytest.raises(ValueError, match="harness.lock повреждён") as planned:
         installation_blockers(target, "pvmalove-suite")
     assert "«Диагностика» (3)" in str(planned.value)
+
+
+def test_a_lock_whose_files_are_not_a_mapping_is_an_error_on_the_check_path(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness/harness.lock").write_text(
+        '{"capabilities": ["pvmalove-suite"], "files": []}', encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="harness.lock повреждён") as checked:
+        inspect_target(str(tmp_path))
+    assert "«Диагностика» (3)" in str(checked.value)

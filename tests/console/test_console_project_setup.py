@@ -305,7 +305,8 @@ def test_the_actions_are_disabled_while_an_operation_runs(tmp_path: Path) -> Non
             await wait_until(
                 pilot,
                 lambda: not screen.busy
-                and "Итого" in str(screen.query_one("#setup-output", Static).render()),
+                and "Итого" in str(screen.query_one("#setup-output", Static).render())
+                and screen._blocked is not None,
             )
             names = ("inspect-project", "activate-project", "install-project")
             idle = [screen.query_one("#" + n, Button).disabled for n in names]
@@ -810,6 +811,68 @@ def test_a_failed_recheck_clears_the_previous_target_plan_and_result(
     assert status.splitlines()[0] == "✖ harness.lock повреждён"
 
 
+def test_a_lock_with_a_wrong_files_field_leaves_nothing_of_the_previous_run(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path / "backend")
+    (project / ".harness").mkdir()
+    (project / ".harness/harness.lock").write_text(
+        '{"capabilities": ["pvmalove-suite"], "files": []}', encoding="utf-8"
+    )
+
+    async def scenario() -> tuple[dict[str, object], str, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_setup(app, pilot)
+            screen.query_one("#project-path", Input).value = str(project)
+            await press(pilot, "#inspect-project")
+            await wait_until(pilot, lambda: _status(screen).startswith("✖"))
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            summary = screen.query_one("#checks-summary", Static).display
+            return _blank(screen), _status(screen), summary
+
+    blank, status, summary_shown = asyncio.run(scenario())
+    assert blank == _BLANK and not summary_shown
+    assert status.splitlines()[0] == "✖ harness.lock повреждён"
+
+
+def test_a_result_of_an_operation_that_a_reset_outdated_is_dropped(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    from harness.health.model import CheckResult, Report
+
+    project = _git_project(tmp_path / "backend")
+    release = threading.Event()
+
+    def slow() -> Report:
+        release.wait(10)
+        return Report(
+            1,
+            str(project),
+            False,
+            [CheckResult("files.agents_md", "files", "ok", "ok")],
+        )
+
+    async def scenario() -> tuple[dict[str, object], bool, bool]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _checked_project(app, pilot, project)
+            screen._run(slow)
+            await pilot.pause()
+            screen._failed("Путь изменился; проверьте его ещё раз")
+            release.set()
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            summary = screen.query_one("#checks-summary", Static).display
+            return _blank(screen), screen.busy, summary
+
+    blank, busy, summary_shown = asyncio.run(scenario())
+    assert blank == _BLANK and not busy and not summary_shown
+
+
 def test_editing_the_path_clears_the_previous_target_status_plan_and_result(
     tmp_path: Path,
 ) -> None:
@@ -1269,3 +1332,14 @@ def test_y_copies_the_git_init_hint_and_then_the_installation_command(
     assert command == shlex.join(
         ["harness", "init", str(project.resolve()), "--capability", "pvmalove-suite"]
     )
+
+
+def test_an_option_button_keeps_both_lines_of_its_label() -> None:
+    """Guards the private Textual API `_OptionButton` relies on (`_make_label`, `_label`)."""
+    from textual.geometry import Size
+
+    from harness.console.screens.project_setup import _OptionButton
+
+    button = _OptionButton("name\ndescription")
+    assert button._label.plain == "name\ndescription"
+    assert button.get_content_height(Size(40, 10), Size(80, 24), 40) == 2

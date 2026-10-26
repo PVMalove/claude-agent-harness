@@ -258,6 +258,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         self._target_status: tuple[str, str, str] = ("not_started", _TARGET_HINT, "")
         # The plan whose blockers are being read; an older plan's result is dropped.
         self._plan_epoch = 0
+        # A reset outdates the check or fix that is still running: its result is dropped.
+        self._run_epoch = 0
         # None while the blockers of the current plan are being read.
         self._blocked: tuple[str, ...] | None = None
         self._plan_unchecked = False
@@ -298,6 +300,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         self._blocked = None
         self._plan_unchecked = False
         self._plan_epoch += 1
+        self._run_epoch += 1
         self._copyable = None
         self._summary = None
         for name in _AFTER_INSPECT:
@@ -949,6 +952,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     def _run(self, run: Callable[[], Report | str]) -> None:
         self._set_busy(True)
         self._show_running("Выполняется…")
+        epoch = self._run_epoch
 
         def work() -> None:
             result: Report | str
@@ -957,7 +961,13 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             except (Exception, SystemExit):
                 # `SystemExit`: the CLI helpers the checks use exit the process on a broken file.
                 result = "Операция не выполнена; проверьте окружение и доступы"
-            call_from_worker(self, lambda: self._finished(result, False))
+
+            def done() -> None:
+                # The target was reset meanwhile: the result is not of the screen's target.
+                if epoch == self._run_epoch:
+                    self._finished(result, False)
+
+            call_from_worker(self, done)
 
         self.run_worker(work, thread=True, group="setup-run", exclusive=True)
 
