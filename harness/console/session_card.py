@@ -7,6 +7,7 @@ plus words, and the role label is the role's name."""
 from __future__ import annotations
 
 from datetime import datetime
+import unicodedata
 
 from rich.table import Table
 from rich.text import Text
@@ -71,6 +72,8 @@ def session_row(
     state: str,
     language: str,
     elapsed: str,
+    title: str = "",
+    narrow: bool = False,
 ) -> Table:
     """One line per session: ticket and role, the dispatch (cut to the room left), the status
     caption and how long ago the dispatch was recorded."""
@@ -83,9 +86,18 @@ def session_row(
     identity = Text(ticket, style=f"bold {brand.PALETTE['foreground']}")
     identity.append(" ")
     identity.append_text(role_label(role))
+    title = " ".join(
+        "".join(
+            " " if unicodedata.category(char).startswith("C") else char
+            for char in title
+        ).split()
+    )
+    description = dispatch_id
+    if title and not narrow:
+        description += f" · {title}"
     row.add_row(
         identity,
-        Text(dispatch_id, style=brand.PALETTE["muted"]),
+        Text(description, style=brand.PALETTE["muted"]),
         status_caption(session_status(state), language),
         Text(elapsed, style=brand.PALETTE["muted"]),
     )

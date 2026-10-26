@@ -5,6 +5,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from tests.console._console_ledger_fixture import (
     LONG_OUTPUT,
@@ -145,6 +148,44 @@ def test_stages_include_working_dispatches_and_replace_them_with_reports(
     assert len(matching) == 1
     assert matching[0].report is not None
     assert matching[0].report.outcome == "completed"
+
+
+def test_batches_without_titles_remain_local_read_only_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.orchestration.core.constants import STATE_REL
+    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+    from tests.console._console_ledger_fixture import _Batch
+
+    ledger = LifecycleLedger(tmp_path / STATE_REL)
+    ledger.ensure()
+    batch = _Batch(ledger, "batch-legacy", "#303")
+    batch.save("awaiting-approval")
+    batch.dispatch("dispatch-legacy", "developer")
+    before = {
+        path: path.read_bytes()
+        for path in (tmp_path / STATE_REL).rglob("*")
+        if path.is_file()
+    }
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("reading existing batches must not run a tracker CLI")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+
+    [stage] = load_ledger_view(tmp_path).stages
+
+    assert (stage.ticket, stage.dispatch_id, stage.role, stage.state) == (
+        "#303",
+        "dispatch-legacy",
+        "developer",
+        "dispatched",
+    )
+    assert {
+        path: path.read_bytes()
+        for path in (tmp_path / STATE_REL).rglob("*")
+        if path.is_file()
+    } == before
 
 
 def test_stage_filters_combine_and_sort_unknown_times_last() -> None:
