@@ -61,6 +61,8 @@ def test_visible_state_and_svg(
         assert "#d97757" in svg.lower()
         assert ("Команды" if language == "ru" else "Commands").upper() in terminal
         assert "20" in terminal and "INSTALL & UPDATE" not in terminal
+        if language == "en" and size[0] == 160:
+            assert "Select" in terminal and "Выбор" not in terminal
         assert (
             ("↑↓" in terminal and "f2" in terminal)
             if size[0] == 160

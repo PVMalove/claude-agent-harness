@@ -672,6 +672,9 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         menu._bindings.key_to_bindings["enter"] = [
             Binding("enter", "select_cursor", i18n.tr(self._language, description))
         ]
+        menu._bindings.key_to_bindings["up"] = [
+            Binding("up", "cursor_up", self._t("Выбор"), key_display="↑↓")
+        ]
         self._bindings.key_to_bindings["y"] = [
             Binding(
                 "y", "copy_cli", "CLI" if self.narrow else self._t("Копировать CLI")
