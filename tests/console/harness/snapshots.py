@@ -50,7 +50,7 @@ STATES = (
     "filter-empty",
     "confirmation",
     "worktree-empty",
-    "worktree-valid",
+    "worktree-unregistered",
     "reset-empty",
     "reset-wrong",
     "reset-valid",
@@ -80,50 +80,26 @@ MOCKUP_STATES = {
     "unavailable-command": "Команда недоступна",
     "ledger-unavailable": "Ledger недоступен",
 }
-EXCLUDED = (
-    {
-        "state": "Статистика считается",
-        "reason": "Расчёт размеров временных файлов вне #743",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/853",
-    },
-    {
-        "state": "Нечего очищать",
-        "reason": "План и размеры временных файлов вне #743",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/853",
-    },
-    {
-        "state": "Git недоступен",
-        "reason": "Панель фактов worktree вне #743",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/854",
-    },
-    {
-        "state": "Можно удалить",
-        "reason": "Удаление worktree из строки с фактами вне #743",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/854",
-    },
-    {
-        "state": "Есть незакоммиченные изменения",
-        "reason": "Dirty counts и защиты удаления worktree вне #743",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/854",
-    },
-    {
-        "state": "Очистка временных файлов",
-        "reason": "Сводка размеров в подтверждении очистки вне #743",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/853",
-    },
-    {
-        "state": "Вывод по мере поступления",
-        "reason": "capturing_runner возвращает stdout/stderr после завершения",
-        "follow_up": "https://github.com/PVMalove/claude-agent-harness/issues/855",
-    },
-)
+# Additional real-filesystem and subprocess captures are produced by
+# tests/console/test_console_maintenance_app.py in RU/EN at both sizes.
+FOLLOW_UP_STATES = {
+    "loading": "Статистика считается",
+    "empty": "Нечего очищать",
+    "git-unavailable": "Git недоступен",
+    "removable": "Можно удалить",
+    "dirty": "Есть незакоммиченные изменения",
+    "files": "Очистка временных файлов",
+    "streaming": "Вывод по мере поступления",
+}
+EXCLUDED: tuple[dict[str, str], ...] = ()
+
 DIFFERENCES = (
-    "Панели размеров cleanup и фактов worktree, расширенные подтверждения удаления и streaming исключены; связаны с отдельными задачами.",
+    "Панели cleanup/worktree и streaming проверяются на реальных файловых и процессных данных в test_console_maintenance_app.py; его SVG дополняют эту матрицу.",
     "Ячейки терминала заменяют браузерные радиусы, шрифты, отступы и плашки: рамки Textual и цветные подписи сохраняют иерархию.",
     "Счётчик команд зависит от available(repo), поэтому 20 видны только при наличии всех скриптов; в целевом проекте недоступные команды скрыты.",
     "В 80×24 версия, состав и подключение показаны компактно; скиллы, managed files и дата lock остаются в широком состоянии и tooltip, как полный текст состояния.",
     "При запуске в узком режиме описание сворачивается, чтобы список и код выхода оставались в viewport; его можно раскрыть снова.",
-    "Полный stdout затем полный stderr сохраняются раздельно: исходный порядок их чередования capturing_runner не предоставляет.",
+    "stdout/stderr читаются параллельно; живой вывод следует порядку чтения, полный результат сохраняет оба потока раздельно.",
     "Фактические имя проекта, версия, ветка, lock mtime и ledger отличаются от демонстрационных значений HTML; фикстуры используются только для доказательств.",
 )
 
@@ -237,7 +213,7 @@ async def drive(
         "deletion-risk": "cleanup-apply",
         "confirmation": "health-online-fix",
         "worktree-empty": "worktree-remove",
-        "worktree-valid": "worktree-remove",
+        "worktree-unregistered": "worktree-remove",
         "hard": "cleanup-hard-apply",
         "hard-valid": "cleanup-hard-apply",
         "uninstall": "uninstall-apply",
@@ -262,7 +238,7 @@ async def drive(
     if state in (
         "confirmation",
         "worktree-empty",
-        "worktree-valid",
+        "worktree-unregistered",
         "reset-empty",
         "reset-wrong",
         "reset-valid",
@@ -276,7 +252,7 @@ async def drive(
         await pilot.pause()
         form = pilot.app.screen
         assert isinstance(form, CommandFormScreen)
-        if state == "worktree-valid":
+        if state == "worktree-unregistered":
             form.query_one(
                 "#input-worktree", Input
             ).value = "/workspace/issue-743-example"
@@ -409,6 +385,9 @@ def main() -> None:
         "source": "docs/design/console-mockups/harness.html",
         "captures": [],
         "excluded": EXCLUDED,
+        "additional_state_tests": {
+            "tests/console/test_console_maintenance_app.py": FOLLOW_UP_STATES
+        },
         "differences": DIFFERENCES,
     }
     captures = []

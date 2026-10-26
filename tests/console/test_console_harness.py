@@ -143,8 +143,11 @@ def test_confirming_an_irreversible_command_runs_it(tmp_path: Path) -> None:
             await _settle(pilot, app)
 
     asyncio.run(scenario())
+    from harness.cleanup import plan_cleanup, plan_digest
+
     assert runner.calls == [
         process_argv(["harness", "cleanup", str(tmp_path), "--apply"])
+        + ["--plan-digest", plan_digest(plan_cleanup(tmp_path, "soft"))]
     ]
 
 
@@ -536,7 +539,11 @@ def test_layout_explicit_run_copy_and_confirmation_validity(
             assert run.disabled
             field.value = "worktrees/example"
             await pilot.pause()
-            assert not run.disabled
+            await _settle(pilot, app)
+            assert run.disabled  # A typed path alone is no proof of safe deletion.
+            assert str(
+                app.screen.query_one("#maintenance-confirmation", Static).content
+            )
             assert run.region.bottom <= size[1]
             await pilot.click("#cancel")
             assert len(runner.calls) == 1

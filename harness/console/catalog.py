@@ -333,9 +333,9 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
     CatalogEntry(
         "worktree-remove",
         "Удалить worktree",
-        ("git", "-C", "{repo}", "worktree", "remove", "{worktree}"),
+        ("harness", "worktree-remove", "{repo}", "{worktree}"),
         Reversibility.DELETES_LOCAL_DATA,
-        "git:worktree remove",
+        f"{_HARNESS_CLI}:cmd_worktree_remove",
     ),
     CatalogEntry(
         "ledger-migrate",

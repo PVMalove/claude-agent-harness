@@ -43,7 +43,7 @@ sys.path[:] = [
 ]
 sys.path.insert(0, str(ROOT))
 from harness.errors import HarnessError, print_and_exit
-from harness.cleanup import apply_cleanup, plan_cleanup
+from harness.cleanup import apply_cleanup, plan_cleanup, plan_digest, remove_worktree
 from harness.uninstall import (
     CLAUDE_MD_SEED,
     CONFIRM_WORD,
@@ -1492,6 +1492,8 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         plan = plan_cleanup(
             Path(args.repo), args.mode, min_age_hours=args.min_age_hours
         )
+        if args.plan_digest and plan_digest(plan) != args.plan_digest:
+            fail("cleanup plan changed; preview again before applying")
         print(json.dumps({"plan": plan}, ensure_ascii=False, indent=2))
         if args.apply:
             result = apply_cleanup(Path(args.repo), plan, confirm=args.confirm)
@@ -1500,6 +1502,16 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
         return 0
     except ValueError as exc:
         fail(str(exc))
+
+
+def cmd_worktree_remove(args: argparse.Namespace) -> int:
+    """Remove a managed checkout after refreshing its safety facts, without force."""
+    try:
+        remove_worktree(Path(args.repo), Path(args.worktree))
+    except ValueError as exc:
+        fail(str(exc))
+    print(f"Removed worktree: {args.worktree}")
+    return 0
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -1626,7 +1638,17 @@ def parser() -> argparse.ArgumentParser:
         "--apply", action="store_true", help="apply the printed cleanup plan"
     )
     cleanup.add_argument("--confirm", help="pass HARD when applying hard cleanup")
+    cleanup.add_argument(
+        "--plan-digest", help="require the exact previously approved deletion set"
+    )
     cleanup.set_defaults(func=cmd_cleanup)
+
+    worktree = commands.add_parser(
+        "worktree-remove", help="safely remove a managed worktree, keeping its branch"
+    )
+    worktree.add_argument("repo")
+    worktree.add_argument("worktree")
+    worktree.set_defaults(func=cmd_worktree_remove)
 
     uninstall = commands.add_parser(
         "uninstall", help="preview or remove everything the harness installed"

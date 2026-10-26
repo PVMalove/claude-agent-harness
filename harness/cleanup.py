@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -11,14 +12,21 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from ctypes import wintypes
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from harness.orchestration import container_executor
 from harness.orchestration.core.constants import TERMINAL_DISPATCH_STATES
-from harness.orchestration.ledger.lifecycle import DispatchStatusRecord, LifecycleLedger
+from harness.orchestration.ledger.lifecycle import (
+    DispatchStatusRecord,
+    LifecycleLedger,
+    store_is_authority,
+)
+from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
 from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
 from harness.storage import LEGACY_STORAGE_DIRS, sandboxes_root, storage_root
@@ -58,6 +66,100 @@ class CleanupResult(TypedDict):
     removed: list[str]
     failed: list[dict[str, str]]
     skipped: list[dict[str, str]]
+
+
+def plan_digest(plan: CleanupPlan) -> str:
+    """Bind confirmation to the exact set of deletions, including mode and storage owner."""
+    payload = {
+        "mode": plan["mode"],
+        "root": plan["root"],
+        "min_age_hours": plan["min_age_hours"],
+        "remove": plan["remove"],
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class WorktreeFact:
+    path: Path
+    branch: str | None
+    dirty: int | None
+    reason: str
+
+    @property
+    def removable(self) -> bool:
+        return not self.reason
+
+
+def _worktree_fact(
+    checkout: Path,
+    root: Path,
+    path: Path,
+    branch: str | None,
+    active: set[Path] | None,
+    min_age_hours: float,
+) -> WorktreeFact:
+    status = _git(path, "status", "--porcelain", "-z", "--untracked-files=all")
+    # Rename/copy entries carry a second NUL-separated pathname, not a second file.
+    records = iter(status.stdout.split("\0"))
+    dirty = 0
+    for record in records:
+        if record:
+            dirty += 1
+            if record[0] in "RC" or record[1:2] in ("R", "C"):
+                next(records, None)
+    reason = ""
+    managed = (sandboxes_root(checkout) / "worktrees", root / "worktrees")
+    if path == checkout:
+        reason = "current checkout"
+    elif not _inside(root, path) or not any(
+        not parent.is_symlink() and path.parent == parent.resolve()
+        for parent in managed
+    ):
+        reason = "not a direct managed worktree"
+    elif active is None:
+        reason = "Git or ledger state unavailable"
+    elif path in active:
+        reason = "referenced by an active batch"
+    elif branch is not None and not _branch_allowed(root, branch):
+        reason = "unowned local branch"
+    elif not _old_enough(path, min_age_hours):
+        reason = "worktree newer than minimum age"
+    elif status.returncode != 0:
+        reason = "worktree status unavailable"
+    elif dirty:
+        reason = "worktree has uncommitted changes"
+    elif not _worktree_preserved(checkout, path, branch):
+        reason = "local commits are not preserved on origin"
+    return WorktreeFact(path, branch, dirty if status.returncode == 0 else None, reason)
+
+
+def worktree_facts(repo: Path, *, min_age_hours: float = 24) -> list[WorktreeFact]:
+    """Read real registered trees; unknown Git state never becomes an empty success."""
+    checkout = repo.expanduser().resolve()
+    if storage_root(checkout).is_symlink() or sandboxes_root(checkout).is_symlink():
+        raise ValueError("storage root must not be a symlink")
+    registered = _registered_worktrees(checkout)
+    if registered is None:
+        raise ValueError("Git unavailable")
+    root = storage_root(checkout)
+    active = _active_worktrees(root)
+    return [
+        _worktree_fact(checkout, root, path, branch, active, min_age_hours)
+        for path, branch in registered.items()
+    ]
+
+
+def remove_worktree(repo: Path, path: Path) -> None:
+    """Recheck every protection at execution; remove only the checkout, keeping its branch."""
+    target = path.expanduser()
+    target = (target if target.is_absolute() else repo / target).resolve()
+    fact = next((item for item in worktree_facts(repo) if item.path == target), None)
+    if fact is None or not fact.removable:
+        raise ValueError(fact.reason if fact else "worktree is not registered")
+    result = _git(repo, "worktree", "remove", str(target))
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "git worktree remove failed")
 
 
 def _git(repo: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -177,6 +279,34 @@ def _active_worktrees(root: Path) -> set[Path] | None:
     state = root / "orchestration" / "state"
     if not state.exists():
         return set()
+    if store_is_authority(state):
+        try:
+            reply = RuntimeClient(root.parent).call(
+                "state.read",
+                operation_id=f"cleanup.read-{uuid.uuid4().hex}",
+                payload={"collections": ["batches"], "paths": []},
+                timeout_seconds=5,
+            )
+            records = reply.result.get("records")
+            if not isinstance(records, dict):
+                return None
+            active_store: set[Path] = set()
+            for batch in records.values():
+                if not isinstance(batch, dict) or not isinstance(
+                    batch.get("state"), str
+                ):
+                    return None
+                if batch["state"] not in TERMINAL_BATCH_STATES:
+                    value = batch.get("worktree")
+                    if not isinstance(value, str) or not value:
+                        return None
+                    path = Path(value)
+                    active_store.add(
+                        (path if path.is_absolute() else root.parent / path).resolve()
+                    )
+            return active_store
+        except (RuntimeClientError, OSError, ValueError):
+            return None
     pointer = state / "ledger.json"
     try:
         if pointer.exists():
@@ -523,6 +653,13 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                     and _old_enough(path, min_age_hours)
                 ):
                     remove.append({"kind": "file", "path": str(path)})
+                elif path.is_file() and _inside(root, path):
+                    skipped.append(
+                        {
+                            "path": str(path),
+                            "reason": "active or newer than minimum age",
+                        }
+                    )
 
     # 3. Legacy top-level folders outside .sandboxes: (.cache, test-logs, tmp, reports)
     for name in LEGACY_TOP_LEVEL_DIRS:
@@ -606,25 +743,9 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                 for path, branch in registered.items():
                     if path == checkout or not path.is_relative_to(worktrees.resolve()):
                         continue
-                    reason = None
-                    if not _inside(root, path) or path.parent != worktrees.resolve():
-                        reason = "not a direct managed worktree"
-                    elif path in active:
-                        reason = "referenced by an active batch"
-                    elif branch is not None and not _branch_allowed(root, branch):
-                        reason = "unowned local branch"
-                    elif not _old_enough(path, min_age_hours):
-                        reason = "worktree newer than minimum age"
-                    elif (
-                        status := _git(
-                            path, "status", "--porcelain", "--untracked-files=all"
-                        )
-                    ).returncode != 0:
-                        reason = "worktree status unavailable"
-                    elif status.stdout.strip():
-                        reason = "worktree has uncommitted changes"
-                    elif not _worktree_preserved(checkout, path, branch):
-                        reason = "local commits are not preserved on origin"
+                    reason = _worktree_fact(
+                        checkout, root, path, branch, active, min_age_hours
+                    ).reason
                     if reason:
                         skipped.append({"path": str(path), "reason": reason})
                     else:

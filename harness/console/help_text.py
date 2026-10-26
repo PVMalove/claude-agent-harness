@@ -56,6 +56,9 @@ init/adopt/update. Установка требует подтверждения 
 
 - Команды из «Как исправить» пульт только показывает — запускайте их вручную.
 - Перед необратимыми действиями пульт переспрашивает; отмена ничего не запускает.
+- Harness показывает фактический план очистки: размер и число файлов по категориям, пропуски и дополнения hard. Изменившийся после подтверждения список удаления требует нового плана.
+- Строки worktree показывают dirty counts и причины защиты. Удаление повторно проверяет активные batch, возраст, Git и сохранность коммитов на origin; ветка и PR остаются.
+- stdout/stderr команд Harness поступают по мере чтения. Уход со страницы не останавливает уже запущенную команду; повторное открытие показывает тот же запуск и полный результат. Новый запуск доступен после фактического завершения.
 - `ledger reset`, hard cleanup и удаление харнесса требуют ввести `RESET`, `HARD` или `UNINSTALL`.
 - «Исправить» (Diagnostics) выполняет только `health --fix` и требует повторного нажатия.
 - Экспорты сохраняются в `docs/tasks/` и никогда не перезаписываются.
@@ -125,6 +128,9 @@ Check statuses are shown as a symbol and a word, not by colour alone: ✔ ok, �
 
 - The console only shows the “How to fix” commands — run them yourself.
 - Before irreversible actions the console asks again; cancelling runs nothing.
+- Harness shows the actual cleanup plan: bytes and file counts by category, skipped paths and hard-mode additions. A deletion set changed after confirmation requires a new preview.
+- Worktree rows show dirty counts and protection reasons. Removal rechecks active batches, age, Git and commits preserved on origin; it keeps the branch and PR.
+- Harness stdout/stderr appear as they are read. Leaving the page keeps an already running command alive; reopening shows the same invocation and complete result. A new invocation is admitted only after physical completion.
 - `ledger reset`, hard cleanup and Harness removal require typing `RESET`, `HARD` or `UNINSTALL`.
 - “Fix” (Diagnostics) runs only `health --fix` and needs a second press.
 - Exports are saved to `docs/tasks/` and are never overwritten.
