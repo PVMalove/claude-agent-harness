@@ -12,8 +12,9 @@ from typing import Callable, Mapping, Sequence
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Input, ListView, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
+from textual.widgets import Input, ListItem, ListView, Static
 
 from .. import brand, i18n
 from .. import data as console_data
@@ -67,6 +68,19 @@ _GROUP_ORDER = list(dict.fromkeys(_GROUPS.values())) + [_OTHER_GROUP]
 
 def _group_rank(key: str) -> int:
     return _GROUP_ORDER.index(_GROUPS.get(key, _OTHER_GROUP))
+
+
+class HarnessCommandList(ListView):
+    """Mouse selection is read-only; Enter is a separate, explicit activation."""
+
+    class Activate(Message):
+        def __init__(self, item: ListItem) -> None:
+            super().__init__()
+            self.item = item
+
+    def action_select_cursor(self) -> None:
+        if self.highlighted_child is not None:
+            self.post_message(self.Activate(self.highlighted_child))
 
 
 class CommandFormScreen(CommandForm):
@@ -155,6 +169,24 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         with VerticalScroll(id="harness-page"):
             yield from self.compose_commands()
 
+    def compose_commands(self) -> ComposeResult:
+        yield from self.overview()
+        self._language = getattr(self.app, "language", "ru")
+        children = self._menu_children()
+        first = next((i for i, item in enumerate(children) if item.name), 0)
+        with Horizontal(id="command-body"):
+            menu = HarnessCommandList(*children, id="command-menu", initial_index=first)
+            menu.border_title = brand.section_title(i18n.ui(self._language, "commands"))
+            yield menu
+            with VerticalScroll(id="command-detail-scroll") as detail:
+                detail.border_title = brand.section_title("Описание")
+                yield Static("", id="command-detail")
+        output = VerticalScroll(
+            Static("", id="command-output", markup=False), id="command-output-scroll"
+        )
+        output.border_title = brand.section_title("Вывод")
+        yield output
+
     def sync_language(self) -> None:
         ConsoleShell.sync_language(self)
         CommandMenuScreen.sync_language(self)
@@ -206,10 +238,15 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         return self._entries[key].cli_line(self.repo)
 
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Обрабатывает выбор команды из списка, открывая форму параметров либо запуская команду сразу."""
-        if event.item.name is None or event.list_view.id == self.IDS.menu:
-            return
-        self.open_command(event.item.name)
+        if event.list_view.id == self.IDS.menu:
+            await ConsoleShell.on_list_view_selected(self, event)
+        else:
+            event.stop()
+
+    def on_harness_command_list_activate(self, event: HarnessCommandList.Activate) -> None:
+        event.stop()
+        if event.item.name is not None:
+            self.open_command(event.item.name)
 
     def open_command(self, key: str) -> None:
         """Open a catalog command through its usual parameter and confirmation flow."""

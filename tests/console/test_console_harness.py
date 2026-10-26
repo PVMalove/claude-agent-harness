@@ -379,3 +379,31 @@ def test_harness_screen_opens_help_switches_language_and_goes_back(
     assert help_open and help_closed
     assert crumbs == "Home  ›  Harness"
     assert went_back
+
+
+@pytest.mark.parametrize("key", ["diff", "cleanup-apply"])
+def test_click_and_arrow_selection_never_activate_a_command(tmp_path: Path, key: str) -> None:
+    runner = _RecordingRunner()
+
+    async def scenario() -> None:
+        app = _HostApp(HarnessScreen(tmp_path, command_runner=runner))
+        async with app.run_test(size=(160, 52)) as pilot:
+            menu = app.screen.query_one("#command-menu", ListView)
+            row = next(item for item in menu.query(ListItem) if item.name == key)
+            row.scroll_visible(immediate=True)
+            await pilot.pause()
+            await pilot.click(row)
+            await pilot.press("up", "down")
+            await pilot.pause()
+            assert app.screen is app._harness_screen
+            assert runner.calls == []
+            assert menu.highlighted_child is row
+            await pilot.press("enter")
+            await _settle(pilot, app)
+            if key == "diff":
+                assert len(runner.calls) == 1
+            else:
+                assert isinstance(app.screen, CommandFormScreen)
+                assert runner.calls == []
+
+    asyncio.run(scenario())
