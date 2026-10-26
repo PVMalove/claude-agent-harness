@@ -17,13 +17,16 @@ import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from harness.json_types import JsonObject
+from harness.orchestration.ledger.lifecycle import JsonObject as StrictObject
+from harness.orchestration.ledger.lifecycle import _canonical
 from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 
-from .runtime_store_support import SHORT_TMP, Store, store_call
+from .runtime_store_support import SHORT_TMP, Store, store_call, store_records
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="the seam tests drive a Unix-socket runtime"
@@ -186,6 +189,33 @@ def test_a_failure_inside_the_transaction_rolls_it_back_and_a_repeat_succeeds(
     assert store.revisions(store.status_path)[store.status_path] == before + 1
 
 
+def test_a_missing_checkpoint_is_rebuilt_before_the_transaction_opens(store: Store) -> None:
+    connection = sqlite3.connect(store.database, timeout=10)
+    try:
+        connection.execute("DELETE FROM audit_checkpoint")
+        connection.commit()
+    finally:
+        connection.close()
+    store.restart_runtime({PAUSE: IN_TRANSACTION})
+    holder = store.start("dispatch", "heartbeat", "--dispatch", store.dispatch)
+    store.runtime.wait_paused(IN_TRANSACTION)
+
+    # The write is inside BEGIN IMMEDIATE and has committed nothing, yet the whole chain was
+    # verified already and the checkpoint stands at the tail the write started from.
+    connection = sqlite3.connect(store.database, timeout=10)
+    try:
+        checkpoint = connection.execute("SELECT seq FROM audit_checkpoint").fetchone()
+        tail = connection.execute("SELECT MAX(seq) FROM audit").fetchone()
+    finally:
+        connection.close()
+    store.runtime.resume()
+    holder.communicate(timeout=60)
+
+    assert checkpoint is not None and checkpoint[0] == tail[0]
+    assert holder.returncode == 0
+    assert store.validate(full=False)["valid"] is True
+
+
 def test_a_runtime_killed_inside_the_transaction_leaves_nothing_and_the_client_commits_once(
     store: Store,
 ) -> None:
@@ -221,4 +251,140 @@ def test_the_runtime_that_is_not_running_is_runtime_unavailable_and_changes_noth
         )
 
     assert unavailable.value.code == "runtime_unavailable"
+    assert _audit_rows(store) == audit
+
+
+# -- a request the runtime refuses writes nothing (seam 1 with the real runtime, the client of the
+# coordinator sends the request: the policy CLI never builds these) ----------------------------------
+
+
+def _send(
+    store: Store,
+    mutations: list[StrictObject],
+    *,
+    operation_id: str | None = None,
+    batch_id: str | None = None,
+) -> JsonObject:
+    return store_call(
+        store.repo,
+        store.runtime,
+        "state.write",
+        cast("StrictObject", {"mutations": mutations}),
+        operation_id=operation_id,
+        batch_id=batch_id,
+    )
+
+
+def test_a_repeat_of_a_committed_write_is_its_stored_result_and_another_request_is_refused(
+    store: Store,
+) -> None:
+    mutation: JsonObject = {
+        "op": "create",
+        "path": "reports/repeat-a.json",
+        "content": _canonical({"name": "a"}),
+    }
+    first = _send(store, [mutation], operation_id="op-repeat")
+    audit = _audit_rows(store)
+
+    again = _send(store, [mutation], operation_id="op-repeat")
+    with pytest.raises(RuntimeClientError) as other:
+        _send(store, [{**mutation, "path": "reports/repeat-b.json"}], operation_id="op-repeat")
+
+    assert (again["revisions"], again["audit_seq"]) == (first["revisions"], first["audit_seq"])
+    assert other.value.code == "idempotency_conflict"
+    assert _audit_rows(store) == audit
+    assert store.validate()["valid"] is True
+
+
+def _unknown_field() -> JsonObject:
+    return {"op": "create", "path": "reports/x.json", "content": _canonical({"a": 1}), "extra": 1}
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        pytest.param(_unknown_field(), id="unknown-field"),
+        pytest.param(
+            {"op": "mutate", "path": "reports/x.json", "content": _canonical({"a": 1})},
+            id="unknown-op",
+        ),
+        pytest.param(
+            {"op": "create", "path": "reports/../x.json", "content": _canonical({"a": 1})},
+            id="dot-dot",
+        ),
+        pytest.param(
+            {"op": "create", "path": "/etc/x.json", "content": _canonical({"a": 1})},
+            id="absolute",
+        ),
+        pytest.param(
+            {"op": "create", "path": "audit/x.json", "content": _canonical({"a": 1})},
+            id="audit-record",
+        ),
+        pytest.param({"op": "create", "path": "reports/x.json", "content": "[]"}, id="not-object"),
+    ],
+)
+def test_a_malformed_mutation_is_refused_and_writes_nothing(
+    store: Store, mutation: JsonObject
+) -> None:
+    audit = _audit_rows(store)
+
+    with pytest.raises(RuntimeClientError) as refused:
+        _send(store, [mutation])
+
+    assert refused.value.code == "malformed_request"
+    assert _audit_rows(store) == audit
+
+
+def test_a_request_for_the_rows_of_two_batches_is_malformed_and_writes_nothing(
+    store: Store,
+) -> None:
+    audit = _audit_rows(store)
+    other = _canonical({"dispatch_id": "dispatch-x", "batch_id": "batch-other", "state": "approved"})
+
+    with pytest.raises(RuntimeClientError) as refused:
+        _send(
+            store,
+            [{"op": "create", "path": "dispatches/dispatch-x.json", "content": other}],
+            batch_id=store.batch,
+        )
+
+    assert refused.value.code == "malformed_request"
+    assert _audit_rows(store) == audit
+
+
+def test_immutable_evidence_and_a_row_that_a_dispatch_status_needs_are_not_changed(
+    store: Store,
+) -> None:
+    brief = f"dispatches/{store.dispatch}.json"
+    record = store_records(store.repo, store.runtime, brief)[brief]
+    revision = store.revisions(brief)[brief]
+    audit = _audit_rows(store)
+
+    with pytest.raises(RuntimeClientError) as replaced:
+        _send(
+            store,
+            [
+                {
+                    "op": "replace",
+                    "path": brief,
+                    "content": _canonical(record),
+                    "expected_revision": revision,
+                }
+            ],
+        )
+    with pytest.raises(RuntimeClientError) as deleted:
+        _send(
+            store,
+            [
+                {
+                    "op": "delete",
+                    "path": store.batch_path,
+                    "reason": "test",
+                    "expected_revision": store.revisions(store.batch_path)[store.batch_path],
+                }
+            ],
+        )
+
+    assert replaced.value.code == "invariant_violation"
+    assert deleted.value.code == "invariant_violation"
     assert _audit_rows(store) == audit

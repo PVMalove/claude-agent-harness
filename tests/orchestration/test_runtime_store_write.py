@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -35,6 +36,7 @@ from .runtime_store_support import (
     STATE_REL,
     Store,
     audited,
+    coordinator_with,
     store_call,
     store_records,
     tree,
@@ -132,6 +134,80 @@ def test_the_checkout_stays_clean_after_the_writes(store: Store) -> None:
     assert all(
         line.startswith("?? .harness/") for line in status.stdout.splitlines()
     ), status.stdout
+
+
+def test_the_writes_never_change_the_hash_of_the_pinned_runtime(store: Store) -> None:
+    from harness.orchestration.core import workspace
+
+    before = workspace._harness_runtime_sha256(store.repo)
+
+    assert store.heartbeat().returncode == 0
+    assert store.submit_report().returncode == 0
+
+    assert workspace._harness_runtime_sha256(store.repo) == before
+
+
+def test_a_write_for_a_linked_worktree_does_not_touch_the_store_of_the_main_checkout(
+    store: Store, tmp_path: Path
+) -> None:
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", "-b", "linked-branch", str(linked)],
+        cwd=store.repo,
+        check=True,
+        capture_output=True,
+    )
+    chain = store.audit_records()
+    revisions = store.revisions(store.batch_path, store.status_path)
+
+    result = coordinator_with(
+        linked, store.runtime, "dispatch", "heartbeat", "--dispatch", store.dispatch
+    )
+
+    # A linked worktree has a state directory of its own (the state is ignored by Git): the
+    # command finds no dispatch there and the store of the main checkout is as it was.
+    assert result.returncode == 2
+    assert store.audit_records() == chain
+    assert store.revisions(store.batch_path, store.status_path) == revisions
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=linked, capture_output=True, text=True, check=True
+    )
+    assert status.stdout == ""
+
+
+def test_a_write_with_another_state_dir_is_refused_and_writes_nothing(
+    store: Store, tmp_path: Path
+) -> None:
+    chain = store.audit_records()
+    other = tmp_path / "other-state"
+    other.mkdir()
+
+    result = store.run(
+        "dispatch", "heartbeat", "--dispatch", store.dispatch, "--state-dir", str(other)
+    )
+
+    assert result.returncode == 2
+    assert store.audit_records() == chain
+    assert list(other.iterdir()) == []
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() == 0,
+    reason="a file mode does not keep the superuser from reading",
+)
+def test_an_unreadable_store_file_is_a_refusal_that_writes_nothing(store: Store) -> None:
+    chain = store.audit_records()
+    revisions = store.revisions(store.batch_path, store.status_path)
+    store.database.chmod(0o000)
+    try:
+        result = store.heartbeat()
+    finally:
+        store.database.chmod(0o600)
+
+    assert result.returncode == 2
+    assert "REMEDY:" in result.stderr
+    assert store.audit_records() == chain
+    assert store.revisions(store.batch_path, store.status_path) == revisions
 
 
 def test_a_report_and_its_transitions_are_one_commit_with_one_audit_record_each(
