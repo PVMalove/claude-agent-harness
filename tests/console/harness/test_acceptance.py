@@ -9,6 +9,7 @@ from threading import Event
 from typing import cast
 
 import pytest
+from textual.color import Color
 from textual.screen import Screen
 from textual.widgets import Button, Input, ListView, Static
 
@@ -38,6 +39,35 @@ def test_matrix_accounts_for_every_mockup_state_without_fake_captures() -> None:
     )
     assert len(set(STATES)) == len(STATES)
     assert all(entry["follow_up"] and entry["reason"] for entry in EXCLUDED)
+
+
+@pytest.mark.parametrize("size", SIZES)
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_run_action_uses_the_mockup_primary_fill(
+    tmp_path: Path, size: tuple[int, int], language: str
+) -> None:
+    async def scenario() -> None:
+        screen = HarnessScreen(
+            tmp_path,
+            command_runner=_RecordingRunner(),
+            load_drift=lambda _: "clean",
+        )
+        app = EvidenceApp(tmp_path, lambda _: cast(Screen[object], screen))
+        app.language = language
+
+        async with app.run_test(size=size) as pilot:
+            screen.query_one("#detail-fold", Fold).collapsed = False
+            button = screen.query_one("#command-run", Button)
+            await until(pilot, lambda: button.region.height > 0)
+
+            assert not button.disabled
+            # harness.html assigns Run the active theme's primary fill and dark text.
+            # Textual resolves these semantic colors through its color system.
+            theme = app.get_css_variables()
+            assert button.styles.background == Color.parse(theme["primary"])
+            assert button.styles.color == Color.parse(theme["background"])
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("state", STATES)

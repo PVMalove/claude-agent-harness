@@ -253,6 +253,8 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     HarnessScreen #copy-hint { height: 1; color: $text-muted; }
     HarnessScreen #command-actions { height: auto; }
     HarnessScreen #command-actions Button { margin-right: 1; }
+    HarnessScreen #command-run { background: $primary; color: $background; border: round $primary; }
+    HarnessScreen #command-run:hover, HarnessScreen #command-run:focus { border: round $foreground; }
     HarnessScreen #run-status { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
     HarnessScreen #run-feedback { height: auto; max-height: 1; color: $warning; text-wrap: nowrap; text-overflow: ellipsis; }
     HarnessScreen #output-fold { height: 10; max-height: 35%; }
