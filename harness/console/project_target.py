@@ -22,6 +22,8 @@ class ProjectTarget:
     action: Literal["init", "adopt", "update"]
     capabilities: tuple[str, ...]
     conflicts: tuple[str, ...]
+    # The project's own files the installation meets: instruction files and discovery paths.
+    found: tuple[str, ...] = ()
 
 
 # A cold, busy machine (a Windows CI runner starting its first git.exe) needs more than a few seconds.
@@ -50,7 +52,10 @@ def inspect_target(value: str) -> ProjectTarget:
         raise ValueError("Выберите каталог проекта")
     repo = Path(value).expanduser().resolve()
     if not repo.is_dir():
-        raise ValueError("Каталог проекта не существует")
+        raise ValueError(
+            "Каталог проекта не существует\n"
+            "Проверьте путь или выберите папку через «Обзор папок»."
+        )
     try:
         result = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
@@ -59,10 +64,14 @@ def inspect_target(value: str) -> ProjectTarget:
             timeout=GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired):
-        raise ValueError("Git недоступен или не отвечает") from None
+        raise ValueError(
+            "Git недоступен или не отвечает\n"
+            "Проверьте, что git установлен и доступен в PATH."
+        ) from None
     if result.returncode != 0:
         raise ValueError(
-            "Это не Git-проект. Сначала выполните git init в выбранном каталоге"
+            "Это не Git-проект\n"
+            "Сначала выполните в каталоге: git init (y — копировать команду)"
         )
     repo = Path(result.stdout.strip()).resolve()
     selected: tuple[str, ...] = ()
@@ -89,14 +98,16 @@ def inspect_target(value: str) -> ProjectTarget:
         )
         if path.exists() or path.is_symlink()
     )
-    existing = conflicts or any(
-        (repo / name).exists() for name in ("AGENTS.md", "CLAUDE.md")
+    found = (
+        tuple(name for name in ("AGENTS.md", "CLAUDE.md") if (repo / name).exists())
+        + conflicts
     )
     return ProjectTarget(
         repo,
-        "update" if lock is not None else ("adopt" if existing else "init"),
+        "update" if lock is not None else ("adopt" if found else "init"),
         selected,
         conflicts,
+        found,
     )
 
 
@@ -116,6 +127,20 @@ def capability_options() -> tuple[tuple[str, str], ...]:
         (name, _LABELS.get(name) or str(entry.get("description", name)))
         for name, entry in catalog.items()
     )
+
+
+def capability_title(name: str) -> str:
+    """The short name of a capability (`Workflow`); one without a curated label is its id."""
+    head, separator, _ = dict(capability_options()).get(name, name).partition(" — ")
+    return head if separator else name
+
+
+def capability_summary(name: str) -> str:
+    """The one-line description of a capability, as a sentence."""
+    label = dict(capability_options()).get(name, name)
+    _, separator, tail = label.partition(" — ")
+    text = tail if separator else label
+    return text[:1].upper() + text[1:]
 
 
 _DETAILS = {

@@ -9,6 +9,7 @@ import pytest
 from pathlib import Path
 from typing import Mapping, Sequence
 
+from textual.pilot import Pilot
 from textual.widgets import (
     Button,
     DirectoryTree,
@@ -156,9 +157,9 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
             pressed = screen.query_one("#capability", RadioSet).pressed_index
             assert screen.options[pressed][0] == "backend-orchestration"  # type: ignore[attr-defined]
             stage = str(screen.query_one("#setup-stage", Static).render())
-            assert "[Предварительные проверки]" in stage
+            assert "▶ Предварительные проверки" in stage
             plan = str(screen.query_one("#installation-plan", Static).render())
-            assert "Состав:" in plan
+            assert "Состав     Backend (backend-orchestration)" in plan
             await press(pilot, "#browse-project")
             await pilot.pause()
             assert len(screen.query("#directory-browser")) == 1
@@ -206,7 +207,7 @@ def test_late_results_of_the_previous_project_do_not_reach_the_new_dashboard(
 
 
 def test_report_summary_separates_checked_skipped_and_failing_checks() -> None:
-    from harness.console.screens.project_setup import describe_report
+    from harness.console.screens.project_setup import ChecksSummary, summarize_report
     from harness.health.model import CheckResult, Fix, Report
 
     report = Report(
@@ -217,13 +218,11 @@ def test_report_summary_separates_checked_skipped_and_failing_checks() -> None:
             CheckResult("environment.codex_sandbox", "environment", "ok", "ok"),
             CheckResult("tracker.auth", "tracker", "skipped", "офлайн"),
             CheckResult("files.project_json", "files", "fail", "bad", Fix("fix")),
+            CheckResult("files.agents_md", "files", "warn", "old"),
         ],
     )
-    text = describe_report(report)
-    assert "Проверено: 2 из 3" in text
-    assert "Не проверено: 1" in text and "не считается успешной" in text
-    assert "Требует исправления: 1" in text
-    assert "Online" in text and "файлы настроек" in text
+    # A skipped check is not a success: 4 checks, 3 ran, 2 need a fix, 1 was not checked.
+    assert summarize_report(report) == ChecksSummary(3, 4, 2, 1)
 
 
 def test_online_check_and_local_fixes_target_the_selected_project(
@@ -613,10 +612,14 @@ def test_status_lines_start_with_a_symbol(
 
     seen = asyncio.run(scenario())
     assert seen["inspecting"] == "▶ Проверяется путь…"
-    assert seen["inspected"].splitlines()[0] == "✔ " + str(project.resolve())
+    assert seen["inspected"].splitlines()[0] == (
+        "✔ Git-проект найден · действие: новая установка"
+    )
     assert seen["running"] == "▶ Выполняется…"
-    assert seen["failed"] == "✖ Каталог проекта не существует"
-    assert seen["failed en"] == "✖ The project directory does not exist"
+    assert seen["failed"].splitlines()[0] == "✖ Каталог проекта не существует"
+    assert seen["failed"].splitlines()[1].startswith("Проверьте путь")
+    assert seen["failed en"].splitlines()[0] == "✖ The project directory does not exist"
+    assert seen["failed en"].splitlines()[1].startswith("Check the path")
 
 
 @pytest.mark.parametrize("size", [(80, 24), (160, 52)])
@@ -669,9 +672,9 @@ def _corrupt_lock(project: Path) -> None:
     (project / ".harness/harness.lock").write_text("{not json", encoding="utf-8")
 
 
-async def _open_setup(app: HarnessConsoleApp, pilot: object) -> ProjectSetupScreen:
-    await pilot.press("p")  # type: ignore[attr-defined]
-    await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))  # type: ignore[arg-type]
+async def _open_setup(app: HarnessConsoleApp, pilot: Pilot[None]) -> ProjectSetupScreen:
+    await pilot.press("p")
+    await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))
     screen = app.screen
     assert isinstance(screen, ProjectSetupScreen)
     return screen
@@ -748,7 +751,7 @@ def test_a_corrupt_lock_on_the_install_path_is_a_status_and_nothing_is_installed
 
 
 async def _checked_project(
-    app: HarnessConsoleApp, pilot: object, project: Path
+    app: HarnessConsoleApp, pilot: Pilot[None], project: Path
 ) -> ProjectSetupScreen:
     """Open the screen on `project`, check the path and wait for the automatic diagnostics."""
     screen = await _open_setup(app, pilot)
@@ -824,20 +827,20 @@ def test_editing_the_path_clears_the_previous_target_status_plan_and_result(
     blank, ru, en = asyncio.run(scenario())
     assert blank["target"] is None and blank["stage"] == 0
     assert blank["disabled"] == _BLANK["disabled"]
-    assert ru == "Укажите путь к проекту и нажмите «Проверить путь»."
-    assert en == "Enter the project path and press “Check path”."
+    assert ru == "○ Укажите путь к проекту и нажмите «Проверить путь»."
+    assert en == "○ Enter the project path and press “Check path”."
     assert blank["plan"] == "The plan appears after the path is checked."
     assert blank["output"] == "Check and install results appear here."
 
 
 async def _open_browser(
-    app: HarnessConsoleApp, pilot: object, screen: ProjectSetupScreen, root: Path
+    app: HarnessConsoleApp, pilot: Pilot[None], screen: ProjectSetupScreen, root: Path
 ) -> DirectoryTree:
     screen.query_one("#project-path", Input).value = str(root)
     await press(pilot, "#browse-project")
-    await wait_until(pilot, lambda: len(screen.query("#directory-browser")) == 1)  # type: ignore[arg-type]
+    await wait_until(pilot, lambda: len(screen.query("#directory-browser")) == 1)
     tree = screen.query_one("#directory-browser", DirectoryTree)
-    await wait_until(pilot, lambda: tree.has_focus and tree.root.children)  # type: ignore[arg-type]
+    await wait_until(pilot, lambda: tree.has_focus and tree.root.children)
     return tree
 
 
@@ -906,8 +909,8 @@ def test_a_click_on_a_folder_name_highlights_it_but_does_not_select_it(
             tree = await _open_browser(app, pilot, screen, root)
             field = screen.query_one("#project-path", Input)
             before = field.value
-            # Line 0 is the root, line 1 the folder `app`; the click lands on its name.
-            await pilot.click(tree, offset=(8, 1))
+            # Row 0 is the border: the root is row 1, the folder `app` row 2; the click is on its name.
+            await pilot.click(tree, offset=(14, 2))
             await pilot.pause(0.3)
             node = tree.cursor_node
             return (
@@ -999,16 +1002,16 @@ def test_stage_three_is_current_while_installing_and_the_stage_follows_the_outco
         return subprocess.CompletedProcess(list(argv), outcome["code"], "", "")
 
     async def install(
-        app: HarnessConsoleApp, pilot: object, screen: ProjectSetupScreen
+        app: HarnessConsoleApp, pilot: Pilot[None], screen: ProjectSetupScreen
     ) -> str:
         await press(pilot, "#install-project")
         await press(pilot, "#run")
-        await wait_until(pilot, started.is_set)  # type: ignore[arg-type]
-        await pilot.pause()  # type: ignore[attr-defined]
+        await wait_until(pilot, started.is_set)
+        await pilot.pause()
         during = str(screen.query_one("#setup-stage", Static).render())
         release.set()
         await app.workers.wait_for_complete()
-        await wait_until(pilot, lambda: not screen.busy)  # type: ignore[arg-type]
+        await wait_until(pilot, lambda: not screen.busy)
         return during
 
     async def scenario() -> tuple[str, int, str, int]:
@@ -1028,7 +1031,7 @@ def test_stage_three_is_current_while_installing_and_the_stage_follows_the_outco
                 release.set()
 
     during, after_success, during_failure, after_failure = asyncio.run(scenario())
-    assert "[Установка / внедрение]" in during
-    assert "[Установка / внедрение]" in during_failure
+    assert "▶ Установка / внедрение" in during
+    assert "▶ Установка / внедрение" in during_failure
     assert after_success == 3
     assert after_failure == 1

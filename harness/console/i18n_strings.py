@@ -859,6 +859,11 @@ EN.update(
         "Каталог проекта не существует": "The project directory does not exist",
         "Git недоступен или не отвечает": "Git is unavailable or not responding",
         "Путь изменился; проверьте его ещё раз": "The path changed; check it again",
+        "Проверьте путь или выберите папку через «Обзор папок».": "Check the path or pick a folder with “Browse folders”.",
+        "Это не Git-проект": "This is not a Git project",
+        "Сначала выполните в каталоге: git init (y — копировать команду)": "First run in the directory: git init (y — copy the command)",
+        "Проверьте, что git установлен и доступен в PATH.": "Check that git is installed and on PATH.",
+        "План изменился; заново проверьте пути проекта": "The plan changed; check the project paths again",
         "harness.lock повреждён": "harness.lock is corrupt",
         "Сначала проверьте существующую установку: «Диагностика» (3).": "First check the existing installation: “Diagnostics” (3).",
     }
@@ -978,4 +983,60 @@ EN_PHRASES.update(
 
 EN["Команда недоступна для выбранного проекта"] = (
     "Command is unavailable for this project"
+)
+
+# Open project: the page laid out as docs/design/console-mockups/open-project.html.
+EN.update(
+    {
+        "Сейчас открыт:": "Now open:",
+        "Выбор цели меняет проект для всех экранов": "Choosing a target changes the project for every screen",
+        "Укажите Git-проект. Проверка пути ничего не меняет; установка Harness выполняется только после вашего подтверждения.": "Choose a Git project. Checking the path changes nothing; Harness is installed only after you confirm.",
+        "Шаг {} из {}": "Step {} of {}",
+        "Обзор": "Browse",
+        "Открыть →": "Open →",
+        "Закрыть обзор": "Close browser",
+        "Закрыть": "Close",
+        "Папки": "Folders",
+        "↑↓ выбор · → раскрыть · Enter — подставить путь · Esc — закрыть": "↑↓ select · → open · Enter — put in the path · Esc — close",
+        "что будет установлено": "what will be installed",
+        "последняя операция": "last operation",
+        "установлено": "installed",
+        "Основа": "Core",
+        "Небольшой набор инструкций и навыков": "A small set of instructions and skills",
+        "Полный закреплённый набор навыков": "The full pinned set of skills",
+        "Задачи, QA и ручная настройка project.json": "Tasks, QA and manual project.json setup",
+        "Workflow и роли; добавляет orchestration.json": "Workflow and roles; adds orchestration.json",
+        "Добавляет инструкции и базовые навыки. Не создаёт project.json и orchestration.json; подходит, когда нужен только общий каркас.": "Adds instructions and basic skills. Does not create project.json or orchestration.json; fits when only the common scaffold is needed.",
+        "Полный закреплённый upstream-набор навыков. Не содержит workflow project.json; подходит, когда нужны только навыки.": "The full pinned upstream skill set. Has no project.json workflow; fits when only skills are needed.",
+        "Workflow задач, QA и code-review; создаёт project.json. Нужен для мастера project.json; без ролей оркестрации.": "Task, QA and code-review workflow; creates project.json. Needed for the project.json wizard; no orchestration roles.",
+        "Всё из workflow плюс роли и координатор; добавляет orchestration.json. Выбирайте для backend-проекта с автоматизацией этапов.": "Everything from workflow plus roles and the coordinator; adds orchestration.json. Choose it for a backend project with stage automation.",
+        "Конфликты": "Conflicts",
+        "Команда": "Command",
+        "✔ нет": "✔ none",
+        "✖ заблокировано: {}": "✖ blocked: {}",
+        "○ проверяется…": "○ checking…",
+        "y — копировать · перезаписывает только управляемые файлы Harness": "y — copy · overwrites managed Harness files only",
+        "Потребуется подтверждение": "Confirmation is required",
+        "Force/replace не включены. При конфликте операция остановится.": "Force/replace are off. A conflict stops the operation.",
+        "Установка заблокирована; проверьте собственные/изменённые пути:": "Installation is blocked; check the owned/changed paths:",
+        "План не удалось проверить; исправьте существующую установку вручную.": "The plan could not be checked; repair the existing installation manually.",
+        "Проверено {} из {}": "Checked {} of {}",
+        "Требует исправления {}": "Needs fixing {}",
+        "Не проверено {}": "Not checked {}",
+        "Онлайн — отдельная проверка GitHub/GitLab и прав доступа. Проверки песочницы анализируют настройки; фактические доступы могут остаться непроверенными.": "Online — a separate GitHub/GitLab and access-rights check. Sandbox checks analyse settings; real access may stay unchecked.",
+    }
+)
+EN_PHRASES.update(
+    {
+        "Git-проект найден · действие:": "Git project found · action:",
+        "обновление": "update",
+        "новая установка": "new installation",
+        "внедрение": "adoption",
+        "harness.lock есть · установлено: нет": "harness.lock present · installed: none",
+        "harness.lock есть · установлено:": "harness.lock present · installed:",
+        "Файлов Harness в проекте нет.": "The project has no Harness files.",
+        "Найдено:": "Found:",
+        "— конфликты разберите до установки.": "— resolve the conflicts before installing.",
+        "Выбранный состав заменит прежний набор управляемых capabilities:": "The selected set will replace the previously managed capabilities:",
+    }
 )
