@@ -668,6 +668,40 @@ fn an_artifact_written_twice_with_the_same_bytes_is_the_same_evidence() {
 }
 
 #[test]
+fn a_json_artifact_outside_the_canonical_form_is_kept_as_its_bytes() {
+    let repo = cut_over("artifact-bytes");
+    let path = "qa-artifacts/evidence.stage-evidence.json";
+    // The keys are in the order of a schema, not sorted: the bytes are what a hash names.
+    let text = "{\n  \"schema\": 1,\n  \"candidate\": \"abc\"\n}\n";
+
+    let written = write(
+        &repo.state(),
+        &request(
+            "op-1",
+            None,
+            None,
+            json!([{"op": "create_artifact", "path": path, "content": text}]),
+        ),
+    )
+    .unwrap();
+
+    assert!(written.result["revisions"].get(path).is_none());
+    let (bytes, sha): (Vec<u8>, String) = store(&repo)
+        .query_row(
+            "SELECT bytes, sha256 FROM artifact WHERE path = ?1",
+            [path],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(bytes, text.as_bytes());
+    assert_eq!(sha, sha256_hex(text.as_bytes()));
+    assert_eq!(
+        state::validate::validate(&repo.state(), true).unwrap()["valid"],
+        true
+    );
+}
+
+#[test]
 fn a_write_never_touches_the_legacy_files() {
     let repo = cut_over("legacy-untouched");
     let before: BTreeMap<String, Vec<u8>> = repo

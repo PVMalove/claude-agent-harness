@@ -151,8 +151,9 @@ def _ledger_errors() -> Iterator[None]:
 
 @contextmanager
 def _lock(ledger: LifecycleLedger) -> Iterator[None]:
-    """Exclusive ledger lock; a ``LedgerError`` inside it becomes ``CoordinatorError``."""
-    with _ledger_errors(), ledger.lock():
+    """Exclusive ledger lock, or in the runtime-store epoch the store unit of the command; a
+    ``LedgerError`` inside it becomes ``CoordinatorError``."""
+    with _ledger_lock(ledger):
         yield
 
 

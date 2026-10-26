@@ -62,6 +62,7 @@ from harness.orchestration.core.utils import _now as _now
 from harness.orchestration.core.utils import _read_object as _read_object
 from harness.orchestration.core.utils import _repo as _repo
 from harness.orchestration.core.utils import _safe_id as _safe_id
+from harness.orchestration.ledger.ledger_ops import command_state as command_state
 from harness.orchestration.ledger.ledger_ops import _load_batch as _load_batch
 from harness.orchestration.ledger.ledger_ops import _load_dispatch as _load_dispatch
 from harness.orchestration.ledger.ledger_ops import (
@@ -232,7 +233,8 @@ def main() -> int:
             # No timeout by design: the re-run is this same command on the pinned runtime, which
             # applies the bounds the command has (`dispatch wait` its own deadline, for example).
             return subprocess.call(pinned)
-        output = args.handler(args)
+        with command_state(args):
+            output = args.handler(args)
     except HarnessError as exc:
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))

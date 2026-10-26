@@ -325,6 +325,14 @@ fn parse_mutations(payload: Option<&Value>) -> Result<Vec<Mutation>, ErrorBody> 
         .collect()
 }
 
+/// The record that `content` is, when it is a JSON object in the canonical form of the ledger.
+fn canonical_object(content: &str) -> Option<Map<String, Value>> {
+    let Ok(Value::Object(record)) = serde_json::from_str::<Value>(content) else {
+        return None;
+    };
+    (canonical_json(&Value::Object(record.clone())) == content).then_some(record)
+}
+
 /// Check one mutation: the path, the canonical content and the row it names.
 fn plan(mutation: Mutation) -> Result<Planned, ErrorBody> {
     let path = &mutation.path;
@@ -338,23 +346,21 @@ fn plan(mutation: Mutation) -> Result<Planned, ErrorBody> {
     }
     let json_path = path.ends_with(".json");
     let (place, record) = match (&mutation.content, json_path) {
-        (Some(content), true) => {
-            let record = match serde_json::from_str::<Value>(content) {
-                Ok(Value::Object(record)) => record,
-                _ => {
-                    return Err(malformed(format!(
-                        "the content of {path} is not a JSON object"
-                    )));
-                }
-            };
-            if canonical_json(&Value::Object(record.clone())) != *content {
+        (Some(content), true) => match canonical_object(content) {
+            Some(record) => {
+                let target = classify(path, content.as_bytes());
+                (place_of(path, target)?, Some(record))
+            }
+            // An artifact is evidence by its bytes: a document that is not in the canonical
+            // form of the ledger (a stage-evidence document keeps the order of its schema) is
+            // stored as it is, because a hash somewhere refers to exactly these bytes.
+            None if mutation.op == Op::CreateArtifact => (place_of(path, Target::Artifact)?, None),
+            None => {
                 return Err(malformed(format!(
-                    "the content of {path} is not the canonical JSON of the ledger"
+                    "the content of {path} is not a JSON object in the canonical form of the ledger"
                 )));
             }
-            let target = classify(path, content.as_bytes());
-            (place_of(path, target)?, Some(record))
-        }
+        },
         (None, true) => (place_of(path, classify(path, b"{}"))?, None),
         (_, false) => (place_of(path, Target::Artifact)?, None),
     };
@@ -484,18 +490,21 @@ pub(crate) fn row_sha(connection: &Connection, path: &str) -> Result<Option<Stri
         Target::Artifact
     };
     let place = place_of(path, target)?;
-    if let Place::Artifact = place {
-        return sqlite(
-            connection
-                .query_row(
-                    "SELECT sha256 FROM artifact WHERE path = ?1",
-                    [path],
-                    |row| row.get(0),
-                )
-                .optional(),
-        );
+    if !matches!(place, Place::Artifact)
+        && let Some(stored) = load(connection, &place, path)?
+    {
+        return Ok(Some(sha_of(&stored.record)));
     }
-    Ok(load(connection, &place, path)?.map(|stored| sha_of(&stored.record)))
+    // A JSON document outside the canonical form is kept as bytes, next to the other artifacts.
+    sqlite(
+        connection
+            .query_row(
+                "SELECT sha256 FROM artifact WHERE path = ?1",
+                [path],
+                |row| row.get(0),
+            )
+            .optional(),
+    )
 }
 
 fn load(tx: &Connection, place: &Place, path: &str) -> Result<Option<Stored>, ErrorBody> {

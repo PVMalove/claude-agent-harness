@@ -443,7 +443,12 @@ def test_a_1x_installation_refuses_clean_and_migrate_after_the_cutover(tmp_path:
     for command in (("ledger", "clean"), ("ledger", "migrate"), ("ledger", "validate")):
         result = coordinator(tmp_path, *command)
         assert result.returncode == 2, command
-        assert "unsupported version" in result.stderr, command
+        # The file ledger is closed; `validate` asks the runtime, which a scratch directory that
+        # is no git working tree has no address for.
+        assert (
+            "runtime store is the authority" in result.stderr
+            or "[runtime_unavailable]" in result.stderr
+        ), command
 
     assert tree(tmp_path / STATE_REL, skip=("runtime.db-",)) == files
 

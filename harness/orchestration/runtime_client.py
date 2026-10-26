@@ -531,13 +531,15 @@ class RuntimeClient:
         operation_id: str,
         payload: JsonObject | None = None,
         expected_revision: int | None = None,
+        batch_id: str | None = None,
+        dispatch_id: str | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> RuntimeReply:
         """Send one request until it is answered or its ``request_deadline`` passes.
 
         Every attempt carries the same ``operation_id`` and the same ``request_deadline``. Only a
         lost transport is repeated, with a delay from 100 ms to 5 s; an error the runtime answered
-        with is raised as it is.
+        with is raised as it is. ``batch_id`` and ``dispatch_id`` name the entity of a mutation.
         """
         deadline = self._clock() + timeout_seconds
         request: JsonObject = {
@@ -553,6 +555,10 @@ class RuntimeClient:
             request["payload"] = payload
         if expected_revision is not None:
             request["expected_revision"] = expected_revision
+        if batch_id is not None:
+            request["batch_id"] = batch_id
+        if dispatch_id is not None:
+            request["dispatch_id"] = dispatch_id
         delay = BACKOFF_START_SECONDS
         while True:
             try:

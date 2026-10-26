@@ -230,8 +230,11 @@ def _probe_ledger_lock(root: Path) -> tuple[AccessCheckState, str]:
         LedgerLockBusy,
         LedgerSandboxDenied,
         LifecycleLedger,
+        store_is_authority,
     )
 
+    if store_is_authority(root):
+        return _probe_runtime(root)
     try:
         with LifecycleLedger(root).lock():
             return AccessCheckState.VERIFIED, "lock taken and released"
@@ -243,6 +246,20 @@ def _probe_ledger_lock(root: Path) -> tuple[AccessCheckState, str]:
         return AccessCheckState.UNVERIFIED, exc.message
     except OSError as exc:
         return _refusal(exc)
+
+
+def _probe_runtime(root: Path) -> tuple[AccessCheckState, str]:
+    """In the runtime-store epoch every write goes through the runtime, so the access that a
+    worker needs is an answer of the runtime of this repository; there is no lock to take."""
+    from .runtime_client import RuntimeClient, RuntimeClientError
+
+    try:
+        RuntimeClient(root.parents[2]).call(
+            "status", operation_id=f"probe-{uuid.uuid4().hex}", timeout_seconds=5.0
+        )
+    except RuntimeClientError as exc:
+        return AccessCheckState.DENIED, f"{exc.message} {exc.remedy}"
+    return AccessCheckState.VERIFIED, "the runtime of the repository answers"
 
 
 def _refusal(exc: OSError) -> tuple[AccessCheckState, str]:
