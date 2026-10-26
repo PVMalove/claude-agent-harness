@@ -8,6 +8,8 @@ is not listed: it comes from the CLI and stays as it is."""
 from __future__ import annotations
 
 EN: dict[str, str] = {
+    "Дождитесь окончания команды Harness": "Wait for the Harness command to finish",
+    "Выполняется…": "Running…",
     "Подтвердить фиксы": "Confirm fixes",
     "нечего экспортировать: отчёт ещё строится": "Nothing to export: the report is still building",
     "нечего экспортировать: отчёт не построен": "Nothing to export: no report was built",

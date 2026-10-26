@@ -46,6 +46,7 @@ class _HostApp(App[None]):
     def __init__(self, screen: HarnessScreen) -> None:
         super().__init__()
         self._harness_screen = screen
+        self.language = "ru"
 
     def on_mount(self) -> None:
         self.push_screen(self._harness_screen)
@@ -382,7 +383,9 @@ def test_harness_screen_opens_help_switches_language_and_goes_back(
 
 
 @pytest.mark.parametrize("key", ["diff", "cleanup-apply"])
-def test_click_and_arrow_selection_never_activate_a_command(tmp_path: Path, key: str) -> None:
+def test_click_and_arrow_selection_never_activate_a_command(
+    tmp_path: Path, key: str
+) -> None:
     runner = _RecordingRunner()
 
     async def scenario() -> None:
@@ -405,5 +408,69 @@ def test_click_and_arrow_selection_never_activate_a_command(tmp_path: Path, key:
             else:
                 assert isinstance(app.screen, CommandFormScreen)
                 assert runner.calls == []
+
+    asyncio.run(scenario())
+
+
+class _BlockingRunner(_RecordingRunner):
+    def __init__(self) -> None:
+        from threading import Event
+
+        super().__init__()
+        self.started = Event()
+        self.release = Event()
+
+    def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        self.started.set()
+        assert self.release.wait(10)
+        return subprocess.CompletedProcess(
+            list(argv),
+            7,
+            "FIRST\n" + "line\n" * 300 + "LAST",
+            "ERR-FIRST\n" + "err\n" * 300 + "ERR-LAST",
+        )
+
+
+def test_busy_harness_survives_reopen_and_retains_full_output(tmp_path: Path) -> None:
+    runner = _BlockingRunner()
+
+    async def scenario() -> None:
+        screen = HarnessScreen(tmp_path, command_runner=runner)
+        app = _HostApp(screen)
+        async with app.run_test(size=(160, 52), notifications=True) as pilot:
+            try:
+                await _choose(pilot, app, "diff", HARNESS_COMMANDS)
+                assert runner.started.wait(1)
+                await pilot.press("enter")
+                await pilot.pause()
+                assert len(runner.calls) == 1
+                assert "Дождитесь" in str(
+                    screen.query_one("#run-feedback", Static).content
+                )
+                await app.pop_screen()
+                replacement = HarnessScreen(tmp_path, command_runner=runner)
+                await app.push_screen(replacement)
+                replacement.open_command("diff")
+                assert len(runner.calls) == 1
+                runner.release.set()
+                await _settle(pilot, app)
+                await pilot.pause(0.2)
+                output = str(replacement.query_one("#command-output", Static).content)
+                assert all(
+                    marker in output
+                    for marker in ("FIRST", "LAST", "ERR-FIRST", "ERR-LAST")
+                )
+                assert "exit 7" in str(
+                    replacement.query_one("#run-status", Static).content
+                )
+            finally:
+                runner.release.set()
 
     asyncio.run(scenario())

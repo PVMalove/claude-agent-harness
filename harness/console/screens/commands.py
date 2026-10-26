@@ -24,7 +24,7 @@ from ..chrome import TopBar
 from ..translate import Translated
 from ..logtext import colorize_log, colorize_overview
 from ..catalog import CONFIRMATION_REASONS, Reversibility
-from ..runner import CommandRunner
+from ..runner import CommandRunner, HarnessRuns
 from .. import brand, i18n
 
 _OUTPUT_TAIL_LINES = 200
@@ -65,15 +65,28 @@ def call_from_worker(screen: Widget, callback: Callable[[], object]) -> None:
         pass
 
 
+def harness_runs(widget: Widget) -> HarnessRuns:
+    """The Harness session's admission belongs to the app, not to a replaceable screen."""
+    state = getattr(widget.app, "_harness_runs", None)
+    if not isinstance(state, HarnessRuns):
+        state = HarnessRuns()
+        setattr(widget.app, "_harness_runs", state)
+    return state
+
+
 def short_repo(cli_line: str, repo: Path) -> str:
     """`cli_line` with the project path replaced by `$REPO`, quoted or not (a Windows path is quoted)."""
     return cli_line.replace(shlex.quote(str(repo)), "$REPO").replace(str(repo), "$REPO")
 
 
-def render_result(cli_line: str, result: "CompletedProcess[str]") -> str:
+def render_result(
+    cli_line: str, result: "CompletedProcess[str]", *, full: bool = False
+) -> str:
     """Формирует текстовый результат выполнения команды: строку вызова, код выхода и последние строки вывода."""
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    lines = output.rstrip().splitlines()[-_OUTPUT_TAIL_LINES:]
+    lines = output.rstrip().splitlines()
+    if not full:
+        lines = lines[-_OUTPUT_TAIL_LINES:]
     return "\n".join([f"$ {cli_line}", f"код выхода: {result.returncode}", *lines])
 
 

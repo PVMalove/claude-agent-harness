@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import CompletedProcess
 from typing import Callable, Mapping, Sequence
 
 from rich.text import Text
@@ -22,13 +23,15 @@ from .. import reports as console_reports
 from .. import stats as console_stats
 from ..catalog import HARNESS_COMMANDS, CatalogEntry, process_argv
 from ..logtext import colorize_overview
-from ..runner import CommandRunner, capturing_runner
+from ..runner import CommandRunner, HarnessRun, capturing_runner
 from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
 from .commands import (
     CommandForm,
     CommandMenuScreen,
     command_menu_css,
     describe_command,
+    harness_runs,
+    render_result,
 )
 
 _OTHER_GROUP = "Прочее"
@@ -158,6 +161,9 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         """Инициализирует экран раздела Harness со списком доступных команд."""
         super().__init__(repo, command_runner=command_runner)
         self._load_view = load_view
+        self._owned_run: HarnessRun | None = None
+        self._rendered_run: tuple[int, str, str] | None = None
+        self._receiving = True
         # A command whose script is absent here (e.g. verify outside the harness repository)
         # would only ever fail with "can't open file", so it is not offered.
         self._entries = {entry.key: entry for entry in catalog if entry.available(repo)}
@@ -186,6 +192,8 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         )
         output.border_title = brand.section_title("Вывод")
         yield output
+        yield Static("", id="run-status", markup=False, classes="no-i18n")
+        yield Static("", id="run-feedback", markup=False)
 
     def sync_language(self) -> None:
         ConsoleShell.sync_language(self)
@@ -243,13 +251,17 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         else:
             event.stop()
 
-    def on_harness_command_list_activate(self, event: HarnessCommandList.Activate) -> None:
+    def on_harness_command_list_activate(
+        self, event: HarnessCommandList.Activate
+    ) -> None:
         event.stop()
         if event.item.name is not None:
             self.open_command(event.item.name)
 
     def open_command(self, key: str) -> None:
         """Open a catalog command through its usual parameter and confirmation flow."""
+        if self._refuse_busy():
+            return
         entry = self._entries.get(key)
         if entry is None:
             self.notify("Команда недоступна для выбранного проекта", severity="warning")
@@ -260,7 +272,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
 
         def on_form_closed(values: "dict[str, str] | None") -> None:
             """Коллбэк закрытия модальной формы параметров с запуском команды при подтверждении."""
-            if values is not None:
+            if values is not None and self.is_mounted and self.app.screen is self:
                 self._run(entry, values)
 
         self.app.push_screen(CommandFormScreen(entry, self.repo), on_form_closed)
@@ -272,4 +284,80 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             self.repo,
             dev_environment=entry.dev_environment,
         )
-        self.run_process(entry.cli_line(self.repo, values), argv)
+        state = harness_runs(self)
+        run = state.reserve(entry.key, entry.cli_line(self.repo, values), argv, values)
+        if run is None:
+            self._refuse_busy()
+            return
+        self._owned_run = run
+        self._sync_run()
+        self.run_worker(
+            lambda: state.execute(run, self._command_runner, self.repo),
+            thread=True,
+            group="harness-command",
+        )
+
+    def _refuse_busy(self) -> bool:
+        if not harness_runs(self).busy:
+            return False
+        message = i18n.tr(self._language, "Дождитесь окончания команды Harness")
+        self.query_one("#run-feedback", Static).update(message)
+        self.notify(message, severity="warning")
+        return True
+
+    def on_mount(self) -> None:
+        self.set_interval(0.1, self._sync_run)
+        self._sync_run()
+
+    def on_screen_resume(self) -> None:
+        self._receiving = True
+        self.sync_language()
+        self._sync_run()
+
+    def on_screen_suspend(self) -> None:
+        self._receiving = False
+        if self._owned_run is not None:
+            harness_runs(self).abandon_pending(self._owned_run)
+
+    def on_unmount(self) -> None:
+        self._receiving = False
+        if self._owned_run is not None:
+            harness_runs(self).abandon_pending(self._owned_run)
+        # Cancel only this screen's workers, never other application workers.
+        self.workers.cancel_all()
+
+    def _sync_run(self) -> None:
+        if not self.is_mounted or not self._receiving or self.app.screen is not self:
+            return
+        run = harness_runs(self).current
+        if run is None:
+            return
+        signature = (run.token, run.phase, self._language)
+        if self._rendered_run == signature:
+            return
+        self._rendered_run = signature
+        if run.phase in ("pending", "running"):
+            status = "▶ " + i18n.tr(self._language, "Выполняется…")
+            output = f"$ {run.cli_line}"
+        elif run.phase == "cancelled":
+            return
+        else:
+            status = (
+                ("✖ " + i18n.tr_text(self._language, run.error))
+                if run.error
+                else f"{'✔' if run.returncode == 0 else '✖'} exit {run.returncode}"
+            )
+            output = (
+                f"$ {run.cli_line}\n{run.error}"
+                if run.error
+                else render_result(
+                    run.cli_line,
+                    CompletedProcess(
+                        run.argv, run.returncode or 0, run.stdout, run.stderr
+                    ),
+                    full=True,
+                )
+            )
+        self.query_one("#run-status", Static).update(status)
+        self.query_one("#run-feedback", Static).update("")
+        self._show(output)
