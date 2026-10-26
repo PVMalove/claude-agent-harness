@@ -843,9 +843,29 @@ Adapters pass the lifecycle prompt through stdin and return after detached start
 exit, including exit zero, is a launch failure with a bounded log tail. They reject `qa`,
 `purpose: publish`, a transport other than `external`, and absent or empty `allowed_tools`.
 Claude uses the brief's model, effort and native tool allowlist; its only additional directory is
-the incoming reports directory. Codex uses `codex exec` with the brief's model and effort,
-`read-only` for read-only roles and `workspace-write` for writers. Its prompt carries the tool
-allowlist; this is not a native Codex tool filter. Neither adapter grants `danger-full-access`.
+the incoming reports directory. Codex uses a detached `app-server` connection and a native named
+permission profile. The checkout has the brief's source access; the main coordinator state and
+incoming report directory remain writable for lifecycle evidence. Both source-access modes
+can write shared `.harness/.sandboxes/runs/qa` and `.harness/.sandboxes/runs/tests` temporary
+data and `.sandboxes/logs` for the mandatory bounded check wrapper and full verification;
+this does not grant access to other issue worktrees.
+Write roles additionally receive their Git admin directory, shared objects, refs and ref logs so
+they can create commits in a linked worktree. The common Git directory permits creating
+`packed-refs.lock` and atomically replacing `packed-refs`; existing other shared metadata stays
+read-only, including the primary HEAD/index and sibling worktree administration. The selected
+worktree's own Git admin directory remains writable. Shared repository config and hooks remain
+read-only; branch restrictions remain a workflow contract, since Git ref locks need directory access.
+The adapter verifies the actual worker's `thread/start` model, effort, CWD and permission profile
+before sending its task. It gives
+that session's native identity to the worker, which still performs its own model/Git self-report.
+Codex versions without named permission-profile support refuse startup; there is no broader-access
+fallback. Its prompt carries the tool allowlist; this is not a native Codex tool filter.
+Neither adapter grants `danger-full-access`.
+Codex command network access defaults to disabled. Use `--adapter-arg=--network-access=enabled`
+only under the operator's permitted network policy; this also permits local socketpair IPC needed
+by asyncio executor shutdown. It is not an IPC-only grant: without an active native network proxy,
+enabled commands have direct network access. Legacy `sandbox_workspace_write.network_access`
+does not configure the adapter's named profile. Source filesystem permissions stay the same.
 The worker still must self-report, send heartbeats and submit its report. An adapter does not
 accept reports or select the next role. QA and publish keep their coordinator boundaries.
 
