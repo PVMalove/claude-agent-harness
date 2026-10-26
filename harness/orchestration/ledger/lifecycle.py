@@ -1060,6 +1060,16 @@ class LifecycleLedger:
         return self._select(generation)
 
     def status(self) -> JsonObject:
+        if store_is_authority(self.root):
+            # The runtime verifies the audit records after its checkpoint and counts them.
+            store = self._validate_store(full=False)["store"]
+            audit_records = store.get("audit_records") if isinstance(store, dict) else None
+            return {
+                "version": STORE_LEDGER_VERSION,
+                "generation": None,
+                "authority": "runtime-store",
+                "audit_records": audit_records,
+            }
         pointer = self.pointer()
         if pointer is None:
             return {

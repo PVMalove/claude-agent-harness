@@ -446,7 +446,7 @@ def test_a_1x_installation_refuses_clean_and_migrate_after_the_cutover(tmp_path:
         # The file ledger is closed; `validate` asks the runtime, which a scratch directory that
         # is no git working tree has no address for.
         assert (
-            "runtime store is the authority" in result.stderr
+            "does not run in the runtime-store epoch" in result.stderr
             or "[runtime_unavailable]" in result.stderr
         ), command
 

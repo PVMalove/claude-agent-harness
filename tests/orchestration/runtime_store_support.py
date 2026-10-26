@@ -569,6 +569,75 @@ def store_revisions(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[st
     return found
 
 
+class Store:
+    """A cut-over repository with a working dispatch and the runtime that serves it."""
+
+    def __init__(self, tmp: Path) -> None:
+        self.repo, ids = write_coordinator_state(tmp, report=False)
+        self.batch = ids["batch_id"]
+        self.dispatch = ids["dispatch_id"]
+        result = migrate(self.repo)
+        assert result.returncode == 0, result.stderr
+        self.runtime = ServingRuntime(self.repo)
+        # Both commands write through the runtime: the dispatch becomes dispatched, then working.
+        sent = self.run("dispatch", "send", "--dispatch", self.dispatch)
+        assert sent.returncode == 0, sent.stderr
+        worktree = json.loads(sent.stdout)["worker_worktree"]
+        reported = self.run(
+            "dispatch",
+            "self-report",
+            "--dispatch",
+            self.dispatch,
+            "--model",
+            "sonnet",
+            "--worktree",
+            worktree,
+        )
+        assert reported.returncode == 0, reported.stderr
+
+    @property
+    def batch_path(self) -> str:
+        return f"batches/{self.batch}.json"
+
+    @property
+    def status_path(self) -> str:
+        return f"dispatch-status/{self.dispatch}.json"
+
+    @property
+    def database(self) -> Path:
+        return self.repo / STATE_REL / "runtime.db"
+
+    def run(self, *command: str) -> subprocess.CompletedProcess[str]:
+        return coordinator_with(self.repo, self.runtime, *command)
+
+    def heartbeat(self) -> subprocess.CompletedProcess[str]:
+        return self.run("dispatch", "heartbeat", "--dispatch", self.dispatch)
+
+    def revisions(self, *paths: str) -> dict[str, int]:
+        return store_revisions(self.repo, self.runtime, *paths)
+
+    def audit_records(self) -> int:
+        """The revision of the store: the sequence number of the last audit record."""
+        revision = store_call(self.repo, self.runtime, "state.read")["_revision"]
+        assert isinstance(revision, int)
+        return revision
+
+    def validate(self, *, full: bool = True) -> JsonObject:
+        return store_call(self.repo, self.runtime, "state.validate", {"full": full})
+
+    def report_file(self) -> Path:
+        path = f"dispatches/{self.dispatch}.json"
+        brief = store_records(self.repo, self.runtime, path)[path]
+        return architect_report_file(self.repo, self.dispatch, brief)
+
+    def submit_report(self) -> subprocess.CompletedProcess[str]:
+        return self.run("report", "submit", "--file", str(self.report_file()))
+
+    def stop_runtime(self) -> None:
+        """Stop the runtime, so a test can change the database as an attacker would."""
+        self.runtime.stop()
+
+
 def coordinator_with(
     repo: Path, runtime: ServingRuntime | None, *args: str, python: str | None = None
 ) -> subprocess.CompletedProcess[str]:

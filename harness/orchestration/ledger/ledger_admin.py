@@ -24,12 +24,15 @@ from harness.orchestration.ledger.ledger_ops import (
     _ledger_errors,
     _ledger_lock,
     _state_root,
+    read_state,
 )
 from harness.orchestration.ledger.lifecycle import (
     FORCE_RELEASE_COMMAND,
     LEDGER_VERSION,
+    STORE_LEDGER_VERSION,
     LifecycleLedger,
     lock_environment,
+    store_is_authority,
 )
 
 
@@ -38,22 +41,27 @@ def ledger_status(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
-    with _ledger_lock(ledger), _ledger_errors():
+    with read_state(ledger, repo), _ledger_errors():
         return ledger.status()
 
 
 def validate_ledger(args: argparse.Namespace) -> JsonObject:
-    """Read-only generation, audit, record graph and batch-contract validation."""
+    """Read-only generation, audit, record graph and batch-contract validation.
+
+    ``--full`` recomputes the audit chain of the runtime store from its genesis and compares every
+    row with its audit records, never using the checkpoint; a file ledger keeps none."""
     from harness.orchestration.workflow.history import _validate_batch_integrity
     from harness.orchestration.core.utils import _read_object
 
-    root = _state_root(args, _repo(args))
+    repo = _repo(args)
+    root = _state_root(args, repo)
     ledger = LifecycleLedger(root)
+    full = bool(getattr(args, "full", False))
     if not root.exists():
-        return ledger.validate()
-    with _ledger_lock(ledger), _ledger_errors():
-        result = ledger.validate()
-        if result["version"] == LEDGER_VERSION:
+        return ledger.validate(full=full)
+    with read_state(ledger, repo), _ledger_errors():
+        result = ledger.validate(full=full)
+        if result["version"] in (LEDGER_VERSION, STORE_LEDGER_VERSION):
             records = ledger.records_root()
             for batch_id in cast(list[str], result["batches"]):
                 _validate_batch_integrity(
@@ -63,10 +71,32 @@ def validate_ledger(args: argparse.Namespace) -> JsonObject:
         return result
 
 
+# What each command that rewrites the file ledger says in the runtime-store epoch: the store has
+# no generation to select, no orphaned dispatch evidence and no state to throw away.
+_STORE_EPOCH_REMEDIES = {
+    "migrate": "the state was cut over to the runtime store; its history was imported once by "
+    "`harness-runtime migrate`, and a schema change of the store is applied by the runtime",
+    "clean": "the runtime store writes every record with its foreign keys in one transaction, so it "
+    "holds no orphaned dispatch evidence; `coordinator.py ledger validate --full` checks it",
+    "reset": "the runtime store is never emptied by a command; restore the state directory from "
+    "the snapshot named in AUTHORITY.json if the store must be discarded",
+}
+
+
+def _refuse_in_store_epoch(root: Path, command: str) -> None:
+    """A command that rewrites the file ledger never reaches the runtime store."""
+    if store_is_authority(root):
+        raise CoordinatorError(
+            f"`ledger {command}` does not run in the runtime-store epoch",
+            remedy=_STORE_EPOCH_REMEDIES[command],
+        )
+
+
 def migrate_ledger(args: argparse.Namespace) -> JsonObject:
     """Explicitly validate legacy state and atomically select its versioned replacement."""
     repo = _repo(args)
     root = _state_root(args, repo)
+    _refuse_in_store_epoch(root, "migrate")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         _refuse_upgrade_under_pinned_batches(repo, ledger)
@@ -95,6 +125,7 @@ def reset_ledger(args: argparse.Namespace) -> JsonObject:
     """Select an empty generation only after an explicit confirmation and no active batch."""
     repo = _repo(args)
     root = _state_root(args, repo)
+    _refuse_in_store_epoch(root, "reset")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         return ledger.reset(args.confirm)
@@ -104,6 +135,7 @@ def clean_ledger(args: argparse.Namespace) -> JsonObject:
     """Safely remove orphaned dispatch evidence from the ledger state."""
     repo = _repo(args)
     root = _state_root(args, repo)
+    _refuse_in_store_epoch(root, "clean")
     ledger = LifecycleLedger(root)
     with _ledger_lock(ledger), _ledger_errors():
         return ledger.clean()
