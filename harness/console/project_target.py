@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from harness.configuration_schema import PACKAGE
+from harness.health.model import JsonObject
 
 from .catalog import CatalogEntry, Reversibility
 
@@ -25,6 +26,23 @@ class ProjectTarget:
 
 # A cold, busy machine (a Windows CI runner starting its first git.exe) needs more than a few seconds.
 GIT_TIMEOUT_SECONDS = 30
+
+
+# The status line shows the first line; the hint below it names the next step.
+LOCK_BROKEN = (
+    "harness.lock повреждён\n"
+    "Сначала проверьте существующую установку: «Диагностика» (3)."
+)
+
+
+def _read_lock(repo: Path) -> JsonObject | None:
+    """The CLI's lock reader, whose `fail()` exits the process: here a broken lock is an error."""
+    from harness.bin.harness import load_lock
+
+    try:
+        return load_lock(repo)
+    except SystemExit:
+        raise ValueError(LOCK_BROKEN) from None
 
 
 def inspect_target(value: str) -> ProjectTarget:
@@ -47,11 +65,9 @@ def inspect_target(value: str) -> ProjectTarget:
             "Это не Git-проект. Сначала выполните git init в выбранном каталоге"
         )
     repo = Path(result.stdout.strip()).resolve()
-    from harness.bin.harness import load_lock
-
     selected: tuple[str, ...] = ()
     try:
-        lock = load_lock(repo)
+        lock = _read_lock(repo)
         if lock is not None:
             capabilities = lock["capabilities"]
             known = dict(capability_options())
@@ -62,10 +78,8 @@ def inspect_target(value: str) -> ProjectTarget:
             ):
                 raise ValueError
             selected = tuple(capabilities)
-    except (SystemExit, ValueError, KeyError, TypeError):
-        raise ValueError(
-            "harness.lock повреждён; сначала проверьте существующую установку"
-        ) from None
+    except (ValueError, KeyError, TypeError):
+        raise ValueError(LOCK_BROKEN) from None
     conflicts = tuple(
         str(path.relative_to(repo))
         for path in (
@@ -136,7 +150,7 @@ def installation_plan(target: ProjectTarget, capability: str) -> list[str]:
 
 def installation_blockers(target: ProjectTarget, capability: str) -> tuple[str, ...]:
     """Use the same snapshot comparison as the CLI, before any installation writes."""
-    from harness.bin.harness import load_lock, package_files, snapshot_diff
+    from harness.bin.harness import package_files, snapshot_diff
     from harness.health.project_files import DISCOVERY_LINKS, native_link_target
 
     blocked: set[str] = set()
@@ -148,10 +162,10 @@ def installation_blockers(target: ProjectTarget, capability: str) -> tuple[str, 
                 expected
             ):
                 blocked.add(relative)
-    lock = load_lock(repo)
+    lock = _read_lock(repo)
     owned = (lock or {}).get("files", {})
     if not isinstance(owned, dict):
-        raise ValueError("Повреждённый список управляемых файлов в harness.lock")
+        raise ValueError(LOCK_BROKEN)
     for relative in package_files([capability]):
         path = repo / relative
         if (path.exists() and relative not in owned) or path.is_symlink():
@@ -162,7 +176,10 @@ def installation_blockers(target: ProjectTarget, capability: str) -> tuple[str, 
             if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
                 blocked.add(str(parent.relative_to(repo)))
     if lock:
-        diff = snapshot_diff(repo, [capability])
+        try:
+            diff = snapshot_diff(repo, [capability])
+        except SystemExit:
+            raise ValueError(LOCK_BROKEN) from None
         blocked.update(diff.get("local_changed", []))
         blocked.update(diff.get("conflict", []))
     return tuple(sorted(blocked))

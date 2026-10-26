@@ -634,3 +634,102 @@ def test_focus_starts_in_the_path_and_a_long_path_never_widens_the_page(
     first, second, problems = asyncio.run(scenario())
     assert first == "project-path" and second == "browse-project"
     assert problems == []
+
+
+# -- An invalid harness.lock, stale targets, the folder browser, threads, stages ---------------
+
+_ACTIONS = (
+    "activate-project",
+    "install-project",
+    "setup-offline",
+    "setup-online",
+    "setup-fix",
+    "setup-config",
+)
+
+
+def _git_project(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return path
+
+
+def _corrupt_lock(project: Path) -> None:
+    (project / ".harness").mkdir(exist_ok=True)
+    (project / ".harness/harness.lock").write_text("{not json", encoding="utf-8")
+
+
+async def _open_setup(app: HarnessConsoleApp, pilot: object) -> ProjectSetupScreen:
+    await pilot.press("p")  # type: ignore[attr-defined]
+    await wait_until(pilot, lambda: isinstance(app.screen, ProjectSetupScreen))  # type: ignore[arg-type]
+    screen = app.screen
+    assert isinstance(screen, ProjectSetupScreen)
+    return screen
+
+
+def _status(screen: ProjectSetupScreen) -> str:
+    return str(screen.query_one("#target-status", Static).content)
+
+
+def test_a_corrupt_lock_on_the_check_path_is_a_status_with_a_next_step(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path / "backend")
+    _corrupt_lock(project)
+
+    async def scenario() -> tuple[str, bool, list[bool]]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_setup(app, pilot)
+            screen.query_one("#project-path", Input).value = str(project)
+            await press(pilot, "#inspect-project")
+            await wait_until(pilot, lambda: _status(screen).startswith("✖"))
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            actions = [screen.query_one("#" + n, Button).disabled for n in _ACTIONS]
+            return _status(screen), app.is_running and app.screen is screen, actions
+
+    status, alive, actions = asyncio.run(scenario())
+    assert alive
+    lines = status.splitlines()
+    assert lines[0] == "✖ harness.lock повреждён"
+    assert "«Диагностика» (3)" in lines[1]
+
+
+def test_a_corrupt_lock_on_the_install_path_is_a_status_and_nothing_is_installed(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path / "backend")
+    seen: list[list[str]] = []
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        seen.append(list(argv))
+        return subprocess.CompletedProcess(list(argv), 0, "", "")
+
+    async def scenario() -> tuple[str, bool, list[bool]]:
+        app = HarnessConsoleApp(tmp_path, command_runner=runner)
+        async with app.run_test(size=(140, 60)) as pilot:
+            screen = await _open_setup(app, pilot)
+            screen.query_one("#project-path", Input).value = str(project)
+            await press(pilot, "#inspect-project")
+            await app.workers.wait_for_complete()
+            await wait_until(pilot, lambda: not screen.busy)
+            await press(pilot, "#install-project")
+            # The lock breaks between the check and the confirmation.
+            _corrupt_lock(project)
+            await press(pilot, "#run")
+            await wait_until(pilot, lambda: _status(screen).startswith("✖"))
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            actions = [screen.query_one("#" + n, Button).disabled for n in _ACTIONS]
+            return _status(screen), app.is_running and app.screen is screen, actions
+
+    status, alive, actions = asyncio.run(scenario())
+    assert alive and seen == []
+    assert status.splitlines()[0] == "✖ harness.lock повреждён"
+    assert "«Диагностика» (3)" in status

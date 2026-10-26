@@ -859,6 +859,9 @@ EN.update(
         "Каталог проекта не существует": "The project directory does not exist",
         "Git недоступен или не отвечает": "Git is unavailable or not responding",
         "Путь изменился; проверьте его ещё раз": "The path changed; check it again",
+        "harness.lock повреждён": "harness.lock is corrupt",
+        "Сначала проверьте существующую установку: «Диагностика» (3).": "First check the existing installation: “Diagnostics” (3).",
+        "План не удалось проверить; исправьте существующую установку.": "The plan could not be checked; repair the existing installation.",
     }
 )
 

@@ -169,7 +169,10 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         """The target line as a status: its symbol and colour on the first line, the facts below."""
         self._target_status = (kind, text)
         language = getattr(self.app, "language", "ru")
-        first, _, rest = i18n.tr_text(language, text).partition("\n")
+        # Line by line: a known whole line (a status, a hint) has its own English text.
+        first, _, rest = "\n".join(
+            i18n.tr_text(language, line) for line in text.split("\n")
+        ).partition("\n")
         status = Status(kind, first, first)
         shown = Text(status.render(language), style=status.color)
         if rest:
@@ -323,7 +326,11 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             self.query_one("#install-project", Button).disabled = self.busy or bool(
                 blocked
             )
-        except (ValueError, OSError):
+        except ValueError as exc:
+            self._show_target("error", str(exc))
+            text += "\nПлан не удалось проверить; исправьте существующую установку."
+            self.query_one("#install-project", Button).disabled = True
+        except OSError:
             text += (
                 "\nПлан не удалось проверить; исправьте существующую установку вручную."
             )
@@ -462,7 +469,12 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                     render_result(shlex.join(argv), result),
                     result.returncode == 0,
                 )
-            except (OSError, ValueError) as exc:
+            except ValueError as exc:
+                # The plan or the lock changed: an error with a next step, as after a path check.
+                message = str(exc)
+                call_from_worker(self, lambda: self._failed(message))
+                return
+            except OSError as exc:
                 text, success = str(exc), False
             call_from_worker(self, lambda: self._installed(target, text, success))
 
@@ -519,7 +531,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         def work() -> None:
             try:
                 text = run()
-            except Exception:
+            except (Exception, SystemExit):
+                # `SystemExit`: the CLI helpers the checks use exit the process on a broken file.
                 text = "Операция не выполнена; проверьте окружение и доступы"
             call_from_worker(self, lambda: self._finished(text, refresh))
 
