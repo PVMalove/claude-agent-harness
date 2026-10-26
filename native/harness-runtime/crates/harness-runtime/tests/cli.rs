@@ -173,6 +173,123 @@ fn serve_in_a_directory_that_is_no_repository_prints_the_not_found_code_first() 
     assert!(remedy.starts_with("REMEDY: [not_found] "), "{remedy}");
 }
 
+/// A cut-over repository (the fixture without its QA lease), and the path of its store.
+fn cut_over(name: &str) -> (Scratch, PathBuf) {
+    let repo = Scratch::repo_with_ledger(name).without_qa_lane_entries();
+    let output = run(&["migrate", "--repo", repo.0.to_str().unwrap()]);
+    assert!(output.status.success(), "{:?}", stderr_lines(&output));
+    let store = repo.state().join("runtime.db");
+    (repo, store)
+}
+
+fn user_version(store: &Path) -> i64 {
+    rusqlite::Connection::open(store)
+        .unwrap()
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap()
+}
+
+/// Write the store back to the schema of version 1, as the first release left it.
+fn downgrade_to_version_one(store: &Path) {
+    let connection = rusqlite::Connection::open(store).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE dispatch_status DROP COLUMN execution_state;
+             ALTER TABLE dispatch_status DROP COLUMN revision;
+             ALTER TABLE qa_queue DROP COLUMN revision;
+             ALTER TABLE record DROP COLUMN revision;
+             DROP TABLE operations;
+             DROP TABLE audit_checkpoint;
+             CREATE TABLE audit_checkpoint (seq INTEGER NOT NULL, chain_sha256 TEXT NOT NULL) STRICT;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+}
+
+/// `harness-runtime serve` until it prints its readiness line or exits; then it is stopped.
+fn serve_once(repo: &Scratch) -> Output {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let runtime_dir = Scratch::new("xdg");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_harness-runtime"))
+        .args(["serve", "--repo", repo.0.to_str().unwrap()])
+        .env("XDG_RUNTIME_DIR", &runtime_dir.0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let ready = line.contains("\"ready\"");
+    if ready {
+        child.kill().unwrap();
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn serve_upgrades_a_store_of_version_one_and_audits_the_step() {
+    let (repo, store) = cut_over("serve-upgrade");
+    downgrade_to_version_one(&store);
+    assert_eq!(user_version(&store), 1);
+
+    serve_once(&repo);
+
+    assert_eq!(user_version(&store), 2);
+    let connection = rusqlite::Connection::open(&store).unwrap();
+    let (action, details): (String, String) = connection
+        .query_row(
+            "SELECT action, details_json FROM audit ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(action, "schema-migrate");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&details).unwrap(),
+        serde_json::json!({"from": 1, "to": 2})
+    );
+}
+
+#[test]
+fn serve_leaves_a_current_store_unchanged() {
+    let (repo, store) = cut_over("serve-current");
+    let records = |store: &Path| -> i64 {
+        rusqlite::Connection::open(store)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
+            .unwrap()
+    };
+    let before = records(&store);
+
+    serve_once(&repo);
+
+    assert_eq!(records(&store), before);
+    assert_eq!(user_version(&store), 2);
+}
+
+#[test]
+fn serve_of_a_store_of_a_newer_schema_prints_the_protocol_unsupported_code_and_writes_nothing() {
+    let (repo, store) = cut_over("serve-newer");
+    rusqlite::Connection::open(&store)
+        .unwrap()
+        .pragma_update(None, "user_version", 3)
+        .unwrap();
+
+    let output = serve_once(&repo);
+
+    let (code, remedy) = refusal(&output);
+    assert_eq!(code, 2);
+    assert!(
+        remedy.starts_with("REMEDY: [protocol_unsupported] "),
+        "{remedy}"
+    );
+    assert_eq!(user_version(&store), 3);
+}
+
 #[test]
 fn every_error_line_is_followed_by_a_remedy_with_a_known_code() {
     let plain = Scratch::new("plain");

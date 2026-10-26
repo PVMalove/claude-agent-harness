@@ -434,7 +434,7 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
-        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 0}));
+        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 1}));
         assert!(error.remedy.contains("update harness"));
         assert!(reply.close);
     }

@@ -1082,6 +1082,32 @@
         "unknown"
       ]
     },
+    "runtime.operation_state": {
+      "description": "State of a row of the runtime store's operations table, the idempotency record of one mutation (ADR 0021, section 4); the Rust contracts crate and the Python client hold exactly these values.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "intent": "The operation has an external effect that is not finished; a repeat or a restart of the runtime reconciles it before anything starts again.",
+        "committed": "The operation and its effect were committed in one transaction; a repeat with the same request digest returns the stored result.",
+        "failed": "The operation was refused before an external effect, or its absence is proven; a repeat returns the same error."
+      }
+    },
+    "runtime.execution_state": {
+      "description": "State of the execution of a dispatch, written by the Rust runtime and never by the coordinator (ADR 0021, section 6); the store refuses a terminal dispatch state while the execution is unknown, launching or running.",
+      "automatic_decisions": true,
+      "unrecognized": "reject",
+      "values": {
+        "launching": "The execution is being started; no terminal dispatch transition is allowed.",
+        "running": "The execution runs; no terminal dispatch transition is allowed.",
+        "stopping": "A stop was requested; the dispatch does not move until the stop result is known.",
+        "exited": "The execution ended; the coordinator decides reported, failed or blocked from the report and the outcome domain.",
+        "lost": "The execution is gone without a result; the dispatch becomes blocked with the infrastructure domain.",
+        "unknown": "Sentinel: the engine did not answer; the coordinator makes no transition and observes again."
+      },
+      "sentinels": [
+        "unknown"
+      ]
+    },
     "hook.id": {
       "description": "Identifier of a managed project hook, written in the hook_id of its JSON verdict (hook_response.py); a critical hook blocks on an internal error, a behavioral or accounting one only warns.",
       "automatic_decisions": true,

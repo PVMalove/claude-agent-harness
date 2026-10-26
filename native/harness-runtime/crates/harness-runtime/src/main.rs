@@ -118,6 +118,10 @@ fn serve(args: &Args) -> Result<(), Failure> {
         ))
     })?;
     let state_dir = args.repo.join(state::migrate::STATE_REL);
+    // A store that an older release wrote is brought to this schema before the first request; a
+    // store of a newer schema is refused, and nothing is written.
+    state::schema::upgrade_store(&state_dir)
+        .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
     let server = Server::bind_serving(paths, Some(state_dir))
         .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
     let ready = json!({

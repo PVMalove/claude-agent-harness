@@ -56,9 +56,14 @@ RUNTIME_ERROR_CODES = (
 )
 # The failure-domain taxonomy of ADR 0019.
 FAILURE_DOMAINS = tuple(FailureDomain)
+# The state of a row of the store's ``operations`` table (ADR 0021, section 4) and the state of the
+# execution of a dispatch (ADR 0021, section 6): closed vocabularies of the registry.
+OPERATION_STATES = ("intent", "committed", "failed")
+EXECUTION_STATES = ("launching", "running", "stopping", "exited", "lost", "unknown")
 
-# The protocol version this client speaks; the runtime accepts a common major (ADR 0021).
-PROTOCOL_VERSION = (1, 0)
+# The protocol version this client speaks; the runtime accepts a common major (ADR 0021). Minor 1
+# adds ``state.write``, ``state.validate`` and the registry vocabularies of the operations table.
+PROTOCOL_VERSION = (1, 1)
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 MAX_SOCKET_PATH_BYTES = 100
 _FRAME_HEADER = struct.Struct(">I")
