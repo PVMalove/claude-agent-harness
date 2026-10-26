@@ -694,6 +694,7 @@ def test_a_corrupt_lock_on_the_check_path_is_a_status_with_a_next_step(
     lines = status.splitlines()
     assert lines[0] == "✖ harness.lock повреждён"
     assert "«Диагностика» (3)" in lines[1]
+    assert all(actions)
 
 
 def test_a_corrupt_lock_on_the_install_path_is_a_status_and_nothing_is_installed(
@@ -733,3 +734,87 @@ def test_a_corrupt_lock_on_the_install_path_is_a_status_and_nothing_is_installed
     assert alive and seen == []
     assert status.splitlines()[0] == "✖ harness.lock повреждён"
     assert "«Диагностика» (3)" in status
+    assert all(actions)
+
+
+async def _checked_project(
+    app: HarnessConsoleApp, pilot: object, project: Path
+) -> ProjectSetupScreen:
+    """Open the screen on `project`, check the path and wait for the automatic diagnostics."""
+    screen = await _open_setup(app, pilot)
+    screen.query_one("#project-path", Input).value = str(project)
+    await press(pilot, "#inspect-project")
+    await app.workers.wait_for_complete()
+    await wait_until(
+        pilot,
+        lambda: not screen.busy
+        and "Итого" in str(screen.query_one("#setup-output", Static).render()),
+    )
+    assert screen.target is not None and screen.stage == 1
+    return screen
+
+
+def _blank(screen: ProjectSetupScreen) -> dict[str, object]:
+    """What the screen shows once no target is selected."""
+    return {
+        "target": screen.target,
+        "stage": screen.stage,
+        "plan": str(screen.query_one("#installation-plan", Static).content),
+        "output": str(screen.query_one("#setup-output", Static).content),
+        "disabled": [screen.query_one("#" + n, Button).disabled for n in _ACTIONS],
+    }
+
+
+_BLANK = {
+    "target": None,
+    "stage": 0,
+    "plan": "План появится после проверки пути.",
+    "output": "Результат проверок и установки появится здесь.",
+    "disabled": [True] * len(_ACTIONS),
+}
+
+
+def test_a_failed_recheck_clears_the_previous_target_plan_and_result(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path / "backend")
+
+    async def scenario() -> tuple[dict[str, object], str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _checked_project(app, pilot, project)
+            _corrupt_lock(project)
+            await press(pilot, "#inspect-project")  # the same path, checked again
+            await wait_until(pilot, lambda: _status(screen).startswith("✖"))
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            return _blank(screen), _status(screen)
+
+    blank, status = asyncio.run(scenario())
+    assert blank == _BLANK
+    assert status.splitlines()[0] == "✖ harness.lock повреждён"
+
+
+def test_editing_the_path_clears_the_previous_target_status_plan_and_result(
+    tmp_path: Path,
+) -> None:
+    project = _git_project(tmp_path / "backend")
+
+    async def scenario() -> tuple[dict[str, object], str, str]:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _checked_project(app, pilot, project)
+            screen.query_one("#project-path", Input).value = str(project) + "-2"
+            await pilot.pause()
+            ru = _status(screen)
+            app.action_toggle_language()
+            await pilot.pause()
+            return _blank(screen), ru, _status(screen)
+
+    blank, ru, en = asyncio.run(scenario())
+    assert blank["target"] is None and blank["stage"] == 0
+    assert blank["disabled"] == _BLANK["disabled"]
+    assert ru == "Укажите путь к проекту и нажмите «Проверить путь»."
+    assert en == "Enter the project path and press “Check path”."
+    assert blank["plan"] == "The plan appears after the path is checked."
+    assert blank["output"] == "Check and install results appear here."

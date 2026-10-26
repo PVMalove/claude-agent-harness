@@ -33,6 +33,7 @@ from ..project_target import (
     installation_entry,
 )
 from ..runner import CommandRunner
+from ..translate import retranslate
 from .commands import call_from_worker, render_result
 from .diagnostics import render_report, styled_log
 from .configuration import ConfirmConfiguration
@@ -145,6 +146,23 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             for name in _AFTER_INSPECT:
                 self.query_one("#" + name, Button).disabled = False
             self._show_plan()
+
+    def _put(self, selector: str, text: str) -> None:
+        """Replace a fixed text (a hint) in the console language."""
+        widget = self.query_one(selector, Static)
+        widget.update(text)
+        retranslate(widget, getattr(self.app, "language", "ru"))
+
+    def _reset_target(self) -> None:
+        """No target: the previous one, its plan, status and result are not available any more."""
+        self.target = None
+        for name in _AFTER_INSPECT:
+            self.query_one("#" + name, Button).disabled = True
+        self._target_status = None
+        self._put("#target-status", _TARGET_HINT)
+        self._put("#installation-plan", _PLAN_HINT)
+        self._put("#setup-output", _OUTPUT_HINT)
+        self._set_stage(0)
 
     def _set_stage(self, stage: int) -> None:
         self.stage = stage
@@ -327,9 +345,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                 blocked
             )
         except ValueError as exc:
-            self._show_target("error", str(exc))
-            text += "\nПлан не удалось проверить; исправьте существующую установку."
-            self.query_one("#install-project", Button).disabled = True
+            self._failed(str(exc))
+            return
         except OSError:
             text += (
                 "\nПлан не удалось проверить; исправьте существующую установку вручную."
@@ -343,10 +360,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "project-path":
-            self.target = None
-            for name in _AFTER_INSPECT:
-                self.query_one("#" + name, Button).disabled = True
-            self._set_stage(0)
+            self._reset_target()
 
     def on_directory_tree_directory_selected(
         self, event: DirectoryTree.DirectorySelected
@@ -489,6 +503,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             )
 
     def _failed(self, message: str) -> None:
+        self._reset_target()
         self._set_busy(False)
         self._show_target("error", message)
 
