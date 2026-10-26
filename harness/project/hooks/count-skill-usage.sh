@@ -1,6 +1,15 @@
 #!/bin/bash
 # PreToolUse(Skill): tally how often each skill is invoked, for future analysis.
 # Never blocks - analytics only, best-effort.
+# Verdict envelope (hook_response.py): reruns this script, answers with the JSON verdict and the
+# exit code of the hook policy. Without Python or the helper the script below decides alone.
+if [ -z "${HARNESS_HOOK_ENVELOPE:-}" ]; then
+  ENVELOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
+  ENVELOPE_PY="$(command -v python3 || command -v python)"
+  if [ -n "$ENVELOPE_PY" ] && [ -f "$ENVELOPE_DIR/hook_response.py" ]; then
+    exec "$ENVELOPE_PY" "$ENVELOPE_DIR/hook_response.py" run count-skill-usage "${BASH:-bash}" "$0"
+  fi
+fi
 INPUT=$(cat)
 
 SKILL=$(echo "$INPUT" | grep -oE '"skill"[[:space:]]*:[[:space:]]*"[^"]*"' | sed -E 's/.*"skill"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')

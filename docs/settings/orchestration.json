@@ -1,0 +1,477 @@
+{
+    "$schema": "./orchestration/orchestration.schema.json",
+    "provider_profiles": {
+        "claude-profile": {
+            "capabilities": [
+                "architecture-analysis",
+                "backend-development",
+                "code-review",
+                "independent-verification",
+                "database-migrations",
+                "messaging-integration",
+                "conflict-resolution"
+            ],
+            "fallback": [],
+            "known_limitations": []
+        },
+        "codex-profile": {
+            "capabilities": [
+                "architecture-analysis",
+                "backend-development",
+                "code-review",
+                "independent-verification",
+                "database-migrations",
+                "messaging-integration",
+                "conflict-resolution"
+            ],
+            "fallback": [],
+            "known_limitations": []
+        }
+    },
+    "assignment_plans": {
+        "architect": {
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-sonnet-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-6.1-sol",
+                    "effort": "high"
+                }
+            },
+            "default_runtime": "claude"
+        },
+        "developer": {
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-sonnet-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-6.1-sol",
+                    "effort": "high"
+                }
+            },
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "default_runtime": "claude"
+        },
+        "code-review": {
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-sonnet-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-6.1-sol",
+                    "effort": "high"
+                }
+            },
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "default_runtime": "claude"
+        },
+        "qa": {
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-haiku-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-5.6-luna",
+                    "effort": "high"
+                }
+            },
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "default_runtime": "claude"
+        },
+        "verification": {
+            "runtimes": {
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-5.6-luna",
+                    "effort": "high"
+                },
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-sonnet-5-5",
+                    "effort": "high"
+                }
+            },
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "default_runtime": "claude"
+        },
+        "conflict-resolver": {
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-opus-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-6.1-sol",
+                    "effort": "high"
+                }
+            },
+            "default_runtime": "claude"
+        },
+        "database-migrations": {
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-opus-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-6.1-sol",
+                    "effort": "high"
+                }
+            },
+            "default_runtime": "claude"
+        },
+        "messaging-integration": {
+            "transport": "in-process",
+            "write_paths": [
+                "harness/**",
+                "tests/**",
+                "scripts/**",
+                "skills/first-party/**",
+                "docs/**",
+                "global/**",
+                "global-skills/**",
+                "bin/**",
+                ".github/**",
+                "CONTEXT.md",
+                "CHANGELOG.md",
+                "README.md",
+                "AGENTS.md",
+                "CLAUDE.md",
+                "Makefile",
+                "pyproject.toml",
+                "uv.lock"
+            ],
+            "runtimes": {
+                "claude": {
+                    "profiles": [
+                        "claude-profile"
+                    ],
+                    "model": "claude-opus-5-5",
+                    "effort": "high"
+                },
+                "codex": {
+                    "profiles": [
+                        "codex-profile"
+                    ],
+                    "model": "gpt-6.1-sol",
+                    "effort": "high"
+                }
+            },
+            "default_runtime": "claude"
+        }
+    },
+    "concurrency_budget": 5,
+    "approval_policy": "auto",
+    "human_approval_gate": "trusted",
+    "low_risk_paths": [
+        "**"
+    ],
+    "worker_attestation_required": true,
+    "communication_policy": {
+        "agent_to_agent_language": "en",
+        "coordinator_report_language": "ru"
+    },
+    "context_package_policy": {
+        "max_tokens": 260000,
+        "context_window_tokens": 300000,
+        "reserved_prompt_tokens": 20000,
+        "symbol_graph_depth": 2,
+        "max_related_tests": 25,
+        "min_starting_files": 5,
+        "max_starting_files": 10,
+        "section_index_min_tokens": 20000
+    },
+    "adaptive_continuation_policy": {
+        "context_limit": 280000,
+        "tdd_cycle_count": 5,
+        "failure_log_bytes": 50000,
+        "context_warn_ratio": 0.8
+    },
+    "repo_map_policy": {
+        "allow_paths": [],
+        "deny_paths": [
+            "tests/console/snapshots/*"
+        ],
+        "redact_paths": [],
+        "redact_symbols": [],
+        "max_files": 10000,
+        "max_file_bytes": 2000000,
+        "max_path_length": 4096,
+        "max_symbol_length": 256,
+        "max_signature_length": 2048,
+        "timeout_seconds": 30,
+        "max_tokens": 16000,
+        "tier": "full",
+        "min_tier": "full",
+        "parser_bundle_timeout_seconds": 30,
+        "parser_bundle_max_output_bytes": 10000000
+    },
+    "continuation_policy": {
+        "max_continuations": 6,
+        "max_rate_limit_resumes": 3
+    },
+    "retry_policy": {
+        "max_developer_retries": 5
+    },
+    "execution_policy": {
+        "dispatch_wait_timeout_seconds": 60,
+        "dispatch_poll_interval_seconds": 5,
+        "qa_lease_seconds": 3600,
+        "rate_limit_retry_seconds": 60
+    },
+    "attention_policy": {
+        "retry_queue_seconds": 18000,
+        "max_infrastructure_retries": 3,
+        "stale_dispatch_seconds": 7200,
+        "heartbeat_interval_seconds": 300
+    },
+    "approval_ttl_seconds": 14400,
+    "extensions": {
+        "transport_health": "none",
+        "verification_environment_health": "none",
+        "retry_reason_classifier": "none",
+        "context_telemetry_provider": "none",
+        "human_notifier": "none",
+        "runtime_access": "none"
+    },
+    "preflight_policy": {
+        "require_estimates": true,
+        "max_definition_of_done_items": 20,
+        "max_dependencies": 5,
+        "max_expected_files": 25,
+        "max_expected_services": 5,
+        "max_expected_changed_lines": 2000,
+        "max_expected_context_tokens": 150000,
+        "estimated_tokens_per_changed_line": 20,
+        "estimated_tokens_per_file": 2000
+    },
+    "developer_verification_commands": [
+        "make lint",
+        ".harness/.venv/bin/python -m pytest -q tests/orchestration tests/memory"
+    ],
+    "review_verification_commands": [
+        "make lint",
+        ".harness/.venv/bin/python -m pytest -q tests/orchestration tests/memory"
+    ],
+    "verification_commands": [
+        "make verify"
+    ],
+    "test_path_patterns": [
+        "tests/**",
+        "**/tests/**",
+        "**/test_*.py",
+        "**/*_test.py"
+    ],
+    "tool_policy": {
+        "modes": {
+            "read-only": [
+                "Read",
+                "Grep",
+                "Glob",
+                "Bash"
+            ],
+            "write": [
+                "Read",
+                "Grep",
+                "Glob",
+                "Bash",
+                "Edit",
+                "Write"
+            ]
+        }
+    },
+    "qa_preparation": [
+        "make bootstrap"
+    ],
+    "qa_environment_probes": [
+        "python3 -c \"import urllib.request; urllib.request.urlopen('https://pypi.org/simple/', timeout=15)\""
+    ],
+    "qa_project_file_checks": [
+        "uv lock --check --offline"
+    ],
+    "infrastructure_retry_policy": {
+        "enabled": true
+    },
+    "auto_retry_min_severity": "warning"
+}

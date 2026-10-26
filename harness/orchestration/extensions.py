@@ -34,6 +34,16 @@ EXTENSION_KINDS = (
 )
 DEFAULT_EXTENSION = "none"
 EXTENSION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?$")
+# Implementations shipped with the harness, as the module:factory each name loads on first use:
+# importing them here would close the cycle extensions -> implementation -> extensions.
+BUILTIN_EXTENSIONS: Mapping[str, Mapping[str, str]] = {
+    "runtime_access": {
+        "docker": "harness.orchestration.container_executor:DockerExecutor"
+    },
+}
+# The launch identity a provider observes when the worker's real identity exists only once its
+# handoff has created it, such as a container id; the handoff receipt then names the real one.
+LAUNCH_AT_HANDOFF = "launch-at-handoff"
 _METHOD = {
     "transport_health": "probe",
     "verification_environment_health": "probe",
@@ -46,6 +56,20 @@ _METHOD = {
 
 class ExtensionError(HarnessError):
     """Выбранное расширение не существует или непригодно для использования."""
+
+
+class RuntimeAccessBlocked(ExtensionError):
+    """A runtime_access provider names why the approved worker cannot launch, and its remedy.
+
+    ``facts`` is the JSON object of what the provider observed; preflight shows it as the
+    plan's environment evidence. Any other provider failure stays anonymous unverified evidence.
+    """
+
+    def __init__(
+        self, message: str, *, remedy: str, facts: Mapping[str, object]
+    ) -> None:
+        super().__init__(message, remedy=remedy)
+        self.facts = dict(facts)
 
 
 @dataclass(frozen=True)
@@ -131,15 +155,27 @@ class RuntimeAccessObservation:
 
 
 class RuntimeAccess(Protocol):
-    """Confirm and apply permissions for a specific native worker launch."""
+    """Confirm and apply permissions for a specific native worker launch.
+
+    Any method may raise ``RuntimeAccessBlocked`` to name its blocker and remedy; the built-in
+    ``docker`` implementation lives in ``container_executor``.
+    """
 
     def observe(
         self, plan: Mapping[str, object], transport: str
-    ) -> RuntimeAccessObservation | None: ...
+    ) -> RuntimeAccessObservation | None:
+        """Observe the worker environment read-only; it never creates the worker.
+
+        A ``launch_id`` of ``LAUNCH_AT_HANDOFF`` says the real identity exists only after the
+        handoff, whose receipt must then name it.
+        """
+        ...
 
     def apply(
         self, brief: Mapping[str, object], observation: RuntimeAccessObservation
-    ) -> RuntimeAccessObservation | None: ...
+    ) -> RuntimeAccessObservation | None:
+        """Apply the approved plan, or confirm its inheritance, for the observed launch."""
+        ...
 
     def handoff(
         self,
@@ -233,10 +269,15 @@ def _known_kind(kind: str) -> None:
 def register(kind: str, name: str, implementation: object) -> None:
     """Зарегистрировать реализацию под указанным именем для заданного вида интерфейса."""
     _known_kind(kind)
-    if name == DEFAULT_EXTENSION or EXTENSION_NAME.fullmatch(name) is None:
+    if (
+        name == DEFAULT_EXTENSION
+        or name in BUILTIN_EXTENSIONS.get(kind, {})
+        or EXTENSION_NAME.fullmatch(name) is None
+    ):
         raise ExtensionError(
             f"invalid extension name {name!r}",
-            remedy="use a name that is not 'none' and matches [A-Za-z_][A-Za-z0-9_.-]*",
+            remedy="use a name that is neither 'none' nor a built-in name and matches "
+            "[A-Za-z_][A-Za-z0-9_.-]*",
         )
     _require_method(kind, name, implementation)
     _REGISTRY[kind][name] = implementation
@@ -263,8 +304,10 @@ def _resolve(kind: str, name: str) -> object:
     registered = _REGISTRY[kind].get(name)
     if registered is not None:
         return registered
-    module_name, separator, attribute = name.partition(":")
-    if not separator or EXTENSION_NAME.fullmatch(name) is None:
+    # A built-in name loads its shipped factory the same way and is cached under its own name.
+    target = BUILTIN_EXTENSIONS.get(kind, {}).get(name, name)
+    module_name, separator, attribute = target.partition(":")
+    if not separator or EXTENSION_NAME.fullmatch(target) is None:
         raise ExtensionError(
             f"extension {name!r} is not registered for {kind}",
             remedy=f"select 'none', a registered name or a module:factory for {kind} in .harness/orchestration.json",

@@ -30,6 +30,26 @@ from .. import brand, i18n
 _OUTPUT_TAIL_LINES = 200
 
 
+def command_menu_css(screen: str) -> str:
+    """The rules of a command-menu section for the screen type `screen`. A type selector reaches
+    only the first base class of a screen, so a shell screen that mixes in `CommandMenuScreen` loads
+    these rules under its own type name, after the shell's."""
+    return brand.shell_css(f"""
+    {screen} .overview {{ height: auto; margin: 0 0 1 0; padding: 0 1; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-body {{ height: 16; margin: 0 0 1 0; }}
+    {screen} #command-menu {{ height: 1fr; margin: 0; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-menu:focus {{ border: round $primary; }}
+    {screen}.-wide #command-menu, {screen}.-spacious #command-menu {{ width: 48; }}
+    {screen} #command-detail-scroll {{ height: 1fr; padding: 0 1; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-output-scroll {{ height: 8; margin: 0; padding: 0 1; border: round $component-border; border-title-color: $primary; }}
+    {screen} #command-menu > ListItem {{ height: 1; padding: 0 1; }}
+    {screen} #command-menu Static {{ height: 1; text-wrap: nowrap; text-overflow: ellipsis; }}
+    {screen} .group-title {{ color: $text-muted; text-style: bold; }}
+    {screen}.-narrow #command-body {{ layout: vertical; height: 22; }}
+    {screen}.-narrow #command-detail-scroll {{ height: 6; }}
+    """)
+
+
 _Result = TypeVar("_Result")
 
 
@@ -181,7 +201,7 @@ class CommandMenuScreen(Translated, Screen[None]):
     }
     CommandMenuScreen #command-body { height: 1fr; min-height: 8; margin: 0 1; }
     CommandMenuScreen #command-menu { height: 1fr; margin: 0; border-title-color: $primary; }
-    CommandMenuScreen.-wide #command-menu { width: 48; }
+    CommandMenuScreen.-wide #command-menu, CommandMenuScreen.-spacious #command-menu { width: 48; }
     CommandMenuScreen #command-detail-scroll {
         height: 1fr; padding: 0 1; border: round $panel-lighten-2; border-title-color: $primary;
     }
@@ -264,23 +284,28 @@ class CommandMenuScreen(Translated, Screen[None]):
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов экрана меню команд."""
         yield TopBar(f"Главная › {self.CRUMB}")
+        yield from self.compose_commands()
+        yield Footer()
+
+    def compose_commands(self) -> ComposeResult:
+        """Содержимое экрана без рамки: обзор, меню команд с деталями и область вывода. Его же
+        размещает общая оболочка консоли."""
         yield from self.overview()
         self._language = getattr(self.app, "language", "ru")
         children = self._menu_children()
         first = next((i for i, item in enumerate(children) if item.name), 0)
         with Horizontal(id="command-body"):
             menu = ListView(*children, id="command-menu", initial_index=first)
-            menu.border_title = brand.frame_title(i18n.ui(self._language, "commands"))
+            menu.border_title = brand.section_title(i18n.ui(self._language, "commands"))
             yield menu
             with VerticalScroll(id="command-detail-scroll") as detail:
-                detail.border_title = brand.frame_title("Описание")
+                detail.border_title = brand.section_title("Описание")
                 yield Static("", id="command-detail")
         output = VerticalScroll(
             Static("", id="command-output", markup=False), id="command-output-scroll"
         )
-        output.border_title = brand.frame_title("Вывод")
+        output.border_title = brand.section_title("Вывод")
         yield output
-        yield Footer()
 
     def sync_language(self) -> None:
         """Re-label the group headings after the console language changed."""
@@ -290,7 +315,7 @@ class CommandMenuScreen(Translated, Screen[None]):
             return
         self._language = language
         menu = self.query_one("#command-menu", ListView)
-        menu.border_title = brand.frame_title(i18n.ui(language, "commands"))
+        menu.border_title = brand.section_title(i18n.ui(language, "commands"))
         for heading_id, heading in self._headings.items():
             self.query_one(f"#{heading_id} Static", Static).update(
                 i18n.group_title(language, heading).upper()

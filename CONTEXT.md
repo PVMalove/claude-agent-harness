@@ -377,6 +377,13 @@ _Avoid_: сырые логи в Git, report с секретами, удален�
 не выполняет project checks и не мержит PR.
 _Avoid_: обязательная зависимость от конкретного provider, config-only ядро с командами provider.
 
+**Контейнерный исполнитель**:
+Встроенная реализация доступа worker-а, которая запускает один утверждённый external dispatch в
+отдельном контейнере: монтирует только ресурсы плана доступа, пропускает в сеть только хосты плана и
+передаёт только названные в плане переменные окружения. Не меняет флаги агента, не подтверждает
+действия за человека и не исполняет in-process роли.
+_Avoid_: Docker sandbox, песочница (занято `.harness/.sandboxes/`), постоянный dev-контейнер.
+
 **Role common contract** (`harness/orchestration/roles/_common.md`):
 Общий Markdown-контракт для всех ролей: handoff, completion report, branch/worktree, commit proof и
 escalation. Индивидуальный role manifest содержит только уникальные границы, trigger и доказательства.
@@ -571,3 +578,39 @@ _Avoid_: scheduler, worker monitor с гарантией жизни процес
 индекс можно удалить и пересобрать. Включается проектом явно; хиты попадают в Context Package
 как advisory-контекст с пометкой статуса источника.
 _Avoid_: RAG-хранилище, база знаний, долгосрочная память агента, вектор-стор.
+
+**Receipt запуска worker** (`harness-worker-v1`):
+Сведения adapter о конкретном dispatch/launch, идентичности процесса и канале существующих
+событий. Не заменяет model self-report, отчёт роли или решение о приёмке.
+
+**Наблюдение worker** (worker observation):
+Локальное представление уже существующих событий runtime, без дополнительных LLM-вызовов
+и сообщений в контекст модели. Native permissions остаются отдельными действиями человека.
+
+**Передача отчёта** (report relay):
+Доставка координатором неизменного файла worker с раздельным учётом автора, отправителя и hash
+исходных байтов. Сама передача не принимает работу и не расходует developer retry.
+
+**Эпоха authority** (`file-ledger` | `runtime-store`):
+Период, в котором operational state пишет ровно один writer: Python `LifecycleLedger` установки
+1.x или Rust runtime store. Эпоху меняют только `harness-runtime migrate` и
+`harness-runtime rollback --to-legacy`; признак — `ledger.json.version` и `state/AUTHORITY.json`
+(ADR 0020). Релиз 2.0.0 работает только в эпохе `runtime-store`.
+_Avoid_: dual-write, переходный период с двумя writer-ами, Python fallback-writer.
+
+**Release Gate**:
+Условие, при котором кандидат вливается в целевую ветку, будь то integration-ветка или `master`:
+правила пары `{candidate_sha, target_sha}` и дерева кандидата из ADR 0026, раздел 4.
+_Avoid_: merge gate, release QA, QA-gate (проверка кода в checkout, а не допуск к merge).
+
+**Harness Next**:
+Программа эпика #784: Rust runtime, транзакционный store, инкрементальная проверка и профили
+hooks. Работа идёт в `integration/harness-runtime-reliability` и выходит одним релизом 2.0.0
+(ADR 0019–0026).
+_Avoid_: harness-next-runtime (такой ветки нет), HN как имя ветки.
+
+**Superseded-by-Harness-Next**:
+Статус issue или коммита, чью Python-реализацию заменяет компонент Harness Next. Критерии такой
+задачи переходят на новый компонент; сама реализация в Harness Next не импортируется (ADR 0020,
+раздел 6; ADR 0026, раздел 1).
+_Avoid_: отменено, won't fix, закрыто без замены.

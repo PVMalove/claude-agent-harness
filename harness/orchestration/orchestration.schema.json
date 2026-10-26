@@ -5,16 +5,15 @@
   "type": "object",
   "additionalProperties": false,
   "anyOf": [
-    {"required": ["provider_profiles", "assignment_plans", "concurrency_budget", "verification_commands"]},
-    {"required": ["access_policy"], "properties": {
-      "provider_profiles": {"maxProperties": 0},
-      "assignment_plans": {"maxProperties": 0},
-      "backend_zones": {"maxProperties": 0}
-    }},
     {
       "required": [
-        "infrastructure_retry_policy"
-      ],
+        "provider_profiles",
+        "assignment_plans",
+        "concurrency_budget",
+        "verification_commands"
+      ]
+    },
+    {
       "properties": {
         "provider_profiles": {
           "maxProperties": 0
@@ -40,6 +39,26 @@
           "worker_attestation_required": {"const": true}
         },
         "required": ["worker_attestation_required"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "extensions": {
+            "properties": {"runtime_access": {"const": "docker"}},
+            "required": ["runtime_access"]
+          }
+        },
+        "required": ["extensions"]
+      },
+      "then": {
+        "properties": {
+          "access_policy": {
+            "properties": {"defaults": {"required": ["container"]}},
+            "required": ["defaults"]
+          }
+        },
+        "required": ["access_policy"]
       }
     }
   ],
@@ -220,6 +239,41 @@
         }
       },
       "description": "Цель: быстрые проверки developer-retry. За что отвечает: brief developer-retry получает команды lint и одну команду тестов по related_tests своего Context Package (в пределах context_package_policy.max_related_tests); первый developer-dispatch, code-review и clean-room QA не меняются. Варианты: объект {lint, test_command}; если ключ не задан или связанных тестов нет, retry выполняет обычные команды developer batch. Значение замораживается в batch при batch create."
+    },
+    "verification_plan_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_related_tests", "stages"],
+      "properties": {
+        "max_related_tests": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Порог числа related_tests ChangeImpact: при превышении выбор стадии pytest расширяется до full, а не завершается ошибкой."
+        },
+        "stages": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["stage_id", "kind", "argv", "timeout_seconds"],
+            "properties": {
+              "stage_id": {"type": "string", "minLength": 1, "description": "Уникальный идентификатор стадии в плане."},
+              "kind": {"enum": ["lint", "typecheck", "pytest", "clean-room", "custom"], "description": "Что запускает стадия: lint, typecheck, pytest, clean-room или custom. Выбор тестов по ImpactSet применяется только к pytest."},
+              "argv": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+                "description": "Команда стадии как список аргументов; для стадии pytest с выбором focused к ней добавляются пути выбранных тестов."
+              },
+              "timeout_seconds": {"type": "integer", "minimum": 1, "description": "Таймаут стадии в секундах."}
+            }
+          },
+          "not": {"items": {"properties": {"kind": {"not": {"const": "pytest"}}}}},
+          "description": "Шаблоны стадий плана проверки в порядке выполнения; хотя бы одна стадия обязана иметь kind pytest, иначе review и qa отказывают impact_not_covered при любых related_tests."
+        }
+      },
+      "description": "Цель: план проверки по ChangeImpact (ADR 0023). За что отвечает: при dispatch propose для developer-retry, code-review и qa строится план стадий; стадия pytest получает выбор focused по затронутым тестам или full при неизвестном влиянии. Варианты: объект {max_related_tests, stages}; если ключ не задан, batch работает по замороженным командам проверки, как раньше. Значение замораживается в batch при batch create."
     },
     "test_path_patterns": {
       "type": "array",
@@ -406,6 +460,7 @@
       "additionalProperties": false,
       "description": "Локальные таймауты и интервалы работы координатора.",
       "properties": {
+        "worker_startup_timeout_seconds": {"type": "integer", "minimum": 1, "default": 120, "description": "Срок ожидания первого self-report; таймаут не доказывает остановку worker."},
         "dispatch_wait_timeout_seconds": {"type": "integer", "minimum": 1, "default": 60, "description": "Время одного ожидания dispatch в секундах."},
         "dispatch_poll_interval_seconds": {"type": "integer", "minimum": 1, "default": 5, "description": "Интервал опроса dispatch в секундах."},
         "qa_lease_seconds": {"type": "integer", "minimum": 1, "default": 1800, "description": "Срок аренды QA lane в секундах."},
@@ -432,7 +487,7 @@
       "type": "object",
       "propertyNames": {"enum": ["transport_health", "verification_environment_health", "retry_reason_classifier", "context_telemetry_provider", "human_notifier", "runtime_access"]},
       "additionalProperties": {"type": "string", "pattern": "^(none|[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_]*)?)$"},
-      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и подтверждения доступа среды запуска. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'."
+      "description": "Цель: подключение внешней инфраструктуры. За что отвечает: модули уведомления, телеметрии, проверки здоровья и подтверждения доступа среды запуска. Варианты ключей: 'transport_health', 'verification_environment_health', 'retry_reason_classifier', 'context_telemetry_provider', 'human_notifier', 'runtime_access'. Варианты значений: 'none' (по умолчанию), имя зарегистрированного модуля или 'module:factory'. Для 'runtime_access' встроено имя 'docker' — контейнерный исполнитель; он требует access_policy.defaults.container."
     },
     "preflight_policy": {
       "type": "object",
@@ -462,6 +517,43 @@
             "sandbox",
             "unsandboxed"
           ]
+        },
+        "container": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "worker_image"
+          ],
+          "description": "Образы контейнерного исполнителя extensions.runtime_access 'docker'. Override роли или операции заменяет компонент целиком. Resolver не опрашивает движок и образы: digest образов закрепляет dispatch propose. Харнесс образы не собирает и не скачивает.",
+          "properties": {
+            "engine": {
+              "enum": [
+                "docker",
+                "podman"
+              ],
+              "default": "docker",
+              "description": "Движок контейнеров: docker или podman. Режим (rootful или rootless) и SELinux определяет dispatch preflight одним запросом info; удалённый Podman и Docker с userns-remap дают явный блокер до запуска worker-а."
+            },
+            "worker_image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
+              "description": "Тег образа worker-а, например 'harness-worker:local'."
+            },
+            "proxy_image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$",
+              "description": "Тег образа egress-proxy: собирается из .harness/container/Dockerfile.proxy, харнесс образ не собирает и не скачивает. Обязателен, когда network.hosts не пуст: исполнитель запускает из него отдельный sidecar на внутренней сети dispatch, и worker выходит наружу только через него по HTTP(S) к перечисленным хостам. Если тег задан, образ должен присутствовать, и dispatch propose закрепляет его digest."
+            }
+          }
+        },
+        "environment": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "description": "Имена переменных окружения хоста, которые контейнерный исполнитель передаёт worker-у как '--env NAME' без значения. Значения остаются в окружении хоста и не попадают в конфиг, brief, digest, argv и evidence. Отсутствующая на хосте переменная даёт блокер до запуска. Override роли или операции заменяет список целиком."
         },
         "network": {
           "type": "object",

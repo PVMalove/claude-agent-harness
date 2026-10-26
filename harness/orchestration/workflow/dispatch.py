@@ -15,11 +15,13 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
-from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.errors import INTERNAL_INVARIANT_REMEDY, PolicyError
 from harness.orchestration import (
+    hook_policy,
     infrastructure_retry,
     operational_guards,
     runtime_access,
+    verification_plan,
 )
 from harness.orchestration.contract import (
     REPO_MAP_TIER_ORDER,
@@ -32,12 +34,16 @@ from harness.orchestration.contract import (
 )
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import utils
-from harness.orchestration.core.constants import ACCEPTED_DECISIONS
+from harness.orchestration.core.constants import (
+    ACCEPTED_DECISIONS,
+    ContextPackageFreshness,
+)
 from harness.orchestration.core.config import (
     _adaptive_continuation_policy,
     _approval_policy,
     _communication_policy,
     _configured,
+    _execution_policy,
     _is_test_path,
     _orchestration_policy,
     _reject_sensitive,
@@ -92,6 +98,7 @@ from harness.orchestration.workflow import delta_review
 from harness.orchestration.workflow import resolver as resolver_route
 from harness.orchestration.workflow import resolver_state
 from harness.orchestration.workflow import supersede
+from harness.orchestration.workflow import risk as risk_policy
 from harness.orchestration.workflow import approval as approvals
 from harness.orchestration.workflow.approval import (
     _approval,
@@ -131,6 +138,7 @@ from harness.orchestration.workflow.risk import (
     _matching_triggers,
     _risk_triggers,
 )
+from harness.repo_map.policy import policy_from_section as repo_map_policy_from_section
 
 
 def _dispatch_verification_commands(
@@ -157,6 +165,45 @@ def _dispatch_verification_commands(
         if retry is not None:
             return retry
     return cast(list[str], role_verification_commands(batch, role_name, purpose))
+
+
+def _verification_plan(
+    repo: Path,
+    batch: JsonObject,
+    role_name: str,
+    purpose: str,
+    next_action: object,
+    candidate: str | None,
+    snapshot_commit: str,
+    runtime_images: JsonObject | None = None,
+) -> JsonObject | None:
+    """План проверки brief по замороженной ``verification_plan_policy`` (ADR 0023), либо ``None``.
+
+    План строится для developer-retry (diff до кандидата, который он дорабатывает), code-review
+    и qa (diff до кандидата роли). Первый developer диффа не имеет, а batch без политики остаётся
+    без плана и без нового поля в brief. ``runtime_images`` — образы docker-dispatch, которые
+    входят в ``environment_fingerprint`` стадий.
+    """
+    policy = batch.get("verification_plan_policy")
+    if not isinstance(policy, dict) or purpose != "work":
+        return None
+    if role_name == "developer" and next_action == "developer-retry":
+        head = snapshot_commit
+    elif role_name in {"code-review", "qa"} and candidate is not None:
+        head = candidate
+    else:
+        return None
+    return verification_plan.build_plan(
+        repo,
+        policy,
+        base=_effective_base(batch),
+        candidate=head,
+        role=role_name,
+        repo_map_policy=repo_map_policy_from_section(
+            cast(dict[str, object], batch.get("repo_map_policy") or {})
+        ),
+        runtime_images=runtime_images,
+    )
 
 
 def _developer_commit_plan(
@@ -251,6 +298,28 @@ def _dispatch_approval_mode(
     both the project config and the batch plan choose it and no stop is recorded (issue #643);
     otherwise every transition of an ``auto`` batch needs a human.
     """
+    recovery_sha = getattr(args, "_restart_recovery_sha256", None)
+    if recovery_sha is not None:
+        events = batch.get("recovery_events", [])
+        event = events[-1] if events else {}
+        if (
+            event.get("kind") != "resume-stop"
+            or event.get("record_sha256") != recovery_sha
+            or not batch.get("environmental_restart")
+            or event.get("dispatch_id")
+            != batch["environmental_restart"].get("dispatch_id")
+            or str(event.get("approved_by", "")).startswith("policy:")
+        ):
+            raise CoordinatorError(
+                "same-contract restart lacks its recorded human recovery",
+                remedy="use batch resume-stop --restart for this confirmed startup failure",
+            )
+        approvals._require_current_approval(event["approved_at"], config)
+        args._recorded_recovery_approval = {
+            "approved_by": event["approved_by"],
+            "approved_at": event["approved_at"],
+        }
+        return "recorded-recovery"
     if _non_empty(getattr(args, "approved_by", None)) or _non_empty(
         getattr(args, "approved_at", None)
     ):
@@ -339,6 +408,8 @@ def _bind_dispatch_approval(
     -- means it approved another transition, and nothing is created. A policy approval is derived
     from the very transition being created, so it binds to its own digest.
     """
+    if mode == "recorded-recovery":
+        return {**args._recorded_recovery_approval, "transition_digest": digest}
     if mode != "explicit":
         return {
             "approved_by": mode,
@@ -354,7 +425,7 @@ def _bind_dispatch_approval(
     if supplied.strip() != digest:
         raise CoordinatorError(
             f"approval digest does not match the proposed transition: approved {supplied.strip()}, proposed {digest}",
-            remedy="a changed scope, candidate, role, verification command, reason category or Context Package needs a new approval: run 'dispatch propose' again and approve its digest",
+            remedy="a changed scope, candidate, role, verification command, reason category, Context Package or pinned runtime image needs a new approval: run 'dispatch propose' again and approve its digest",
         )
     return {**_approval(args, digest), "transition_digest": digest}
 
@@ -450,6 +521,34 @@ def _newest_decided_dispatch(batch: JsonObject) -> JsonObject | None:
     )
 
 
+def _architect_retry_reason(batch: JsonObject, role: str) -> JsonObject | None:
+    previous = _newest_decided_dispatch(batch)
+    if role != "architect" or not previous or previous.get("role") != "architect":
+        return None
+    decision = previous.get("decision", {})
+    if decision.get("decision") != "retry":
+        return None
+    note = decision.get("note")
+    source = "decision.note"
+    if not _non_empty(note) or note.strip().lower() == "none":
+        # Older decisions and structured tooling retries may have no operator note. Preserve
+        # their sealed routing evidence, without presenting it as a human explanation.
+        note = decision.get("routing", {}).get("rationale")
+        source = "decision.routing.rationale"
+    if not _non_empty(note) or note.strip().lower() == "none":
+        raise CoordinatorError(
+            "architect retry requires a non-empty recorded reason",
+            remedy="record an explained retry decision; never pass an empty extra prompt file",
+        )
+    return {
+        "previous_dispatch_id": previous["dispatch_id"],
+        "note": note,
+        "source": source,
+        "reason_category": decision.get("routing", {}).get("reason_category"),
+        "decision_sha256": hashlib.sha256(_canonical(decision).encode()).hexdigest(),
+    }
+
+
 def _proposed_transition(
     batch: JsonObject,
     next_action: object,
@@ -462,6 +561,7 @@ def _proposed_transition(
     carried: JsonObject,
     delta_scope: JsonObject | None = None,
     supersede_target: str | None = None,
+    plan: JsonObject | None = None,
 ) -> JsonObject:
     """The canonical transition an approval binds: what came before, and exactly what is about to run.
 
@@ -471,7 +571,7 @@ def _proposed_transition(
     new approval. The developer-retry of a ``rebase-fix-forward`` decision binds the rebase target
     its routing record proposed (issue #504), else the ``supersede_target`` of a superseding batch
     (issue #506), and a code-review brief after a fix-forward binds its ``delta_review_scope``
-    (issue #625)."""
+    (issue #625). A brief that carries a verification plan binds its digest (ADR 0023)."""
     previous = _newest_decided_dispatch(batch)
     decision = previous.get("decision") if previous else None
     routing = decision.get("routing") if isinstance(decision, dict) else None
@@ -508,10 +608,12 @@ def _proposed_transition(
         transition,
         {
             "carried_items": carried,
+            "retry_reason": _architect_retry_reason(batch, role_name),
             "rebase_target_commit": rebase_target
             if isinstance(rebase_target, str)
             else None,
             "delta_review_scope": delta_scope,
+            "verification_plan": plan,
         },
     )
 
@@ -654,6 +756,10 @@ def cancel_dispatch(args: argparse.Namespace) -> JsonObject:
                                 "model_self_report",
                                 "worker_worktree",
                                 "worker_snapshot_commit",
+                                # The receipt and the worker's exit evidence outlive the cancel.
+                                "runtime_access",
+                                "worker_exit",
+                                "worker_teardown",
                             )
                             if k in status
                         }
@@ -840,6 +946,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 (resolver_state.RESOLVER_ROLE, "work")
             },
         }
+        if role_name == "qa" and batch.get("risk_reassessment_required"):
+            message, remedy = risk_policy.reassessment_remedy(batch)
+            raise CoordinatorError(message, remedy=remedy)
         if next_action == "risk-assessment":
             raise CoordinatorError(
                 "risk assessment must prepare the next dispatch before another role starts",
@@ -979,11 +1088,6 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="only pass --delta-review-of for a code-review dispatch",
             )
         if role_name == "qa":
-            if batch.get("risk_reassessment_required"):
-                raise CoordinatorError(
-                    "QA is blocked until the candidate is risk-assessed again",
-                    remedy="register a new risk assessment for this candidate before dispatching QA",
-                )
             if risk is None:
                 # The guard above raised when a qa dispatch has no risk.
                 raise CoordinatorError(
@@ -1103,7 +1207,7 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 )
             if (
                 context_package_freshness is None
-                or context_package_freshness["status"] != "fresh"
+                or context_package_freshness["status"] != ContextPackageFreshness.FRESH
             ):
                 raise CoordinatorError(
                     "newly registered Context Package is stale; refresh before dispatch",
@@ -1156,6 +1260,32 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             root,
             delta_scope,
         )
+        access_plan = runtime_access.resolve_plan(
+            repo,
+            Path(batch["worktree"]),
+            config,
+            role_name,
+            role["mode"],
+            operation=runtime_access.dispatch_operation(role_name, purpose),
+        )
+        # A docker plan pins the image digests observed now, beside the plan and outside its
+        # digest; propose and create each observe, so an image changed in between is refused.
+        # The plan's environment fingerprint carries them (ADR 0023, section 2).
+        runtime_images = runtime_access.pin_images(
+            access_plan, transport, role_name, purpose
+        )
+        plan = _verification_plan(
+            repo,
+            batch,
+            role_name,
+            purpose,
+            next_action,
+            candidate,
+            snapshot_commit,
+            runtime_images,
+        )
+        if plan is not None and role_name in {"code-review", "qa"}:
+            verification_plan.require_covered(plan)
         transition = _proposed_transition(
             batch,
             next_action,
@@ -1168,23 +1298,43 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             carried,
             delta_scope,
             supersede_target,
-        )
-        access_plan = runtime_access.resolve_plan(
-            repo,
-            Path(batch["worktree"]),
-            config,
-            role_name,
-            role["mode"],
-            operation=runtime_access.dispatch_operation(role_name, purpose),
+            plan,
         )
         transition[operational_guards.ACCESS_TRANSITION_FIELD] = access_plan[
             "plan_digest"
         ]
+        if runtime_images is not None:
+            transition = operational_guards.bind_transition(
+                transition, {"runtime_images": runtime_images}
+            )
         if batch.get("recovery_events"):
             transition["recovery_event_sha256"] = batch["recovery_events"][-1][
                 "record_sha256"
             ]
+        from harness.orchestration import pinned_configuration
+
         orchestration_policy = _orchestration_policy(config)
+        project_snapshot = getattr(config, "project_snapshot", None)
+        if not isinstance(project_snapshot, dict):
+            project_snapshot = core_config._project(repo)
+        # The hook policy and the tool list are pinned with the approval (issue #794): a later
+        # edit of hook_policy or of the role tool policy does not change an approved dispatch.
+        allowed_tools = resolve_allowed_tools(config, role_name, role["mode"])
+        try:
+            hook_policy_sha256 = hook_policy.hook_policy_sha256(
+                hook_policy.normalize_policy(project_snapshot.get("hook_policy"))
+            )
+        except PolicyError as exc:
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        transition = operational_guards.bind_transition(
+            transition,
+            {"hook_policy_sha256": hook_policy_sha256, "allowed_tools": allowed_tools},
+        )
+        pinned_config = pinned_configuration.snapshot(config, project_snapshot, role)
+        orchestration_policy["configuration"] = pinned_config
+        transition[pinned_configuration.TRANSITION_FIELD] = pinned_config[
+            "canonical_sha256"
+        ]
         transition[infrastructure_retry.TRANSITION_FIELD] = (
             operational_guards.policy_digest(
                 orchestration_policy["infrastructure_retry"]
@@ -1238,6 +1388,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                     proposal["context_package_quality_warning"] = warning
             if delta_scope is not None:
                 proposal["delta_review_scope"] = delta_scope
+            if plan is not None:
+                proposal["verification_plan"] = plan
+            if runtime_images is not None:
+                proposal["runtime_images"] = runtime_images
             return proposal
         if approval_mode is None:
             # Only a proposal skips the approval mode, and a proposal returned above.
@@ -1279,7 +1433,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "resolved_model": model,
             "resolved_effort": effort,
             "resolved_transport": transport,
-            "allowed_tools": resolve_allowed_tools(config, role_name, role["mode"]),
+            "allowed_tools": allowed_tools,
+            "hook_policy_sha256": hook_policy_sha256,
             "context_budget": _adaptive_continuation_policy(config)["context_limit"],
             "coordinator_approval": approval,
             "candidate_commit": candidate,
@@ -1313,9 +1468,13 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "transition": transition,
             "transition_digest": digest,
             "retry_idempotency_key": idempotency_key,
+            "retry_reason": _architect_retry_reason(batch, role_name),
             "orchestration_policy": orchestration_policy,
             "liveness": {
                 "heartbeat_every_seconds": heartbeat_every,
+                "startup_timeout_seconds": _execution_policy(config)[
+                    "worker_startup_timeout_seconds"
+                ],
                 "stale_after_seconds": stale_after,
             },
             "commit_plan": commit_plan,
@@ -1327,6 +1486,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             "rebase_target_commit": transition.get("rebase_target_sha"),
             "runtime_access": access_plan,
         }
+        if runtime_images is not None:
+            brief["runtime_images"] = runtime_images
+        if plan is not None:
+            brief["verification_plan"] = plan
         if role_name == resolver_state.RESOLVER_ROLE:
             brief["resolver"] = resolver_route.brief_section(
                 root, config, batch, dispatch_commands, brief["report_staging_path"]

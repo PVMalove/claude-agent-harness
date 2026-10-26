@@ -85,6 +85,29 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
     dispatch = _load_dispatch(root, args.dispatch)
     batch = ledger_ops._load_batch(root, dispatch["batch_id"])
     report = _read_object(Path(result["report"]), "QA completion report")
+    from harness.orchestration.pinned_configuration import read_snapshot
+    from harness.orchestration.core.utils import CoordinatorError
+
+    approved = read_snapshot(dispatch)
+    try:
+        current = core_config._config(repo)
+        project = getattr(current, "project_snapshot", None)
+        if not isinstance(project, dict):
+            project = core_config._project(repo)
+    except CoordinatorError as exc:
+        return {
+            **result,
+            "transition_blocked": True,
+            "diagnostic": exc.message,
+            "remedy": exc.remedy,
+        }
+    if dict(current) != approved["config"] or project != approved["project"]:
+        return {
+            **result,
+            "transition_blocked": True,
+            "diagnostic": "configuration changed since dispatch approval",
+            "remedy": "review the pending report and approve the next transition under current policy",
+        }
     from harness.orchestration.infrastructure_retry import pinned
     from harness.orchestration.workflow.completion import _run_policy_chain, _completion
 
@@ -97,7 +120,7 @@ def run_qa(args: argparse.Namespace) -> JsonObject:
                 chain, args.dispatch, getattr(args, "state_dir", None)
             )
         return result
-    if _auto_accept_policy(core_config._config(repo), batch, dispatch, report) not in {
+    if _auto_accept_policy(current, batch, dispatch, report) not in {
         "low_risk",
         "auto",
     }:

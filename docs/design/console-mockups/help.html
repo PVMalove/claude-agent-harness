@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Справка — макет</title><link rel="stylesheet" href="console.css"><style>
+.dg{display:grid;grid-template-columns:210px minmax(0,1fr);gap:16px;align-items:start}
+.toc2{position:sticky;top:0;font-size:13.5px}
+.toc2 div{display:flex;justify-content:space-between;padding:6px 10px;border-radius:6px;border-left:3px solid transparent;color:var(--muted)}
+.toc2 .on{background:var(--row);border-left-color:var(--primary);color:var(--fg)}
+.doc h2{margin:22px 0 8px;font-size:16px;display:flex;gap:10px;align-items:baseline}
+.doc h2:first-child{margin-top:0}
+.doc h2 small{font-size:12px;font-weight:400;color:var(--selfg);background:var(--sel);border:1px solid #6b4a3c;border-radius:999px;padding:0 9px}
+.doc p,.doc li{color:#d6cfc4;font-size:14px}
+.doc ul{margin:6px 0;padding-left:20px}.doc li{margin:3px 0}
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl th{text-align:left;color:var(--muted);font-weight:600;font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;padding:6px 10px;border-bottom:1px solid var(--edge)}
+.tbl td{padding:7px 10px;border-bottom:1px solid var(--rule);vertical-align:top}
+.tbl td:first-child{white-space:nowrap}.sec td:nth-child(2){white-space:nowrap}
+.kbd{display:inline-block;border:1px solid var(--edge);border-bottom-width:2px;border-radius:5px;padding:0 7px;font-size:12.5px;background:var(--bg);margin-right:3px}
+.grp td{background:var(--bg);color:var(--primary);font-size:12.5px;letter-spacing:.06em;text-transform:uppercase;padding:5px 10px}
+.mini{display:grid;grid-template-columns:86px 1fr 100px;grid-template-rows:auto auto auto auto;gap:4px;font-size:12px;border:1px solid var(--edge);border-radius:8px;padding:8px;background:var(--bg)}
+.mini div{border:1px dashed var(--edge);border-radius:5px;padding:5px 8px;color:var(--muted)}
+.mini .tp{grid-column:1/-1;color:var(--fg)}.mini .mn{grid-row:2/4;color:var(--fg)}.mini .cr2{color:var(--fg)}.mini .ct{grid-row:2/4}.mini .ft{grid-column:1/-1}
+.mini b{color:var(--primary)}
+.stbl td:first-child{font-size:16px}
+.ctxb{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--rule);border-radius:8px;background:var(--bg);color:var(--muted);font-size:13px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+</style></head><body>
+<div class="caption"><span><b>9 · Справка (≈160×52) — вся страница, на экране она прокручивается</b></span><span>Содержание — из help_text.py, переписано под каркас и меню. Новое отмечено; «Вы пришли с…» и содержание слева — предложения.</span></div>
+<div class="app wide dense" style="height:2620px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><span class="cur">Справка</span></div><div class="strip"><span>Справка F1 · RU</span><span>Прокрутка ↑↓; содержание слева — предложение</span></div>
+      <div class="page fill">
+<div class="hd"><div style="display:flex;align-items:baseline;gap:16px"><h1>Справка</h1><div class="sub">Руководство по консоли. F1 открывает его с любого экрана.</div></div></div>
+<div class="ctxb"><span>Вы пришли с экрана «Отчёты» (предлагаю: справка открывается сразу на нужном месте)</span><a class="btn xs" href="#">Показать клавиши экрана ▸</a></div>
+<div class="dg"><div class="toc2"><div class="on"><span>Окно консоли</span></div><div><span>Разделы</span></div><div><span>Клавиши</span></div><div><span>Статусы</span></div><div><span>Безопасность</span></div><div><span>Документация</span></div></div><div class="doc">
+<h2>Окно консоли <small>обновлено под каркас</small></h2>
+<div class="two" style="grid-template-columns:360px minmax(0,1fr);gap:20px">
+  <div class="mini"><div class="tp"><b>Верхняя панель</b> · версия · проект · ветка</div><div class="mn"><b>Меню</b><br>0–9<br>бейджи</div><div class="cr2"><b>Крошки</b> › › ›</div><div class="ct"><b>Контекст</b><br>≥140</div><div>Содержимое экрана</div><div class="ft"><b>Нижняя строка</b> · клавиши экрана</div></div>
+  <ul>
+    <li><b>Верхняя панель</b> показывает версию консоли, проект и ветку; commit обновляется при смене цели.</li>
+    <li><b>Меню</b> слева: номерные клавиши, подсветка текущего раздела, бейджи (число или статус). Выбор пункта только открывает раздел и ничего не запускает.</li>
+    <li><b>Крошки</b>: каждое звено пути — ссылка на свой экран. Последнее звено — текущий экран.</li>
+    <li><b>Узкий терминал</b>: меню сворачивается в «≡», поля идут в одну колонку, панель контекста уходит под содержимое. Действия и причины блокировки остаются видимыми.</li>
+  </ul>
+</div>
+
+<h2>Разделы <small>названия как в меню</small></h2>
+<table class="tbl sec"><tr><th>Клавиша</th><th>Раздел</th><th>Что внутри</th></tr>
+<tr><td><span class="kbd">0</span></td><td>Главная</td><td>Рабочее пространство: что требует внимания, рабочие сессии, быстрые проверки.</td></tr>
+<tr><td><span class="kbd">1</span></td><td>Открыть проект</td><td>Проверка пути и плана init / adopt / update, выбор состава, установка с подтверждением.</td></tr>
+<tr><td><span class="kbd">2</span></td><td>Обновить Harness</td><td>Версии, дрейф управляемых файлов, diff, режим обновления и запуск после подтверждения.</td></tr>
+<tr><td><span class="kbd">3</span></td><td>Диагностика</td><td>Отчёт <code>harness health</code>, онлайн-проверки, <code>--fix</code>, экспорт в Markdown.</td></tr>
+<tr><td><span class="kbd">4</span></td><td>Harness</td><td>Состояние установки, временные файлы, worktree и команды обслуживания.</td></tr>
+<tr><td><span class="kbd">5</span></td><td>Оркестрация</td><td>Статистика пайплайна, история batch (Enter — хронология), команды координатора, рабочие сессии, контейнерный запуск и восстановление.</td></tr>
+<tr><td><span class="kbd">6</span></td><td>Отчёты</td><td>Отчёты ролей с фильтрами, хронология batch, QA-логи.</td></tr>
+<tr><td><span class="kbd">7</span></td><td>Repo Map</td><td>Карта для HEAD: сводка, файлы и связи, хабы, диагностики, настройки режима, парсеров и памяти.</td></tr>
+<tr><td><span class="kbd">8</span></td><td>Настройка</td><td>Шаги <code>project.json</code> и <code>orchestration.json</code>, черновик, diff, версии и откат, адаптеры runtime.</td></tr>
+<tr><td><span class="kbd">9</span></td><td>Справка</td><td>Эта страница.</td></tr></table>
+
+<h2>Клавиши</h2>
+<table class="tbl"><tr><th>Клавиша</th><th>Действие</th></tr>
+<tr class="grp"><td colspan="2">Навигация</td></tr>
+<tr><td><span class="kbd">↑</span><span class="kbd">↓</span><span class="kbd">Enter</span></td><td>Выбор пункта меню или строки списка</td></tr>
+<tr><td><span class="kbd">0</span>–<span class="kbd">9</span></td><td>Открыть раздел (таблица выше)</td></tr>
+<tr><td><span class="kbd">Tab</span></td><td>Следующий элемент экрана</td></tr>
+<tr><td><span class="kbd">Esc</span></td><td>Назад или отмена</td></tr>
+<tr class="grp"><td colspan="2">На конкретных экранах</td></tr>
+<tr><td><span class="kbd">r</span> <span class="kbd">o</span></td><td>Главная: офлайн- и онлайн-проверки</td></tr>
+<tr><td><span class="kbd">p</span></td><td>Главная: открыть или подключить проект</td></tr>
+<tr><td><span class="kbd">y</span></td><td>Harness и Оркестрация: скопировать CLI выбранной команды</td></tr>
+<tr><td><span class="kbd">b</span></td><td>Отчёты: хронология batch · Repo Map: построить карту</td></tr>
+<tr><td><span class="kbd">F3</span></td><td>Отчёты: QA-логи</td></tr>
+<tr><td><span class="kbd">e</span> <span class="kbd">j</span></td><td>Экспорт в Markdown · экспорт Repo Map в JSON</td></tr>
+<tr class="grp"><td colspan="2">Везде</td></tr>
+<tr><td><span class="kbd">F1</span></td><td>Справка с любого экрана</td></tr>
+<tr><td><span class="kbd">F2</span></td><td>Язык: русский / English (по умолчанию из <code>HARNESS_CONSOLE_LANG</code>)</td></tr>
+<tr><td><span class="kbd">Ctrl+P</span> <span class="kbd">Ctrl+Q</span></td><td>Палитра команд · выход</td></tr></table>
+
+<h2>Статусы <small>новый раздел</small></h2>
+<p>Статус всегда показан символом и словом, не только цветом — консоль читается и в монохромном терминале.</p>
+<table class="tbl stbl"><tr><th>Символ</th><th>Подпись</th><th>Что значит</th></tr>
+<tr><td class="e-ok">✔</td><td>принято</td><td>Проверка пройдена, отчёт принят, действие выполнено.</td></tr>
+<tr><td class="e-warn">Ⅱ</td><td>приостановлено</td><td>Работа остановлена на подтверждённой границе, ждёт решения.</td></tr>
+<tr><td style="color:var(--muted)">○</td><td>не начато</td><td>Этап не запускался или проверка не выполнялась. Не считается успехом.</td></tr>
+<tr><td class="e-err">✖</td><td>ошибка</td><td>Проверка не пройдена или действие завершилось отказом.</td></tr>
+<tr><td class="e-warn">⚠</td><td>предупреждение</td><td>Нужно внимание; у необратимых команд — требуется подтверждение.</td></tr></table>
+
+<h2>Безопасность</h2>
+<ul>
+<li><b>Что консоль не делает сама.</b> Команды из «Как исправить» только показываются — запускайте их вручную. Выбор пункта меню или вкладки ничего не запускает и не обходит gates.</li>
+<li><b>Подтверждения.</b> Перед необратимыми действиями консоль переспрашивает; отмена ничего не запускает. <code>ledger reset</code>, жёсткая очистка и удаление харнесса требуют ввести <code>RESET</code>, <code>HARD</code> или <code>UNINSTALL</code>. «Исправить» в диагностике делает только <code>health --fix</code> и требует повторного нажатия.</li>
+<li><b>Файлы и версии.</b> Экспорты сохраняются в <code>docs/tasks/</code> и не перезаписываются. Мастер пишет JSON только после итогового подтверждения и сохраняет предыдущую версию; версии лежат в <code>.harness/config_versions/</code> и переживают очистку.</li>
+<li><b>ИИ.</b> По умолчанию выключен. Рекомендация попадает в черновик, предложенные команды автоматически не запускаются.</li>
+</ul>
+
+<h2>Документация</h2>
+<ul><li>Команды и флаги: <code>harness --help</code></li><li>Контракт оркестрации и роли: <code>.harness/orchestration/playbook.md</code></li><li>Настройки <code>orchestration.json</code>: <code>.harness/orchestration/README.md</code></li></ul>
+</div></div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">↑↓</b>Прокрутка</span><span><b class="k">Tab</b>Фокус</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Что не так в текущей справке</b></span><span>Сверено с кодом: help_text.py, shell.py, dashboard.py.</span></div>
+<div class="sheet"><h3>Расхождения, которые макет исправляет</h3>
+  <table class="tbl"><tr><th>В текущей справке</th><th>В коде и в меню</th><th>В макете</th></tr>
+  <tr><td>Разделы названы по-английски (Diagnostics, Reports, Help) в RU-тексте</td><td>В меню: «Диагностика», «Отчёты», «Справка»</td><td>Названия как в меню</td></tr>
+  <tr><td>В таблице разделов нет «Открыть проект» и «Обновить Harness»; они упомянуты только в клавишах</td><td>Это пункты меню 1 и 2</td><td>Все пункты 0–9 в одной таблице</td></tr>
+  <tr><td>Нет описания окна: верхняя панель, меню, крошки, контекст, нижняя строка</td><td>Есть в каркасе (#721)</td><td>Раздел «Окно консоли» со схемой</td></tr>
+  <tr><td>Нет статусных символов</td><td>Требуют тикет #725 и словарь статусов</td><td>Раздел «Статусы»: символ, подпись, смысл</td></tr>
+  <tr><td>Клавиши одним списком; <code>1</code> и <code>p</code> дублируют друг друга</td><td><code>r</code>, <code>o</code>, <code>p</code> — только на Главной</td><td>Клавиши сгруппированы: навигация, на экранах, везде</td></tr>
+  <tr><td>«Harness» описан только командами CLI</td><td>Появятся временные файлы и worktree</td><td>Описание «Harness» обновлено</td></tr></table>
+  <div class="lab" style="margin:12px 0 0">Раздел «Статусы», крошки-ссылки и клавиша <b style="color:var(--fg)">0</b> — предложения из макетов; они попадут в справку, только если их примут в #721/#725.</div>
+</div>
+
+<div class="caption"><span><b>RU / EN</b></span><span>Тикет #725 требует перевод всех новых подписей. Заголовки нового текста в английской версии.</span></div>
+<div class="sheet"><div class="two">
+  <div class="panel" style="background:var(--bg)"><div class="ph"><span class="t">RU</span></div><div class="toc2" style="position:static"><div class="on"><span>Окно консоли</span></div><div><span>Разделы</span></div><div><span>Клавиши</span></div><div><span>Статусы</span></div><div><span>Безопасность</span></div><div><span>Документация</span></div></div></div>
+  <div class="panel" style="background:var(--bg)"><div class="ph"><span class="t">EN</span></div><div class="toc2" style="position:static"><div class="on"><span>Console window</span></div><div><span>Sections</span></div><div><span>Keys</span></div><div><span>Statuses</span></div><div><span>Safety</span></div><div><span>Documentation</span></div></div>
+    <div class="lab" style="margin:8px 0 0;font-size:12.5px">✔ accepted · Ⅱ paused · ○ not started · ✖ error · ⚠ warning</div></div>
+</div></div>
+<div class="caption"><span><b>9 · Справка — узкий терминал (≈80×24)</b></span><span>Разделы справки сворачиваются, раскрыт один.</span></div>
+<div class="app narrow dense" style="height:800px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">⎇ feature/issue-721…</div></div>
+  <div class="body"><main><div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><span class="cur">Справка</span></div><div class="page fill">
+<div class="hd"><h1 style="font-size:18px">Справка</h1><span class="chip">Содержание ▾</span></div>
+<div class="ctxb" style="font-size:12.5px"><span>Вы пришли с «Отчёты»</span><a class="btn xs" href="#">клавиши экрана ▸</a></div>
+<div class="panel" style="padding:10px 12px"><div class="ph"><span class="t">Окно консоли</span><span style="color:var(--muted)">▾</span></div>
+  <div class="doc"><ul><li><b>Верхняя панель</b>: версия, проект, ветка.</li><li><b>Меню</b> сворачивается в «≡»; цифры 0–9 открывают разделы.</li><li><b>Крошки</b> — ссылки на экраны пути.</li><li>Нижняя строка показывает клавиши экрана.</li></ul></div></div>
+<div class="card fold"><span>▸ Разделы</span><span>10</span></div>
+<div class="card fold"><span>▸ Клавиши</span><span>3 группы</span></div>
+<div class="card fold"><span>▸ Статусы</span><span>✔ Ⅱ ○ ✖ ⚠</span></div>
+<div class="card fold"><span>▸ Безопасность</span><span>4 пункта</span></div>
+<div class="card fold"><span>▸ Документация</span><span>3 ссылки</span></div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">↑↓</b>Прокрутка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="legend">Из кода: текущая справка (разделы, клавиши, безопасность, документация) и привязки клавиш экранов. Из #725: справка описывает меню, номерные клавиши и статусные символы; подписи в RU и EN. Моё: схема окна, раздел «Статусы», группировка клавиш, содержание слева, строка «Вы пришли с экрана…». Клавиша 0 и крошки-ссылки зависят от решения по каркасу.</div>
+</body></html>

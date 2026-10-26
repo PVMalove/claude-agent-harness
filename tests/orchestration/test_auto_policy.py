@@ -776,6 +776,81 @@ class AutoDecisionTableTests(unittest.TestCase):
                     )
                 )
 
+    def test_finish_spends_the_budget_only_on_a_proven_code_defect(self) -> None:
+        proven = {"domain": "code_test", "method": "structured", "matched": "m", "source": "s"}
+        for domain, method in (
+            ("infrastructure", "structured"),
+            ("environment_preparation", "structured"),
+            ("policy", "approver"),
+        ):
+            routing = {
+                "route": "developer-retry",
+                "next_action": "developer-retry",
+                "reason_category": "code",
+                "failure": {**proven, "domain": domain, "method": method},
+            }
+            with self.subTest(domain=domain):
+                self.assertIsNone(
+                    auto_policy.finish(
+                        routing, None, budget_exhausted=True, bug_ticket=None
+                    )
+                )
+        # An unknown domain spends no budget, so nothing else would bound the automatic retry:
+        # it is the unknown-reason stop, with or without an exhausted budget.
+        unproven = {
+            "route": "developer-retry",
+            "next_action": "developer-retry",
+            "reason_category": "code",
+            "failure": {**proven, "domain": "unknown", "method": "fallback"},
+        }
+        for exhausted in (True, False):
+            with self.subTest(unknown_exhausted=exhausted):
+                stop = auto_policy.finish(
+                    unproven, None, budget_exhausted=exhausted, bug_ticket=None
+                )
+                self.assertIsNotNone(stop)
+                assert stop is not None
+                self.assertEqual(
+                    (stop.category, stop.reason),
+                    ("no-automatic-route", "unknown-reason"),
+                )
+        stop = auto_policy.finish(
+            {
+                "route": "developer-retry",
+                "next_action": "developer-retry",
+                "reason_category": "code",
+                "failure": proven,
+            },
+            None,
+            budget_exhausted=True,
+            bug_ticket=None,
+        )
+        assert stop is not None
+        self.assertEqual(stop.category, "budget-exhausted")
+
+    def test_the_unknown_reason_stop_carries_the_failure_that_showed_it(self) -> None:
+        failure = {
+            "domain": "unknown",
+            "method": "fallback",
+            "matched": "no structured evidence classifies the cause",
+            "source": "report",
+        }
+        stop = auto_policy.finish(
+            {
+                "route": "developer-retry",
+                "next_action": "developer-retry",
+                "reason_category": "unknown",
+                "failure": failure,
+            },
+            None,
+            budget_exhausted=False,
+            bug_ticket=None,
+        )
+
+        assert stop is not None
+        self.assertEqual(stop.reason, "unknown-reason")
+        self.assertEqual(stop.evidence["failure"], failure)
+
     def test_a_tooling_retry_without_a_bug_ticket_is_refused(self) -> None:
         with self.assertRaises(CoordinatorError) as refused:
             auto_policy.finish(
@@ -797,6 +872,51 @@ class AutoDecisionTableTests(unittest.TestCase):
             argparse.Namespace(block_bypass=True, note="ran pytest through a wrapper")
         )
         self.assertTrue(inputs.block_bypass)
+
+    def _failed_gate(self, diagnostics: str) -> JsonObject:
+        return _clean(
+            "qa",
+            outcome="failed",
+            checks_run=[{"command": "make verify", "result": "fail", "evidence": "exit 2"}],
+            qa_stages={
+                "stages": [
+                    {
+                        "stage": "gate",
+                        "command": "make verify",
+                        "result": "fail",
+                        "exit_code": 2,
+                        "diagnostics": diagnostics,
+                    }
+                ],
+                "failed_stage": "gate",
+                "code_checks_started": "started",
+            },
+        )
+
+    def test_a_qa_gate_failed_on_its_environment_stops_without_a_retry(self) -> None:
+        report = self._failed_gate(
+            "FAILED tests/a.py::t - OSError: [Errno 30] Read-only file system: "
+            "'/tmp/harness-db-1'\n1 failed, 9 passed in 1.00s"
+        )
+        stop = auto_policy.environment_stop("qa", report, Path("/work/repo"))
+        assert stop is not None
+        self.assertEqual(
+            (stop.category, stop.reason), ("no-automatic-route", "qa-environment-failure")
+        )
+        self.assertEqual(stop.evidence["command"], "make verify")
+        self.assertEqual(
+            stop.evidence["classification"]["category"], "read-only-filesystem"
+        )
+        self.assertIn("batch rewind --to qa", stop.evidence["remedy"])
+        # The same evidence from any other stage is no QA environment failure.
+        self.assertIsNone(auto_policy.environment_stop("developer", report, Path("/work/repo")))
+
+    def test_a_qa_gate_failed_on_the_code_keeps_the_developer_retry(self) -> None:
+        report = self._failed_gate(
+            "FAILED tests/a.py::t - AssertionError: assert 1 == 2\n1 failed in 1.00s"
+        )
+        self.assertIsNone(auto_policy.environment_stop("qa", report, Path("/work/repo")))
+        self.assertEqual(self._category("qa", report).decision, "retry")
 
     def test_a_stop_outside_the_closed_list_cannot_exist(self) -> None:
         with self.assertRaises(CoordinatorError):

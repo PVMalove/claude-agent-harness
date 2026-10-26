@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import BinaryIO, ClassVar, Protocol, cast
 
 from ...errors import INTERNAL_INVARIANT_REMEDY, HarnessError
+from ..core import state_view
 from ..core.constants import BatchState, DispatchState
 from ..core.utils import sealed
 from .recovery_chain import event_audit, terminal
@@ -100,6 +101,13 @@ class LedgerError(HarnessError):
 
 class LedgerLockBusy(LedgerError):
     """Another operation holds the ledger lock."""
+
+
+class LedgerSandboxDenied(LedgerError):
+    """The process may not write the ledger state: an environment limit, not a task error."""
+
+
+_DENIED_ERRNOS = frozenset({errno.EROFS, errno.EACCES, errno.EPERM})
 
 
 def _parse_state[T: StrEnum](value: object, vocabulary: type[T]) -> T:
@@ -670,12 +678,21 @@ class LifecycleLedger:
 
     def _take_lock_directory(self) -> Path:
         """The first step of ``lock()``: create the lock directory, or be busy."""
-        self.root.mkdir(parents=True, exist_ok=True)
         lock_dir = self.root / LOCK_DIRECTORY
         try:
+            self.root.mkdir(parents=True, exist_ok=True)
             lock_dir.mkdir()
         except FileExistsError as exc:
             raise _lock_busy() from exc
+        except OSError as exc:
+            if exc.errno not in _DENIED_ERRNOS:
+                raise
+            raise LedgerSandboxDenied(
+                f"sandbox_denied: the coordinator cannot write {lock_dir} ({exc.strerror})",
+                remedy=f"let this process write {self.root} (for the Claude Code sandbox: "
+                "sandbox.filesystem.allowWrite), or run the command where that directory is "
+                "writable; an infrastructure refusal, not a task error",
+            ) from exc
         return lock_dir
 
     def _record_lock_owner(self, lock_dir: Path) -> Path:
@@ -924,7 +941,13 @@ class LifecycleLedger:
         return generation
 
     def records_root(self) -> Path:
-        """Return the selected generation; legacy state is readable only by ``migrate``."""
+        """Return the selected generation; legacy state is readable only by ``migrate``.
+
+        While a read view of the runtime store is bound for this state root (ADR 0020), the records
+        root is the virtual root of that view: the file ledger is not the authority any more."""
+        view = state_view.current_view()
+        if view is not None and view.root == self.root:
+            return view.virtual_root
         pointer = self.pointer()
         if pointer is None:
             if self._legacy_records_present():

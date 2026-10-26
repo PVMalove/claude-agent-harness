@@ -51,6 +51,7 @@ PROJECT_JSON_ALLOWED_FIELDS = frozenset(PROJECT_JSON_REQUIRED_FIELDS) | {
     "ci_required_checks",
     "test_paths",
     "test_runner",
+    "hook_policy",
 }
 STORY_POINTS_REQUIRED_FIELDS = (
     "scale",
@@ -87,6 +88,11 @@ TEST_RUNNER_FIELDS = ("command", "build", "database")
 ARTIFACT_PATH_PATTERN = "^(?![/\\\\])(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.?(?:/|$))[^/*?\\[\\]{}\\\\\\x00-\\x1f]+(?:/[^/*?\\[\\]{}\\\\\\x00-\\x1f]+)*/\\*\\*$(?![\\s\\S])"
 # The one `test_runner.command` element the runner replaces with the selected test id.
 TEST_ID_PLACEHOLDER = "{test_id}"
+
+# The optional `hook_policy` field (issue #794): profiles ordered from the weakest to the strictest
+# and the roles an escalation may name.  `project.schema.json` repeats both lists.
+HOOK_PROFILES = ("minimal", "standard", "strict")
+HOOK_POLICY_ROLES = ("developer", "review", "qa", "coordinator")
 # Bound of the `git ls-files` skill inventory.
 GIT_TIMEOUT_SECONDS = 30
 # A JSON file cannot be opened, decoded or parsed (too deep nesting included).
@@ -517,6 +523,18 @@ def validate_integrations(repo: Path, problems: list[str]) -> int:
             problems.append(
                 f"integration {identifier!r} secret_refs must contain environment variable names only"
             )
+        managed = entry.get("managed_entries")
+        if managed is not None and not (
+            isinstance(managed, list)
+            and len(set(managed)) == len(managed)
+            and all(
+                isinstance(item, str) and re.fullmatch(r"[0-9a-f]{64}", item)
+                for item in managed
+            )
+        ):
+            problems.append(
+                f"integration {identifier!r} managed_entries must be unique sha256 digests"
+            )
         try:
             config = relative_path(
                 entry.get("config"), label=f"integration {identifier!r} config"
@@ -688,6 +706,87 @@ def test_runner_problems(value: object) -> list[str]:
     return problems
 
 
+def hook_policy_problems(value: object) -> list[str]:
+    """Problems of the `hook_policy` value: `{"profile": ..., "escalations": [{"paths": globs,
+    "roles": roles, "profile": ...}]}`.  An escalation must not be weaker than the base profile.
+    Values are shown by position, never echoed."""
+    prefix = ".harness/project.json hook_policy"
+    if not isinstance(value, dict):
+        return [f"{prefix} must be an object"]
+    problems: list[str] = []
+    extra = sorted(set(value) - {"profile", "escalations"})
+    if extra:
+        problems.append(f"{prefix} has unknown field(s): {', '.join(extra)}")
+    profile = value.get("profile")
+    if profile not in HOOK_PROFILES:
+        problems.append(f"{prefix}.profile must be one of: {', '.join(HOOK_PROFILES)}")
+    escalations = value.get("escalations", [])
+    if not isinstance(escalations, list):
+        problems.append(f"{prefix}.escalations must be a list")
+        return problems
+    for index, escalation in enumerate(escalations):
+        problems.extend(
+            _hook_escalation_problems(
+                f"{prefix}.escalations[{index}]", escalation, profile
+            )
+        )
+    return problems
+
+
+def _has_duplicates(items: list[object]) -> bool:
+    seen: list[object] = []
+    for item in items:
+        if item in seen:
+            return True
+        seen.append(item)
+    return False
+
+
+def _hook_escalation_problems(
+    prefix: str, escalation: object, base: object
+) -> list[str]:
+    if not isinstance(escalation, dict):
+        return [f"{prefix} must be an object"]
+    problems: list[str] = []
+    extra = sorted(set(escalation) - {"paths", "roles", "profile"})
+    if extra:
+        problems.append(f"{prefix} has unknown field(s): {', '.join(extra)}")
+    profile = escalation.get("profile")
+    if profile not in HOOK_PROFILES:
+        problems.append(f"{prefix}.profile must be one of: {', '.join(HOOK_PROFILES)}")
+    elif base in HOOK_PROFILES and HOOK_PROFILES.index(profile) < HOOK_PROFILES.index(
+        base
+    ):
+        problems.append(f"{prefix}.profile must not be lower than the base profile")
+    if "paths" not in escalation and "roles" not in escalation:
+        problems.append(f"{prefix} must set paths or roles")
+    if "paths" in escalation:
+        paths = escalation["paths"]
+        if not isinstance(paths, list) or not paths:
+            problems.append(f"{prefix}.paths must be a non-empty list of glob strings")
+        else:
+            if _has_duplicates(paths):
+                problems.append(f"{prefix}.paths must not repeat an entry")
+            problems.extend(
+                f"{prefix}.paths[{i}] must be a relative glob without '..' segments"
+                for i, item in enumerate(paths)
+                if not (isinstance(item, str) and re.fullmatch(TEST_PATH_PATTERN, item))
+            )
+    if "roles" in escalation:
+        roles = escalation["roles"]
+        if not isinstance(roles, list) or not roles:
+            problems.append(f"{prefix}.roles must be a non-empty list of role names")
+        else:
+            if _has_duplicates(roles):
+                problems.append(f"{prefix}.roles must not repeat an entry")
+            problems.extend(
+                f"{prefix}.roles[{i}] must be one of: {', '.join(HOOK_POLICY_ROLES)}"
+                for i, item in enumerate(roles)
+                if item not in HOOK_POLICY_ROLES
+            )
+    return problems
+
+
 def validate_project_json(repo: Path, problems: list[str]) -> None:
     """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
@@ -767,6 +866,8 @@ def validate_project_data(data: object, problems: list[str]) -> None:
         problems.extend(test_paths_problems(data["test_paths"]))
     if "test_runner" in data:
         problems.extend(test_runner_problems(data["test_runner"]))
+    if "hook_policy" in data:
+        problems.extend(hook_policy_problems(data["hook_policy"]))
     if "story_points" in data:
         story_points = data["story_points"]
         if not isinstance(story_points, dict):

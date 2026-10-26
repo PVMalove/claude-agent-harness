@@ -4,6 +4,15 @@
 # mattpocock-suite capability). Deliberately does NOT block `git push` outright, unlike upstream —
 # docs/agents/git-workflow.md requires pushing issue branches; push-to-base/integration is already
 # covered by block-direct-master.sh.
+# Verdict envelope (hook_response.py): reruns this script, answers with the JSON verdict and the
+# exit code of the hook policy. Without Python or the helper the script below decides alone.
+if [ -z "${HARNESS_HOOK_ENVELOPE:-}" ]; then
+  ENVELOPE_DIR="$(cd "$(dirname "$0")" && pwd)"
+  ENVELOPE_PY="$(command -v python3 || command -v python)"
+  if [ -n "$ENVELOPE_PY" ] && [ -f "$ENVELOPE_DIR/hook_response.py" ]; then
+    exec "$ENVELOPE_PY" "$ENVELOPE_DIR/hook_response.py" run block-dangerous-git "${BASH:-bash}" "$0"
+  fi
+fi
 INPUT=$(cat)
 PY="$(command -v python3 || command -v python)"
 if [ -z "$PY" ]; then

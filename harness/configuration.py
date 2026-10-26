@@ -9,6 +9,7 @@ writing and versions live in ``harness.configuration_store``.
 from __future__ import annotations
 
 import base64
+import difflib
 import json
 import re
 from pathlib import Path
@@ -17,6 +18,7 @@ from harness.json_types import JsonObject
 
 NAMES = ("project.json", "orchestration.json")
 MAX_BYTES = 2_000_000
+MAX_DEPTH = 64
 Bundle = dict[str, bytes | None]
 _SECRET_KEY = re.compile(
     r"^(?:api[_-]?key|password|secret|(?:access|auth|refresh|id)[_-]?token|token|client[_-]?secret|private[_-]?key|authorization|credential)s?$",
@@ -58,27 +60,64 @@ def read_limited(path: Path) -> bytes | None:
     return raw
 
 
-def parse_config_json(raw: bytes | str) -> object:
-    """Accept standard JSON only, including finite numbers at every depth."""
+def parse_config_json(raw: bytes | str, *, max_bytes: int = MAX_BYTES) -> object:
+    """Bound standard JSON and reject ambiguous duplicate keys before any consumer."""
 
     def invalid_constant(value: str) -> object:
         raise ValueError("Некорректное JSON-значение")
 
+    def unique_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                # Do not echo an authored key: it may contain a secret.
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    if len(raw.encode("utf-8") if isinstance(raw, str) else raw) > max_bytes:
+        raise ValueError("Файл конфигурации слишком большой")
+
     try:
-        value = json.loads(raw, parse_constant=invalid_constant)
+        value = json.loads(
+            raw, parse_constant=invalid_constant, object_pairs_hook=unique_keys
+        )
         json.dumps(value, allow_nan=False)
-    except (ValueError, RecursionError):
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Некорректное JSON-значение: line {exc.lineno}, column {exc.colno}"
+        ) from None
+    except UnicodeDecodeError:
+        raise ValueError("Некорректный UTF-8") from None
+    except RecursionError:
+        raise ValueError("Конфигурация слишком глубокая") from None
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > MAX_DEPTH:
+            raise ValueError("Конфигурация слишком глубокая")
+        if isinstance(item, dict):
+            pending.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            pending.extend((child, depth + 1) for child in item)
+    try:
+        json.dumps(value, allow_nan=False)
+    except ValueError:
         raise ValueError("Некорректное JSON-значение") from None
     return value
 
 
-def parse_object(raw: bytes, label: str = "") -> JsonObject:
+def parse_object(
+    raw: bytes, label: str = "", *, max_bytes: int = MAX_BYTES
+) -> JsonObject:
     """Parse a standard-JSON object; ``label`` names the file in the error text."""
     prefix = label + ": " if label else ""
     try:
-        value = parse_config_json(raw)
-    except (ValueError, RecursionError):
-        raise ValueError(prefix + "требуется корректный JSON в UTF-8") from None
+        value = parse_config_json(raw, max_bytes=max_bytes)
+    except (ValueError, RecursionError) as exc:
+        raise ValueError(
+            prefix + "требуется корректный JSON в UTF-8: " + str(exc)
+        ) from None
     if not isinstance(value, dict):
         raise ValueError(prefix + "требуется JSON-объект")
     return value
@@ -88,7 +127,11 @@ def reject_secrets(value: object) -> None:
     """Reject recognizable secrets without putting values in error messages."""
     if isinstance(value, dict):
         for key, item in value.items():
-            if not isinstance(key, str) or _SECRET_KEY.search(key):
+            if (
+                not isinstance(key, str)
+                or _SECRET_KEY.search(key)
+                or _SECRET_TEXT.search(key)
+            ):
                 raise ValueError("Секреты нельзя сохранять в конфигурации и версиях")
             reject_secrets(item)
     elif isinstance(value, list):
@@ -96,6 +139,28 @@ def reject_secrets(value: object) -> None:
             reject_secrets(item)
     elif isinstance(value, str) and _SECRET_TEXT.search(value):
         raise ValueError("Секреты нельзя сохранять в конфигурации и версиях")
+
+
+SECRET_MASK = "••••••"
+
+
+def mask_secrets(value: object, key: str | None = None) -> object:
+    """A display copy of `value`: every value under a secret key and every string with secret text
+    becomes SECRET_MASK. It recognizes exactly what reject_secrets refuses; never store its result."""
+    if key is not None and _SECRET_KEY.search(key):
+        return SECRET_MASK
+    if isinstance(value, dict):
+        return {
+            name: SECRET_MASK
+            if not isinstance(name, str)
+            else mask_secrets(item, name)
+            for name, item in value.items()
+        }
+    if isinstance(value, list):
+        return [mask_secrets(item) for item in value]
+    if isinstance(value, str) and _SECRET_TEXT.search(value):
+        return SECRET_MASK
+    return value
 
 
 def decode_bundle(value: object) -> Bundle:
@@ -128,7 +193,7 @@ def read_journal(path: Path) -> JsonObject | None:
         return None
     if len(raw) > MAX_BYTES * 8:
         raise ValueError("Журнал конфигурации слишком большой")
-    data = parse_object(raw)
+    data = parse_object(raw, max_bytes=MAX_BYTES * 8)
     if data.get("schema") != 1 or data.get("state") not in (
         "prepared",
         "committed",
@@ -169,4 +234,25 @@ def read_config_json(path: Path) -> object:
     Raises ``ValueError`` for malformed, oversized or linked files.
     """
     raw = read_config_file(path)
-    return {} if raw is None else json.loads(raw)
+    return {} if raw is None else parse_config_json(raw)
+
+
+def bundle_diff(
+    before: dict[str, bytes | None],
+    after: dict[str, bytes | None],
+    old_label: str,
+    new_label: str,
+) -> str:
+    """Unified diff of two configuration sets; a deleted file is announced explicitly."""
+    lines: list[str] = []
+    for name, raw in after.items():
+        old = (before[name] or b"").decode("utf-8").splitlines(keepends=True)
+        new = (raw or b"").decode("utf-8").splitlines(keepends=True)
+        lines.extend(
+            difflib.unified_diff(
+                old, new, fromfile=f"{old_label}/{name}", tofile=f"{new_label}/{name}"
+            )
+        )
+        if raw is None and before[name] is not None:
+            lines.append(f"Удалить {name}\n")
+    return "".join(lines)

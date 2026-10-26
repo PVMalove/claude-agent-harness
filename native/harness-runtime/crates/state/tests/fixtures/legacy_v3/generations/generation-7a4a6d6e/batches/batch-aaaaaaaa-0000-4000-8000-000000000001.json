@@ -1,0 +1,63 @@
+{
+  "allowed_paths": [
+    "a/**"
+  ],
+  "approval_policy": "manual",
+  "base_commit": "1111111111111111111111111111111111111111",
+  "batch_id": "batch-aaaaaaaa-0000-4000-8000-000000000001",
+  "branch": "feature/issue-1-example",
+  "branch_start_commit": "2222222222222222222222222222222222222222",
+  "communication_policy": {
+    "agent_to_agent_language": "en",
+    "coordinator_report_language": "ru"
+  },
+  "coordinator_approval": null,
+  "created_at": "2026-10-01T00:00:00+00:00",
+  "definition_of_done": [
+    "The example is done."
+  ],
+  "dependencies": [],
+  "developer_verification_commands": [
+    "make test"
+  ],
+  "dispatches": [
+    {
+      "brief_sha256": "7ce4f6e92b7f3e8a115ff8bce0ecdbfe214144135db167781a84a487fba75076",
+      "dispatch_id": "dispatch-11111111-0000-4000-8000-000000000001",
+      "report": "reports/dispatch-11111111-0000-4000-8000-000000000001.json",
+      "report_sha256": "8e088e42b49ad21068858f4664240a892b0ac598ad7fd3dfb80f293a1e0016e8",
+      "state": "reported"
+    },
+    {
+      "brief_sha256": "2bb46447e0d78d7dc3c51a2cf12839e3c0f9f2a7e1f3fe1a49f74bb6bb6e59ad",
+      "dispatch_id": "dispatch-22222222-0000-4000-8000-000000000002",
+      "state": "approved"
+    }
+  ],
+  "harness_runtime_sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+  "integration_ref": "integration/example",
+  "prohibited_changes": [],
+  "required_gates": [
+    "review",
+    "qa"
+  ],
+  "risk_reassessment_candidate": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "risk_reassessment_required": true,
+  "risk_reassessment_triggers": [
+    "transactions"
+  ],
+  "scope_preflight": {
+    "outside_allowed_paths": [],
+    "status": "clean"
+  },
+  "state": "active",
+  "ticket": "#1",
+  "verification_commands": [
+    "make test"
+  ],
+  "worktree": "/var/projects/example/.harness/.sandboxes/worktrees/issue-1-example",
+  "write_paths": [
+    "a/**"
+  ],
+  "zone": null
+}

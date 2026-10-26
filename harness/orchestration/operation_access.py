@@ -14,6 +14,7 @@ import subprocess
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from ..errors import INTERNAL_INVARIANT_REMEDY
@@ -22,6 +23,7 @@ from .core.constants import ACCESS_OPERATIONS
 from .core.utils import CoordinatorError, JsonObject
 from .runtime_access import (
     AccessError,
+    RuntimeAccessStatus,
     resolve_plan,
     validate_binding,
     validate_plan,
@@ -29,6 +31,39 @@ from .runtime_access import (
 )
 
 REMOTE_PROBE_SECONDS = 30
+
+
+# State of one access check; every check that is not verified stops the operation.
+class AccessCheckState(StrEnum):
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    DENIED = "denied"
+    UNSUPPORTED = "unsupported"
+
+
+# What established the state of an access check.
+class AccessCheckSource(StrEnum):
+    PLAN = "plan"
+    PROBE = "probe"
+    INHERIT = "inherit"
+    NATIVE_RUNTIME = "native-runtime"
+
+
+# Overall status of an operation's access evidence: legacy-inherit for a plan without authored
+# access, otherwise the first FAILED_STATUS_ORDER state among the failed checks, or verified.
+class OperationAccessStatus(StrEnum):
+    LEGACY_INHERIT = "legacy-inherit"
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    DENIED = "denied"
+    UNSUPPORTED = "unsupported"
+
+
+FAILED_STATUS_ORDER = (
+    OperationAccessStatus.UNSUPPORTED,
+    OperationAccessStatus.DENIED,
+    OperationAccessStatus.UNVERIFIED,
+)
 
 
 class OperationAccessError(AccessError, CoordinatorError):
@@ -156,7 +191,7 @@ def _allowed(plan: JsonObject, need: _Need) -> bool:
     )
 
 
-def _probe(need: _Need) -> tuple[str, str]:
+def _probe(need: _Need) -> tuple[AccessCheckState, str]:
     """Really exercise the access the operation needs: ``(state, reason)``.
 
     A write creates and removes one uniquely named file; a refusal by the environment is a
@@ -165,16 +200,16 @@ def _probe(need: _Need) -> tuple[str, str]:
     path = need.path
     if not path.is_dir():
         if not need.create:
-            return "unverified", f"{path} does not exist"
+            return AccessCheckState.UNVERIFIED, f"{path} does not exist"
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return _refusal(exc)
     if need.access == "read":
         return (
-            ("verified", "readable")
+            (AccessCheckState.VERIFIED, "readable")
             if os.access(path, os.R_OK | os.X_OK)
-            else ("denied", "read access is refused")
+            else (AccessCheckState.DENIED, "read access is refused")
         )
     probe = path / f".access-probe-{uuid.uuid4().hex}"
     try:
@@ -182,13 +217,38 @@ def _probe(need: _Need) -> tuple[str, str]:
         probe.unlink()
     except OSError as exc:
         return _refusal(exc)
-    return "verified", "writable"
+    return AccessCheckState.VERIFIED, "writable"
 
 
-def _refusal(exc: OSError) -> tuple[str, str]:
+def _probe_ledger_lock(root: Path) -> tuple[AccessCheckState, str]:
+    """Take and release the real coordinator lock; another holder proves the state is writable.
+
+    `report submit` takes this lock while `dispatch heartbeat` does not, so a file written in the
+    state directory does not prove a worker can submit."""
+    from .ledger.lifecycle import (
+        LedgerError,
+        LedgerLockBusy,
+        LedgerSandboxDenied,
+        LifecycleLedger,
+    )
+
+    try:
+        with LifecycleLedger(root).lock():
+            return AccessCheckState.VERIFIED, "lock taken and released"
+    except LedgerLockBusy:
+        return AccessCheckState.VERIFIED, "lock held by another operation; the state is writable"
+    except LedgerSandboxDenied as exc:
+        return AccessCheckState.DENIED, exc.message
+    except LedgerError as exc:
+        return AccessCheckState.UNVERIFIED, exc.message
+    except OSError as exc:
+        return _refusal(exc)
+
+
+def _refusal(exc: OSError) -> tuple[AccessCheckState, str]:
     refused = exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS)
     # os.strerror(0) is "Success": an error without an errno names itself instead.
-    return ("denied" if refused else "unverified"), (
+    return (AccessCheckState.DENIED if refused else AccessCheckState.UNVERIFIED), (
         os.strerror(exc.errno) if exc.errno else str(exc)
     )
 
@@ -204,8 +264,8 @@ def _check(
     }
     if not _allowed(plan, need):
         entry.update(
-            state="denied",
-            source="plan",
+            state=AccessCheckState.DENIED,
+            source=AccessCheckSource.PLAN,
             reason=f"the approved access plan does not allow {need.access} on {need.resource}",
             remedy=(
                 f"allow {need.access} on {need.resource} for the {operation} operation in "
@@ -219,13 +279,13 @@ def _check(
         )
         return entry
     state, reason = _probe(need)
-    entry.update(state=state, source="probe", reason=reason)
-    if state == "denied":
+    entry.update(state=state, source=AccessCheckSource.PROBE, reason=reason)
+    if state == AccessCheckState.DENIED:
         entry["remedy"] = (
             f"grant the coordinator process {need.access} access to {need.path} "
             f"({need.label}) in its sandbox or filesystem permissions"
         )
-    elif state == "unverified":
+    elif state == AccessCheckState.UNVERIFIED:
         entry["remedy"] = (
             f"make {need.path} ({need.label}) exist and be reachable for the coordinator process"
         )
@@ -242,20 +302,22 @@ def _mode_check(operation: str, plan: JsonObject) -> JsonObject:
     }
     if mode == "inherit":
         entry.update(
-            state="verified",
-            source="inherit",
+            state=AccessCheckState.VERIFIED,
+            source=AccessCheckSource.INHERIT,
             reason="the coordinator runs in its own inherited environment",
         )
         return entry
     summary, _ = verify_plan(plan, "in-process")
-    if summary["status"] == "verified":
+    if summary["status"] == RuntimeAccessStatus.VERIFIED:
         entry.update(
-            state="verified", source="native-runtime", reason="confirmed natively"
+            state=AccessCheckState.VERIFIED,
+            source=AccessCheckSource.NATIVE_RUNTIME,
+            reason="confirmed natively",
         )
         return entry
     entry.update(
-        state="unsupported",
-        source="native-runtime",
+        state=AccessCheckState.UNSUPPORTED,
+        source=AccessCheckSource.NATIVE_RUNTIME,
         reason=f"mode {mode} is not provable for the coordinator: {summary.get('reason')}",
         remedy=(
             f"run the coordinator in a native runtime whose runtime_access extension confirms mode "
@@ -296,16 +358,16 @@ def _remote_check(
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         entry.update(
-            state="unverified",
-            source="probe",
+            state=AccessCheckState.UNVERIFIED,
+            source=AccessCheckSource.PROBE,
             reason=f"remote {remote!r} could not be read: {exc}",
             remedy="make git available and responsive for the coordinator process and repeat the command",
         )
         return entry
     if located.returncode:
         entry.update(
-            state="unverified",
-            source="probe",
+            state=AccessCheckState.UNVERIFIED,
+            source=AccessCheckSource.PROBE,
             reason=f"remote {remote!r} is not configured",
             remedy=f"configure the remote {remote!r} with 'git remote add' and repeat the command",
         )
@@ -314,8 +376,8 @@ def _remote_check(
     restricted = plan["mode"] == "sandbox" or bool(plan["network"]["hosts"])
     if host is not None and restricted and host not in plan["network"]["hosts"]:
         entry.update(
-            state="denied",
-            source="plan",
+            state=AccessCheckState.DENIED,
+            source=AccessCheckSource.PLAN,
             reason=f"host {host} is not in the approved network hosts",
             remedy=f"add {host} to access_policy network.hosts for the {operation} operation",
         )
@@ -332,28 +394,34 @@ def _remote_check(
         )
     except subprocess.TimeoutExpired:
         entry.update(
-            state="unverified",
-            source="probe",
+            state=AccessCheckState.UNVERIFIED,
+            source=AccessCheckSource.PROBE,
             reason=f"remote did not answer within {REMOTE_PROBE_SECONDS} seconds",
             remedy=f"restore connectivity to remote {remote!r} and repeat the command",
         )
         return entry
     except OSError as exc:
         entry.update(
-            state="unverified",
-            source="probe",
+            state=AccessCheckState.UNVERIFIED,
+            source=AccessCheckSource.PROBE,
             reason=f"git ls-remote could not run: {exc}",
             remedy="make git available for the coordinator process and repeat the command",
         )
         return entry
     if probed.returncode == 0:
-        entry.update(state="verified", source="probe", reason="reachable")
+        entry.update(
+            state=AccessCheckState.VERIFIED,
+            source=AccessCheckSource.PROBE,
+            reason="reachable",
+        )
         return entry
     detail = (probed.stderr or probed.stdout).strip()
     category = git_utils.classify_git_failure(detail)
     entry.update(
-        state="denied" if category == git_utils.REMOTE_DENIED else "unverified",
-        source="probe",
+        state=AccessCheckState.DENIED
+        if category == git_utils.REMOTE_DENIED
+        else AccessCheckState.UNVERIFIED,
+        source=AccessCheckSource.PROBE,
         reason=detail.splitlines()[-1] if detail else "ls-remote failed",
         remedy=(
             f"grant the credentials this process uses access to remote {remote!r}"
@@ -393,7 +461,11 @@ def verify(
         "sources": plan["sources"],
     }
     if is_legacy_inherit(plan):
-        return {**evidence, "status": "legacy-inherit", "checks": []}
+        return {
+            **evidence,
+            "status": OperationAccessStatus.LEGACY_INHERIT,
+            "checks": [],
+        }
     checks = [_mode_check(operation, plan)]
     checks += [
         _check(plan, need, operation, dispatch_bound=dispatch_bound)
@@ -401,11 +473,11 @@ def verify(
     ]
     if remote is not None and operation in ("git", "publish"):
         checks.append(_remote_check(operation, plan, repo, remote))
-    failed = [check for check in checks if check["state"] != "verified"]
+    failed = [check for check in checks if check["state"] != AccessCheckState.VERIFIED]
     states = {check["state"] for check in failed}
     status = next(
-        (name for name in ("unsupported", "denied", "unverified") if name in states),
-        "verified",
+        (name for name in FAILED_STATUS_ORDER if name in states),
+        OperationAccessStatus.VERIFIED,
     )
     evidence = {**evidence, "status": status, "checks": checks}
     if not failed:
@@ -442,3 +514,63 @@ def require(
         remote=remote,
         dispatch_bound=brief is not None,
     )
+
+
+def probe_worker_resources(
+    repo: Path, brief: JsonObject, *, state_dir: Path | None = None
+) -> JsonObject:
+    """Exercise role resources in the caller's context, using the operation probe contract.
+
+    The adapter calls this in its own context; the worker repeats it through its native tool
+    before task work. An adapter-side success alone is never proof of native worker access.
+    """
+    from .core.constants import STATE_REL
+    from .core.workspace import _agent_inbox
+
+    checkout = Path(brief["worktree"]).resolve()
+    plan = brief.get("runtime_access")
+    if not isinstance(plan, dict) or not plan.get("requirements"):
+        # Enumerate the same mandatory roots for a historical inherit plan. This is only an
+        # access probe; it neither changes the pinned plan nor grants additional permissions.
+        plan = resolve_plan(
+            repo, checkout, {"access_policy": {}}, brief["role"], brief["access"]
+        )
+    needs = [
+        _Need(
+            item["resource"],
+            item["access"],
+            item["resource"],
+            Path(item["path"]),
+            Path(item["path"]),
+            item["resource"] in {"cache", "artifacts"},
+        )
+        for item in plan["requirements"]
+    ]
+    ledger_path = state_dir or repo / STATE_REL
+    inbox = _agent_inbox(repo)
+    needs.extend(
+        [
+            _Need("ledger", "write", "ledger", ledger_path, ledger_path, True),
+            _Need("inbox", "write", "report inbox", inbox, inbox, True),
+        ]
+    )
+    probes = [(need.resource, need.path, need.access, _probe(need)) for need in needs]
+    probes.append(
+        ("ledger_lock", ledger_path, "write", _probe_ledger_lock(ledger_path))
+    )
+    checks = [
+        {
+            "requirement": resource,
+            "path": str(path),
+            "access": access,
+            "state": state,
+            "reason": reason,
+        }
+        for resource, path, access, (state, reason) in probes
+    ]
+    return {
+        "checks": checks,
+        "ready": all(check["state"] == "verified" for check in checks),
+        "scope": "current process only",
+        "native_worker_access": "unverified",
+    }

@@ -17,8 +17,8 @@ HELP_MARKDOWN = """\
 | Diagnostics | Полный отчёт `harness health`, онлайн-проверки, `--fix` и экспорт в Markdown. |
 | Harness | Состояние установки и использование пайплайна; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса, registry, list, health, Repo Map, ledger. |
 | Orchestration | Статистика пайплайна, история batch по состояниям (Enter открывает хронологию) и команды coordinator. |
-| Reports | Отчёты ролей из леджера с фильтрами, хронология batch и QA-логи. |
-| Repo Map | Карта репозитория для HEAD: сводка, дерево файлов, символы, связи и хабы. Вкладка «Диагностики» проверяет, что мешает полной карте; вкладка «Настройки»: режим minimal / full, установка парсеров языков и память проекта. |
+| Reports | Стадии и отчёты ролей из леджера с фильтрами (на узком терминале фильтры и батчи свёрнуты), хронология batch и QA-логи. Статус везде «символ + слово». |
+| Repo Map | Карта репозитория для HEAD: сводка, дерево файлов со статусом парсера, символы, связи (на узком терминале — раскрывающийся блок) и хабы. Вкладка «Диагностики» проверяет, что мешает полной карте; вкладка «Настройки»: режим minimal / full, установка парсеров языков и память проекта. |
 | Настройка конфигурации | Шаги `project.json` и `orchestration.json`, черновик, проверка и diff, версии и откат, необязательные CLI-подсказки. |
 | Help | Эта справка. |
 
@@ -32,10 +32,11 @@ init/adopt/update. Установка требует подтверждения 
 | Клавиша | Действие |
 | --- | --- |
 | `↑` `↓` `Enter` | Выбор пункта меню |
+| `0` | Вернуться на главный экран |
 | `1` | Открыть или подключить проект |
 | `2` | Открыть экран обновления Harness: версии, дрейф, diff, режим и подтверждённый запуск |
 | `3`–`9` | Открыть раздел на главном экране: Diagnostics, Harness, Orchestration, Reports, Repo Map, Configuration, Help |
-| `r` / `o` | Офлайн- / онлайн-проверки на главном экране |
+| `r` / `o` | Офлайн- / онлайн-проверки на главном экране; `r` в Reports обновляет списки |
 | `p` | Открыть или подключить проект |
 | `y` | Скопировать полную CLI-строку выбранной команды (Harness, Orchestration) |
 | `Tab` | Следующий элемент экрана |
@@ -48,6 +49,8 @@ init/adopt/update. Установка требует подтверждения 
 | `F2` | Язык меню: русский / English (по умолчанию из `HARNESS_CONSOLE_LANG`) |
 | `Ctrl+P` | Палитра команд |
 | `Ctrl+Q` | Выход |
+
+Статусы проверок показаны символом и словом, а не только цветом: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
 
 ## Безопасность
 
@@ -83,8 +86,8 @@ its logic.
 | Diagnostics | The full `harness health` report, online checks, `--fix` and export to Markdown. |
 | Harness | Installation state and pipeline usage; CLI commands: init, update (including `--force-managed-files` and `--force-seed-files`), diff, adopt, soft/hard cleanup (plan and apply), Harness removal, registry, list, health, Repo Map, ledger. |
 | Orchestration | Pipeline statistics, batch history by state (Enter opens the timeline) and coordinator commands. |
-| Reports | Role reports from the ledger with filters, the batch timeline and QA logs. |
-| Repo Map | The repository map for HEAD: summary, file tree, symbols, relations and hubs. The Diagnostics tab checks what stands in the way of a full map; the Settings tab: the minimal / full mode, installing language parsers and project memory. |
+| Reports | Stages and role reports from the ledger with filters (on a narrow terminal the filters and batches are folded), the batch timeline and QA logs. A status is always a symbol and a word. |
+| Repo Map | The repository map for HEAD: summary, file tree with the parser status, symbols, relations (a foldable block on a narrow terminal) and hubs. The Diagnostics tab checks what stands in the way of a full map; the Settings tab: the minimal / full mode, installing language parsers and project memory. |
 | Configuration | `project.json` and `orchestration.json` steps, draft, check and diff, versions and restore, optional CLI hints. |
 | Help | This guide. |
 
@@ -98,10 +101,11 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | Key | Action |
 | --- | --- |
 | `↑` `↓` `Enter` | Choose a menu item |
+| `0` | Back to the home screen |
 | `1` | Open or connect a project |
 | `2` | Open the Harness update screen: versions, drift, diff, mode and a confirmed run |
 | `3`–`9` | Open a section from the home screen: Diagnostics, Harness, Orchestration, Reports, Repo Map, Configuration, Help |
-| `r` / `o` | Offline / online checks on the home screen |
+| `r` / `o` | Offline / online checks on the home screen; `r` in Reports refreshes the lists |
 | `p` | Open or connect a project |
 | `y` | Copy the full CLI line of the selected command (Harness, Orchestration) |
 | `Tab` | Next element on the screen |
@@ -114,6 +118,8 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | `F2` | Menu language: Russian / English (default from `HARNESS_CONSOLE_LANG`) |
 | `Ctrl+P` | Command palette |
 | `Ctrl+Q` | Quit |
+
+Check statuses are shown as a symbol and a word, not by colour alone: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
 
 ## Safety
 

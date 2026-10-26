@@ -8,10 +8,12 @@ import argparse
 import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import traceback
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 MIN_PYTHON = (3, 12)
@@ -27,7 +29,26 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from harness.gate_runner.gate_runner import (
+    EvidenceContext,
+    StageCommand,
+    build_stage_evidence,
+    sanitise,
+)
+from harness.gate_runner.junit import failed_nodeids
+from harness.gate_runner.stage_evidence import StageEvidenceError
 from harness.storage import storage_path
+from scripts.verification.cache import (
+    COLD_ENV,
+    JUNIT_ENV,
+    VerificationCacheError,
+    WorktreeCache,
+    checkout_fingerprint,
+    head_commit,
+    open_cache,
+    write_evidence,
+)
+from scripts.verification import failed_only
 from scripts.verification.docs_sync import (
     check_docs_agents_enumeration,
     check_docs_agents_mirror,
@@ -43,6 +64,7 @@ from scripts.verification.instructions import (
 from scripts.verification.process import (
     isolated_temp_env,
     remove_tree,
+    run_captured,
     run_ok,
     run_stage,
 )
@@ -208,24 +230,38 @@ def pytest_command(
     fail_fast: bool = False,
     failed_first: Path | None = None,
     junit_xml: Path | None = None,
+    cache_dir: Path | None = None,
+    targets: Sequence[str] | None = None,
 ) -> list[str]:
     """Сформировать аргументы запуска pytest с учетом платформы и числа воркеров.
 
     `fail_fast` останавливает прогон на первом падении, `failed_first` хранит кэш pytest в
-    указанном каталоге и запускает прежде упавшие тесты первыми, `junit_xml` пишет отчёт для сводки CI."""
+    указанном каталоге и запускает прежде упавшие тесты первыми, `junit_xml` пишет отчёт для сводки CI,
+    `cache_dir` держит кэш pytest в кэше worktree без смены порядка тестов (ADR 0023, раздел 4),
+    `targets` заменяет весь набор точными nodeid или файлами failed-only прогона (ADR 0023, раздел 3)."""
     effective_cpus = os.cpu_count() or 1 if cpu_count is None else cpu_count
-    workers = min(8, effective_cpus)
+    workers = (
+        min(8, effective_cpus, len(targets)) if targets else min(8, effective_cpus)
+    )
     args = [sys.executable, "-m", "pytest"]
-    if failed_first is None:
-        args.extend(["-p", "no:cacheprovider"])
-    else:
+    if failed_first is not None:
         args.extend(["-o", f"cache_dir={failed_first}", "--ff"])
+    elif cache_dir is not None:
+        args.extend(["-o", f"cache_dir={cache_dir}"])
+    else:
+        args.extend(["-p", "no:cacheprovider"])
     if fail_fast:
         args.append("-x")
     if junit_xml is not None:
         args.extend([f"--junitxml={junit_xml}", "-o", "junit_family=xunit2"])
     args.extend(
-        ["-n", str(workers), "--basetemp", str(run_tmp / "p"), str(ROOT / "tests")]
+        [
+            "-n",
+            str(workers),
+            "--basetemp",
+            str(run_tmp / "p"),
+            *(targets or [str(ROOT / "tests")]),
+        ]
     )
     if platform == "win32":
         args.extend(
@@ -239,6 +275,135 @@ def pytest_command(
     return args
 
 
+def mypy_command() -> list[str]:
+    """The mypy stage."""
+    return [sys.executable, "-m", "mypy"]
+
+
+def clean_room_command() -> list[str]:
+    """The clean-room stage."""
+    return [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")]
+
+
+# What each recorded stage is, as the stage evidence names it.
+_STAGE_KINDS = {"mypy": "typecheck", "pytest": "pytest", "clean-room": "clean-room"}
+
+
+class _EvidenceRecorder:
+    """Runs the stages with separate, kept output streams and writes their stage evidence.
+
+    A stage the run never reached, because an earlier one failed or ``--only`` skipped it after the
+    failure, is recorded as ``not_run`` (ADR 0023, section 5).
+    """
+
+    def __init__(
+        self,
+        directory: Path,
+        context: EvidenceContext,
+        planned: list[str],
+        selections: Mapping[str, str],
+    ) -> None:
+        self._directory = directory
+        self._context = context
+        self._planned = planned
+        self.selections = dict(selections)
+        self._runs: dict[str, StageCommand] = {}
+
+    def run(
+        self,
+        name: str,
+        cmd: list[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+        junit: Path | None = None,
+    ) -> None:
+        """Run one stage, report its duration like ``run_stage`` and keep its evidence."""
+        if junit is not None:
+            # A report left by an earlier run must never stand in for this one: pytest that stops
+            # before its session starts (a conftest import error) writes none.
+            junit.unlink(missing_ok=True)
+        captured = run_captured(cmd, env=env, cwd=cwd)
+        state = "passed" if captured.exit_code == 0 else "failed"
+        print(f"[verify] {name}: {state} in {captured.duration_ms / 1000:.2f}s")
+        failed: tuple[str, ...] = ()
+        nothing_selected = (
+            name == "pytest" and captured.exit_code == failed_only.NO_TESTS_EXIT
+        )
+        if (
+            captured.exit_code != 0
+            and not nothing_selected
+            and junit is not None
+            and junit.is_file()
+        ):
+            try:
+                failed = failed_nodeids(junit.read_text(encoding="utf-8"), ROOT).nodeids
+            except (OSError, UnicodeDecodeError, StageEvidenceError):
+                failed = ()
+        command = subprocess.list2cmdline(cmd)
+        self._runs[name] = StageCommand(
+            command=command,
+            executed=sanitise(command),
+            exit_code=captured.exit_code,
+            output="",
+            stdout=sanitise(captured.stdout),
+            stderr=sanitise(captured.stderr),
+            duration_ms=captured.duration_ms,
+            failed_nodeids=failed,
+            not_run=nothing_selected,
+        )
+        if captured.exit_code != 0:
+            sys.exit(captured.exit_code)
+
+    def record_unrun(self, name: str, exit_code: int, reason: str) -> None:
+        """Record a stage that selected nothing and so never started: ``not_run`` with ``reason``."""
+        self._runs[name] = StageCommand(
+            command=name,
+            executed=name,
+            exit_code=exit_code,
+            output="",
+            stderr=reason + "\n",
+            not_run=True,
+        )
+
+    def write(self) -> None:
+        """Write the evidence document and the streams, whatever happened to the run."""
+        bundle = build_stage_evidence(
+            self._context,
+            [(name, self._runs.get(name)) for name in self._planned],
+            directory="",
+            kinds=_STAGE_KINDS,
+            selections=self.selections,
+        )
+        write_evidence(self._directory, bundle)
+
+
+def _mirror_junit(source: Path, targets: list[Path]) -> None:
+    """Copy the JUnit report to every other place that expects it (CI, the gate, the cache)."""
+    if not source.is_file():
+        return
+    for target in targets:
+        if target != source:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+
+def _stage(
+    recorder: _EvidenceRecorder | None,
+    name: str,
+    cmd: list[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    junit: Path | None = None,
+) -> None:
+    """Run one stage, with its streams kept apart when a recorder is given."""
+    if recorder is None:
+        run_stage(name, cmd, env=env, cwd=cwd)
+    else:
+        recorder.run(name, cmd, env=env, cwd=cwd, junit=junit)
+
+
 def _run_stages(
     run_tmp: Path,
     test_env: dict[str, str],
@@ -248,31 +413,118 @@ def _run_stages(
     fail_fast: bool = False,
     failed_first: Path | None = None,
     junit_xml: Path | None = None,
+    cache: WorktreeCache | None = None,
+    recorder: _EvidenceRecorder | None = None,
+    junit_mirrors: list[Path] | None = None,
 ) -> None:
-    """Стадии с замером времени: mypy, pytest и clean-room прогон; `only` оставляет одну группу."""
+    """Стадии с замером времени: mypy, pytest и clean-room прогон; `only` оставляет одну группу.
+
+    С `cache` mypy и pytest держат кэши в кэше worktree; clean-room стадия всегда холодная.
+    С `recorder` потоки стадий хранятся раздельно и порождают stage evidence."""
     try:
         if only != "clean-room":
-            run_stage("mypy", [sys.executable, "-m", "mypy"], cwd=ROOT, env=test_env)
-            run_stage(
-                "pytest",
-                pytest_command(
-                    run_tmp,
-                    platform_subset=platform_subset,
-                    fail_fast=fail_fast,
-                    failed_first=failed_first,
-                    junit_xml=junit_xml,
-                ),
-                env=test_env,
+            mypy_env = (
+                test_env
+                if cache is None
+                else dict(test_env, MYPY_CACHE_DIR=str(cache.mypy_dir))
             )
+            _stage(recorder, "mypy", mypy_command(), cwd=ROOT, env=mypy_env)
+            try:
+                _stage(
+                    recorder,
+                    "pytest",
+                    pytest_command(
+                        run_tmp,
+                        platform_subset=platform_subset,
+                        fail_fast=fail_fast,
+                        failed_first=failed_first,
+                        junit_xml=junit_xml,
+                        cache_dir=None if cache is None else cache.pytest_dir,
+                    ),
+                    env=test_env,
+                    junit=junit_xml,
+                )
+            finally:
+                if junit_xml is not None:
+                    _mirror_junit(junit_xml, junit_mirrors or [])
         if only != "tests":
-            run_stage(
+            _stage(
+                recorder,
                 "clean-room",
-                [sys.executable, str(ROOT / "scripts" / "test_clean_room.py")],
+                clean_room_command(),
                 # UTF-8 mode: the harness CLI writes UTF-8, and a cp1252 runner locale cannot decode it.
                 env=dict(test_env, HARNESS_TEST_RUN_ROOT=str(run_tmp), PYTHONUTF8="1"),
             )
     finally:
-        remove_tree(run_tmp)
+        try:
+            if recorder is not None:
+                recorder.write()
+        finally:
+            remove_tree(run_tmp)
+
+
+def _run_failed_only(
+    run_tmp: Path,
+    test_env: dict[str, str],
+    *,
+    platform_subset: bool,
+    junit_xml: Path | None,
+    cache: WorktreeCache,
+    recorder: _EvidenceRecorder | None,
+    junit_mirrors: list[Path],
+) -> None:
+    """Rerun only the tests that failed in the previous JUnit report of this worktree cache.
+
+    The pytest stage alone runs, with the exact failed nodeids (``failed-only``), or with their
+    surviving test files when a nodeid vanished (``focused``). An empty selection, like a pytest
+    run that collects nothing, is ``not_run`` with exit code 5. The result is a diagnostic: it
+    proves only the selected tests and never authorizes a publish (ADR 0023, section 3).
+    """
+    try:
+        # The previous report is read before this run replaces it in the cache.
+        selection = failed_only.select(ROOT, cache.junit_path, test_env)
+        if recorder is not None:
+            recorder.selections["pytest"] = selection.selection
+        print(f"[verify] failed-only: {selection.reason}")
+        if selection.empty:
+            print(
+                "[verify] pytest: not_run, no test selected "
+                f"(exit {failed_only.NO_TESTS_EXIT})"
+            )
+            if recorder is not None:
+                recorder.record_unrun(
+                    "pytest", failed_only.NO_TESTS_EXIT, selection.reason
+                )
+            sys.exit(failed_only.NO_TESTS_EXIT)
+        try:
+            _stage(
+                recorder,
+                "pytest",
+                pytest_command(
+                    run_tmp,
+                    platform_subset=platform_subset,
+                    junit_xml=junit_xml,
+                    cache_dir=cache.pytest_dir,
+                    targets=selection.targets,
+                ),
+                env=test_env,
+                # The nodeids are relative to the rootdir, so pytest runs from the checkout.
+                cwd=ROOT,
+                junit=junit_xml,
+            )
+        finally:
+            if junit_xml is not None:
+                _mirror_junit(junit_xml, junit_mirrors)
+        print(
+            f"[verify] {selection.selection}: the selected tests passed; this proves only "
+            "them and never authorizes a publish, which needs the full clean-room run"
+        )
+    finally:
+        try:
+            if recorder is not None:
+                recorder.write()
+        finally:
+            remove_tree(run_tmp)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -324,23 +576,132 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="CACHE_DIR",
         help=(
             "keep the pytest cache in CACHE_DIR and run the tests that failed last time first, "
-            "so a repeated failure shows up in the first minute"
+            "so a repeated failure shows up in the first minute; the whole suite still runs, "
+            "so it is recorded as the full selection"
+        ),
+    )
+    parser.add_argument(
+        "--worktree-cache",
+        action="store_true",
+        help=(
+            "keep the mypy and pytest caches and the previous JUnit report in "
+            ".harness/.sandboxes/cache/<worktree-id>/<environment_fingerprint>/; a cache of "
+            "another worktree or fingerprint is never read, and the run is refused when "
+            f"{COLD_ENV} marks a cold clean-room environment"
+        ),
+    )
+    parser.add_argument(
+        "--failed-only",
+        action="store_true",
+        help=(
+            "rerun only the pytest tests that failed in the previous JUnit report of the "
+            "--worktree-cache (the exact nodeids; their surviving test files when a nodeid "
+            "vanished); an empty selection or no collected test is not_run with exit code 5. "
+            "A diagnostic: it never authorizes a publish"
+        ),
+    )
+    parser.add_argument(
+        "--evidence-dir",
+        type=Path,
+        metavar="DIR",
+        help=(
+            "write stage-evidence.v1 for the mypy, pytest and clean-room stages into DIR: "
+            "separate stdout and stderr files with their sha256, exit codes, durations, failed "
+            "nodeids, and not_run for every stage the run did not reach"
         ),
     )
     parser.add_argument(
         "--junit-xml",
         type=Path,
         metavar="PATH",
-        help="write the pytest results as JUnit XML (the CI summary reads it)",
+        help=(
+            "write the pytest results as JUnit XML (the CI summary reads it); without it the "
+            f"report goes to ${JUNIT_ENV}, the worktree cache or the evidence directory"
+        ),
     )
     return parser
+
+
+def _junit_paths(
+    args: argparse.Namespace, cache: WorktreeCache | None
+) -> tuple[Path | None, list[Path]]:
+    """The JUnit report path of the pytest stage and the other places that expect a copy of it."""
+    wanted: list[Path] = []
+    if args.junit_xml is not None:
+        wanted.append(args.junit_xml)
+    if os.environ.get(JUNIT_ENV):
+        wanted.append(Path(os.environ[JUNIT_ENV]))
+    if cache is not None:
+        wanted.append(cache.junit_path)
+    if args.evidence_dir is not None:
+        wanted.append(args.evidence_dir / "pytest.junit.xml")
+    return (wanted[0] if wanted else None), wanted
+
+
+def _planned_stages(only: str | None) -> list[str]:
+    """The stages a run with this ``--only`` goes through, in order."""
+    return [
+        *(["mypy", "pytest"] if only != "clean-room" else []),
+        *(["clean-room"] if only != "tests" else []),
+    ]
+
+
+def _refuse(message: str) -> None:
+    sys.stderr.write(f"[ERROR] {message}\n")
+    sys.exit(2)
 
 
 def main(argv: list[str] | None = None) -> None:
     """Точка входа: подготовить изолированный корень, выполнить проверки и стадии."""
     args = build_parser().parse_args(argv)
+    if args.worktree_cache and args.failed_first is not None:
+        _refuse(
+            "--worktree-cache and --failed-first both own the pytest cache; pick one"
+        )
+    if args.failed_only:
+        if not args.worktree_cache:
+            _refuse("--failed-only reads the previous JUnit report of --worktree-cache")
+        if args.failed_first is not None or args.only is not None or args.fail_fast:
+            _refuse(
+                "--failed-only runs the pytest stage alone and cannot combine with "
+                "--failed-first, --only or --fail-fast"
+            )
+    cache: WorktreeCache | None = None
+    recorder: _EvidenceRecorder | None = None
+    try:
+        if args.worktree_cache:
+            cache = open_cache(ROOT, os.environ)
+        if args.evidence_dir is not None:
+            context = EvidenceContext(
+                candidate_sha=head_commit(ROOT),
+                environment_fingerprint=checkout_fingerprint(ROOT),
+            )
+            planned = ["pytest"] if args.failed_only else _planned_stages(args.only)
+            recorder = _EvidenceRecorder(
+                args.evidence_dir, context, planned, {"pytest": "full"}
+            )
+    except VerificationCacheError as exc:
+        _refuse(str(exc))
+    junit_xml, junit_copies = _junit_paths(args, cache)
     run_tmp, test_env = _prepare_run_root()
-    _static_checks(test_env)
+    if args.failed_only and cache is not None:
+        _run_failed_only(
+            run_tmp,
+            test_env,
+            platform_subset=args.platform_subset,
+            junit_xml=junit_xml,
+            cache=cache,
+            recorder=recorder,
+            junit_mirrors=junit_copies,
+        )
+        return
+    try:
+        _static_checks(test_env)
+    except BaseException:
+        # No stage was reached: the evidence says so instead of staying silent.
+        if recorder is not None:
+            recorder.write()
+        raise
     _run_stages(
         run_tmp,
         test_env,
@@ -348,7 +709,10 @@ def main(argv: list[str] | None = None) -> None:
         platform_subset=args.platform_subset,
         fail_fast=args.fail_fast,
         failed_first=args.failed_first,
-        junit_xml=args.junit_xml,
+        junit_xml=junit_xml,
+        cache=cache,
+        recorder=recorder,
+        junit_mirrors=junit_copies,
     )
     print("agent-harness verification passed")
 

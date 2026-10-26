@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from harness.orchestration.core import state_view
 from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
 from harness.orchestration.core.utils import (
     CoordinatorError,
@@ -80,7 +81,7 @@ def validate_events(root: Path, batch: JsonObject) -> None:
         )
     records = _records_root(root)
     audits = (
-        [_read_object(p, "audit") for p in (records / "audit").glob("*.json")]
+        [_read_object(p, "audit") for p in state_view.glob(records / "audit", "*.json")]
         if events
         else []
     )

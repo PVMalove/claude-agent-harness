@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/protect-hook-policy.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/block-public-attribution.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/block-direct-master.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/block-pr-merge.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/check-branch-name.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/require-qa-gate.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/require-bounded-check.sh\"" },
+          { "type": "command", "command": "cd \"$(git rev-parse --show-toplevel)\" && bash \".claude/hooks/block-dangerous-git.sh\"" }
+        ]
+      }
+    ]
+  }
+}

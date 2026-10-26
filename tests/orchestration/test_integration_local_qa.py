@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from harness.gate_runner import stage_evidence
 from harness.gate_runner.gate_runner import (
+    EvidenceContext,
     ExecutionPolicy,
     GateResult,
     GateRunnerError,
     LocalPolicy,
+    parse_evidence_trailer,
     run_gate,
 )
 
@@ -157,8 +161,11 @@ class LocalQaContractTests(unittest.TestCase):
             policy: ExecutionPolicy,
             *,
             stop_on_failure: bool,
+            evidence: EvidenceContext | None = None,
         ) -> GateResult:
-            result = original(commands, policy, stop_on_failure=stop_on_failure)
+            result = original(
+                commands, policy, stop_on_failure=stop_on_failure, evidence=evidence
+            )
             self.branch.advance_integration_ref()
             return result
 
@@ -175,6 +182,31 @@ class LocalQaContractTests(unittest.TestCase):
                 "pair_checks"
             ][0]["applies_to_current_pair"]
         )
+
+    def test_the_qa_log_trailer_links_the_stage_evidence_and_its_streams(self) -> None:
+        result = coordinator.integration_local_qa(self.args())
+        self.assertEqual(result["verification"], "verified")
+
+        log = Path(result["artifact"])
+        linked = parse_evidence_trailer(log.read_text(encoding="utf-8").splitlines())
+        self.assertIsNotNone(linked)
+        assert linked is not None
+        relative, checksum = linked
+        document_path = log.parent.parent / relative
+        text = document_path.read_text(encoding="utf-8")
+        self.assertEqual(hashlib.sha256(text.encode("utf-8")).hexdigest(), checksum)
+        document = stage_evidence.parse(text)
+        self.assertEqual(
+            {stage.candidate_sha for stage in document.stages},
+            {result["candidate_sha"]},
+        )
+        self.assertTrue(document.stages)
+        for stage in document.stages:
+            self.assertEqual((stage.result, stage.exit_code), ("pass", 0))
+            for ref in (stage.stdout, stage.stderr):
+                assert ref is not None
+                data = (log.parent.parent / ref.path).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), ref.sha256)
 
     def test_incomplete_command_coverage_cannot_verify_or_reuse_different_inputs(
         self,

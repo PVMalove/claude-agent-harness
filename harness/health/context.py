@@ -8,7 +8,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from .model import JsonObject
 from .project_files import BACKEND_ORCHESTRATION_CAPABILITY
@@ -49,6 +49,10 @@ class HealthContext:
     # and script path so the command runs as printed; a shipped, standalone package keeps the
     # documented `harness` alias.
     harness_cli: tuple[str, ...] = ("harness",)
+    # Seed-файлы проекта из шаблонов (путь от корня проекта -> эталонные байты) для проверки дрейфа
+    # hooks. Их передаёт только канонический CLI `harness health`: установленный пакет и консоль
+    # шаблонов не имеют и оставляют None, тогда `hooks.policy` сообщает «дрейф не проверен».
+    hook_templates: Mapping[str, bytes] | None = None
 
     def no_lock_message(self) -> str:
         """Причина пропуска проверки, зависящей от lock-файла: lock отсутствует либо повреждён."""

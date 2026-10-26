@@ -85,3 +85,24 @@ def test_short_time_keeps_minutes_only() -> None:
     assert stats.short_time("2026-09-28T09:52:05.4+00:00") == "2026-09-28 09:52"
     assert stats.short_time("") == ""
     assert stats.short_time("вчера") == "вчера"
+
+
+def test_pipeline_stats_fields_keep_each_label_apart_from_its_value(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    view = reports.load_ledger_view(tmp_path)
+
+    fields = dict(stats.pipeline_stats_fields(stats.pipeline_stats(view)))
+
+    assert fields["Запусков (batch)"] == "2, тикетов: 2"
+    assert fields["По состояниям"] == "заблокирован 1, завершён 1"
+    assert set(fields) == {
+        "Запусков (batch)",
+        "По состояниям",
+        "Диспатчи по ролям",
+        "Отчёты по итогам",
+        "QA-прогонов",
+        "Период",
+    }
+    assert stats.pipeline_stats_fields(stats.pipeline_stats(reports.LedgerView())) == []

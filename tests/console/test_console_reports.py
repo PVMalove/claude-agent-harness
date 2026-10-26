@@ -3,6 +3,7 @@ real lifecycle-ledger fixture (tests/_console_ledger_fixture.py). No textual nee
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from tests.console._console_ledger_fixture import (
@@ -12,9 +13,18 @@ from tests.console._console_ledger_fixture import (
     build_reports_fixture,
 )
 from harness.console.export import render_markdown
+from harness.orchestration.ledger.lifecycle import JsonObject
 from harness.console.reports import (
     QA_LOG_TAIL_LINES,
     REPORT_SECTIONS,
+    BatchSummary,
+    ReportEntry,
+    StageEntry,
+    batch_status,
+    outcome_status,
+    qa_run_status,
+    report_section_lines,
+    stage_status,
     filter_reports,
     load_ledger_view,
     qa_log_text,
@@ -412,3 +422,134 @@ def test_timeline_document_is_a_table_of_events(tmp_path: Path) -> None:
         in text
     )
     assert text.count("\n| 20") == len(timeline.events)
+
+
+def _stage(state: str, outcome: str | None) -> StageEntry:
+    report = (
+        ReportEntry("dispatch-x", "batch-x", "#1", "developer", outcome, "", {})
+        if outcome is not None
+        else None
+    )
+    return StageEntry("dispatch-x", "batch-x", "#1", "developer", state, "", report)
+
+
+def test_stage_status_is_a_symbol_and_a_label_for_every_known_outcome() -> None:
+    cases = {
+        ("reported", "completed"): "✔ отчёт получен · завершено",
+        ("reported", "blocked"): "⚠ отчёт получен · заблокировано",
+        ("reported", "failed"): "✖ отчёт получен · ошибка",
+        ("working", None): "⚠ в работе · отчёта ещё нет",
+    }
+    for (state, outcome), shown in cases.items():
+        assert stage_status(_stage(state, outcome)).render("ru") == shown
+
+
+def test_stage_status_is_shorter_on_a_narrow_terminal_and_follows_the_language() -> (
+    None
+):
+    entry = _stage("reported", "completed")
+    assert stage_status(entry, narrow=True).render("ru") == "✔ отчёт · завершено"
+    assert stage_status(entry).render("en") == "✔ report received · completed"
+
+
+def test_stage_status_shows_an_unknown_ledger_value_as_it_is() -> None:
+    assert (
+        stage_status(_stage("reported", "weird")).render("ru")
+        == "⚠ отчёт получен · weird"
+    )
+    assert (
+        stage_status(_stage("queued", None)).render("ru") == "⚠ queued · отчёта ещё нет"
+    )
+
+
+def test_batch_status_names_the_state_with_a_symbol_and_keeps_an_unknown_one() -> None:
+    def batch(state: str) -> BatchSummary:
+        return BatchSummary("batch-x", "#1", state, "")
+
+    assert batch_status(batch("completed")).render("ru") == "✔ завершён"
+    assert batch_status(batch("blocked")).render("ru") == "⚠ заблокирован"
+    assert batch_status(batch("active")).render("en") == "▶ in progress"
+    assert batch_status(batch("mystery")).render("ru") == "⚠ mystery"
+
+
+def test_outcome_status_keeps_the_ledger_word_beside_its_symbol() -> None:
+    assert outcome_status("completed").render("ru") == "✔ completed"
+    assert outcome_status("blocked").render("ru") == "⚠ blocked"
+    assert outcome_status("failed").render("ru") == "✖ failed"
+    assert outcome_status("odd").render("ru") == "⚠ odd"
+
+
+def test_report_section_lines_give_every_check_and_every_risk_a_symbol_and_label(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    reports = {entry.dispatch_id: entry for entry in load_ledger_view(tmp_path).reports}
+
+    developer = dict(report_section_lines(reports["dispatch-dev"].report))
+    assert list(developer) == list(REPORT_SECTIONS)
+    [(status, check)] = developer["Checks"]
+    assert status is not None and status.render("ru") == "✔ pass"
+    assert check == "make test — 412 passed"
+    [(risk, _)] = developer["Risks"]
+    assert risk is not None and risk.render("ru") == "✔ нет"
+    assert developer["Output"] == [(None, LONG_OUTPUT)]
+
+    blocked = dict(report_section_lines(reports["dispatch-stuck"].report))
+    [(blocker, details)] = blocked["Blockers"]
+    assert blocker is not None and blocker.render("ru") == "⚠ есть"
+    assert details == "нет токена трекера в окружении"
+
+
+def test_report_review_lines_mark_each_axis_and_keep_the_findings(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    reports = {entry.dispatch_id: entry for entry in load_ledger_view(tmp_path).reports}
+
+    lines = dict(report_section_lines(reports["dispatch-review"].report))["Review"]
+    shown = [(status.render("ru") if status else "", text) for status, text in lines]
+    assert shown == [
+        ("", "candidate: " + "a" * 40),
+        ("⚠ low", "standards · находок: 1"),
+        ("", "  [low] имя функции: reports.py:10"),
+        ("✔ none", "spec · находок: 0"),
+    ]
+
+
+def test_report_review_axis_verdict_follows_the_recorded_severity_not_the_findings_count() -> (
+    None
+):
+    info: JsonObject = {"severity": "info", "summary": "заметка", "evidence": "a.py:1"}
+    review: JsonObject = {
+        "candidate_commit": "c" * 40,
+        "standards": {"severity": "clean", "findings": [info]},
+        "spec": {"severity": "warning", "findings": []},
+    }
+    lines = dict(report_section_lines({"review": review}))["Review"]
+    axes = {
+        text.split(" · ")[0]: status.render("ru")
+        for status, text in lines
+        if status is not None
+    }
+    assert axes == {"standards": "✔ clean", "spec": "⚠ warning"}
+
+    for severity, shown in (
+        ("none", "✔ none"),
+        ("clean", "✔ clean"),
+        ("warning", "⚠ warning"),
+        ("blocker", "✖ blocker"),
+    ):
+        single: JsonObject = {"standards": {"severity": severity, "findings": []}}
+        [(status, text)] = dict(report_section_lines({"review": single}))["Review"][1:]
+        assert status is not None and status.render("ru") == shown
+        assert text == "standards · находок: 0"
+
+
+def test_qa_run_status_is_failed_when_any_command_exits_non_zero(
+    tmp_path: Path,
+) -> None:
+    build_reports_fixture(tmp_path)
+    [run] = load_ledger_view(tmp_path).qa_runs
+    assert qa_run_status(run).render("ru") == "✔ passed"
+    failing = replace(run, commands=[("make lint", 1)])
+    assert qa_run_status(failing).render("ru") == "✖ failed"

@@ -17,6 +17,7 @@ from harness.orchestration.core.git_utils import (
     _commits_between,
     _git_is_ancestor,
 )
+from harness.orchestration.core import state_view
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -74,7 +75,7 @@ def events(root: Path, record_id: str) -> list[JsonObject]:
     directory = _records_root(root) / ResolverEventRecord.directory
     found = [
         _read_object(path, "resolver event")
-        for path in sorted(directory.glob("*.json") if directory.is_dir() else [])
+        for path in state_view.glob(directory, "*.json")
     ]
     found = [item for item in found if item.get("integration_record_id") == record_id]
     return sorted(found, key=lambda item: (item["recorded_at"], item["event_id"]))
@@ -96,7 +97,7 @@ def write_event(
     }
     event_id = ResolverEventRecord.derive_id({**members, "kind": kind})
     path = _records_root(root) / ResolverEventRecord.directory / f"{event_id}.json"
-    if path.is_file():
+    if state_view.is_file(path):
         return _read_object(path, "resolver event")
     document: JsonObject = {
         "event_id": event_id,

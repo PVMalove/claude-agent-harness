@@ -16,6 +16,9 @@ from ctypes import wintypes
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from harness.orchestration import container_executor
+from harness.orchestration.core.constants import TERMINAL_DISPATCH_STATES
+from harness.orchestration.ledger.lifecycle import DispatchStatusRecord, LifecycleLedger
 from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
 from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
 from harness.storage import LEGACY_STORAGE_DIRS, sandboxes_root, storage_root
@@ -30,11 +33,13 @@ GIT_TIMEOUT_SECONDS = 300
 
 
 class CleanupItem(TypedDict):
-    """Элемент плана очистки (файл, директория или worktree)."""
+    """Элемент плана очистки (файл, директория, worktree, контейнер или сеть)."""
 
     kind: str
     path: str
     branch: NotRequired[str | None]
+    dispatch: NotRequired[str]
+    engine_id: NotRequired[str]
 
 
 class CleanupPlan(TypedDict):
@@ -198,6 +203,148 @@ def _active_worktrees(root: Path) -> set[Path] | None:
         return active
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def _dispatch_statuses(root: Path) -> dict[str, dict[str, object]] | None:
+    """Прочитать записи статусов dispatch текущего поколения ledger, не изменяя их."""
+    state = root / "orchestration" / "state"
+    if not state.exists():
+        return {}
+    base = LifecycleLedger(state).records_root_lenient()
+    if base is None:
+        return None
+    statuses: dict[str, dict[str, object]] = {}
+    try:
+        for record in sorted(
+            (base / DispatchStatusRecord.directory).glob("dispatch-*.json")
+        ):
+            status = LifecycleLedger.read_record_lenient(record)
+            if status is None:
+                return None
+            statuses[str(status["dispatch_id"])] = dict(status)
+    except (OSError, KeyError, TypeError):
+        return None
+    return statuses
+
+
+def _docker_selected(root: Path) -> bool:
+    """Проверить, что проект выбрал встроенный docker-исполнитель; иначе движок не опрашивается."""
+    try:
+        config = json.loads((root / "orchestration.json").read_text(encoding="utf-8"))
+        selected = config["extensions"]["runtime_access"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return bool(selected == container_executor.EXTENSION_NAME)
+
+
+def _repository_label(checkout: Path) -> str | None:
+    """Метка `harness.repository` этого репозитория: разрешённый общий каталог Git."""
+    result = _git(checkout, "rev-parse", "--git-common-dir")
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    common = Path(result.stdout.strip())
+    return str((common if common.is_absolute() else checkout / common).resolve())
+
+
+def _container_group_reason(
+    group: list[dict[str, object]], status: dict[str, object] | None
+) -> str | None:
+    """Причина, по которой ресурсы dispatch нельзя удалять, или `None`, если можно."""
+    worker = next((item for item in group if item["role"] == "worker"), None)
+    if worker is not None and worker["state"] not in {"exited", "dead"}:
+        return (
+            "worker is not stopped; harness never stops it: stop it explicitly "
+            f"(docker stop {worker['name']}) first"
+        )
+    if status is None:
+        return None
+    if status.get("state") not in TERMINAL_DISPATCH_STATES:
+        return "dispatch is open in the ledger"
+    if worker is not None and not isinstance(status.get("worker_exit"), dict):
+        return "terminal evidence not recorded; run coordinator dispatch status first"
+    return None
+
+
+def _plan_containers(
+    checkout: Path,
+    root: Path,
+    remove: list[CleanupItem],
+    skipped: list[dict[str, str]],
+) -> None:
+    """Добавить в план ресурсы контейнеров этого репозитория, у которых нет живого владельца."""
+    if not _docker_selected(root):
+        return
+    repository = _repository_label(checkout)
+    statuses = _dispatch_statuses(root)
+    if repository is None or statuses is None:
+        skipped.append(
+            {"path": "container resources", "reason": "Git or ledger state unavailable"}
+        )
+        return
+    objects = container_executor.engine_objects(repository)
+    if objects is None:
+        skipped.append(
+            {"path": "container resources", "reason": "container engine unavailable"}
+        )
+        return
+    groups: dict[str, list[dict[str, object]]] = {}
+    for item in objects:
+        groups.setdefault(str(item["dispatch"]), []).append(dict(item))
+    order = ("worker", "proxy", "network")
+    for dispatch_id in sorted(groups):
+        group = sorted(
+            groups[dispatch_id], key=lambda item: order.index(str(item["role"]))
+        )
+        reason = _container_group_reason(group, statuses.get(dispatch_id))
+        if reason is not None:
+            skipped.append(
+                {
+                    "path": container_executor.container_name(dispatch_id),
+                    "reason": reason,
+                }
+            )
+            continue
+        remove.extend(
+            {
+                "kind": str(item["kind"]),
+                "path": str(item["name"]),
+                "dispatch": dispatch_id,
+                "engine_id": str(item["id"]),
+            }
+            for item in group
+        )
+
+
+def _remove_containers(
+    items: list[CleanupItem],
+) -> tuple[list[str], list[dict[str, str]]]:
+    """Удалить планируемые ресурсы контейнеров через общий примитив; отсутствующий считается удалённым."""
+    objects = [
+        {
+            "kind": item["kind"],
+            "id": item["engine_id"],
+            "name": item["path"],
+            "dispatch": item["dispatch"],
+            "role": "network"
+            if item["kind"] == "network"
+            else (
+                "proxy"
+                if item["path"] == container_executor.proxy_name(item["dispatch"])
+                else "worker"
+            ),
+        }
+        for item in items
+    ]
+    result = container_executor.remove_objects(objects)
+    removed = [
+        str(label).split(" ", 1)[1]
+        for label in (*result["removed"], *result["missing"])
+    ]
+    failed = [
+        {"path": str(item["object"]).split(" ", 1)[1], "reason": str(item["reason"])}
+        for item in result["failed"]
+    ]
+    return removed, failed
 
 
 def _origin_ref_current(repo: Path, upstream_ref: str) -> bool:
@@ -484,6 +631,7 @@ def plan_cleanup(repo: Path, mode: str, *, min_age_hours: float = 24) -> Cleanup
                         remove.append(
                             {"kind": "worktree", "path": str(path), "branch": branch}
                         )
+    _plan_containers(checkout, root, remove, skipped)
     return {
         "mode": mode,
         "root": str(root),
@@ -517,7 +665,11 @@ def apply_cleanup(
     root = Path(fresh["root"])
     removed: list[str] = []
     failed: list[dict[str, str]] = []
+    containers: list[CleanupItem] = []
     for item in fresh["remove"]:
+        if item["kind"] in {"container", "network"}:
+            containers.append(item)
+            continue
         path = Path(item["path"])
         if not _inside(root, path):
             failed.append({"path": str(path), "reason": "path escaped storage root"})
@@ -551,4 +703,8 @@ def apply_cleanup(
             removed.append(str(path))
         except OSError as exc:
             failed.append({"path": str(path), "reason": str(exc)})
+    if containers:
+        container_removed, container_failed = _remove_containers(containers)
+        removed.extend(container_removed)
+        failed.extend(container_failed)
     return {"removed": removed, "failed": failed, "skipped": fresh["skipped"]}

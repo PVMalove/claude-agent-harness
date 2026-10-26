@@ -8,6 +8,7 @@ Nothing here reads project configuration, touches git, or opens the ledger, so `
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -18,6 +19,7 @@ from typing import TypeGuard
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import concise_evidence, sanitise
 from harness.json_types import JsonObject as JsonObject
+from harness.orchestration.core import state_view
 
 
 class CoordinatorError(HarnessError):
@@ -33,6 +35,15 @@ def _non_empty(value: object) -> TypeGuard[str]:
 
 
 def _read_object(path: Path, label: str) -> JsonObject:
+    found = state_view.view_for(path)
+    if found is not None:
+        # The runtime store answers: the record has the shape the legacy file had.
+        record = found[0].read(found[1])
+        if record is None:
+            raise CoordinatorError(
+                f"{label} is not valid JSON", remedy=f"fix the JSON syntax in {label}"
+            )
+        return copy.deepcopy(record)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     # UnicodeDecodeError: a payload written in a legacy code page, never valid UTF-8 JSON.

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -19,10 +20,13 @@ from harness.storage import storage_path
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import (
     CleanRoomPolicy,
+    EvidenceContext,
     GateRunnerError,
     LocalPolicy,
     _clean_room_python,
     diagnose,
+    format_evidence_trailer,
+    parse_evidence_trailer,
     run_gate,
     StageCommand,
     run_qa_stages,
@@ -544,6 +548,23 @@ def test_a_failing_gate_command_keeps_the_gate_stage_failure(tmp_path: Path) -> 
     assert result.record()["failed_stage"] == "gate"
 
 
+def test_qa_commands_keep_temporary_data_in_the_harness_storage(tmp_path: Path) -> None:
+    repo, head = _committed_repo(tmp_path)
+    seen = tmp_path / "seen"
+    record = "import os,sys; open(sys.argv[1],'w').write(os.environ['TMPDIR']+'|'+os.environ['GIT_CEILING_DIRECTORIES'])"
+    command = [sys.executable, "-c", record, str(seen)]
+    result = run_qa_stages([command], [command], CleanRoomPolicy(repo, head))
+
+    assert result.failed_stage is None
+    directory, ceilings = seen.read_text().split("|")
+    runs = storage_path(repo, "runs", "qa")
+    assert Path(directory).parent == runs
+    assert Path(directory).name.startswith("tmp-")
+    assert directory in ceilings.split(os.pathsep)
+    assert not Path(directory).exists()
+    assert list(runs.iterdir()) == []
+
+
 def test_stage_diagnostics_are_sanitised_and_bounded(tmp_path: Path) -> None:
     result = run_qa_stages(
         [_py("import sys; print('x' * 5000); print('token=visible'); sys.exit(1)")],
@@ -742,3 +763,190 @@ def test_an_unlaunchable_git_during_diagnosis_keeps_the_stage_evidence(
     assert result.code_checks_started == "not_started"
     assert result.diagnosis is not None
     assert result.diagnosis.category == "unknown"
+
+
+# --- stage evidence of every command (ADR 0023, section 5) ---------------------------------------
+
+_JUNIT_WRITER = (
+    "import os, sys; open(os.environ['HARNESS_STAGE_JUNIT_XML'], 'w').write("
+    "'<testsuites><testsuite>"
+    '<testcase classname="tests.test_x" name="test_a[1]"><failure message="m"/></testcase>'
+    '<testcase classname="tests.test_x.TestK" name="test_b"><error message="m"/></testcase>'
+    '<testcase classname="tests.test_x" name="test_ok"/>'
+    "</testsuite></testsuites>'); sys.exit(1)"
+)
+
+
+def test_every_command_records_separate_streams_exit_code_and_duration(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    command = _py(
+        "import sys; print('to-out'); print('token=visible'); print('to-err', file=sys.stderr)"
+    )
+
+    result = run_gate([command], CleanRoomPolicy(repo, head), stop_on_failure=True)
+
+    assert result.evidence is not None
+    stage = result.evidence.document.stages[0]
+    assert (stage.stage_id, stage.result, stage.exit_code) == ("gate-1", "pass", 0)
+    assert stage.candidate_sha == head and stage.duration_ms >= 0
+    assert stage.stdout is not None and stage.stderr is not None
+    assert stage.stdout.sha256 != stage.stderr.sha256
+    out, err = (result.evidence.files[ref.path] for ref in (stage.stdout, stage.stderr))
+    assert "to-out" in out and "to-err" not in out
+    assert "to-err" in err and "to-out" not in err
+    assert "token=<redacted>" in out and "token=visible" not in out
+    for ref in (stage.stdout, stage.stderr):
+        text = result.evidence.files[ref.path]
+        assert hashlib.sha256(text.encode("utf-8")).hexdigest() == ref.sha256
+        assert ref.path == f"qa-artifacts/{ref.sha256}.{ref.path.split('.')[-2]}.txt"
+
+
+def test_a_command_the_run_never_reached_is_not_run(tmp_path: Path) -> None:
+    repo, head = _committed_repo(tmp_path)
+
+    result = run_gate(
+        [_py("import sys; sys.exit(3)"), _py("print('skipped')"), _py("print('x')")],
+        CleanRoomPolicy(repo, head),
+        stop_on_failure=True,
+    )
+
+    assert result.evidence is not None
+    stages = result.evidence.document.stages
+    assert [(s.stage_id, s.result) for s in stages] == [
+        ("gate-1", "fail"),
+        ("gate-2", "not_run"),
+        ("gate-3", "not_run"),
+    ]
+    assert stages[0].exit_code == 3
+    assert stages[1].exit_code is None and stages[1].stdout is None
+
+
+def test_failed_nodeids_come_from_the_junit_report_the_command_wrote(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("", encoding="utf-8")
+
+    result = run_gate(
+        [[sys.executable, "-c", _JUNIT_WRITER]],
+        LocalPolicy(tmp_path),
+        stop_on_failure=True,
+        evidence=EvidenceContext("a" * 40),
+    )
+
+    assert result.evidence is not None
+    stage = result.evidence.document.stages[0]
+    assert stage.result == "fail"
+    assert stage.failed_nodeids == (
+        "tests/test_x.py::test_a[1]",
+        "tests/test_x.py::TestK::test_b",
+    )
+
+
+_RECORD_ENV = (
+    "import os,sys; open(sys.argv[1],'a').write("
+    "os.environ.get('HARNESS_VERIFY_COLD','-')+'|'+os.environ['HARNESS_STAGE_JUNIT_XML']+'\\n')"
+)
+
+
+def test_the_clean_room_gate_is_marked_cold_and_each_command_has_its_own_junit_path(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+    seen = tmp_path / "seen"
+    command = [sys.executable, "-c", _RECORD_ENV, str(seen)]
+
+    run_gate([command, command], CleanRoomPolicy(repo, head), stop_on_failure=True)
+
+    first, second = (line.split("|") for line in seen.read_text().splitlines())
+    assert first[0] == second[0] == "1"
+    assert first[1] != second[1] and first[1].endswith(".junit.xml")
+
+
+def test_a_local_run_through_the_bounded_wrapper_is_not_cold_and_may_use_the_worktree_cache(
+    tmp_path: Path,
+) -> None:
+    repo, _ = _committed_repo(tmp_path)
+    seen = tmp_path / "seen"
+    source = Path(__file__).resolve().parents[2]
+    open_cache = (
+        "import os,sys; sys.path.insert(0, sys.argv[2]); from pathlib import Path; "
+        "from scripts.verification.cache import open_cache; "
+        "open(sys.argv[1],'w').write(str(open_cache(Path(sys.argv[3]), os.environ).directory))"
+    )
+
+    result = run_gate(
+        [[sys.executable, "-c", open_cache, str(seen), str(source), str(repo)]],
+        LocalPolicy(repo),
+        stop_on_failure=True,
+    )
+
+    assert result.passed, result.checks
+    assert Path(seen.read_text()).is_dir()
+
+
+def test_a_local_run_without_an_evidence_context_has_no_stage_evidence(
+    tmp_path: Path,
+) -> None:
+    result = run_gate([_py("print(1)")], LocalPolicy(tmp_path), stop_on_failure=True)
+
+    assert result.evidence is None
+
+
+def test_the_qa_stages_evidence_lists_every_command_and_not_run_for_the_gate_after_a_failed_preparation(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+
+    result = run_qa_stages(
+        [_py("import sys; sys.exit(2)"), _py("print('never')")],
+        [_py("print('gate')")],
+        CleanRoomPolicy(repo, head),
+        environment_probes=[_py("print('probe')")],
+    )
+
+    assert result.evidence is not None
+    assert [(s.stage_id, s.result) for s in result.evidence.document.stages] == [
+        ("preparation-1", "fail"),
+        ("preparation-2", "not_run"),
+        ("environment-probe-1", "pass"),
+        ("gate-1", "not_run"),
+    ]
+
+
+def test_the_qa_stages_evidence_of_a_passing_run_covers_preparation_and_gate(
+    tmp_path: Path,
+) -> None:
+    repo, head = _committed_repo(tmp_path)
+
+    result = run_qa_stages(
+        [_py("print('prep')")],
+        [_py("print('a')"), _py("import sys; sys.exit(1)"), _py("print('c')")],
+        CleanRoomPolicy(repo, head),
+    )
+
+    assert result.evidence is not None
+    assert [(s.stage_id, s.result) for s in result.evidence.document.stages] == [
+        ("preparation-1", "pass"),
+        ("gate-1", "pass"),
+        ("gate-2", "fail"),
+        ("gate-3", "not_run"),
+    ]
+
+
+def test_the_log_trailer_links_to_the_evidence_document() -> None:
+    digest = "ab" * 32
+    trailer = format_evidence_trailer(
+        f"qa-artifacts/{digest}.stage-evidence.json", digest
+    )
+
+    assert trailer.endswith("\n")
+    assert parse_evidence_trailer(
+        ["$ x", "exit_code=0", "out", trailer.rstrip("\n")]
+    ) == (
+        f"qa-artifacts/{digest}.stage-evidence.json",
+        digest,
+    )
+    assert parse_evidence_trailer(["$ x", "exit_code=0"]) is None

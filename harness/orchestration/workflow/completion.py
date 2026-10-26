@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+from enum import StrEnum
 from pathlib import Path
 
 from harness.orchestration.core.git_utils import _candidate_commit
@@ -33,6 +34,7 @@ from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.workflow import rebase
 from harness.orchestration.workflow.decisions import decide_batch
 from harness.orchestration.workflow.dispatch import create_dispatch
+from harness.orchestration.workflow.failure_domains import FailureRefusal
 from harness.orchestration.workflow.history import (
     _require_route,
     _validate_batch_integrity,
@@ -43,6 +45,15 @@ POLICY_CHAIN_STEPS = ("policy-decide", "risk-assess", "next-dispatch")
 COMPLETION_ROUTE = "report-completion"
 # An accepted report of these roles moves its batch to `risk-assessment` of the reported candidate.
 RISK_ASSESSED_ROLES = {"developer", "verification", "conflict-resolver"}
+
+
+# What `report complete` did with one step of the policy chain.
+class ChainStepStatus(StrEnum):
+    DONE = "done"
+    ALREADY_DONE = "already-done"
+    NOT_APPLICABLE = "not-applicable"
+    NOT_RUN = "not-run"
+    FAILED = "failed"
 
 
 def _completion_command(dispatch_id: str, state_dir: str | None) -> str:
@@ -130,7 +141,7 @@ def _run_policy_chain(
     `not-run`).  Only the policy recorded at `report submit` is replayed; a report submit left for
     a human decision has no step to run."""
     root = _state_root(argparse.Namespace(state_dir=state_dir), repo)
-    steps: JsonObject = {step: "not-run" for step in POLICY_CHAIN_STEPS}
+    steps: JsonObject = {step: ChainStepStatus.NOT_RUN for step in POLICY_CHAIN_STEPS}
     result: JsonObject = {
         "report": None,
         "report_sha256": None,
@@ -151,7 +162,9 @@ def _run_policy_chain(
             state["batch"].get("manual_recovery")
             or state["batch"].get("state") == "paused"
         ):
-            steps.update(dict.fromkeys(POLICY_CHAIN_STEPS, "not-applicable"))
+            steps.update(
+                dict.fromkeys(POLICY_CHAIN_STEPS, ChainStepStatus.NOT_APPLICABLE)
+            )
             result["next_action"] = state["batch"].get("next_action")
             return result
         from harness.orchestration.infrastructure_retry import pinned
@@ -170,9 +183,9 @@ def _run_policy_chain(
             if state["following"]:
                 steps.update(
                     {
-                        "policy-decide": "already-done",
-                        "risk-assess": "not-applicable",
-                        "next-dispatch": "already-done",
+                        "policy-decide": ChainStepStatus.ALREADY_DONE,
+                        "risk-assess": ChainStepStatus.NOT_APPLICABLE,
+                        "next-dispatch": ChainStepStatus.ALREADY_DONE,
                     }
                 )
                 result["next_dispatch_id"] = state["following"][0]["dispatch_id"]
@@ -182,7 +195,9 @@ def _run_policy_chain(
                 prior_decision
                 and prior_decision.get("approved_by") != "policy:infrastructure-retry"
             ):
-                steps.update(dict.fromkeys(POLICY_CHAIN_STEPS, "not-applicable"))
+                steps.update(
+                    dict.fromkeys(POLICY_CHAIN_STEPS, ChainStepStatus.NOT_APPLICABLE)
+                )
                 return result
             if not prior_decision:
                 decide_batch(
@@ -200,10 +215,10 @@ def _run_policy_chain(
                         _policy_infrastructure_retry=True,
                     )
                 )
-                steps["policy-decide"] = "done"
+                steps["policy-decide"] = ChainStepStatus.DONE
             else:
-                steps["policy-decide"] = "already-done"
-            steps["risk-assess"] = "not-applicable"
+                steps["policy-decide"] = ChainStepStatus.ALREADY_DONE
+            steps["risk-assess"] = ChainStepStatus.NOT_APPLICABLE
             step = "next-dispatch"
             brief = state["dispatch"]
             created = create_dispatch(
@@ -225,19 +240,21 @@ def _run_policy_chain(
                     _policy_infrastructure_retry=True,
                 )
             )
-            steps[step] = "done"
+            steps[step] = ChainStepStatus.DONE
             result["next_dispatch_id"] = created["dispatch_id"]
             result["next_action"] = brief["role"]
             return result
         policy = state["status"].get("auto_accept_policy")
         result["auto_accept_policy"] = policy
         if policy is None:
-            steps.update(dict.fromkeys(POLICY_CHAIN_STEPS, "not-applicable"))
+            steps.update(
+                dict.fromkeys(POLICY_CHAIN_STEPS, ChainStepStatus.NOT_APPLICABLE)
+            )
             result["next_action"] = state["batch"].get("next_action")
             return result
         batch_id = state["batch"]["batch_id"]
         if "decision" in state["entry"]:
-            steps[step] = "already-done"
+            steps[step] = ChainStepStatus.ALREADY_DONE
         else:
             decide_batch(
                 argparse.Namespace(
@@ -254,26 +271,28 @@ def _run_policy_chain(
                     _policy_auto_accept=True,
                 )
             )
-            steps[step] = "done"
+            steps[step] = ChainStepStatus.DONE
         step = "risk-assess"
-        if steps["policy-decide"] == "done":
+        if steps["policy-decide"] == ChainStepStatus.DONE:
             state = _chain_state(root, dispatch_id)
         decision = state["entry"]["decision"]
         result["auto_accepted"] = decision.get("approved_by") == f"policy:{policy}"
         if decision.get("decision") != "accept" or not result["auto_accepted"]:
             # Someone else decided this report; whatever follows is theirs to start.
-            steps.update(dict.fromkeys(POLICY_CHAIN_STEPS[1:], "not-applicable"))
+            steps.update(
+                dict.fromkeys(POLICY_CHAIN_STEPS[1:], ChainStepStatus.NOT_APPLICABLE)
+            )
             result["next_action"] = state["batch"].get("next_action")
             return result
 
         report = state["report"]
         assessed = report.get("role") in RISK_ASSESSED_ROLES
         if not assessed:
-            steps[step] = "not-applicable"
+            steps[step] = ChainStepStatus.NOT_APPLICABLE
         elif (
             state["following"] or state["batch"].get("next_action") != "risk-assessment"
         ):
-            steps[step] = "already-done"
+            steps[step] = ChainStepStatus.ALREADY_DONE
         else:
             candidate = _assessed_candidate(state)
             changed_files = report["changed_files"]
@@ -296,14 +315,14 @@ def _run_policy_chain(
                     _expected_next_action="risk-assessment",
                 )
             )
-            steps[step] = "done"
+            steps[step] = ChainStepStatus.DONE
         step = "next-dispatch"
-        if steps["risk-assess"] == "done":
+        if steps["risk-assess"] == ChainStepStatus.DONE:
             state = _chain_state(root, dispatch_id)
         next_action = state["batch"].get("next_action")
         result["next_action"] = next_action
         if state["following"]:
-            steps[step] = "already-done"
+            steps[step] = ChainStepStatus.ALREADY_DONE
             result["next_dispatch_id"] = state["following"][0]["dispatch_id"]
         elif next_action == "developer" or (
             next_action == "qa"
@@ -332,18 +351,22 @@ def _run_policy_chain(
                     approved_at=None,
                 )
             )
-            steps[step] = "done"
+            steps[step] = ChainStepStatus.DONE
             result["next_dispatch_id"] = prepared["dispatch_id"]
         else:
-            steps[step] = "not-applicable"
+            steps[step] = ChainStepStatus.NOT_APPLICABLE
     except CoordinatorError as exc:
         if result["auto_accept_policy"] == "infrastructure-retry":
             from harness.orchestration.infrastructure_retry import stop_attention
 
             stop_attention(repo, root, dispatch_id, exc)
-        steps[step] = "failed"
+        steps[step] = ChainStepStatus.FAILED
         result["failed_step"] = step
-        result["error"] = {"message": exc.message, "remedy": exc.remedy}
+        error: JsonObject = {"message": exc.message, "remedy": exc.remedy}
+        if isinstance(exc, FailureRefusal):
+            # A refusal that carries its ADR 0019 failure domain keeps it for the human.
+            error["failure"] = exc.failure.to_json()
+        result["error"] = error
     return result
 
 
@@ -373,8 +396,10 @@ def complete_report(args: argparse.Namespace) -> JsonObject:
     chain = _run_policy_chain(repo, state_dir, args.dispatch)
     if chain["failed_step"] is not None:
         error = chain["error"]
+        failure = error.get("failure")
+        domain = f" (failure domain {failure['domain']})" if failure else ""
         raise CoordinatorError(
-            f"report complete stopped at step {chain['failed_step']}: {error['message']}",
+            f"report complete stopped at step {chain['failed_step']}: {error['message']}{domain}",
             remedy=f"{error['remedy']}; then run "
             f"{_completion_command(args.dispatch, state_dir)} again",
         )

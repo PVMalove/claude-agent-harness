@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Восстановление — макет</title><link rel="stylesheet" href="console.css"><style>.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}.rib{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}.rb{background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:9px 12px}.rb b{display:block;font-weight:600}.rb small{color:var(--muted);font-size:12.5px}.rb.cur{border-color:#6b5326;background:#2b2418}.rb.cur b{color:var(--warn)}.big{font-size:19px;font-weight:700;line-height:1.35}</style></head><body>
+<div class="caption"><span><b>7 · Восстановление — основной сценарий: неверная конфигурация (≈160×52)</b></span><span>Демонстрационные данные. Core/CLI-механизм — #684; здесь только интерфейс над ним.</span></div>
+<div class="app wide dense" style="height:900px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">claude-agent-harness · ⎇ feature/issue-721-console-design-system</div></div>
+  <div class="body" style="grid-template-columns:250px 1fr"><nav class="ctxnav"><h6>Главное меню</h6><a class="" href="#"><i>0</i>Главная</a><a class="" href="#"><i>1</i>Открыть проект</a><a class="" href="#"><i>2</i>Обновить Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>3</i>Диагностика<em class="e-err">✖ 2</em></a><a class="" href="#"><i>4</i>Harness<em class="e-warn">⚠</em></a><a class="" href="#"><i>5</i>Оркестрация<em>3</em></a><a class="" href="#"><i>6</i>Отчёты</a><a class="" href="#"><i>7</i>Repo Map<em>full</em></a><a class="" href="#"><i>8</i>Настройка</a><a class="" href="#"><i>9</i>Справка</a><div class="mctx"><b>Контекст исполнителя</b>Worker: выбранная сессия<br>QA: отдельный dispatch<br>Env: имена, без значений</div></nav>
+    <main><div class="crumbs"><a href="#">Главная</a><span class="sep">›</span><a href="#">Оркестрация</a><span class="sep">›</span><a href="#">batch-5a2c7e11…</a><span class="sep">›</span><span class="cur">Восстановление</span></div><div class="strip"><span>Проект: claude-agent-harness · batch-5a2c7e11-90bd-4c3a-a1d2-3f8e6b0c9d42</span><span>Действия и причина блокировки Resume всегда видны</span></div>
+      <div class="page fill">
+<div class="hd"><div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h1>Восстановление</h1><div class="sub">batch-5a2c7e11-90bd-… · #556 · роль <b style="color:var(--fg)">Developer</b></div></div>
+  <div style="display:flex;gap:8px"><span class="badge w">Ⅱ runtime: suspended</span><span class="badge">lifecycle: в работе</span></div></div>
+<div class="lab" style="margin:0">Последний checkpoint принят. Новые действия приостановлены. Подтверждённая граница: <b style="color:var(--fg)">checkpoint cp-03 (Developer)</b>. Runtime и lifecycle batch — разные факты, они не подменяют друг друга.</div>
+
+<div class="rib">
+  <div class="rb"><b class="e-ok">✔ Architect</b><small>результат принят</small></div>
+  <div class="rb cur"><b>Ⅱ Developer</b><small>checkpoint принят · приостановлен</small></div>
+  <div class="rb"><b style="color:var(--muted)">○ Review</b><small>не начат</small></div>
+  <div class="rb"><b style="color:var(--muted)">○ QA</b><small>не начат</small></div>
+</div>
+
+<div class="cols g2 tight" style="gap:12px">
+  <div class="panel al" style="grid-row:1;grid-column:1;border-left:3px solid var(--err)">
+    <div class="ph"><span class="t">Диагностика<span>config-invalid</span></span></div>
+    <div class="status err" style="margin-top:0"><span>✖</span><div><b>Неизвестная политика подтверждения</b></div></div>
+    <dl class="kv i" style="grid-template-columns:200px 1fr;margin-top:8px">
+      <dt>Файл</dt><dd>orchestration.json</dd>
+      <dt>Поле</dt><dd>/approval_policy</dd>
+      <dt>Получено</dt><dd class="e-err">"manul_all"</dd>
+      <dt>Допустимо</dt><dd>manual_all · low_risk · auto</dd>
+      <dt>В утверждённой копии задания</dt><dd class="e-ok">manual_all</dd>
+    </dl>
+    <div class="lab" style="margin:auto 0 0;padding-top:10px;font-size:12.5px">Неизвестное значение автоматически не исправляется. Секреты в «Получено» редактируются.</div>
+  </div>
+  <div class="panel al" style="grid-row:1;grid-column:2">
+    <div class="ph"><span class="t">Проверки перед продолжением<span>результат core</span></span><span style="color:var(--muted);font-size:13px">3 из 6 ✔</span></div>
+    <div class="chk"><span class="e-err">✖</span><span>Конфигурация: parser, normalizer, строгая validation<small>config-invalid · исправьте файл</small></span><span class="d">не прошла</span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>Store и ledger: schema, generation, hashes, immutable refs</span><span class="d">согласованы</span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>Brief, report, checkpoint, snapshot, candidate, base, context</span><span class="d">действительны</span></div>
+    <div class="chk"><span class="e-ok">✔</span><span>Runtime/adapter и версия контракта</span><span class="d">совместимы</span></div>
+    <div class="chk"><span style="color:var(--muted)">○</span><span>Внешний эффект доказан, второго worker нет<small>зависит от конфигурации</small></span><span class="d">не проверено</span></div>
+    <div class="chk"><span style="color:var(--muted)">○</span><span>Approval текущего перехода, budgets, auto-stop</span><span class="d">не проверено</span></div>
+  </div>
+</div>
+
+<div class="panel" style="padding:10px 14px">
+  <div class="hd">
+    <div class="tbtns"><a class="btn" href="#"><b style="color:var(--primary)">f</b> Исправить</a><a class="btn" href="#"><b style="color:var(--primary)">r</b> Перечитать</a><a class="btn dis" href="#">Продолжить</a><a class="btn" href="#"><b style="color:var(--primary)">a</b> Выйти с сохранением</a></div>
+    <span class="e-warn" style="font-size:13px">⚠ Продолжить недоступно: конфигурация не прошла проверку (1 из 6)</span>
+  </div>
+  <div class="lab" style="margin:8px 0 0;font-size:12.5px">«Исправить» и «Перечитать» не запускают worker. «Выйти» не отменяет batch, не завершает worker и не удаляет worktree.</div>
+</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">f</b>Исправить</span><span><b class="k">r</b>Перечитать</span><span><b class="k">a</b>Выйти</span><span><b class="k">Tab</b>Фокус</span><span><b class="k">f1</b>Справка</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+
+<div class="caption"><span><b>Второй обязательный сценарий</b></span><span>Вместо формы исправления конфигурации.</span></div>
+<div class="sheet">
+  <h3>Исход запуска неизвестен</h3>
+  <p>Показывается вместо config-формы. Живой worker не перезапускается вслепую; отсутствие ответа не считается остановкой.</p>
+  <div class="two" style="grid-template-columns:1.1fr 1fr">
+    <div class="panel" style="border-left:3px solid var(--warn)">
+      <div class="ph"><span class="t">Причина<span>effect_state = unknown</span></span><span class="badge w">Ⅱ приостановлено</span></div>
+      <div class="big">Мы не знаем, запустился ли агент</div>
+      <div class="lab" style="margin:8px 0 6px">Что нужно сверить</div>
+      <div class="chk"><span style="color:var(--muted)">○</span><span>Receipt запуска</span><span class="d">не получен</span></div>
+      <div class="chk"><span style="color:var(--muted)">○</span><span>Inspect контейнера или процесса</span><span class="d">нет данных</span></div>
+      <div class="chk"><span style="color:var(--muted)">○</span><span>Report worker</span><span class="d">не получен</span></div>
+      <div class="lab" style="margin:8px 0 0;font-size:12.5px">Отсутствие report не доказывает остановку worker.</div>
+    </div>
+    <div class="panel">
+      <div class="ph"><span class="t">Действия</span></div>
+      <div class="tbtns" style="flex-direction:column;align-items:flex-start;gap:10px">
+        <div><a class="btn p" href="#">Проверить состояние</a> <span style="color:var(--muted);font-size:13px">observe (общий механизм #695), второй worker не создаётся</span></div>
+        <div><a class="btn" href="#"><b style="color:var(--primary)">a</b> Выйти с сохранением</a></div>
+        <div><a class="btn dis" href="#">Продолжить</a> <span class="e-warn" style="font-size:13px">⚠ нет доказательства безопасного продолжения</span></div>
+        <div><a class="btn dis" href="#">Отправить повторно</a> <span class="e-warn" style="font-size:13px">⚠ возможен второй worker</span></div>
+      </div>
+      <div class="lab" style="margin:12px 0 0;font-size:12.5px">Если доказательств нет, остаётся «unknown»: показан ручной разбор и авторизованный маршрут. Не abandon и не kill.</div>
+    </div>
+  </div>
+</div>
+
+<div class="caption"><span><b>Шаги 3–8 из последовательности экранов</b></span><span>Правка и «Перечитать» не запускают worker; «Продолжено» — только после подтверждённого исхода.</span></div>
+<div class="sheet">
+  <h3>От выбора исправления до выхода</h3>
+  <p>Пример продолжения относится к Developer с реальным принятым checkpoint. Для read-only ролей и без checkpoint он не применяется.</p>
+  <div class="steps8">
+    <div class="s8"><h5>3 · Выбор исправления</h5>
+      <div>○ manual_all <span class="e-ok">— из утверждённой копии</span></div><div style="color:var(--muted)">○ low_risk</div><div style="color:var(--muted)">○ auto</div>
+      <div style="color:var(--muted);font-size:12.5px">Нечёткий подбор не применяется: значение выбирает человек.</div></div>
+    <div class="s8"><h5>4 · Просмотр разницы</h5>
+      <div class="df"><div style="color:var(--muted)">orchestration.json</div><div class="m">- "approval_policy": "manul_all"</div><div class="p2">+ "approval_policy": "manual_all"</div></div>
+      <div class="tbtns"><a class="btn xs solid" href="#">Применить правку</a><a class="btn xs" href="#">Отмена</a></div>
+      <div style="color:var(--muted);font-size:12.5px">Запись: backup, проверка устаревших байтов.</div></div>
+    <div class="s8"><h5>5 · Повторная проверка</h5>
+      <div class="e-ok">✔ Настройки исправны</div><div class="e-warn">Ⅱ Batch ещё на паузе</div>
+      <div style="color:var(--muted);font-size:12.5px">Resume доступен только когда выполнены все 6 проверок.</div></div>
+    <div class="s8"><h5>6 · Подтверждение продолжения</h5>
+      <div>Роль <b>Developer</b> · от checkpoint <b>cp-03</b></div><div style="color:var(--muted)">Используются: результат Architect (принят)</div><div class="digest">Требуется approval перехода · digest <b>3e9a…c71f</b></div>
+      <div class="tbtns"><a class="btn xs solid" href="#">Подтвердить продолжение…</a></div>
+      <div style="color:var(--muted);font-size:12.5px">Digest изменился — нужно новое разрешение.</div></div>
+    <div class="s8"><h5>7 · Результат</h5>
+      <div class="e-ok">✔ Core подтвердил: Developer продолжен от cp-03</div><div class="e-err">✖ или отказ: &lt;причина из core&gt;</div>
+      <div style="color:var(--muted);font-size:12.5px">«Продолжено» не показывается до подтверждённого исхода; статус и хронология обновляются.</div></div>
+    <div class="s8"><h5>8 · Выход</h5>
+      <div class="e-ok">✔ Batch не отменён. Состояние сохранено.</div><div class="e-warn">⚠ или: сохранение не подтверждено — причина</div>
+      <div style="color:var(--muted);font-size:12.5px">При следующем входе загружается durable status.</div></div>
+  </div>
+</div>
+
+<div class="caption"><span><b>Ошибки и независимые действия</b></span><span>Тексты — из #711/#684; формулировки сообщений — предлагаю.</span></div>
+<div class="sheet">
+  <h3>Ничего не выдаётся за успех</h3>
+  <div class="states" style="grid-template-columns:230px 1fr 300px">
+    <span class="lab2">«Перечитать», файл не исправлен</span>
+    <div class="status err"><span>✖</span><div>Ошибка остаётся видимой<small>Повторная validation текущего файла; worker не запускается.</small></div></div>
+    <span class="res2">Resume остаётся недоступным</span>
+    <span class="lab2">Файл изменили параллельно</span>
+    <div class="status warn"><span>⚠</span><div>Файл изменился после просмотра<small>Устаревший diff не применён. Предложено «Перечитать» и новый просмотр.</small></div></div>
+    <span class="res2">Защита от записи по устаревшим байтам</span>
+    <span class="lab2">Сбой записи, backup или flush</span>
+    <div class="status err"><span>✖</span><div>Реальный отказ + что успело сохраниться<small>Ложное «сохранено» не показывается.</small></div></div>
+    <span class="res2">Хранилище недоступно — диагностируется явно</span>
+    <span class="lab2">Worker ещё жив</span>
+    <div class="status warn"><span>⚠</span><div>Продолжить недоступно: активный worker<small>Остановка — только через отдельную авторизацию, не отсюда.</small></div></div>
+    <span class="res2">Второй worker не создаётся</span>
+    <span class="lab2">Approval устарел</span>
+    <div class="status warn"><span>⚠</span><div>Approval относится к другому переходу<small>Нужно новое предложение и разрешение.</small></div></div>
+    <span class="res2">Подтверждение в UI разрешение не заменяет</span>
+    <span class="lab2">Advisory skip</span>
+    <div class="status" style="color:var(--muted)"><span>○</span><div>Пропустить можно только разрешённые advisory<small>Только на текущую сессию. Fatal-правила пропускать нельзя.</small></div></div>
+    <span class="res2">Кнопки нет в демо-сценарии, но контракт обязателен</span>
+    <span class="lab2">Отмена формы</span>
+    <div class="status ok"><span>✔</span><div>Ничего не применено<small>Abort закрывает экран с сохранением; batch не отменён.</small></div></div>
+    <span class="res2">Без TTY — не ждёт ввода: exit 0/2</span>
+  </div>
+</div>
+<div class="caption"><span><b>7 · Восстановление — узкий терминал (≈80×24)</b></span><span>Блоки в одну колонку; действия и причина блокировки не теряются при прокрутке.</span></div>
+<div class="app narrow dense" style="height:860px">
+  <div class="top"><div class="brand"><div class="logo">H</div><b>Agent Harness console</b><span>1.4.6</span></div><div class="where">⎇ feature/issue-721…</div></div>
+  <div class="body"><main><div class="crumbs"><b style="color:var(--primary)">≡</b> <a href="#">Главная</a><span class="sep">›</span><a href="#">Оркестрация</a><span class="sep">›</span><a href="#">batch-5a2c…</a><span class="sep">›</span><span class="cur">Восстановление</span></div><div class="page fill">
+<div class="hd"><h1 style="font-size:18px">Восстановление</h1><span class="badge w">Ⅱ suspended</span></div>
+<div class="lab" style="margin:0;font-size:12.5px">#556 · Developer · граница: checkpoint cp-03 · lifecycle: в работе</div>
+<div class="panel" style="border-left:3px solid var(--err)"><div class="ph"><span class="t">config-invalid</span></div>
+  <div class="status err" style="margin-top:0"><span>✖</span><div><b>Неизвестная политика подтверждения</b></div></div>
+  <dl class="kv i" style="grid-template-columns:110px 1fr;margin-top:6px"><dt>Файл</dt><dd>orchestration.json</dd><dt>Поле</dt><dd>/approval_policy</dd><dt>Получено</dt><dd class="e-err">"manul_all"</dd><dt>Допустимо</dt><dd>manual_all · low_risk · auto</dd></dl></div>
+<div class="card fold"><span>▸ Проверки перед продолжением</span><span><span class="e-ok">✔ 3</span> · <span class="e-err">✖ 1</span> · ○ 2</span></div>
+<div class="tbtns"><a class="btn" href="#">f Исправить</a><a class="btn" href="#">r Перечитать</a><a class="btn" href="#">a Выйти</a><a class="btn dis" href="#">Продолжить</a></div>
+<div class="lab" style="margin:0;font-size:12.5px;color:var(--warn)">⚠ Продолжить недоступно: конфигурация не прошла проверку</div>
+</div></main></div>
+  <div class="foot"><div><span><b class="k">esc</b>Назад</span><span><b class="k">f</b>Исправить</span><span><b class="k">r</b>Перечитать</span><span><b class="k">f2</b>RU/EN</span></div><span class="r">^p palette</span></div>
+</div>
+<div class="legend">Из #711/#684: путь Главная → Оркестрация → batch → Восстановление; причина и подтверждённая граница до выбора действия; runtime suspended отдельно от lifecycle; диагностика (код, файл, pointer, received, expected); «Исправить» с diff, независимый «Перечитать», авторизованный «Продолжить», выход без abandon/kill; второй сценарий «исход неизвестен»; шесть проверок перед Resume. Все ID, значения, checkpoint и digest демонстрационные.</div>
+</body></html>

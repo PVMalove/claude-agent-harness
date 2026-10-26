@@ -63,6 +63,12 @@ so Assemble step 5 (`harness init`) applies, not step 6 (`harness update`/`adopt
 found a `.harness/harness.lock` already present, in which case stop and defer to `start-project`
 entirely: that is routine harness maintenance, not a first integration.
 
+Install `hook_policy` with the `standard` profile explicitly, as Assemble step 5 states: put the
+profile into the confirmed manifest and, after `harness init`, verify that `.harness/project.json`
+holds `"hook_policy": {"profile": "standard"}` and that `harness health` reports `hooks.policy`
+with profile `standard`. The repository's own hooks stay in their native files and are merged, not
+replaced, by `harness init`.
+
 ## Reconstruct decision history (optional)
 
 Only when the owner opted in above. A separate, read-only investigation, independent of Install in
@@ -108,6 +114,8 @@ description: Аудит существующей, уже значительно�
 ## Установка
 
 Продолжите с раздела "Сборка" (Assemble) из `global-skills/start-project/SKILL.md`, начиная с шага 2 и далее, используя этот аудит вместо его шага 1 (который уже более глубоко покрыт этапом Аудита этого навыка), а также его раздел "Завершение" (Finish) без изменений. Репозиторий, дошедший до этого навыка, по определению не имеет существующего каркаса, поэтому применяется шаг 5 Сборки (`harness init`), а не шаг 6 (`harness update`/`adopt`) — если только Аудит не обнаружил уже присутствующий файл `.harness/harness.lock`, в этом случае остановитесь и полностью перейдите к `start-project`: это рутинное обслуживание каркаса, а не первичная интеграция.
+
+Установите `hook_policy` с профилем `standard` явно, как сказано в шаге 5 Сборки: внесите профиль в подтвержденный манифест и после `harness init` проверьте, что `.harness/project.json` содержит `"hook_policy": {"profile": "standard"}`, а `harness health` показывает `hooks.policy` с профилем `standard`. Собственные hooks репозитория остаются в их родных файлах: `harness init` сливает их с управляемыми записями, а не заменяет.
 
 ## Реконструкция истории решений (необязательно)
 

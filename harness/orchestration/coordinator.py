@@ -42,6 +42,7 @@ if _HARNESS_ROOT.name != "harness" or not (_HARNESS_ROOT / "__init__.py").is_fil
     sys.modules["harness"] = importlib.util.module_from_spec(_spec)
 
 from harness.errors import HarnessError, print_and_exit
+from harness.orchestration.config_commands import validate_config as validate_config
 from harness.orchestration.coordinator_cli import build_parser
 from harness.orchestration.core import constants
 
@@ -100,6 +101,7 @@ from harness.orchestration.ledger.ledger_admin import (
     release_ledger_lock as release_ledger_lock,
 )
 from harness.orchestration.ledger.ledger_admin import reset_ledger as reset_ledger
+from harness.orchestration.runtime_client import runtime_status as runtime_status
 from harness.orchestration.workflow.attention import attention_check as attention_check
 from harness.orchestration.workflow.attention import (
     attention_resolve as attention_resolve,
@@ -131,6 +133,7 @@ from harness.orchestration.workflow.context_package import (
 )
 from harness.orchestration.workflow.decisions import decide_batch as decide_batch
 from harness.orchestration.workflow.decisions import decision_packet as decision_packet
+from harness.orchestration.workflow.delivery import observe_dispatch as observe_dispatch
 from harness.orchestration.workflow.delivery import dispatch_status as dispatch_status
 from harness.orchestration.workflow.delivery import publish_dispatch as publish_dispatch
 from harness.orchestration.workflow.delivery import (
@@ -233,6 +236,8 @@ def main() -> int:
     except HarnessError as exc:
         return print_and_exit(exc)
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))
+    if args.command == "config" and output.get("valid") is False:
+        return 2
     return 0
 
 

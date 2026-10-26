@@ -126,7 +126,11 @@ and send verify the selected path, branch and startup SHA. Start the worker in e
 `send.worker_worktree` using a runtime-supported mechanism for that existing directory. Verify that
 mechanism before launch: `isolation: worktree` alone does not prove attachment to an existing
 worktree. If the runtime cannot select that checkout, report a blocker. The coordinator stays in the
-main checkout. A selected path is intent; self-report proves the worker's actual CWD. Pass the
+main checkout. Never `cd` into a worktree from the coordinator session, not even as
+`cd <worktree> && …`: the shell's working directory persists between commands, so one `cd` moves the
+whole session. Read worktree files by absolute path: `git -C <abs worktree> …`, `rg <pattern> <abs
+worktree path>`, and the file tools with absolute paths. If the session moved anyway, `cd` back to
+the main checkout before the next command. A selected path is intent; self-report proves the worker's actual CWD. Pass the
 brief's `report_staging_path` to the worker verbatim; a role that has to guess where its report
 belongs writes it outside the project.
 
@@ -279,6 +283,21 @@ lock. For the lock of a stopped sandboxed worker, show the operator a copyable
 `ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>`; it is
 their action, never yours, under every `approval_policy`.
 
+## External launch and observation
+
+Use the shipped example explicitly with `--adapter .harness/orchestration/adapters/claude_code.py`;
+`claude` and `codex` are runtime executables, not adapters. Read the playbook's "Observable external
+workers" for its visible-console requirement, explicit background choice, native access probe and
+per-invocation sandbox mode. A parent-side probe does not prove the worker tool's sandbox access.
+Run the native worker probe before feature work; a permanent EROFS/EPERM needs environment repair.
+
+Use `dispatch wait` for lifecycle signals. The console/`dispatch observe` reads existing events
+locally: no extra model calls, agent progress prompts or logs in model context for observation.
+A proven early exit uses auto-report → auto-decide → human `resume-stop --restart`; the one
+confirmation covers only an unchanged successor and never resets the infrastructure budget.
+A ready but unsent report uses the playbook's "Delivering a worker report after a tool refusal",
+not another developer run. Retain the original file/check results and relay provenance.
+
 ## Worker prompt
 
 Every worker prompt is this template, filled from the `dispatch send` result and the CLI invocation
@@ -322,13 +341,12 @@ If the result includes completion, relay it to the coordinator for report comple
 already recorded, so submit it only once. Chat text alone does not complete the dispatch.
 ```
 
-An architect retry adds one line. `batch decide --note` does not reach the brief, and `retry_start` exists only for a developer retry. Pass the reason of the retry in `--note`, in English, and add this line after the template lines:
-
-```text
-Retry reason: <the exact --note text of the retry decision>; previous architect dispatch: <previous dispatch id>
-```
-
-The new architect uses the line as evidence of what the previous report lacked. The line does not widen the brief's scope.
+An architect retry reads `retry_reason` from its immutable brief. The coordinator must record a
+non-empty English `batch decide --note`; that note, source dispatch and decision digest are bound
+to the next transition. Historical or structured retries without a human note carry their sealed
+routing rationale with an explicit source instead; never label it a human explanation. Do not add an extra prompt file or read a sandbox-dependent TMPDIR.
+An explicit human retry with a non-empty note acknowledges only that decision's unknown reason;
+other attention findings remain independent.
 
 A developer retry adds two lines from the `retry_start` of its `dispatch preflight`:
 

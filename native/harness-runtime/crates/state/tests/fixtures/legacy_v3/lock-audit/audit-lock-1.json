@@ -1,0 +1,9 @@
+{
+  "action": "ledger-lock-force-release",
+  "at": "2026-10-22T07:19:02.550725+00:00",
+  "audit_id": "audit-lock-1",
+  "details": {
+    "reason": "test"
+  },
+  "record_sha256": "d20f6c17910c45c54619c3df048764621b9a233cc9c10d2df7aac8735ace16e6"
+}

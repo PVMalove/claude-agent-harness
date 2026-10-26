@@ -11,6 +11,7 @@ The module reads configuration only — it never opens the ledger and never adva
 from __future__ import annotations
 
 import json
+import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import cast
@@ -22,13 +23,14 @@ from harness.configuration import (
 )
 
 from harness.orchestration import extensions
+from harness.orchestration.config_boundary import inspect_configuration
 from harness.orchestration.contract import (
     APPROVAL_POLICIES,
     AUTO_TTY_PROBLEM,
     COMMUNICATION_POLICY_FIELDS,
+    EFFORT_LEVELS,
     HUMAN_APPROVAL_GATES,
     ContractError,
-    configuration_problems,
     load_role_manifest,
     reject_sensitive,
     resolve_assignment,
@@ -49,6 +51,7 @@ from harness.orchestration.core.constants import (
     DEFAULT_TEST_PATH_PATTERNS,
     ZERO_ALLOWED_POLICY_FIELDS,
 )
+from harness.orchestration.core.system_fields import enum_problem, enum_remedy
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
@@ -106,7 +109,7 @@ def _configured(repo: Path) -> bool:
         raw = read_config_file(path)
         if raw is None:
             return False
-        value = json.loads(raw)
+        value = parse_config_json(raw)
     except (OSError, ValueError):
         return True  # let the real loader report the parse failure
     if not isinstance(value, dict):
@@ -115,13 +118,14 @@ def _configured(repo: Path) -> bool:
 
 
 def _configured_value(value: JsonObject) -> bool:
-    return (
-        bool(value.get("backend_zones"))
-        or bool(value.get("assignment_plans"))
-        or "access_policy" in value
-        or "infrastructure_retry_policy" in value
-        or "auto_retry_min_severity" in value
-    )
+    authored = {key: item for key, item in value.items() if key != "$schema"}
+    seed = {
+        "provider_profiles": {},
+        "assignment_plans": {},
+        "concurrency_budget": 1,
+        "verification_commands": [],
+    }
+    return bool(authored) and authored != seed
 
 
 def _default_config(repo: Path, *, project: JsonObject | None = None) -> JsonObject:
@@ -148,29 +152,45 @@ def _config(repo: Path) -> JsonObject:
             "cannot read project configuration",
             remedy="repair the configuration or recover its transaction",
         ) from None
-    value = _configuration_data(
-        bundle["orchestration.json"], "project orchestration config"
+    result = inspect_configuration(
+        repo, bundle["orchestration.json"], roles_root=_roles_dir(repo)
     )
-    if not _configured_value(value):
-        return _default_config(
-            repo, project=_configuration_data(bundle["project.json"], "project config")
-        )
-    _reject_sensitive(value, "project orchestration config")
-    problems = configuration_problems(value, _roles_dir(repo))
-    if problems:
+    if not result.valid:
         raise CoordinatorError(
-            "invalid project orchestration config: " + "; ".join(problems),
-            remedy="fix the listed project orchestration config problem(s) before retrying",
+            "invalid project orchestration config: "
+            + "; ".join(
+                item.message
+                for item in result.diagnostics[:200]
+                if item.severity == "error"
+            ),
+            remedy=f"fix the {len(result.diagnostics)} diagnosed problem(s) before retrying; "
+            "use config validate --json for structured diagnostics",
         )
+    for item in result.diagnostics:
+        print(
+            "WARN: " + json.dumps(item.to_dict(), ensure_ascii=False), file=sys.stderr
+        )
+    value = result.document
+    project = _configuration_data(bundle["project.json"], "project config")
+    _reject_sensitive(project, "project config")
+    defaults = _default_config(repo, project=project)
     if value.get("assignment_plans"):
-        return value
+        return LoadedConfiguration(value, result.source_sha256, project)
     # Policy-only configuration and QA defaults must belong to the same generation.
-    defaults = _default_config(
-        repo, project=_configuration_data(bundle["project.json"], "project config")
-    )
     if "developer_verification_commands" not in value:
         del defaults["developer_verification_commands"]
-    return {**defaults, **value}
+    return LoadedConfiguration({**defaults, **value}, result.source_sha256, project)
+
+
+class LoadedConfiguration(dict[str, object]):
+    """Canonical config with source identity, without inserting machine metadata as policy."""
+
+    def __init__(
+        self, document: JsonObject, source_sha256: str, project: JsonObject
+    ) -> None:
+        super().__init__(document)
+        self.source_sha256 = source_sha256
+        self.project_snapshot = project
 
 
 def _adaptive_continuation_policy(config: JsonObject) -> JsonObject:
@@ -361,8 +381,15 @@ def _roles_dir(repo: Path) -> Path:
 
 
 def _role(repo: Path, name: str) -> JsonObject:
+    """The installed manifest of exactly ``name``: never a case variant or a path elsewhere."""
+    roles = _roles_dir(repo)
+    installed = sorted(
+        path.stem for path in roles.glob("*.md") if path.stem != "_common"
+    )
+    if installed and (problem := enum_problem("role", name, installed)):
+        raise CoordinatorError(problem, remedy=enum_remedy("the role", installed))
     try:
-        return load_role_manifest(_roles_dir(repo) / f"{name}.md")
+        return load_role_manifest(roles / f"{name}.md")
     except ContractError as exc:
         raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
 
@@ -491,14 +518,30 @@ def _resolve_assignment(
     *,
     session_model: object = None,
     session_effort: object = None,
+    replay: bool = False,
+    role_manifest: JsonObject | None = None,
 ) -> tuple[JsonObject, list[str], str, str, str, str, str]:
-    """Resolve a role's assignment; the second element is the role's write ceiling."""
-    role = _role(repo, role_name)
+    """Resolve a role's assignment; the second element is the role's write ceiling.
+
+    ``replay`` re-derives the assignment a recorded brief was created with: its session effort is
+    the recorded value, which is not re-validated against the current exact-value rule.
+    """
+    role = role_manifest if role_manifest is not None else _role(repo, role_name)
     if not config.get("assignment_plans"):
         if not _non_empty(session_model) or not _non_empty(session_effort):
             raise CoordinatorError(
                 "without .harness/orchestration.json the invoking session must supply --model and --effort",
                 remedy="pass --model and --effort explicitly, or create .harness/orchestration.json with an assignment plan",
+            )
+        if not replay and (
+            problem := enum_problem("--effort", session_effort, EFFORT_LEVELS)
+        ):
+            raise CoordinatorError(
+                problem,
+                remedy=enum_remedy("--effort", EFFORT_LEVELS)
+                + "; report complete and an infrastructure retry reuse the previous brief's "
+                "resolved_effort, so when that recorded value is not exact, create the next "
+                "dispatch with dispatch create --effort and an exact value",
             )
         # No project-owned provider profile exists; the invoking session handles the role.
         return (
@@ -506,7 +549,7 @@ def _resolve_assignment(
             ["**"],
             DEFAULT_PROFILE,
             session_model.strip(),
-            session_effort.strip(),
+            session_effort.strip() if replay else session_effort,
             "in-process",
             runtime_name.strip() if _non_empty(runtime_name) else "session",
         )

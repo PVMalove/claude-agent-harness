@@ -1,0 +1,10 @@
+{
+  "action": "immutable-artifact",
+  "at": "2026-10-22T07:19:02.542107+00:00",
+  "audit_id": "audit-adbb5ec3-5d84-4560-8aa6-216f30f09ab3",
+  "details": {
+    "path": "qa-lane/lease.json",
+    "sha256": "188a455f94f6789ce3981122155cd12f6cd85d4956b253f2cb197ccf5cf1619a"
+  },
+  "record_sha256": "cab7ee5485599c0fc2b7ac951d4cd97ea73b96ca16fe10f617c8ac776effec9d"
+}
