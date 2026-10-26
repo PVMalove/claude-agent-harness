@@ -98,7 +98,18 @@ impl Spec {
         )
     }
 
-    /// `SELECT` of every row, ordered by `id`: the same columns, in the same order.
+    /// Whether the rows of the table carry a `revision` that a write checks and advances.
+    pub fn revisioned(&self) -> bool {
+        matches!(self.table, "batch" | "dispatch" | "dispatch_status")
+    }
+
+    /// Whether a command may replace a row of the table. The other tables hold immutable evidence.
+    pub fn replaceable(&self) -> bool {
+        matches!(self.table, "batch" | "dispatch_status")
+    }
+
+    /// `SELECT` of every row, ordered by `id`: the same columns, in the same order, and, for a
+    /// revisioned table, the `revision` after `body_json`.
     pub fn select_sql(&self) -> String {
         let columns: Vec<&str> = self.typed.iter().map(|(name, _)| *name).collect();
         let names = if columns.is_empty() {
@@ -106,9 +117,27 @@ impl Spec {
         } else {
             format!("{}, ", columns.join(", "))
         };
+        let revision = if self.revisioned() { ", revision" } else { "" };
         format!(
-            "SELECT id, {names}body_json FROM {} ORDER BY id",
+            "SELECT id, {names}body_json{revision} FROM {} ORDER BY id",
             self.table
+        )
+    }
+
+    /// `UPDATE` of one row by `id`: the typed columns and `body_json` are set, and the revision
+    /// advances by one. The parameters are those of `split` with `id` moved to the end.
+    pub fn update_sql(&self) -> String {
+        let mut assignments: Vec<String> = self
+            .typed
+            .iter()
+            .map(|(name, _)| format!("{name} = ?"))
+            .collect();
+        assignments.push("body_json = ?".to_owned());
+        assignments.push("revision = revision + 1".to_owned());
+        format!(
+            "UPDATE {} SET {} WHERE id = ?",
+            self.table,
+            assignments.join(", ")
         )
     }
 

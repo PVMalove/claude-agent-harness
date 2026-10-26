@@ -53,6 +53,8 @@ pub struct Answer {
     pub revision: u64,
     /// Legacy path (relative to the generation) to record.
     pub records: Map<String, Value>,
+    /// The `revision` of every row that has one, by the same path: the value a write expects.
+    pub revisions: Map<String, Value>,
 }
 
 /// The `store_id` of the store when it is the authority of the state directory.
@@ -95,11 +97,27 @@ fn parse(body: &str) -> Result<Map<String, Value>, ReadError> {
     }
 }
 
+/// The records of an answer by path, and the revision of each row that has one.
+#[derive(Default)]
+struct Found {
+    records: Map<String, Value>,
+    revisions: Map<String, Value>,
+}
+
+impl Found {
+    fn add(&mut self, path: String, record: Map<String, Value>, revision: Option<i64>) {
+        if let Some(revision) = revision {
+            self.revisions.insert(path.clone(), Value::from(revision));
+        }
+        self.records.insert(path, Value::Object(record));
+    }
+}
+
 fn typed_rows(
     connection: &Connection,
     spec: &Spec,
     only: Option<&str>,
-    records: &mut Map<String, Value>,
+    found: &mut Found,
 ) -> Result<(), ReadError> {
     let sql = match only {
         None => spec.select_sql(),
@@ -114,27 +132,73 @@ fn typed_rows(
     };
     while let Some(row) = rows.next()? {
         let (id, record) = spec.join(row)?;
-        records.insert(
-            format!("{}/{id}.json", spec.directory),
-            Value::Object(record),
-        );
+        let revision = if spec.revisioned() {
+            Some(row.get::<_, i64>(spec.typed.len() + 2)?)
+        } else {
+            None
+        };
+        found.add(format!("{}/{id}.json", spec.directory), record, revision);
     }
     Ok(())
 }
 
+/// The rows of `sql`, each as `(path, body, revision)`: the third column is optional.
 fn table_rows(
     connection: &Connection,
     sql: &str,
     argument: Option<&str>,
-    mut accept: impl FnMut(String, String) -> Result<(), ReadError>,
+    mut accept: impl FnMut(String, String, Option<i64>) -> Result<(), ReadError>,
 ) -> Result<(), ReadError> {
     let mut statement = connection.prepare(sql)?;
+    let has_revision = statement.column_count() > 2;
     let mut rows = match argument {
         None => statement.query([])?,
         Some(value) => statement.query([value])?,
     };
     while let Some(row) = rows.next()? {
-        accept(row.get(0)?, row.get(1)?)?;
+        let revision = if has_revision {
+            Some(row.get(2)?)
+        } else {
+            None
+        };
+        accept(row.get(0)?, row.get(1)?, revision)?;
+    }
+    Ok(())
+}
+
+/// The audit chain in the form of the legacy audit files: `startup` and recovery look for the
+/// decision of a transition in `audit/*.json`, and the chain holds it after the cutover.
+fn chain_name(seq: i64) -> String {
+    format!("audit-chain-{seq:012}")
+}
+
+fn chain_rows(
+    connection: &Connection,
+    only: Option<i64>,
+    found: &mut Found,
+) -> Result<(), ReadError> {
+    let sql = match only {
+        None => "SELECT seq, at, action, details_json, record_sha256 FROM audit ORDER BY seq",
+        Some(_) => "SELECT seq, at, action, details_json, record_sha256 FROM audit WHERE seq = ?1",
+    };
+    let mut statement = connection.prepare(sql)?;
+    let mut rows = match only {
+        None => statement.query([])?,
+        Some(seq) => statement.query([seq])?,
+    };
+    while let Some(row) = rows.next()? {
+        let seq: i64 = row.get(0)?;
+        let details: String = row.get(3)?;
+        let mut record = Map::new();
+        record.insert("audit_id".to_owned(), Value::String(chain_name(seq)));
+        record.insert("at".to_owned(), Value::String(row.get(1)?));
+        record.insert("action".to_owned(), Value::String(row.get(2)?));
+        record.insert(
+            "details".to_owned(),
+            serde_json::from_str(&details).unwrap_or(Value::Null),
+        );
+        record.insert("record_sha256".to_owned(), Value::String(row.get(4)?));
+        found.add(format!("audit/{}.json", chain_name(seq)), record, None);
     }
     Ok(())
 }
@@ -143,53 +207,54 @@ fn collection(
     connection: &Connection,
     name: &str,
     selected: &str,
-    records: &mut Map<String, Value>,
+    found: &mut Found,
 ) -> Result<(), ReadError> {
     if let Some(spec) = spec_of(name) {
-        return typed_rows(connection, spec, None, records);
+        return typed_rows(connection, spec, None, found);
     }
     if name == "audit" {
         let prefix = format!("generations/{selected}/");
-        return table_rows(
+        table_rows(
             connection,
             "SELECT path, CAST(bytes AS TEXT) FROM legacy_audit ORDER BY path",
             None,
-            |path, text| {
+            |path, text, _| {
                 if let Some(relative) = path.strip_prefix(&prefix)
                     && let Ok(Value::Object(record)) = serde_json::from_str::<Value>(&text)
                 {
-                    records.insert(relative.to_owned(), Value::Object(record));
+                    found.add(relative.to_owned(), record, None);
                 }
                 Ok(())
             },
-        );
+        )?;
+        return chain_rows(connection, None, found);
     }
     if name == "qa-lane" {
         table_rows(
             connection,
-            "SELECT 'qa-lane/lease.json', body_json FROM qa_lane",
+            "SELECT 'qa-lane/lease.json', body_json, revision FROM qa_lane",
             None,
-            |path, body| {
-                records.insert(path, Value::Object(parse(&body)?));
+            |path, body, revision| {
+                found.add(path, parse(&body)?, revision);
                 Ok(())
             },
         )?;
         table_rows(
             connection,
-            "SELECT 'qa-lane/queue/' || id || '.json', body_json FROM qa_queue ORDER BY id",
+            "SELECT 'qa-lane/queue/' || id || '.json', body_json, revision FROM qa_queue ORDER BY id",
             None,
-            |path, body| {
-                records.insert(path, Value::Object(parse(&body)?));
+            |path, body, revision| {
+                found.add(path, parse(&body)?, revision);
                 Ok(())
             },
         )?;
     }
     table_rows(
         connection,
-        "SELECT path, body_json FROM record WHERE collection = ?1 ORDER BY path",
+        "SELECT path, body_json, revision FROM record WHERE collection = ?1 ORDER BY path",
         Some(name),
-        |path, body| {
-            records.insert(path, Value::Object(parse(&body)?));
+        |path, body, revision| {
+            found.add(path, parse(&body)?, revision);
             Ok(())
         },
     )
@@ -199,7 +264,7 @@ fn one_path(
     connection: &Connection,
     path: &str,
     selected: &str,
-    records: &mut Map<String, Value>,
+    found: &mut Found,
 ) -> Result<(), ReadError> {
     let parts: Vec<&str> = path.split('/').collect();
     let stem = |name: &str| {
@@ -210,17 +275,17 @@ fn one_path(
     match parts[..] {
         [directory, name] if spec_of(directory).is_some() => {
             if let (Some(spec), Some(id)) = (spec_of(directory), stem(name)) {
-                typed_rows(connection, spec, Some(&id), records)?;
+                typed_rows(connection, spec, Some(&id), found)?;
             }
             return Ok(());
         }
         ["qa-lane", "lease.json"] => {
             return table_rows(
                 connection,
-                "SELECT 'qa-lane/lease.json', body_json FROM qa_lane",
+                "SELECT 'qa-lane/lease.json', body_json, revision FROM qa_lane",
                 None,
-                |found, body| {
-                    records.insert(found, Value::Object(parse(&body)?));
+                |path, body, revision| {
+                    found.add(path, parse(&body)?, revision);
                     Ok(())
                 },
             );
@@ -229,14 +294,24 @@ fn one_path(
             if let Some(id) = stem(name) {
                 return table_rows(
                     connection,
-                    "SELECT 'qa-lane/queue/' || id || '.json', body_json FROM qa_queue WHERE id = ?1",
+                    "SELECT 'qa-lane/queue/' || id || '.json', body_json, revision FROM qa_queue WHERE id = ?1",
                     Some(&id),
-                    |found, body| {
-                        records.insert(found, Value::Object(parse(&body)?));
+                    |path, body, revision| {
+                        found.add(path, parse(&body)?, revision);
                         Ok(())
                     },
                 );
             }
+        }
+        ["audit", name] if name.starts_with("audit-chain-") => {
+            let seq = name
+                .strip_prefix("audit-chain-")
+                .and_then(|rest| rest.strip_suffix(".json"))
+                .and_then(|digits| digits.parse::<i64>().ok());
+            if let Some(seq) = seq {
+                chain_rows(connection, Some(seq), found)?;
+            }
+            return Ok(());
         }
         ["audit", name] if stem(name).is_some() => {
             let stored = format!("generations/{selected}/{path}");
@@ -250,7 +325,7 @@ fn one_path(
             if let Some(text) = text
                 && let Ok(Value::Object(record)) = serde_json::from_str::<Value>(&text)
             {
-                records.insert(path.to_owned(), Value::Object(record));
+                found.add(path.to_owned(), record, None);
             }
             return Ok(());
         }
@@ -258,10 +333,10 @@ fn one_path(
     }
     table_rows(
         connection,
-        "SELECT path, body_json FROM record WHERE path = ?1",
+        "SELECT path, body_json, revision FROM record WHERE path = ?1",
         Some(path),
-        |found, body| {
-            records.insert(found, Value::Object(parse(&body)?));
+        |path, body, revision| {
+            found.add(path, parse(&body)?, revision);
             Ok(())
         },
     )
@@ -346,14 +421,15 @@ pub fn read(
         });
     }
     let selected = meta(&connection, "selected_generation")?;
-    let mut records = Map::new();
+    let mut found = Found::default();
     for name in &collections {
-        collection(&connection, name, &selected, &mut records)?;
+        collection(&connection, name, &selected, &mut found)?;
     }
     for path in &paths {
-        one_path(&connection, path, &selected, &mut records)?;
+        one_path(&connection, path, &selected, &mut found)?;
     }
     connection.execute_batch("COMMIT")?;
+    let Found { records, revisions } = found;
     let size: usize = records
         .iter()
         .map(|(path, record)| path.len() + record.to_string().len())
@@ -361,5 +437,9 @@ pub fn read(
     if size > MAX_ANSWER_BYTES {
         return Err(ReadError::TooLarge);
     }
-    Ok(Answer { revision, records })
+    Ok(Answer {
+        revision,
+        records,
+        revisions,
+    })
 }

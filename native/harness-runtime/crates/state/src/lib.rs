@@ -21,5 +21,6 @@ pub mod schema;
 pub mod snapshot;
 pub mod time;
 pub mod vocabulary;
+pub mod write;
 
 pub use error::{Error, Result};

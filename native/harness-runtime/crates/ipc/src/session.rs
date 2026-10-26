@@ -122,6 +122,7 @@ impl Session {
                 close: false,
             },
             "state.read" => state_read(shared, &request),
+            "state.write" => state_write(shared, &request),
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -193,6 +194,7 @@ impl Session {
         let mut features = vec!["status".to_owned()];
         if store_id.is_some() {
             features.push("state.read".to_owned());
+            features.push("state.write".to_owned());
         }
         let result = HelloResult {
             protocol: version,
@@ -234,7 +236,10 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
         request.expected_revision,
     ) {
         Ok(answer) => {
-            let mut response = Response::ok(id, json!({"records": answer.records}));
+            let mut response = Response::ok(
+                id,
+                json!({"records": answer.records, "revisions": answer.revisions}),
+            );
             response.revision = Some(answer.revision);
             Reply {
                 response,
@@ -300,6 +305,35 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
             format!("the store cannot be read: {message}"),
             "repeat the command; if the store stays unreadable, restore the state directory from the snapshot named in AUTHORITY.json",
         ),
+    }
+}
+
+/// `state.write`: the mutations of one command, applied in one transaction (ADR 0020, section 3).
+fn state_write(shared: &Shared, request: &Request) -> Reply {
+    let id = &request.operation_id;
+    let Some(state_dir) = shared.state_dir.as_deref() else {
+        return failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::NotFound,
+                FailureDomain::Policy,
+                false,
+                "this runtime serves no state",
+                "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
+            ),
+            false,
+        );
+    };
+    match state::write::write(state_dir, request) {
+        Ok(written) => {
+            let mut response = Response::ok(id, written.result);
+            response.revision = Some(written.revision);
+            Reply {
+                response,
+                close: false,
+            }
+        }
+        Err(error) => failure(id, error, false),
     }
 }
 
@@ -665,7 +699,10 @@ mod tests {
 
         let result = hello.response.result.unwrap();
         assert_eq!(result["store_id"], store_id.as_str());
-        assert_eq!(result["features"], json!(["status", "state.read"]));
+        assert_eq!(
+            result["features"],
+            json!(["status", "state.read", "state.write"])
+        );
         assert_eq!(reply.response.status, Status::Ok);
         assert_eq!(reply.response.revision, Some(1));
         let records = &reply.response.result.unwrap()["records"];
@@ -681,6 +718,66 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::RevisionConflict);
         assert!(reply.response.error.unwrap().retryable);
+    }
+
+    fn write_body(id: &str, mutations: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "protocol_version": {"major": 1, "minor": 1},
+            "operation_id": id,
+            "operation": "state.write",
+            "request_deadline": NOW + 1,
+            "payload": {"mutations": mutations},
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_runtime_that_serves_no_state_does_not_know_state_write() {
+        let (shared, root) = setup();
+        let mut session = authenticated(&shared, &root);
+
+        let reply = session.handle(&shared, &write_body("w", json!([])), NOW);
+
+        assert_eq!(code(&reply), ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn state_write_commits_and_answers_the_revisions_and_the_audit_revision() {
+        let (shared, root, _) = serving_a_store();
+        let mut session = authenticated(&shared, &root);
+        let mutation = json!([{
+            "op": "create",
+            "path": "reports/r1.json",
+            "content": "{\n  \"a\": 1\n}\n",
+        }]);
+
+        let reply = session.handle(&shared, &write_body("w", mutation.clone()), NOW);
+        let repeat = session.handle(&shared, &write_body("w", mutation), NOW);
+
+        assert_eq!(reply.response.status, Status::Ok);
+        assert_eq!(reply.response.revision, Some(2));
+        let result = reply.response.result.unwrap();
+        assert_eq!(result["revisions"]["reports/r1.json"], 1);
+        assert_eq!(repeat.response.revision, Some(2));
+        assert_eq!(repeat.response.result.unwrap(), result);
+    }
+
+    #[test]
+    fn a_refused_state_write_answers_the_typed_error_of_the_store() {
+        let (shared, root, _) = serving_a_store();
+        let mut session = authenticated(&shared, &root);
+
+        let reply = session.handle(
+            &shared,
+            &write_body(
+                "w",
+                json!([{"op": "create", "path": "audit/x.json", "content": "{}\n"}]),
+            ),
+            NOW,
+        );
+
+        assert_eq!(code(&reply), ErrorCode::MalformedRequest);
+        assert!(!reply.close);
     }
 
     #[test]
