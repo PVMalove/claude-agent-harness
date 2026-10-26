@@ -491,20 +491,31 @@ SHORT_TMP = (
 class ServingRuntime:
     """``harness-runtime serve --repo <repo>``, with a runtime directory short enough for a socket."""
 
-    def __init__(self, repo: Path) -> None:
-        self.xdg = Path(tempfile.mkdtemp(prefix="hr", dir=SHORT_TMP)).resolve()
+    def __init__(
+        self,
+        repo: Path,
+        *,
+        env: dict[str, str] | None = None,
+        xdg: Path | None = None,
+    ) -> None:
+        """``env`` sets the debug hooks of the runtime (``HARNESS_RUNTIME_TEST_*``); ``xdg`` is
+        the runtime directory of an earlier runtime that a new one takes over after a kill."""
+        self.xdg = xdg or Path(tempfile.mkdtemp(prefix="hr", dir=SHORT_TMP)).resolve()
         self.environ = {"XDG_RUNTIME_DIR": str(self.xdg)}
         self.process = subprocess.Popen(
             [str(runtime_binary()), "serve", "--repo", str(repo)],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, **self.environ},
+            env={**os.environ, **self.environ, **(env or {})},
         )
         stdout = self.process.stdout
         assert stdout is not None
         lines: queue.Queue[str] = queue.Queue()
         threading.Thread(target=lambda: lines.put(stdout.readline()), daemon=True).start()
+        self._paused: queue.Queue[str] = queue.Queue()
+        threading.Thread(target=self._read_stderr, daemon=True).start()
         try:
             text = lines.get(timeout=30)
         except queue.Empty:
@@ -512,13 +523,44 @@ class ServingRuntime:
             pytest.fail("harness-runtime printed no readiness line within 30 seconds")
         assert json.loads(text)["status"] == "ready"
 
+    def _read_stderr(self) -> None:
+        stderr = self.process.stderr
+        assert stderr is not None
+        for line in stderr:
+            if line.startswith("PAUSED:"):
+                self._paused.put(line.strip().removeprefix("PAUSED:"))
+
+    def wait_paused(self, step: str, timeout: float = 30.0) -> None:
+        """Wait until the runtime stops at the debug hook ``step`` (``HARNESS_RUNTIME_TEST_PAUSE_AT``)."""
+        try:
+            reached = self._paused.get(timeout=timeout)
+        except queue.Empty:
+            self.stop()
+            pytest.fail(f"the runtime did not pause at {step!r} within {timeout} seconds")
+        assert reached == step
+
+    def resume(self) -> None:
+        """Let the paused request go on."""
+        stdin = self.process.stdin
+        assert stdin is not None
+        stdin.write("\n")
+        stdin.flush()
+
+    def kill(self) -> None:
+        """SIGKILL: the runtime cannot clean up anything; its directory stays for a successor."""
+        self.process.kill()
+        self.process.wait(timeout=30)
+
     def stop(self) -> None:
         if self.process.poll() is None:
             self.process.kill()
         self.process.wait(timeout=30)
-        for stream in (self.process.stdout, self.process.stderr):
+        for stream in (self.process.stdin, self.process.stdout, self.process.stderr):
             if stream:
-                stream.close()
+                try:
+                    stream.close()
+                except OSError:
+                    pass
         shutil.rmtree(self.xdg, ignore_errors=True)
 
 
@@ -634,8 +676,38 @@ class Store:
         return self.run("report", "submit", "--file", str(self.report_file()))
 
     def stop_runtime(self) -> None:
-        """Stop the runtime, so a test can change the database as an attacker would."""
+        """Stop the runtime and remove its directory."""
         self.runtime.stop()
+
+    def restart_runtime(self, env: dict[str, str] | None = None) -> None:
+        """Kill the runtime and start another in the same runtime directory, with debug hooks
+        ``env``: the hooks fire once for each process, so a setup that wrote already is past them."""
+        xdg = self.runtime.xdg
+        self.runtime.kill()
+        self.runtime = ServingRuntime(self.repo, env=env, xdg=xdg)
+
+    def start(self, *command: str) -> subprocess.Popen[str]:
+        """A coordinator command that runs while the test goes on."""
+        return coordinator_popen(self.repo, self.runtime, *command)
+
+
+def coordinator_popen(
+    repo: Path, runtime: ServingRuntime, *args: str
+) -> subprocess.Popen[str]:
+    """The coordinator CLI against ``repo`` as a process that the test waits for later."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            str(ROOT / "harness/orchestration/coordinator.py"),
+            "--repo",
+            str(repo),
+            *args,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(ROOT), **runtime.environ},
+    )
 
 
 def coordinator_with(
