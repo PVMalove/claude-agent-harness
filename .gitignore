@@ -5,6 +5,7 @@ __pycache__/
 .harness/
 .idea/
 .coverage
+.coverage.*
 .coverage.diff-coverage.json
 # Maintainer-only private term list of scripts/check_private_terms.py (docs/agents/releases.md).
 /.private-terms.txt
