@@ -38,8 +38,14 @@ pub fn manifest_entries(legacy: &LegacyState) -> Vec<(String, String)> {
 
 /// The canonical manifest file and its SHA-256.
 pub fn manifest(legacy: &LegacyState) -> (String, String) {
-    let entries: Vec<Value> = manifest_entries(legacy)
-        .into_iter()
+    manifest_of(&manifest_entries(legacy))
+}
+
+/// The canonical manifest of a sorted `(path, sha256)` list and its SHA-256: `ledger validate
+/// --full` recomputes it from the rows of `import_manifest`.
+pub fn manifest_of(entries: &[(String, String)]) -> (String, String) {
+    let entries: Vec<Value> = entries
+        .iter()
         .map(|(path, sha256)| json!({"path": path, "sha256": sha256}))
         .collect();
     let text = canonical_json(&json!({"entries": entries}));

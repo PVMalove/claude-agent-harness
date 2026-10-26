@@ -30,6 +30,8 @@ pub enum ReadError {
     RevisionConflict { expected: u64, actual: u64 },
     /// The answer would not fit one frame.
     TooLarge,
+    /// The audit chain after the checkpoint failed its verification.
+    Broken(crate::audit::Broken),
     /// The store could not be read; `busy` says the reason is a lock another process holds.
     Store { message: String, busy: bool },
 }
@@ -407,6 +409,8 @@ pub fn read(
     )?;
     connection.busy_timeout(std::time::Duration::from_secs(5))?;
     connection.execute_batch("BEGIN")?;
+    // An ordinary command verifies the audit records after the checkpoint (ADR 0020, section 4).
+    crate::audit::verify_tail(&connection).map_err(ReadError::Broken)?;
     let revision: i64 =
         connection.query_row("SELECT COALESCE(MAX(seq), 0) FROM audit", [], |row| {
             row.get(0)

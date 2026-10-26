@@ -471,7 +471,34 @@ fn object(text: &str) -> Result<Map<String, Value>, ErrorBody> {
     }
 }
 
-fn load(tx: &Transaction<'_>, place: &Place, path: &str) -> Result<Option<Stored>, ErrorBody> {
+/// The SHA-256 of the canonical projection of the row at `path` (of the bytes of an artifact), or
+/// `None` when the store holds no row there. `ledger validate --full` compares it with the last
+/// audit record of the path.
+///
+/// # Errors
+/// A path that no row can have, or a store that cannot be read.
+pub(crate) fn row_sha(connection: &Connection, path: &str) -> Result<Option<String>, ErrorBody> {
+    let target = if path.ends_with(".json") {
+        classify(path, b"{}")
+    } else {
+        Target::Artifact
+    };
+    let place = place_of(path, target)?;
+    if let Place::Artifact = place {
+        return sqlite(
+            connection
+                .query_row(
+                    "SELECT sha256 FROM artifact WHERE path = ?1",
+                    [path],
+                    |row| row.get(0),
+                )
+                .optional(),
+        );
+    }
+    Ok(load(connection, &place, path)?.map(|stored| sha_of(&stored.record)))
+}
+
+fn load(tx: &Connection, place: &Place, path: &str) -> Result<Option<Stored>, ErrorBody> {
     let body_row = |sql: &str, key: Sql| -> Result<Option<Stored>, ErrorBody> {
         let found: Option<(String, i64)> = sqlite(
             tx.query_row(sql, [key], |row| Ok((row.get(0)?, row.get(1)?)))
@@ -851,6 +878,9 @@ fn run(
     if let Some(written) = replay(tx, &request.operation_id, digest)? {
         return Ok(Step::Replayed(written));
     }
+    // An ordinary command verifies the audit records after the checkpoint (ADR 0020, section 4)
+    // before it adds to the chain.
+    audit::verify_tail(tx).map_err(|broken| broken.to_error())?;
     if let (Some(expected), Some(batch)) = (request.expected_revision, &request.batch_id) {
         let path = format!("batches/{batch}.json");
         let actual: i64 = sqlite(
@@ -901,6 +931,11 @@ fn run(
     let mut audit_seq = 0;
     for effect in effects.into_iter().flatten() {
         audit_seq = sqlite_audit(tx, &at, &effect)?;
+    }
+    // The chain was verified up to its old tail and this request appended to it: the checkpoint
+    // moves to the new tail in the same transaction.
+    if let Some((seq, chain)) = sqlite(audit::tail(tx))? {
+        sqlite(audit::move_checkpoint(tx, seq, &chain))?;
     }
     touched.push(CLASS_GENERATION);
     let result = json!({"revisions": revisions, "audit_seq": audit_seq});
@@ -954,11 +989,12 @@ fn record_failure(connection: &mut Connection, request: &Request, digest: &str, 
     }
 }
 
-fn is_recorded(code: ErrorCode) -> bool {
-    matches!(
-        code,
-        ErrorCode::RevisionConflict | ErrorCode::InvariantViolation
-    )
+/// A refusal the same request meets again: a stale revision, or a change that breaks an invariant
+/// of the schema. A broken chain (the infrastructure domain) is not one: it ends when the store
+/// is restored, and the same operation must then be able to run.
+fn is_recorded(error: &ErrorBody) -> bool {
+    error.code == ErrorCode::RevisionConflict
+        || (error.code == ErrorCode::InvariantViolation && error.domain == FailureDomain::Tooling)
 }
 
 /// Apply one `state.write` request to the store of `state`.
@@ -983,7 +1019,7 @@ pub fn write(state: &Path, request: &Request) -> Result<Written, ErrorBody> {
     let outcome = transact(&mut connection, request, &digest, mutations);
     // The transaction is rolled back by now; a refusal that a repeat would meet again is kept.
     if let Err(error) = &outcome
-        && is_recorded(error.code)
+        && is_recorded(error)
     {
         record_failure(&mut connection, request, &digest, error);
     }

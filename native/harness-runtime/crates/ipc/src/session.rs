@@ -123,6 +123,7 @@ impl Session {
             },
             "state.read" => state_read(shared, &request),
             "state.write" => state_write(shared, &request),
+            "state.validate" => state_validate(shared, &request),
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -195,6 +196,7 @@ impl Session {
         if store_id.is_some() {
             features.push("state.read".to_owned());
             features.push("state.write".to_owned());
+            features.push("state.validate".to_owned());
         }
         let result = HelloResult {
             protocol: version,
@@ -273,6 +275,7 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
             .with_fact("actual_revision", actual),
             false,
         ),
+        Err(ReadError::Broken(broken)) => failure(id, broken.to_error(), false),
         Err(ReadError::TooLarge) => failure(
             id,
             ErrorBody::new(
@@ -333,6 +336,42 @@ fn state_write(shared: &Shared, request: &Request) -> Reply {
                 close: false,
             }
         }
+        Err(error) => failure(id, error, false),
+    }
+}
+
+/// `state.validate`: the verification of the store; `{"full": true}` recomputes everything from
+/// the genesis of the audit chain and does not use the checkpoint (ADR 0020, section 4).
+fn state_validate(shared: &Shared, request: &Request) -> Reply {
+    let id = &request.operation_id;
+    let full = match request.payload.as_ref() {
+        None => false,
+        Some(Value::Object(members))
+            if members.keys().all(|key| key == "full")
+                && members.get("full").is_none_or(Value::is_boolean) =>
+        {
+            members.get("full") == Some(&Value::Bool(true))
+        }
+        Some(_) => return malformed(id, "the payload is {\"full\": <bool>} or none"),
+    };
+    let Some(state_dir) = shared.state_dir.as_deref() else {
+        return failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::NotFound,
+                FailureDomain::Policy,
+                false,
+                "this runtime serves no state",
+                "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
+            ),
+            false,
+        );
+    };
+    match state::validate::validate(state_dir, full) {
+        Ok(result) => Reply {
+            response: Response::ok(id, result),
+            close: false,
+        },
         Err(error) => failure(id, error, false),
     }
 }
@@ -701,7 +740,7 @@ mod tests {
         assert_eq!(result["store_id"], store_id.as_str());
         assert_eq!(
             result["features"],
-            json!(["status", "state.read", "state.write"])
+            json!(["status", "state.read", "state.write", "state.validate"])
         );
         assert_eq!(reply.response.status, Status::Ok);
         assert_eq!(reply.response.revision, Some(1));
@@ -760,6 +799,37 @@ mod tests {
         assert_eq!(result["revisions"]["reports/r1.json"], 1);
         assert_eq!(repeat.response.revision, Some(2));
         assert_eq!(repeat.response.result.unwrap(), result);
+    }
+
+    fn validate_body(payload: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "protocol_version": {"major": 1, "minor": 1},
+            "operation_id": "v",
+            "operation": "state.validate",
+            "request_deadline": NOW + 1,
+            "payload": payload,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn state_validate_answers_the_mode_and_refuses_a_payload_it_does_not_define() {
+        let (shared, root, _) = serving_a_store();
+        let mut session = authenticated(&shared, &root);
+
+        let ordinary = session.handle(&shared, &validate_body(json!({})), NOW);
+        let full = session.handle(&shared, &validate_body(json!({"full": true})), NOW);
+        let unknown = session.handle(&shared, &validate_body(json!({"deep": true})), NOW);
+        let not_boolean = session.handle(&shared, &validate_body(json!({"full": "yes"})), NOW);
+
+        assert_eq!(ordinary.response.result.unwrap()["mode"], "incremental");
+        let full = full.response.result.unwrap();
+        assert_eq!(
+            (full["mode"].as_str(), full["valid"].as_bool()),
+            (Some("full"), Some(true))
+        );
+        assert_eq!(code(&unknown), ErrorCode::MalformedRequest);
+        assert_eq!(code(&not_boolean), ErrorCode::MalformedRequest);
     }
 
     #[test]
