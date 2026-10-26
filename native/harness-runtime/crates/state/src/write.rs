@@ -1025,6 +1025,8 @@ pub fn write(state: &Path, request: &Request) -> Result<Written, ErrorBody> {
     let digest = request_digest(request);
     hooks::reach_once("state.write:before-begin").map_err(|err| internal(err.to_string()))?;
     let mut connection = open(state)?;
+    // A store without a checkpoint is verified whole here, outside the transaction.
+    audit::ensure_checkpoint(&mut connection).map_err(|broken| broken.to_error())?;
     let outcome = transact(&mut connection, request, &digest, mutations);
     // The transaction is rolled back by now; a refusal that a repeat would meet again is kept.
     if let Err(error) = &outcome

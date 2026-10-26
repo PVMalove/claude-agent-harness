@@ -284,7 +284,8 @@ fn rebuild_checkpoint(state: &Path, last: &(i64, String)) {
 ///
 /// # Errors
 /// `not_found` when the store is not the authority; `invariant_violation` naming the first check
-/// that failed; `store_busy` or `internal` when the store cannot be read.
+/// that failed; `store_busy` when another process holds a lock past the limit, and `internal`
+/// when the store cannot be read for another reason (see [`Broken::to_error`]).
 pub fn validate(state: &Path, full: bool) -> Result<Value, ErrorBody> {
     let authority = match epoch(state) {
         Epoch::Store(authority) => authority,

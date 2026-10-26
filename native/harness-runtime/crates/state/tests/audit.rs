@@ -4,10 +4,10 @@
 
 mod common;
 
-use contracts::{ErrorBody, ErrorCode, PROTOCOL_VERSION, Request};
+use contracts::{ErrorBody, ErrorCode, FailureDomain, PROTOCOL_VERSION, Request};
 use rusqlite::Connection;
 use serde_json::{Value, json};
-use state::audit::{GENESIS_CHAIN, chain_sha256, record_sha256};
+use state::audit::{Broken, GENESIS_CHAIN, chain_sha256, ensure_checkpoint, record_sha256};
 use state::canonical::canonical_json;
 use state::migrate::run;
 use state::read::{ReadError, read};
@@ -484,4 +484,57 @@ fn the_genesis_of_the_chain_is_sixty_four_zeros() {
         )
         .unwrap();
     assert_eq!(prev, GENESIS_CHAIN);
+}
+
+#[test]
+fn a_store_without_a_checkpoint_gets_one_before_a_write_opens_its_transaction() {
+    let repo = cut_over("ensure");
+    add_report(&repo, "a");
+    store(&repo)
+        .execute("DELETE FROM audit_checkpoint", [])
+        .unwrap();
+
+    ensure_checkpoint(&mut store(&repo)).unwrap();
+
+    let (seq, _) = checkpoint(&repo).unwrap();
+    assert_eq!(seq, tail(&repo));
+    assert!(full(&repo).is_ok());
+}
+
+#[test]
+fn a_broken_chain_is_not_given_a_checkpoint() {
+    let repo = cut_over("ensure-broken");
+    add_report(&repo, "a");
+    store(&repo)
+        .execute("DELETE FROM audit_checkpoint", [])
+        .unwrap();
+    store(&repo)
+        .execute(
+            "UPDATE audit SET record_sha256 = 'forged' WHERE seq = 2",
+            [],
+        )
+        .unwrap();
+
+    let broken = ensure_checkpoint(&mut store(&repo)).unwrap_err();
+
+    assert_eq!((broken.check, broken.seq), ("audit_record", Some(2)));
+    assert_eq!(checkpoint(&repo), None);
+}
+
+#[test]
+fn a_store_that_cannot_be_read_is_busy_or_internal_never_a_broken_chain() {
+    let busy =
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None);
+    let corrupt = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+        None,
+    );
+
+    let busy = Broken::from(busy).to_error();
+    let corrupt = Broken::from(corrupt).to_error();
+
+    assert_eq!((busy.code, busy.retryable), (ErrorCode::StoreBusy, true));
+    assert_eq!(busy.remedy, "repeat the command");
+    assert_eq!(corrupt.code, ErrorCode::Internal);
+    assert_eq!(corrupt.domain, FailureDomain::Infrastructure);
 }

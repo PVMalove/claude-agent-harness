@@ -5,7 +5,7 @@
 //! this `record_sha256`, both as lower-case hex text. The first record chains from 64 zeros.
 
 use contracts::{ErrorBody, ErrorCode, FailureDomain};
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Value, json};
 
 use crate::canonical::{canonical_json, sha256_hex};
@@ -55,8 +55,35 @@ impl Broken {
         }
     }
 
-    /// The typed error of the protocol for a store that fails its own verification.
+    /// The typed error of the protocol for a store that fails its own verification. A check that
+    /// could not read the store says nothing about the chain: a lock another process holds is
+    /// `store_busy`, any other SQLite failure is `internal`, and neither sends the operator to
+    /// restore a snapshot.
     pub fn to_error(&self) -> ErrorBody {
+        if self.check == CHECK_BUSY {
+            return ErrorBody::new(
+                ErrorCode::StoreBusy,
+                FailureDomain::Infrastructure,
+                true,
+                format!(
+                    "the runtime store stayed locked while it was verified: {}",
+                    self.detail
+                ),
+                "repeat the command",
+            );
+        }
+        if self.check == CHECK_STORE {
+            return ErrorBody::new(
+                ErrorCode::Internal,
+                FailureDomain::Infrastructure,
+                false,
+                format!(
+                    "the store could not be read for its verification: {}",
+                    self.detail
+                ),
+                "repeat the command; if the store stays unreadable, restore the state directory from the snapshot named in AUTHORITY.json",
+            );
+        }
         let mut error = ErrorBody::new(
             ErrorCode::InvariantViolation,
             FailureDomain::Infrastructure,
@@ -72,9 +99,22 @@ impl Broken {
     }
 }
 
+/// The check name of a verification that met a lock another process holds.
+const CHECK_BUSY: &str = "store_busy";
+/// The check name of a verification that could not read the store for another reason.
+const CHECK_STORE: &str = "store";
+
 impl From<rusqlite::Error> for Broken {
     fn from(err: rusqlite::Error) -> Self {
-        Self::new(None, "store", err.to_string())
+        let busy = matches!(
+            err.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        );
+        Self::new(
+            None,
+            if busy { CHECK_BUSY } else { CHECK_STORE },
+            err.to_string(),
+        )
     }
 }
 
@@ -189,6 +229,37 @@ pub fn verify_tail(connection: &Connection) -> std::result::Result<Verified, Bro
         connection,
         anchor.as_ref().map(|(seq, chain)| (*seq, chain.as_str())),
     )
+}
+
+/// Give a store that has no usable checkpoint one, before a write opens its transaction.
+///
+/// The whole chain is verified in a read snapshot, which blocks no writer, and the checkpoint is
+/// then set in a short write transaction that verifies only the records another writer appended
+/// since. The transaction of the write that follows then verifies the tail only (ADR 0020,
+/// section 3: no full audit check inside the transaction). A store that has a checkpoint costs
+/// one query.
+///
+/// # Errors
+/// The first record that fails a check, or the SQLite failure that kept the check from running.
+pub fn ensure_checkpoint(connection: &mut Connection) -> std::result::Result<(), Broken> {
+    if anchor(connection)?.is_some() {
+        return Ok(());
+    }
+    let verified = {
+        let snapshot = connection.transaction()?;
+        verify(&snapshot, None)?
+    };
+    let Some((seq, chain)) = verified.last else {
+        return Ok(());
+    };
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if anchor(&tx)?.is_none()
+        && let Some((seq, chain)) = verify(&tx, Some((seq, chain.as_str())))?.last
+    {
+        move_checkpoint(&tx, seq, &chain)?;
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 /// Move the checkpoint to `seq`, the last record of a chain that was verified.
