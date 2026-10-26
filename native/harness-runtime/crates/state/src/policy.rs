@@ -291,6 +291,44 @@ fn resolve(path: &str) -> PathBuf {
 
 // --- recovery events ---
 
+/// A stopped writer is proved by cancellation or an unaccepted immutable blocked report (#837).
+fn preserved_source_matches(
+    records: &Records<'_>,
+    entry: &Object,
+    head: &Value,
+    retired: bool,
+) -> std::result::Result<bool, String> {
+    if truthy(field(entry, "report")) {
+        let report = field(entry, "report")
+            .as_str()
+            .filter(|path| crate::read::valid_path(path))
+            .and_then(|path| records.get(path));
+        let Some(report) = report else {
+            return Ok(false);
+        };
+        let accepted = entry
+            .get("decision")
+            .and_then(Value::as_object)
+            .and_then(|decision| field(decision, "decision").as_str())
+            .is_some_and(|decision| {
+                ["accept", "accept-conditional", "override-warning"].contains(&decision)
+            });
+        return Ok((field(entry, "state").as_str() == Some("reported")
+            || (retired && field(entry, "state").as_str() == Some("abandoned")))
+            && field(report, "outcome").as_str() == Some("blocked")
+            && field(report, "commit_sha") == head
+            && field(entry, "report_sha256").as_str() == Some(object_sha256(report).as_str())
+            && !accepted);
+    }
+    let cancellation = match entry.get("cancellation") {
+        None => None,
+        Some(Value::Object(found)) => Some(found),
+        Some(_) => return fail("preserved writer evidence has an invalid cancellation"),
+    };
+    Ok(field(entry, "state").as_str() == Some("cancelled")
+        && cancellation.is_some_and(|found| field(found, "runtime_stopped") == &Value::Bool(true)))
+}
+
 fn preserved_progress(
     records: &Records<'_>,
     batch: &Object,
@@ -321,12 +359,15 @@ fn preserved_progress(
         .get("superseded_dispatches")
         .and_then(Value::as_array)
         .is_some_and(|items| items.contains(source));
-    let cancellation = match entry.and_then(|entry| entry.get("cancellation")) {
-        None => None,
-        Some(Value::Object(found)) => Some(found),
-        Some(_) => return fail("preserved writer evidence has an invalid cancellation"),
-    };
     let head = field(progress, "head_commit");
+    let retired = evidence
+        .get("retired_dispatches")
+        .and_then(Value::as_array)
+        .is_some_and(|items| items.contains(source));
+    let source_matches = entry
+        .map(|entry| preserved_source_matches(records, entry, head, retired))
+        .transpose()?
+        .unwrap_or(false);
     let files = progress.get("files").and_then(Value::as_object);
     let diverged = !exact_keys(progress, &PRESERVED_PROGRESS_FIELDS)
         || field(event, "kind").as_str() != Some("rewind")
@@ -335,12 +376,7 @@ fn preserved_progress(
         || field(&brief, "batch_id") != field(batch, "batch_id")
         || field(&brief, "role").as_str() != role
         || field(&brief, "purpose").as_str() != Some("work")
-        || entry.is_some_and(|entry| truthy(field(entry, "report")))
-        || entry
-            .and_then(|entry| entry.get("state"))
-            .and_then(Value::as_str)
-            != Some("cancelled")
-        || !cancellation.is_some_and(|found| truthy(field(found, "runtime_stopped")))
+        || !source_matches
         || field(progress, "snapshot_commit") != field(&brief, "snapshot_commit")
         || head != field(evidence, "writer_start_commit")
         || !is_hex(head, &[40, 64])
