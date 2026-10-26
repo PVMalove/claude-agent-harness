@@ -94,7 +94,8 @@ def session_row(
     )
     description = dispatch_id
     if title and not narrow:
-        description += f" · {title}"
+        # A real dispatch UUID must leave room for the title in the home column.
+        description = f"{brand.shorten(dispatch_id, 16)} · {title}"
     row.add_row(
         identity,
         Text(description, style=brand.PALETTE["muted"]),

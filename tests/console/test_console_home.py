@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
@@ -428,6 +429,35 @@ def test_long_and_multiline_titles_stay_on_one_terminal_line(project: Path) -> N
                 widget = item.query_one(Static)
                 assert item.region.height == 1
                 assert widget.content_size.height == 1
+
+    asyncio.run(scenario())
+
+
+def test_real_dispatch_ids_leave_room_for_the_task_title(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stages = [
+        replace(
+            STAGES[0],
+            dispatch_id="dispatch-e98a4a72-50ac-4fd8-b421-1db55c17f287",
+        )
+    ]
+    monkeypatch.setattr(
+        reports, "load_ledger_view", lambda repo: reports.LedgerView(stages=stages)
+    )
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(project)
+        async with app.run_test(size=WIDE) as pilot:
+            home = _home(project, lambda repo, tickets: {"#716": "Тикет"})
+            await app.switch_screen(home)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+
+            [line] = _session_lines(home)
+            assert "dispatch-e98" in line
+            assert "… · Тикет" in line
+            assert "▶ Выполняется" in line and "2 мин" in line
 
     asyncio.run(scenario())
 
