@@ -909,3 +909,67 @@ EN.update(
     }
 )
 EN_PHRASES.update({"нужна «Онлайн»": "needs Online"})
+
+
+# Harness-specific presentation. Command classes and the actual process output are unchanged.
+EN.update(
+    {
+        "Недоступные в этом проекте команды не показываются": "Commands unavailable in this project are hidden",
+        "Команды харнесса и обслуживание. У каждой команды виден CLI.": "Harness commands and maintenance. Every command shows its CLI.",
+        "✔ обратимые": "✔ reversible",
+        "⚠ с подтверждением": "⚠ confirmation",
+        "✔ обратимо": "✔ reversible",
+        "✖ удаление": "✖ deletion",
+        "⚠ внешнее": "⚠ external",
+        "⚠ решение": "⚠ decision",
+        "⚠ перезапись": "⚠ overwrite",
+        "⚠ загрузка": "⚠ download",
+        "Нет доступных команд": "No commands available",
+        "Описание выбранной команды": "Selected command details",
+        "Перед запуском откроется форма подтверждения.": "A confirmation form opens before execution.",
+        "y — копировать CLI": "y — copy CLI",
+        "Повторить": "Retry",
+        "пока пусто": "empty for now",
+        "○ дрейф: проверяется…": "○ drift: checking…",
+        "✔ дрейфа нет": "✔ no drift",
+        "⚠ дрейф есть": "⚠ drift detected",
+        "○ дрейф: нет lock": "○ drift: no lock",
+        "○ дрейф неизвестен": "○ drift unknown",
+        "Состав": "Composition",
+        "Версия": "Version",
+        "Выбор": "Select",
+    }
+)
+EN_PHRASES.update(
+    {
+        key: value
+        for key, value in EN.items()
+        if key
+        in (
+            "✔ обратимо",
+            "✖ удаление",
+            "⚠ внешнее",
+            "⚠ решение",
+            "⚠ перезапись",
+            "⚠ загрузка",
+            "Перед запуском откроется форма подтверждения.",
+            "Харнесс не установлен",
+        )
+    }
+)
+EN_PREFIXES.update(
+    {
+        "Введите ": "Enter ",
+        "Для запуска введите ": "To run, enter ",
+        "Заполните: ": "Fill in: ",
+    }
+)
+
+EN_PHRASES.update(
+    {
+        "○ Харнесс не установлен: нет читаемого lock": "○ Harness not installed: no readable lock",
+        "Пайплайн": "Pipeline",
+        "не удалось запустить": "could not start",
+        "сбой запуска": "launch failed",
+    }
+)

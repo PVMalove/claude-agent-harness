@@ -87,7 +87,8 @@ def render_result(
     lines = output.rstrip().splitlines()
     if not full:
         lines = lines[-_OUTPUT_TAIL_LINES:]
-    return "\n".join([f"$ {cli_line}", f"код выхода: {result.returncode}", *lines])
+    label = "exit" if full else "код выхода:"
+    return "\n".join([f"$ {cli_line}", f"{label} {result.returncode}", *lines])
 
 
 def describe_command(
@@ -137,13 +138,23 @@ class CommandForm(Translated, ModalScreen["dict[str, str] | None"]):
     """
 
     def form_header(
-        self, title: str, cli_line: str, reversibility: Reversibility
+        self,
+        title: str,
+        cli_line: str,
+        reversibility: Reversibility,
+        *,
+        warning_cli: bool = False,
     ) -> ComposeResult:
         """Генерирует заголовок формы, эквивалент команды CLI и причину подтверждения при наличии."""
         language = getattr(self.app, "language", "ru")
         yield Static(Text(i18n.tr(language, title), style="bold"), markup=False)
         yield Static(
-            Text(f"$ {cli_line}", style=f"bold {brand.PALETTE['secondary']}"),
+            Text(
+                f"$ {cli_line}",
+                style=brand.PALETTE["warning"]
+                if warning_cli
+                else f"bold {brand.PALETTE['secondary']}",
+            ),
             id="form-cli",
             markup=False,
         )

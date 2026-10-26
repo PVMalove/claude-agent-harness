@@ -10,26 +10,35 @@ from __future__ import annotations
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Callable, Mapping, Sequence
+from collections import Counter
 
 from rich.text import Text
+from textual import events, on
 from textual.app import ComposeResult
+from textual.binding import ActiveBinding, Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Input, ListItem, ListView, Static
+from textual.widgets import Button, Collapsible, Input, ListItem, ListView, Static
 
 from .. import brand, i18n
 from .. import data as console_data
 from .. import reports as console_reports
 from .. import stats as console_stats
-from ..catalog import HARNESS_COMMANDS, CatalogEntry, process_argv
-from ..logtext import colorize_overview
+from ..catalog import (
+    HARNESS_COMMANDS,
+    CONFIRMATION_REASONS,
+    REVERSIBILITY_LABELS,
+    Reversibility,
+    CatalogEntry,
+    process_argv,
+)
 from ..runner import CommandRunner, HarnessRun, capturing_runner
-from ..shell import SHELL_CSS, ConsoleShell, WrappedValue
+from ..shell import SHELL_CSS, ConsoleShell, Fold, SectionCard
 from .commands import (
     CommandForm,
     CommandMenuScreen,
-    command_menu_css,
-    describe_command,
+    call_from_worker,
+    short_repo,
     harness_runs,
     render_result,
 )
@@ -73,8 +82,23 @@ def _group_rank(key: str) -> int:
     return _GROUP_ORDER.index(_GROUPS.get(key, _OTHER_GROUP))
 
 
+_HIDDEN_COMMANDS = {
+    "init",
+    "update",
+    "update-force-managed",
+    "update-force-seed",
+    "adopt",
+}
+
+
 class HarnessCommandList(ListView):
     """Mouse selection is read-only; Enter is a separate, explicit activation."""
+
+    BINDINGS = [
+        Binding("enter", "select_cursor", "Запустить"),
+        Binding("up", "cursor_up", "Выбор", key_display="↑↓"),
+        Binding("down", "cursor_down", show=False),
+    ]
 
     class Activate(Message):
         def __init__(self, item: ListItem) -> None:
@@ -101,11 +125,22 @@ class CommandFormScreen(CommandForm):
         with Vertical(id="command-form"):
             with VerticalScroll(id="command-form-body"):
                 yield from self.form_header(
-                    entry.title, entry.cli_line(self.repo), entry.reversibility
+                    entry.title,
+                    short_repo(entry.cli_line(self.repo), self.repo).replace(
+                        "$REPO", "…"
+                    ),
+                    entry.reversibility,
+                    warning_cli=True,
                 )
                 for name in entry.inputs:
+                    yield Static(name, id=f"label-{name}", markup=False)
                     yield Input(placeholder=name, id=f"input-{name}")
                 if entry.typed_confirmation is not None:
+                    yield Static(
+                        f"Введите {entry.typed_confirmation}",
+                        id="label-confirmation",
+                        markup=False,
+                    )
                     yield Input(
                         placeholder=f"Введите {entry.typed_confirmation}",
                         id="typed-confirmation",
@@ -113,8 +148,20 @@ class CommandFormScreen(CommandForm):
             # Outside the scrolling body: Run and the error stay visible however long the form is.
             yield from self.form_buttons(entry.reversibility)
 
-    def _submit(self) -> None:
-        """Проверяет заполнение обязательных полей и ввод проверочного слова подтверждения."""
+    CSS = """
+    CommandFormScreen #command-form { max-height: 95%; }
+    CommandFormScreen #command-form-body { max-height: 65vh; }
+    CommandFormScreen #form-cli { color: $warning; text-style: none; }
+    CommandFormScreen #form-error { height: auto; min-height: 1; }
+    """
+
+    def on_mount(self) -> None:
+        self._validate()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._validate()
+
+    def _validation(self) -> tuple[dict[str, str], str]:
         values = {
             name: self.query_one(f"#input-{name}", Input).value.strip()
             for name in self.entry.inputs
@@ -122,12 +169,23 @@ class CommandFormScreen(CommandForm):
         missing = [name for name, value in values.items() if not value]
         word = self.entry.typed_confirmation
         if missing:
-            self._error(f"Заполните: {', '.join(missing)}")
-        elif (
+            return values, f"Заполните: {', '.join(missing)}"
+        if (
             word is not None
             and self.query_one("#typed-confirmation", Input).value != word
         ):
-            self._error(f"Для запуска введите {word}")
+            return values, f"Для запуска введите {word}"
+        return values, ""
+
+    def _validate(self) -> None:
+        _, error = self._validation()
+        self.query_one("#run", Button).disabled = bool(error)
+        self._error(i18n.tr_text(getattr(self.app, "language", "ru"), error))
+
+    def _submit(self) -> None:
+        values, error = self._validation()
+        if error:
+            self._validate()
         else:
             self.dismiss(values)
 
@@ -141,12 +199,58 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     SECTION = "Harness"
     NARROW_FOOTER_KEYS = ("escape", "enter", "y")
 
-    # The shell's rules plus the command-menu rules under this screen's own type name.
-    CSS = (
-        SHELL_CSS
-        + command_menu_css("HarnessScreen")
-        + brand.shell_css("HarnessScreen #harness-page { height: 1fr; padding: 0 2; }")
-    )
+    BINDINGS = [Binding("y", "copy_cli", "Копировать CLI")]
+    CSS = SHELL_CSS + brand.shell_css("""
+    HarnessScreen #harness-page { height: 1fr; padding: 0 2; }
+    HarnessScreen #harness-title { height: 1; text-style: bold; }
+    HarnessScreen #harness-subtitle { height: 1; color: $text-muted; }
+    HarnessScreen .section-card { border: round $component-border; padding: 0 1; height: auto; margin: 0; }
+    HarnessScreen #harness-state, HarnessScreen #harness-usage { height: auto; }
+    HarnessScreen #harness-usage { color: $text-muted; }
+    HarnessScreen #command-body { height: 1fr; min-height: 3; }
+    HarnessScreen #command-list { width: 56%; height: 1fr; min-height: 2; }
+    HarnessScreen #command-filters { height: 1; }
+    HarnessScreen #command-filters Button { min-width: 0; padding: 0 1; }
+    HarnessScreen #command-filters .-on { background: $selection-background; color: $selection-foreground; }
+    HarnessScreen #command-menu { height: 1fr; min-height: 2; margin: 0; padding: 0; border: round $component-border; }
+    HarnessScreen #command-menu > ListItem { height: 1; padding: 0; border-left: solid transparent; text-style: none; }
+    HarnessScreen #command-menu > ListItem.-highlight { background: $selection-background; border-left: solid $primary; outline: round $selection-outline; text-style: none; }
+    HarnessScreen #command-menu Static { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    HarnessScreen #command-menu Horizontal { height: 1; }
+    HarnessScreen .command-label { width: 1fr; }
+    HarnessScreen .command-risk { width: auto; padding-left: 1; }
+    HarnessScreen .group-title { color: $text-muted; text-style: bold; }
+    HarnessScreen #detail-fold { width: 1fr; height: 1fr; }
+    HarnessScreen #detail-fold > CollapsibleTitle { display: none; }
+    HarnessScreen #detail-fold > Contents { height: 1fr; padding: 0; }
+    HarnessScreen #command-detail-scroll { height: 1fr; padding: 0 1; }
+    HarnessScreen #command-detail { height: auto; }
+    HarnessScreen #command-risk { height: auto; padding: 1; border: round $warning; background: $warning 8%; color: $warning; }
+    HarnessScreen #command-risk.-safe { border: round $success; background: $success 8%; color: $success; }
+    HarnessScreen #command-risk.-deletes { border: round $error; background: $error 8%; color: $error; }
+    HarnessScreen #command-cli { height: auto; border: round $component-border; padding: 0 1; }
+    HarnessScreen #copy-hint { height: 1; color: $text-muted; }
+    HarnessScreen #command-actions { height: auto; }
+    HarnessScreen #command-actions Button { margin-right: 1; }
+    HarnessScreen #run-status { height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    HarnessScreen #run-feedback { height: auto; max-height: 1; color: $warning; text-wrap: nowrap; text-overflow: ellipsis; }
+    HarnessScreen #output-fold { height: 10; max-height: 35%; }
+    HarnessScreen #output-fold.-collapsed { height: 1; border: none; padding: 0 1; }
+    HarnessScreen #output-fold > Contents { height: 1fr; padding: 0; }
+    HarnessScreen #command-output-scroll { height: 1fr; }
+    HarnessScreen #command-output { height: auto; }
+    HarnessScreen.-narrow #harness-page { padding: 0 1; }
+    HarnessScreen.-narrow #harness-subtitle { display: none; }
+    HarnessScreen.-narrow #command-body { layout: vertical; }
+    HarnessScreen.-narrow #command-list { width: 1fr; height: 1fr; }
+    HarnessScreen.-narrow #detail-fold { width: 1fr; height: 8; }
+    HarnessScreen.-narrow #detail-fold.-collapsed { height: 1; border: none; padding: 0 1; }
+    HarnessScreen.-narrow #detail-fold > CollapsibleTitle { display: block; }
+    HarnessScreen.-narrow #command-risk { padding: 0; border: none; }
+    HarnessScreen.-narrow #command-actions Button { height: 1; border: none; min-height: 1; }
+    HarnessScreen.-narrow #output-fold { height: 5; }
+    HarnessScreen.-narrow #output-fold.-collapsed { height: 1; }
+    """)
 
     def __init__(
         self,
@@ -154,6 +258,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         *,
         command_runner: CommandRunner = capturing_runner,
         catalog: Sequence[CatalogEntry] = HARNESS_COMMANDS,
+        load_drift: Callable[[Path], str] = console_data.drift_state,
         load_view: Callable[
             [Path], console_reports.LedgerView
         ] = console_reports.load_ledger_view,
@@ -161,86 +266,450 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         """Инициализирует экран раздела Harness со списком доступных команд."""
         super().__init__(repo, command_runner=command_runner)
         self._load_view = load_view
+        self._load_drift = load_drift
+        self._drift = "loading"
+        self._drift_epoch = 0
+        self._filter = "all"
+        self._expanded_group = "Проверки"
+        self._selected_key: str | None = None
+        self._detail_ready: str | None = None
+        self._rebuilding = False
+        self._last_narrow: bool | None = None
+        self._state = console_stats.harness_state(repo)
+        self._view = load_view(repo)
         self._owned_run: HarnessRun | None = None
         self._rendered_run: tuple[int, str, str] | None = None
         self._receiving = True
         # A command whose script is absent here (e.g. verify outside the harness repository)
         # would only ever fail with "can't open file", so it is not offered.
-        self._entries = {entry.key: entry for entry in catalog if entry.available(repo)}
+        self._entries = {
+            entry.key: entry
+            for entry in catalog
+            if entry.key not in _HIDDEN_COMMANDS and entry.available(repo)
+        }
+        if self._entries and not any(
+            self.menu_group(key) == self._expanded_group for key in self._entries
+        ):
+            self._expanded_group = self.menu_group(next(iter(self._entries)))
+
+    @property
+    def active_bindings(self) -> dict[str, ActiveBinding]:
+        bindings = super().active_bindings
+        order = (
+            "escape",
+            "up",
+            "down",
+            "enter",
+            "y",
+            "f2",
+            self.app.COMMAND_PALETTE_BINDING,
+        )
+        return {key: bindings[key] for key in order if key in bindings}
+
+    @property
+    def narrow(self) -> bool:
+        return self.app.size.width < brand.NARROW_WIDTH
+
+    def _t(self, text: str) -> str:
+        return i18n.tr_text(self._language, text)
 
     def compose_strip(self) -> ComposeResult:
-        yield WrappedValue(str(self.repo))
+        yield Static(f"Проект: {self.repo.name}", id="harness-project", markup=False)
+        yield Static(
+            "Недоступные в этом проекте команды не показываются",
+            id="availability-hint",
+            classes="wide-only",
+        )
 
     def compose_content(self) -> ComposeResult:
-        with VerticalScroll(id="harness-page"):
-            yield from self.compose_commands()
-
-    def compose_commands(self) -> ComposeResult:
-        yield from self.overview()
         self._language = getattr(self.app, "language", "ru")
-        children = self._menu_children()
-        first = next((i for i, item in enumerate(children) if item.name), 0)
-        with Horizontal(id="command-body"):
-            menu = HarnessCommandList(*children, id="command-menu", initial_index=first)
-            menu.border_title = brand.section_title(i18n.ui(self._language, "commands"))
-            yield menu
-            with VerticalScroll(id="command-detail-scroll") as detail:
-                detail.border_title = brand.section_title("Описание")
-                yield Static("", id="command-detail")
-        output = VerticalScroll(
-            Static("", id="command-output", markup=False), id="command-output-scroll"
-        )
-        output.border_title = brand.section_title("Вывод")
-        yield output
-        yield Static("", id="run-status", markup=False, classes="no-i18n")
-        yield Static("", id="run-feedback", markup=False)
+        with Vertical(id="harness-page"):
+            yield Static("Harness", id="harness-title")
+            yield Static(
+                "Команды харнесса и обслуживание. У каждой команды виден CLI.",
+                id="harness-subtitle",
+            )
+            with SectionCard(title="Состояние"):
+                yield Static("", id="harness-state", classes="no-i18n", markup=False)
+                yield Static("", id="harness-usage", classes="no-i18n", markup=False)
+            with Horizontal(id="command-body"):
+                with Vertical(id="command-list"):
+                    with Horizontal(id="command-filters"):
+                        yield Button(
+                            "Все", id="filter-all", compact=True, classes="-on"
+                        )
+                        yield Button(
+                            "✔ обратимые", id="filter-reversible", compact=True
+                        )
+                        yield Button(
+                            "⚠ с подтверждением", id="filter-confirmation", compact=True
+                        )
+                    children = self._menu_children()
+                    first = next((i for i, item in enumerate(children) if item.name), 0)
+                    yield HarnessCommandList(
+                        *children, id="command-menu", initial_index=first
+                    )
+                with Fold(
+                    title="Описание выбранной команды",
+                    id="detail-fold",
+                    collapsed=self.narrow,
+                ):
+                    with VerticalScroll(id="command-detail-scroll"):
+                        yield Static(
+                            "", id="command-detail", classes="no-i18n", markup=False
+                        )
+                        yield Static(
+                            "", id="command-risk", classes="no-i18n", markup=False
+                        )
+                        yield Static(
+                            "", id="command-cli", classes="no-i18n", markup=False
+                        )
+                        yield Static("y — копировать CLI", id="copy-hint")
+                    with Horizontal(id="command-actions"):
+                        yield Button("Запустить", id="command-run", variant="primary")
+                        yield Button("Копировать CLI", id="command-copy")
+            yield Static("", id="run-feedback", markup=False, classes="no-i18n")
+            yield Static("", id="run-status", markup=False, classes="no-i18n")
+            with Fold(
+                title="Вывод", summary="пока пусто", collapsed=True, id="output-fold"
+            ):
+                with VerticalScroll(id="command-output-scroll"):
+                    yield Static(
+                        "", id="command-output", markup=False, classes="no-i18n"
+                    )
+                yield Button("Повторить", id="command-retry", compact=True)
 
-    def sync_language(self) -> None:
-        ConsoleShell.sync_language(self)
-        CommandMenuScreen.sync_language(self)
-
-    def overview(self) -> ComposeResult:
-        """Текущее состояние установки и сводка использования пайплайна."""
-        state = console_stats.harness_state(self.repo)
-        text = console_stats.harness_state_text(state, console_data.harness_version())
-        text += "\n" + console_stats.usage_text(self._load_view(self.repo))
-        panel = Static(
-            colorize_overview(text),
-            id="harness-state",
-            classes="overview",
-            markup=False,
-        )
-        panel.border_title = brand.section_title("Состояние")
-        panel.i18n_source = text  # type: ignore[attr-defined]
-        yield panel
+    def _filtered_entries(self) -> list[CatalogEntry]:
+        return [
+            entry
+            for entry in sorted(
+                self._entries.values(), key=lambda entry: _group_rank(entry.key)
+            )
+            if self._filter == "all"
+            or (self._filter == "confirmation") == entry.needs_confirmation
+        ]
 
     def menu_items(self) -> Sequence[tuple[str, str]]:
-        """Команды харнесса по группам; необратимые отмечены ⚠."""
-        ordered = sorted(
-            self._entries.values(), key=lambda entry: _group_rank(entry.key)
-        )
         return [
-            (
-                entry.key,
-                ("⚠ " if entry.needs_confirmation else "  ")
-                + i18n.tr(self._language, entry.title),
-            )
-            for entry in ordered
+            (entry.key, i18n.tr(self._language, entry.title))
+            for entry in self._filtered_entries()
         ]
 
     def menu_group(self, key: str) -> str:
         return _GROUPS.get(key, _OTHER_GROUP)
 
+    def _risk_color(self, entry: CatalogEntry) -> str:
+        return brand.STATUS_COLORS[
+            "ok"
+            if not entry.needs_confirmation
+            else "fail"
+            if entry.reversibility is Reversibility.DELETES_LOCAL_DATA
+            else "warn"
+        ]
+
+    def _risk_label(self, entry: CatalogEntry) -> str:
+        label = self._t(REVERSIBILITY_LABELS[entry.reversibility])
+        return label[0] if self.narrow else label
+
+    def _menu_children(self) -> list[ListItem]:
+        entries = self._filtered_entries()
+        children: list[ListItem] = []
+        self._headings = {}
+        for group in _GROUP_ORDER:
+            members = [
+                entry for entry in entries if self.menu_group(entry.key) == group
+            ]
+            if not members:
+                continue
+            heading_id = f"group-{_GROUP_ORDER.index(group)}"
+            self._headings[heading_id] = group
+            opened = group == self._expanded_group
+            counts = Counter(
+                REVERSIBILITY_LABELS[entry.reversibility][0] for entry in members
+            )
+            summary = " ".join(f"{symbol} {count}" for symbol, count in counts.items())
+            heading = f"{'▾' if opened else '▸'} {i18n.group_title(self._language, group)} · {len(members)}"
+            if not opened:
+                heading += "   " + summary
+            children.append(
+                ListItem(
+                    Static(heading, classes="group-title no-i18n", markup=False),
+                    id=heading_id,
+                )
+            )
+            if opened:
+                for entry in members:
+                    children.append(
+                        ListItem(
+                            Horizontal(
+                                Static(
+                                    i18n.tr(self._language, entry.title),
+                                    classes="command-label no-i18n",
+                                    markup=False,
+                                ),
+                                Static(
+                                    Text(
+                                        self._risk_label(entry),
+                                        style=self._risk_color(entry),
+                                    ),
+                                    classes="command-risk no-i18n",
+                                    markup=False,
+                                ),
+                            ),
+                            name=entry.key,
+                        )
+                    )
+        if not entries:
+            children.append(
+                ListItem(
+                    Static(self._t("Нет доступных команд"), markup=False), disabled=True
+                )
+            )
+        return children
+
+    async def _rebuild_menu(self, selected: str | None = None) -> None:
+        self._rebuilding = True
+        menu = self.query_one("#command-menu", ListView)
+        await menu.clear()
+        await menu.extend(self._menu_children())
+        rows = list(menu.children)
+        menu.index = next(
+            (
+                i
+                for i, row in enumerate(rows)
+                if row.name == selected and selected is not None
+            ),
+            next((i for i, row in enumerate(rows) if row.name), 0),
+        )
+        self._rebuilding = False
+        item = menu.highlighted_child
+        self._select_item(item)
+        self._paint_menu_title()
+
+    def select_command(self, key: str) -> None:
+        """Reveal a command for direct navigation, keeping admission separate from selection."""
+        if key not in {entry.key for entry in self._filtered_entries()}:
+            return
+        group = self.menu_group(key)
+        if group != self._expanded_group:
+            self._expanded_group = group
+            self.run_worker(
+                self._rebuild_menu(key), group="harness-menu", exclusive=True
+            )
+        else:
+            menu = self.query_one("#command-menu", ListView)
+            menu.index = next(
+                i for i, row in enumerate(menu.children) if row.name == key
+            )
+
+    def _paint_menu_title(self) -> None:
+        self.query_one("#command-menu").border_title = brand.section_title(
+            i18n.ui(self._language, "commands"), str(len(self._filtered_entries()))
+        )
+
+    def _paint_state(self) -> None:
+        fields = console_stats.harness_summary_fields(
+            self._state, console_data.harness_version()
+        )
+        text = Text()
+        if self.narrow:
+            if self._state.installed:
+                fields = [
+                    field
+                    for field in fields
+                    if field[0] in ("Версия", "Состав", "Оркестрация")
+                ]
+            else:
+                fields = [("", "○ Харнесс не установлен: нет читаемого lock")]
+        for index, (label, value) in enumerate(fields):
+            if index:
+                text.append(" · ")
+            text.append(
+                (self._t(label) + " ") if label else "", style=brand.PALETTE["muted"]
+            )
+            text.append(self._t(value), style="bold")
+        drift_labels = {
+            "loading": "○ дрейф: проверяется…",
+            "clean": "✔ дрейфа нет",
+            "drift": "⚠ дрейф есть",
+            "missing": "○ дрейф: нет lock",
+        }
+        drift = drift_labels.get(self._drift, "○ дрейф неизвестен")
+        text.append(
+            " · " + self._t(drift),
+            style=brand.STATUS_COLORS["ok" if self._drift == "clean" else "warn"],
+        )
+        self.query_one("#harness-state", Static).update(text)
+        self.query_one("#harness-state").tooltip = console_stats.harness_state_text(
+            self._state, console_data.harness_version()
+        )
+        usage = console_stats.usage_text(self._view)
+        if self.narrow:
+            if self._view.unavailable:
+                usage = "○ Ledger: " + self._t(self._view.unavailable)
+            else:
+                stats = console_stats.pipeline_stats(self._view)
+                usage = self._t(
+                    f"Пайплайн: запусков {stats.batches} · тикетов {stats.tickets} · диспатчей {sum(stats.dispatches_by_role.values())} · отчётов {sum(stats.reports_by_outcome.values())}"
+                )
+        elif self._view.unavailable:
+            usage = "○ " + usage
+        self.query_one("#harness-usage", Static).update(self._t(usage))
+
+    def sync_language(self) -> None:
+        ConsoleShell.sync_language(self)
+        language = getattr(self.app, "language", "ru")
+        changed = language != self._language
+        self._language = language
+        self._paint_state()
+        self._paint_menu_title()
+        if changed:
+            self.run_worker(
+                self._rebuild_menu(self._selected_key),
+                group="harness-menu",
+                exclusive=True,
+            )
+        self._paint_detail()
+        self._sync_run()
+
     def menu_detail(self, key: str) -> Text:
         entry = self._entries[key]
-        return describe_command(
-            i18n.tr(self._language, entry.title),
-            entry.reversibility,
-            self.display_cli(entry.cli_line(self.repo)),
-            entry.inputs,
-            confirmation_word=entry.typed_confirmation,
-            language=self._language,
+        text = Text()
+        text.append(i18n.tr(self._language, entry.title), style="bold")
+        if entry.inputs:
+            text.append("\n" + self._t("Параметры:") + " " + ", ".join(entry.inputs))
+        return text
+
+    @on(ListView.Highlighted, "#command-menu")
+    def _show_detail(self, event: ListView.Highlighted) -> None:
+        if not self._rebuilding:
+            self._select_item(event.item)
+
+    def _select_item(self, item: ListItem | None) -> None:
+        if item is not None and item.name in self._entries:
+            if self._selected_key != item.name:
+                self._detail_ready = None
+                if self.narrow:
+                    self.query_one("#detail-fold", Fold).collapsed = True
+            self._selected_key = item.name
+            self._paint_detail()
+        elif not self._filtered_entries():
+            self._selected_key = None
+            self._paint_detail()
+
+    def _paint_detail(self) -> None:
+        key = self._selected_key
+        if key is None:
+            for widget_id in ("command-detail", "command-risk", "command-cli"):
+                self.query_one(f"#{widget_id}", Static).update("")
+            self.query_one("#command-run", Button).disabled = True
+            return
+        entry = self._entries[key]
+        self.query_one("#command-run", Button).disabled = False
+        self.query_one("#command-detail", Static).update(self.menu_detail(key))
+        risk = REVERSIBILITY_LABELS[entry.reversibility]
+        reason = ""
+        if entry.needs_confirmation:
+            reason = (
+                CONFIRMATION_REASONS[entry.reversibility]
+                + "\nПеред запуском откроется форма подтверждения."
+            )
+            if entry.typed_confirmation:
+                reason += f"\nПотребуется ввести {entry.typed_confirmation}"
+        risk_widget = self.query_one("#command-risk", Static)
+        risk_widget.set_class(not entry.needs_confirmation, "-safe")
+        risk_widget.set_class(
+            entry.reversibility is Reversibility.DELETES_LOCAL_DATA, "-deletes"
         )
+        risk_widget.update(
+            Text(
+                self._t(risk + ("\n" + reason if reason else "")),
+                style=self._risk_color(entry),
+            )
+        )
+        self.query_one("#command-cli", Static).update("$ " + entry.cli_line(self.repo))
+        self.query_one("#detail-fold", Fold).set_summary(risk)
+        self._update_enter_hint()
+
+    def _update_enter_hint(self) -> None:
+        menu = self.query_one("#command-menu", HarnessCommandList)
+        description = (
+            "Описание"
+            if self.narrow and self._detail_ready != self._selected_key
+            else "Запустить"
+        )
+        menu._bindings.key_to_bindings["enter"] = [
+            Binding("enter", "select_cursor", i18n.tr(self._language, description))
+        ]
+        self._bindings.key_to_bindings["y"] = [
+            Binding(
+                "y", "copy_cli", "CLI" if self.narrow else self._t("Копировать CLI")
+            )
+        ]
+        self.refresh_bindings()
+
+    def on_resize(self, event: events.Resize) -> None:
+        if (
+            self.is_mounted
+            and self.query("#detail-fold")
+            and self._last_narrow != self.narrow
+        ):
+            self._last_narrow = self.narrow
+            self.query_one("#detail-fold", Fold).collapsed = (
+                self.narrow and self._detail_ready is None
+            )
+            self.run_worker(
+                self._rebuild_menu(self._selected_key),
+                group="harness-menu",
+                exclusive=True,
+            )
+
+    @on(Collapsible.Expanded, "#detail-fold")
+    def _expanded_detail(self) -> None:
+        self._detail_ready = self._selected_key
+        self._update_enter_hint()
+
+    @on(Collapsible.Collapsed, "#detail-fold")
+    def _collapsed_detail(self) -> None:
+        self._detail_ready = None
+        self._update_enter_hint()
+
+    def action_copy_cli(self) -> None:
+        if self._selected_key is not None:
+            self.app.copy_to_clipboard(self.menu_cli_line(self._selected_key))
+            self.notify(self._t("Команда скопирована"))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        key = event.button.id or ""
+        if key.startswith("filter-"):
+            event.stop()
+            self._filter = key.removeprefix("filter-")
+            for button in self.query("#command-filters Button"):
+                button.set_class(button.id == key, "-on")
+            entries = self._filtered_entries()
+            selected = (
+                self._selected_key
+                if any(entry.key == self._selected_key for entry in entries)
+                else entries[0].key
+                if entries
+                else None
+            )
+            if selected:
+                self._expanded_group = self.menu_group(selected)
+            self.run_worker(
+                self._rebuild_menu(selected), group="harness-menu", exclusive=True
+            )
+        elif key == "command-run" and self._selected_key:
+            event.stop()
+            self.open_command(self._selected_key)
+        elif key == "command-copy":
+            event.stop()
+            self.action_copy_cli()
+        elif key == "command-retry":
+            event.stop()
+            run = harness_runs(self).current
+            if run is not None:
+                self.open_command(run.key)
 
     def menu_cli_line(self, key: str) -> str:
         return self._entries[key].cli_line(self.repo)
@@ -248,14 +717,30 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     async def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.list_view.id == self.IDS.menu:
             await ConsoleShell.on_list_view_selected(self, event)
-        else:
+        elif event.list_view.id == "command-menu":
             event.stop()
+            if event.item.id in self._headings:
+                self._expanded_group = self._headings[event.item.id]
+                await self._rebuild_menu(self._selected_key)
 
-    def on_harness_command_list_activate(
+    async def on_harness_command_list_activate(
         self, event: HarnessCommandList.Activate
     ) -> None:
         event.stop()
-        if event.item.name is not None:
+        if event.item.id in self._headings:
+            self._expanded_group = self._headings[event.item.id]
+            await self._rebuild_menu(self._selected_key)
+        elif event.item.name is not None:
+            if self._refuse_busy():
+                return
+            if self.narrow and (
+                self._detail_ready != event.item.name
+                or self.query_one("#detail-fold", Fold).collapsed
+            ):
+                self._detail_ready = event.item.name
+                self.query_one("#detail-fold", Fold).collapsed = False
+                self._update_enter_hint()
+                return
             self.open_command(event.item.name)
 
     def open_command(self, key: str) -> None:
@@ -263,8 +748,11 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         if self._refuse_busy():
             return
         entry = self._entries.get(key)
-        if entry is None:
-            self.notify("Команда недоступна для выбранного проекта", severity="warning")
+        if entry is None or not entry.available(self.repo):
+            message = self._t("Команда недоступна для выбранного проекта")
+            self.query_one("#run-feedback", Static).update(message)
+            self.query_one("#run-feedback").display = True
+            self.notify(message, severity="warning")
             return
         if not entry.needs_confirmation and not entry.inputs:
             self._run(entry, {})
@@ -290,6 +778,8 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             self._refuse_busy()
             return
         self._owned_run = run
+        if self.narrow:
+            self.query_one("#detail-fold", Fold).collapsed = True
         self._sync_run()
         self.run_worker(
             lambda: state.execute(run, self._command_runner, self.repo),
@@ -302,12 +792,35 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             return False
         message = i18n.tr(self._language, "Дождитесь окончания команды Harness")
         self.query_one("#run-feedback", Static).update(message)
+        self.query_one("#run-feedback").display = True
         self.notify(message, severity="warning")
         return True
 
     def on_mount(self) -> None:
+        self._paint_state()
+        self._paint_menu_title()
+        self.query_one("#command-retry").display = False
+        self.query_one("#run-status").display = False
+        self.query_one("#run-feedback").display = False
         self.set_interval(0.1, self._sync_run)
         self._sync_run()
+        self._drift_epoch += 1
+        epoch = self._drift_epoch
+
+        def load() -> None:
+            try:
+                value = self._load_drift(self.repo)
+            except Exception:
+                value = "unknown"
+
+            def apply() -> None:
+                if epoch == self._drift_epoch:
+                    self._drift = value
+                    self._paint_state()
+
+            call_from_worker(self, apply)
+
+        self.run_worker(load, thread=True, group="harness-drift")
 
     def on_screen_resume(self) -> None:
         self._receiving = True
@@ -320,6 +833,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             harness_runs(self).abandon_pending(self._owned_run)
 
     def on_unmount(self) -> None:
+        self._drift_epoch += 1
         self._receiving = False
         if self._owned_run is not None:
             harness_runs(self).abandon_pending(self._owned_run)
@@ -358,6 +872,21 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
                     full=True,
                 )
             )
-        self.query_one("#run-status", Static).update(status)
+        color = brand.STATUS_COLORS[
+            "warn"
+            if run.phase in ("pending", "running")
+            else "ok"
+            if run.returncode == 0 and not run.error
+            else "fail"
+        ]
+        self.query_one("#run-status").display = True
+        self.query_one("#run-status", Static).update(Text(status, style=color))
+        fold = self.query_one("#output-fold", Fold)
+        fold.set_summary(status)
+        fold.collapsed = False
+        self.query_one("#command-retry").display = run.phase == "completed" and (
+            bool(run.error) or run.returncode != 0
+        )
         self.query_one("#run-feedback", Static).update("")
+        self.query_one("#run-feedback").display = False
         self._show(output)
