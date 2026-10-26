@@ -604,6 +604,22 @@ def _retry_evidence(
     return None
 
 
+def _named_failure(
+    domain: FailureDomain,
+    approver_matched: str,
+    classifier_matched: str,
+    by_classifier: bool,
+    explicit_by: str,
+) -> Failure:
+    """The failure of a reason category that someone named, not a structured fact.
+
+    A classifier hint proves nothing, so it is ``unknown``; any other namer is the approver's own
+    evidence."""
+    if by_classifier:
+        return failure_domains.unrecognised(classifier_matched, explicit_by)
+    return failure_domains.approver(domain, approver_matched, explicit_by)
+
+
 def _operational_failure(
     category: RetryReason, by_classifier: bool, explicit_by: str
 ) -> Failure:
@@ -615,13 +631,11 @@ def _operational_failure(
         return failure_domains.structured(
             FailureDomain.INFRASTRUCTURE, "context_pressure.level=critical", "ledger"
         )
-    if by_classifier:
-        return failure_domains.unrecognised(
-            f"{category} named by a classifier hint", explicit_by
-        )
-    return failure_domains.approver(
+    return _named_failure(
         FailureDomain.INFRASTRUCTURE,
         f"--reason-category {category}; outcome=blocked",
+        f"{category} named by a classifier hint",
+        by_classifier,
         explicit_by,
     )
 
@@ -700,17 +714,12 @@ def _retry_routing(
         by_classifier and structured is not None
     ):
         category, basis = explicit_category, "the approver named this reason category"
-        failure = (
-            failure_domains.unrecognised(
-                f"classifier hint {explicit_category} is no proof of a code defect",
-                explicit_by,
-            )
-            if by_classifier
-            else failure_domains.approver(
-                FailureDomain.CODE_TEST,
-                f"--reason-category {explicit_category}",
-                explicit_by,
-            )
+        failure = _named_failure(
+            FailureDomain.CODE_TEST,
+            f"--reason-category {explicit_category}",
+            f"classifier hint {explicit_category} is no proof of a code defect",
+            by_classifier,
+            explicit_by,
         )
     elif structured is not None:
         category, basis, failure = structured
@@ -741,18 +750,13 @@ def _retry_routing(
     elif bypass_named:
         category = BLOCK_BYPASS_REASON_CATEGORY
         basis = "the approver found that the role worked around a hook or tool block, so its findings, checks and outcome are no evidence"
-        failure = (
-            failure_domains.unrecognised(
-                f"classifier hint {BLOCK_BYPASS_REASON_CATEGORY} is no proof that the role "
-                "worked around a block",
-                explicit_by,
-            )
-            if by_classifier
-            else failure_domains.approver(
-                FailureDomain.POLICY,
-                f"--reason-category {BLOCK_BYPASS_REASON_CATEGORY}",
-                explicit_by,
-            )
+        failure = _named_failure(
+            FailureDomain.POLICY,
+            f"--reason-category {BLOCK_BYPASS_REASON_CATEGORY}",
+            f"classifier hint {BLOCK_BYPASS_REASON_CATEGORY} is no proof that the role "
+            "worked around a block",
+            by_classifier,
+            explicit_by,
         )
     elif (
         explicit_category in {None, TOOLING_REASON_CATEGORY}

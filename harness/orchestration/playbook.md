@@ -141,8 +141,9 @@ bound it.
 The approver proves a code defect with `--reason-category code`, `requirements` or
 `candidate-change`. The approver can also take the developer retry with `--retry-role developer`,
 including for a tooling-blocked code-review, qa or verification report. Both are `approver` evidence
-and spend the budget. Only the `tooling-retry` of a developer stage keeps the domain `tooling` and
-spends nothing. A decision recorded before failure domains existed has no `failure` and counts as
+and spend the budget. With `--retry-role developer`, only the `tooling-retry` of a developer stage
+keeps the domain `tooling` and spends nothing. Every other `tooling-retry` spends nothing too, as
+the route table says. A decision recorded before failure domains existed has no `failure` and counts as
 before.
 
 | Reporting stage | `accept` | `retry` | `block` / `fail` | `abandon` |
