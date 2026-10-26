@@ -50,6 +50,16 @@ CONFIRMATION_REASONS = {
     ),
 }
 
+# Short presentation labels; the confirmation classes and their reasons remain authoritative.
+REVERSIBILITY_LABELS = {
+    Reversibility.REVERSIBLE: "✔ обратимо",
+    Reversibility.DELETES_LOCAL_DATA: "✖ удаление",
+    Reversibility.TERMINAL_COORDINATOR_ACTION: "⚠ решение",
+    Reversibility.EXTERNAL_CHANGE: "⚠ внешнее",
+    Reversibility.OVERWRITES_MANAGED_FILES: "⚠ перезапись",
+    Reversibility.DOWNLOADS_FILES: "⚠ загрузка",
+}
+
 _PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
 _REPO = "repo"
 

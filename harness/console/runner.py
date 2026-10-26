@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import dataclass
+from threading import Lock
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 
@@ -62,3 +64,81 @@ def capturing_runner(
         capture_output=True,
         stdin=subprocess.DEVNULL,
     )
+
+
+@dataclass
+class HarnessRun:
+    """One accepted invocation, independent of menu selection and screen lifetime."""
+
+    token: int
+    key: str
+    cli_line: str
+    argv: list[str]
+    values: dict[str, str]
+    phase: str = "pending"
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int | None = None
+    error: str = ""
+
+
+class HarnessRuns:
+    """App-local admission, held until the runner actually returns, even after UI departure."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._serial = 0
+        self.current: HarnessRun | None = None
+        self._busy = False
+
+    @property
+    def busy(self) -> bool:
+        with self._lock:
+            return self._busy
+
+    def reserve(
+        self, key: str, cli_line: str, argv: list[str], values: Mapping[str, str]
+    ) -> HarnessRun | None:
+        with self._lock:
+            if self._busy:
+                return None
+            self._serial += 1
+            run = HarnessRun(self._serial, key, cli_line, argv, dict(values))
+            self.current = run
+            self._busy = True
+            return run
+
+    def abandon_pending(self, run: HarnessRun) -> None:
+        with self._lock:
+            if self.current is run and run.phase == "pending":
+                run.phase = "cancelled"
+                self._busy = False
+
+    def execute(self, run: HarnessRun, runner: CommandRunner, repo: Path) -> None:
+        with self._lock:
+            if self.current is not run or run.phase != "pending":
+                return
+            run.phase = "running"
+        try:
+            result = runner(run.argv, cwd=repo)
+        except OSError as exc:
+            error = f"не удалось запустить: {exc}"
+            result = None
+        except Exception as exc:
+            error = f"сбой запуска: {exc!r}"
+            result = None
+        else:
+            error = ""
+        finally:
+            # Worker cancellation does not release this section; only physical completion does.
+            with self._lock:
+                if self.current is run:
+                    if result is not None:
+                        run.stdout, run.stderr = (
+                            result.stdout or "",
+                            result.stderr or "",
+                        )
+                        run.returncode = result.returncode
+                    run.error = error
+                    run.phase = "completed"
+                    self._busy = False

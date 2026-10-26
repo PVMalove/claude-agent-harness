@@ -24,7 +24,7 @@ from ..chrome import TopBar
 from ..translate import Translated
 from ..logtext import colorize_log, colorize_overview
 from ..catalog import CONFIRMATION_REASONS, Reversibility
-from ..runner import CommandRunner
+from ..runner import CommandRunner, HarnessRuns
 from .. import brand, i18n
 
 _OUTPUT_TAIL_LINES = 200
@@ -65,16 +65,30 @@ def call_from_worker(screen: Widget, callback: Callable[[], object]) -> None:
         pass
 
 
+def harness_runs(widget: Widget) -> HarnessRuns:
+    """The Harness session's admission belongs to the app, not to a replaceable screen."""
+    state = getattr(widget.app, "_harness_runs", None)
+    if not isinstance(state, HarnessRuns):
+        state = HarnessRuns()
+        setattr(widget.app, "_harness_runs", state)
+    return state
+
+
 def short_repo(cli_line: str, repo: Path) -> str:
     """`cli_line` with the project path replaced by `$REPO`, quoted or not (a Windows path is quoted)."""
     return cli_line.replace(shlex.quote(str(repo)), "$REPO").replace(str(repo), "$REPO")
 
 
-def render_result(cli_line: str, result: "CompletedProcess[str]") -> str:
+def render_result(
+    cli_line: str, result: "CompletedProcess[str]", *, full: bool = False
+) -> str:
     """Формирует текстовый результат выполнения команды: строку вызова, код выхода и последние строки вывода."""
     output = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    lines = output.rstrip().splitlines()[-_OUTPUT_TAIL_LINES:]
-    return "\n".join([f"$ {cli_line}", f"код выхода: {result.returncode}", *lines])
+    lines = output.rstrip().splitlines()
+    if not full:
+        lines = lines[-_OUTPUT_TAIL_LINES:]
+    label = "exit" if full else "код выхода:"
+    return "\n".join([f"$ {cli_line}", f"{label} {result.returncode}", *lines])
 
 
 def describe_command(
@@ -124,13 +138,23 @@ class CommandForm(Translated, ModalScreen["dict[str, str] | None"]):
     """
 
     def form_header(
-        self, title: str, cli_line: str, reversibility: Reversibility
+        self,
+        title: str,
+        cli_line: str,
+        reversibility: Reversibility,
+        *,
+        warning_cli: bool = False,
     ) -> ComposeResult:
         """Генерирует заголовок формы, эквивалент команды CLI и причину подтверждения при наличии."""
         language = getattr(self.app, "language", "ru")
         yield Static(Text(i18n.tr(language, title), style="bold"), markup=False)
         yield Static(
-            Text(f"$ {cli_line}", style=f"bold {brand.PALETTE['secondary']}"),
+            Text(
+                f"$ {cli_line}",
+                style=brand.PALETTE["warning"]
+                if warning_cli
+                else f"bold {brand.PALETTE['secondary']}",
+            ),
             id="form-cli",
             markup=False,
         )
@@ -193,6 +217,7 @@ class CommandMenuScreen(Translated, Screen[None]):
     # The command menu owns the keyboard on arrival even when a section adds an overview above it.
     AUTO_FOCUS = "#command-menu"
     CRUMB = "Команды"
+    CANCEL_OWN_WORKERS_ONLY = False
     HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide")]
     DEFAULT_CSS = """
     CommandMenuScreen .overview {
@@ -357,7 +382,10 @@ class CommandMenuScreen(Translated, Screen[None]):
 
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
-        self.workers.cancel_all()
+        if self.CANCEL_OWN_WORKERS_ONLY:
+            self.workers.cancel_node(self)
+        else:
+            self.workers.cancel_all()
 
     def run_process(self, cli_line: str, argv: list[str]) -> None:
         """Запускает процесс команды в фоновом потоке без блокировки интерфейса TUI."""

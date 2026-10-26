@@ -216,3 +216,25 @@ def usage_text(view: LedgerView) -> str:
         f"диспатчей {sum(stats.dispatches_by_role.values())}, отчётов "
         f"{sum(stats.reports_by_outcome.values())}"
     )
+
+
+def harness_summary_fields(
+    state: HarnessState, package_version: str
+) -> list[tuple[str, str]]:
+    """Compact facts for Harness, retaining the verbose shared state renderer unchanged."""
+    if not state.installed:
+        return [
+            ("Состояние", "Харнесс не установлен: нет читаемого .harness/harness.lock.")
+        ]
+    mismatch = state.installed_version != package_version
+    return [
+        (
+            "Версия",
+            state.installed_version + (f" ⚠ ({package_version})" if mismatch else " ✔"),
+        ),
+        ("Состав", ", ".join(state.capabilities) or "нет"),
+        ("Скилов", str(state.skills)),
+        ("файлов", str(state.managed_files)),
+        ("Lock", state.updated_at),
+        ("Оркестрация", "✔ подключена" if state.orchestration else "○ не подключена"),
+    ]
