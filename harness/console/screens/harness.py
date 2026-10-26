@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Callable, Mapping, Sequence
@@ -113,6 +115,8 @@ class HarnessCommandList(ListView):
 class CommandFormScreen(CommandForm):
     """Модальная форма параметров для команд раздела Harness."""
 
+    BINDINGS = [Binding("f2", "app.toggle_language", "RU/EN", show=False)]
+
     def __init__(self, entry: CatalogEntry, repo: Path) -> None:
         """Инициализирует форму параметров команды каталога для репозитория."""
         super().__init__()
@@ -182,6 +186,22 @@ class CommandFormScreen(CommandForm):
         self.query_one("#run", Button).disabled = bool(error)
         self._error(i18n.tr_text(getattr(self.app, "language", "ru"), error))
 
+    def sync_language(self) -> None:
+        language = getattr(self.app, "language", "ru")
+        self.query_one("#command-form-body > Static", Static).update(
+            Text(i18n.tr(language, self.entry.title), style="bold")
+        )
+        if self.entry.needs_confirmation:
+            self.query_one("#confirmation-reason", Static).update(
+                Text(
+                    i18n.tr_text(
+                        language, CONFIRMATION_REASONS[self.entry.reversibility]
+                    ),
+                    style=brand.PALETTE["warning"],
+                )
+            )
+        self._validate()
+
     def _submit(self) -> None:
         values, error = self._validation()
         if error:
@@ -195,6 +215,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     обслуживания леджера."""
 
     CRUMB = "Harness"
+    CANCEL_OWN_WORKERS_ONLY = True
     CRUMBS = "Главная › Harness"
     SECTION = "Harness"
     NARROW_FOOTER_KEYS = ("escape", "enter", "y")
@@ -274,6 +295,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         self._selected_key: str | None = None
         self._detail_ready: str | None = None
         self._rebuilding = False
+        self._menu_lock = asyncio.Lock()
         self._last_narrow: bool | None = None
         self._state = console_stats.harness_state(repo)
         self._view = load_view(repo)
@@ -468,6 +490,10 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         return children
 
     async def _rebuild_menu(self, selected: str | None = None) -> None:
+        async with self._menu_lock:
+            await self._replace_menu(selected)
+
+    async def _replace_menu(self, selected: str | None) -> None:
         self._rebuilding = True
         menu = self.query_one("#command-menu", ListView)
         await menu.clear()
@@ -493,9 +519,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         group = self.menu_group(key)
         if group != self._expanded_group:
             self._expanded_group = group
-            self.run_worker(
-                self._rebuild_menu(key), group="harness-menu", exclusive=True
-            )
+            self.run_worker(self._rebuild_menu(key), group="harness-menu")
         else:
             menu = self.query_one("#command-menu", ListView)
             menu.index = next(
@@ -540,8 +564,10 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             style=brand.STATUS_COLORS["ok" if self._drift == "clean" else "warn"],
         )
         self.query_one("#harness-state", Static).update(text)
-        self.query_one("#harness-state").tooltip = console_stats.harness_state_text(
-            self._state, console_data.harness_version()
+        self.query_one("#harness-state").tooltip = self._t(
+            console_stats.harness_state_text(
+                self._state, console_data.harness_version()
+            )
         )
         usage = console_stats.usage_text(self._view)
         if self.narrow:
@@ -554,7 +580,13 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
                 )
         elif self._view.unavailable:
             usage = "○ " + usage
-        self.query_one("#harness-usage", Static).update(self._t(usage))
+        badges = Text(self._t(usage))
+        if not self._view.unavailable:
+            for match in re.finditer(r"\b\d+\b", badges.plain):
+                badges.stylize(
+                    f"bold on {brand.PALETTE['panel']}", match.start(), match.end()
+                )
+        self.query_one("#harness-usage", Static).update(badges)
 
     def sync_language(self) -> None:
         ConsoleShell.sync_language(self)
@@ -567,7 +599,6 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             self.run_worker(
                 self._rebuild_menu(self._selected_key),
                 group="harness-menu",
-                exclusive=True,
             )
         self._paint_detail()
         self._sync_run()
@@ -661,13 +692,18 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             self.run_worker(
                 self._rebuild_menu(self._selected_key),
                 group="harness-menu",
-                exclusive=True,
             )
 
     @on(Collapsible.Expanded, "#detail-fold")
     def _expanded_detail(self) -> None:
         self._detail_ready = self._selected_key
         self._update_enter_hint()
+        self.call_after_refresh(self._scroll_selection)
+
+    def _scroll_selection(self) -> None:
+        item = self.query_one("#command-menu", ListView).highlighted_child
+        if item is not None:
+            item.scroll_visible(animate=False, immediate=True)
 
     @on(Collapsible.Collapsed, "#detail-fold")
     def _collapsed_detail(self) -> None:
@@ -696,9 +732,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             )
             if selected:
                 self._expanded_group = self.menu_group(selected)
-            self.run_worker(
-                self._rebuild_menu(selected), group="harness-menu", exclusive=True
-            )
+            self.run_worker(self._rebuild_menu(selected), group="harness-menu")
         elif key == "command-run" and self._selected_key:
             event.stop()
             self.open_command(self._selected_key)
@@ -778,6 +812,8 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             self._refuse_busy()
             return
         self._owned_run = run
+        self.query_one("#run-feedback", Static).update("")
+        self.query_one("#run-feedback").display = False
         if self.narrow:
             self.query_one("#detail-fold", Fold).collapsed = True
         self._sync_run()
@@ -838,7 +874,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         if self._owned_run is not None:
             harness_runs(self).abandon_pending(self._owned_run)
         # Cancel only this screen's workers, never other application workers.
-        self.workers.cancel_all()
+        self.workers.cancel_node(self)
 
     def _sync_run(self) -> None:
         if not self.is_mounted or not self._receiving or self.app.screen is not self:
@@ -887,6 +923,4 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         self.query_one("#command-retry").display = run.phase == "completed" and (
             bool(run.error) or run.returncode != 0
         )
-        self.query_one("#run-feedback", Static).update("")
-        self.query_one("#run-feedback").display = False
         self._show(output)

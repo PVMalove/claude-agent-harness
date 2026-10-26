@@ -973,3 +973,7 @@ EN_PHRASES.update(
         "сбой запуска": "launch failed",
     }
 )
+
+EN["Команда недоступна для выбранного проекта"] = (
+    "Command is unavailable for this project"
+)

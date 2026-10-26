@@ -217,6 +217,7 @@ class CommandMenuScreen(Translated, Screen[None]):
     # The command menu owns the keyboard on arrival even when a section adds an overview above it.
     AUTO_FOCUS = "#command-menu"
     CRUMB = "Команды"
+    CANCEL_OWN_WORKERS_ONLY = False
     HORIZONTAL_BREAKPOINTS = [(0, "-narrow"), (100, "-wide")]
     DEFAULT_CSS = """
     CommandMenuScreen .overview {
@@ -381,7 +382,10 @@ class CommandMenuScreen(Translated, Screen[None]):
 
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
-        self.workers.cancel_all()
+        if self.CANCEL_OWN_WORKERS_ONLY:
+            self.workers.cancel_node(self)
+        else:
+            self.workers.cancel_all()
 
     def run_process(self, cli_line: str, argv: list[str]) -> None:
         """Запускает процесс команды в фоновом потоке без блокировки интерфейса TUI."""
