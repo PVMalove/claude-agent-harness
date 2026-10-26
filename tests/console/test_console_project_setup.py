@@ -311,6 +311,9 @@ def test_the_actions_are_disabled_while_an_operation_runs(tmp_path: Path) -> Non
             screen._set_busy(True)
             busy = [screen.query_one("#" + n, Button).disabled for n in names]
             screen._set_busy(False)
+            # The plan's blockers are read again in a worker; "Установить" waits for them.
+            await app.workers.wait_for_complete()
+            await pilot.pause()
             assert [screen.query_one("#" + n, Button).disabled for n in names] == idle
             return idle, busy
 
@@ -917,3 +920,115 @@ def test_a_click_on_a_folder_name_highlights_it_but_does_not_select_it(
     before, after, still_open, highlighted = asyncio.run(scenario())
     assert before == str(root) and after == before
     assert still_open and highlighted == "app"
+
+
+def _locked_project(path: Path, *capabilities: str) -> Path:
+    import json
+
+    project = _git_project(path)
+    (project / ".harness").mkdir(exist_ok=True)
+    (project / ".harness/harness.lock").write_text(
+        json.dumps({"capabilities": list(capabilities), "files": {}}), encoding="utf-8"
+    )
+    return project
+
+
+def test_git_and_the_snapshot_comparison_never_run_in_the_ui_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    import harness.bin.harness as cli
+
+    project = _locked_project(tmp_path / "backend", "pvmalove-suite")
+    ui_thread = threading.get_ident()
+    in_ui: list[str] = []
+    calls: list[str] = []
+    watching = threading.Event()
+
+    def spy(name: str, real: object) -> object:
+        def wrapper(*args: object, **kwargs: object) -> object:
+            if watching.is_set():
+                calls.append(name)
+                if threading.get_ident() == ui_thread:
+                    in_ui.append(name)
+            return real(*args, **kwargs)  # type: ignore[operator]
+
+        return wrapper
+
+    monkeypatch.setattr(subprocess, "run", spy("git", subprocess.run))
+    monkeypatch.setattr(cli, "snapshot_diff", spy("snapshot_diff", cli.snapshot_diff))
+
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(120, 48)) as pilot:
+            screen = await _open_setup(app, pilot)
+            watching.set()
+            screen.query_one("#project-path", Input).value = str(project)
+            await press(pilot, "#inspect-project")
+            await app.workers.wait_for_complete()
+            await wait_until(pilot, lambda: not screen.busy)
+            # Another capability: the plan is checked again.
+            screen.query_one("#capability", RadioSet).query(RadioButton)[0].value = True
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            assert not screen.query_one("#install-project", Button).disabled
+
+    asyncio.run(scenario())
+    assert "git" in calls and "snapshot_diff" in calls
+    assert in_ui == []
+
+
+def test_stage_three_is_current_while_installing_and_the_stage_follows_the_outcome(
+    tmp_path: Path,
+) -> None:
+    import threading
+
+    project = _git_project(tmp_path / "backend")
+    started, release = threading.Event(), threading.Event()
+    outcome = {"code": 0}
+
+    def runner(
+        argv: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        started.set()
+        release.wait(30)
+        return subprocess.CompletedProcess(list(argv), outcome["code"], "", "")
+
+    async def install(
+        app: HarnessConsoleApp, pilot: object, screen: ProjectSetupScreen
+    ) -> str:
+        await press(pilot, "#install-project")
+        await press(pilot, "#run")
+        await wait_until(pilot, started.is_set)  # type: ignore[arg-type]
+        await pilot.pause()  # type: ignore[attr-defined]
+        during = str(screen.query_one("#setup-stage", Static).render())
+        release.set()
+        await app.workers.wait_for_complete()
+        await wait_until(pilot, lambda: not screen.busy)  # type: ignore[arg-type]
+        return during
+
+    async def scenario() -> tuple[str, int, str, int]:
+        app = HarnessConsoleApp(tmp_path, command_runner=runner)
+        async with app.run_test(size=(140, 60)) as pilot:
+            try:
+                screen = await _checked_project(app, pilot, project)
+                during = await install(app, pilot, screen)
+                after_success = screen.stage
+                # A failed installation returns to the checks.
+                started.clear()
+                release.clear()
+                outcome["code"] = 1
+                during_failure = await install(app, pilot, screen)
+                return during, after_success, during_failure, screen.stage
+            finally:
+                release.set()
+
+    during, after_success, during_failure, after_failure = asyncio.run(scenario())
+    assert "[Установка / внедрение]" in during
+    assert "[Установка / внедрение]" in during_failure
+    assert after_success == 3
+    assert after_failure == 1

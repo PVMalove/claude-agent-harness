@@ -158,6 +158,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         self._capability_value = ""
         # What `#target-status` shows as a status: (kind, text); None while it shows the hint.
         self._target_status: tuple[str, str] | None = None
+        # The plan whose blockers are being read; an older plan's result is dropped.
+        self._plan_epoch = 0
 
     def _set_busy(self, value: bool) -> None:
         self.busy = value
@@ -338,46 +340,81 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             if option == name:
                 button.value = True
 
-    def _show_plan(self) -> None:
-        if self.target is None:
-            return
-        capability = self._capability()
-        entry = installation_entry(self.target, capability)
+    def _plan_text(self, target: ProjectTarget, capability: str) -> str:
+        """The plan without the blockers: no file system or git access, so it is built at once."""
+        entry = installation_entry(target, capability)
         text = (
             "Цель: "
-            + str(self.target.repo)
+            + str(target.repo)
             + "\n$ "
-            + shlex.join(entry.cli_argv(self.target.repo))
+            + shlex.join(entry.cli_argv(target.repo))
             + "\nСостав: "
             + capability_details(capability)
         )
-        if self.target.conflicts:
-            text += "\nСуществующие пути: " + ", ".join(self.target.conflicts)
+        if target.conflicts:
+            text += "\nСуществующие пути: " + ", ".join(target.conflicts)
             text += "\nForce/replace не включены. При конфликте операция остановится."
-        if self.target.capabilities and self.target.capabilities != (capability,):
+        if target.capabilities and target.capabilities != (capability,):
             text += (
                 "\nВыбранный состав заменит прежний набор управляемых capabilities: "
-                + ", ".join(self.target.capabilities)
+                + ", ".join(target.capabilities)
                 + "."
             )
-        try:
-            blocked = installation_blockers(self.target, capability)
+        return text
+
+    def _show_plan(self) -> None:
+        """Show the plan at once; the blockers come from a worker (they read files and run git),
+        and "Установить" stays off until they are known."""
+        if self.target is None:
+            return
+        target, capability = self.target, self._capability()
+        text = self._plan_text(target, capability)
+        self.query_one("#installation-plan", Static).update(text)
+        self.query_one("#install-project", Button).disabled = True
+        self._plan_epoch += 1
+        epoch = self._plan_epoch
+
+        def work() -> None:
+            blocked: tuple[str, ...] = ()
+            error: Exception | None = None
+            try:
+                blocked = installation_blockers(target, capability)
+            except (ValueError, OSError) as exc:
+                error = exc
+            call_from_worker(
+                self, lambda: self._planned(epoch, target, text, blocked, error)
+            )
+
+        # Not exclusive: a thread cannot be cancelled, an outdated result is dropped by its epoch.
+        self.run_worker(work, thread=True, group="plan")
+
+    def _planned(
+        self,
+        epoch: int,
+        target: ProjectTarget,
+        text: str,
+        blocked: tuple[str, ...],
+        error: Exception | None,
+    ) -> None:
+        # The target or the capability changed while the blockers were being read: not this plan.
+        if epoch != self._plan_epoch or self.target is not target:
+            return
+        if isinstance(error, ValueError):
+            self._failed(str(error))
+            return
+        install = self.query_one("#install-project", Button)
+        if error is not None:
+            text += (
+                "\nПлан не удалось проверить; исправьте существующую установку вручную."
+            )
+            install.disabled = True
+        else:
             if blocked:
                 text += (
                     "\nУстановка заблокирована; проверьте собственные/изменённые пути:\n"
                     + "\n".join(blocked)
                 )
-            self.query_one("#install-project", Button).disabled = self.busy or bool(
-                blocked
-            )
-        except ValueError as exc:
-            self._failed(str(exc))
-            return
-        except OSError:
-            text += (
-                "\nПлан не удалось проверить; исправьте существующую установку вручную."
-            )
-            self.query_one("#install-project", Button).disabled = True
+            install.disabled = self.busy or bool(blocked)
         self.query_one("#installation-plan", Static).update(text)
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
@@ -504,6 +541,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
 
     def _install(self, target: ProjectTarget, capability: str) -> None:
         self._set_busy(True)
+        self._set_stage(2)
         self._show_running("Устанавливается Harness…")
         entry = installation_entry(target, capability)
         argv = entry.cli_argv(target.repo)
@@ -527,7 +565,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
                 text, success = str(exc), False
             call_from_worker(self, lambda: self._installed(target, text, success))
 
-        self.run_worker(work, thread=True, group="setup", exclusive=True)
+        # Its own group: the check that follows the installation must not cancel this worker.
+        self.run_worker(work, thread=True, group="setup-install", exclusive=True)
 
     def _installed(self, target: ProjectTarget, text: str, success: bool) -> None:
         self._finished(text, True)
@@ -536,6 +575,8 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
             self.notify(
                 "Harness установлен. Откройте настройки, затем выполните итоговую диагностику."
             )
+        else:
+            self._set_stage(1)
 
     def _failed(self, message: str) -> None:
         self._reset_target()
@@ -589,13 +630,12 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
         self.run_worker(work, thread=True, group="setup-run", exclusive=True)
 
     def _finished(self, text: str, refresh: bool) -> None:
-        self._set_busy(False)
         self.query_one("#setup-output", Static).update(styled_log(text))
         if refresh and self.target is not None:
-            try:
-                self._inspected(inspect_target(str(self.target.repo)))
-            except ValueError as exc:
-                self._failed(str(exc))
+            # Checked again in the inspection worker (it runs git), the screen stays busy until then.
+            self._inspect(str(self.target.repo))
+        else:
+            self._set_busy(False)
 
     def _wait_for_operation(self) -> bool:
         """True (after telling the user) while an operation runs: the screen is not left meanwhile."""
