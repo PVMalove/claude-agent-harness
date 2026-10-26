@@ -326,18 +326,39 @@ def coordinator_repository(tmp: Path) -> Path:
 
 
 def write_coordinator_state(
-    tmp: Path, *, report: bool = True
+    tmp: Path,
+    *,
+    report: bool = True,
+    ticket: str = "#797",
+    state_from: Path | None = None,
 ) -> tuple[Path, dict[str, str]]:
     """The state of a real batch: planned, approved, one architect dispatch created and, unless
     ``report`` is false, sent, self-reported and reported (with ``report`` false it stays approved,
-    which the cutover accepts). Returns the repository and the ids."""
+    which the cutover accepts). Returns the repository and the ids.
+
+    ``state_from`` is a state directory the batch is added to, such as a copy of the state of a
+    real repository: the measurement runs on a ledger of that size."""
     import argparse
 
     from harness.orchestration import coordinator
 
     repo = coordinator_repository(tmp)
+    if state_from is not None:
+        shutil.copytree(state_from, repo / STATE_REL)
+        # The copied ledger holds the batch that is open there; a new batch needs room beside it.
+        (repo / ".harness" / "orchestration.json").write_text(
+            json.dumps(
+                {
+                    "provider_profiles": {},
+                    "assignment_plans": {},
+                    "concurrency_budget": 99,
+                    "verification_commands": [],
+                }
+            ),
+            encoding="utf-8",
+        )
     worktree = tmp / "worktree"
-    branch = "feature/issue-797-seam"
+    branch = f"feature/issue-{ticket.removeprefix('#')}-seam"
     _git(repo, "worktree", "add", "-b", branch, str(worktree), "master")
 
     def args(**values: object) -> argparse.Namespace:
@@ -345,7 +366,7 @@ def write_coordinator_state(
 
     batch = coordinator.create_batch(
         args(
-            ticket="#797",
+            ticket=ticket,
             goal=None,
             branch=branch,
             worktree=str(worktree),
