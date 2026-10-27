@@ -74,7 +74,7 @@ UNRESOLVED = (
     f"-C не поддерживаются. Укажи путь явно: git -C <path> commit {GUIDE}."
 )
 GIT_NO_ANSWER = (
-    "Zero Direct Commits: git не запустился или не ответил за "
+    "Zero Direct Commits: git завершился с ошибкой, не запустился или не ответил за "
     f"{GIT_TIMEOUT_SECONDS} с — ветку checkout не определить, команда заблокирована (fail "
     f"closed). Проверь git в этом checkout и повтори {GUIDE}."
 )
@@ -433,10 +433,8 @@ def block_reason(command: str, start: Path, project: Path) -> str:
         result = _git(call, "rev-parse", "--abbrev-ref", "HEAD")
         if result is None:
             return GIT_NO_ANSWER
-        # Outside a repository git fails as the command would; an explicit path that does not
-        # resolve yet (`git -C {} commit` from xargs) cannot be checked.
-        if result.returncode and call.location:
-            return UNRESOLVED
+        if result.returncode:
+            return UNRESOLVED if call.location else GIT_NO_ANSWER
         branch = result.stdout.strip()
         if _protected(branch, base_branch) and not _grill_docs_commit(
             command, call, branch
