@@ -12,7 +12,7 @@
   "max_noise_ratio": 0.7,
   "dataset_hash": "315f9903467b695f11d2662824dc47437c225091832026e397d6fd1ff5f70af1",
   "source_hashes": {
-    "CONTEXT.md": "0c787590880a83c7417b632b332efed79821b40b12cdc766da24a4612fff17d0",
+    "CONTEXT.md": "80247d9980f6a02274a4495f893b6d0d76cd1858cf33dcf6d60d7622e680d378",
     "docs/adr/0001-portable-capability-delivery.md": "5254f06b516ee14371422ba9cbca9947ced09067edf167bcef09fc9b446d805b",
     "docs/adr/0002-controlled-delivery.md": "769be42fd2da1bfbcdf27829d672df48e85a91cc9d283f1be28b5e3235b063aa",
     "docs/adr/0003-orchestration-core.md": "f5a323619678f23617b6c1e500c4327f70467e61cdf022decd2e6bdd851d4dc0",
@@ -62,8 +62,8 @@
         "retrieved": [
           "docs/adr/0008-repo-map.md",
           "docs/adr/0010-project-memory.md",
-          "CONTEXT.md",
           "docs/adr/0003-orchestration-core.md",
+          "CONTEXT.md",
           "docs/adr/0009-harness-console.md"
         ],
         "expected": [
