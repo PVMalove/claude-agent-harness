@@ -186,19 +186,16 @@ def test_only_verify_runs_under_the_repository_dev_environment(tmp_path: Path) -
     assert process_argv(["python", "x.py"], tmp_path) == [sys.executable, "x.py"]
 
 
-def test_worktree_removal_runs_git_after_confirmation() -> None:
-    """Проверить, что удаление worktree вызывает git после подтверждения."""
+def test_worktree_removal_uses_the_guarded_cli_boundary() -> None:
     entry = ENTRIES["worktree-remove"]
     assert entry.inputs == ("worktree",)
     assert entry.cli_argv(REPO, {"worktree": "wt"}) == [
-        "git",
-        "-C",
+        "harness",
+        "worktree-remove",
         str(REPO),
-        "worktree",
-        "remove",
         "wt",
     ]
-    assert process_argv(entry.cli_argv(REPO, {"worktree": "wt"}))[0] == "git"
+    assert process_argv(entry.cli_argv(REPO, {"worktree": "wt"}))[0] == sys.executable
 
 
 def test_catalog_imports_without_textual() -> None:

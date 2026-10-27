@@ -34,6 +34,16 @@ from ..catalog import (
     CatalogEntry,
     process_argv,
 )
+from harness.cleanup import plan_cleanup, plan_digest, worktree_facts
+from ..maintenance import (
+    MaintenanceView,
+    load_maintenance,
+    summarize,
+    summary_text,
+    reason_text,
+    format_size,
+    path_size,
+)
 from ..runner import CommandRunner, HarnessRun, capturing_runner
 from ..shell import SHELL_CSS, ConsoleShell, Fold, SectionCard
 from .commands import (
@@ -117,11 +127,28 @@ class CommandFormScreen(CommandForm):
 
     BINDINGS = [Binding("f2", "app.toggle_language", "RU/EN", show=False)]
 
-    def __init__(self, entry: CatalogEntry, repo: Path) -> None:
+    def __init__(
+        self,
+        entry: CatalogEntry,
+        repo: Path,
+        *,
+        values: Mapping[str, str] | None = None,
+    ) -> None:
         """Инициализирует форму параметров команды каталога для репозитория."""
         super().__init__()
         self.entry = entry
         self.repo = repo
+        self._values = dict(values or {})
+        self._facts_required = entry.key in (
+            "cleanup-apply",
+            "cleanup-hard-apply",
+            "worktree-remove",
+        )
+        self._facts_ready = not self._facts_required
+        self._facts_error = ""
+        self._facts_epoch = 0
+        self._approved_digest = ""
+        self._facts_text: Callable[[str], str] = lambda language: ""
 
     def compose(self) -> ComposeResult:
         """Формирует структуру виджетов формы ввода параметров команды."""
@@ -136,9 +163,20 @@ class CommandFormScreen(CommandForm):
                     entry.reversibility,
                     warning_cli=True,
                 )
+                if self._facts_required:
+                    yield Static(
+                        "…",
+                        id="maintenance-confirmation",
+                        classes="no-i18n",
+                        markup=False,
+                    )
                 for name in entry.inputs:
                     yield Static(name, id=f"label-{name}", markup=False)
-                    yield Input(placeholder=name, id=f"input-{name}")
+                    yield Input(
+                        value=self._values.get(name, ""),
+                        placeholder=name,
+                        id=f"input-{name}",
+                    )
                 if entry.typed_confirmation is not None:
                     yield Static(
                         f"Введите {entry.typed_confirmation}",
@@ -161,9 +199,101 @@ class CommandFormScreen(CommandForm):
 
     def on_mount(self) -> None:
         self._validate()
+        if self._facts_required:
+            self._refresh_facts()
 
     def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "input-worktree" and self.is_mounted:
+            self._refresh_facts()
         self._validate()
+
+    def _refresh_facts(self) -> None:
+        self._facts_epoch += 1
+        epoch = self._facts_epoch
+        self._facts_ready = False
+        self._facts_error = ""
+        value = (
+            self.query_one("#input-worktree", Input).value.strip()
+            if self.entry.key == "worktree-remove"
+            else ""
+        )
+        self._validate()
+
+        def load() -> None:
+            digest, error = "", ""
+            render: Callable[[str], str]
+            try:
+                if self.entry.key == "worktree-remove":
+                    path = Path(value).expanduser()
+                    path = (path if path.is_absolute() else self.repo / path).resolve()
+                    fact = next(
+                        (
+                            item
+                            for item in worktree_facts(self.repo)
+                            if item.path == path
+                        ),
+                        None,
+                    )
+                    error = fact.reason if fact else "worktree is not registered"
+                    try:
+                        size_label = format_size(path_size(path).bytes) if fact else "?"
+                    except OSError:
+                        size_label = "?"
+
+                    def render(language: str) -> str:
+                        dirty = (
+                            str(fact.dirty) if fact and fact.dirty is not None else "?"
+                        )
+                        return (
+                            f"{path}\n{reason_text(error, language)} · dirty: {dirty} · {size_label}\n"
+                            + (
+                                "Ветка и PR останутся."
+                                if language == "ru"
+                                else "The branch and PR are kept."
+                            )
+                        )
+                else:
+                    summary = summarize(
+                        plan_cleanup(
+                            self.repo,
+                            "hard"
+                            if self.entry.key == "cleanup-hard-apply"
+                            else "soft",
+                        )
+                    )
+                    digest = plan_digest(summary.plan)
+
+                    def render(language: str) -> str:
+                        return summary_text(summary, language)
+            except Exception as exc:
+                error = str(exc)
+
+                def render(language: str) -> str:
+                    return error
+
+            def apply() -> None:
+                if epoch != self._facts_epoch or not self.is_mounted:
+                    return
+                self._facts_ready = True
+                self._facts_error = error
+                self._approved_digest = digest
+                self._facts_text = render
+                if self.entry.key == "worktree-remove":
+                    self.query_one("#form-cli", Static).update(
+                        "$ " + self.entry.cli_line(self.repo, {"worktree": value})
+                    )
+                self.query_one("#maintenance-confirmation", Static).update(
+                    render(getattr(self.app, "language", "ru"))
+                )
+                self._validate()
+
+            call_from_worker(self, apply)
+
+        self.run_worker(load, thread=True, group="maintenance-confirmation")
+
+    def on_unmount(self) -> None:
+        self._facts_epoch += 1
+        self.workers.cancel_node(self)
 
     def _validation(self) -> tuple[dict[str, str], str]:
         values = {
@@ -179,6 +309,14 @@ class CommandFormScreen(CommandForm):
             and self.query_one("#typed-confirmation", Input).value != word
         ):
             return values, f"Для запуска введите {word}"
+        if not self._facts_ready:
+            return values, "…"
+        if self._facts_error:
+            return values, reason_text(
+                self._facts_error, getattr(self.app, "language", "ru")
+            )
+        if self._approved_digest:
+            values["__plan_digest"] = self._approved_digest
         return values, ""
 
     def _validate(self) -> None:
@@ -199,6 +337,10 @@ class CommandFormScreen(CommandForm):
                     ),
                     style=brand.PALETTE["warning"],
                 )
+            )
+        if self._facts_required:
+            self.query_one("#maintenance-confirmation", Static).update(
+                self._facts_text(language)
             )
         self._validate()
 
@@ -228,6 +370,17 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     HarnessScreen .section-card { border: round $component-border; padding: 0 1; height: auto; margin: 0; }
     HarnessScreen #harness-state, HarnessScreen #harness-usage { height: auto; }
     HarnessScreen #harness-usage { color: $text-muted; }
+    HarnessScreen #maintenance-fold { height: 12; margin: 0; padding: 0 1; }
+    HarnessScreen #maintenance-fold.-collapsed { height: 1; border: none; }
+    HarnessScreen #maintenance-fold > Contents { height: 1fr; padding: 0; }
+    HarnessScreen #maintenance-scroll { height: 1fr; }
+    HarnessScreen #maintenance-summary { height: auto; }
+    HarnessScreen #maintenance-actions, HarnessScreen .worktree-row { height: 1; }
+    HarnessScreen #maintenance-worktrees { height: auto; }
+    HarnessScreen .worktree-label { width: 1fr; height: 1; text-wrap: nowrap; text-overflow: ellipsis; }
+    HarnessScreen #maintenance-fold Button { height: 1; min-height: 1; min-width: 0; border: none; padding: 0 1; }
+    HarnessScreen.-narrow #maintenance-fold { height: 7; }
+    HarnessScreen.-narrow #maintenance-fold.-collapsed { height: 1; }
     HarnessScreen #command-body { height: 1fr; min-height: 3; }
     HarnessScreen #command-list { width: 56%; height: 1fr; min-height: 2; }
     HarnessScreen #command-filters { height: 1; }
@@ -266,7 +419,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     HarnessScreen.-narrow #harness-subtitle { display: none; }
     HarnessScreen.-narrow #command-body { layout: vertical; }
     HarnessScreen.-narrow #command-list { width: 1fr; height: 1fr; }
-    HarnessScreen.-narrow #detail-fold { width: 1fr; height: 8; }
+    HarnessScreen.-narrow #detail-fold { width: 1fr; height: 7; }
     HarnessScreen.-narrow #detail-fold.-collapsed { height: 1; border: none; padding: 0 1; }
     HarnessScreen.-narrow #detail-fold > CollapsibleTitle { display: block; }
     HarnessScreen.-narrow #command-risk { padding: 0; border: none; }
@@ -302,7 +455,12 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         self._state = console_stats.harness_state(repo)
         self._view = load_view(repo)
         self._owned_run: HarnessRun | None = None
-        self._rendered_run: tuple[int, str, str] | None = None
+        self._rendered_run: tuple[int, str, str, int] | None = None
+        self._maintenance: MaintenanceView | None = None
+        self._maintenance_error = ""
+        self._maintenance_epoch = 0
+        self._tree_paths: dict[str, Path] = {}
+        self._refresh_after_run = 0
         self._receiving = True
         # A command whose script is absent here (e.g. verify outside the harness repository)
         # would only ever fail with "can't open file", so it is not offered.
@@ -356,6 +514,24 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             with SectionCard(title="Состояние"):
                 yield Static("", id="harness-state", classes="no-i18n", markup=False)
                 yield Static("", id="harness-usage", classes="no-i18n", markup=False)
+            with Fold(
+                title="Обслуживание", id="maintenance-fold", collapsed=self.narrow
+            ):
+                with VerticalScroll(id="maintenance-scroll"):
+                    yield Static(
+                        "…", id="maintenance-summary", classes="no-i18n", markup=False
+                    )
+                    with Horizontal(id="maintenance-actions"):
+                        yield Button("План", id="maintenance-plan", compact=True)
+                        yield Button(
+                            "Очистить…",
+                            id="maintenance-clean",
+                            compact=True,
+                            disabled=True,
+                        )
+                        yield Button("↻", id="maintenance-refresh", compact=True)
+                    with Vertical(id="maintenance-worktrees"):
+                        yield Static("Worktree: …", markup=False)
             with Horizontal(id="command-body"):
                 with Vertical(id="command-list"):
                     with Horizontal(id="command-filters"):
@@ -590,6 +766,119 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
                 )
         self.query_one("#harness-usage", Static).update(badges)
 
+    def _load_maintenance(self) -> None:
+        self._maintenance_epoch += 1
+        epoch = self._maintenance_epoch
+        self._maintenance = None
+        self._maintenance_error = ""
+        self._paint_maintenance_summary()
+
+        def load() -> None:
+            try:
+                view, error = load_maintenance(self.repo), ""
+            except Exception as exc:
+                view, error = None, str(exc)
+
+            def apply() -> None:
+                if epoch != self._maintenance_epoch or not self.is_mounted:
+                    return
+                self._maintenance, self._maintenance_error = view, error
+                self._paint_maintenance_summary()
+                self.run_worker(
+                    self._paint_worktrees(), group="maintenance-paint", exclusive=True
+                )
+
+            call_from_worker(self, apply)
+
+        self.run_worker(load, thread=True, group="maintenance-load")
+
+    def _paint_maintenance_summary(self) -> None:
+        if not self.query("#maintenance-summary"):
+            return
+        language = self._language
+        view = self._maintenance
+        if self._maintenance_error:
+            text = (
+                "Ошибка плана очистки: " if language == "ru" else "Cleanup plan error: "
+            ) + self._maintenance_error
+        elif view is None:
+            text = (
+                "Статистика считается…"
+                if language == "ru"
+                else "Calculating statistics…"
+            )
+        else:
+            # Full paths and skip reasons stay in the confirmation and tooltip.
+            summary = view.soft
+            text = "\n".join(
+                line
+                for line in summary_text(summary, language).splitlines()
+                if not line.startswith("○ ")
+            )
+            extra = max(0, view.hard.total.bytes - summary.total.bytes)
+            text += (
+                "\nЖёсткий режим: +" if language == "ru" else "\nHard mode: +"
+            ) + format_size(extra)
+            self.query_one("#maintenance-summary").tooltip = summary_text(
+                summary, language
+            )
+        heading = "Временные файлы" if language == "ru" else "Temporary files"
+        self.query_one("#maintenance-summary", Static).update(heading + "\n" + text)
+        self.query_one("#maintenance-clean", Button).disabled = (
+            view is None or not view.soft.plan["remove"] or harness_runs(self).busy
+        )
+        self.query_one("#maintenance-plan", Button).disabled = view is None
+        self.query_one("#maintenance-fold", Fold).title = (
+            "Обслуживание" if language == "ru" else "Maintenance"
+        )
+        self.query_one("#maintenance-plan", Button).label = (
+            "План" if language == "ru" else "Plan"
+        )
+        self.query_one("#maintenance-clean", Button).label = (
+            "Очистить…" if language == "ru" else "Clean…"
+        )
+
+    async def _paint_worktrees(self) -> None:
+        container = self.query_one("#maintenance-worktrees", Vertical)
+        await container.remove_children()
+        self._tree_paths.clear()
+        view = self._maintenance
+        if view is None:
+            await container.mount(Static("Worktree: …", markup=False))
+        elif view.worktree_error:
+            await container.mount(
+                Static(reason_text(view.worktree_error, self._language), markup=False)
+            )
+        elif not view.worktrees:
+            await container.mount(Static("Worktree: 0", markup=False))
+        else:
+            available = sum(fact.removable for fact in view.worktrees)
+            await container.mount(
+                Static(
+                    f"Worktree: {len(view.worktrees)} · "
+                    + ("можно удалить" if self._language == "ru" else "can remove")
+                    + f": {available}",
+                    markup=False,
+                )
+            )
+            for index, fact in enumerate(view.worktrees):
+                self._tree_paths[f"tree-remove-{index}"] = fact.path
+                size = view.tree_sizes.get(fact.path)
+                label = f"{fact.path.name} · dirty: {fact.dirty if fact.dirty is not None else '?'} · {format_size(size.bytes) if size else '?'} · {reason_text(fact.reason, self._language)}"
+                row = Horizontal(
+                    Static(label, classes="worktree-label", markup=False),
+                    Button(
+                        "Удалить…" if self._language == "ru" else "Remove…",
+                        id=f"tree-remove-{index}",
+                        compact=True,
+                    ),
+                    classes="worktree-row",
+                )
+                row.tooltip = (
+                    str(fact.path) + "\n" + reason_text(fact.reason, self._language)
+                )
+                await container.mount(row)
+
     def sync_language(self) -> None:
         ConsoleShell.sync_language(self)
         language = getattr(self.app, "language", "ru")
@@ -597,6 +886,9 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         self._language = language
         self._paint_state()
         self._paint_menu_title()
+        self._paint_maintenance_summary()
+        if changed:
+            self.run_worker(self._paint_worktrees(), group="maintenance-paint")
         if changed:
             self.run_worker(
                 self._rebuild_menu(self._selected_key),
@@ -722,7 +1014,23 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         key = event.button.id or ""
-        if key.startswith("filter-"):
+        if key.startswith("tree-remove-"):
+            event.stop()
+            path = self._tree_paths.get(key)
+            if path is not None:
+                self.open_command(
+                    "worktree-remove",
+                    {"worktree": str(path)},
+                )
+        elif key == "maintenance-refresh":
+            event.stop()
+            self._load_maintenance()
+        elif key in ("maintenance-plan", "maintenance-clean"):
+            event.stop()
+            self.open_command(
+                "cleanup" if key == "maintenance-plan" else "cleanup-apply"
+            )
+        elif key.startswith("filter-"):
             event.stop()
             self._filter = key.removeprefix("filter-")
             for button in self.query("#command-filters Button"):
@@ -782,7 +1090,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
                 return
             self.open_command(event.item.name)
 
-    def open_command(self, key: str) -> None:
+    def open_command(self, key: str, values: Mapping[str, str] | None = None) -> None:
         """Open a catalog command through its usual parameter and confirmation flow."""
         if self._refuse_busy():
             return
@@ -802,7 +1110,9 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             if values is not None and self.is_mounted and self.app.screen is self:
                 self._run(entry, values)
 
-        self.app.push_screen(CommandFormScreen(entry, self.repo), on_form_closed)
+        self.app.push_screen(
+            CommandFormScreen(entry, self.repo, values=values), on_form_closed
+        )
 
     def _run(self, entry: CatalogEntry, values: Mapping[str, str]) -> None:
         """Формирует аргументы и запускает процесс выбранной команды каталога."""
@@ -811,6 +1121,8 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             self.repo,
             dev_environment=entry.dev_environment,
         )
+        if "__plan_digest" in values:
+            argv.extend(["--plan-digest", values["__plan_digest"]])
         state = harness_runs(self)
         run = state.reserve(entry.key, entry.cli_line(self.repo, values), argv, values)
         if run is None:
@@ -840,6 +1152,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     def on_mount(self) -> None:
         self._paint_state()
         self._paint_menu_title()
+        self._load_maintenance()
         self.query_one("#command-retry").display = False
         self.query_one("#run-status").display = False
         self.query_one("#run-feedback").display = False
@@ -875,6 +1188,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
 
     def on_unmount(self) -> None:
         self._drift_epoch += 1
+        self._maintenance_epoch += 1
         self._receiving = False
         if self._owned_run is not None:
             harness_runs(self).abandon_pending(self._owned_run)
@@ -887,13 +1201,19 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
         run = harness_runs(self).current
         if run is None:
             return
-        signature = (run.token, run.phase, self._language)
+        signature = (run.token, run.phase, self._language, run.revision)
         if self._rendered_run == signature:
             return
+        scroll = self.query_one("#command-output-scroll", VerticalScroll)
+        follow = (
+            self._rendered_run is None
+            or self._rendered_run[0] != run.token
+            or scroll.scroll_y >= scroll.max_scroll_y - 1
+        )
         self._rendered_run = signature
         if run.phase in ("pending", "running"):
             status = "▶ " + i18n.tr(self._language, "Выполняется…")
-            output = f"$ {run.cli_line}"
+            output = f"$ {run.cli_line}\n{run.output}"
         elif run.phase == "cancelled":
             return
         else:
@@ -903,7 +1223,7 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
                 else f"{'✔' if run.returncode == 0 else '✖'} exit {run.returncode}"
             )
             output = (
-                f"$ {run.cli_line}\n{run.error}"
+                f"$ {run.cli_line}\n{run.output}{run.error}"
                 if run.error
                 else render_result(
                     run.cli_line,
@@ -929,3 +1249,21 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
             bool(run.error) or run.returncode != 0
         )
         self._show(output)
+        if follow:
+            self.call_after_refresh(self._follow_output, run.token)
+        if run.phase == "completed" and run.token != self._refresh_after_run:
+            self._refresh_after_run = run.token
+            self._load_maintenance()
+
+    def _follow_output(self, token: int) -> None:
+        run = harness_runs(self).current
+        if (
+            self.is_mounted
+            and self._receiving
+            and self.app.screen is self
+            and run is not None
+            and run.token == token
+        ):
+            self.query_one("#command-output-scroll", VerticalScroll).scroll_end(
+                animate=False, immediate=True
+            )

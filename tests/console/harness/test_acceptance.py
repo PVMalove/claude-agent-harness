@@ -18,6 +18,7 @@ from harness.console.shell import Fold
 from tests.console._svg_snapshot import SIZES, mockup_states, until
 from tests.console.harness.snapshots import (
     EXCLUDED,
+    FOLLOW_UP_STATES,
     LANGUAGES,
     MOCKUP_STATES,
     STATES,
@@ -34,9 +35,9 @@ from tests.console.test_console_harness import (
 
 
 def test_matrix_accounts_for_every_mockup_state_without_fake_captures() -> None:
-    assert set(MOCKUP_STATES.values()) | {entry["state"] for entry in EXCLUDED} >= set(
-        mockup_states("harness.html")
-    )
+    assert set(MOCKUP_STATES.values()) | set(FOLLOW_UP_STATES.values()) | {
+        entry["state"] for entry in EXCLUDED
+    } >= set(mockup_states("harness.html"))
     assert len(set(STATES)) == len(STATES)
     assert all(entry["follow_up"] and entry["reason"] for entry in EXCLUDED)
 
