@@ -171,6 +171,14 @@ struct Touch {
 }
 
 fn touches(connection: &Connection) -> Result<Vec<Touch>, Broken> {
+    let anchor = anchor_details(connection)?;
+    let generation = anchor["generation"].as_str().ok_or_else(|| {
+        broken(
+            "audit_anchor",
+            "the legacy-import record names no selected generation",
+        )
+    })?;
+    let import_prefix = format!("generations/{generation}/");
     let mut statement = connection
         .prepare("SELECT seq, action, details_json FROM audit WHERE seq > 1 ORDER BY seq")?;
     let mut rows = statement.query([])?;
@@ -182,8 +190,24 @@ fn touches(connection: &Connection) -> Result<Vec<Touch>, Broken> {
         let Some(path) = details["path"].as_str() else {
             continue;
         };
+        // Migration records keep their original state-root paths. Later writes address the
+        // selected generation's live projection; both records must track the same row.
+        let path = if action == "migration-repair" {
+            path.strip_prefix(&import_prefix)
+                .filter(|path| !path.is_empty())
+                .ok_or_else(|| {
+                    Broken::new(
+                        Some(seq),
+                        "migration_repair",
+                        "the repair path is outside the imported generation",
+                    )
+                })?
+        } else {
+            path
+        };
         let text = |key: &str| details[key].as_str().map(str::to_owned);
         let (before, after) = match action.as_str() {
+            "migration-repair" => (text("before_sha256"), text("after_sha256")),
             "transition" => (text("before_sha256"), text("sha256")),
             "deletion" => (text("sha256"), None),
             _ => (None, text("sha256")),
@@ -206,7 +230,7 @@ fn check_rows(connection: &Connection) -> Result<(), Broken> {
     for touch in touches(connection)? {
         if let Some((previous_seq, previous)) = last.get(&touch.path) {
             let expected = match touch.action.as_str() {
-                "transition" | "deletion" => touch.before.as_ref(),
+                "migration-repair" | "transition" | "deletion" => touch.before.as_ref(),
                 _ => None,
             };
             if let Some(expected) = expected

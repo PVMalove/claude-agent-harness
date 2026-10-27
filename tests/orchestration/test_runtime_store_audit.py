@@ -23,9 +23,12 @@ from harness.orchestration.ledger.lifecycle import _canonical
 
 from .runtime_store_support import (
     STATE_REL,
+    ServingRuntime,
     Store,
     build_state,
     coordinator,
+    coordinator_repository,
+    coordinator_with,
     migrate,
     tree,
 )
@@ -105,6 +108,20 @@ def test_an_untouched_store_passes_the_ordinary_and_the_full_validation(store: S
     assert report["valid"] is True
     assert report["store"]["mode"] == "full"
     assert report["batches"] == [store.batch]
+
+
+def test_full_validation_accepts_a_migration_repaired_batch(tmp_path: Path) -> None:
+    repo = coordinator_repository(tmp_path)
+    build_state(repo, owes_reassessment_without_candidate=True)
+    result = migrate(repo)
+    assert result.returncode == 0, result.stderr
+    runtime = ServingRuntime(repo)
+    try:
+        result = coordinator_with(repo, runtime, "ledger", "validate", "--full")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout)["store"]["valid"] is True
+    finally:
+        runtime.stop()
 
 
 def test_a_record_changed_after_the_checkpoint_covered_it_is_found_by_the_full_check_only(
