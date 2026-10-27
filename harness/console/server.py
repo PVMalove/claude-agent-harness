@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import secrets
+
+from .discovery import Discovery
 from pathlib import Path
 
 H11_PIN = "0.16.0"
@@ -18,6 +21,8 @@ class ConsoleServer:
     def __init__(self, repo: Path, *, idle_grace_seconds: float = 30) -> None:
         self.repo = repo.resolve()
         self._listener: asyncio.Server | None = None
+        self._discovery: Discovery | None = None
+        self._token = ""
         self._port = 0
         self._started = False
         self._closing = False
@@ -39,18 +44,26 @@ class ConsoleServer:
         importlib.import_module("websockets.server")
         self._started = True
         try:
+            self._discovery = Discovery(self.repo)
+            self._discovery.acquire()
             self._listener = await asyncio.start_server(self._accept, "127.0.0.1", 0)
             self._port = self._listener.sockets[0].getsockname()[1]
+            self._token = secrets.token_hex(32)
+            self._discovery.publish(self._port, self._token)
         except BaseException:
             await self.close()
             raise
 
-    def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    def _accept(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         task = asyncio.create_task(self._handle(reader, writer))
         self._connections.add(task)
         task.add_done_callback(self._connections.discard)
 
-    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         import h11
 
         try:
@@ -60,9 +73,17 @@ class ConsoleServer:
                     event = connection.next_event()
                     if isinstance(event, h11.Request):
                         body = b"Console server\n"
-                        writer.write(connection.send(h11.Response(status_code=200, headers=[
-                            (b"Content-Length", str(len(body)).encode()), (b"Connection", b"close")
-                        ])))
+                        writer.write(
+                            connection.send(
+                                h11.Response(
+                                    status_code=200,
+                                    headers=[
+                                        (b"Content-Length", str(len(body)).encode()),
+                                        (b"Connection", b"close"),
+                                    ],
+                                )
+                            )
+                        )
                         if event.method != b"HEAD":
                             writer.write(connection.send(h11.Data(data=body)))
                         writer.write(connection.send(h11.EndOfMessage()))
@@ -100,7 +121,11 @@ class ConsoleServer:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
         finally:
-            self._closed.set()
+            try:
+                if self._discovery is not None:
+                    self._discovery.close()
+            finally:
+                self._closed.set()
 
     async def wait_closed(self) -> None:
         await self._closed.wait()
