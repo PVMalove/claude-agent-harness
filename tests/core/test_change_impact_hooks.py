@@ -447,3 +447,164 @@ def test_a_full_operation_journal_allows_with_a_diagnostic(
     assert err and not err.startswith("[")
     operation = project / ".harness" / ".sandboxes" / "hook-events"
     assert len(list(next(operation.iterdir()).iterdir())) == 1
+
+
+def _warned(result: tuple[int, str, str]) -> bool:
+    code, out, err = result
+    assert code == 0
+    if not err.startswith("["):
+        assert out == ""
+        return False
+    return True
+
+
+def _triggers(project: Path) -> dict[str, list[dict[str, object]]]:
+    """Per hook: the events that lead to its warning (the reminder needs a touch first)."""
+    risky = _write(project / "pyproject.toml", "[project]\n")
+    code = _write(project / "services" / "x.py")
+    return {
+        FIRST_TOUCH: [_edit(risky)],
+        SENSITIVE: [_edit(risky)],
+        REMINDER: [_edit(code), _stop()],
+    }
+
+
+def _fire(
+    project: Path,
+    hook_id: str,
+    events: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> tuple[int, str, str]:
+    """Send the events in order; the answer to the last one."""
+    result = (0, "", "")
+    for payload in events:
+        result = _body(project, hook_id, payload, monkeypatch, capsys)
+    return result
+
+
+@pytest.mark.parametrize("hook_id", [FIRST_TOUCH, SENSITIVE, REMINDER])
+def test_a_repeated_identical_event_warns_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+) -> None:
+    project = _project(tmp_path)
+    events = _triggers(project)[hook_id]
+
+    first = _fire(project, hook_id, events, monkeypatch, capsys)
+    repeated = [_fire(project, hook_id, events, monkeypatch, capsys) for _ in range(3)]
+
+    assert _warned(first)
+    assert repeated == [(0, "", "")] * 3
+
+
+@pytest.mark.parametrize("hook_id", [FIRST_TOUCH, SENSITIVE, REMINDER])
+@pytest.mark.parametrize(
+    "identity",
+    [{"session_id": "session-next"}, {"agent_id": "agent-retry"}],
+    ids=["new-session", "new-agent"],
+)
+def test_a_new_operation_warns_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+    identity: dict[str, str],
+) -> None:
+    project = _project(tmp_path)
+    events = _triggers(project)[hook_id]
+    assert _warned(_fire(project, hook_id, events, monkeypatch, capsys))
+
+    renewed = [{**payload, **identity} for payload in events]
+
+    assert _warned(_fire(project, hook_id, renewed, monkeypatch, capsys))
+
+
+def test_a_changed_digest_warns_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _project(tmp_path)
+    triggers = _triggers(project)
+    for hook_id, events in triggers.items():
+        assert _warned(_fire(project, hook_id, events, monkeypatch, capsys)), hook_id
+
+    lock = _write(project / "uv.lock", "")
+    other_edit = _edit(project / "pyproject.toml")
+    other_edit["tool_input"] = {"file_path": str(project / "pyproject.toml"), "x": 1}
+    _write(project / "services" / "x.py", "x = 'changed size'\n")
+    changed = {
+        FIRST_TOUCH: [_edit(lock)],
+        SENSITIVE: [other_edit],
+        REMINDER: [_stop()],
+    }
+
+    for hook_id, events in changed.items():
+        assert _warned(_fire(project, hook_id, events, monkeypatch, capsys)), hook_id
+    # The first touch is one notification per path: another edit of the same path stays quiet.
+    assert not _warned(_fire(project, FIRST_TOUCH, [other_edit], monkeypatch, capsys))
+
+
+def test_the_warning_names_its_evidence_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _project(tmp_path)
+    payload = _triggers(project)[SENSITIVE][0]
+
+    _, _, err = _body(project, SENSITIVE, payload, monkeypatch, capsys)
+
+    first, second = err.splitlines()[:2]
+    assert first.startswith("[sensitive-path-touched] ")
+    reference = second.removeprefix("evidence_ref=")
+    assert reference.startswith(".harness/.sandboxes/hook-events/")
+    record = json.loads((project / reference).read_text(encoding="utf-8"))
+    assert record["hook_id"] == SENSITIVE
+    assert record["event"] == "PreToolUse"
+    assert record["path"] == "pyproject.toml"
+    assert record["session_id"] == "session-main"
+    assert record["agent_id"] == "agent-developer"
+    operation = hooks.operation_id("session-main", "agent-developer")
+    assert record["operation_id"] == operation
+    assert len(str(record["subject_digest"])) == 64
+    assert record["recorded_at"]
+
+
+@needs_bash
+def test_the_strict_verdict_carries_the_evidence_record(tmp_path: Path) -> None:
+    project = _project(tmp_path, {"profile": "strict"})
+    risky = _write(project / "Cargo.toml", "")
+
+    verdict = _decision(_script(project, SENSITIVE, _edit(risky)))
+
+    assert verdict["decision"] == "warn"
+    evidence = project / str(verdict["evidence_ref"])
+    record = json.loads(evidence.read_text(encoding="utf-8"))
+    assert (record["hook_id"], record["profile"]) == (SENSITIVE, "strict")
+
+
+def test_concurrent_identical_events_warn_once(tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    payload = json.dumps(_triggers(project)[FIRST_TOUCH][0])
+    module = project / ".claude" / "hooks" / "change_impact_hooks.py"
+
+    processes = [
+        subprocess.Popen(
+            [sys.executable, str(module), FIRST_TOUCH],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _ in range(8)
+    ]
+    answers = [process.communicate(payload, timeout=60) for process in processes]
+
+    assert [process.returncode for process in processes] == [0] * 8
+    warned = [err for _, err in answers if err.startswith("[risky-path-first-touch] ")]
+    assert len(warned) == 1
+    assert sum(1 for out, _ in answers if out) == 1

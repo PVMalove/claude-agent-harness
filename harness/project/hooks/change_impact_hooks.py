@@ -22,11 +22,13 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
 import shutil
 import sys
+from datetime import datetime, timezone
 from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
@@ -300,6 +302,72 @@ class Store:
         return found
 
 
+def _profile(root: Path) -> Optional[str]:
+    """Профиль evidence-записи — ``read_profile`` конверта рядом с модулем; без helper-а — None."""
+    try:
+        helper = importlib.import_module("hook_response")
+    except ImportError:
+        return None
+    value: object = helper.read_profile(root)
+    return value if isinstance(value, str) else None
+
+
+def notify(
+    event: Event, root: Path, hook_id: str, subject: object, path: str
+) -> Optional[str]:
+    """Создать маркер уведомления и evidence-запись; ``None`` — такое уведомление уже было.
+
+    Ключ — (hook_id, событие, digest предмета, операция): повтор того же события молчит, а новый
+    digest или новая операция дают новое уведомление. Маркер создаётся через O_EXCL, поэтому из
+    параллельных вызовов уведомляет ровно один. Результат — путь evidence от корня проекта.
+    """
+    digest = _sha256(subject)
+    key = _sha256([hook_id, event.name, digest, event.operation_id])[:32]
+    record: Dict[str, object] = {
+        "hook_id": hook_id,
+        "event": event.name,
+        "path": path,
+        "subject_digest": digest,
+        "operation_id": event.operation_id,
+        "session_id": event.session_id,
+        "agent_id": event.agent_id,
+        "profile": _profile(root),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    store = Store(root, event.operation_id)
+    if not store.create(f"n-{key}.json", record):
+        return None
+    return (store.directory / f"n-{key}.json").relative_to(root).as_posix()
+
+
+class Notice(NamedTuple):
+    """Предупреждение hook-а: причина, текст, предмет дедупликации и вывод протокола runtime."""
+
+    hook_id: str
+    reason: str
+    text: str
+    subject: object
+    path: str
+    output: Dict[str, object]
+
+
+def announce(event: Event, root: Path, notice: Notice) -> Output:
+    """Новое предупреждение: stdout протокола, ``[reason] текст`` и evidence_ref в stderr.
+
+    Дубликат молчит; заполненная операция разрешает с диагностикой без префикса причины.
+    """
+    try:
+        evidence = notify(event, root, notice.hook_id, notice.subject, notice.path)
+    except StoreFull as exc:
+        return None, [f"уведомление не записано: {exc}"]
+    if evidence is None:
+        return None, []
+    return notice.output, [
+        f"[{notice.reason}] {notice.text}",
+        f"evidence_ref={evidence}",
+    ]
+
+
 def _pre_tool_context(text: str) -> Dict[str, object]:
     """Контекст для модели рядом с результатом инструмента; решение о разрешении не меняется."""
     return {
@@ -316,7 +384,16 @@ def impact_first_touch(event: Event, root: Path) -> Output:
         f"Рискованный путь {target.rel} ({code}): ChangeImpact не вычисляет его влияние по графу, "
         "поэтому review и QA проверяют полный набор. Назовите путь в отчёте и запустите проверки brief."
     )
-    return _pre_tool_context(text), [f"[{REASON_RISKY}] {text}"]
+    # Одно уведомление на путь в операции: это и есть первое касание.
+    notice = Notice(
+        IMPACT_FIRST_TOUCH,
+        REASON_RISKY,
+        text,
+        target.rel,
+        target.rel,
+        _pre_tool_context(text),
+    )
+    return announce(event, root, notice)
 
 
 def sensitive_path_recheck(event: Event, root: Path) -> Output:
@@ -328,7 +405,21 @@ def sensitive_path_recheck(event: Event, root: Path) -> Output:
         "перепроверьте правку. Под strict review, QA и publish требуют VerificationPlan, который "
         "покрывает этот путь."
     )
-    return _pre_tool_context(text), [f"[{REASON_SENSITIVE}] {text}"]
+    # Каждая новая правка проверяется заново; повтор той же правки — дубликат.
+    subject = [
+        target.rel,
+        event.payload.get("tool_name"),
+        event.payload.get("tool_input"),
+    ]
+    notice = Notice(
+        SENSITIVE_PATH_RECHECK,
+        REASON_SENSITIVE,
+        text,
+        subject,
+        target.rel,
+        _pre_tool_context(text),
+    )
+    return announce(event, root, notice)
 
 
 def _record_touch(event: Event, root: Path) -> Output:
@@ -379,14 +470,27 @@ def targeted_check_reminder(event: Event, root: Path) -> Output:
     if event.name not in STOP_EVENTS or event.payload.get("stop_hook_active") is True:
         return None, []
     changes, reports = _changes(Store(root, event.operation_id).records("t-"))
-    if not changes or (reports and max(reports) > max(item[1] for item in changes)):
+    last_report = max(reports) if reports else None
+    if not changes or (
+        last_report is not None and last_report > max(item[1] for item in changes)
+    ):
         return None, []
     worktrees = ", ".join(sorted({item[3] for item in changes}))
     text = (
         f"После последнего отчёта изменено файлов: {len(changes)} ({worktrees}). Отчитайте "
         "targeted-проверки brief в checks_run: команда и результат каждой."
     )
-    return {"systemMessage": text}, [f"[{REASON_UNREPORTED}] {text}"]
+    # Новое изменение файла или новый отчёт меняют digest и дают новое напоминание.
+    state = [sorted(item[:3] for item in changes), last_report]
+    notice = Notice(
+        TARGETED_CHECK_REMINDER,
+        REASON_UNREPORTED,
+        text,
+        state,
+        worktrees,
+        {"systemMessage": text},
+    )
+    return announce(event, root, notice)
 
 
 HANDLERS: Dict[str, Callable[[Event, Path], Output]] = {
