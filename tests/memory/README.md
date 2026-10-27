@@ -59,6 +59,9 @@ source hash changes, and the report is identical to the #788 revision.
 Version 5 imports `integration/console-redesign` into Harness Next and re-evaluates the merged
 `CONTEXT.md`, ADR 0003 and ADR 0006 explicitly. Recall (0.95) and noise (0.61) are unchanged, and the
 gate passes; `baseline_fts5_initial.json` stays unchanged.
+#863 adds the Web Console and Console Server terms to `CONTEXT.md` and re-evaluates the corpus
+explicitly. Recall (0.95), noise (0.61) and the gate are unchanged; only the `CONTEXT.md` hash and the
+order of the retrieved paths of query 339 differ. `baseline_fts5_initial.json` stays unchanged.
 Vector comparisons must use the same reviewed
 multi-label dataset and corpus as the active FTS5 baseline; never compare across label revisions.
 
