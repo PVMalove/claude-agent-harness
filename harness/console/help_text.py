@@ -10,17 +10,33 @@ HELP_MARKDOWN = """\
 Пульт — интерактивная оболочка над CLI `harness` и coordinator оркестрации. Рядом с каждым
 действием показан CLI-эквивалент: пульт запускает тот же процесс и не повторяет его логику.
 
+## Окно консоли
+
+- Верхняя панель показывает версию консоли, проект и ветку.
+- Главное меню слева открывает разделы клавишами `0`–`9` или стрелками и `Enter`.
+  Текущий раздел отмечен линией слева; подчёркивание показывает фокус клавиатуры.
+- В узком терминале меню открывается кнопкой `≡`; контекст следует под содержимым.
+- Хлебные крошки показывают путь. Все сегменты, кроме текущего, открываются как ссылки.
+- Контекстная панель содержит факты выбранного проекта; длинные значения доступны с прокруткой.
+- Нижняя строка показывает клавиши текущего экрана. `Tab` и `Shift+Tab` перемещают фокус,
+  `Esc` возвращает назад или отменяет действие. На главной `Esc` ничего не закрывает.
+
+Выбор пункта меню, вкладки или сессии не запускает команду.
+
 ## Разделы
 
-| Раздел | Что внутри |
-| --- | --- |
-| Diagnostics | Полный отчёт `harness health`, онлайн-проверки, `--fix` и экспорт в Markdown. |
-| Harness | Состояние установки и использование пайплайна; команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса, registry, list, health, Repo Map, ledger. |
-| Orchestration | Статистика пайплайна, история batch по состояниям (Enter открывает хронологию) и команды coordinator. |
-| Reports | Стадии и отчёты ролей из леджера с фильтрами (на узком терминале фильтры и батчи свёрнуты), хронология batch и QA-логи. Статус везде «символ + слово». |
-| Repo Map | Карта репозитория для HEAD: сводка, дерево файлов со статусом парсера, символы, связи (на узком терминале — раскрывающийся блок) и хабы. Вкладка «Диагностики» проверяет, что мешает полной карте; вкладка «Настройки»: режим minimal / full, установка парсеров языков и память проекта. |
-| Настройка конфигурации | Шаги `project.json` и `orchestration.json`, черновик, проверка и diff, версии и откат, необязательные CLI-подсказки. |
-| Help | Эта справка. |
+| Клавиша | Раздел | Что внутри |
+| --- | --- | --- |
+| `0` | Главная | Проблемы проекта, рабочие сессии, проверки и контекст проекта. |
+| `1` | Открыть проект | Путь, проверка Git-проекта и план init/adopt/update перед подтверждением. |
+| `2` | Обновить Harness | Установленная и доступная версии, дрейф, diff, режим обновления и подтверждённый запуск. |
+| `3` | Диагностика | Отчёт `harness health`, онлайн-проверки, `--fix` и экспорт в Markdown. |
+| `4` | Harness | Установка и команды CLI: init, update (в том числе `--force-managed-files` и `--force-seed-files`), diff, adopt, очистка soft/hard (план и применение), удаление харнесса, registry, list, health, Repo Map, ledger. |
+| `5` | Оркестрация | Статистика пайплайна, история batch по состояниям (Enter открывает хронологию) и команды coordinator. |
+| `6` | Отчёты | Стадии и отчёты ролей из леджера с фильтрами (на узком терминале фильтры и батчи свёрнуты), хронология batch и QA-логи. |
+| `7` | Repo Map | Карта для HEAD: сводка, дерево файлов со статусом парсера, символы, связи (на узком терминале — раскрывающийся блок) и хабы. Вкладка «Диагностики» проверяет полноту карты; «Настройки»: режим minimal / full, парсеры языков и память проекта. |
+| `8` | Настройка | Шаги `project.json` и `orchestration.json`, черновик, проверка и diff, версии и откат, необязательные CLI-подсказки. |
+| `9` | Справка | Окно консоли, разделы, клавиши, статусы, безопасность и документация. |
 
 ## Клавиши
 
@@ -35,7 +51,7 @@ init/adopt/update. Установка требует подтверждения 
 | `0` | Вернуться на главный экран |
 | `1` | Открыть или подключить проект |
 | `2` | Открыть экран обновления Harness: версии, дрейф, diff, режим и подтверждённый запуск |
-| `3`–`9` | Открыть раздел на главном экране: Diagnostics, Harness, Orchestration, Reports, Repo Map, Configuration, Help |
+| `3`–`9` | Открыть соответствующий раздел из таблицы выше с любого экрана общего каркаса |
 | `r` / `o` | Офлайн- / онлайн-проверки на главном экране; `r` в Reports обновляет списки |
 | `p` | Открыть или подключить проект |
 | `y` | Скопировать полную CLI-строку выбранной команды (Harness, Orchestration) |
@@ -50,7 +66,21 @@ init/adopt/update. Установка требует подтверждения 
 | `Ctrl+P` | Палитра команд |
 | `Ctrl+Q` | Выход |
 
-Статусы проверок показаны символом и словом, а не только цветом: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
+## Статусы
+
+Статус всегда показан символом и подписью. Цвет только дополняет их.
+
+| Символ | Сессии и действия |
+| --- | --- |
+| ✔ | Принято или успешно; «Отчёт получен» ещё не означает, что он принят. |
+| ▶ | Выполняется. |
+| Ⅱ | Приостановлено, запускается, отменено или завершено — смотрите подпись. |
+| ○ | Не начато или готово к запуску. |
+| ✖ | Ошибка или работа заблокирована. Причина доступна в деталях. |
+| ⚠ | Предупреждение, нет подтверждения или требуется разрешение. |
+
+Статусы проверок: ✔ ok — успешно; ⚠ warn — предупреждение; ✖ fail — ошибка;
+○ skipped — проверка пропущена, а не завершилась успешно. Отсутствие данных не заменяется нулём.
 
 ## Безопасность
 
@@ -82,17 +112,33 @@ The console is an interactive shell over the `harness` CLI and the orchestration
 to each action the CLI equivalent is shown: the console runs the same process and does not repeat
 its logic.
 
+## Console window
+
+- The header shows the console version, project and branch.
+- The main menu on the left opens sections with `0`–`9` or the arrow keys and `Enter`.
+  A line on the left marks the current section; an underline marks keyboard focus.
+- On a narrow terminal, `≡` opens the menu and context follows the content.
+- Breadcrumbs show the path. Every segment except the current one is a link.
+- The context panel shows facts about the selected project; long values remain accessible by scrolling.
+- The footer shows the current screen's keys. `Tab` and `Shift+Tab` move focus;
+  `Esc` goes back or cancels. On Home, `Esc` closes nothing.
+
+Selecting a menu item, tab or session never runs a command.
+
 ## Sections
 
-| Section | What is inside |
-| --- | --- |
-| Diagnostics | The full `harness health` report, online checks, `--fix` and export to Markdown. |
-| Harness | Installation state and pipeline usage; CLI commands: init, update (including `--force-managed-files` and `--force-seed-files`), diff, adopt, soft/hard cleanup (plan and apply), Harness removal, registry, list, health, Repo Map, ledger. |
-| Orchestration | Pipeline statistics, batch history by state (Enter opens the timeline) and coordinator commands. |
-| Reports | Stages and role reports from the ledger with filters (on a narrow terminal the filters and batches are folded), the batch timeline and QA logs. A status is always a symbol and a word. |
-| Repo Map | The repository map for HEAD: summary, file tree with the parser status, symbols, relations (a foldable block on a narrow terminal) and hubs. The Diagnostics tab checks what stands in the way of a full map; the Settings tab: the minimal / full mode, installing language parsers and project memory. |
-| Configuration | `project.json` and `orchestration.json` steps, draft, check and diff, versions and restore, optional CLI hints. |
-| Help | This guide. |
+| Key | Section | What is inside |
+| --- | --- | --- |
+| `0` | Home | Project issues, working sessions, checks and project context. |
+| `1` | Open project | Path, Git project checks and an init/adopt/update plan before confirmation. |
+| `2` | Update Harness | Installed and available versions, drift, diff, update mode and a confirmed run. |
+| `3` | Diagnostics | The full `harness health` report, online checks, `--fix` and export to Markdown. |
+| `4` | Harness | Installation state and CLI commands: init, update (including `--force-managed-files` and `--force-seed-files`), diff, adopt, soft/hard cleanup (plan and apply), Harness removal, registry, list, health, Repo Map, ledger. |
+| `5` | Orchestration | Pipeline statistics, batch history by state (Enter opens the timeline) and coordinator commands. |
+| `6` | Reports | Stages and role reports from the ledger with filters (on a narrow terminal the filters and batches are folded), the batch timeline and QA logs. |
+| `7` | Repo Map | The map for HEAD: summary, file tree with parser status, symbols, relations (a foldable block on a narrow terminal) and hubs. Diagnostics checks map completeness; Settings covers minimal / full mode, language parsers and project memory. |
+| `8` | Configuration | `project.json` and `orchestration.json` steps, draft, check and diff, versions and restore, optional CLI hints. |
+| `9` | Help | Console window, sections, keys, statuses, safety and documentation. |
 
 ## Keys
 
@@ -107,7 +153,7 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | `0` | Back to the home screen |
 | `1` | Open or connect a project |
 | `2` | Open the Harness update screen: versions, drift, diff, mode and a confirmed run |
-| `3`–`9` | Open a section from the home screen: Diagnostics, Harness, Orchestration, Reports, Repo Map, Configuration, Help |
+| `3`–`9` | Open the corresponding section in the table above from any shared-shell screen |
 | `r` / `o` | Offline / online checks on the home screen; `r` in Reports refreshes the lists |
 | `p` | Open or connect a project |
 | `y` | Copy the full CLI line of the selected command (Harness, Orchestration) |
@@ -122,7 +168,21 @@ every screen. Conflicts in discovery paths and managed files must be resolved be
 | `Ctrl+P` | Command palette |
 | `Ctrl+Q` | Quit |
 
-Check statuses are shown as a symbol and a word, not by colour alone: ✔ ok, ⚠ warn, ✖ fail, ○ skipped.
+## Statuses
+
+A status always has a symbol and a label. Colour is supplementary.
+
+| Symbol | Sessions and actions |
+| --- | --- |
+| ✔ | Accepted or successful; “Report received” does not mean the report has been accepted. |
+| ▶ | Running. |
+| Ⅱ | Paused, starting, cancelled or finished; read the label. |
+| ○ | Not started or ready to start. |
+| ✖ | Error or work blocked. Details explain the reason. |
+| ⚠ | Warning, unconfirmed state or permission pending. |
+
+Check statuses: ✔ ok — successful; ⚠ warn — warning; ✖ fail — error;
+○ skipped — the check was skipped, not successful. Missing data is never replaced with zero.
 
 ## Safety
 

@@ -142,6 +142,7 @@ class ReportsScreen(ConsoleShell):
     ReportsScreen .report-list:focus > ListItem.-highlight { background: $selection-background; color: $selection-foreground; border-left: outer $primary; text-style: none; }
     ReportsScreen #batch-list { height: 8; }
     ReportsScreen #reports-empty { height: auto; color: $text-muted; }
+    ReportsScreen.-narrow #reports-page { height: auto; }
     ReportsScreen.-narrow #report-header { layout: vertical; }
     ReportsScreen.-narrow #reports-subtitle { display: none; }
     ReportsScreen.-narrow #report-toolbar { margin-top: 1; }

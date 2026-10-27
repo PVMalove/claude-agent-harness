@@ -162,7 +162,9 @@ CHECK_ROUTES: dict[str, CheckRoute] = {
     "environment.hook_bash": CheckRoute("Bash для hooks не найден", "Diagnostics"),
     # The advisory warn of the second runtime survives `harness update`, so the route points to the
     # check details in Diagnostics instead of Update Harness.
-    "hooks.policy": CheckRoute("Политика hooks проекта требует внимания", "Diagnostics"),
+    "hooks.policy": CheckRoute(
+        "Политика hooks проекта требует внимания", "Diagnostics"
+    ),
     "files.sandboxes": CheckRoute("Каталог .sandboxes настроен неверно", "Diagnostics"),
     "directories.harness": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
     "directories.sandboxes": CheckRoute("Каталог Harness недоступен", "Diagnostics"),
@@ -555,21 +557,22 @@ Screen.shell { background: $background; }
 .shell Button:hover, .shell Button:focus { border: round $primary; color: $primary; }
 .shell .context-strip Button { border: none; height: 1; min-width: 3; color: $primary; }
 .shell Button.-textual-compact, .shell Button.-textual-compact:hover, .shell Button.-textual-compact:focus { border: none; padding: 0 1; height: 1; min-height: 1; min-width: 0; }
-.shell .context-panel { width: 30; height: 1fr; padding: 0 2; overflow-x: hidden; scrollbar-gutter: stable; border-left: solid $border-subtle; background: $surface; }
+.shell .context-panel { width: 30; height: 1fr; padding: 0 2; overflow-x: hidden; scrollbar-gutter: stable; border-left: solid $border-subtle; background: transparent; }
 .shell .context-panel Static { height: auto; }
 .shell .context-label { height: 2; color: $text-muted; margin-top: 1; }
 .shell .context-value { height: auto; margin-bottom: 1; }
 .shell .context-note { height: auto; border: round $component-border; padding: 0 1; margin-top: 1; color: $text-muted; }
-.shell ShellSidebar { width: 30; height: 1fr; background: $surface; border-right: solid $border-subtle; padding: 1; }
+.shell ShellSidebar { width: 30; height: 1fr; background: transparent; border-right: solid $border-subtle; padding: 1; }
 .shell ShellSidebar .menu-heading { height: 2; padding-left: 2; color: $text-muted; }
-.shell ShellSidebar ListView, .shell ShellSidebar ListView:focus { height: 1fr; border: none; padding: 0; margin: 0; background: $surface; }
-.shell ShellSidebar ListView > ListItem { height: 3; padding: 1 2; color: $text-muted; background: $surface; text-style: none; }
+.shell ShellSidebar ListView, .shell ShellSidebar ListView:focus { height: 1fr; border: none; padding: 0; margin: 0; background: transparent; }
+.shell ShellSidebar ListView > ListItem { height: 1; padding: 0 1; border-left: solid transparent; color: $text-muted; background: transparent; text-style: none; }
 .shell ShellSidebar ListView > ListItem.-highlight, .shell ShellSidebar ListView:focus > ListItem.-highlight {
-    background: $selection-background; color: $selection-foreground; text-style: none; outline: round $selection-outline;
+    background: transparent; color: $selection-foreground; text-style: none; outline: none;
 }
-.shell Footer, .shell WorkspaceHeader { background: $surface; }
+.shell ShellSidebar ListView:focus > ListItem.-highlight { text-style: underline; }
+.shell Footer, .shell WorkspaceHeader { background: transparent; }
 .shell ListView, .shell ListView:focus { background-tint: transparent; }
-.shell ShellSidebar ListView > ListItem.-active { color: $selection-foreground; }
+.shell ShellSidebar ListView > ListItem.-active { color: $selection-foreground; border-left: solid $selection-edge; }
 .shell .shell-frame { height: 1fr; }
 .shell .shell-main { width: 1fr; min-width: 0; height: 1fr; }
 .shell .shell-body { height: 1fr; }
@@ -584,9 +587,9 @@ Screen.shell { background: $background; }
 .shell.-narrow ShellSidebar { display: none; }
 .shell.-narrow.-menu-open ShellSidebar { display: block; }
 .shell.-narrow .shell-body, .shell.-fold-context .shell-body { layout: vertical; overflow-y: auto; }
-.shell.-narrow .shell-content, .shell.-fold-context .shell-content { min-height: 100%; }
+.shell.-narrow .shell-content, .shell.-fold-context .shell-content { height: auto; min-height: 0; }
 .shell.-narrow .context-panel, .shell.-fold-context .context-panel { width: 100%; height: auto; border-left: none; border-top: solid $border-subtle; }
-.shell .section-card { height: auto; padding: 0 1; background: $surface; border: round $border-subtle; }
+.shell .section-card { height: auto; padding: 0 1; background: transparent; border: round $border-subtle; }
 .shell .section-card.-alert { border-left: outer $error; }
 .shell .fold { padding: 0 1; }
 .shell .fold > CollapsibleTitle { width: 1fr; padding: 0; color: $foreground; background: transparent; }
@@ -594,17 +597,14 @@ Screen.shell { background: $background; }
 .shell .context-fold { border: none; padding: 0; background: transparent; }
 .shell .context-fold > Contents { padding: 0; }
 .shell .context-fold > CollapsibleTitle { display: none; }
-.shell.-fold-context .context-fold { border: round $border-subtle; padding: 0 1; background: $surface; }
+.shell.-fold-context .context-fold { border: round $border-subtle; padding: 0 1; background: transparent; }
 .shell.-fold-context .context-fold > CollapsibleTitle { display: block; }
 .shell * { border-title-color: $text-muted !important; border-title-style: none !important; }
 .shell.-narrow .field-grid { layout: vertical; }
 .shell.-narrow .field-column { width: 100%; padding-right: 0; }
 .shell.-narrow ShellSidebar { padding: 0 1; }
 .shell.-narrow ShellSidebar .menu-heading { height: 1; padding-left: 1; }
-.shell.-short ShellSidebar ListView > ListItem { height: 1; padding: 0 2; }
 .shell.-narrow ShellSidebar ListView > ListItem { height: 1; padding: 0 1; }
-.shell.-narrow ShellSidebar ListView > ListItem.-highlight, .shell.-narrow ShellSidebar ListView:focus > ListItem.-highlight,
-.shell.-short ShellSidebar ListView > ListItem.-highlight, .shell.-short ShellSidebar ListView:focus > ListItem.-highlight { outline: none; }
 .shell.-narrow WorkspaceHeader { height: 2; padding: 0 2; }
 .shell.-narrow .crumb-row, .shell.-narrow .context-strip { min-height: 1; border: none; }
 .shell * { scrollbar-color: $scrollbar-thumb; scrollbar-color-hover: $primary; scrollbar-color-active: $primary; scrollbar-background: $scrollbar-track; scrollbar-background-hover: $scrollbar-track; scrollbar-background-active: $scrollbar-track; }
@@ -711,8 +711,6 @@ class ConsoleShell(Translated, Screen[ShellResult]):
         (brand.NARROW_WIDTH, "-wide"),
         (140, "-spacious"),
     ]
-    # Shorter than this, the main menu's entries take one line each so all ten fit unscrolled.
-    VERTICAL_BREAKPOINTS = [(0, "-short"), (38, "-tall")]
     BINDINGS = [
         Binding("escape", "back", "Назад"),
         *(
@@ -828,6 +826,7 @@ class ConsoleShell(Translated, Screen[ShellResult]):
 
     def on_resize(self, event: events.Resize) -> None:
         self._fold_context(event.size.width)
+        self.call_after_refresh(self._ensure_visible_focus)
         for link in self.query(JumpLink):
             link.relabel()
         narrow = event.size.width < brand.NARROW_WIDTH
@@ -864,6 +863,17 @@ class ConsoleShell(Translated, Screen[ShellResult]):
             self.query_one(f"#{self.IDS.menu}", ListView).index = SECTIONS.index(
                 self.SECTION
             )
+        self.call_after_refresh(self._ensure_visible_focus)
+
+    def _ensure_visible_focus(self) -> None:
+        """An absent or folded autofocus target must not strand keyboard navigation."""
+        if self.app.screen is not self:
+            return
+        focused = self.app.focused
+        if focused is None or not all(
+            node.display for node in focused.ancestors_with_self
+        ):
+            self.focus_next()
 
     def sync_language(self) -> None:
         for number, item in enumerate(self.query(f"#{self.IDS.menu} > ListItem")):

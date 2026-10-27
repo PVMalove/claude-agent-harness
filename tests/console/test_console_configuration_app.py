@@ -924,7 +924,7 @@ def _dashboard_host(repo: Path) -> App[None]:
     return DashboardHost()
 
 
-async def _open_wizard_from_home(
+async def _open_configuration_from_home(
     app: App[None], pilot: Pilot[None]
 ) -> ConfigurationScreen:
     from textual.widgets import ListView
@@ -932,12 +932,22 @@ async def _open_wizard_from_home(
     from harness.console.shell import SECTIONS
 
     await wait_until(pilot, lambda: bool(app.screen.query("#section-menu")))
+    if not app.screen.query_one("#dashboard-sections").display:
+        await pilot.click("#dashboard-menu")
+        await pilot.pause()
+    app.screen.query_one("#section-menu", ListView).focus()
     app.screen.query_one("#section-menu", ListView).index = SECTIONS.index(
         "Configuration"
     )
     await pilot.press("enter")
     await wait_until(pilot, lambda: isinstance(app.screen, ConfigurationScreen))
-    screen = cast(ConfigurationScreen, app.screen)
+    return cast(ConfigurationScreen, app.screen)
+
+
+async def _open_wizard_from_home(
+    app: App[None], pilot: Pilot[None]
+) -> ConfigurationScreen:
+    screen = await _open_configuration_from_home(app, pilot)
     await press(pilot, "#configure-project")
     await wait_until(
         pilot, lambda: screen.draft is not None and bool(screen.query("#step-jump"))
@@ -1179,8 +1189,6 @@ def test_a_number_key_closes_the_wizard_and_opens_the_section_over_a_refreshed_h
     from harness.console.screens.dashboard import DashboardScreen
     from harness.configuration_store import json_bytes
     from harness.console.screens.help import HelpScreen
-    from harness.console.shell import SECTIONS
-    from textual.widgets import ListView
 
     installed_project(tmp_path)
     # The wizard compares the files with their canonical encoding: store them that way, so an
@@ -1188,7 +1196,9 @@ def test_a_number_key_closes_the_wizard_and_opens_the_section_over_a_refreshed_h
     project = tmp_path / ".harness/project.json"
     project.write_bytes(json_bytes(json.loads(project.read_bytes())))
 
-    async def scenario() -> dict[tuple[str, tuple[int, int], str], tuple[list[str], int]]:
+    async def scenario() -> (
+        dict[tuple[str, tuple[int, int], str], tuple[list[str], int]]
+    ):
         outcome: dict[tuple[str, tuple[int, int], str], tuple[list[str], int]] = {}
         for language in ("ru", "en"):
             for size in ((120, 48), (80, 24)):
@@ -1198,20 +1208,11 @@ def test_a_number_key_closes_the_wizard_and_opens_the_section_over_a_refreshed_h
                     async with app.run_test(size=size) as pilot:
                         dashboard = cast(DashboardScreen, app.screen)
                         refreshes: list[bool] = []
-                        dashboard._refresh_dashboard = lambda *, online=False: refreshes.append(  # type: ignore[method-assign]
-                            online
+                        dashboard._refresh_dashboard = (  # type: ignore[method-assign]
+                            lambda *, online=False: refreshes.append(online)
                         )
                         if place == "start":
-                            await wait_until(
-                                pilot, lambda: bool(app.screen.query("#section-menu"))
-                            )
-                            app.screen.query_one(
-                                "#section-menu", ListView
-                            ).index = SECTIONS.index("Configuration")
-                            await pilot.press("enter")
-                            await wait_until(
-                                pilot, lambda: isinstance(app.screen, ConfigurationScreen)
-                            )
+                            await _open_configuration_from_home(app, pilot)
                         else:
                             wizard = await _open_wizard_from_home(app, pilot)
                             if place == "changed":
@@ -1219,10 +1220,13 @@ def test_a_number_key_closes_the_wizard_and_opens_the_section_over_a_refreshed_h
                         await pilot.press("9")
                         if place == "changed":
                             await wait_until(
-                                pilot, lambda: isinstance(app.screen, ConfirmConfiguration)
+                                pilot,
+                                lambda: isinstance(app.screen, ConfirmConfiguration),
                             )
                             await press(pilot, "#confirm")
-                        await wait_until(pilot, lambda: isinstance(app.screen, HelpScreen))
+                        await wait_until(
+                            pilot, lambda: isinstance(app.screen, HelpScreen)
+                        )
                         for _ in range(10):
                             await pilot.pause(0.05)
                         outcome[(language, size, place)] = (
@@ -1433,9 +1437,7 @@ def _ui_text(screen: Screen[None]) -> str:
     parts = []
     for widget in screen.query(Static):
         content = widget.content
-        parts.append(
-            content.text.plain if isinstance(content, JSON) else str(content)
-        )
+        parts.append(content.text.plain if isinstance(content, JSON) else str(content))
     parts += [widget.text for widget in screen.query(TextArea)]
     parts += [widget.value for widget in screen.query(Input)]
     parts += [str(widget.label) for widget in screen.query(Button)]
@@ -1557,9 +1559,7 @@ def test_a_stored_secret_in_a_list_is_masked_in_the_menu_and_the_json_text(
             screen.query_one("#field-value", TextArea).load_text('["ruff check"]')
             await press(pilot, "#next-step")
             await wait_until(pilot, lambda: screen.index == index + 1)
-            assert draft.documents["project.json"]["qa_gate_commands"] == [
-                "ruff check"
-            ]
+            assert draft.documents["project.json"]["qa_gate_commands"] == ["ruff check"]
             assert draft.changed()
 
     for language in ("ru", "en"):

@@ -73,7 +73,9 @@ def test_the_steps_the_tests_stop_at_are_the_steps_the_hooks_name() -> None:
     )
     block = source.split("pub const STEPS")[1].split("];")[0]
 
-    assert tuple(part.split('"')[1] for part in block.split(",") if '"' in part) == STEPS
+    assert (
+        tuple(part.split('"')[1] for part in block.split(",") if '"' in part) == STEPS
+    )
 
 
 @pytest.mark.parametrize("step", STEPS)
@@ -101,7 +103,9 @@ def test_a_sigkill_at_a_step_then_a_repeat_leaves_exactly_one_authority(
     assert authorities(tmp_path) == {"file-ledger": False, "runtime-store": True}
     assert not (tmp_path / STATE_REL / ".coordinator.lock").exists()
     assert not (tmp_path / STATE_REL / "runtime.db.importing").exists()
-    assert {path: content for path, content in _legacy(tmp_path).items() if path in legacy} == legacy
+    assert {
+        path: content for path, content in _legacy(tmp_path).items() if path in legacy
+    } == legacy
     again = migrate(tmp_path)
     assert json.loads(again.stdout)["already_cut_over"] is True
 
@@ -159,7 +163,10 @@ def test_an_injected_failure_exits_3_and_leaves_the_file_ledger_the_authority(
 
     assert failed.returncode == 3, failed.stderr
     assert f"injected failure at the step {step}" in failed.stderr
-    assert "REMEDY: repeat `harness-runtime migrate --repo <repo>`" in failed.stderr
+    assert (
+        "REMEDY: [internal] repeat `harness-runtime migrate --repo <repo>`"
+        in failed.stderr
+    )
     assert authorities(tmp_path) == {"file-ledger": True, "runtime-store": False}
     assert _store_files(tmp_path) == []
     assert not (tmp_path / STATE_REL / ".coordinator.lock").exists()
@@ -212,13 +219,18 @@ def test_a_legacy_write_during_the_import_exits_4_and_commits_no_cutover(
     assert code == 4, stderr
     assert stdout == ""
     assert "the legacy state changed while the migration ran" in stderr
-    assert "REMEDY: stop every writer of the state directory" in stderr
+    assert (
+        "REMEDY: [invariant_violation] stop every writer of the state directory"
+        in stderr
+    )
     assert authorities(tmp_path) == {"file-ledger": True, "runtime-store": False}
     assert _store_files(tmp_path) == []
     assert not (tmp_path / STATE_REL / ".coordinator.lock").exists()
 
 
-def test_a_source_changed_after_the_stop_is_migrated_as_it_is_now(tmp_path: Path) -> None:
+def test_a_source_changed_after_the_stop_is_migrated_as_it_is_now(
+    tmp_path: Path,
+) -> None:
     build_state(tmp_path)
     process = PausedMigrate(tmp_path, "import")
     process.wait_paused()

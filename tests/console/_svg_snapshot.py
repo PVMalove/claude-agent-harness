@@ -103,9 +103,11 @@ async def until(pilot: Pilot[None], ready: Callable[[], bool]) -> None:
 async def capture(case: Case, size: tuple[int, int], repo: Path, *, source: str) -> str:
     """The SVG of `case` at `size`; `source` names the mockup file in the title."""
     with (
+        patch.dict(os.environ),
         patch.object(console_data, "harness_version", lambda: VERSION),
         patch.object(brand, "current_branch", lambda _repo, **_kw: BRANCH),
     ):
+        os.environ.pop("NO_COLOR", None)
         app = _SnapshotApp(repo, case.make_screen)
         # Notifications are off in a test app by default; a toast is part of some states.
         async with app.run_test(size=size, notifications=True) as pilot:

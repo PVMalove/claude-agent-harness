@@ -104,6 +104,7 @@ def test_dashboard_repo_map_section_opens_the_repo_map_screen(tmp_path: Path) ->
 
         app = _DashboardHost()
         async with app.run_test() as pilot:
+            await pilot.click("#dashboard-menu")
             menu = app.screen.query_one("#section-menu", ListView)
             menu.focus()
             menu.index = SECTIONS.index("Repo Map")

@@ -101,7 +101,7 @@ def test_dashboard_keeps_visible_checks_and_project_actions_with_keyboard_shortc
             assert not screen.query(
                 "#dashboard-cli, #dashboard-offline-cli, #dashboard-online-cli"
             )
-            assert screen.query_one(TopBar).region.height == (2 if size[0] < 100 else 3)
+            assert screen.query_one(TopBar).region.height == 2
             for key in ("r", "o", "p"):
                 assert any(
                     isinstance(binding, Binding) and binding.key == key
@@ -168,7 +168,9 @@ def test_dashboard_menu_opens_a_section_by_its_number(
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             await pilot.press("4")
-            await wait_until(pilot, lambda: type(app.screen).__name__ == "HarnessScreen")
+            await wait_until(
+                pilot, lambda: type(app.screen).__name__ == "HarnessScreen"
+            )
             return type(app.screen).__name__
 
     assert asyncio.run(scenario()) == "HarnessScreen"

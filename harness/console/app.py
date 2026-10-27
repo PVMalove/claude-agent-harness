@@ -58,8 +58,8 @@ class HarnessConsoleApp(App[None]):
         Binding("f2", "toggle_language", "RU/EN"),
     ]
     # Thin rounded frames and warm accents shared by every screen. Only the screen itself is
-    # filled by default. The home/worker workspaces opt into the shared pane and selection fills
-    # below. Modal dialogs keep the screen colour so the screen behind them does not show through.
+    # filled by default. Informational panes stay transparent; selected data rows and primary
+    # actions may use a fill. Modal dialogs mask the screen behind them.
     CSS = """
     Screen { background: $background; }
     Screen * { background: transparent; }

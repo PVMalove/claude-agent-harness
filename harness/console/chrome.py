@@ -95,7 +95,7 @@ class WorkspaceHeader(TopBar):
     """Product identity stays in the window bar; breadcrumbs belong to the content below it."""
 
     DEFAULT_CSS = brand.shell_css("""
-    WorkspaceHeader { height: 3; margin: 0; padding: 1 2 0 2; background: $surface; color: $foreground; border-bottom: solid $border-subtle; }
+    WorkspaceHeader { height: 2; margin: 0; padding: 0 2; background: transparent; color: $foreground; border-bottom: solid $border-subtle; }
     WorkspaceHeader #topbar-left { width: 1fr; }
     WorkspaceHeader #topbar-right { width: 1fr; color: $text-muted; }
     """)
