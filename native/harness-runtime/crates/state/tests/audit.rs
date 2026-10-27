@@ -24,6 +24,23 @@ fn cut_over(name: &str) -> Repo {
     repo
 }
 
+fn repaired_store(name: &str) -> Repo {
+    let repo = Repo::new(name);
+    let path = repo.generation().join(format!("batches/{BATCH}.json"));
+    let mut record: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    record
+        .as_object_mut()
+        .unwrap()
+        .remove("risk_reassessment_candidate");
+    record
+        .as_object_mut()
+        .unwrap()
+        .remove("risk_reassessment_triggers");
+    std::fs::write(path, canonical_json(&record)).unwrap();
+    run(&repo.root).unwrap();
+    repo
+}
+
 fn store(repo: &Repo) -> Connection {
     Connection::open(repo.state().join("runtime.db")).unwrap()
 }
@@ -127,6 +144,28 @@ fn a_fresh_store_and_a_store_after_writes_pass_the_full_verification() {
     let result = full(&repo).unwrap();
     assert_eq!(result["valid"], true);
     assert_eq!(result["audit_records"], tail(&repo));
+}
+
+#[test]
+fn a_migration_repair_and_later_writes_share_the_same_audited_row() {
+    let repo = repaired_store("repaired-full");
+    assert_eq!(full(&repo).unwrap()["valid"], true);
+    replace_batch(&repo, "op-after-repair", "#2");
+    assert_eq!(full(&repo).unwrap()["valid"], true);
+}
+
+#[test]
+fn a_repaired_row_changed_outside_the_runtime_is_found() {
+    let repo = repaired_store("repaired-tamper");
+    store(&repo)
+        .execute(
+            "UPDATE batch SET body_json = json_set(body_json, '$.ticket', '#999') WHERE id = ?1",
+            [BATCH],
+        )
+        .unwrap();
+    let error = full(&repo).unwrap_err();
+    assert_eq!(broken_check(&error).0, "row");
+    assert!(error.message.contains("expected"), "{error:?}");
 }
 
 #[test]

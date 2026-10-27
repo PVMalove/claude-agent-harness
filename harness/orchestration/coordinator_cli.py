@@ -526,6 +526,10 @@ def build_parser(
     context_package_register.add_argument("--batch", required=True)
     context_package_register.add_argument("--candidate-commit", required=True)
     context_package_register.add_argument(
+        "--starting-file", action="append", default=None,
+        help="required repository-relative read input at the pinned snapshot; repeatable",
+    )
+    context_package_register.add_argument(
         "--role",
         default="shared",
         choices=["shared"],

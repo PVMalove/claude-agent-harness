@@ -83,7 +83,7 @@ def test_a_context_package_accepts_the_base_it_is_built_on(
         return {"context_package_id": "context-package-1"}
 
     monkeypatch.setattr(
-        context_package, "_latest_developer_candidate", lambda *_: CANDIDATE
+        context_package, "_current_developer_candidate", lambda *_: CANDIDATE
     )
     monkeypatch.setattr(context_package, "_persist_context_package", persist)
     monkeypatch.setattr(context_package, "_replace_record", lambda *_: None)

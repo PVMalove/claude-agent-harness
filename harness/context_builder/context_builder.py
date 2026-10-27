@@ -438,12 +438,15 @@ def _select_starting_files(
     *,
     min_files: int,
     max_files: int,
+    required: list[str] | None = None,
 ) -> list[StartingFile]:
     """Выбрать начальные файлы для исследования контекста из изменённых и их соседей по графу."""
     reasons: dict[str, str] = {
         path: f"changed in diff ({status})" for path, status in changed
     }
-    ordered: list[str] = sorted(reasons)
+    required = required or []
+    reasons.update({path: "explicit read input at pinned snapshot" for path in required})
+    ordered: list[str] = [*required, *sorted(set(reasons) - set(required))]
 
     if len(ordered) > max_files:
         return [
@@ -669,6 +672,7 @@ def build_context_package(
     max_package_tokens: int | None = 80_000,
     max_related_tests: int | None = None,
     seed_paths: list[str] | None = None,
+    required_paths: list[str] | None = None,
     section_index_min_tokens: int | None = None,
     goal: str = "",
     definition_of_done: list[str] | None = None,
@@ -695,14 +699,28 @@ def build_context_package(
         repository, base_commit, candidate_commit
     )
 
+    required = list(dict.fromkeys(required_paths or []))
+    if len(required) > max_starting_files:
+        raise ContextPackageError(
+            "explicit starting files exceed max_starting_files",
+            remedy="supply fewer starting files or approve a larger starting-file limit",
+        )
     repo_map_seeds: list[str] = sorted({path for path, _ in changed}) or list(
         seed_paths or []
     )
+    repo_map_seeds = list(dict.fromkeys([*repo_map_seeds, *required]))
     repo_map_payload: dict[str, object] = _run_repo_map(
         repository, candidate_commit, repo_map_seeds
     )
     files, signatures_by_path = _parse_repo_map_files(repo_map_payload)
     files_set: set[str] = set(files)
+    unavailable = set(required) - files_set
+    if unavailable:
+        raise ContextPackageError(
+            "explicit starting file is unavailable at the pinned snapshot or excluded by policy: "
+            + ", ".join(sorted(unavailable)),
+            remedy="select existing tracked read inputs permitted by the repository map policy",
+        )
     import_graph, reference_graph = _import_and_reference_graphs(
         repo_map_payload, files
     )
@@ -752,9 +770,10 @@ def build_context_package(
             imported_by,
             min_files=min_starting_files,
             max_files=max_starting_files,
+            required=required,
         )
     else:
-        requested = [path for path in (seed_paths or []) if path in files]
+        requested = [path for path in [*required, *(seed_paths or [])] if path in files]
         if not requested:
             requested = [path for path in ("AGENTS.md", "README.md") if path in files]
         if not requested:
