@@ -202,9 +202,10 @@ authority прежняя; 4 — нарушение инварианта, тре�
    (участники по алфавиту, mtime 0, uid/gid 0, mode 0444; `store_meta.json`, `audit.jsonl` — вся
    цепочка store, `operations.jsonl`, `revisions.jsonl` (`path`, `revision`, `execution_state`),
    `qa_lane.json` при наличии строки, `MANIFEST.json` с sha256 каждого участника). Файл пишется под
-   временным именем, сбрасывается на диск, переименовывается и становится read-only; существующий
-   файл с другими байтами — код 4. Затем новое `generation-<hex>` и его сверка `check_export` по
-   правилу шага 5 миграции; единственный лишний файл — v3 audit-запись `runtime-rollback`.
+   временным именем, сбрасывается на диск, переименовывается и становится read-only. Файл с
+   другими байтами, который оставила незавершённая попытка, заменяется (см. «Повторы»). Затем
+   новое `generation-<hex>` и его сверка `check_export` по правилу шага 5 миграции; единственный
+   лишний файл — v3 audit-запись `runtime-rollback`.
 7. **Audit-запись store** `runtime-rollback` (`generation`, `export`, `export_sha256`,
    `approved_by`, `approved_at`, `reason`), checkpoint WAL, `runtime.db` переводится в read-only и
    не удаляется.
@@ -215,7 +216,12 @@ authority прежняя; 4 — нарушение инварианта, тре�
 **Повторы.** Повтор после шага 9 возвращает код 0 и `already_rolled_back`. Повтор, который застал
 шаг 8 выполненным, а указатель ещё на `version: 4`, выполняет только шаг 9. Повтор, который застал
 audit-запись шага 7, продолжает с шага 8 по поколению и архиву из этой записи. Сбой до шага 7
-удаляет записанное поколение, и authority остаётся у store.
+удаляет записанное поколение, и authority остаётся у store. Архив, который незавершённая попытка
+установила до commit point, не назван ни одной audit-записью `runtime-rollback`: это отброшенное
+состояние, и store мог измениться после сбоя. Повтор заменяет такой архив архивом текущего store и
+не завершается кодом 4. Архив, который назван audit-записью шага 7, в том числе архив
+зафиксированного отката, неизменяем: повтор только сверяет его sha256 с записью, а расхождение —
+код 4.
 
 ### 6. Поставка и работа до cutover
 
@@ -314,11 +320,12 @@ Lease и execution receipt в store хранят `boot_id`, inode PID-namespace,
   только из ответа 2.0.0:
   - `dispatch status`: `dispatches[*].adapter_receipt`, `dispatches[*].worker`,
     `dispatches[*].startup.deadline_exceeded`, `dispatches[*].startup.failure`,
-    `dispatches[*].startup.observation`, `dispatches[*].startup.startup_timeout_seconds`;
+    `dispatches[*].startup.observation`, `dispatches[*].startup.startup_elapsed_seconds`,
+    `dispatches[*].startup.startup_timeout_seconds`;
   - `batch decision-packet`: `route_preview.retry.failure`.
 
-  Время, прошедшее с события, зависит от часов: значение `silent_seconds` маскируется, ключ
-  сравнивается; `startup_elapsed_seconds` удаляется из обоих ответов, как в
-  `test_runtime_store_read`. Адрес отчёта в `batch decision-packet` сравнивается по имени файла.
+  Всего в списке восемь полей. Значение `silent_seconds` есть в обоих ответах и зависит от
+  часов, поэтому маскируется, а ключ сравнивается. Адрес отчёта в `batch decision-packet`
+  сравнивается по имени файла.
   Любое другое добавленное, отсутствующее или изменённое поле — провал теста; расширение списка —
   новое решение владельца.
