@@ -644,6 +644,89 @@ def test_the_first_touch_does_not_repeat_through_the_envelope(tmp_path: Path) ->
     assert [bool(done.stdout) for done in answers] == [True, False, False]
 
 
+UNREADABLE = [
+    "not json",
+    "[]",
+    json.dumps({"hook_event_name": "PreToolUse", "tool_input": {"file_path": "x"}}),
+    json.dumps({"session_id": 7, "hook_event_name": "Stop"}),
+    json.dumps({"session_id": "s", "hook_event_name": "PreToolUse", "tool_input": {}}),
+]
+
+
+@pytest.mark.parametrize("hook_id", [FIRST_TOUCH, SENSITIVE, REMINDER])
+@pytest.mark.parametrize("raw", UNREADABLE)
+def test_an_unreadable_event_allows_with_an_internal_error_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+    raw: str,
+) -> None:
+    project = _project(tmp_path)
+
+    code, out, err = _body(project, hook_id, raw, monkeypatch, capsys)
+
+    assert (code, out) == (0, "")
+    assert err.startswith("[internal-error] ")
+
+
+@pytest.mark.parametrize("hook_id", [FIRST_TOUCH, SENSITIVE, REMINDER])
+def test_a_store_that_cannot_be_written_allows_with_an_internal_error_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+) -> None:
+    project = _project(tmp_path)
+    events = _triggers(project)[hook_id]
+    # The store directory is a file: no operation can be opened.
+    _write(project / ".harness" / ".sandboxes" / "hook-events", "not a directory")
+
+    code, out, err = _fire(project, hook_id, events[:1], monkeypatch, capsys)
+
+    assert (code, out) == (0, "")
+    assert err.startswith("[internal-error] ")
+
+
+def test_an_unknown_hook_id_is_an_internal_error_that_allows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project = _project(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+
+    for argv in ([], ["no-such-hook"], [FIRST_TOUCH, "extra"]):
+        assert hooks.main(argv) == 0
+        captured = capsys.readouterr()
+        assert (captured.out, captured.err[:17]) == ("", "[internal-error] ")
+    assert not (project / ".harness").exists()
+
+
+@needs_bash
+@pytest.mark.parametrize("hook_id", [FIRST_TOUCH, SENSITIVE, REMINDER])
+def test_an_internal_error_through_the_envelope_warns_and_never_blocks(
+    tmp_path: Path, hook_id: str
+) -> None:
+    project = _project(tmp_path, {"profile": "strict"})
+    _write(project / ".harness" / ".sandboxes" / "hook-events", "not a directory")
+    payloads: list[object] = ["not json", _triggers(project)[hook_id][0]]
+
+    for payload in payloads:
+        done = subprocess.run(
+            [str(BASH), str(project / ".claude" / "hooks" / f"{hook_id}.sh")],
+            input=payload if isinstance(payload, str) else json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert (done.returncode, done.stdout) == (0, "")
+        verdict = parse_hook_response(done.stderr)
+        assert verdict["decision"] == "warn"
+        assert verdict["reason_code"] == "internal-error"
+
+
 def test_concurrent_identical_events_warn_once(tmp_path: Path) -> None:
     project = _project(tmp_path)
     payload = json.dumps(_triggers(project)[FIRST_TOUCH][0])

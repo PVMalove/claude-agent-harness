@@ -546,6 +546,74 @@ def test_a_hanging_hook_body_is_an_internal_error_after_the_timeout(
 
 def test_the_timeout_is_below_the_runtime_hook_timeout() -> None:
     assert 0 < hook_response.INNER_TIMEOUT_SECONDS < 60
+    advisory = hook_response.ADVISORY_TIMEOUT_SECONDS
+    assert 0 < advisory < hook_response.INNER_TIMEOUT_SECONDS
+
+
+@needs_bash
+@pytest.mark.parametrize("hook_id", ADVISORY)
+@pytest.mark.parametrize(
+    "body",
+    [
+        "echo '{\"partial\":' ; exit 1",
+        "echo '{\"partial\":' ; exit 2",
+        "echo '{\"partial\":' ; kill -9 $$",
+        "echo '{\"x\": 1}'; echo '[internal-error] the store is a file' >&2",
+    ],
+    ids=["exit-1", "exit-2", "crash", "named-internal-error"],
+)
+def test_an_advisory_internal_error_allows_with_a_diagnostic_and_no_stdout(
+    tmp_path: Path, hook_id: str, body: str
+) -> None:
+    project = _project(tmp_path, {"profile": "strict"})
+
+    done = _wrapper(project, hook_id, body)
+
+    assert done.returncode == 0
+    # Partial body output would break the runtime protocol of the end of a turn.
+    assert done.stdout == ""
+    verdict = parse_hook_response(done.stderr)
+    assert (verdict["decision"], verdict["reason_code"]) == ("warn", "internal-error")
+    assert verdict["remedy"]
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("hook_id", "code", "decision", "reason"),
+    [
+        ("impact-first-touch", 0, "warn", "internal-error"),
+        # A critical hook keeps the general timeout: the advisory one does not cut it short.
+        ("block-pr-merge", 2, "block", "pr-merge"),
+    ],
+)
+def test_the_advisory_timeout_applies_only_to_advisory_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+    code: int,
+    decision: str,
+    reason: str,
+) -> None:
+    import io
+
+    project = _project(tmp_path, {"profile": "strict"})
+    script = project / "inner.sh"
+    script.write_text("echo '{}'; sleep 2; echo late >&2; exit 2", encoding="utf-8")
+    monkeypatch.setattr(hook_response, "ADVISORY_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(hook_response, "INNER_TIMEOUT_SECONDS", 20)
+    monkeypatch.setattr(hook_response, "project_root", lambda: project)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"payload")))
+
+    returned = hook_response.main(["run", hook_id, str(BASH), str(script)])
+
+    assert returned == code
+    captured = capsys.readouterr()
+    verdict = parse_hook_response(captured.err)
+    assert (verdict["decision"], verdict["reason_code"]) == (decision, reason)
+    if decision == "warn":
+        assert "тайм-аут" in str(verdict["remedy"])
+        assert captured.out == ""
 
 
 def test_an_unknown_hook_or_usage_is_refused(tmp_path: Path) -> None:

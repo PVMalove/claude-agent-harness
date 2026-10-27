@@ -41,6 +41,7 @@ SENSITIVE_PATH_RECHECK = "sensitive-path-recheck"
 REASON_RISKY = "risky-path-first-touch"
 REASON_UNREPORTED = "targeted-checks-unreported"
 REASON_SENSITIVE = "sensitive-path-touched"
+REASON_INTERNAL_ERROR = "internal-error"
 
 # Копия правил harness/repo_map/change_impact.py (path_unknown_code): hook не видит пакет harness.
 # tests/core/test_change_impact_hooks.py сверяет копию с источником.
@@ -501,13 +502,22 @@ HANDLERS: Dict[str, Callable[[Event, Path], Output]] = {
 
 
 def main(argv: List[str]) -> int:
-    """``<hook_id>``: прочитать событие, решить и напечатать вывод; код возврата всегда 0."""
-    if len(argv) != 1 or argv[0] not in HANDLERS:
-        raise SystemExit(
-            "change_impact_hooks.py: ожидается один hook_id: " + ", ".join(HANDLERS)
+    """``<hook_id>``: прочитать событие, решить и напечатать вывод; код возврата всегда 0.
+
+    Внутренняя ошибка (нечитаемое событие, сбой хранилища, любое исключение) разрешает действие:
+    stdout пуст, а stderr начинается с ``[internal-error]`` и называет причину.
+    """
+    try:
+        if len(argv) != 1 or argv[0] not in HANDLERS:
+            raise HookInputError("ожидается один hook_id: " + ", ".join(HANDLERS))
+        event = read_event(sys.stdin.read())
+        output, diagnostics = HANDLERS[argv[0]](event, project_root())
+    except Exception as exc:  # advisory-hook не блокирует и не ломает протокол runtime
+        print(
+            f"[{REASON_INTERNAL_ERROR}] change_impact_hooks.py: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
         )
-    event = read_event(sys.stdin.read())
-    output, diagnostics = HANDLERS[argv[0]](event, project_root())
+        return 0
     if output is not None:
         sys.stdout.write(json.dumps(output, ensure_ascii=False))
         sys.stdout.flush()
