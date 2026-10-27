@@ -41,6 +41,7 @@ from harness.orchestration.core.constants import (
 )
 from harness.orchestration.core.git_utils import (
     _fetch_ref_tip,
+    _git_is_ancestor,
     _head_commit,
 )
 from harness.orchestration.core.utils import (
@@ -96,6 +97,28 @@ from harness.orchestration.workflow.history import (
     _settled,
     _validate_batch_integrity,
 )
+
+BRANCH_START_MISSING_BASE = "branch_start_missing_base"
+
+
+def _reject_start_without_base(
+    repo: Path, worktree: str, base: str, start: str | None
+) -> None:
+    """Refuse a batch whose worktree branch does not contain the integration base it pins.
+
+    The batch measures its changes from that base when the branch starts below it, so the files
+    of the upstream commits would count as changes of the ticket. The coordinator never moves the
+    branch: the human brings the base into it and repeats ``batch create``."""
+    if start is None or _git_is_ancestor(repo, base, start):
+        return
+    raise CoordinatorError(
+        f"{BRANCH_START_MISSING_BASE}: the branch of worktree {worktree} starts at {start}, "
+        f"which does not contain the integration base {base}; the files of the upstream "
+        "commits would count as changes of this batch",
+        remedy=f"fast-forward the issue branch to the fetched tip with 'git -C {worktree} merge "
+        f"--ff-only {base}' (merge or rebase onto {base} when the branch has commits of its "
+        "own), then repeat batch create",
+    )
 
 
 def _batch_records(root: Path) -> Iterator[JsonObject]:
@@ -402,6 +425,12 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
     )
     # A superseding batch is approved by a human before the lock (issue #506).
     superseded = supersede.request(args)
+    has_worktree = Path(worktree).is_dir()
+    branch_start = _head_commit(Path(worktree) if has_worktree else repo)
+    # A superseding batch keeps its branch: its rebase target brings the base in (issue #506).
+    # A conflict-resolver batch (issue #534) exists to merge the moved base into its branch.
+    if has_worktree and superseded is None and not getattr(args, "merges_base", False):
+        _reject_start_without_base(repo, worktree, pinned_base, branch_start)
     root = _state_root(args, repo)
     developer_commands, review_commands = _batch_verification_commands(
         config, allowed_paths
@@ -414,9 +443,7 @@ def create_batch(args: argparse.Namespace) -> JsonObject:
         if _non_empty(integration_ref)
         else None,
         "integration_base_commit": pinned_base,
-        "branch_start_commit": _head_commit(Path(worktree))
-        if Path(worktree).is_dir()
-        else _head_commit(repo),
+        "branch_start_commit": branch_start,
         "state": "planned",
         "ticket": ticket.strip(),
         "branch": branch.strip(),
