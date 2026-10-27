@@ -399,9 +399,9 @@ class HarnessScreen(ConsoleShell, CommandMenuScreen):
     HarnessScreen #detail-fold > Contents { height: 1fr; padding: 0; }
     HarnessScreen #command-detail-scroll { height: 1fr; padding: 0 1; }
     HarnessScreen #command-detail { height: auto; }
-    HarnessScreen #command-risk { height: auto; padding: 1; border: round $warning; background: $warning 8%; color: $warning; }
-    HarnessScreen #command-risk.-safe { border: round $success; background: $success 8%; color: $success; }
-    HarnessScreen #command-risk.-deletes { border: round $error; background: $error 8%; color: $error; }
+    HarnessScreen #command-risk { height: auto; padding: 0 1; border: round $warning; background: transparent; color: $warning; }
+    HarnessScreen #command-risk.-safe { border: round $success; color: $success; }
+    HarnessScreen #command-risk.-deletes { border: round $error; color: $error; }
     HarnessScreen #command-cli { height: auto; border: round $component-border; padding: 0 1; }
     HarnessScreen #copy-hint { height: 1; color: $text-muted; }
     HarnessScreen #command-actions { height: auto; }

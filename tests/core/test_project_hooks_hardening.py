@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -157,6 +158,43 @@ def test_the_grill_docs_exception_needs_an_answer_from_git(
     assert (
         direct_commits._grill_docs_commit(command, found[0], "integration/new") is False
     )
+
+
+@pytest.mark.parametrize("path", ["app.py", "CONTEXT.md", "src/app.py"])
+def test_grill_docs_exception_blocks_commit_path_arguments(
+    tmp_path: Path, path: str
+) -> None:
+    repo = _repo(tmp_path, "integration/grill")
+    remote = tmp_path / "origin.git"
+    _git(repo, "init", "--bare", "-q", str(remote))
+    _git(repo, "remote", "add", "origin", str(remote))
+    (repo / "CONTEXT.md").write_text("# docs\n", encoding="utf-8")
+    _git(repo, "add", "CONTEXT.md")
+    payload = {
+        "tool_input": {"command": f"git commit -m 'docs: grill' {path}"},
+        "cwd": str(repo),
+    }
+    result = subprocess.run(
+        ["bash", str(HOOKS / "block-direct-master.sh")],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        env=dict(os.environ, CLAUDE_PROJECT_DIR=str(repo)),
+        check=False,
+    )
+    assert result.returncode == 2, (result.stdout, result.stderr)
+
+
+@pytest.mark.parametrize("branch", ["master", "integration/grill", ISSUE_BRANCH])
+def test_commit_is_blocked_when_git_cannot_resolve_the_branch(
+    direct_commits: ModuleType, tmp_path: Path, branch: str
+) -> None:
+    repo = tmp_path / "unborn"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", branch)
+    # rev-parse exits 128 before the first commit; an empty/HEAD response is not a branch.
+    reason = direct_commits.block_reason("git commit -m init app.py", repo, repo)
+    assert reason == direct_commits.GIT_NO_ANSWER
 
 
 @pytest.mark.parametrize(

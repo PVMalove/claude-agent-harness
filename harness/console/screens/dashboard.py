@@ -327,8 +327,8 @@ class DashboardScreen(ConsoleShell):
     # Home is the bottom of the screen stack: Esc has nowhere to go.
     CAN_GO_BACK = False
     NARROW_FOOTER_KEYS = ("p", "f1", "f2")
-    # Beside the content from 100 columns; narrower, one folded card under it.
-    CONTEXT_SIDE_MIN = brand.NARROW_WIDTH
+    # Beside the content from 140 columns; narrower, one folded card under it.
+    CONTEXT_SIDE_MIN = 140
     CONTEXT_TITLE = "Контекст проекта"
     CONTEXT_SUMMARY = "ветка, Harness, Repo Map, память"
     IDS = ShellIds(
@@ -347,9 +347,9 @@ class DashboardScreen(ConsoleShell):
     ]
     DEFAULT_CSS = brand.shell_css("""
     DashboardScreen { overflow: hidden hidden; }
-    DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 1 3; overflow-y: auto; }
-    DashboardScreen #dashboard-title { height: 2; text-style: bold; }
-    DashboardScreen #dashboard-subtitle { height: 2; color: $text-muted; }
+    DashboardScreen #dashboard-overview { width: 1fr; height: 1fr; padding: 0 2; overflow-y: auto; }
+    DashboardScreen #dashboard-title { height: 1; text-style: bold; }
+    DashboardScreen #dashboard-subtitle { height: 1; color: $text-muted; }
     DashboardScreen #dashboard-attention-card { margin-bottom: 1; }
     DashboardScreen #dashboard-attention, DashboardScreen #dashboard-problems { height: auto; }
     DashboardScreen .problem-row { height: auto; }
@@ -374,6 +374,7 @@ class DashboardScreen(ConsoleShell):
     DashboardScreen .context-panel .section-card { margin-top: 1; }
     DashboardScreen .context-panel .context-fold { margin-top: 0; }
     DashboardScreen.-narrow #dashboard-overview { height: auto; padding: 0 2; }
+    DashboardScreen.-fold-context #dashboard-overview { height: auto; }
     DashboardScreen.-narrow #dashboard-title { height: 1; }
     DashboardScreen.-narrow #dashboard-subtitle { display: none; }
     DashboardScreen.-narrow .problem-caption, DashboardScreen.-narrow #dashboard-check-label, DashboardScreen.-narrow #home-sessions-hint { display: none; }
@@ -657,6 +658,20 @@ class DashboardScreen(ConsoleShell):
         rows: list[Widget] = []
         for status, check_id, message in data.problems:
             route = check_route(check_id)
+            title = Static(
+                i18n.tr(self._language, route.title),
+                classes="problem-title no-i18n",
+                markup=False,
+            )
+            title.tooltip = (
+                f"{i18n.tr(self._language, route.title)}\n{check_id} · {message}"
+            )
+            caption = Static(
+                f"{check_id} · {message}",
+                classes="problem-caption no-i18n",
+                markup=False,
+            )
+            caption.tooltip = f"{check_id} · {message}"
             rows.append(
                 Horizontal(
                     Static(
@@ -664,16 +679,8 @@ class DashboardScreen(ConsoleShell):
                         classes="problem-symbol no-i18n",
                     ),
                     Vertical(
-                        Static(
-                            i18n.tr(self._language, route.title),
-                            classes="problem-title no-i18n",
-                            markup=False,
-                        ),
-                        Static(
-                            f"{check_id} · {message}",
-                            classes="problem-caption no-i18n",
-                            markup=False,
-                        ),
+                        title,
+                        caption,
                         classes="problem-text",
                     ),
                     JumpLink(route.section),

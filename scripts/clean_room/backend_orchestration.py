@@ -158,7 +158,9 @@ def run(ctx: SimpleNamespace) -> None:
         return path
 
     orchestration_project.mkdir(parents=True)
-    run_step(["git", "init", "-q"], cwd=orchestration_project, check=True)
+    run_step(
+        ["git", "init", "-q", "-b", "master"], cwd=orchestration_project, check=True
+    )
     orchestration_remote = test_root / "orchestration-remote.git"
     run_step(["git", "init", "--bare", "-q", str(orchestration_remote)], check=True)
     run_step(

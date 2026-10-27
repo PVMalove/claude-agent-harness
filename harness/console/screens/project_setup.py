@@ -204,7 +204,7 @@ class ProjectSetupScreen(ConsoleShell[Path | None]):
     ProjectSetupScreen #setup-scroll { width: 100%; height: 1fr; overflow-x: hidden; padding: 0 2; }
     ProjectSetupScreen #setup-title { height: 1; text-style: bold; }
     ProjectSetupScreen #setup-subtitle { height: auto; color: $text-muted; }
-    ProjectSetupScreen #setup-stage { height: auto; border: round $border-subtle; background: $surface; padding: 0 1; }
+    ProjectSetupScreen #setup-stage { height: auto; border: round $border-subtle; background: transparent; padding: 0 1; }
     ProjectSetupScreen #setup-columns { width: 100%; height: auto; layout: vertical; }
     ProjectSetupScreen.-spacious #setup-columns { layout: horizontal; }
     ProjectSetupScreen #setup-left, ProjectSetupScreen #setup-right { width: 1fr; height: auto; }

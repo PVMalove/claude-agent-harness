@@ -83,6 +83,7 @@ def test_dashboard_reports_section_opens_the_reports_screen(tmp_path: Path) -> N
 
         app = _DashboardHost()
         async with app.run_test() as pilot:
+            await pilot.click("#dashboard-menu")
             menu = app.screen.query_one("#section-menu", ListView)
             menu.focus()
             menu.index = SECTIONS.index("Reports")
@@ -375,6 +376,10 @@ def test_batch_list_opens_a_blocked_batch_timeline(tmp_path: Path) -> None:
     async def scenario() -> str:
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
+            fold = app.screen.query_one("#batch-fold", Fold)
+            fold.scroll_visible(animate=False)
+            await pilot.pause()
+            await pilot.click("#batch-fold > CollapsibleTitle")
             batch_list = app.screen.query_one("#batch-list", ListView)
             assert [item.name for item in batch_list.children] == [
                 "batch-stuck",
@@ -483,6 +488,10 @@ def test_timeline_export_writes_markdown_table(tmp_path: Path) -> None:
     async def scenario() -> None:
         app = _ReportsHost(tmp_path)
         async with app.run_test() as pilot:
+            fold = app.screen.query_one("#batch-fold", Fold)
+            fold.scroll_visible(animate=False)
+            await pilot.pause()
+            await pilot.click("#batch-fold > CollapsibleTitle")
             batch_list = app.screen.query_one("#batch-list", ListView)
             batch_list.focus()
             batch_list.index = 1  # batch-flow

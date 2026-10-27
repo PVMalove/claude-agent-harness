@@ -8,6 +8,14 @@ is not listed: it comes from the CLI and stays as it is."""
 from __future__ import annotations
 
 EN: dict[str, str] = {
+    "Справка F1": "Help F1",
+    "Сначала завершите или отмените диалог": "Complete or cancel the dialog first",
+    "Вы пришли с экрана": "Opened from",
+    "Окно консоли": "Console window",
+    "Клавиши": "Keys",
+    "Статусы": "Statuses",
+    "Безопасность": "Safety",
+    "Документация": "Documentation",
     "Дождитесь окончания команды Harness": "Wait for the Harness command to finish",
     "Выполняется…": "Running…",
     "Подтвердить фиксы": "Confirm fixes",

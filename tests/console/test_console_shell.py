@@ -73,6 +73,52 @@ async def _open(app: HarnessConsoleApp, pilot: object) -> StubShell:
     return screen
 
 
+@pytest.mark.parametrize("size", [(160, 52), (120, 40), (80, 24)])
+def test_all_ten_menu_entries_take_one_row_without_gaps(
+    tmp_path: Path, size: tuple[int, int]
+) -> None:
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=size) as pilot:
+            screen = await _open(app, pilot)
+            if size[0] < 100:
+                await pilot.click("#shell-menu")
+                await pilot.pause()
+
+            menu = screen.query_one("#stub-sections", ListView)
+            entries = list(menu.children)
+            assert len(entries) == 10
+            assert [item.region.height for item in entries] == [1] * 10
+            assert [item.region.y - entries[0].region.y for item in entries] == list(
+                range(10)
+            )
+            assert all(
+                menu.content_region.contains_region(item.region) for item in entries
+            )
+
+    asyncio.run(scenario())
+
+
+def test_information_blocks_share_the_terminal_background(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            home = _home(tmp_path)
+            await app.switch_screen(home)
+            await pilot.pause()
+
+            blocks = list(
+                home.query(
+                    "ShellSidebar, WorkspaceHeader, .context-panel, .section-card"
+                )
+            )
+            assert len(blocks) >= 5
+            for block in blocks:
+                assert block.styles.background.a == 0, block.css_identifier
+
+    asyncio.run(scenario())
+
+
 def test_wide_shell_shows_menu_breadcrumbs_content_and_context_side_by_side(
     tmp_path: Path,
 ) -> None:
@@ -125,9 +171,12 @@ def test_narrow_shell_collapses_menu_folds_context_and_wraps_long_values(
             fields = screen.query_one("#stub-fields", FieldGrid)
             assert context.display and context.region.height > 0
             assert context.region.y >= fields.region.bottom
-            # The content keeps the whole screen; the panel is one scroll below it.
+            # The context follows the actual content, without reserving an empty screen.
             body = screen.query_one("#shell-body")
-            assert body.max_scroll_y > 0
+            content = screen.query_one(".shell-content")
+            action = screen.query_one("#stub-action")
+            assert context.region.y == content.region.bottom
+            assert content.region.bottom == action.region.bottom
             body.scroll_to_widget(context, animate=False)
             await pilot.pause()
             assert screen.region.contains_region(context.region)
@@ -447,16 +496,35 @@ def test_the_main_menu_fits_update_harness_and_its_badge_on_one_line(
     assert len(update) == 1
     assert update[0].startswith(label) and update[0].rstrip().endswith("⚠")
     assert selected[0].startswith("0 ")
-    # The selected entry: the selection fill, an outline on a wide terminal, no left bar.
+    # The current section keeps a left marker; keyboard focus adds an underline without a fill.
     tokens = brand.SHELL_TOKENS
-    assert styles.background.hex.lower() == tokens["selection-background"]  # type: ignore[attr-defined]
-    assert styles.border_left[0] in ("", "none")  # type: ignore[attr-defined]
+    assert styles.background.a == 0  # type: ignore[attr-defined]
+    assert styles.border_left[0] == "solid"  # type: ignore[attr-defined]
+    assert styles.border_left[1].hex.lower() == tokens["selection-edge"]  # type: ignore[attr-defined]
     outline = styles.outline_top  # type: ignore[attr-defined]
-    if size[1] >= 38:
-        assert outline[0] == "round"
-        assert outline[1].hex.lower() == tokens["selection-outline"]
-    else:
-        assert outline[0] in ("", "none")
+    assert outline[0] in ("", "none")
+
+
+def test_menu_cursor_moves_without_losing_the_current_section_marker(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> None:
+        app = HarnessConsoleApp(tmp_path)
+        async with app.run_test(size=(160, 52)) as pilot:
+            screen = await _open(app, pilot)
+            menu = screen.query_one("#stub-sections", ListView)
+            menu.focus()
+            await pilot.press("down")
+
+            current = _menu_item(screen, "Reports")
+            cursor = _menu_item(screen, "Repo Map")
+            assert app.screen is screen
+            assert current.styles.border_left[1].a == 1
+            assert cursor.styles.border_left[1].a == 0
+            assert cursor.styles.text_style.underline
+            assert not current.styles.text_style.underline
+
+    asyncio.run(scenario())
 
 
 def test_a_menu_number_takes_the_colour_of_its_entry() -> None:

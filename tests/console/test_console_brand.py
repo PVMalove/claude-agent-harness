@@ -155,23 +155,55 @@ def test_console_revision_comes_from_its_source_checkout(tmp_path: Path) -> None
     assert brand.source_commit(nested) is None
 
 
-def test_help_describes_every_menu_section_and_the_exit_key() -> None:
-    for section in (
-        "Diagnostics",
-        "Harness",
-        "Orchestration",
-        "Reports",
-        "Repo Map",
-        "Настройка конфигурации",
-        "Help",
-    ):
-        assert f"| {section} |" in HELP_MARKDOWN
-    assert "`Ctrl+Q`" in HELP_MARKDOWN and "`F1`" in HELP_MARKDOWN
+@pytest.mark.parametrize(
+    ("guide", "sections"),
+    [
+        (
+            HELP_MARKDOWN,
+            (
+                "Главная",
+                "Открыть проект",
+                "Обновить Harness",
+                "Диагностика",
+                "Harness",
+                "Оркестрация",
+                "Отчёты",
+                "Repo Map",
+                "Настройка",
+                "Справка",
+            ),
+        ),
+        (
+            HELP_MARKDOWN_EN,
+            (
+                "Home",
+                "Open project",
+                "Update Harness",
+                "Diagnostics",
+                "Harness",
+                "Orchestration",
+                "Reports",
+                "Repo Map",
+                "Configuration",
+                "Help",
+            ),
+        ),
+    ],
+    ids=["ru", "en"],
+)
+def test_help_describes_all_ten_menu_numbers_with_their_visible_names(
+    guide: str, sections: tuple[str, ...]
+) -> None:
+    for number, section in enumerate(sections):
+        assert f"| `{number}` | {section} |" in guide
+    assert "`Ctrl+Q`" in guide and "`F1`" in guide
+    for symbol in ("✔", "▶", "Ⅱ", "○", "✖", "⚠"):
+        assert f"| {symbol} |" in guide
 
 
 @pytest.mark.parametrize("guide", [HELP_MARKDOWN, HELP_MARKDOWN_EN], ids=["ru", "en"])
 def test_help_matches_the_current_interface(guide: str) -> None:
-    assert "Configuration" in guide
+    assert "project.json" in guide
     assert "Open project" in guide or "«Открыть проект»" in guide
     assert "commit" in guide
     assert ".harness/config_versions/" in guide
