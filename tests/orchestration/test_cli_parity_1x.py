@@ -6,10 +6,9 @@ decision-packet`` and ``qa status``; then ``harness-runtime migrate`` imports th
 CLI of this tree answers the same four commands through the real runtime. The test compares the
 whole canonical-JSON answers. It excludes only the fields that a ``migration-repair`` audit record
 of the store names for the record it repaired and the closed list of fields the CLI added after
-1.5.1 (``ADDED_AFTER_1X``). As the plan of the test allows, the elapsed-time fields that
-``test_runtime_store_read`` drops are not compared by value: ``silent_seconds`` is masked, so its key
-stays compared, and ``startup_elapsed_seconds`` is dropped from both answers. The report address is
-cut to its name. Any other added, missing or changed field fails the test.
+1.5.1 (``ADDED_AFTER_1X``). ``silent_seconds`` depends on the clock: its value is masked, so its
+key stays compared. The report address is cut to its name. Any other added, missing or changed
+field fails the test.
 """
 
 from __future__ import annotations
@@ -46,14 +45,13 @@ ADDED_AFTER_1X: dict[str, tuple[tuple[str, ...], ...]] = {
         ("dispatches", "*", "startup", "deadline_exceeded"),
         ("dispatches", "*", "startup", "failure"),
         ("dispatches", "*", "startup", "observation"),
+        ("dispatches", "*", "startup", "startup_elapsed_seconds"),
         ("dispatches", "*", "startup", "startup_timeout_seconds"),
     ),
     "batch decision-packet": (("route_preview", "retry", "failure"),),
 }
-#: The elapsed-time fields of ``dispatch status``; their values depend on the clock.
-#: ``silent_seconds`` is in both answers and is masked; ``startup_elapsed_seconds`` is dropped.
+#: The elapsed-time field of ``dispatch status``: in both answers, its value depends on the clock.
 MASKED_ELAPSED = "silent_seconds"
-DROPPED_ELAPSED = "startup_elapsed_seconds"
 
 
 def _commands(ids: dict[str, str]) -> dict[str, list[str]]:
@@ -76,18 +74,15 @@ def _json(stdout: str) -> JsonObject:
 
 
 def _comparable(name: str, answer: JsonObject) -> JsonObject:
-    """The answer without the elapsed time and with the report address cut to its name."""
+    """The answer with the elapsed time masked and the report address cut to its name."""
     comparable: JsonObject = json.loads(json.dumps(answer))
     if name == "dispatch status":
         entries = comparable["dispatches"]
         assert isinstance(entries, list)
         for entry in entries:
             assert isinstance(entry, dict)
-            startup = entry["startup"]
-            assert isinstance(startup, dict)
             if entry.get(MASKED_ELAPSED) is not None:
                 entry[MASKED_ELAPSED] = "<elapsed>"
-            startup.pop(DROPPED_ELAPSED, None)
     if name == "batch decision-packet":
         report = comparable["report"]
         assert isinstance(report, str)
