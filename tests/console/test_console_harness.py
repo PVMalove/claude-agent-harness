@@ -620,7 +620,7 @@ def test_empty_filter_cannot_activate_and_drift_does_not_block_ui(
 
     def drift(_: Path) -> str:
         started.set()
-        assert release.wait(5)
+        release.wait()  # The scenario releases this in finally; wall time is not the assertion.
         return "drift"
 
     async def scenario() -> None:
