@@ -17,13 +17,13 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Sequence
+from typing import Callable, Iterator, Mapping, Sequence, TypedDict, cast
 from unittest import mock
 
 import pytest
 
 from harness.console import launcher
-from harness.console.discovery import discovery_path
+from harness.console.discovery import ServerEndpoint, discovery_path
 from harness.console.pin import TEXTUAL_PIN
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -44,8 +44,8 @@ def uv_at(monkeypatch: pytest.MonkeyPatch) -> UvAt:
     return choose
 
 
-def _ready_server(_repo: Path, _uv: str) -> launcher.ServerEndpoint:
-    return launcher.ServerEndpoint(port=1, token="00" * 32)
+def _ready_server(_repo: Path, _uv: str) -> ServerEndpoint:
+    return ServerEndpoint(port=1, token="00" * 32)
 
 
 def test_find_uv_uses_shutil_which() -> None:
@@ -250,9 +250,9 @@ def test_web_prints_the_token_url_opens_the_browser_and_exits_zero(
     started: list[tuple[Path, str]] = []
     opened: list[str] = []
 
-    def fake_starter(passed_repo: Path, uv: str) -> launcher.ServerEndpoint:
+    def fake_starter(passed_repo: Path, uv: str) -> ServerEndpoint:
         started.append((passed_repo, uv))
-        return launcher.ServerEndpoint(port=43210, token=token)
+        return ServerEndpoint(port=43210, token=token)
 
     uv_at("/usr/local/bin/uv")
     exit_code = launcher.run_console(
@@ -282,7 +282,7 @@ def test_web_no_open_prints_the_url_without_opening_the_browser(
         web=True,
         no_open=True,
         runner=_no_runner,
-        server_starter=lambda _repo, _uv: launcher.ServerEndpoint(7, "cd" * 32),
+        server_starter=lambda _repo, _uv: ServerEndpoint(7, "cd" * 32),
         browser_opener=opened.append,
     )
 
@@ -293,7 +293,7 @@ def test_web_no_open_prints_the_url_without_opening_the_browser(
     assert opened == []
 
 
-def _failing_starter(repo: Path, uv: str) -> launcher.ServerEndpoint:
+def _failing_starter(repo: Path, uv: str) -> ServerEndpoint:
     raise launcher.ServerStartError("сервер завершился с кодом 7")
 
 
@@ -450,8 +450,14 @@ def test_console_prints_reason_and_health_report_when_relaunch_fails(
     assert "Итого:" in result.stdout
 
 
+class _Record(TypedDict):
+    port: int
+    token: str
+    pid: int
+
+
 @contextlib.contextmanager
-def _running_console_server(repo: Path) -> Iterator[tuple[int, dict[str, Any]]]:
+def _running_console_server(repo: Path) -> Iterator[tuple[int, _Record]]:
     """`harness console-server <repo>` as its own process: yields its pid and published record."""
     record_path = discovery_path(repo)
     argv = [sys.executable, str(_BIN_HARNESS), "console-server", str(repo)]
@@ -467,7 +473,10 @@ def _running_console_server(repo: Path) -> Iterator[tuple[int, dict[str, Any]]]:
                 time.sleep(0.05)
             output.seek(0)
             assert proc.poll() is None, output.read()
-            yield proc.pid, json.loads(record_path.read_text(encoding="utf-8"))
+            yield (
+                proc.pid,
+                cast(_Record, json.loads(record_path.read_text(encoding="utf-8"))),
+            )
         finally:
             if proc.poll() is None:
                 _kill_process_tree(proc)
