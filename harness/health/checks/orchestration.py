@@ -21,6 +21,7 @@ Every check only reads state: ledger records, `git worktree list --porcelain`, a
 from __future__ import annotations
 
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 from harness.configuration import read_config_json
@@ -52,37 +53,54 @@ class _LedgerState:
     """One read of the lifecycle ledger, shared by the ledger-backed checks in this module so
     none of them repeats the same pointer/generation resolution and error handling.
 
-    Only calls read-only `LifecycleLedger` methods (`status`, `records_root`,
-    `read_record_lenient`) -- it never writes, migrates, or resets the ledger."""
+    Materializes records inside the coordinator's read-only state view, so the same checks work
+    with a file ledger and with the runtime store. Nothing reads a virtual store path after the
+    view closes, and an unavailable runtime never falls back to the old generation."""
 
     def __init__(self, repo: Path) -> None:
         from harness.orchestration.core.constants import STATE_REL
-        from harness.orchestration.ledger.lifecycle import LedgerError, LifecycleLedger
+        from harness.orchestration.core import state_view
+        from harness.orchestration.ledger.ledger_ops import read_state
+        from harness.orchestration.ledger.lifecycle import (
+            LedgerError,
+            LifecycleLedger,
+            store_is_authority,
+        )
 
         self.ledger = LifecycleLedger(repo / STATE_REL)
         self.error: str | None = None
         self.status: JsonObject = {}
         self.batches: list[JsonObject] = []
+        self.dispatch_statuses: dict[str, JsonObject] = {}
         self.records_root: Path | None = None
         try:
-            self.status = self.ledger.status()
-        except LedgerError as exc:
+            # File health stays lock-free and never initializes an empty state directory.
+            reader = (
+                read_state(self.ledger, repo)
+                if store_is_authority(self.ledger.root)
+                else nullcontext()
+            )
+            with reader:
+                self.status = self.ledger.status()
+                if self.needs_migration:
+                    return
+                if (
+                    self.status.get("generation") is None
+                    and self.status.get("authority") != "runtime-store"
+                ):
+                    return
+                root = self.ledger.records_root()
+                self.records_root = root
+                for path in state_view.glob(root / "batches", "*.json"):
+                    record = LifecycleLedger.read_record_lenient(path)
+                    if record is not None:
+                        self.batches.append(record)
+                for path in state_view.glob(root / "dispatch-status", "*.json"):
+                    record = LifecycleLedger.read_record_lenient(path)
+                    if record is not None:
+                        self.dispatch_statuses[path.stem] = record
+        except (LedgerError, HarnessError) as exc:
             self.error = str(exc)
-            return
-        if self.status.get("legacy") or self.status.get("stale_schema"):
-            return
-        if self.status.get("generation") is None:
-            return
-        try:
-            root = self.ledger.records_root()
-        except LedgerError as exc:
-            self.error = str(exc)
-            return
-        self.records_root = root
-        for path in sorted((root / "batches").glob("*.json")):
-            record = LifecycleLedger.read_record_lenient(path)
-            if record is not None:
-                self.batches.append(record)
 
     @property
     def unreadable(self) -> bool:
@@ -113,7 +131,7 @@ def check_ledger_summary(context: HealthContext) -> CheckResult:
             message=_MIGRATION_MESSAGE,
             fix=_migration_fix(context),
         )
-    if state.status.get("generation") is None:
+    if state.records_root is None:
         return CheckResult(
             id=check_id,
             group="orchestration",
@@ -132,12 +150,17 @@ def check_ledger_summary(context: HealthContext) -> CheckResult:
         if counts
         else "батчей нет"
     )
+    location = (
+        "authority=runtime-store"
+        if state.status.get("authority") == "runtime-store"
+        else f"generation={state.status['generation']}"
+    )
     return CheckResult(
         id=check_id,
         group="orchestration",
         status="ok",
         message=(
-            f"леджер: generation={state.status['generation']} "
+            f"леджер: {location} "
             f"schema_version={state.status['version']}; батчи по состояниям: {counts_text}"
         ),
     )
@@ -185,13 +208,9 @@ def check_unfinished_batches(context: HealthContext) -> CheckResult:
             message=_MIGRATION_MESSAGE,
             fix=_migration_fix(context),
         )
-    from harness.orchestration.core.constants import TERMINAL_BATCH_STATES
+    from harness.orchestration.ledger.recovery_chain import terminal
 
-    unfinished = [
-        batch
-        for batch in state.batches
-        if batch.get("state") not in TERMINAL_BATCH_STATES
-    ]
+    unfinished = [batch for batch in state.batches if not terminal(batch)]
     if not unfinished:
         return CheckResult(
             id=check_id,
@@ -312,18 +331,14 @@ def check_stale_dispatches(context: HealthContext) -> CheckResult:
             status="ok",
             message="леджер оркестрации ещё не инициализирован (диспатчей нет)",
         )
-    from harness.orchestration.core.constants import (
-        LIVE_DISPATCH_STATES,
-        TERMINAL_BATCH_STATES,
-    )
+    from harness.orchestration.core.constants import LIVE_DISPATCH_STATES
     from harness.orchestration.core.utils import CoordinatorError, _silent_seconds
-    from harness.orchestration.ledger.lifecycle import LifecycleLedger
+    from harness.orchestration.ledger.recovery_chain import terminal
 
     threshold = _attention_policy_threshold(context.repo)
-    root = state.records_root
     stale: list[str] = []
     for batch in state.batches:
-        if batch.get("state") in TERMINAL_BATCH_STATES:
+        if terminal(batch):
             continue
         entries = batch.get("dispatches")
         if not isinstance(entries, list):
@@ -334,9 +349,7 @@ def check_stale_dispatches(context: HealthContext) -> CheckResult:
             dispatch_id = entry.get("dispatch_id")
             if not isinstance(dispatch_id, str):
                 continue
-            status = LifecycleLedger.read_record_lenient(
-                root / "dispatch-status" / f"{dispatch_id}.json"
-            )
+            status = state.dispatch_statuses.get(dispatch_id)
             if status is None or status.get("state") not in LIVE_DISPATCH_STATES:
                 continue
             try:

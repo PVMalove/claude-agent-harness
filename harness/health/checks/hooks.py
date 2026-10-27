@@ -240,7 +240,8 @@ def _runtime_parts(
         )
     if unprotected:
         advisory.append(
-            f"{adapter.runtime}: критический hook без события и без проверки вне hook: "
+            f"ограничение адаптера {adapter.runtime}: критический hook без события "
+            "и без проверки вне hook: "
             + ", ".join(item.split(" (")[0] for item in unprotected)
         )
     if context.hook_templates is None:
