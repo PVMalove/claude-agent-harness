@@ -105,7 +105,7 @@ fn refusal(output: &Output) -> (i32, String) {
 
 #[test]
 fn an_unknown_command_prints_the_malformed_request_code_first() {
-    let (code, remedy) = refusal(&run(&["rollback"]));
+    let (code, remedy) = refusal(&run(&["rewind"]));
 
     assert_eq!(code, 2);
     assert!(
@@ -301,6 +301,16 @@ fn every_error_line_is_followed_by_a_remedy_with_a_known_code() {
         run(&["serve", "--repo", plain.0.to_str().unwrap()]),
         run(&["migrate", "--repo", plain.0.to_str().unwrap()]),
         run(&["migrate", "--repo", ledger.0.to_str().unwrap()]),
+        run(&["rollback", "--repo", ledger.0.to_str().unwrap()]),
+        run(&[
+            "rollback",
+            "--to-legacy",
+            "--repo",
+            ledger.0.to_str().unwrap(),
+        ]),
+        run_owned(&rollback_args(&plain, "human:operator")),
+        run_owned(&rollback_args(&ledger, "policy:auto")),
+        run_owned(&rollback_args(&ledger, "human:operator")),
     ];
 
     for output in &runs {
@@ -322,4 +332,129 @@ fn every_error_line_is_followed_by_a_remedy_with_a_known_code() {
             );
         }
     }
+}
+
+fn rollback_args(repo: &Scratch, approved_by: &str) -> Vec<String> {
+    [
+        "rollback",
+        "--to-legacy",
+        "--repo",
+        repo.0.to_str().unwrap(),
+        "--approved-by",
+        approved_by,
+        "--approved-at",
+        "2026-10-27T10:00:00+00:00",
+        "--reason",
+        "return to 1.x",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+fn run_rollback(repo: &Scratch, approved_by: &str, env: &[(&str, &std::ffi::OsStr)]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_harness-runtime"));
+    command
+        .args(rollback_args(repo, approved_by))
+        .env_remove("XDG_RUNTIME_DIR");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    command.output().unwrap()
+}
+
+fn pointer(repo: &Scratch) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(repo.state().join("ledger.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn rollback_prints_one_json_line_and_returns_the_state_to_the_file_ledger() {
+    let (repo, store) = cut_over("rollback");
+
+    let output = run_rollback(&repo, "human:operator", &[]);
+
+    assert!(output.status.success(), "{:?}", stderr_lines(&output));
+    let line: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(line["rolled_back"], true);
+    assert_eq!(pointer(&repo)["version"], 3);
+    assert_eq!(pointer(&repo)["generation"], line["generation"]);
+    assert!(store.exists());
+}
+
+#[test]
+fn rollback_of_a_policy_approver_prints_the_policy_denied_code_and_changes_nothing() {
+    let (repo, _) = cut_over("rb-policy");
+    let before = fs::read(repo.state().join("ledger.json")).unwrap();
+
+    let (code, remedy) = refusal(&run_rollback(&repo, "policy:auto", &[]));
+
+    assert_eq!(code, 2);
+    assert!(remedy.starts_with("REMEDY: [policy_denied] "), "{remedy}");
+    assert_eq!(fs::read(repo.state().join("ledger.json")).unwrap(), before);
+}
+
+#[test]
+fn rollback_while_serve_runs_prints_the_lease_held_code_and_changes_nothing() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let (repo, _) = cut_over("rb-serving");
+    let runtime_dir = Scratch::new("xdg-rollback");
+    let mut serve = Command::new(env!("CARGO_BIN_EXE_harness-runtime"))
+        .args(["serve", "--repo", repo.0.to_str().unwrap()])
+        .env("XDG_RUNTIME_DIR", &runtime_dir.0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(serve.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    assert!(line.contains("\"ready\""), "{line}");
+
+    let output = run_rollback(
+        &repo,
+        "human:operator",
+        &[("XDG_RUNTIME_DIR", runtime_dir.0.as_os_str())],
+    );
+    serve.kill().unwrap();
+    serve.wait().unwrap();
+
+    let (code, remedy) = refusal(&output);
+    assert_eq!(code, 2);
+    assert!(remedy.starts_with("REMEDY: [lease_held] "), "{remedy}");
+    assert!(remedy.contains("stop `harness-runtime serve`"), "{remedy}");
+    assert_eq!(pointer(&repo)["version"], 4);
+}
+
+#[test]
+fn rollback_that_stops_before_the_pointer_finishes_on_a_repeat() {
+    let (repo, _) = cut_over("rb-crash");
+
+    let failed = run_rollback(
+        &repo,
+        "human:operator",
+        &[(
+            "HARNESS_RUNTIME_TEST_FAIL_AT",
+            std::ffi::OsStr::new("rollback-pointer-replace"),
+        )],
+    );
+
+    let (code, remedy) = refusal(&failed);
+    assert_eq!(code, 3, "{:?}", stderr_lines(&failed));
+    assert!(remedy.starts_with("REMEDY: [internal] "), "{remedy}");
+    assert_eq!(pointer(&repo)["version"], 4);
+    let authority: serde_json::Value =
+        serde_json::from_slice(&fs::read(repo.state().join("AUTHORITY.json")).unwrap()).unwrap();
+    assert_eq!(authority["authority"], "file-ledger");
+
+    let repeated = run_rollback(&repo, "human:operator", &[]);
+
+    assert!(repeated.status.success(), "{:?}", stderr_lines(&repeated));
+    assert_eq!(pointer(&repo)["version"], 3);
+    assert_eq!(pointer(&repo)["generation"], authority["generation"]);
+}
+
+fn run_owned(args: &[String]) -> Output {
+    run(&args.iter().map(String::as_str).collect::<Vec<_>>())
 }

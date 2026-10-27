@@ -18,6 +18,7 @@ pub mod policy;
 pub mod project;
 pub mod read;
 pub mod repair;
+pub mod rollback;
 pub mod route;
 pub mod schema;
 pub mod snapshot;

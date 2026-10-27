@@ -26,7 +26,7 @@ pub fn chain_sha256(prev: &str, record_sha256: &str) -> String {
 }
 
 /// The actions a record of the chain may name: the closed vocabulary of ADR 0020, section 4.
-pub const ACTIONS: [&str; 7] = [
+pub const ACTIONS: [&str; 8] = [
     "legacy-import",
     "migration-repair",
     "schema-migrate",
@@ -34,6 +34,7 @@ pub const ACTIONS: [&str; 7] = [
     "immutable-artifact",
     "transition",
     "deletion",
+    "runtime-rollback",
 ];
 
 /// What a check of the chain found wrong, and where.

@@ -19,6 +19,8 @@ pub const AUTHORITY_NAME: &str = "AUTHORITY.json";
 pub const STORE_NAME: &str = "runtime.db";
 pub const IMPORTING_NAME: &str = "runtime.db.importing";
 pub const RUNTIME_STORE: &str = "runtime-store";
+/// The authority `AUTHORITY.json` names after `rollback --to-legacy`.
+pub const FILE_LEDGER: &str = "file-ledger";
 /// The pointer version of the runtime-store epoch.
 pub const STORE_VERSION: i64 = 4;
 
