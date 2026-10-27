@@ -9,6 +9,7 @@ import logging
 import secrets
 
 from .discovery import Discovery
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,8 +46,18 @@ _SECURITY_HEADERS = [
 class ConsoleServer:
     """One loopback listener for one project; callers own its asynchronous lifetime."""
 
-    def __init__(self, repo: Path, *, idle_grace_seconds: float = 30) -> None:
+    def __init__(
+        self,
+        repo: Path,
+        *,
+        idle_grace_seconds: float = 30,
+        active_jobs: Callable[[], int] = lambda: 0,
+    ) -> None:
         self.repo = repo.resolve()
+        self._idle_grace = idle_grace_seconds
+        self._active_jobs = active_jobs
+        self._clients = 0
+        self._idle_task: asyncio.Task[None] | None = None
         self._listener: asyncio.Server | None = None
         self._discovery: Discovery | None = None
         self._token = ""
@@ -80,6 +91,7 @@ class ConsoleServer:
             self._token = secrets.token_hex(32)
             self._discovery.publish(self._port, self._token)
             await self._listener.start_serving()
+            self._idle_task = asyncio.create_task(self._exit_when_idle())
         except BaseException:
             await self.close()
             raise
@@ -271,7 +283,6 @@ class ConsoleServer:
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        from websockets.frames import Frame, Opcode
         from websockets.http11 import Request
         from websockets.server import ServerProtocol
         from websockets.typing import Origin
@@ -296,6 +307,20 @@ class ConsoleServer:
             return
         if tail:
             protocol.receive_data(tail)
+        self._clients += 1
+        try:
+            await self._pump_websocket(protocol, reader, writer)
+        finally:
+            self._clients -= 1
+
+    async def _pump_websocket(
+        self,
+        protocol: ServerProtocol,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        from websockets.frames import Frame, Opcode
+
         closing_at: float | None = None
         while True:
             for event in protocol.events_received():
@@ -321,6 +346,19 @@ class ConsoleServer:
                 return
             protocol.receive_data(data)
 
+    async def _exit_when_idle(self) -> None:
+        """Close once no client and no job has been present for the grace period."""
+        loop = asyncio.get_running_loop()
+        poll = min(1.0, self._idle_grace / 4)
+        idle_since = loop.time()
+        while True:
+            await asyncio.sleep(poll)
+            if self._clients or self._active_jobs():
+                idle_since = loop.time()
+            elif loop.time() - idle_since >= self._idle_grace:
+                asyncio.create_task(self.close())
+                return
+
     async def close(self) -> None:
         """Idempotently close the listener and all of this instance's connections."""
         self._closing = True
@@ -330,6 +368,8 @@ class ConsoleServer:
 
     async def _shutdown(self) -> None:
         try:
+            if self._idle_task is not None:
+                self._idle_task.cancel()
             if self._listener is not None:
                 self._listener.close()
                 await self._listener.wait_closed()

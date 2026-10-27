@@ -841,3 +841,61 @@ def test_frame_errors_and_unanswered_close_have_bounded_cleanup(
             await server.close()
 
     asyncio.run(scenario())
+
+
+def test_idle_server_exits_after_grace_and_removes_discovery(project: Path) -> None:
+    from harness.console.discovery import discovery_path
+
+    async def scenario() -> None:
+        server = ConsoleServer(project, idle_grace_seconds=0.2)
+        await server.start()
+        assert discovery_path(project).exists()
+        await asyncio.wait_for(server.wait_closed(), 3)
+        assert not discovery_path(project).exists()
+
+    asyncio.run(scenario())
+
+
+def test_active_job_keeps_server_alive_until_it_finishes(project: Path) -> None:
+    async def scenario() -> None:
+        jobs = 1
+        server = ConsoleServer(
+            project, idle_grace_seconds=0.2, active_jobs=lambda: jobs
+        )
+        await server.start()
+        try:
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(asyncio.shield(server.wait_closed()), 0.8)
+            jobs = 0
+            await asyncio.wait_for(server.wait_closed(), 3)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_connected_client_keeps_server_alive_until_it_disconnects(
+    project: Path,
+) -> None:
+    from harness.console.discovery import discovery_path
+    from websockets.asyncio.client import connect
+
+    async def scenario() -> None:
+        server = ConsoleServer(project, idle_grace_seconds=0.2)
+        await server.start()
+        record = json.loads(discovery_path(project).read_text())
+        try:
+            async with connect(
+                f"ws://127.0.0.1:{server.port}/ws",
+                proxy=None,
+                additional_headers={"Authorization": "Bearer " + record["token"]},
+                open_timeout=2,
+                close_timeout=1,
+            ):
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(server.wait_closed()), 0.8)
+            await asyncio.wait_for(server.wait_closed(), 3)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
