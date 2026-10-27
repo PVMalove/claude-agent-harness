@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..errors import PolicyError
 from ..health.project_files import HOOK_PROFILES, hook_policy_problems
@@ -81,6 +82,94 @@ def _path_matches(path: str, patterns: Iterable[str]) -> bool:
     ``src/a/b.py`` — совпадений больше, а не меньше, и профиль только строже."""
     normalized = path.replace("\\", "/").removeprefix("./")
     return any(fnmatchcase(normalized, pattern) for pattern in patterns)
+
+
+# Чувствительные пути ADR 0024, раздел 2: фиксированная константа политики, ключа конфигурации нет.
+# Копию держит hook `sensitive-path-recheck` (harness/project/hooks/change_impact_hooks.py), который
+# не видит пакет harness; tests/core/test_change_impact_hooks.py сверяет её с этой функцией.
+SENSITIVE_NAMES = frozenset(
+    {
+        "pyproject.toml",
+        "uv.lock",
+        "poetry.lock",
+        "Pipfile",
+        "Pipfile.lock",
+        "setup.py",
+        "setup.cfg",
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "go.mod",
+        "go.sum",
+        "Gemfile",
+        "Gemfile.lock",
+        "composer.json",
+        "composer.lock",
+        "CODEOWNERS",
+    }
+)
+SENSITIVE_NAME_GLOBS = ("requirements*.txt", "constraints*.txt")
+SENSITIVE_PATH_GLOBS = (
+    ".github/*",
+    ".claude/settings*.json",
+    ".claude/hooks/*",
+    ".claude/agents/*",
+    ".codex/hooks.json",
+    ".codex/hooks/*",
+    ".codex/config.toml",
+    ".harness/project.json",
+)
+# Миграции, auth и права доступа: сравниваются токены сегмента пути и stem файла, а не подстроки.
+SENSITIVE_TOKENS = frozenset(
+    {
+        "migration",
+        "migrations",
+        "migrate",
+        "alembic",
+        "auth",
+        "authn",
+        "authz",
+        "oauth",
+        "oauth2",
+        "authentication",
+        "authorization",
+        "permission",
+        "permissions",
+        "acl",
+        "rbac",
+    }
+)
+_TOKEN_SEPARATORS = re.compile(r"[._-]")
+
+
+def is_sensitive_path(path: str) -> bool:
+    """Чувствительный ли путь репозитория (ADR 0024, раздел 2).
+
+    Манифест или lock-файл по имени на любой глубине, `.github/*`, миграции, auth и права доступа
+    (токен сегмента пути или stem файла, разбитых по `.`, `_` и `-`; `author` не совпадает с
+    `auth`), `CODEOWNERS`, файлы hooks runtime и `.harness/project.json`.
+    """
+    normalized = path.replace("\\", "/").removeprefix("./")
+    parts = normalized.split("/")
+    name = parts[-1]
+    if name in SENSITIVE_NAMES or any(
+        fnmatchcase(name, pattern) for pattern in SENSITIVE_NAME_GLOBS
+    ):
+        return True
+    if any(fnmatchcase(normalized, pattern) for pattern in SENSITIVE_PATH_GLOBS):
+        return True
+    pieces = [*parts[:-1], PurePosixPath(name).stem]
+    return any(
+        token.lower() in SENSITIVE_TOKENS
+        for piece in pieces
+        for token in _TOKEN_SEPARATORS.split(piece)
+    )
 
 
 def resolve_profile(

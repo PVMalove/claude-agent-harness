@@ -37,6 +37,7 @@ CRITICAL = sorted(h for h, (_, critical) in hook_response.HOOKS.items() if criti
 NON_CRITICAL = sorted(
     h for h, (_, critical) in hook_response.HOOKS.items() if not critical
 )
+ADVISORY = sorted(hook_response.ADVISORY_HOOKS)
 
 
 def test_build_response_carries_the_six_fields() -> None:
@@ -141,7 +142,12 @@ def test_a_critical_hook_blocks_in_every_profile(hook_id: str, profile: str) -> 
 
 
 @pytest.mark.parametrize(
-    "hook_id", [h for h in NON_CRITICAL if hook_response.HOOKS[h][0] != "ok"]
+    "hook_id",
+    [
+        h
+        for h in NON_CRITICAL
+        if hook_response.HOOKS[h][0] != "ok" and h not in ADVISORY
+    ],
 )
 def test_a_non_critical_block_is_downgraded_only_by_the_minimal_profile(
     hook_id: str,
@@ -161,6 +167,51 @@ def test_a_non_critical_internal_error_only_warns(hook_id: str) -> None:
             "warn",
             "internal-error",
         )
+
+
+@pytest.mark.parametrize("hook_id", ADVISORY)
+@pytest.mark.parametrize("profile", hook_response.PROFILES)
+def test_an_advisory_hook_warns_by_its_prefix_and_never_blocks(
+    hook_id: str, profile: str
+) -> None:
+    reason = hook_response.HOOKS[hook_id][0]
+
+    warned = hook_response.decide(hook_id, profile, 0, f"[{reason}] look again\n")
+    referenced = hook_response.decide(
+        hook_id, profile, 0, f"[{reason}] look\nevidence_ref=.harness/e.json\n"
+    )
+    plain = hook_response.decide(hook_id, profile, 0, "a diagnostic without a prefix")
+    other = hook_response.decide(hook_id, profile, 0, "[unbounded-check] not mine")
+
+    assert (warned["decision"], warned["reason_code"], warned["remedy"]) == (
+        "warn",
+        reason,
+        "look again",
+    )
+    assert warned["evidence_ref"] == f".claude/hooks/{hook_id}.sh"
+    assert referenced["evidence_ref"] == ".harness/e.json"
+    for response in (plain, other):
+        assert (response["decision"], response["reason_code"]) == ("allow", "ok")
+    for code in (1, 2, 127, None):
+        failed = hook_response.decide(hook_id, profile, code, "[x] boom")
+        assert (failed["decision"], failed["reason_code"]) == ("warn", "internal-error")
+
+
+@needs_bash
+@pytest.mark.parametrize("hook_id", ADVISORY)
+def test_an_advisory_hook_body_runs_only_in_its_active_profiles(
+    tmp_path: Path, hook_id: str
+) -> None:
+    for profile in hook_response.PROFILES:
+        project = _project(tmp_path / profile, {"profile": profile})
+        marker = project / "ran"
+
+        done = _wrapper(project, hook_id, f"touch {marker}; echo '[x] noise' >&2")
+
+        assert done.returncode == 0
+        verdict = parse_hook_response(done.stderr)
+        assert (verdict["decision"], verdict["profile"]) == ("allow", profile)
+        assert marker.exists() is (profile in hook_response.ACTIVE_PROFILES[hook_id])
 
 
 def test_a_hook_that_never_blocks_treats_exit_two_as_an_error() -> None:

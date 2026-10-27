@@ -282,23 +282,35 @@ def _unseen_importers(
     return reasons
 
 
+_PATH_DETAILS = {
+    UNKNOWN_BUILD_CONFIG: "build or verification config",
+    UNKNOWN_CAPABILITIES: "capability catalog or skill",
+}
+
+
+def path_unknown_code(path: str) -> str | None:
+    """Код `unknown`, который следует из одного пути без графа: конфиг сборки или capabilities.
+
+    Правило `non-python-file` сюда не входит. Копию правил держит hook `impact-first-touch`
+    (`harness/project/hooks/change_impact_hooks.py`); tests/core/test_change_impact_hooks.py сверяет её.
+    """
+    name = PurePosixPath(path).name
+    if name in _BUILD_CONFIG_NAMES or any(
+        fnmatch.fnmatchcase(path, pattern) for pattern in _BUILD_CONFIG_GLOBS
+    ):
+        return UNKNOWN_BUILD_CONFIG
+    if any(fnmatch.fnmatchcase(path, pattern) for pattern in _CAPABILITIES_GLOBS):
+        return UNKNOWN_CAPABILITIES
+    return None
+
+
 def _config_unknown(item: ChangedPath) -> list[UnknownReason]:
     """Причины `unknown`, которые следуют из одного лишь пути: конфиги, capabilities, не-Python."""
     reasons: list[UnknownReason] = []
     for path in (item.path, *(p for p in (item.old_path,) if p)):
-        name = PurePosixPath(path).name
-        if name in _BUILD_CONFIG_NAMES or any(
-            fnmatch.fnmatchcase(path, pattern) for pattern in _BUILD_CONFIG_GLOBS
-        ):
-            reasons.append(
-                UnknownReason(
-                    UNKNOWN_BUILD_CONFIG, path, "build or verification config"
-                )
-            )
-        elif any(fnmatch.fnmatchcase(path, pattern) for pattern in _CAPABILITIES_GLOBS):
-            reasons.append(
-                UnknownReason(UNKNOWN_CAPABILITIES, path, "capability catalog or skill")
-            )
+        code = path_unknown_code(path)
+        if code is not None:
+            reasons.append(UnknownReason(code, path, _PATH_DETAILS[code]))
         elif not path.endswith(".py"):
             reasons.append(
                 UnknownReason(

@@ -14,6 +14,7 @@ from harness.repo_map.change_impact import (
     ChangedPath,
     ImpactSet,
     compute_change_impact,
+    path_unknown_code,
 )
 from harness.repo_map.git_source import read_blobs
 from harness.repo_map.policy import RepoMapPolicy
@@ -234,6 +235,34 @@ def test_a_non_python_file_sets_unknown(repo: Path) -> None:
     _commit(repo, "docs")
 
     assert _codes(_impact(repo, base)) == {"non-python-file"}
+
+
+@pytest.mark.parametrize(
+    ("path", "code"),
+    [
+        ("pyproject.toml", "build-config-changed"),
+        ("tests/conftest.py", "build-config-changed"),
+        (".github/workflows/ci.yml", "build-config-changed"),
+        ("skills/first-party/x/SKILL.md", "capabilities-or-skills-changed"),
+        ("docs/notes.md", None),
+        ("services/x.py", None),
+    ],
+)
+def test_the_path_code_matches_the_unknown_reason_of_a_diff(
+    repo: Path, path: str, code: str | None
+) -> None:
+    """`path_unknown_code` is the one-path rule of the diff, without `non-python-file`."""
+    base = _base(repo)
+    _write(repo, {path: "changed\n"})
+    _commit(repo, "touch one path")
+
+    reasons = {
+        reason.code for reason in _impact(repo, base).unknown if reason.path == path
+    }
+
+    assert path_unknown_code(path) == code
+    if code is not None:
+        assert code in reasons
 
 
 def test_a_renamed_module_that_others_import_sets_unknown(repo: Path) -> None:

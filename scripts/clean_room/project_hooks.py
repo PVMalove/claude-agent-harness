@@ -73,6 +73,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("pvmalove-suite init did not scaffold the pr_commands.py hook helper")
     if not (pv_project / ".claude" / "hooks" / "hook_response.py").is_file():
         sys.exit("pvmalove-suite init did not scaffold the hook_response.py envelope")
+    check_change_impact_hooks(pv_project)
     if json.loads(project_json.read_text(encoding="utf-8")).get("hook_policy") != {
         "profile": "standard"
     }:
@@ -2011,6 +2012,46 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"require-qa-gate.sh with pr_commands.py {label} allowed a PR")
     if (pv_project / ".claude" / "hooks" / "__pycache__").exists():
         sys.exit("a hook left .claude/hooks/__pycache__, which uninstall cannot prune")
+
+
+def check_change_impact_hooks(project: Path) -> None:
+    """Advisory-hooks ChangeImpact поставлены, подключены и предупреждают о рискованном пути с кодом 0."""
+    hooks = project / ".claude" / "hooks"
+    for name in (
+        "change_impact_hooks.py",
+        "impact-first-touch.sh",
+        "sensitive-path-recheck.sh",
+        "targeted-check-reminder.sh",
+    ):
+        if not (hooks / name).is_file():
+            sys.exit(f"pvmalove-suite init did not scaffold {name}")
+    settings = json.loads(
+        (project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
+    )
+    for event in ("Stop", "SubagentStop"):
+        if "targeted-check-reminder.sh" not in json.dumps(settings["hooks"].get(event)):
+            sys.exit(f"targeted-check-reminder.sh is not wired for {event}")
+    payload = {
+        "session_id": "clean-room",
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(project / "pyproject.toml")},
+        "cwd": str(project),
+    }
+    answered = run_hook(
+        hooks / "impact-first-touch.sh",
+        project,
+        "",
+        raw_payload=json.dumps(payload),
+        cwd=project,
+    )
+    verdict = json.loads(answered.stderr.strip().splitlines()[-1])
+    if (answered.returncode, verdict.get("decision"), verdict.get("reason_code")) != (
+        0,
+        "warn",
+        "risky-path-first-touch",
+    ):
+        sys.exit(f"impact-first-touch.sh did not warn with exit 0: {verdict}")
 
 
 def check_hooks_policy_health(project: Path) -> None:

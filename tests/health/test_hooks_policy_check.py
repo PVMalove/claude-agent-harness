@@ -92,6 +92,37 @@ def test_events_the_second_runtime_lacks_are_listed_and_a_missing_out_of_hook_ch
     assert "count-skill-usage" in message
 
 
+def test_the_second_runtime_lists_the_change_impact_edit_rows_with_their_out_of_hook_check(
+    repo: Path,
+) -> None:
+    result = check(repo)
+    message = result["message"]
+
+    _, marker, lacking = message.partition("codex: нет события или payload: ")
+    assert marker
+    for row in (
+        "impact-first-touch (вне hook: ChangeImpact-gate по ADR 0023)",
+        "sensitive-path-recheck (вне hook: граница strict (dispatch propose, qa run, publish))",
+        "targeted-check-reminder (вне hook: сверка checks_run)",
+    ):
+        assert row in lacking
+    # The hooks are advisory and checked outside the hook: no advisory finding, no missing wiring.
+    unprotected = message.partition("без события и без проверки вне hook: ")[2]
+    for hook_id in ("impact-first-touch", "sensitive-path-recheck", "targeted-check"):
+        assert hook_id not in unprotected.split(";")[0]
+    assert "не подключён hook targeted-check-reminder" not in message
+    assert "claude: нет события" not in message
+
+
+def test_a_missing_script_of_several_events_is_named_once(repo: Path) -> None:
+    (repo / HOOKS_DIR / "targeted-check-reminder.sh").unlink()
+
+    result = check(repo)
+
+    assert result["status"] == "warn"
+    assert result["message"].count("targeted-check-reminder.sh: файл отсутствует") == 1
+
+
 def test_qa_marker_hook_is_missing_for_the_second_runtime_only(repo: Path) -> None:
     second = load(repo, CODEX)
     assert not [

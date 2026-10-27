@@ -19,7 +19,9 @@
 тоже внутренняя ошибка: процесс прерывается, критичный hook блокирует; поведенческий (``require-bounded-check``) и
 учётные (``count-skill-usage``, ``mark-qa-gate-passed``) разрешают с предупреждением (код 0). Профиль
 ``minimal`` понижает блокировку поведенческого hook до предупреждения; критичные hooks блокируют в любом
-профиле (ADR 0024). Только стандартная библиотека, Python 3.9+.
+профиле (ADR 0024). Advisory-hooks ChangeImpact (``ADVISORY_HOOKS``) не блокируют никогда: тело
+предупреждает префиксом причины при коде 0, а в профиле вне ``ACTIVE_PROFILES`` тело не запускается.
+Только стандартная библиотека, Python 3.9+.
 """
 
 from __future__ import annotations
@@ -48,7 +50,21 @@ HOOKS: Dict[str, Tuple[str, bool]] = {
     "require-bounded-check": ("unbounded-check", False),
     "count-skill-usage": ("ok", False),
     "mark-qa-gate-passed": ("ok", False),
+    "impact-first-touch": ("risky-path-first-touch", False),
+    "targeted-check-reminder": ("targeted-checks-unreported", False),
+    "sensitive-path-recheck": ("sensitive-path-touched", False),
 }
+# Advisory-hooks ChangeImpact (ADR 0024, раздел 2a): тело всегда завершается кодом 0 и называет
+# предупреждение префиксом ``[reason_code] `` первой строки stderr, строка ``evidence_ref=<путь>``
+# называет evidence. Конверт никогда их не блокирует. Hook работает только в профилях
+# ``ACTIVE_PROFILES``: в остальных конверт отвечает allow, не запуская тело.
+ACTIVE_PROFILES: Dict[str, Tuple[str, ...]] = {
+    "impact-first-touch": ("standard", "strict"),
+    "targeted-check-reminder": ("standard", "strict"),
+    "sensitive-path-recheck": ("strict",),
+}
+ADVISORY_HOOKS = tuple(ACTIVE_PROFILES)
+EVIDENCE_PREFIX = "evidence_ref="
 # Дополнительные причины блокировки: сценарий называет одну из них префиксом ``[reason_code] `` stderr.
 EXTRA_REASONS: Dict[str, Tuple[str, ...]] = {
     "protect-hook-policy": (
@@ -161,10 +177,41 @@ def read_profile(root: Path) -> str:
     return _policy_profile(data["hook_policy"])
 
 
+def decide_advisory(
+    hook_id: str, profile: str, code: Optional[int], stderr: str
+) -> Dict[str, object]:
+    """Вердикт advisory-hook: код 0 с его префиксом — warn, без префикса — allow, иначе warn
+    ``internal-error``. Advisory-hook не блокирует ни в одном профиле."""
+    reason = HOOKS[hook_id][0]
+    evidence = f".claude/hooks/{hook_id}.sh"
+    lines = stderr.strip().splitlines()
+    if code == 0:
+        named = REASON_PREFIX.match(lines[0]) if lines else None
+        if named is None or named.group(1) != reason:
+            return build_response(hook_id, profile, "allow", REASON_OK)
+        refs = [
+            line[len(EVIDENCE_PREFIX) :].strip()
+            for line in lines[1:]
+            if line.startswith(EVIDENCE_PREFIX)
+        ]
+        remedy = lines[0][named.end() :][:REMEDY_LIMIT]
+        return build_response(
+            hook_id, profile, "warn", reason, remedy, refs[0] if refs else evidence
+        )
+    detail = f"hook вернул код {code}" if code is not None else "hook не отработал"
+    if lines:
+        detail = f"{detail}: {stderr.strip()}"
+    return build_response(
+        hook_id, profile, "warn", REASON_INTERNAL_ERROR, detail[:REMEDY_LIMIT], evidence
+    )
+
+
 def decide(
     hook_id: str, profile: str, code: Optional[int], stderr: str
 ) -> Dict[str, object]:
     """Вердикт по коду возврата исходного сценария (``None`` — сценарий не запустился)."""
+    if hook_id in ADVISORY_HOOKS:
+        return decide_advisory(hook_id, profile, code, stderr)
     block_reason, critical = HOOKS[hook_id]
     named = REASON_PREFIX.match(stderr.lstrip())
     if named and named.group(1) in EXTRA_REASONS.get(hook_id, ()):
@@ -239,6 +286,8 @@ def main(argv: List[str]) -> int:
     try:
         payload = sys.stdin.buffer.read()
         profile = read_profile(project_root())
+        if profile not in ACTIVE_PROFILES.get(hook_id, PROFILES):
+            return emit(b"", b"", build_response(hook_id, profile, "allow", REASON_OK))
         code, out, err = run_inner(argv[2:], payload)
         response = decide(hook_id, profile, code, err.decode("utf-8", "replace"))
         return emit(out, err, response)

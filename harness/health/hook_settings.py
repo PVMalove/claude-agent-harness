@@ -341,6 +341,48 @@ HOOK_CATALOG: tuple[HookSpec, ...] = (
     HookSpec(
         "mark-qa-gate-passed", "mark-qa-gate-passed.sh", "PostToolUse", ("Bash",), False
     ),
+    # Advisory-hooks ChangeImpact (ADR 0024, раздел 2a). Инструмент `*` обозначает событие без
+    # инструмента (Stop, SubagentStop): его покрывает группа без matcher.
+    HookSpec(
+        "impact-first-touch",
+        "impact-first-touch.sh",
+        "PreToolUse",
+        ("Write", "Edit"),
+        False,
+        "ChangeImpact-gate по ADR 0023",
+    ),
+    HookSpec(
+        "sensitive-path-recheck",
+        "sensitive-path-recheck.sh",
+        "PreToolUse",
+        ("Write", "Edit"),
+        False,
+        "граница strict (dispatch propose, qa run, publish)",
+    ),
+    HookSpec(
+        "targeted-check-reminder",
+        "targeted-check-reminder.sh",
+        "PreToolUse",
+        ("Write", "Edit"),
+        False,
+        "сверка checks_run",
+    ),
+    HookSpec(
+        "targeted-check-reminder",
+        "targeted-check-reminder.sh",
+        "Stop",
+        ("*",),
+        False,
+        "сверка checks_run",
+    ),
+    HookSpec(
+        "targeted-check-reminder",
+        "targeted-check-reminder.sh",
+        "SubagentStop",
+        ("*",),
+        False,
+        "сверка checks_run",
+    ),
 )
 
 EventTool = tuple[str, str]
@@ -376,7 +418,13 @@ class RuntimeAdapter:
 # `mark-qa-gate-passed` на `PostToolUse` не подключается: runtime вызывает `PostToolUse` и после
 # команды Bash с ненулевым кодом выхода, а в payload нет поля с кодом выхода. Hook записал бы
 # маркер `.claude/.qa-gate/passed` для упавшего QA-прогона, и `require-qa-gate` разрешил бы PR.
-CODEX_SUPPORT: frozenset[EventTool] = frozenset({("PreToolUse", "Bash")})
+# События Stop и SubagentStop подтверждены тем же источником (страница hooks, 2026-10-27): payload
+# несёт `session_id`, `hook_event_name`, `stop_hook_active`, а SubagentStop — ещё `agent_id`; при коде 0
+# stdout принимает только JSON или пустую строку. Журнал касаний `targeted-check-reminder` на Write и
+# Edit ждёт адаптера `apply_patch`, поэтому до него напоминание второго runtime молчит.
+CODEX_SUPPORT: frozenset[EventTool] = frozenset(
+    {("PreToolUse", "Bash"), ("Stop", "*"), ("SubagentStop", "*")}
+)
 
 ADAPTERS: tuple[RuntimeAdapter, ...] = (
     RuntimeAdapter(
