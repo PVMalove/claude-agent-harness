@@ -18,10 +18,11 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value};
 
-use crate::canonical::{object_sha256, sha256_hex};
+use crate::canonical::{canonical_json, object_sha256, sha256_hex};
 use crate::error::{Error, Result};
+use crate::export::{Generation, ROLLBACK_ACTION};
 use crate::import::manifest;
-use crate::legacy::LegacyState;
+use crate::legacy::{LegacyState, Pointer, audit_record_is_valid, is_direct, parse_object};
 use crate::project::SPECS;
 use crate::repair::rule_fields;
 use crate::route::{Target, classify};
@@ -51,20 +52,27 @@ impl Entry {
     }
 }
 
+/// The entry of one file of a generation; `None` for an audit record, which is compared by the
+/// manifest instead.
+fn file_entry(path: &str, bytes: &[u8]) -> Option<Entry> {
+    match classify(path, bytes) {
+        Target::Audit => None,
+        Target::Typed { record, .. }
+        | Target::QaLease(record)
+        | Target::QaQueue { record, .. }
+        | Target::Record { record, .. } => Some(Entry::record(record)),
+        Target::Artifact => Some(Entry::bytes(bytes)),
+    }
+}
+
 /// The legacy side, keyed by the path relative to the state root.
 fn legacy_side(legacy: &LegacyState) -> BTreeMap<String, Entry> {
     let selected = format!("generations/{}", legacy.pointer.generation);
     let mut found = BTreeMap::new();
     for file in &legacy.files {
-        let entry = match classify(&file.path, &file.bytes) {
-            Target::Audit => continue,
-            Target::Typed { record, .. }
-            | Target::QaLease(record)
-            | Target::QaQueue { record, .. }
-            | Target::Record { record, .. } => Entry::record(record),
-            Target::Artifact => Entry::bytes(&file.bytes),
-        };
-        found.insert(format!("{selected}/{}", file.path), entry);
+        if let Some(entry) = file_entry(&file.path, &file.bytes) {
+            found.insert(format!("{selected}/{}", file.path), entry);
+        }
     }
     let audit = legacy.audit_files();
     for other in &legacy.other_generations {
@@ -105,48 +113,78 @@ fn json_record(body: &str) -> rusqlite::Result<Map<String, Value>> {
     }
 }
 
-/// Every row of the store, keyed by the path the row projects to. The selected generation is
-/// named `generation`.
-fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<String, Entry>> {
-    let selected = format!("generations/{generation}");
-    let mut found = BTreeMap::new();
+/// What a row of the selected generation projects to.
+enum Projected {
+    /// A JSON record.
+    Record(Map<String, Value>),
+    /// A file kept byte for byte.
+    Bytes(Vec<u8>),
+}
+
+/// Every row of the selected generation, keyed by the path, relative to the generation, that the
+/// row projects to. The import compares it with the legacy files, and the rollback writes it.
+fn projection(connection: &Connection) -> Result<Vec<(String, Projected)>> {
+    let mut found = Vec::new();
     for spec in SPECS {
         for (id, record) in rows(connection, &spec.select_sql(), |row| spec.join(row))? {
-            found.insert(
-                format!("{selected}/{}/{id}.json", spec.directory),
-                Entry::record(record),
-            );
+            found.push((
+                format!("{}/{id}.json", spec.directory),
+                Projected::Record(record),
+            ));
         }
     }
     for (body,) in rows(connection, "SELECT body_json FROM qa_lane", |row| {
         Ok((row.get::<_, String>(0)?,))
     })? {
-        found.insert(
-            format!("{selected}/qa-lane/lease.json"),
-            Entry::record(json_record(&body)?),
-        );
+        found.push((
+            "qa-lane/lease.json".to_owned(),
+            Projected::Record(json_record(&body)?),
+        ));
     }
-    for (id, body) in rows(connection, "SELECT id, body_json FROM qa_queue", |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        found.insert(
-            format!("{selected}/qa-lane/queue/{id}.json"),
-            Entry::record(json_record(&body)?),
-        );
+    for (id, body) in rows(
+        connection,
+        "SELECT id, body_json FROM qa_queue ORDER BY id",
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )? {
+        found.push((
+            format!("qa-lane/queue/{id}.json"),
+            Projected::Record(json_record(&body)?),
+        ));
     }
-    for (path, body) in rows(connection, "SELECT path, body_json FROM record", |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        found.insert(
-            format!("{selected}/{path}"),
-            Entry::record(json_record(&body)?),
-        );
+    for (path, body) in rows(
+        connection,
+        "SELECT path, body_json FROM record ORDER BY path",
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )? {
+        found.push((path, Projected::Record(json_record(&body)?)));
     }
-    for (path, bytes) in rows(connection, "SELECT path, bytes FROM artifact", |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
-    })? {
-        found.insert(format!("{selected}/{path}"), Entry::bytes(&bytes));
+    for (path, bytes) in rows(
+        connection,
+        "SELECT path, bytes FROM artifact ORDER BY path",
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+    )? {
+        found.push((path, Projected::Bytes(bytes)));
     }
+    Ok(found)
+}
+
+impl From<Projected> for Entry {
+    fn from(projected: Projected) -> Self {
+        match projected {
+            Projected::Record(record) => Self::record(record),
+            Projected::Bytes(bytes) => Self::bytes(&bytes),
+        }
+    }
+}
+
+/// Every row of the store, keyed by the path the row projects to. The selected generation is
+/// named `generation`.
+fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<String, Entry>> {
+    let selected = format!("generations/{generation}");
+    let mut found: BTreeMap<String, Entry> = projection(connection)?
+        .into_iter()
+        .map(|(path, projected)| (format!("{selected}/{path}"), projected.into()))
+        .collect();
     for (path, bytes) in rows(connection, "SELECT path, bytes FROM legacy_audit", |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
     })? {
@@ -164,6 +202,51 @@ fn store_side(connection: &Connection, generation: &str) -> Result<BTreeMap<Stri
         },
     )? {
         found.insert(format!("generations/{other}/{path}"), Entry::bytes(&bytes));
+    }
+    Ok(found)
+}
+
+/// The files of a generation of format v3 that holds the rows of the store: each path relative
+/// to the generation, with the canonical JSON of a record or the bytes of an artifact.
+///
+/// # Errors
+/// `Error::Interrupted` when the store cannot be read.
+pub fn generation_files(connection: &Connection) -> Result<Vec<(String, Vec<u8>)>> {
+    Ok(projection(connection)?
+        .into_iter()
+        .map(|(path, projected)| {
+            let bytes = match projected {
+                Projected::Record(record) => canonical_json(&Value::Object(record)).into_bytes(),
+                Projected::Bytes(bytes) => bytes,
+            };
+            (path, bytes)
+        })
+        .collect())
+}
+
+/// The legacy audit records of the generation the store imported, as `audit/<name>` with their
+/// bytes.
+///
+/// # Errors
+/// `Error::Interrupted` when the store cannot be read.
+pub fn imported_audit(connection: &Connection) -> Result<Vec<(String, Vec<u8>)>> {
+    let imported: String = connection.query_row(
+        "SELECT value FROM store_meta WHERE key = 'selected_generation'",
+        [],
+        |row| row.get(0),
+    )?;
+    let prefix = format!("generations/{imported}/");
+    let mut found = Vec::new();
+    for (path, bytes) in rows(
+        connection,
+        "SELECT path, bytes FROM legacy_audit ORDER BY path",
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+    )? {
+        if let Some(relative) = path.strip_prefix(&prefix)
+            && is_direct(relative, "audit")
+        {
+            found.push((relative.to_owned(), bytes));
+        }
     }
     Ok(found)
 }
@@ -265,13 +348,76 @@ pub fn check(legacy: &LegacyState, db_path: &Path) -> Result<()> {
             "the manifest_sha256 of the store is not the manifest of the legacy audit".to_owned(),
         );
     }
+    report(differences, "parity check")
+}
+
+fn report(mut differences: Vec<String>, what: &str) -> Result<()> {
     if differences.is_empty() {
         return Ok(());
     }
     let total = differences.len();
     differences.truncate(REPORTED);
     Err(Error::invariant(format!(
-        "parity check failed, {total} difference(s): {}",
+        "{what} failed, {total} difference(s): {}",
         differences.join("; ")
     )))
+}
+
+/// Compare the generation the rollback wrote into `state` with the store behind `connection`,
+/// by the rule of the import: the canonical-JSON SHA-256 of every record, the bytes of every
+/// artifact and of every legacy audit record of the imported generation, and equal sets of paths.
+/// The `runtime-rollback` audit record of the generation is the only file the store does not hold.
+///
+/// # Errors
+/// `Error::Invariant` names the paths that differ; an unreadable generation is `Error::Refused`
+/// and an unreadable store `Error::Interrupted`.
+pub fn check_export(connection: &Connection, state: &Path, generation: &Generation) -> Result<()> {
+    let written = LegacyState::read(
+        state,
+        Pointer {
+            version: crate::legacy::LEGACY_VERSION,
+            generation: generation.name.clone(),
+            selected_at: String::new(),
+        },
+    )?;
+    let mut expected: BTreeMap<String, Entry> = projection(connection)?
+        .into_iter()
+        .map(|(path, projected)| (path, projected.into()))
+        .collect();
+    for (path, bytes) in imported_audit(connection)? {
+        expected.insert(path, Entry::bytes(&bytes));
+    }
+    let mut differences = Vec::new();
+    let mut rollback_record = false;
+    for file in &written.files {
+        if file.path == generation.audit_file {
+            let record = parse_object(&file.bytes);
+            rollback_record = audit_record_is_valid(&file.bytes)
+                && record
+                    .as_ref()
+                    .and_then(|record| record.get("action"))
+                    .and_then(Value::as_str)
+                    == Some(ROLLBACK_ACTION);
+            continue;
+        }
+        let actual =
+            file_entry(&file.path, &file.bytes).unwrap_or_else(|| Entry::bytes(&file.bytes));
+        match expected.remove(&file.path) {
+            None => differences.push(format!("not in the store: {}", file.path)),
+            Some(entry) if entry.digest != actual.digest => {
+                differences.push(format!("differs: {}", file.path));
+            }
+            Some(_) => {}
+        }
+    }
+    for path in expected.keys() {
+        differences.push(format!("missing in the generation: {path}"));
+    }
+    if !rollback_record {
+        differences.push(format!(
+            "the {ROLLBACK_ACTION} audit record {} is missing or invalid",
+            generation.audit_file
+        ));
+    }
+    report(differences, "the parity check of the export")
 }
