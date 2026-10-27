@@ -18,3 +18,11 @@ def offline_advisor_probe(monkeypatch: pytest.MonkeyPatch) -> None:
 def private_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
     """A test never reads or overwrites the developer's real clipboard."""
     monkeypatch.setenv("HARNESS_CONSOLE_SYSTEM_CLIPBOARD", "0")
+
+
+@pytest.fixture(autouse=True)
+def offline_home_titles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ordinary Pilot tests never read the user's tracker."""
+    from harness.console import task_titles
+
+    monkeypatch.setattr(task_titles, "load_task_titles", lambda repo, tickets: {})
