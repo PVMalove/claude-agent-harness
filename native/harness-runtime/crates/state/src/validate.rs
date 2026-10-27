@@ -269,11 +269,12 @@ fn rebuild_checkpoint(state: &Path, last: &(i64, String)) {
     {
         return;
     }
-    // Only a store of the current schema has the table; an older one is upgraded by the next write.
+    // Only a store of the current schema gets the checkpoint: an older one is upgraded by the next
+    // write, and a newer one belongs to a newer runtime, which this one never writes.
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap_or(0);
-    if version < crate::schema::SCHEMA_VERSION {
+    if version != crate::schema::SCHEMA_VERSION {
         return;
     }
     let _ = audit::move_checkpoint(&connection, last.0, &last.1);

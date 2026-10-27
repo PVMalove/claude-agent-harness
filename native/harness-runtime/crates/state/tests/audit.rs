@@ -473,6 +473,28 @@ fn a_failed_full_check_writes_nothing() {
 }
 
 #[test]
+fn the_check_of_a_store_of_a_newer_schema_writes_no_checkpoint() {
+    let repo = cut_over("newer-schema");
+    add_report(&repo, "a");
+    store(&repo)
+        .execute("DELETE FROM audit_checkpoint", [])
+        .unwrap();
+    let newer = state::schema::SCHEMA_VERSION + 1;
+    store(&repo)
+        .pragma_update(None, "user_version", newer)
+        .unwrap();
+
+    let _ = validate(&repo.state(), false);
+    let _ = full(&repo);
+
+    assert_eq!(checkpoint(&repo), None);
+    let version: i64 = store(&repo)
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, newer);
+}
+
+#[test]
 fn the_genesis_of_the_chain_is_sixty_four_zeros() {
     assert_eq!(GENESIS_CHAIN.len(), 64);
     let repo = cut_over("genesis");
