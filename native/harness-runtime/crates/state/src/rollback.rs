@@ -22,7 +22,9 @@
 //! A repeat after the commit point answers `already_rolled_back`. A repeat that finds step 8 done
 //! and the pointer still at version 4 does step 9 only; a repeat that finds step 7 done continues
 //! from step 8 with the generation and the archive the audit record names. A failure before
-//! step 7 removes the generation it wrote, and the store stays the authority.
+//! step 7 removes the generation it wrote, and the store stays the authority; the archive it
+//! installed is named by no record, so a repeat replaces it. The archive the record names is
+//! never replaced.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -240,7 +242,7 @@ fn nothing_to_roll_back() -> Error {
 /// `Error::Refused` (exit code 2): the approval or a precondition refused it, nothing was changed.
 /// `Error::Interrupted` (3): it failed after it began; the store is the authority until step 9,
 /// and a repeat continues. `Error::Invariant` (4): the export differs from the store, the archive
-/// of an earlier attempt has other bytes, or the state directory is inconsistent.
+/// the `runtime-rollback` record names has other bytes, or the state directory is inconsistent.
 pub fn run(repo: &Path, approval: &Approval) -> Result<Outcome> {
     check_approval(approval)?;
     let state: PathBuf = repo.join(STATE_REL);
@@ -393,6 +395,7 @@ fn write_export(
     hooks::reach("rollback-checked")?;
     let tail = audit::tail(connection)?;
     let bytes = export::archive(connection)?;
+    discard_unfinished_archive(state, &authority.store_id, &bytes)?;
     let export = export::write_archive(state, &authority.store_id, &bytes)?;
     hooks::reach("rollback-archive")?;
     let at = iso_now();
@@ -417,6 +420,30 @@ fn write_export(
         tail,
         at,
     })
+}
+
+/// The archive an unfinished attempt installed before the commit point. Step 6 runs only while
+/// the store has no `runtime-rollback` record, so no record names that archive: it is discarded
+/// state, and the store may have changed since. It is removed when its bytes differ, and this
+/// attempt installs its own. The archive of a committed rollback is never reached here: a repeat
+/// then continues from the record, and `finish` only compares the archive with it.
+fn discard_unfinished_archive(state: &Path, store_id: &str, bytes: &[u8]) -> Result<()> {
+    // `write_archive` refuses a store_id that names no plain file name.
+    if store_id.is_empty() || store_id.contains(['/', '\\']) || store_id.starts_with('.') {
+        return Ok(());
+    }
+    let path = state
+        .join(export::EXPORT_DIRECTORY)
+        .join(format!("{store_id}.tar"));
+    match fs::read(&path) {
+        Ok(existing) if existing == bytes => Ok(()),
+        Ok(_) => {
+            fs::remove_file(&path)?;
+            Ok(())
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 fn remove_generation(state: &Path, name: &str) {

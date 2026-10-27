@@ -455,6 +455,51 @@ fn rollback_that_stops_before_the_pointer_finishes_on_a_repeat() {
     assert_eq!(pointer(&repo)["generation"], authority["generation"]);
 }
 
+#[test]
+fn rollback_that_fails_before_the_commit_point_replaces_its_archive_on_a_repeat() {
+    let (repo, store) = cut_over("rb-stale");
+    let authority: serde_json::Value =
+        serde_json::from_slice(&fs::read(repo.state().join("AUTHORITY.json")).unwrap()).unwrap();
+    let archive = repo.state().join(format!(
+        "runtime-export/{}.tar",
+        authority["store_id"].as_str().unwrap()
+    ));
+
+    let failed = run_rollback(
+        &repo,
+        "human:operator",
+        &[(
+            "HARNESS_RUNTIME_TEST_FAIL_AT",
+            std::ffi::OsStr::new("rollback-generation"),
+        )],
+    );
+
+    let (code, _) = refusal(&failed);
+    assert_eq!(code, 3, "{:?}", stderr_lines(&failed));
+    assert_eq!(pointer(&repo)["version"], 4);
+    let stale = fs::read(&archive).unwrap();
+    // The store is still the authority and changes before the repeat.
+    rusqlite::Connection::open(&store)
+        .unwrap()
+        .execute(
+            "UPDATE record SET revision = revision + 1 WHERE path = (SELECT MIN(path) FROM record)",
+            [],
+        )
+        .unwrap();
+
+    let repeated = run_rollback(&repo, "human:operator", &[]);
+
+    assert!(repeated.status.success(), "{:?}", stderr_lines(&repeated));
+    let line: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    let replaced = fs::read(&archive).unwrap();
+    assert_ne!(replaced, stale);
+    assert_eq!(
+        line["export_sha256"],
+        state::canonical::sha256_hex(&replaced).as_str()
+    );
+    assert_eq!(pointer(&repo)["version"], 3);
+}
+
 fn run_owned(args: &[String]) -> Output {
     run(&args.iter().map(String::as_str).collect::<Vec<_>>())
 }
