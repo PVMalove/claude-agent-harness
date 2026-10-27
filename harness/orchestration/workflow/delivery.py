@@ -17,7 +17,12 @@ import time
 from pathlib import Path
 from typing import cast
 
-from harness.orchestration import operation_access, runtime_access, runtime_probe
+from harness.orchestration import (
+    hook_policy,
+    operation_access,
+    runtime_access,
+    runtime_probe,
+)
 from harness.errors import INTERNAL_INVARIANT_REMEDY
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import state_view
@@ -944,7 +949,19 @@ def publish_dispatch(args: argparse.Namespace) -> JsonObject:
             stop_attention(repo, root, args.dispatch, exc, locked=True)
             raise
         candidate = dispatch["candidate_commit"]
-        _accepted_qa_for_candidate(root, batch, candidate)
+        accepted_qa = _accepted_qa_for_candidate(root, batch, candidate)
+        # Strict fails closed before the push: the plan is the one the accepted QA brief carried.
+        hook_policy.check_strict_boundary(
+            repo,
+            hook_policy.dispatch_policy(dispatch),
+            role="coordinator",
+            boundary="publish",
+            batch=batch,
+            candidate=candidate,
+            plan=_load_dispatch(root, accepted_qa["dispatch_id"]).get(
+                "verification_plan"
+            ),
+        )
         # Only a candidate with accepted QA reaches this check, and nothing leaves the machine
         # before the pinned plan of this brief is proven for Git metadata, storage and the remote.
         try:
