@@ -5,6 +5,12 @@
 //! (done, or already done), 2 (a precondition refused it, nothing changed), 3 (it failed after it
 //! began; the file ledger is still the authority) or 4 (an invariant broke; an operator must look).
 //!
+//! `harness-runtime rollback --to-legacy [--repo <path>] --approved-by <human> --approved-at <RFC
+//! 3339 time> --reason <text>` exports the runtime store into a new generation of the file ledger
+//! and returns the authority to it (ADR 0020, section 5). It holds the instance lock of `serve`
+//! for its whole run, so a running `serve` refuses it, prints one JSON line and uses the exit codes
+//! of `migrate`.
+//!
 //! `harness-runtime serve [--repo <path>]` serves the local IPC of one repository until it gets
 //! SIGINT or SIGTERM (on Windows, Ctrl+C or Ctrl+Break). On Windows the `socket` key of the
 //! readiness line holds the name of the named pipe. ADR 0021, section 8 defines exit code 0 (a
@@ -22,18 +28,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use contracts::ErrorCode;
-use ipc::{Server, resolve_paths};
+use ipc::{Server, StartError, resolve_paths};
 use serde_json::json;
 
 const EXIT_FAILED: u8 = 1;
 const EXIT_REFUSED: u8 = 2;
-const USAGE: &str = "usage: harness-runtime serve|migrate [--repo <path>]";
+const USAGE: &str = "usage: harness-runtime serve|migrate [--repo <path>] | harness-runtime \
+    rollback --to-legacy [--repo <path>] --approved-by <human> --approved-at <time> --reason <text>";
 
 /// What the command line asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     Serve,
     Migrate,
+    Rollback,
 }
 
 /// The command and the repository it works on.
@@ -41,6 +49,8 @@ enum Command {
 struct Args {
     command: Command,
     repo: PathBuf,
+    /// The approval of `rollback`; blank fields are refused by the rollback itself.
+    approval: state::rollback::Approval,
 }
 
 fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> {
@@ -48,17 +58,44 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
     let command = match args.next().as_deref().and_then(|word| word.to_str()) {
         Some("serve") => Command::Serve,
         Some("migrate") => Command::Migrate,
+        Some("rollback") => Command::Rollback,
         _ => return Err(USAGE.to_owned()),
     };
     let mut repo = None;
+    let mut to_legacy = false;
+    let mut approval = state::rollback::Approval {
+        approved_by: String::new(),
+        approved_at: String::new(),
+        reason: String::new(),
+    };
     while let Some(flag) = args.next() {
-        if flag != "--repo" {
-            return Err(format!("unknown argument {flag:?}; {USAGE}"));
-        }
+        let rollback = command == Command::Rollback;
+        let field = match flag.to_str() {
+            Some("--repo") => None,
+            Some("--to-legacy") if rollback => {
+                to_legacy = true;
+                continue;
+            }
+            Some("--approved-by") if rollback => Some(&mut approval.approved_by),
+            Some("--approved-at") if rollback => Some(&mut approval.approved_at),
+            Some("--reason") if rollback => Some(&mut approval.reason),
+            _ => return Err(format!("unknown argument {flag:?}; {USAGE}")),
+        };
+        let what = if field.is_none() { "a path" } else { "a value" };
         let value = args
             .next()
-            .ok_or_else(|| format!("--repo needs a path; {USAGE}"))?;
-        repo = Some(PathBuf::from(value));
+            .ok_or_else(|| format!("{} needs {what}; {USAGE}", flag.to_string_lossy()))?;
+        match field {
+            None => repo = Some(PathBuf::from(value)),
+            Some(field) => {
+                *field = value
+                    .into_string()
+                    .map_err(|value| format!("{value:?} is not UTF-8; {USAGE}"))?;
+            }
+        }
+    }
+    if command == Command::Rollback && !to_legacy {
+        return Err(format!("rollback needs --to-legacy; {USAGE}"));
     }
     let repo = match repo {
         Some(repo) => repo,
@@ -66,7 +103,11 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Args, String> 
             env::current_dir().map_err(|err| format!("cannot read the working directory: {err}"))?
         }
     };
-    Ok(Args { command, repo })
+    Ok(Args {
+        command,
+        repo,
+        approval,
+    })
 }
 
 /// What an error line and its `REMEDY:` line say. The remedy line starts with the protocol error
@@ -170,6 +211,54 @@ fn migrate(args: &Args) -> ExitCode {
     }
 }
 
+/// Print what a rollback did as one JSON line, or the failure with the remedy of the rollback.
+fn rollback(args: &Args) -> ExitCode {
+    let refuse = |code: ErrorCode, message: String, remedy: &str| {
+        Report::new(code, message, remedy).print(EXIT_REFUSED)
+    };
+    if let Err(error) = state::rollback::check_approval(&args.approval) {
+        return refuse(
+            error.code(),
+            error.to_string(),
+            state::rollback::remedy(&error),
+        );
+    }
+    let xdg = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+    let paths = match resolve_paths(&args.repo, xdg.as_deref()) {
+        Ok(paths) => paths,
+        Err(err) => return refuse(err.code(), err.to_string(), err.remedy()),
+    };
+    // The instance lock of `serve`: no runtime serves the store while the rollback exports it.
+    let _instance = match ipc::hold_instance_lock(&paths) {
+        Ok(lock) => lock,
+        Err(err @ StartError::AlreadyRunning(_)) => {
+            return refuse(
+                err.code(),
+                err.to_string(),
+                "stop `harness-runtime serve` of this repository first, then repeat the rollback",
+            );
+        }
+        Err(err) => return refuse(err.code(), err.to_string(), err.remedy()),
+    };
+    match state::rollback::run(&args.repo, &args.approval) {
+        Ok(outcome) => {
+            let mut stdout = std::io::stdout().lock();
+            match writeln!(stdout, "{}", outcome.to_json()).and_then(|()| stdout.flush()) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(err) => Report::new(
+                    ErrorCode::Internal,
+                    format!("the rollback is done but its result cannot be written: {err}"),
+                    "repeat the rollback: a repeat after the commit point answers \
+                     already_rolled_back",
+                )
+                .print(EXIT_FAILED),
+            }
+        }
+        Err(error) => Report::new(error.code(), &error, state::rollback::remedy(&error))
+            .print(error.exit_code()),
+    }
+}
+
 fn main() -> ExitCode {
     let args = match parse_args(env::args_os().skip(1)) {
         Ok(args) => args,
@@ -177,13 +266,16 @@ fn main() -> ExitCode {
             return Report::new(
                 ErrorCode::MalformedRequest,
                 message,
-                "pass `serve` or `migrate`, with an optional `--repo <path>`",
+                "pass `serve` or `migrate` with an optional `--repo <path>`, or `rollback \
+                 --to-legacy` with `--approved-by`, `--approved-at` and `--reason`",
             )
             .print(EXIT_REFUSED);
         }
     };
-    if args.command == Command::Migrate {
-        return migrate(&args);
+    match args.command {
+        Command::Migrate => return migrate(&args),
+        Command::Rollback => return rollback(&args),
+        Command::Serve => {}
     }
     match serve(&args) {
         Ok(()) => ExitCode::SUCCESS,
@@ -217,6 +309,29 @@ mod tests {
     }
 
     #[test]
+    fn rollback_takes_the_approval_from_its_flags() {
+        let args = parse(&[
+            "rollback",
+            "--to-legacy",
+            "--repo",
+            "/r",
+            "--approved-by",
+            "human:a",
+            "--approved-at",
+            "2026-10-27T10:00:00+00:00",
+            "--reason",
+            "back to 1.x",
+        ])
+        .unwrap();
+
+        assert_eq!(args.command, Command::Rollback);
+        assert_eq!(args.repo, PathBuf::from("/r"));
+        assert_eq!(args.approval.approved_by, "human:a");
+        assert_eq!(args.approval.approved_at, "2026-10-27T10:00:00+00:00");
+        assert_eq!(args.approval.reason, "back to 1.x");
+    }
+
+    #[test]
     fn serve_defaults_to_the_working_directory() {
         assert_eq!(parse(&["serve"]).unwrap().repo, env::current_dir().unwrap());
     }
@@ -224,7 +339,13 @@ mod tests {
     #[test]
     fn anything_else_is_refused_with_the_usage() {
         assert!(parse(&[]).unwrap_err().contains("usage"));
-        assert!(parse(&["rollback"]).unwrap_err().contains("usage"));
+        assert!(parse(&["rewind"]).unwrap_err().contains("usage"));
+        assert!(parse(&["rollback"]).unwrap_err().contains("--to-legacy"));
+        assert!(
+            parse(&["migrate", "--reason", "x"])
+                .unwrap_err()
+                .contains("unknown argument")
+        );
         assert!(
             parse(&["serve", "--socket", "x"])
                 .unwrap_err()

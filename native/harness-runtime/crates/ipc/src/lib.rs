@@ -17,7 +17,7 @@ pub use paths::{
     resolve_paths,
 };
 pub use peer::{PeerId, same_user};
-pub use server::StartError;
+pub use server::{StartError, hold_instance_lock};
 #[cfg(unix)]
 pub use server_unix::Server;
 #[cfg(windows)]

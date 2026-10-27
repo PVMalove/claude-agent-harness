@@ -116,6 +116,25 @@ pub(crate) fn take_lock(paths: &RuntimePaths) -> Result<File, StartError> {
     }
 }
 
+/// Hold the instance lock of the repository's runtime without serving. An operation that must not
+/// run while `serve` runs (`harness-runtime rollback --to-legacy`) keeps the returned file open for
+/// its whole run; a `serve` that starts meanwhile is refused, and the kernel drops the lock when
+/// the process dies.
+///
+/// # Errors
+/// `StartError::AlreadyRunning` when a runtime serves the repository; `StartError::Io` when the
+/// runtime directory or the lock file cannot be created.
+pub fn hold_instance_lock(paths: &RuntimePaths) -> Result<File, StartError> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .create(&paths.dir)
+        .map_err(io_context(format!("cannot create {}", paths.dir.display())))?;
+    take_lock(paths)
+}
+
 pub(crate) fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

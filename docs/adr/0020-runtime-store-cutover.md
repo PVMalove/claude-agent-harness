@@ -183,6 +183,46 @@ authority прежняя; 4 — нарушение инварианта, тре�
 - аварийный откат восстановлением снимка теряет состояние после cutover, поэтому требует
   отдельного approval владельца и audit-записи `snapshot-restore`.
 
+Порядок шагов `rollback --to-legacy` (нарушение на шагах 1–5 — код 2, state-каталог и `runtime.db`
+не изменены):
+
+1. **Approval**: `--approved-by`, `--approved-at` и `--reason` не пустые (иначе
+   `malformed_request`); approver с префиксом `policy:` отклоняется (`policy_denied`);
+   `--approved-at` разбирается как время RFC 3339 и не лежит в будущем.
+2. **Замок экземпляра `serve`** (`ipc::hold_instance_lock`, тот же `take_lock`, что у `serve`):
+   занятый замок — код 2, сначала нужно остановить `serve`.
+3. **Legacy-замок** по протоколу шага 2 миграции, `owner.json` с `operation: runtime-rollback`.
+4. **Схема store**: `schema::upgrade`; `user_version` новее runtime — код 2 без записи. Откат
+   никогда не понижает `user_version`.
+5. **Предусловия в одном снимке чтения**: нет строки в `qa_lane` и `qa_queue`, нет исполнения в
+   `launching`, `running`, `stopping` или `unknown` (`lease_held`). Dispatch в `dispatched` или
+   `working` с остановленным исполнением или без него экспортируется как есть: тест DoD требует
+   поколение с batch в каждом `DispatchState`.
+6. **Архив и поколение**: детерминированный ustar `state/runtime-export/<store_id>.tar`
+   (участники по алфавиту, mtime 0, uid/gid 0, mode 0444; `store_meta.json`, `audit.jsonl` — вся
+   цепочка store, `operations.jsonl`, `revisions.jsonl` (`path`, `revision`, `execution_state`),
+   `qa_lane.json` при наличии строки, `MANIFEST.json` с sha256 каждого участника). Файл пишется под
+   временным именем, сбрасывается на диск, переименовывается и становится read-only. Файл с
+   другими байтами, который оставила незавершённая попытка, заменяется (см. «Повторы»). Затем
+   новое `generation-<hex>` и его сверка `check_export` по правилу шага 5 миграции; единственный
+   лишний файл — v3 audit-запись `runtime-rollback`.
+7. **Audit-запись store** `runtime-rollback` (`generation`, `export`, `export_sha256`,
+   `approved_by`, `approved_at`, `reason`), checkpoint WAL, `runtime.db` переводится в read-only и
+   не удаляется.
+8. **`AUTHORITY.json`**: `authority: file-ledger`, `rolled_back_from: <store_id>`, `generation`,
+   `export`, `export_sha256`, `rolled_back_at` и поля cutover.
+9. **`ledger.json`** заменяется на `{version: 3, generation: <новое>, selected_at}` — commit point.
+
+**Повторы.** Повтор после шага 9 возвращает код 0 и `already_rolled_back`. Повтор, который застал
+шаг 8 выполненным, а указатель ещё на `version: 4`, выполняет только шаг 9. Повтор, который застал
+audit-запись шага 7, продолжает с шага 8 по поколению и архиву из этой записи. Сбой до шага 7
+удаляет записанное поколение, и authority остаётся у store. Архив, который незавершённая попытка
+установила до commit point, не назван ни одной audit-записью `runtime-rollback`: это отброшенное
+состояние, и store мог измениться после сбоя. Повтор заменяет такой архив архивом текущего store и
+не завершается кодом 4. Архив, который назван audit-записью шага 7, в том числе архив
+зафиксированного отката, неизменяем: повтор только сверяет его sha256 с записью, а расхождение —
+код 4.
+
 ### 6. Поставка и работа до cutover
 
 Integration-ветки поставляются цепочкой: дочерние PR → `integration/orchestration-ledger` и
@@ -263,7 +303,29 @@ Lease и execution receipt в store хранят `boot_id`, inode PID-namespace,
   (`container_executor.run_engine`) переходит к Rust до 2.0.0; #709, #777, #778 и #779 стоят в
   `status::blocked` до появления тикетов Rust-фундамента и store.
 - **Откат на 1.x:** `rollback --to-legacy` экспортирует состояние в формат v3, поэтому после него
-  state-каталог снова читает установка 1.x; её `ledger validate` завершает откат.
-- **Golden-тест паритета CLI** (обязателен до cutover): фикстуры state-каталогов 1.x с batch в
-  каждом состоянии `DispatchState`, с QA-lease и очередью; ответы CLI 1.x и CLI 2.0.0 после
-  импорта совпадают в каноническом JSON, кроме полей repair-записей.
+  state-каталог снова читает установка 1.x; её `ledger validate` завершает откат. Перед откатом
+  оператор останавливает `serve` (иначе код 2 на замке экземпляра) и дожидается пустой QA-lane;
+  архив `runtime-export/<store_id>.tar` и read-only `runtime.db` остаются для разбора, а sha256
+  архива записан в audit-записи `runtime-rollback` и в `AUTHORITY.json`.
+- **Golden-тест паритета CLI** (обязателен до cutover, `tests/orchestration/test_cli_parity_1x.py`
+  в job `verify`): state-каталог пишет код релиза 1.5.1 (коммит `3e4dee33`, извлекается из истории
+  Git). Решение владельца (2026-10-27) об объёме фикстур: фикстура содержит состояния, которые
+  допускает шаг 1 `migrate`. Dispatch в `dispatched` или `working`, QA-lease и записи очереди QA
+  шаг 1 отклоняет: их покрывают негативные тесты `migrate`, а batch в каждом `DispatchState`
+  покрывает тест отката (`ledger validate` 1.5.1 по поколению отката).
+- **Правило сравнения golden-теста** (решение владельца, 2026-10-27): тест сравнивает весь ответ
+  CLI 1.5.1 до импорта с ответом CLI 2.0.0 после импорта в каноническом JSON. Исключаются только
+  поля, которые audit-запись `migration-repair` называет для своей записи (правило → поля
+  сверяется с `repair.rs`), и закрытый список полей, добавленных в CLI после 1.5.1; они удаляются
+  только из ответа 2.0.0:
+  - `dispatch status`: `dispatches[*].adapter_receipt`, `dispatches[*].worker`,
+    `dispatches[*].startup.deadline_exceeded`, `dispatches[*].startup.failure`,
+    `dispatches[*].startup.observation`, `dispatches[*].startup.startup_elapsed_seconds`,
+    `dispatches[*].startup.startup_timeout_seconds`;
+  - `batch decision-packet`: `route_preview.retry.failure`.
+
+  Всего в списке восемь полей. Значение `silent_seconds` есть в обоих ответах и зависит от
+  часов, поэтому маскируется, а ключ сравнивается. Адрес отчёта в `batch decision-packet`
+  сравнивается по имени файла.
+  Любое другое добавленное, отсутствующее или изменённое поле — провал теста; расширение списка —
+  новое решение владельца.

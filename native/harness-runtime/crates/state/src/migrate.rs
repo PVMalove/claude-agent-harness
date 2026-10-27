@@ -330,7 +330,7 @@ pub fn run(repo: &Path) -> Result<Outcome> {
     }
     preconditions(&state)?;
     hooks::reach("preconditions")?;
-    let held: LegacyLock = lock::acquire(&state)?;
+    let held: LegacyLock = lock::acquire(&state, lock::OPERATION)?;
     let outcome = hooks::reach("locked").and_then(|()| locked(repo, &state));
     let released = held.release();
     let authority = outcome?;

@@ -1,10 +1,10 @@
-//! The legacy ledger lock, taken by the migrator (ADR 0020, section 5, step 2).
+//! The legacy ledger lock, taken by the migrator and by the rollback (ADR 0020, section 5, step 2).
 //!
 //! The protocol is the one of the Python ledger (`LifecycleLedger.lock`): a directory
 //! `.coordinator.lock` is created, and whoever creates its `owner.json` exclusively holds the lock.
-//! The owner record names `operation: runtime-cutover`. On Unix the migrator also keeps an
-//! exclusive `flock` on `owner.json` for the whole operation, so the kernel drops it when the
-//! process dies.
+//! The owner record names the operation (`runtime-cutover` or `runtime-rollback`). On Unix the
+//! process also keeps an exclusive `flock` on `owner.json` for the whole operation, so the kernel
+//! drops it when the process dies.
 //!
 //! A live owner is never removed. A dead owner is removed only by the verdict `owner-dead` that
 //! `coordinator.py ledger release-lock` also uses (same host, PID namespace and boot, and a pid that
@@ -26,7 +26,10 @@ pub const LOCK_DIRECTORY: &str = ".coordinator.lock";
 pub const LOCK_OWNER: &str = "owner.json";
 /// The operating-system lock that lets one release at a time judge and remove the lock.
 pub const LOCK_RELEASE_GUARD: &str = ".coordinator.lock.release";
+/// The operation of `migrate` in the owner record.
 pub const OPERATION: &str = "runtime-cutover";
+/// The operation of `rollback --to-legacy` in the owner record.
+pub const ROLLBACK_OPERATION: &str = "runtime-rollback";
 const LOCK_AUDIT: &str = "lock-audit";
 
 const BUSY_REMEDY: &str = "repeat the command once the other operation finishes; \
@@ -108,7 +111,7 @@ fn write_lock_audit(state: &Path, action: &str, details: Value) -> Result<()> {
 
 /// Remove the lock of a dead owner, after the removal is audited. The lock is judged and removed
 /// under the release guard, so a second release cannot interleave.
-fn remove_dead(state: &Path, lock_dir: &Path) -> Result<()> {
+fn remove_dead(state: &Path, lock_dir: &Path, operation: &str) -> Result<()> {
     // A live or foreign owner is refused before the guard file is even created.
     if let Some(reason) = why_not_dead(read_owner(lock_dir).as_ref()) {
         return Err(busy(&format!(
@@ -135,7 +138,7 @@ fn remove_dead(state: &Path, lock_dir: &Path) -> Result<()> {
         "ledger-lock-owner-dead-release",
         json!({
             "verdict": "owner-dead",
-            "released_by": OPERATION,
+            "released_by": operation,
             "lock": {"path": lock_dir.to_string_lossy(), "owner": observed},
         }),
     )?;
@@ -161,15 +164,15 @@ pub fn release_if_dead(state: &Path) -> Result<bool> {
     if !lock_dir.is_dir() {
         return Ok(false);
     }
-    remove_dead(state, &lock_dir)?;
+    remove_dead(state, &lock_dir, OPERATION)?;
     Ok(true)
 }
 
-/// Take the lock of the legacy ledger.
+/// Take the lock of the legacy ledger for `operation`, which the owner record names.
 ///
 /// # Errors
 /// `Error::Refused` when another operation holds it and its owner is not provably dead.
-pub fn acquire(state: &Path) -> Result<LegacyLock> {
+pub fn acquire(state: &Path, operation: &str) -> Result<LegacyLock> {
     let lock_dir = state.join(LOCK_DIRECTORY);
     let mut removed_dead_owner = false;
     loop {
@@ -179,7 +182,7 @@ pub fn acquire(state: &Path) -> Result<LegacyLock> {
                 if removed_dead_owner {
                     return Err(busy("another operation took it first"));
                 }
-                remove_dead(state, &lock_dir)?;
+                remove_dead(state, &lock_dir, operation)?;
                 removed_dead_owner = true;
             }
             Err(err) => {
@@ -197,7 +200,7 @@ pub fn acquire(state: &Path) -> Result<LegacyLock> {
         "pid": std::process::id(),
         "host": platform::hostname(),
         "acquired_at": iso_now(),
-        "operation": OPERATION,
+        "operation": operation,
     });
     if let Some(namespace) = environment.pid_namespace {
         record["pid_namespace"] = Value::String(namespace);

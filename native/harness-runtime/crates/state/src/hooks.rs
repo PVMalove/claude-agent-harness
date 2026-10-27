@@ -12,12 +12,19 @@
 //! `pointer-replace` (just before the pointer is replaced) and `pointer` (the pointer is
 //! replaced: the commit point is behind). A failure cannot be injected at `pointer`, because
 //! the cutover is done by then.
+//!
+//! `rollback --to-legacy` has its own steps: `rollback-locked` (the legacy lock is held),
+//! `rollback-checked` (the store passed its preconditions), `rollback-archive` (the archive is
+//! installed), `rollback-generation` (the generation is written and checked), `rollback-audit`
+//! (the store has the `runtime-rollback` record and is read-only), `rollback-authority`
+//! (`AUTHORITY.json` names the file ledger), `rollback-pointer-replace` (just before the pointer
+//! is replaced) and `rollback-pointer` (the commit point is behind).
 
 #[cfg(debug_assertions)]
 use crate::error::Error;
 use crate::error::Result;
 
-pub const STEPS: [&str; 9] = [
+pub const STEPS: [&str; 17] = [
     "preconditions",
     "locked",
     "snapshot",
@@ -27,6 +34,14 @@ pub const STEPS: [&str; 9] = [
     "authority",
     "pointer-replace",
     "pointer",
+    "rollback-locked",
+    "rollback-checked",
+    "rollback-archive",
+    "rollback-generation",
+    "rollback-audit",
+    "rollback-authority",
+    "rollback-pointer-replace",
+    "rollback-pointer",
 ];
 
 #[cfg(debug_assertions)]
