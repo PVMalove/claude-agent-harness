@@ -81,6 +81,7 @@ def test_events_the_second_runtime_lacks_are_listed_and_a_missing_out_of_hook_ch
 
     assert result["status"] == "warn"
     message = result["message"]
+    assert "ограничение адаптера codex:" in message
     assert (
         "codex: нет события или payload: block-scratch-outside-docs-tasks "
         "(нет проверки вне hook)"

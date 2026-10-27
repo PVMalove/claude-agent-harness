@@ -30,6 +30,7 @@ _ORCHESTRATION_LOCK: dict[str, object] = {"capabilities": ["backend-orchestratio
 
 _CHECK_FUNCTIONS: list[Callable[[HealthContext], CheckResult]] = [
     checks.check_ledger_summary,
+    checks.check_unfinished_batches,
     checks.check_blocked_batches,
     checks.check_stale_dispatches,
     checks.check_orphaned_worktrees,
@@ -109,6 +110,7 @@ def test_ledger_summary_ok_with_no_orchestration_data_yet(tmp_path: Path) -> Non
     result = checks.check_ledger_summary(_context(tmp_path, lock=_ORCHESTRATION_LOCK))
 
     assert result.status == "ok"
+    assert not (tmp_path / STATE_REL).exists()
 
 
 def test_ledger_summary_fails_on_an_unreadable_ledger_pointer(tmp_path: Path) -> None:
@@ -197,6 +199,32 @@ def test_ledger_summary_reports_generation_schema_and_batch_counts(
     assert "completed=1" in result.message
     assert "abandoned=1" in result.message
     assert "active=1" in result.message
+
+
+def test_unfinished_batches_excludes_legacy_operator_abandonment(
+    tmp_path: Path,
+) -> None:
+    ledger = _ledger(tmp_path)
+    _write_batch(ledger, "batch-abandoned", "failed")
+    path = ledger.records_root() / "batches/batch-abandoned.json"
+    batch = json.loads(path.read_text(encoding="utf-8"))
+    approval = {"approved_by": "Owner", "approved_at": "2026-10-01T00:00:00+00:00"}
+    batch["abandoned"] = {
+        **approval,
+        "reason": "The owner stopped this attempt.",
+        "abandoned_at": approval["approved_at"],
+    }
+    batch["coordinator_decisions"] = [{"decision": "abandon", **approval}]
+    path.write_text(json.dumps(batch), encoding="utf-8")
+    _write_batch(ledger, "batch-retryable", "failed")
+
+    result = checks.check_unfinished_batches(
+        _context(tmp_path, lock=_ORCHESTRATION_LOCK)
+    )
+
+    assert result.status == "ok"
+    assert "batch-abandoned" not in result.message
+    assert "batch-retryable" in result.message
 
 
 # --- orchestration.blocked_batches (DoD 3) ------------------------------------------------------
