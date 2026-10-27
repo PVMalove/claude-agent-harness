@@ -13,6 +13,7 @@ from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
+from textual import events
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
@@ -20,6 +21,7 @@ from textual.widget import Widget
 from textual.widgets import Button, ListItem, ListView, Static
 
 from .. import brand, i18n
+from .. import task_titles
 from ..chrome import TopBar
 from ..session_card import elapsed_text, session_row
 from ..shell import (
@@ -397,6 +399,7 @@ class DashboardScreen(ConsoleShell):
         command_runner: CommandRunner = capturing_runner,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         collect_context: Callable[[Path], HomeContext] = collect_context,
+        collect_titles: task_titles.TaskTitlesLoader | None = None,
     ) -> None:
         super().__init__()
         self.repo = repo
@@ -404,6 +407,13 @@ class DashboardScreen(ConsoleShell):
         self._collect_dashboard = collect_dashboard
         self._collect_banner = collect_banner
         self._collect_context = collect_context
+        self._collect_titles = (
+            collect_titles
+            if collect_titles is not None
+            else task_titles.load_task_titles
+        )
+        self._titles: dict[str, str] = {}
+        self._title_generation = 0
         self._command_runner = command_runner
         self._home_context = HomeContext()
         self._language = "ru"
@@ -423,6 +433,54 @@ class DashboardScreen(ConsoleShell):
     def compose(self) -> ComposeResult:
         self._load()
         yield from super().compose()
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self._refresh_titles()
+
+    def on_resize(self, event: events.Resize) -> None:
+        super().on_resize(event)
+        self._repaint_sessions()
+
+    def _repaint_sessions(self) -> None:
+        if not self.is_mounted:
+            return
+        stages = {stage.dispatch_id: stage for stage in self._home_sessions()}
+        for item in self.query("#home-sessions > ListItem").results(ListItem):
+            if item.name in stages:
+                item.query_one(Static).update(self._session_row(stages[item.name]))
+
+    def _refresh_titles(self) -> None:
+        """Read optional tracker facts off the UI thread; only the latest pass may repaint."""
+        self._title_generation += 1
+        generation, repo = self._title_generation, self.repo
+        tickets = list(dict.fromkeys(stage.ticket for stage in self._home_sessions()))
+        self._titles = {}
+        self._repaint_sessions()
+        if not tickets:
+            return
+
+        def work() -> None:
+            try:
+                titles = self._collect_titles(repo, tickets)
+            except Exception:
+                # Optional tracker data must never take down the console or expose CLI errors.
+                titles = {}
+
+            def apply() -> None:
+                if (
+                    self.is_mounted
+                    and self in self.app.screen_stack
+                    and generation == self._title_generation
+                    and self.repo == repo
+                    and getattr(self.app, "repo", repo) == repo
+                ):
+                    self._titles = titles
+                    self._repaint_sessions()
+
+            call_from_worker(self, apply)
+
+        self.run_worker(work, thread=True, exclusive=True, group="dashboard-titles")
 
     def _load(self) -> None:
         banner = self._collect_banner(self.repo)
@@ -567,6 +625,8 @@ class DashboardScreen(ConsoleShell):
             elapsed=elapsed_text(
                 reports.timestamp(stage.at), self._now(), self._language
             ),
+            title=self._titles.get(stage.ticket, ""),
+            narrow=self.app.size.width < brand.NARROW_WIDTH,
         )
 
     def _home_sessions(self) -> list[reports.StageEntry]:
@@ -641,10 +701,7 @@ class DashboardScreen(ConsoleShell):
         self._language = language
         self._render_menu()
         self._repaint()
-        stages = {stage.dispatch_id: stage for stage in self._home_sessions()}
-        for item in self.query("#home-sessions > ListItem").results(ListItem):
-            if item.name in stages:
-                item.query_one(Static).update(self._session_row(stages[item.name]))
+        self._repaint_sessions()
 
     def _repaint(self) -> None:
         """Re-render the data-driven texts in the current language from the stored data."""
@@ -720,12 +777,14 @@ class DashboardScreen(ConsoleShell):
 
     def on_unmount(self) -> None:
         """Отменяет фоновые воркеры при размонтировании экрана."""
+        self._title_generation += 1
         self.workers.cancel_node(self)
 
     def action_checks_offline(self) -> None:
         self._refresh_dashboard(online=False)
 
     def action_checks_online(self) -> None:
+        self._refresh_titles()
         self._refresh_dashboard(online=True)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
