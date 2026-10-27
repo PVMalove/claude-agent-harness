@@ -587,6 +587,63 @@ def test_the_strict_verdict_carries_the_evidence_record(tmp_path: Path) -> None:
     assert (record["hook_id"], record["profile"]) == (SENSITIVE, "strict")
 
 
+@needs_bash
+def test_the_hooks_start_no_make_pytest_or_git(tmp_path: Path) -> None:
+    project = _project(tmp_path / "project", {"profile": "strict"})
+    sentinel = tmp_path / "started"
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    for program in ("make", "pytest", "git", "uv", "cargo"):
+        script = fake / program
+        script.write_text(f'#!/bin/sh\necho "$0" >> "{sentinel}"\n', encoding="utf-8")
+        script.chmod(0o755)
+    env = {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"}
+    risky = _write(project / "pyproject.toml", "")
+    code = _write(project / "services" / "x.py")
+
+    verdicts = [
+        _decision(_script(project, hook_id, _edit(path), env=env))
+        for hook_id in (FIRST_TOUCH, SENSITIVE, REMINDER)
+        for path in (risky, code)
+    ]
+    verdicts.append(_decision(_script(project, REMINDER, _stop(), env=env)))
+
+    assert {v["decision"] for v in verdicts} == {"warn", "allow"}
+    assert not sentinel.exists()
+
+
+@needs_bash
+@pytest.mark.parametrize("role", ["coordinator", "developer"])
+def test_the_end_of_a_turn_never_continues_it(tmp_path: Path, role: str) -> None:
+    project = _project(tmp_path, {"profile": "strict"})
+    changed = _write(project / "services" / "x.py")
+    _decision(_script(project, REMINDER, _edit(changed, role)))
+
+    active = _script(project, REMINDER, _stop(role, stop_hook_active=True))
+    reminded = _script(project, REMINDER, _stop(role))
+
+    assert (_decision(active)["decision"], active.stdout) == ("allow", "")
+    assert _decision(reminded)["decision"] == "warn"
+    # Only a message for the user: no block decision, no context that continues the turn.
+    assert set(json.loads(reminded.stdout)) == {"systemMessage"}
+    assert reminded.returncode == 0
+
+
+@needs_bash
+def test_the_first_touch_does_not_repeat_through_the_envelope(tmp_path: Path) -> None:
+    project = _project(tmp_path, {"profile": "strict"})
+    risky = _write(project / "Makefile", "all:\n")
+
+    answers = [_script(project, FIRST_TOUCH, _edit(risky)) for _ in range(3)]
+
+    assert [_decision(done)["decision"] for done in answers] == [
+        "warn",
+        "allow",
+        "allow",
+    ]
+    assert [bool(done.stdout) for done in answers] == [True, False, False]
+
+
 def test_concurrent_identical_events_warn_once(tmp_path: Path) -> None:
     project = _project(tmp_path)
     payload = json.dumps(_triggers(project)[FIRST_TOUCH][0])

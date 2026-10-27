@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import socket
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -288,6 +289,86 @@ class PublishBoundaryTests(StrictBoundaryFixture):
 
         self.assertEqual(code, 0, err)
         self.assertTrue(self._pushed(candidate))
+
+
+class RecoveryUnderStrictTests(StrictBoundaryFixture):
+    """Strict adds no check to a recovery command: each one answers as under standard."""
+
+    def _recovery(self, policy: JsonObject) -> dict[str, tuple[int, bool]]:
+        """Run the recovery commands on a pinned review dispatch; (exit code, strict refusal)."""
+        fx = self.fx
+        fx._reset()
+        self._write_test()
+        # `qa clear-stale-lease` is repository-scoped: the whole ledger lives in the repository.
+        fx.state_dir = fx.repo / coordinator.STATE_REL
+        self._configure(None)
+        batch_id, candidate = self._candidate()
+        self._hook_policy(policy)
+        with self._boundary_of_an_older_coordinator():
+            review = fx._dispatch(batch_id, "code-review", candidate=candidate)["brief"]
+        approval = ("--approved-by", "Malove", "--approved-at", fx.APPROVED_AT)
+        commands: dict[str, tuple[str, ...]] = {
+            "ledger lock-status": ("ledger", "lock-status"),
+            "qa clear-stale-lease": (
+                "qa", "clear-stale-lease", *approval, "--expected-host", "host",
+                "--expected-pid", "1", "--expected-expiry", fx.APPROVED_AT,
+                "--reason", "the owner is gone",
+            ),
+            "dispatch cancel": (
+                "dispatch", "cancel", "--dispatch", str(review["dispatch_id"]),
+                *approval, "--reason", "the review is not needed",
+            ),
+            "batch rewind": (
+                "batch", "rewind", "--batch", batch_id, "--to", "developer",
+                *approval, "--note", "redo the change",
+            ),
+            "ledger release-lock --force without approval": (
+                "ledger", "release-lock", "--force", "--reason", "the owner is gone",
+            ),
+            "ledger release-lock --force": (
+                "ledger", "release-lock", "--force", *approval,
+                "--reason", "the owner is gone",
+            ),
+        }  # fmt: skip
+        results: dict[str, tuple[int, bool]] = {}
+        for name, argv in commands.items():
+            if name.startswith("ledger release-lock") and not self._lock().exists():
+                self._orphan_lock()
+            code, _, err = self._cli(*argv)
+            results[name] = (code, "strict_impact_unknown" in err)
+            if name.endswith("without approval"):
+                self.assertEqual(code, 2)
+                self.assertIn("--approved-by", err)
+                self.assertTrue(self._lock().exists())
+        self.assertFalse(self._lock().exists())
+        return results
+
+    def _lock(self) -> Path:
+        return self.fx.state_dir / ".coordinator.lock"
+
+    def _orphan_lock(self) -> None:
+        """A ledger lock left by a stopped sandboxed worker of another PID namespace."""
+        self._lock().mkdir(parents=True)
+        owner = {
+            "pid": 1,
+            "host": socket.gethostname(),
+            "acquired_at": self.fx.APPROVED_AT,
+            "pid_namespace": "pid:[1]",
+            "boot_id": "boot-of-another-sandbox",
+        }
+        (self._lock() / "owner.json").write_text(json.dumps(owner), encoding="utf-8")
+
+    def test_the_recovery_commands_answer_under_strict_as_under_standard(
+        self,
+    ) -> None:
+        standard = self._recovery({"profile": "standard"})
+        strict = self._recovery({"profile": "strict"})
+
+        self.assertEqual(strict, standard)
+        self.assertEqual(strict["ledger lock-status"], (0, False))
+        self.assertEqual(strict["dispatch cancel"], (0, False))
+        self.assertEqual(strict["ledger release-lock --force"], (0, False))
+        self.assertFalse(any(refused for _, refused in strict.values()))
 
 
 class DispatchPolicyTests(StrictBoundaryFixture):
