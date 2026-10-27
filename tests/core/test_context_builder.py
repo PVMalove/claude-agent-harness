@@ -129,6 +129,25 @@ class ContextBuilderFixture(unittest.TestCase):
 
 
 class ContextBuilderTests(ContextBuilderFixture):
+    def test_explicit_read_input_survives_a_changed_file_limit(self) -> None:
+        package = build_context_package(
+            self.repo, self.base_commit, self.candidate_commit,
+            min_starting_files=1, max_starting_files=1,
+            required_paths=["docs/adr/0001-base-module.md"],
+        )
+        self.assertEqual(
+            [item.path for item in package.starting_files],
+            ["docs/adr/0001-base-module.md"],
+        )
+
+    def test_explicit_read_inputs_cannot_exceed_the_starting_file_limit(self) -> None:
+        with self.assertRaisesRegex(ContextPackageError, "starting files exceed"):
+            build_context_package(
+                self.repo, self.base_commit, self.candidate_commit,
+                min_starting_files=1, max_starting_files=1,
+                required_paths=["pkg/base.py", "docs/adr/0001-base-module.md"],
+            )
+
     """Набор тестов для сборщика контекста при использовании минимального (безбандлового) уровня Repo Map."""
 
     def test_builds_diff_starting_files_cards_and_hashes(self) -> None:

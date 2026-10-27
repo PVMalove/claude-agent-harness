@@ -802,6 +802,17 @@ With `approval_ttl_seconds` set, an `--approved-at` older than that (or dated in
 rejected. A denied terminal confirmation (`human_approval_gate: "tty"`) or an expired approval fails
 closed: the coordinator never repeats the call and never falls back to an older approval.
 
+## Explicit Context Package inputs
+
+When planned implementation files do not exist yet, register the existing read inputs before
+proposing the next dispatch. Repeat `context-package register --starting-file <relative-path>`
+for each needed ADR, module or test. Use the batch's initial base SHA before coding, or its
+current candidate SHA after coding. Every path must exist at that pinned snapshot and pass the
+repository map policy. The file and token limits still apply; the command refuses unavailable
+inputs instead of silently dropping them. A package with the same snapshot is reused only when
+it already contains every requested starting file. The next role shares the enriched package;
+previous packages and briefs remain immutable. Adding read inputs does not widen write scope.
+
 ## Read-only retry idempotency
 
 Every `architect`, `code-review`, `qa` and `publish` brief records
