@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -24,6 +25,7 @@ from harness.orchestration import (
     runtime_probe,
 )
 from harness.errors import INTERNAL_INVARIANT_REMEDY
+from harness.storage import storage_path
 from harness.orchestration.core import config as core_config
 from harness.orchestration.core import state_view
 from harness.orchestration.core import utils
@@ -48,6 +50,7 @@ from harness.orchestration.core.git_utils import (
 from harness.orchestration.core.utils import (
     CoordinatorError,
     JsonObject,
+    _canonical,
     _non_empty,
     _read_object,
     _repo,
@@ -57,6 +60,7 @@ from harness.orchestration.core.utils import (
 )
 from harness.orchestration.core.workspace import (
     _agent_inbox,
+    _prepare_agent_inbox,
 )
 from harness.orchestration.ledger.ledger_ops import (
     read_state,
@@ -100,6 +104,33 @@ from harness.orchestration.workflow.reports import (
 
 # A push of one already verified commit is bounded; the limit only stops a hung transport.
 PUBLISH_PUSH_TIMEOUT_SECONDS = 600
+
+
+def _worker_brief_path(repo: Path, root: Path, dispatch: JsonObject) -> Path:
+    """Export the validated store record for a worker that needs an ordinary file.
+
+    The store remains authoritative. The copy survives send and is never replaced: a conflicting
+    copy is an integrity failure, not permission to change the approved worker contract.
+    """
+    name = f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
+    if not store_is_authority(root):
+        return _records_root(root) / DispatchRecord.directory / name
+    _prepare_agent_inbox(repo)
+    path = storage_path(repo, "scratch", "briefs", name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    expected = _canonical(dispatch).encode("utf-8")
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(expected)
+    except FileExistsError:
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != expected:
+            raise CoordinatorError(
+                "the exported worker brief differs from its approved store record",
+                remedy="inspect the conflicting brief export before retrying; never edit the approved dispatch",
+            ) from None
+    path.chmod(0o400)
+    return path
 
 
 def _validate_checkout(
@@ -349,11 +380,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
                 remedy="the dispatch was already sent or is not registered in its batch -- "
                 + INTERNAL_INVARIANT_REMEDY,
             )
-        brief_path = (
-            _records_root(root)
-            / DispatchRecord.directory
-            / f"{_safe_id(dispatch['dispatch_id'], 'dispatch')}.json"
-        )
+        brief_path = _worker_brief_path(repo, root, dispatch)
         command = None
         adapter_preflight: JsonObject | None = None
         if adapter is not None:
