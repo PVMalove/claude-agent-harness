@@ -11,6 +11,7 @@ import secrets
 import stat
 import subprocess
 import sys
+from typing import NamedTuple
 
 from harness.storage import storage_path, storage_root
 
@@ -43,6 +44,25 @@ def discovery_path(repo: Path) -> Path:
         if sys.platform != "win32" and part.exists() and part.stat().st_uid != os.getuid():
             raise PermissionError("console storage has a foreign owner")
     return path
+
+
+class ServerEndpoint(NamedTuple):
+    """Где слушает Сервер консоли проекта: loopback-порт и токен из discovery-записи."""
+
+    port: int
+    token: str
+
+
+def read_record(repo: Path) -> ServerEndpoint | None:
+    """Return the published endpoint, or None when no valid record is readable."""
+    try:
+        record = json.loads(discovery_path(repo).read_text(encoding="utf-8"))
+        port, token = record["port"], record["token"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if isinstance(port, int) and isinstance(token, str):
+        return ServerEndpoint(port, token)
+    return None
 
 
 if sys.platform == "win32":
