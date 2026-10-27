@@ -3471,6 +3471,72 @@ class CoordinatorRetryRoutingTests(unittest.TestCase):
             )
         )
 
+    def _coordinator_cli(self, *argv: str) -> tuple[int, str, str]:
+        """One coordinator CLI command: its exit code, stdout and stderr."""
+        command = [
+            "coordinator.py", "--repo", str(self.repo),
+            "--state-dir", str(self.state_dir), *argv,
+        ]  # fmt: skip
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", command),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = coordinator.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def _batch_create_cli(self) -> tuple[int, str, str]:
+        return self._coordinator_cli(
+            "batch", "create", "--ticket", "#244", "--branch", self.branch,
+            "--worktree", str(self.worktree), "--allowed-path", "**",
+            "--integration-ref", "master",
+            "--definition-of-done", "route retries by cause",
+            "--prohibited-change", "secrets", "--expected-file", "services/x.py",
+            "--expected-service", "core", "--expected-changed-lines", "10",
+        )  # fmt: skip
+
+    def test_batch_create_refuses_a_branch_that_starts_below_the_integration_tip(
+        self,
+    ) -> None:
+        """The integration tip moves one commit ahead after the issue worktree is created and
+        before `batch create`. The batch would pin that tip as its base and count the upstream
+        file as a change of the ticket, so `batch create` refuses with a typed error and writes
+        no batch. The remedy names the fast-forward; after it the batch starts on the tip."""
+        _git(
+            self.repo,
+            "worktree",
+            "add",
+            "-b",
+            self.branch,
+            str(self.worktree),
+            "master",
+        )
+        start = _git(self.worktree, "rev-parse", "HEAD")
+        upstream = self._push_upstream()
+
+        code, out, err = self._batch_create_cli()
+
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("ERROR: branch_start_missing_base: ", err)
+        self.assertIn(start, err)
+        self.assertIn(f"git -C {self.worktree} merge --ff-only {upstream}", err)
+
+        _git(self.worktree, "merge", "--ff-only", upstream)
+        code, out, err = self._batch_create_cli()
+
+        self.assertEqual((code, err), (0, ""))
+        record = self._batch_record(json.loads(out)["batch_id"])
+        self.assertEqual(
+            (record["branch_start_commit"], record["integration_base_commit"]),
+            (upstream, upstream),
+        )
+        code, out, _ = self._coordinator_cli("batch", "list")
+        self.assertEqual(
+            (code, [item["batch_id"] for item in json.loads(out)["batches"]]),
+            (0, [record["batch_id"]]),
+        )
+
     def test_a_batch_on_a_branch_with_earlier_commits_shows_no_scope_warning(
         self,
     ) -> None:

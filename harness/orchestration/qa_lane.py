@@ -23,7 +23,7 @@ from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
-from . import operation_access, operational_guards, verification_plan
+from . import hook_policy, operation_access, operational_guards, verification_plan
 from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _qa_preparation_commands
@@ -989,6 +989,16 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
                 remedy="approve the QA dispatch and run the QA runner before sending it to any agent",
             )
         _verify_access(ledger, repo, dispatch, ops)
+        # Strict fails closed before the lease, by the policy the brief pinned (ADR 0024, 2a).
+        hook_policy.check_strict_boundary(
+            repo,
+            hook_policy.dispatch_policy(dispatch),
+            role="qa",
+            boundary="qa run",
+            batch=batch,
+            candidate=str(dispatch.get("candidate_commit")),
+            plan=dispatch.get("verification_plan"),
+        )
         admission = acquire(
             ledger, dispatch["dispatch_id"], lease_seconds=lease_seconds
         )

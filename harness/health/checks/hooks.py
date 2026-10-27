@@ -227,8 +227,10 @@ def _runtime_parts(
             fails.append(
                 f"не подключён критический hook {spec.hook_id} ({adapter.runtime})"
             )
-        else:
-            warns.append(f"не подключён hook {spec.hook_id} ({adapter.runtime})")
+        elif (
+            text := f"не подключён hook {spec.hook_id} ({adapter.runtime})"
+        ) not in warns:
+            warns.append(text)  # hook нескольких событий называется один раз
 
     unprotected, others = _lacking(adapter)
     lacking = [*unprotected, *others]
@@ -301,9 +303,13 @@ def check_policy(context: HealthContext) -> CheckResult:
         fails.append(problem)
     notes.append(profile)
 
+    checked: set[str] = set()
     for spec in HOOK_CATALOG:
         if spec.wiring == "agent" and not (context.repo / TEST_AUTHOR_AGENT).is_file():
             continue
+        if spec.script in checked:
+            continue  # один скрипт на нескольких событиях проверяется один раз
+        checked.add(spec.script)
         script_problem = _script_problem(context.repo, spec)
         if script_problem is None:
             continue

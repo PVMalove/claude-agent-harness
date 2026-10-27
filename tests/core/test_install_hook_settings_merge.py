@@ -328,7 +328,7 @@ def codex_triples(document: JsonObject) -> list[tuple[str, str, str]]:
             for handler in group["hooks"]:
                 match = CODEX_COMMAND.fullmatch(handler["command"])
                 assert match, handler["command"]
-                triples.append((event, group["matcher"], match.group(1)))
+                triples.append((event, group.get("matcher", ""), match.group(1)))
     return triples
 
 
@@ -337,15 +337,19 @@ def test_init_installs_the_second_runtime_adapter_from_the_same_scripts(
 ) -> None:
     install(repo)
 
+    # The second runtime delivers PreToolUse for Bash and the end of a turn (Stop, SubagentStop).
     expected = sorted(
-        (event, group["matcher"], script)
+        (event, group.get("matcher", ""), script)
         for event, groups in template_document()["hooks"].items()
         for group in groups
         for handler in group["hooks"]
         if (script := script_of(handler))
-        and event == "PreToolUse"
-        and "Bash" in group["matcher"].split("|")
+        and (
+            (event == "PreToolUse" and "Bash" in group["matcher"].split("|"))
+            or event in ("Stop", "SubagentStop")
+        )
     )
+    assert ("Stop", "", "targeted-check-reminder.sh") in expected
     assert sorted(codex_triples(load_codex(repo))) == expected
     inventory = json.loads((repo / INTEGRATIONS).read_text(encoding="utf-8"))
     entry = next(
@@ -372,9 +376,20 @@ def test_second_runtime_adapter_skips_hooks_whose_payload_it_cannot_deliver(
             "block-scratch-outside-docs-tasks.sh",
             "check-worktree-branch-name.sh",
             "count-skill-usage.sh",
+            "impact-first-touch.sh",
+            "sensitive-path-recheck.sh",
         }
     )
     assert "protect-hook-policy.sh" in scripts
+    # Write and Edit arrive as apply_patch without file_path: only the end-of-turn rows are wired.
+    assert {
+        (event, script)
+        for event, _, script in codex_triples(load_codex(repo))
+        if script == "targeted-check-reminder.sh"
+    } == {
+        ("Stop", "targeted-check-reminder.sh"),
+        ("SubagentStop", "targeted-check-reminder.sh"),
+    }
 
 
 def test_second_runtime_adapter_does_not_wire_the_qa_marker_hook(repo: Path) -> None:

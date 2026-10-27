@@ -1286,6 +1286,27 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         )
         if plan is not None and role_name in {"code-review", "qa"}:
             verification_plan.require_covered(plan)
+        project_snapshot = getattr(config, "project_snapshot", None)
+        if not isinstance(project_snapshot, dict):
+            project_snapshot = core_config._project(repo)
+        try:
+            project_hook_policy = hook_policy.normalize_policy(
+                project_snapshot.get("hook_policy")
+            )
+        except PolicyError as exc:
+            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        # Strict fails closed before the record is written (ADR 0024, section 2a).
+        boundary_role = hook_policy.STRICT_BOUNDARY_ROLES.get(role_name)
+        if boundary_role is not None and purpose == "work" and candidate:
+            hook_policy.check_strict_boundary(
+                repo,
+                project_hook_policy,
+                role=boundary_role,
+                boundary=f"dispatch propose and create for {role_name}",
+                batch=batch,
+                candidate=candidate,
+                plan=plan,
+            )
         transition = _proposed_transition(
             batch,
             next_action,
@@ -1314,18 +1335,10 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         from harness.orchestration import pinned_configuration
 
         orchestration_policy = _orchestration_policy(config)
-        project_snapshot = getattr(config, "project_snapshot", None)
-        if not isinstance(project_snapshot, dict):
-            project_snapshot = core_config._project(repo)
         # The hook policy and the tool list are pinned with the approval (issue #794): a later
         # edit of hook_policy or of the role tool policy does not change an approved dispatch.
         allowed_tools = resolve_allowed_tools(config, role_name, role["mode"])
-        try:
-            hook_policy_sha256 = hook_policy.hook_policy_sha256(
-                hook_policy.normalize_policy(project_snapshot.get("hook_policy"))
-            )
-        except PolicyError as exc:
-            raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+        hook_policy_sha256 = hook_policy.hook_policy_sha256(project_hook_policy)
         transition = operational_guards.bind_transition(
             transition,
             {"hook_policy_sha256": hook_policy_sha256, "allowed_tools": allowed_tools},

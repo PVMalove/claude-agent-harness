@@ -367,6 +367,7 @@ def integration_resolve(args: argparse.Namespace) -> JsonObject:
             expected_service=["conflict-resolution"],
             expected_changed_lines=max(10, 20 * len(conflicting or scope)),
             expected_context_tokens=None,
+            merges_base=True,
         )
     )
     with _ledger_lock(ledger):

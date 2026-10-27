@@ -4,20 +4,27 @@
 (``HOOK_PROFILE`` и подобные) и параметры инструментов не читаются: ни этот модуль, ни его вызывающие
 не получают их на вход, поэтому решение зависит только от файла проекта, роли и затрагиваемых путей.
 Проект без ключа получает профиль ``standard`` без эскалаций.
+
+Здесь же — чувствительные пути ADR 0024, раздел 2, и fail-closed граница профиля strict (issue #802):
+``dispatch propose`` и ``create`` для code-review и QA, ``qa run`` и ``dispatch publish`` отказывают
+``strict_impact_unknown``, пока VerificationPlan не доказывает ImpactSet чувствительного изменения.
+Запущенный dispatch решает по политике, которую закрепил его ``hook_policy_sha256``.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from ..errors import PolicyError
 from ..health.project_files import HOOK_PROFILES, hook_policy_problems
 from .contract import ContractError
 from .core.system_fields import enum_problem, enum_remedy, load_registry
+from .core.utils import CoordinatorError
 
 PROJECT_JSON_REL = ".harness/project.json"
 DEFAULT_PROFILE = "standard"
@@ -83,6 +90,94 @@ def _path_matches(path: str, patterns: Iterable[str]) -> bool:
     return any(fnmatchcase(normalized, pattern) for pattern in patterns)
 
 
+# Чувствительные пути ADR 0024, раздел 2: фиксированная константа политики, ключа конфигурации нет.
+# Копию держит hook `sensitive-path-recheck` (harness/project/hooks/change_impact_hooks.py), который
+# не видит пакет harness; tests/core/test_change_impact_hooks.py сверяет её с этой функцией.
+SENSITIVE_NAMES = frozenset(
+    {
+        "pyproject.toml",
+        "uv.lock",
+        "poetry.lock",
+        "Pipfile",
+        "Pipfile.lock",
+        "setup.py",
+        "setup.cfg",
+        "package.json",
+        "package-lock.json",
+        "npm-shrinkwrap.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+        "go.mod",
+        "go.sum",
+        "Gemfile",
+        "Gemfile.lock",
+        "composer.json",
+        "composer.lock",
+        "CODEOWNERS",
+    }
+)
+SENSITIVE_NAME_GLOBS = ("requirements*.txt", "constraints*.txt")
+SENSITIVE_PATH_GLOBS = (
+    ".github/*",
+    ".claude/settings*.json",
+    ".claude/hooks/*",
+    ".claude/agents/*",
+    ".codex/hooks.json",
+    ".codex/hooks/*",
+    ".codex/config.toml",
+    ".harness/project.json",
+)
+# Миграции, auth и права доступа: сравниваются токены сегмента пути и stem файла, а не подстроки.
+SENSITIVE_TOKENS = frozenset(
+    {
+        "migration",
+        "migrations",
+        "migrate",
+        "alembic",
+        "auth",
+        "authn",
+        "authz",
+        "oauth",
+        "oauth2",
+        "authentication",
+        "authorization",
+        "permission",
+        "permissions",
+        "acl",
+        "rbac",
+    }
+)
+_TOKEN_SEPARATORS = re.compile(r"[._-]")
+
+
+def is_sensitive_path(path: str) -> bool:
+    """Чувствительный ли путь репозитория (ADR 0024, раздел 2).
+
+    Манифест или lock-файл по имени на любой глубине, `.github/*`, миграции, auth и права доступа
+    (токен сегмента пути или stem файла, разбитых по `.`, `_` и `-`; `author` не совпадает с
+    `auth`), `CODEOWNERS`, файлы hooks runtime и `.harness/project.json`.
+    """
+    normalized = path.replace("\\", "/").removeprefix("./")
+    parts = normalized.split("/")
+    name = parts[-1]
+    if name in SENSITIVE_NAMES or any(
+        fnmatchcase(name, pattern) for pattern in SENSITIVE_NAME_GLOBS
+    ):
+        return True
+    if any(fnmatchcase(normalized, pattern) for pattern in SENSITIVE_PATH_GLOBS):
+        return True
+    pieces = [*parts[:-1], PurePosixPath(name).stem]
+    return any(
+        token.lower() in SENSITIVE_TOKENS
+        for piece in pieces
+        for token in _TOKEN_SEPARATORS.split(piece)
+    )
+
+
 def resolve_profile(
     policy: Mapping[str, object], *, role: str | None = None, paths: Iterable[str] = ()
 ) -> str:
@@ -106,6 +201,138 @@ def resolve_profile(
             continue
         effective = max(effective, HOOK_PROFILES.index(item["profile"]))
     return HOOK_PROFILES[effective]
+
+
+STRICT_PROFILE = "strict"
+STRICT_IMPACT_UNKNOWN = "strict_impact_unknown"
+# Роль dispatch-а, чью границу проверяет propose и create, -> роль эскалаций hook_policy.
+STRICT_BOUNDARY_ROLES = {"code-review": "review", "qa": "qa"}
+_STRICT_PATH_LIMIT = 20
+_STRICT_REMEDY = (
+    "enable verification_plan_policy in the orchestration config and create a new batch, so "
+    "that code-review and QA carry a VerificationPlan for the candidate; or the human owner "
+    "changes hook_policy in .harness/project.json and proposes the dispatch again"
+)
+
+
+def may_resolve_strict(policy: Mapping[str, object]) -> bool:
+    """Может ли политика дать ``strict`` хоть одной роли: базовый профиль или эскалация."""
+    escalations = policy.get("escalations", [])
+    assert isinstance(escalations, list)
+    return policy["profile"] == STRICT_PROFILE or any(
+        item["profile"] == STRICT_PROFILE for item in escalations
+    )
+
+
+def _plan_proves(plan: Mapping[str, object], sensitive: list[str]) -> bool:
+    """План доказывает влияние: все стадии ``full`` либо ни одна причина ``unknown`` не относится к
+    чувствительному пути и нет причины без пути."""
+    stages = plan.get("stages")
+    if (
+        isinstance(stages, list)
+        and stages
+        and all(isinstance(s, Mapping) and s.get("selection") == "full" for s in stages)
+    ):
+        return True
+    impact = plan.get("impact")
+    unknown = impact.get("unknown") if isinstance(impact, Mapping) else None
+    if not isinstance(unknown, list):
+        return False
+    return not any(
+        not isinstance(reason, Mapping)
+        or not reason.get("path")
+        or reason.get("path") in sensitive
+        for reason in unknown
+    )
+
+
+def require_strict_boundary(
+    policy: Mapping[str, object],
+    *,
+    role: str,
+    boundary: str,
+    changed: Iterable[str],
+    plan: Mapping[str, object] | None,
+) -> None:
+    """Fail-closed граница профиля strict (ADR 0024, раздел 2a): чистое решение без I/O.
+
+    Профиль — ``resolve_profile`` для роли политики и изменённых путей. Не strict — проверки нет.
+    Strict пропускает изменение без чувствительных путей и изменение, для которого VerificationPlan
+    доказывает ImpactSet (``_plan_proves``). Иначе — ``CoordinatorError`` с префиксом
+    ``strict_impact_unknown``, перечнем чувствительных путей и границей.
+    """
+    paths = list(changed)
+    if resolve_profile(policy, role=role, paths=paths) != STRICT_PROFILE:
+        return
+    sensitive = sorted({path for path in paths if is_sensitive_path(path)})
+    if not sensitive or (plan is not None and _plan_proves(plan, sensitive)):
+        return
+    shown = ", ".join(sensitive[:_STRICT_PATH_LIMIT])
+    if len(sensitive) > _STRICT_PATH_LIMIT:
+        shown += ", ..."
+    evidence = "no VerificationPlan" if plan is None else "a VerificationPlan"
+    raise CoordinatorError(
+        f"{STRICT_IMPACT_UNKNOWN}: the strict hook profile refuses {boundary}: the ImpactSet of "
+        f"the candidate is unknown for {len(sensitive)} sensitive path(s) and {evidence} "
+        f"proves it: {shown}",
+        remedy=_STRICT_REMEDY,
+    )
+
+
+def check_strict_boundary(
+    repo: Path,
+    policy: Mapping[str, object],
+    *,
+    role: str,
+    boundary: str,
+    batch: Mapping[str, object],
+    candidate: str,
+    plan: Mapping[str, object] | None,
+) -> None:
+    """Граница strict для diff от базы batch до ``candidate`` — той же базы, что у плана.
+
+    Diff (``--no-renames``: и прежний путь переименования) читается, только если политика может
+    дать strict: minimal и standard не меняют поведение границы.
+    """
+    if not may_resolve_strict(policy):
+        return
+    from .core.git_utils import _changed_files_between
+    from .workflow.history import _effective_base
+
+    require_strict_boundary(
+        policy,
+        role=role,
+        boundary=boundary,
+        changed=_changed_files_between(repo, _effective_base(dict(batch)), candidate),
+        plan=plan,
+    )
+
+
+def dispatch_policy(dispatch: Mapping[str, object]) -> dict[str, object]:
+    """Политика hooks запущенного dispatch из его пинованной конфигурации; project.json не читается.
+
+    Brief без ``hook_policy_sha256`` (выдан до его появления) получает политику по умолчанию —
+    сегодняшнее поведение. Политика снимка, чей хеш не равен ``hook_policy_sha256`` brief-а, —
+    отказ целостности (fail closed).
+    """
+    pinned = dispatch.get("hook_policy_sha256")
+    if pinned is None:
+        return normalize_policy(None)
+    from .pinned_configuration import read_snapshot
+
+    project = read_snapshot(dict(dispatch))["project"]
+    assert isinstance(project, dict)
+    try:
+        policy = normalize_policy(project.get("hook_policy"))
+    except PolicyError as exc:
+        raise CoordinatorError(exc.message, remedy=exc.remedy) from exc
+    if hook_policy_sha256(policy) != pinned:
+        raise CoordinatorError(
+            "dispatch hook_policy_sha256 does not match the hook policy of its pinned "
+            "configuration",
+            remedy="restore the approved dispatch record; do not replace its pinned policy",
+        )
+    return policy
 
 
 def hook_policy_sha256(policy: Mapping[str, object]) -> str:

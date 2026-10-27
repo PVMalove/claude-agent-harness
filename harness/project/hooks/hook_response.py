@@ -19,7 +19,11 @@
 тоже внутренняя ошибка: процесс прерывается, критичный hook блокирует; поведенческий (``require-bounded-check``) и
 учётные (``count-skill-usage``, ``mark-qa-gate-passed``) разрешают с предупреждением (код 0). Профиль
 ``minimal`` понижает блокировку поведенческого hook до предупреждения; критичные hooks блокируют в любом
-профиле (ADR 0024). Только стандартная библиотека, Python 3.9+.
+профиле (ADR 0024). Advisory-hooks ChangeImpact (``ADVISORY_HOOKS``) не блокируют никогда: тело
+предупреждает префиксом причины при коде 0, а в профиле вне ``ACTIVE_PROFILES`` тело не запускается.
+Их внутренняя ошибка (префикс ``[internal-error]``, иной код, тайм-аут ``ADVISORY_TIMEOUT_SECONDS``)
+даёт warn с кодом 0 и пустым stdout.
+Только стандартная библиотека, Python 3.9+.
 """
 
 from __future__ import annotations
@@ -48,7 +52,21 @@ HOOKS: Dict[str, Tuple[str, bool]] = {
     "require-bounded-check": ("unbounded-check", False),
     "count-skill-usage": ("ok", False),
     "mark-qa-gate-passed": ("ok", False),
+    "impact-first-touch": ("risky-path-first-touch", False),
+    "targeted-check-reminder": ("targeted-checks-unreported", False),
+    "sensitive-path-recheck": ("sensitive-path-touched", False),
 }
+# Advisory-hooks ChangeImpact (ADR 0024, раздел 2a): тело всегда завершается кодом 0 и называет
+# предупреждение префиксом ``[reason_code] `` первой строки stderr, строка ``evidence_ref=<путь>``
+# называет evidence. Конверт никогда их не блокирует. Hook работает только в профилях
+# ``ACTIVE_PROFILES``: в остальных конверт отвечает allow, не запуская тело.
+ACTIVE_PROFILES: Dict[str, Tuple[str, ...]] = {
+    "impact-first-touch": ("standard", "strict"),
+    "targeted-check-reminder": ("standard", "strict"),
+    "sensitive-path-recheck": ("strict",),
+}
+ADVISORY_HOOKS = tuple(ACTIVE_PROFILES)
+EVIDENCE_PREFIX = "evidence_ref="
 # Дополнительные причины блокировки: сценарий называет одну из них префиксом ``[reason_code] `` stderr.
 EXTRA_REASONS: Dict[str, Tuple[str, ...]] = {
     "protect-hook-policy": (
@@ -89,6 +107,8 @@ ENVELOPE_MARKER = "HARNESS_HOOK_ENVELOPE"
 REMEDY_LIMIT = 1000
 # Меньше тайм-аута hook-а в runtime (60 с): при зависании тела вердикт выдаёт конверт, а не runtime.
 INNER_TIMEOUT_SECONDS = 50
+# Тело advisory-hook стоит на горячем пути каждой правки: его тайм-аут короче.
+ADVISORY_TIMEOUT_SECONDS = 10
 
 
 def build_response(
@@ -161,10 +181,51 @@ def read_profile(root: Path) -> str:
     return _policy_profile(data["hook_policy"])
 
 
+def decide_advisory(
+    hook_id: str, profile: str, code: Optional[int], stderr: str
+) -> Dict[str, object]:
+    """Вердикт advisory-hook: код 0 с его префиксом — warn, без префикса — allow; префикс
+    ``[internal-error]``, иной код, тайм-аут и сбой запуска — warn ``internal-error``.
+    Advisory-hook не блокирует ни в одном профиле."""
+    reason = HOOKS[hook_id][0]
+    evidence = f".claude/hooks/{hook_id}.sh"
+    lines = stderr.strip().splitlines()
+    if code == 0:
+        named = REASON_PREFIX.match(lines[0]) if lines else None
+        if named is not None and named.group(1) == REASON_INTERNAL_ERROR:
+            return build_response(
+                hook_id,
+                profile,
+                "warn",
+                REASON_INTERNAL_ERROR,
+                stderr.strip()[:REMEDY_LIMIT],
+                evidence,
+            )
+        if named is None or named.group(1) != reason:
+            return build_response(hook_id, profile, "allow", REASON_OK)
+        refs = [
+            line[len(EVIDENCE_PREFIX) :].strip()
+            for line in lines[1:]
+            if line.startswith(EVIDENCE_PREFIX)
+        ]
+        remedy = lines[0][named.end() :][:REMEDY_LIMIT]
+        return build_response(
+            hook_id, profile, "warn", reason, remedy, refs[0] if refs else evidence
+        )
+    detail = f"hook вернул код {code}" if code is not None else "hook не отработал"
+    if lines:
+        detail = f"{detail}: {stderr.strip()}"
+    return build_response(
+        hook_id, profile, "warn", REASON_INTERNAL_ERROR, detail[:REMEDY_LIMIT], evidence
+    )
+
+
 def decide(
     hook_id: str, profile: str, code: Optional[int], stderr: str
 ) -> Dict[str, object]:
     """Вердикт по коду возврата исходного сценария (``None`` — сценарий не запустился)."""
+    if hook_id in ADVISORY_HOOKS:
+        return decide_advisory(hook_id, profile, code, stderr)
     block_reason, critical = HOOKS[hook_id]
     named = REASON_PREFIX.match(stderr.lstrip())
     if named and named.group(1) in EXTRA_REASONS.get(hook_id, ()):
@@ -190,9 +251,12 @@ def decide(
 
 
 def run_inner(
-    command: Sequence[str], payload: bytes
+    command: Sequence[str], payload: bytes, timeout: Optional[float] = None
 ) -> Tuple[Optional[int], bytes, bytes]:
-    """Запустить исходный сценарий с тем же stdin; код — ``None`` при сбое запуска или тайм-ауте."""
+    """Запустить исходный сценарий с тем же stdin; код — ``None`` при сбое запуска или тайм-ауте.
+
+    ``timeout`` по умолчанию — ``INNER_TIMEOUT_SECONDS``."""
+    limit = INNER_TIMEOUT_SECONDS if timeout is None else timeout
     env = dict(os.environ, **{ENVELOPE_MARKER: "1"})
     try:
         done = subprocess.run(
@@ -201,10 +265,10 @@ def run_inner(
             capture_output=True,
             env=env,
             check=False,
-            timeout=INNER_TIMEOUT_SECONDS,
+            timeout=limit,
         )
     except subprocess.TimeoutExpired:
-        message = f"тайм-аут {INNER_TIMEOUT_SECONDS} с: hook прерван"
+        message = f"тайм-аут {limit} с: hook прерван"
         return None, b"", message.encode("utf-8")
     except OSError as exc:
         return None, b"", f"{exc}".encode("utf-8", "replace")
@@ -239,8 +303,14 @@ def main(argv: List[str]) -> int:
     try:
         payload = sys.stdin.buffer.read()
         profile = read_profile(project_root())
-        code, out, err = run_inner(argv[2:], payload)
+        advisory = hook_id in ADVISORY_HOOKS
+        if profile not in ACTIVE_PROFILES.get(hook_id, PROFILES):
+            return emit(b"", b"", build_response(hook_id, profile, "allow", REASON_OK))
+        timeout = ADVISORY_TIMEOUT_SECONDS if advisory else INNER_TIMEOUT_SECONDS
+        code, out, err = run_inner(argv[2:], payload, timeout)
         response = decide(hook_id, profile, code, err.decode("utf-8", "replace"))
+        if advisory and response["reason_code"] == REASON_INTERNAL_ERROR:
+            out = b""  # частичный вывод тела сломал бы протокол runtime
         return emit(out, err, response)
     except Exception as exc:  # критичный hook не должен открывать проход при сбое
         print(f"hook_response.py: внутренняя ошибка: {exc}", file=sys.stderr)

@@ -1109,7 +1109,7 @@
       ]
     },
     "hook.id": {
-      "description": "Identifier of a managed project hook, written in the hook_id of its JSON verdict (hook_response.py); a critical hook blocks on an internal error, a behavioral or accounting one only warns.",
+      "description": "Identifier of a managed project hook, written in the hook_id of its JSON verdict (hook_response.py); a critical hook blocks on an internal error, a behavioral, advisory or accounting one only warns.",
       "automatic_decisions": true,
       "unrecognized": "reject",
       "values": {
@@ -1124,7 +1124,10 @@
         "require-bounded-check": "Behavioral: blocks an unbounded full test or quality-gate run; the minimal profile downgrades it to a warning.",
         "block-scratch-outside-docs-tasks": "Critical: keeps task artifacts and pull request text in their designated folders.",
         "count-skill-usage": "Accounting: tallies skill invocations and never blocks.",
-        "mark-qa-gate-passed": "Accounting: fallback marker after the last configured QA command succeeds; never blocks."
+        "mark-qa-gate-passed": "Accounting: fallback marker after the last configured QA command succeeds; never blocks.",
+        "impact-first-touch": "Advisory: warns on the first touch of a risky path whose impact ChangeImpact cannot compute from the import graph; standard and strict profiles; never blocks.",
+        "targeted-check-reminder": "Advisory: at the end of a role turn, reminds to report the targeted checks when files changed after the last report; standard and strict profiles; never blocks or continues the turn.",
+        "sensitive-path-recheck": "Advisory: warns on every new edit of a sensitive path and names an evidence record; strict profile only; never blocks."
       }
     },
     "hook.profile": {
@@ -1135,7 +1138,7 @@
       "values": {
         "minimal": "A behavioral hook's block is downgraded to a warning; critical hooks still block.",
         "standard": "Every hook keeps its blocking decisions.",
-        "strict": "Every hook keeps its blocking decisions; stricter boundaries are added by later hooks."
+        "strict": "Every hook keeps its blocking decisions; sensitive-path-recheck warns on sensitive edits, and dispatch propose for code-review and QA, qa run and publish fail closed without ImpactSet coverage of the sensitive paths."
       }
     },
     "hook.decision": {
@@ -1168,7 +1171,10 @@
         "branch-name": "A branch name outside the project convention was refused.",
         "worktree-branch-name": "A worktree name outside the project convention was refused.",
         "unbounded-check": "An unbounded full test or quality-gate run was refused.",
-        "scratch-location": "Task artifacts or pull request text outside their folders were refused."
+        "scratch-location": "Task artifacts or pull request text outside their folders were refused.",
+        "risky-path-first-touch": "The first touch of a risky path in an operation was reported; ChangeImpact cannot compute its impact from the import graph.",
+        "targeted-checks-unreported": "Files changed after the last report of the operation, and the targeted checks are not reported yet.",
+        "sensitive-path-touched": "An edit of a sensitive path (manifest, CI, migration, auth, permissions or hooks) was reported with an evidence record."
       }
     }
   }

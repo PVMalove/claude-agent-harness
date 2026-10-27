@@ -1623,6 +1623,12 @@ Hooks закрепляют часть правил из `docs/agents/git-workflo
 | `require-bounded-check.sh` | `PreToolUse(Bash)` | Полный прогон тестов или одной из `qa_gate_commands` без обёртки `test_summary.py`. Точечный тест (`::` node-id) hook не блокирует. |
 | `block-dangerous-git.sh` | `PreToolUse(Bash)` | `git reset --hard`, `git clean -f`/`-fd`, `git branch -D`, `git checkout .`, `git restore .`, когда shell реально запускает `git`. Упоминание в кавычках, в `python -c` или в heredoc для не-оболочки hook не блокирует. В отличие от апстримного `git-guardrails-claude-code` **не** блокирует `git push` целиком — пуш issue-веток нужен. |
 | `count-skill-usage.sh` | `PreToolUse(Skill)` | Ничего — считает частоту вызова скиллов в `.claude/.skill-usage.json`. |
+| `impact-first-touch.sh` | `PreToolUse(Write\|Edit)` | Ничего — advisory: в профилях `standard` и `strict` один раз за операцию сообщает модели о первом касании рискованного пути, влияние которого ChangeImpact не вычисляет по графу (конфиг сборки и проверок, capabilities, skills). |
+| `sensitive-path-recheck.sh` | `PreToolUse(Write\|Edit)` | Ничего — advisory, только `strict`: сообщает о каждой новой правке чувствительного пути (манифест, CI, миграции, auth, права доступа, hooks) и пишет evidence-запись. Отказ под `strict` дают границы coordinator-а: propose code-review и QA, `qa run` и publish без VerificationPlan для чувствительного изменения. |
+| `targeted-check-reminder.sh` | `PreToolUse(Write\|Edit)`, `Stop`, `SubagentStop` | Ничего — advisory: в `standard` и `strict` ведёт журнал касаний и в конце хода роли напоминает пользователю (`systemMessage`) отчитать targeted-проверки brief, если файлы менялись после отчёта. Ход не продолжает. |
+
+Три hooks ChangeImpact никогда не блокируют, а их внутренняя ошибка разрешает действие с
+диагностикой. Подробности — в описаниях hooks в каталоге `docs/hooks/` репозитория харнесса.
 
 Пример блокировки:
 

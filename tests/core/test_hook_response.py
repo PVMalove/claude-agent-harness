@@ -37,6 +37,7 @@ CRITICAL = sorted(h for h, (_, critical) in hook_response.HOOKS.items() if criti
 NON_CRITICAL = sorted(
     h for h, (_, critical) in hook_response.HOOKS.items() if not critical
 )
+ADVISORY = sorted(hook_response.ADVISORY_HOOKS)
 
 
 def test_build_response_carries_the_six_fields() -> None:
@@ -141,7 +142,12 @@ def test_a_critical_hook_blocks_in_every_profile(hook_id: str, profile: str) -> 
 
 
 @pytest.mark.parametrize(
-    "hook_id", [h for h in NON_CRITICAL if hook_response.HOOKS[h][0] != "ok"]
+    "hook_id",
+    [
+        h
+        for h in NON_CRITICAL
+        if hook_response.HOOKS[h][0] != "ok" and h not in ADVISORY
+    ],
 )
 def test_a_non_critical_block_is_downgraded_only_by_the_minimal_profile(
     hook_id: str,
@@ -161,6 +167,51 @@ def test_a_non_critical_internal_error_only_warns(hook_id: str) -> None:
             "warn",
             "internal-error",
         )
+
+
+@pytest.mark.parametrize("hook_id", ADVISORY)
+@pytest.mark.parametrize("profile", hook_response.PROFILES)
+def test_an_advisory_hook_warns_by_its_prefix_and_never_blocks(
+    hook_id: str, profile: str
+) -> None:
+    reason = hook_response.HOOKS[hook_id][0]
+
+    warned = hook_response.decide(hook_id, profile, 0, f"[{reason}] look again\n")
+    referenced = hook_response.decide(
+        hook_id, profile, 0, f"[{reason}] look\nevidence_ref=.harness/e.json\n"
+    )
+    plain = hook_response.decide(hook_id, profile, 0, "a diagnostic without a prefix")
+    other = hook_response.decide(hook_id, profile, 0, "[unbounded-check] not mine")
+
+    assert (warned["decision"], warned["reason_code"], warned["remedy"]) == (
+        "warn",
+        reason,
+        "look again",
+    )
+    assert warned["evidence_ref"] == f".claude/hooks/{hook_id}.sh"
+    assert referenced["evidence_ref"] == ".harness/e.json"
+    for response in (plain, other):
+        assert (response["decision"], response["reason_code"]) == ("allow", "ok")
+    for code in (1, 2, 127, None):
+        failed = hook_response.decide(hook_id, profile, code, "[x] boom")
+        assert (failed["decision"], failed["reason_code"]) == ("warn", "internal-error")
+
+
+@needs_bash
+@pytest.mark.parametrize("hook_id", ADVISORY)
+def test_an_advisory_hook_body_runs_only_in_its_active_profiles(
+    tmp_path: Path, hook_id: str
+) -> None:
+    for profile in hook_response.PROFILES:
+        project = _project(tmp_path / profile, {"profile": profile})
+        marker = project / "ran"
+
+        done = _wrapper(project, hook_id, f"touch {marker}; echo '[x] noise' >&2")
+
+        assert done.returncode == 0
+        verdict = parse_hook_response(done.stderr)
+        assert (verdict["decision"], verdict["profile"]) == ("allow", profile)
+        assert marker.exists() is (profile in hook_response.ACTIVE_PROFILES[hook_id])
 
 
 def test_a_hook_that_never_blocks_treats_exit_two_as_an_error() -> None:
@@ -495,6 +546,74 @@ def test_a_hanging_hook_body_is_an_internal_error_after_the_timeout(
 
 def test_the_timeout_is_below_the_runtime_hook_timeout() -> None:
     assert 0 < hook_response.INNER_TIMEOUT_SECONDS < 60
+    advisory = hook_response.ADVISORY_TIMEOUT_SECONDS
+    assert 0 < advisory < hook_response.INNER_TIMEOUT_SECONDS
+
+
+@needs_bash
+@pytest.mark.parametrize("hook_id", ADVISORY)
+@pytest.mark.parametrize(
+    "body",
+    [
+        "echo '{\"partial\":' ; exit 1",
+        "echo '{\"partial\":' ; exit 2",
+        "echo '{\"partial\":' ; kill -9 $$",
+        "echo '{\"x\": 1}'; echo '[internal-error] the store is a file' >&2",
+    ],
+    ids=["exit-1", "exit-2", "crash", "named-internal-error"],
+)
+def test_an_advisory_internal_error_allows_with_a_diagnostic_and_no_stdout(
+    tmp_path: Path, hook_id: str, body: str
+) -> None:
+    project = _project(tmp_path, {"profile": "strict"})
+
+    done = _wrapper(project, hook_id, body)
+
+    assert done.returncode == 0
+    # Partial body output would break the runtime protocol of the end of a turn.
+    assert done.stdout == ""
+    verdict = parse_hook_response(done.stderr)
+    assert (verdict["decision"], verdict["reason_code"]) == ("warn", "internal-error")
+    assert verdict["remedy"]
+
+
+@needs_bash
+@pytest.mark.parametrize(
+    ("hook_id", "code", "decision", "reason"),
+    [
+        ("impact-first-touch", 0, "warn", "internal-error"),
+        # A critical hook keeps the general timeout: the advisory one does not cut it short.
+        ("block-pr-merge", 2, "block", "pr-merge"),
+    ],
+)
+def test_the_advisory_timeout_applies_only_to_advisory_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    hook_id: str,
+    code: int,
+    decision: str,
+    reason: str,
+) -> None:
+    import io
+
+    project = _project(tmp_path, {"profile": "strict"})
+    script = project / "inner.sh"
+    script.write_text("echo '{}'; sleep 2; echo late >&2; exit 2", encoding="utf-8")
+    monkeypatch.setattr(hook_response, "ADVISORY_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(hook_response, "INNER_TIMEOUT_SECONDS", 20)
+    monkeypatch.setattr(hook_response, "project_root", lambda: project)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"payload")))
+
+    returned = hook_response.main(["run", hook_id, str(BASH), str(script)])
+
+    assert returned == code
+    captured = capsys.readouterr()
+    verdict = parse_hook_response(captured.err)
+    assert (verdict["decision"], verdict["reason_code"]) == (decision, reason)
+    if decision == "warn":
+        assert "тайм-аут" in str(verdict["remedy"])
+        assert captured.out == ""
 
 
 def test_an_unknown_hook_or_usage_is_refused(tmp_path: Path) -> None:
