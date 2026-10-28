@@ -108,6 +108,31 @@ fn an_unresolvable_or_unsafe_root_and_the_container_home_are_denied() {
 }
 
 #[test]
+fn a_missing_root_and_a_protected_root_carry_their_own_remedies() {
+    let scratch = Scratch::new("remedies");
+    let missing = text(&scratch.0.join("scratch"));
+    let run = scratch.dir("run");
+    let protected = [run.join("docker.sock")];
+
+    let denials =
+        policy::deny_mounts(&[missing.clone(), text(&run)], &protected).expect_err("denied");
+
+    let [absent, exposed] = denials.as_slice() else {
+        panic!("two denials: {denials:?}");
+    };
+    assert_eq!(absent.root, missing);
+    assert!(absent.reason.contains("does not exist"), "{absent:?}");
+    assert!(
+        absent.remedy.contains(&missing) && absent.remedy.contains("harness install"),
+        "the remedy names the missing path: {absent:?}"
+    );
+    assert!(!absent.remedy.contains("XDG_RUNTIME_DIR"), "{absent:?}");
+    assert_eq!(exposed.root, text(&run));
+    assert!(exposed.remedy.contains("XDG_RUNTIME_DIR"), "{exposed:?}");
+    assert!(!exposed.remedy.contains("harness install"), "{exposed:?}");
+}
+
+#[test]
 fn the_protected_list_names_every_engine_socket_and_runtime_directory() {
     let paths = policy::protected_paths(&Protected {
         uid: 1000,

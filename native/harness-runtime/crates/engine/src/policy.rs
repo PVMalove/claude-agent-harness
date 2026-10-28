@@ -6,9 +6,11 @@
 //! check. A protected path is compared by the real path of its longest existing prefix plus the
 //! rest, so `/var/run/docker.sock` protects `/run/docker.sock`. A root that does not resolve, a
 //! root with a character that could inject `--mount` options and a root that overlaps the
-//! container home are denied too. The caller builds the protected list, so this crate does not
-//! depend on where the runtime keeps its files.
+//! container home are denied too. Each denial carries its own remedy: a root that does not exist
+//! names itself, a protected path names the runtime directory. The caller builds the protected
+//! list, so this crate does not depend on where the runtime keeps its files.
 
+use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
 
 use crate::argv::CONTAINER_HOME;
@@ -26,12 +28,17 @@ pub struct Protected {
     pub runtime: Vec<PathBuf>,
 }
 
-/// One denied root and why.
+/// One denied root, why, and what the operator does about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Denial {
     pub root: String,
     pub reason: String,
+    pub remedy: String,
 }
+
+/// The remedy of a root that exposes an engine socket or a harness runtime.
+const PROTECTED_REMEDY: &str = "keep every engine socket and the harness runtime directory out of \
+     the plan roots: narrow the root or set XDG_RUNTIME_DIR outside them and restart harness-runtime";
 
 fn unix_path(host: Option<&str>) -> Option<PathBuf> {
     let path = host?.strip_prefix("unix://")?;
@@ -108,52 +115,85 @@ fn normal(path: &Path) -> bool {
             .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
 }
 
-fn check(root: &str, protected: &[PathBuf]) -> Option<String> {
+fn denial(root: &str, reason: String, remedy: String) -> Option<Denial> {
+    Some(Denial {
+        root: root.to_owned(),
+        reason,
+        remedy,
+    })
+}
+
+fn check(root: &str, protected: &[PathBuf]) -> Option<Denial> {
     let path = Path::new(root);
+    let unsafe_remedy = || {
+        format!(
+            "move the root to a path without commas, quotes or line breaks outside {CONTAINER_HOME}"
+        )
+    };
     if unsafe_text(root) || overlaps_home(path) {
-        return Some(format!(
-            "plan root {root:?} cannot be mounted safely: move it to a path without commas, \
-             quotes or line breaks outside {CONTAINER_HOME}"
-        ));
+        return denial(
+            root,
+            format!(
+                "plan root {root:?} cannot be mounted safely: it holds a comma, a quote or a line \
+                 break, or overlaps {CONTAINER_HOME}"
+            ),
+            unsafe_remedy(),
+        );
     }
-    let Ok(real) = path.canonicalize() else {
-        return Some(format!(
-            "plan root {root:?} does not resolve to a real path"
-        ));
+    let real = match path.canonicalize() {
+        Ok(real) => real,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            return denial(
+                root,
+                format!("plan root {root:?} does not exist"),
+                format!(
+                    "create {root}, or run `harness install` in the repository when it is a \
+                     harness directory, and repeat the command"
+                ),
+            );
+        }
+        Err(err) => {
+            return denial(
+                root,
+                format!("plan root {root:?} does not resolve to a real path: {err}"),
+                format!(
+                    "make {root} readable by the user of harness-runtime and repeat the command"
+                ),
+            );
+        }
     };
     let real_text = real.to_string_lossy();
     if unsafe_text(&real_text) || overlaps_home(&real) {
-        return Some(format!(
-            "plan root {root:?} resolves to {real_text:?}, which cannot be mounted safely"
-        ));
+        return denial(
+            root,
+            format!("plan root {root:?} resolves to {real_text:?}, which cannot be mounted safely"),
+            unsafe_remedy(),
+        );
     }
-    protected
+    let item = protected
         .iter()
         .filter(|item| normal(item))
         .map(|item| resolve_prefix(item))
-        .find(|item| related(&real, item))
-        .map(|item| {
-            format!(
-                "plan root {root:?} would give the worker {}: an engine socket or a harness \
-                 runtime is never mounted",
-                item.display()
-            )
-        })
+        .find(|item| related(&real, item))?;
+    denial(
+        root,
+        format!(
+            "plan root {root:?} would give the worker {}: an engine socket or a harness runtime \
+             is never mounted",
+            item.display()
+        ),
+        PROTECTED_REMEDY.to_owned(),
+    )
 }
 
 /// Deny every root that would expose a protected path, does not resolve or is unsafe to mount.
 ///
 /// # Errors
-/// Every denied root, with its reason.
+/// Every denied root, with its reason and remedy.
 pub fn deny_mounts(roots: &[String], protected: &[PathBuf]) -> Result<(), Vec<Denial>> {
     let denials: Vec<Denial> = roots
         .iter()
-        .filter_map(|root| {
-            check(root, protected).map(|reason| Denial {
-                root: root.clone(),
-                reason,
-            })
-        })
+        .filter_map(|root| check(root, protected))
         .collect();
     if denials.is_empty() {
         Ok(())

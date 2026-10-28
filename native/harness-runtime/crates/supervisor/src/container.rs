@@ -143,13 +143,23 @@ impl Supervisor {
                 .iter()
                 .map(|denial| denial.reason.as_str())
                 .collect();
+            // Each denial names its own remedy; the same remedy is said once.
+            let mut remedies: Vec<&str> = Vec::new();
+            for denial in &denials {
+                if !remedies.contains(&denial.remedy.as_str()) {
+                    remedies.push(&denial.remedy);
+                }
+            }
             return Err(policy_denied(
                 reasons.join("; "),
-                "keep every engine socket and the harness runtime directory out of the plan roots: narrow the root or set XDG_RUNTIME_DIR outside them and restart harness-runtime; nothing was written",
+                &format!("{}; nothing was written", remedies.join("; ")),
             )
             .with_fact(
                 "denied_roots",
-                denials.iter().map(|denial| denial.root.clone()).collect::<Vec<_>>(),
+                denials
+                    .iter()
+                    .map(|denial| denial.root.clone())
+                    .collect::<Vec<_>>(),
             ));
         }
         // Only presence is read: a value never enters an answer or the evidence.

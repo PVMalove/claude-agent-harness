@@ -504,6 +504,37 @@ fn a_mount_of_the_runtime_or_a_changed_image_is_refused_before_any_write() {
 }
 
 #[test]
+fn a_missing_plan_root_and_a_protected_root_are_refused_with_their_own_remedies() {
+    let repo = Repo::new("remedies", 3600);
+    // Like .harness/.sandboxes/scratch before `harness install`.
+    let artifacts = repo.root.join(".harness/.sandboxes/artifacts");
+    fs::remove_dir(&artifacts).unwrap();
+
+    let missing = repo.launch(&repo.supervisor(Vec::new())).unwrap_err();
+
+    assert_eq!(missing.code, ErrorCode::PolicyDenied, "{missing:?}");
+    assert!(missing.message.contains("does not exist"), "{missing:?}");
+    assert!(
+        missing.remedy.contains(artifacts.to_str().unwrap())
+            && missing.remedy.contains("harness install"),
+        "the remedy names the missing path: {missing:?}"
+    );
+    assert!(!missing.remedy.contains("XDG_RUNTIME_DIR"), "{missing:?}");
+
+    fs::create_dir_all(&artifacts).unwrap();
+    let socket = repo
+        .root
+        .join(".harness/orchestration/state/runtime/x.sock");
+    let exposed = repo.launch(&repo.supervisor(vec![socket])).unwrap_err();
+
+    assert_eq!(exposed.code, ErrorCode::PolicyDenied, "{exposed:?}");
+    assert!(exposed.remedy.contains("XDG_RUNTIME_DIR"), "{exposed:?}");
+    assert!(!exposed.remedy.contains("harness install"), "{exposed:?}");
+    assert!(repo.engine.calls().is_empty());
+    assert!(repo.execution().is_none());
+}
+
+#[test]
 fn container_observe_reports_the_engine_facts_and_denies_a_protected_root() {
     let repo = Repo::new("observe", 3600);
     let supervisor = repo.supervisor(Vec::new());
