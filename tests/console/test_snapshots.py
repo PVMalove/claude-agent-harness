@@ -17,11 +17,15 @@ from harness.console.repo_map import MapEdge, MapFile, RepoMapView
 from harness.console.repo_map_settings import MemoryStatus
 from harness.console.snapshots import (
     HOME_TTL_SECONDS,
+    MAX_REQUEST_BYTES,
+    PROTOCOL_VERSION,
     SCHEMA_VERSION,
     HomeContext,
     HomeSnapshot,
     SnapshotService,
     build_home_snapshot,
+    busy,
+    respond,
 )
 from harness.health.model import CheckResult
 
@@ -370,3 +374,160 @@ def test_a_slow_collect_does_not_block_the_event_loop() -> None:
         assert ticks >= 10
 
     asyncio.run(scenario())
+
+
+def _ask(raw: str, collect: CountingCollect | None = None) -> dict[str, object]:
+    collect = collect or CountingCollect()
+    service = _service(collect, FakeClock())
+    return json.loads(asyncio.run(respond(raw, service)))  # type: ignore[no-any-return]
+
+
+def _failure(reply: dict[str, object]) -> tuple[object, object, object, object]:
+    error = reply["error"]
+    assert isinstance(error, dict)
+    assert reply["v"] == PROTOCOL_VERSION and reply["ok"] is False
+    assert isinstance(error["message"], str) and 0 < len(error["message"]) < 80
+    return reply["id"], reply["type"], error["code"], error["message"]
+
+
+def test_a_home_request_is_answered_with_the_snapshot_and_its_freshness() -> None:
+    reply = _ask('{"id": "r1", "type": "home.snapshot", "ignored": [1]}')
+    assert reply == {
+        "v": 1,
+        "id": "r1",
+        "type": "home.snapshot",
+        "ok": True,
+        "cached": False,
+        "age_seconds": 0.0,
+        "snapshot": _wire(build_home_snapshot(DATA, HomeContext())),
+    }
+
+
+@pytest.mark.parametrize("id", ["a" * 64, 7, 0, -3])
+def test_the_request_id_is_echoed_as_sent(id: object) -> None:
+    reply = _ask(json.dumps({"id": id, "type": "home.snapshot"}))
+    assert reply["ok"] is True and reply["id"] == id
+
+
+def test_an_absent_id_is_answered_with_null() -> None:
+    assert _ask('{"type": "home.snapshot"}')["id"] is None
+
+
+def test_age_is_rounded_to_milliseconds() -> None:
+    async def scenario() -> dict[str, object]:
+        clock = FakeClock()
+        service = _service(CountingCollect(), clock)
+        await respond('{"type": "home.snapshot"}', service)
+        clock.advance(1.23456)
+        reply: dict[str, object] = json.loads(
+            await respond('{"type": "home.snapshot"}', service)
+        )
+        return reply
+
+    reply = asyncio.run(scenario())
+    assert (reply["cached"], reply["age_seconds"]) == (True, 1.235)
+
+
+def test_force_is_forwarded_to_the_service() -> None:
+    async def scenario() -> tuple[int, dict[str, object]]:
+        collect = CountingCollect()
+        service = _service(collect, FakeClock())
+        await respond('{"type": "home.snapshot"}', service)
+        await respond('{"type": "home.snapshot", "force": false}', service)
+        forced = json.loads(
+            await respond('{"type": "home.snapshot", "force": true}', service)
+        )
+        return collect.calls, forced
+
+    calls, forced = asyncio.run(scenario())
+    assert calls == 2 and forced["cached"] is False
+
+
+@pytest.mark.parametrize("raw", ["data", "", "{", '{"type": "home.snapshot"', "nul"])
+def test_text_that_is_not_json_is_bad_json(raw: str) -> None:
+    collect = CountingCollect()
+    assert _failure(_ask(raw, collect)) == (
+        None,
+        None,
+        "bad_json",
+        "Request is not valid JSON.",
+    )
+    assert collect.calls == 0
+
+
+@pytest.mark.parametrize(
+    "raw,id",
+    [
+        ("[]", None),
+        ("42", None),
+        ('"home.snapshot"', None),
+        ("{}", None),
+        ('{"id": "q"}', "q"),
+        ('{"id": "q", "type": 1}', "q"),
+        ('{"id": "q", "type": null}', "q"),
+        ('{"id": "q", "type": "home.snapshot", "force": "yes"}', "q"),
+        ('{"id": "q", "type": "home.snapshot", "force": 1}', "q"),
+        ('{"id": true, "type": "home.snapshot"}', None),
+        ('{"id": 1.5, "type": "home.snapshot"}', None),
+        ('{"id": null, "type": "home.snapshot"}', None),
+        ('{"id": ["q"], "type": "home.snapshot"}', None),
+        ('{"id": "' + "a" * 65 + '", "type": "home.snapshot"}', None),
+    ],
+)
+def test_wrong_types_of_known_keys_are_bad_request(raw: str, id: object) -> None:
+    collect = CountingCollect()
+    reply_id, _type, code, _message = _failure(_ask(raw, collect))
+    assert (reply_id, code) == (id, "bad_request")
+    assert collect.calls == 0
+
+
+def test_an_unknown_type_is_refused_with_its_id_and_type_echoed() -> None:
+    assert _failure(_ask('{"id": 5, "type": "settings.write"}')) == (
+        5,
+        "settings.write",
+        "unknown_type",
+        "Unknown request type.",
+    )
+
+
+def test_a_request_is_too_large_above_the_byte_limit_before_it_is_parsed() -> None:
+    def padded(size: int) -> str:
+        body = '{"type": "home.snapshot", "pad": "%s"}'
+        return body % ("x" * (size - len(body % "")))
+
+    assert len(padded(MAX_REQUEST_BYTES)) == MAX_REQUEST_BYTES
+    assert _ask(padded(MAX_REQUEST_BYTES))["ok"] is True
+    collect = CountingCollect()
+    assert _failure(_ask(padded(MAX_REQUEST_BYTES + 1), collect)) == (
+        None,
+        None,
+        "too_large",
+        "Request is too large.",
+    )
+    # Not JSON at all, and multi-byte: the limit counts bytes, and size wins over syntax.
+    assert _failure(_ask("я" * (MAX_REQUEST_BYTES // 2 + 1)))[2] == "too_large"
+    assert collect.calls == 0
+
+
+def test_a_failed_collect_names_only_the_exception_class() -> None:
+    class Boom(Exception):
+        pass
+
+    def collect(repo: Path) -> HomeSnapshot:
+        raise Boom("/secret/path leaked")
+
+    service = SnapshotService(Path("."), clock=FakeClock(), collect=collect)
+    raw = asyncio.run(respond('{"id": "z", "type": "home.snapshot"}', service))
+    assert "secret" not in raw
+    assert _failure(json.loads(raw)) == ("z", "home.snapshot", "collect_failed", "Boom")
+
+
+def test_busy_is_an_error_reply_that_echoes_the_request_id() -> None:
+    reply = json.loads(busy('{"id": 9, "type": "home.snapshot"}'))
+    assert _failure(reply) == (
+        9,
+        "home.snapshot",
+        "busy",
+        "Too many unfinished requests.",
+    )
+    assert _failure(json.loads(busy("garbage")))[2] == "busy"

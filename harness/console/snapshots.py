@@ -7,6 +7,7 @@ values; the Home screen of the TUI shows the same facts. Nothing here imports `r
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from collections.abc import Callable
@@ -19,6 +20,11 @@ from .repo_map_settings import MemoryStatus, memory_status
 
 SCHEMA_VERSION = 1
 HOME_TTL_SECONDS = 15.0
+
+PROTOCOL_VERSION = 1
+MAX_REQUEST_BYTES = 4096
+MAX_ID_CHARS = 64
+HOME_REQUEST = "home.snapshot"
 
 PROBLEMS_LIMIT = 100
 MESSAGE_BYTES = 300
@@ -238,3 +244,106 @@ class SnapshotService:
             snapshot = await asyncio.to_thread(self._collect, self._repo)
             self._snapshot, self._stamp = snapshot, self._clock()
             return Served(snapshot, False, 0.0)
+
+
+_ERRORS = {
+    "bad_json": "Request is not valid JSON.",
+    "bad_request": "Request has a missing or invalid field.",
+    "unknown_type": "Unknown request type.",
+    "too_large": "Request is too large.",
+    "busy": "Too many unfinished requests.",
+    "collect_failed": "Snapshot collection failed.",
+}
+
+
+@dataclass(frozen=True)
+class _Request:
+    id: str | int | None
+    type: str
+    force: bool
+
+
+class _Rejected(Exception):
+    """A request that cannot be served, with whatever of its id and type could be trusted."""
+
+    def __init__(
+        self, code: str, id: str | int | None = None, type: str | None = None
+    ) -> None:
+        super().__init__(code)
+        self.code, self.id, self.type = code, id, type
+
+
+def _parse(raw: str) -> _Request:
+    if len(raw.encode("utf-8", errors="replace")) > MAX_REQUEST_BYTES:
+        raise _Rejected("too_large")
+    try:
+        body = json.loads(raw)
+    except (ValueError, RecursionError):
+        raise _Rejected("bad_json") from None
+    if not isinstance(body, dict):
+        raise _Rejected("bad_request")
+    request_id = body.get("id")
+    if "id" in body and not (
+        (isinstance(request_id, str) and len(request_id) <= MAX_ID_CHARS)
+        or (isinstance(request_id, int) and not isinstance(request_id, bool))
+    ):
+        raise _Rejected("bad_request")
+    kind = body.get("type")
+    if not isinstance(kind, str):
+        raise _Rejected("bad_request", request_id)
+    if kind != HOME_REQUEST:
+        raise _Rejected("unknown_type", request_id, kind[:MAX_ID_CHARS])
+    force = body.get("force", False)
+    if not isinstance(force, bool):
+        raise _Rejected("bad_request", request_id, kind)
+    return _Request(request_id, kind, force)
+
+
+def _encode(reply: dict[str, object]) -> str:
+    return json.dumps(reply, separators=(",", ":"), ensure_ascii=False)
+
+
+def _error(
+    code: str, id: str | int | None, type: str | None, message: str | None = None
+) -> str:
+    return _encode(
+        {
+            "v": PROTOCOL_VERSION,
+            "id": id,
+            "type": type,
+            "ok": False,
+            "error": {"code": code, "message": message or _ERRORS[code]},
+        }
+    )
+
+
+def busy(raw: str) -> str:
+    """The reply to a request that arrived while too many were unfinished; echoes what it can."""
+    try:
+        request = _parse(raw)
+    except _Rejected as rejected:
+        return _error("busy", rejected.id, rejected.type)
+    return _error("busy", request.id, request.type)
+
+
+async def respond(raw: str, snapshots: SnapshotService) -> str:
+    """The reply to one request frame. Never raises: every failure is an error reply."""
+    try:
+        request = _parse(raw)
+    except _Rejected as rejected:
+        return _error(rejected.code, rejected.id, rejected.type)
+    try:
+        served = await snapshots.home(force=request.force)
+    except Exception as exc:
+        return _error("collect_failed", request.id, request.type, type(exc).__name__)
+    return _encode(
+        {
+            "v": PROTOCOL_VERSION,
+            "id": request.id,
+            "type": request.type,
+            "ok": True,
+            "cached": served.cached,
+            "age_seconds": round(served.age_seconds, 3),
+            "snapshot": served.snapshot.to_payload(),
+        }
+    )
