@@ -316,6 +316,25 @@ impl Runner<'_> {
         let err = self
             .directory
             .join(format!("{}.stderr.log", command.stage_id));
+        // Each command gets its own JUnit report path; its failed nodeids become stage evidence.
+        let junit = self
+            .junit_dir
+            .map(|dir| dir.join(format!("stage-{}.junit.xml", command.stage_id)));
+        let settings: Vec<(String, String)> = self
+            .run
+            .settings
+            .iter()
+            .cloned()
+            .chain(
+                junit
+                    .iter()
+                    .map(|path| (JUNIT_ENV.to_owned(), path.to_string_lossy().into_owned())),
+            )
+            .collect();
+        let run = QaRun {
+            settings: &settings,
+            ..*self.run
+        };
         let started = Instant::now();
         let files = fs::create_dir_all(self.directory)
             .and_then(|()| File::create(&out))
@@ -323,9 +342,12 @@ impl Runner<'_> {
         let spawned = files
             .map_err(|err| err.to_string())
             .and_then(|(stdout, stderr)| {
-                let argv = argv::qa_run_argv(self.run, &command.stage_id, &command.command);
+                let argv = argv::qa_run_argv(&run, &command.stage_id, &command.command);
                 self.engine.spawn(&argv, stdout, stderr)
             });
+        if spawned.is_ok() {
+            record.junit = junit;
+        }
         let mut ending = Ending {
             code: None,
             deadline: false,

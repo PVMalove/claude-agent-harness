@@ -323,6 +323,72 @@ fn an_explicit_stop_ends_the_running_container_and_every_later_command_is_not_ru
 }
 
 #[test]
+fn each_command_gets_its_own_junit_report_path_and_its_record_returns_it() {
+    let engine = Scripted::new(Kind::Podman);
+    attach(&engine, "gate-1", Run::finish("", "", 0));
+    attach(&engine, "gate-2", Run::finish("", "1 failed\n", 1));
+    let labels = labels();
+    let settings = [("TMPDIR".to_owned(), "/work/runs/qa/tmp".to_owned())];
+    let qa = QaRun {
+        settings: &settings,
+        ..qa_run(&labels)
+    };
+    let dir = directory("junit");
+    let tmp = Path::new("/work/runs/qa/tmp");
+    let plan = plan(&json!([
+        {"group": "gate", "run_when": "after-success", "stop_on_failure": true, "commands": [
+            {"stage_id": "gate-1", "command": "make lint"},
+            {"stage_id": "gate-2", "command": "make test"},
+            {"stage_id": "gate-3", "command": "make docs"},
+        ]},
+    ]));
+    let stop = AtomicBool::new(false);
+
+    let outcome = Runner {
+        junit_dir: Some(tmp),
+        ..runner(&engine, &qa, &dir, limits(5_000))
+    }
+    .run(&plan, &stop, |_| {});
+
+    let reports: Vec<Option<PathBuf>> = outcome
+        .commands
+        .iter()
+        .map(|item| item.junit.clone())
+        .collect();
+    assert_eq!(
+        reports,
+        [
+            Some(tmp.join("stage-gate-1.junit.xml")),
+            Some(tmp.join("stage-gate-2.junit.xml")),
+            None,
+        ]
+    );
+    let calls = engine.calls();
+    for (call, stage) in calls.iter().zip(["gate-1", "gate-2"]) {
+        let envs: Vec<&str> = call
+            .windows(2)
+            .filter(|pair| pair[0] == "--env")
+            .map(|pair| pair[1].as_str())
+            .collect();
+        assert!(envs.contains(&"TMPDIR=/work/runs/qa/tmp"), "{envs:?}");
+        let junit = format!("HARNESS_STAGE_JUNIT_XML=/work/runs/qa/tmp/stage-{stage}.junit.xml");
+        assert_eq!(
+            envs.iter()
+                .filter(|env| env.starts_with("HARNESS_STAGE_JUNIT_XML="))
+                .count(),
+            1,
+            "{envs:?}"
+        );
+        assert!(envs.contains(&junit.as_str()), "{envs:?}");
+    }
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("001.json")).expect("the record of the command"),
+    )
+    .expect("json");
+    assert_eq!(record["junit"], "/work/runs/qa/tmp/stage-gate-2.junit.xml");
+}
+
+#[test]
 fn a_cli_that_cannot_start_is_infrastructure_without_an_exit_code() {
     let engine = Scripted::new(Kind::Podman);
     let labels = labels();

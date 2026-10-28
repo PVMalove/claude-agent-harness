@@ -12,6 +12,7 @@ infrastructure ending leaves no report but a new attempt of the same dispatch.
 from __future__ import annotations
 
 import json
+import sqlite3
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -252,6 +253,55 @@ def test_each_command_runs_in_its_own_container_and_a_failed_gate_fails_the_repo
     assert [(r["stage_id"], r["result"], r["exit_code"]) for r in records] == [
         ("gate-1", "ran", 0), ("gate-2", "ran", 1), ("gate-3", "not_run", None),
     ]
+
+
+_JUNIT = (
+    "<testsuites><testsuite>"
+    '<testcase classname="services.x" name="test_value[1]"><failure message="m"/></testcase>'
+    '<testcase classname="services.x" name="test_ok"/>'
+    "</testsuite></testsuites>"
+)
+
+
+def test_the_failed_nodeids_of_a_container_command_come_from_its_own_junit_report(
+    qa: Make,
+) -> None:
+    repo = qa()
+    repo.engine.script("gate-2", stderr="1 failed\n", exit_code=1, junit=_JUNIT)
+
+    code, result, err = repo.qa_run()
+
+    assert code == 0 and result is not None, err
+    report = repo.report()
+    assert report["outcome"] == "failed"
+    reports = [
+        [env for env in _flag(run, "--env") if env.startswith("HARNESS_STAGE_JUNIT_XML=")]
+        for run in repo.engine.runs()
+    ]
+    assert [len(found) for found in reports] == [1, 1]
+    assert reports[0] != reports[1] and reports[1][0].endswith("/stage-gate-2.junit.xml")
+    records = repo.execution()["exit"]["commands"]
+    assert records[1]["junit"] == reports[1][0].split("=", 1)[1]
+    stages = {stage["stage_id"]: stage for stage in _stage_evidence(repo, report)["stages"]}
+    assert stages["gate-2"]["failed_nodeids"] == ["services/x.py::test_value[1]"]
+    assert stages["gate-1"]["failed_nodeids"] == []
+
+
+def _stage_evidence(repo: ContainerQa, report: JsonObject) -> JsonObject:
+    """The stage-evidence document the QA artifact of ``report`` links to, read from the store's
+    immutable artifacts."""
+    log = str(report["output"]).split("full sanitised output: ", 1)[1].split(" ", 1)[0]
+    connection = sqlite3.connect(repo.repo / STATE_REL / "runtime.db", timeout=10)
+    try:
+        artifacts: dict[str, str] = {
+            path: bytes(content).decode("utf-8")
+            for path, content in connection.execute("SELECT path, bytes FROM artifact")
+        }
+    finally:
+        connection.close()
+    trailer = artifacts["qa-artifacts/" + log.rsplit("/qa-artifacts/", 1)[1]].splitlines()[-1]
+    document: JsonObject = json.loads(artifacts[trailer.split(" ")[1]])
+    return document
 
 
 def test_an_infrastructure_ending_is_a_new_attempt_without_a_report_or_a_developer_retry(

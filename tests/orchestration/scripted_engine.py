@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from harness.json_types import JsonObject as State
 
 STATE_ENV = "HARNESS_SCRIPTED_ENGINE_STATE"
+JUNIT_ENV = "HARNESS_STAGE_JUNIT_XML"
 WORKER_ID = "0123456789abcdef" * 4
 PROXY_ID = "89abcdef01234567" * 4
 NETWORK_ID = "fedcba9876543210" * 4
@@ -82,13 +83,15 @@ class ScriptedEngine:
 
     def script(
         self, stage_id: str, *, stdout: str = "", stderr: str = "", exit_code: int = 0,
-        hang: bool = False,
+        hang: bool = False, junit: str = "",
     ) -> None:
         """What the foreground ``run`` of the QA command ``stage_id`` prints and exits with; a
-        hanging one runs until a stop or a kill of its container ends it."""
+        hanging one runs until a stop or a kill of its container ends it. ``junit`` is the JUnit
+        report the command writes where ``HARNESS_STAGE_JUNIT_XML`` of its ``run`` points."""
         def add(state: State) -> None:
             state["runs"][stage_id] = {
                 "stdout": stdout, "stderr": stderr, "exit_code": exit_code, "hang": hang,
+                "junit": junit,
             }
         self.update(add)
 
@@ -252,6 +255,12 @@ def _run(path: Path, argv: list[str]) -> int:
             "kind": "container", "id": name, "name": name, "labels": _labels(argv),
             "status": "running", "exit_code": 0,
         }
+    junit = next(
+        (part.split("=", 1)[1] for part in argv if part.startswith(f"{JUNIT_ENV}=")), None
+    )
+    if junit is not None and script.get("junit"):
+        # The run root is bind-mounted at its own path: the report lands on the host as is.
+        Path(junit).write_text(script["junit"], encoding="utf-8")
     sys.stdout.write(script.get("stdout", ""))
     sys.stderr.write(script.get("stderr", ""))
     sys.stdout.flush()
