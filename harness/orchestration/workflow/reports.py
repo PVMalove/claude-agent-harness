@@ -49,6 +49,7 @@ from harness.orchestration.core.constants import (
     QA_NOT_RUN_RESULT,
     QA_STAGE_ENTRY_FIELDS,
     QA_STAGE_ENTRY_OPTIONAL_FIELDS,
+    QA_STAGE_DOMAINS,
     QA_PRIMARY_STAGE_NAMES,
     QA_STAGE_NAMES,
     QA_STAGES_FIELDS,
@@ -1442,6 +1443,7 @@ def _validate_qa_stages(report: JsonObject, dispatch: JsonObject) -> None:
             or isinstance(entry["exit_code"], bool)
             or not isinstance(entry["exit_code"], int)
             or entry["result"] != ("pass" if entry["exit_code"] == 0 else "fail")
+            or entry.get("domain", QA_STAGE_DOMAINS[0]) not in QA_STAGE_DOMAINS
         ):
             raise refuse("has an invalid stage entry")
         diagnostics = entry.get("diagnostics")

@@ -13,6 +13,7 @@ import fcntl
 import json
 import os
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -49,7 +50,7 @@ class ScriptedEngine:
         self.binary = binary
         self._write(
             {"binary": binary, "info": podman_info(), "images": {}, "objects": {},
-             "failures": {}, "calls": []}
+             "failures": {}, "calls": [], "runs": {}}
         )
         wrapper = self.bin / binary
         wrapper.write_text(
@@ -78,6 +79,21 @@ class ScriptedEngine:
 
     def removals(self) -> list[list[str]]:
         return [c for c in self.calls() if c[1] == "rm" or c[1:3] == ["network", "rm"]]
+
+    def script(
+        self, stage_id: str, *, stdout: str = "", stderr: str = "", exit_code: int = 0,
+        hang: bool = False,
+    ) -> None:
+        """What the foreground ``run`` of the QA command ``stage_id`` prints and exits with; a
+        hanging one runs until a stop or a kill of its container ends it."""
+        def add(state: State) -> None:
+            state["runs"][stage_id] = {
+                "stdout": stdout, "stderr": stderr, "exit_code": exit_code, "hang": hang,
+            }
+        self.update(add)
+
+    def runs(self) -> list[list[str]]:
+        return [call for call in self.calls() if call[1] == "run"]
 
     def add_container(self, container_id: str, name: str, labels: dict[str, str], status: str) -> None:
         def add(state: State) -> None:
@@ -205,6 +221,7 @@ def _answer(state: State, argv: list[str]) -> tuple[int, str, str]:
         if item is None:
             return 1, "", f"Error: no such container {argv[-1]}"
         item["status"] = "running" if verb == "start" else "exited"
+        item["signalled"] = verb
         return 0, argv[-1] + "\n", ""
     if kind == "network-connect":
         return 0, "", ""
@@ -221,8 +238,41 @@ def _answer(state: State, argv: list[str]) -> tuple[int, str, str]:
     return 1, "", f"the scripted engine has no answer for {argv}"
 
 
+def _run(path: Path, argv: list[str]) -> int:
+    """A foreground ``run --rm`` of a QA command: its scripted streams and exit code, or, for a
+    hanging one, the wait outside the lock until a stop (143) or a kill (137) of its name."""
+    name = argv[argv.index("--name") + 1]
+    with _locked(path) as state:
+        argv[0] = state["binary"]
+        state["calls"].append(argv)
+        script: State = next(
+            (value for key, value in state["runs"].items() if name.endswith(f"-{key}")), {}
+        )
+        state["objects"][name] = {
+            "kind": "container", "id": name, "name": name, "labels": _labels(argv),
+            "status": "running", "exit_code": 0,
+        }
+    sys.stdout.write(script.get("stdout", ""))
+    sys.stderr.write(script.get("stderr", ""))
+    sys.stdout.flush()
+    sys.stderr.flush()
+    code = int(script.get("exit_code", 0))
+    while script.get("hang"):
+        with _locked(path) as state:
+            item = state["objects"].get(name, {"status": "exited", "signalled": "kill"})
+        if item["status"] == "exited":
+            code = 143 if item.get("signalled") == "stop" else 137
+            break
+        time.sleep(0.05)
+    with _locked(path) as state:
+        state["objects"].pop(name, None)
+    return code
+
+
 def main() -> int:
     argv = [Path(sys.argv[0]).name, *sys.argv[1:]]
+    if argv[1:2] == ["run"]:
+        return _run(Path(os.environ[STATE_ENV]), argv)
     with _locked(Path(os.environ[STATE_ENV])) as state:
         argv[0] = state["binary"]
         state["calls"].append(argv)

@@ -16,7 +16,7 @@ import socket
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -24,6 +24,7 @@ from typing import Protocol
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
 from . import hook_policy, operation_access, operational_guards, qa_lease, verification_plan
+from .qa_execution import NO_REPORT_DOMAINS, RuntimeQaPolicy, container_brief, next_attempt
 from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
 from .core.config import _execution_policy, _lease_ttl, _qa_preparation_commands
@@ -33,6 +34,7 @@ from .core.constants import (
     QA_QUEUE_FIELDS,
     QA_LEASE_FIELDS,
     STATE_REL,
+    FailureDomain,
     QaOwnerKind,
 )
 from .core.utils import (
@@ -64,6 +66,7 @@ from .ledger import (
 )
 from .ledger.ledger_ops import (
     LedgerBusyError,
+    store_is_authority,
     _ledger_lock,
     persist_writes,
     read_state,
@@ -736,16 +739,52 @@ def _qa_report(
     return report
 
 
+def _container_domain(
+    policy: object, stages: JsonObject | None
+) -> FailureDomain | None:
+    """The failure domain of a container QA run: the one the runtime classified, else an
+    environment that failed the preparation; ``None`` for a host QA and for own exit codes."""
+    if not isinstance(policy, RuntimeQaPolicy):
+        return None
+    if policy.domain is not None:
+        return policy.domain
+    from .workflow.failure_domains import of_qa_stages
+
+    failure = of_qa_stages(stages)
+    if failure is not None and failure.domain == FailureDomain.ENVIRONMENT_PREPARATION:
+        return failure.domain
+    return None
+
+
+def _blocked_by(report: JsonObject, domain: FailureDomain) -> None:
+    """A container QA whose command ended with a tooling, timeout or unknown failure: the code
+    was not judged, so the report is ``blocked`` with that domain and no developer retry."""
+    report.update(
+        outcome="blocked",
+        output=f"QA blocked: a command ended with a {domain} failure; {report['output']}",
+        risks={
+            "status": "present",
+            "details": f"a {domain} ending stopped the QA gate; the candidate code was not judged",
+        },
+        blockers={
+            "status": "present",
+            "details": f"QA {domain} failure; no developer retry is needed",
+        },
+        next_coordinator_action=f"resolve the {domain} failure, then decide a same-SHA QA retry",
+    )
+
+
 def _verify_stages_against_artifact(
-    stages: JsonObject, artifact: Path, checksum: str
+    stages: JsonObject, artifact: Path, checksum: str, written: str | None = None
 ) -> None:
     """Prove the recorded stages against the persisted immutable artifact, read back from disk.
 
     The artifact must still hash to its recorded checksum, and its command blocks must be exactly
-    the stage entries' executed commands and exit codes, in order.
+    the stage entries' executed commands and exit codes, in order. In the store epoch the runtime
+    holds the artifact and checks its bytes on write: ``written`` is the text it accepted.
     """
     try:
-        data = artifact.read_bytes()
+        data = artifact.read_bytes() if written is None else written.encode("utf-8")
     except OSError as exc:
         raise CoordinatorError(
             f"could not read back the immutable QA evidence {artifact}: {exc}",
@@ -818,8 +857,10 @@ def _recover_transient_failure(
     failure: HarnessError,
     stage: str,
     ops: QaWorkflowOps,
+    details: JsonObject | None = None,
 ) -> None:
-    """Return one QA dispatch to its retryable state after a non-terminal failure."""
+    """Return one QA dispatch to its retryable state after a non-terminal failure; ``details``
+    (the attempt of a container QA, its domain and evidence) join the attempt record."""
     with _lock_waiting(ledger, dispatch["dispatch_id"]):
         _write_immutable(
             ledger,
@@ -830,6 +871,7 @@ def _recover_transient_failure(
                 "failed_at": _now(),
                 "message": failure.message,
                 "remedy": failure.remedy,
+                **(details or {}),
             },
         )
         if state_view.exists(queue_path):
@@ -874,6 +916,8 @@ def _restore_approved(
     _safe_id(batch["batch_id"], "batch")
     _replace_record(ledger, BatchRecord.from_dict(batch))
     _safe_id(dispatch["dispatch_id"], "dispatch")
+    # The attempt of a container QA outlives the run, so the next run is the next attempt.
+    attempt = ops._load_dispatch_status(root, dispatch["dispatch_id"]).get("attempt")
     _replace_record(
         ledger,
         DispatchStatusRecord.from_dict(
@@ -881,6 +925,7 @@ def _restore_approved(
                 "dispatch_id": dispatch["dispatch_id"],
                 "state": "approved",
                 "updated_at": _now(),
+                **({} if attempt is None else {"attempt": attempt}),
             }
         ),
     )
@@ -925,6 +970,7 @@ def _release_after_failure(
     exc: BaseException,
     stage: str,
     ops: QaWorkflowOps,
+    details: JsonObject | None = None,
 ) -> None:
     """Undo an acquired lane after any failure and raise a coordinator error for an unexpected one.
 
@@ -946,7 +992,7 @@ def _release_after_failure(
             remedy="the QA lane and the dispatch were released; run the QA runner again",
         )
     _recover_transient_failure(
-        ledger, root, dispatch, queue_path, lease, failure, stage, ops
+        ledger, root, dispatch, queue_path, lease, failure, stage, ops, details
     )
     if failure is not exc and isinstance(exc, Exception):
         raise failure from exc
@@ -1049,6 +1095,10 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             return {"dispatch_id": dispatch["dispatch_id"], **admission}
         queue_path = Path(admission["queue_path"])
         lease = admission["lease"]
+        # A container QA run is an attempt of its dispatch (ADR 0021, section 4): a rerun after an
+        # infrastructure ending is the next attempt, with its own operation id.
+        container = container_brief(dispatch)
+        attempt = next_attempt(status) if container else None
         try:
             entry["state"] = "dispatched"
             _safe_id(dispatch["dispatch_id"], "dispatch")
@@ -1059,6 +1109,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
                         "dispatch_id": dispatch["dispatch_id"],
                         "state": "working",
                         "updated_at": _now(),
+                        **({} if attempt is None else {"attempt": attempt}),
                     }
                 ),
             )
@@ -1081,7 +1132,11 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
         with qa_lease.heartbeat(ledger, lease, lease_seconds):
             # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
             # not consume CI time and coordinator context collecting unrelated failures afterwards.
-            policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
+            policy: CleanRoomPolicy | RuntimeQaPolicy = (
+                RuntimeQaPolicy(repo, dispatch, attempt, lease.get("fencing_token"))
+                if attempt is not None
+                else CleanRoomPolicy(repo, dispatch["candidate_commit"])
+            )
             from .infrastructure_retry import pinned
 
             config = read_snapshot(dispatch)["config"]
@@ -1118,20 +1173,38 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     except GateRunnerError as exc:
         failure = CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
-            ledger, root, dispatch, queue_path, lease, failure, "gate-run", ops
+            ledger,
+            root,
+            dispatch,
+            queue_path,
+            lease,
+            failure,
+            "gate-run",
+            ops,
+            None if attempt is None else {"attempt": attempt, "domain": "infrastructure"},
         )
         raise failure from exc
     except BaseException as exc:
+        details = (
+            None
+            if attempt is None
+            else {"attempt": attempt, "domain": getattr(exc, "domain", None)}
+        )
         _release_after_failure(
-            ledger, root, dispatch, queue_path, lease, exc, "gate-run", ops
+            ledger, root, dispatch, queue_path, lease, exc, "gate-run", ops, details
         )
         raise
+    trailer = ""
+    store = store_is_authority(ledger.root)
     try:
-        if bundle is not None:
-            artifact_text += persist_stage_evidence(ledger, bundle)
-        checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
-        artifact = _artifact_path(ledger, checksum)
-        _write_artifact(ledger, artifact, artifact_text)
+        # In the store epoch an artifact is written in a store unit of the command.
+        with _lock(ledger) if store else nullcontext():
+            if bundle is not None:
+                trailer = persist_stage_evidence(ledger, bundle)
+                artifact_text += trailer
+            checksum = hashlib.sha256(artifact_text.encode("utf-8")).hexdigest()
+            artifact = _artifact_path(ledger, checksum)
+            _write_artifact(ledger, artifact, artifact_text)
     except CoordinatorError as exc:
         failure = CoordinatorError(
             "could not persist immutable QA evidence",
@@ -1156,7 +1229,12 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     stages = staged.record() if staged is not None else None
     if stages is not None:
         try:
-            _verify_stages_against_artifact(stages, artifact, checksum)
+            _verify_stages_against_artifact(
+                stages,
+                artifact,
+                checksum,
+                artifact_text if store else None,
+            )
         except CoordinatorError as exc:
             _recover_transient_failure(
                 ledger,
@@ -1181,8 +1259,37 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
                 ops,
             )
             raise
+    domain = _container_domain(policy, stages)
+    if domain in NO_REPORT_DOMAINS:
+        failure = CoordinatorError(
+            f"QA attempt {attempt} of {dispatch['dispatch_id']} ended with a {domain} failure; "
+            f"its evidence is {artifact.name}",
+            remedy=f"restore the QA environment, then run qa run for {dispatch['dispatch_id']} "
+            f"again: it is attempt {(attempt or 0) + 1} with a new operation id and spends no "
+            "developer retry",
+        )
+        _recover_transient_failure(
+            ledger,
+            root,
+            dispatch,
+            queue_path,
+            lease,
+            failure,
+            "gate-run",
+            ops,
+            {
+                "attempt": attempt,
+                "domain": str(domain),
+                "artifact": artifact.name,
+                "sha256": checksum,
+                "stage_evidence": trailer.strip() or None,
+            },
+        )
+        raise failure
     try:
         report = _qa_report(dispatch, checks, artifact, checksum, stages)
+        if domain is not None:
+            _blocked_by(report, domain)
         with _lock(ledger):
             report_path = _record_report(ledger, root, repo, dispatch, report, ops)
     except CoordinatorError as exc:

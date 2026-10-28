@@ -235,6 +235,9 @@ class StageCommand:
     failed_nodeids: tuple[str, ...] = ()
     # The command ran but selected nothing (pytest exit 5): never a pass, never a failure.
     not_run: bool = False
+    # The failure domain the runtime classified the ending of a containerised command as
+    # (ADR 0022, section 3); ``None`` when the exit code is the command's own result.
+    domain: str | None = None
 
 
 # The environment a gate command sees (ADR 0023, sections 4 and 5): where it may write the JUnit
@@ -997,6 +1000,8 @@ def _stage_record(stage: str, item: StageCommand) -> dict[str, object]:
         record["executed_command"] = item.executed
     if item.exit_code != 0:
         record["diagnostics"] = _diagnostic_tail(item.output)
+    if item.domain is not None:
+        record["domain"] = item.domain
     return record
 
 

@@ -603,13 +603,15 @@ class RuntimeClient:
         payload: JsonObject | None = None,
         expected_revision: int | None = None,
         batch_id: str | None = None,
+        fencing_token: str | None = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> RuntimeReply:
         """Send one request until it is answered or its ``request_deadline`` passes.
 
         Every attempt carries the same ``operation_id`` and the same ``request_deadline``. Only a
         lost transport is repeated, with a delay from 100 ms to 5 s; an error the runtime answered
-        with is raised as it is. ``batch_id`` names the batch of a mutation.
+        with is raised as it is. ``batch_id`` names the batch of a mutation, ``fencing_token`` the
+        QA lane lease a QA run holds.
         """
         deadline = self._clock() + timeout_seconds
         request: JsonObject = {
@@ -627,6 +629,8 @@ class RuntimeClient:
             request["expected_revision"] = expected_revision
         if batch_id is not None:
             request["batch_id"] = batch_id
+        if fencing_token is not None:
+            request["fencing_token"] = fencing_token
         delay = BACKOFF_START_SECONDS
         while True:
             try:
