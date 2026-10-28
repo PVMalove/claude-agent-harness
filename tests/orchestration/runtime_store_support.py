@@ -281,6 +281,14 @@ def authorities(repo: Path) -> dict[str, bool]:
 
 ORCHESTRATION_ROOT = ROOT / "harness" / "orchestration"
 APPROVAL = {"approved_by": "Malove", "approved_at": "2026-09-17T00:00:00+00:00"}
+# The architect dispatch of the seam batches, as ``dispatch create`` takes it.
+ARCHITECT_DISPATCH = {
+    "role": "architect",
+    "runtime": "claude",
+    "purpose": "work",
+    "model": "sonnet",
+    "effort": "high",
+}
 
 
 def _git(repo: Path, *arguments: str) -> str:
@@ -357,7 +365,36 @@ def write_coordinator_state(
             ),
             encoding="utf-8",
         )
-    worktree = tmp / "worktree"
+    ids, brief = add_coordinator_batch(repo, tmp / "worktree", ticket=ticket)
+    dispatch_id = ids["dispatch_id"]
+
+    def args(**values: object) -> argparse.Namespace:
+        return argparse.Namespace(repo=str(repo), state_dir=None, **values)
+
+    if not report:
+        # An approved dispatch is no live worker: the cutover accepts this state.
+        return repo, ids
+    launched = coordinator.send_dispatch(
+        args(dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None)
+    )
+    coordinator.self_report_dispatch(
+        args(dispatch=dispatch_id, model="sonnet", worktree=launched["worker_worktree"])
+    )
+    path = architect_report_file(repo, dispatch_id, brief)
+    coordinator.submit_report(args(file=str(path)))
+    return repo, ids
+
+
+def add_coordinator_batch(
+    repo: Path, worktree: Path, *, ticket: str, dispatch: bool = True
+) -> tuple[dict[str, str], JsonObject]:
+    """A planned and approved batch of the file ledger of ``repo`` with one approved architect
+    dispatch, in its own issue branch and ``worktree``: the ids and the brief. Without
+    ``dispatch`` the batch stays planned, and the ids and the brief name no dispatch."""
+    import argparse
+
+    from harness.orchestration import coordinator
+
     branch = f"feature/issue-{ticket.removeprefix('#')}-seam"
     _git(repo, "worktree", "add", "-b", branch, str(worktree), "master")
 
@@ -384,35 +421,21 @@ def write_coordinator_state(
     )
     batch_id = str(batch["batch_id"])
     coordinator.approve_batch(args(batch=batch_id, **APPROVAL))
+    if not dispatch:
+        return {"batch_id": batch_id}, {}
     fields = {
         "batch": batch_id,
-        "role": "architect",
-        "runtime": "claude",
-        "purpose": "work",
+        **ARCHITECT_DISPATCH,
         "candidate_commit": None,
         "delta_review_of": None,
-        "model": "sonnet",
-        "effort": "high",
     }
     proposal = coordinator.create_dispatch(args(propose=True, **fields))
     created = coordinator.create_dispatch(
         args(transition_digest=proposal["transition_digest"], **fields, **APPROVAL)
     )
     brief = created["brief"]
-    dispatch_id = str(brief["dispatch_id"])
-    ids = {"batch_id": batch_id, "dispatch_id": dispatch_id}
-    if not report:
-        # An approved dispatch is no live worker: the cutover accepts this state.
-        return repo, ids
-    launched = coordinator.send_dispatch(
-        args(dispatch=dispatch_id, adapter=None, adapter_arg=None, checkout=None)
-    )
-    coordinator.self_report_dispatch(
-        args(dispatch=dispatch_id, model="sonnet", worktree=launched["worker_worktree"])
-    )
-    path = architect_report_file(repo, dispatch_id, brief)
-    coordinator.submit_report(args(file=str(path)))
-    return repo, ids
+    assert isinstance(brief, dict)
+    return {"batch_id": batch_id, "dispatch_id": str(brief["dispatch_id"])}, brief
 
 
 def architect_report_file(repo: Path, dispatch_id: str, brief: JsonObject) -> Path:

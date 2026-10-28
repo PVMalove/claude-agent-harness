@@ -157,6 +157,9 @@ def _check_batch_conflicts(root: Path, config: JsonObject, batch: JsonObject) ->
         ):
             continue
         active += 1
+    # The count read every batch: a command that admits another batch in the meantime moves the
+    # generation, and the write of this command is refused instead of exceeding the budget.
+    state_view.depend_on_shared()
     if active >= budget:
         raise CoordinatorError(
             f"concurrency_budget ({budget}) is exhausted: {active} other batch(es) are already active",
@@ -173,7 +176,11 @@ def _reject_duplicate_work(root: Path, ticket: str, branch: str, worktree: str) 
     retain their ticket, branch and worktree until an explicit operator refusal.
     """
     mine_worktree = str(Path(worktree).resolve())
-    for other in _batch_records(root):
+    # The check reads every batch: a batch another command creates in the meantime moves the
+    # generation, and the creation of this one is refused instead of doubling the work.
+    others = list(_batch_records(root))
+    state_view.depend_on_shared()
+    for other in others:
         if terminal(other):
             continue
         other_worktree = other.get("worktree")

@@ -185,9 +185,16 @@ def _runtime_commit(repo: Path) -> state_view.Commit:
     client = _LazyClient(repo)
 
     def commit(
-        batch_id: str | None, expected_revision: int | None, mutations: list[JsonObject]
+        batch_id: str | None,
+        expected_revision: int | None,
+        mutations: list[JsonObject],
+        /,
+        *,
+        guard: state_view.Guard | None = None,
     ) -> dict[str, int]:
         payload: JsonObject = {"mutations": mutations}
+        if guard is not None and guard.expected is not None:
+            payload["expected_generation_revision"] = guard.expected
         try:
             reply = client.call(
                 "state.write",
@@ -203,6 +210,10 @@ def _runtime_commit(repo: Path) -> state_view.Commit:
             if exc.code == "store_busy":
                 raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
             raise
+        generation = reply.result.get("generation_revision")
+        if guard is not None and isinstance(generation, int):
+            # The next request of the unit expects the generation this one left.
+            guard.expected = generation
         revisions = reply.result.get("revisions")
         return {
             path: revision
@@ -252,29 +263,53 @@ def persist_writes(ledger: LifecycleLedger) -> None:
         unit.persist()
 
 
-def _runtime_fetch(repo: Path) -> state_view.Fetch:
-    """``state.read`` through ``runtime_client``; a busy or moving store reads as a busy ledger."""
-    from harness.orchestration.runtime_client import RuntimeClientError
+class _SnapshotRead:
+    """``state.read`` through ``runtime_client``, from one read snapshot of the store.
 
-    client = _LazyClient(repo)
+    The first read opens the snapshot (``"snapshot": "open"``) and the later reads name it, so the
+    reads of one view see the store as it was at its first read, while other commands commit
+    (ADR 0020, section 3). ``close`` ends it; the view closes it at a refresh, after its unit
+    commits and when it is unbound. A busy store and a snapshot the runtime no longer holds read
+    as a busy ledger; the command repeats on a new snapshot."""
 
-    def fetch(
-        collections: Sequence[str], paths: Sequence[str], revision: int | None
+    def __init__(self, repo: Path) -> None:
+        self._client = _LazyClient(repo)
+        self._snapshot: str | None = None
+        self._generation: int | None = None
+
+    @property
+    def generation_revision(self) -> int | None:
+        return self._generation
+
+    def __call__(
+        self, collections: Sequence[str], paths: Sequence[str], revision: int | None, /
     ) -> tuple[dict[str, JsonObject], int | None, dict[str, int]]:
+        from harness.orchestration.runtime_client import RuntimeClientError
+
         try:
-            reply = client.call(
+            reply = self._client.call(
                 "state.read",
                 operation_id=f"state.read-{uuid.uuid4().hex}",
-                payload={"collections": list(collections), "paths": list(paths)},
-                expected_revision=revision,
+                payload={
+                    "collections": list(collections),
+                    "paths": list(paths),
+                    "snapshot": self._snapshot or "open",
+                },
                 timeout_seconds=READ_TIMEOUT_SECONDS,
             )
         except RuntimeClientError as exc:
+            if exc.facts.get("reason") in {"snapshot_expired", "snapshot_limit"}:
+                self._snapshot, self._generation = None, None
             if exc.code in {"store_busy", "revision_conflict"}:
                 raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
             if exc.facts.get("reason") == "answer_too_large":
                 raise state_view.AnswerTooLarge(exc.message) from exc
             raise
+        snapshot = reply.result.get("snapshot")
+        if self._snapshot is None and isinstance(snapshot, str):
+            self._snapshot = snapshot
+            generation = reply.result.get("generation_revision")
+            self._generation = generation if isinstance(generation, int) else None
         records = reply.result.get("records")
         revisions = reply.result.get("revisions")
         return (
@@ -289,7 +324,28 @@ def _runtime_fetch(repo: Path) -> state_view.Fetch:
             },
         )
 
-    return fetch
+    def close(self) -> None:
+        snapshot, self._snapshot, self._generation = self._snapshot, None, None
+        if snapshot is None:
+            return
+        from harness.orchestration.runtime_client import RuntimeClientError
+
+        try:
+            self._client.call(
+                "state.read",
+                operation_id=f"state.read-{uuid.uuid4().hex}",
+                payload={"snapshot": snapshot, "close": True},
+                timeout_seconds=READ_TIMEOUT_SECONDS,
+            )
+        except RuntimeClientError:
+            # An expired snapshot is closed already, and the runtime ends an idle one itself.
+            pass
+
+
+def _runtime_fetch(repo: Path) -> state_view.Fetch:
+    """``state.read`` through ``runtime_client`` from one snapshot; a busy store, or a snapshot
+    the runtime no longer holds, reads as a busy ledger."""
+    return _SnapshotRead(repo)
 
 
 @contextmanager

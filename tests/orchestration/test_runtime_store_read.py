@@ -226,3 +226,37 @@ def test_a_read_of_a_record_outside_a_bulk_collection_stays_a_point_read(tmp_pat
         assert view.read(f"reports/dispatch-{number}.json") is None
 
     assert all(not collections for collections, _ in store.requests)
+
+
+# -- the read snapshot of one view ------------------------------------------------------------------
+
+
+def test_a_snapshot_the_runtime_no_longer_holds_reads_as_a_busy_ledger_and_a_repeat_reopens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from .runtime_store_support import store_call
+
+    repo, _ = write_coordinator_state(tmp_path, report=False)
+    result = migrate(repo)
+    assert result.returncode == 0, result.stderr
+    runtime = ServingRuntime(repo)
+    try:
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime.xdg))
+        fetch = ledger_ops._runtime_fetch(repo)
+        assert isinstance(fetch, state_view.SnapshotFetch)
+        fetch(["batches"], [], None)
+        assert isinstance(fetch.generation_revision, int)
+        snapshot = getattr(fetch, "_snapshot")
+        store_call(repo, runtime, "state.read", {"snapshot": snapshot, "close": True})
+
+        with pytest.raises(ledger_ops.LedgerBusyError) as busy:
+            fetch(["batches"], [], None)
+        records, _, _ = fetch(["batches"], [], None)
+
+        assert busy.value.remedy.startswith("[store_busy] ")
+        assert records
+        assert getattr(fetch, "_snapshot") not in (None, snapshot)
+        fetch.close()
+        assert getattr(fetch, "_snapshot") is None
+    finally:
+        runtime.stop()
