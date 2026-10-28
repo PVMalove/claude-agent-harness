@@ -1,6 +1,6 @@
 [package]
 name = "supervisor"
-description = "Process supervisor of harness-runtime: launch from the stored brief, adoption, reconcile and deadline stop on Linux (ADR 0022)"
+description = "Process and container supervisor of harness-runtime: launch from the stored brief, adoption, reconcile and deadline stop on Linux (ADR 0022)"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
@@ -12,10 +12,11 @@ workspace = true
 
 [dependencies]
 contracts = { version = "0.1.0", path = "../contracts" }
+engine = { version = "0.1.0", path = "../engine" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde_json = "1.0.154"
 state = { version = "0.1.0", path = "../state" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-nix = { version = "0.31.3", default-features = false, features = ["process", "signal"] }
+nix = { version = "0.31.3", default-features = false, features = ["process", "signal", "user"] }
 sha2 = "0.11.1"

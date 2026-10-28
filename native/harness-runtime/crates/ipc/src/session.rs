@@ -146,6 +146,15 @@ impl Session {
             "execution.observe" if supervised(shared) => {
                 answer(&request, shared.supervisor.observe(&request))
             }
+            "container.observe" if supervised(shared) => {
+                answer(&request, shared.supervisor.container_observe(&request))
+            }
+            "container.objects" if supervised(shared) => {
+                answer(&request, shared.supervisor.container_objects(&request))
+            }
+            "container.remove" if supervised(shared) => {
+                answer(&request, shared.supervisor.container_remove(&request))
+            }
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -606,7 +615,7 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
-        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 2}));
+        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 3}));
         assert!(error.remedy.contains("update harness"));
         assert!(reply.close);
     }
@@ -846,7 +855,7 @@ mod tests {
         ];
         // The supervisor serves its operations where the platform supervises processes.
         if supervisor::Supervisor::supported() {
-            features.extend(["execution.launch", "execution.observe"]);
+            features.extend(supervisor::FEATURES);
         }
         assert_eq!(result["features"], json!(features));
         assert_eq!(reply.response.status, Status::Ok);

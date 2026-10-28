@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use contracts::ErrorCode;
-use ipc::{Server, StartError, resolve_paths};
+use ipc::{Environment, Server, StartError, resolve_paths};
 use serde_json::json;
 
 const EXIT_FAILED: u8 = 1;
@@ -145,8 +145,8 @@ enum Failure {
 }
 
 fn serve(args: &Args) -> Result<(), Failure> {
-    let xdg = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    let paths = resolve_paths(&args.repo, xdg.as_deref())
+    // The environment is read once: the runtime directory never moves while the runtime serves.
+    let paths = resolve_paths(&args.repo, &Environment::of_process())
         .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
     // The handler comes before the bind: a signal then never kills a bound server without
     // `Drop` removing its socket and token.
@@ -228,8 +228,7 @@ fn rollback(args: &Args) -> ExitCode {
             state::rollback::remedy(&error),
         );
     }
-    let xdg = env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    let paths = match resolve_paths(&args.repo, xdg.as_deref()) {
+    let paths = match resolve_paths(&args.repo, &Environment::of_process()) {
         Ok(paths) => paths,
         Err(err) => return refuse(err.code(), err.to_string(), err.remedy()),
     };

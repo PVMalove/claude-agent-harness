@@ -2,9 +2,9 @@
 //! thread per connection (ADR 0021, section 2). A lock file in the runtime directory makes the
 //! start of two runtimes for one repository exclusive.
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -16,7 +16,8 @@ use contracts::FrameError;
 use crate::paths::RuntimePaths;
 use crate::peer::{PeerId, own_uid, peer_pid, peer_uid, same_user};
 use crate::server::{
-    ACCEPT_POLL, IDLE_TIMEOUT, StartError, io_context, serve_connection, take_lock,
+    ACCEPT_POLL, IDLE_TIMEOUT, StartError, io_context, secure_directory, serve_connection,
+    take_lock,
 };
 use crate::session::Shared;
 use crate::token::generate_token;
@@ -29,12 +30,15 @@ pub struct Server {
     shared: Arc<Shared>,
     /// Holds the exclusive lock of this repository's runtime until the server is dropped.
     _lock: File,
+    /// A shared lock on the runtime directory: `systemd-tmpfiles` never ages a directory that a
+    /// process holds a BSD lock on, so the socket, token and lock of a live runtime stay.
+    _directory: File,
 }
 
 impl Server {
-    /// Prepare the `0700` directory, take the lock, write the `0600` token, then bind the `0600`
-    /// socket. The lock holder is the only runtime of the repository, so it alone touches the
-    /// socket and the token files.
+    /// Check the private `0700` directory and hold a shared lock on it, take the lock, write the
+    /// `0600` token, then bind the `0600` socket. The lock holder is the only runtime of the
+    /// repository, so it alone touches the socket and the token files.
     pub fn bind(paths: RuntimePaths) -> Result<Self, StartError> {
         Self::bind_serving(paths, None)
     }
@@ -45,7 +49,8 @@ impl Server {
         paths: RuntimePaths,
         state_dir: Option<std::path::PathBuf>,
     ) -> Result<Self, StartError> {
-        prepare_directory(&paths.dir, own_uid())?;
+        secure_directory(&paths.dir, own_uid())?;
+        let directory = hold_directory(&paths.dir)?;
         let lock = take_lock(&paths)?;
         remove_stale_socket(&paths.socket)?;
         let token = generate_token().map_err(io_context("cannot read the random source"))?;
@@ -63,7 +68,7 @@ impl Server {
             token,
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
-            supervisor: Arc::new(supervisor::Supervisor::new(state_dir.clone())),
+            supervisor: Arc::new(crate::server::supervisor_of(&paths, state_dir.as_deref())),
             state_dir,
             snapshots: Arc::default(),
         });
@@ -72,6 +77,7 @@ impl Server {
             paths,
             shared,
             _lock: lock,
+            _directory: directory,
         })
     }
 
@@ -120,21 +126,12 @@ impl Drop for Server {
     }
 }
 
-fn prepare_directory(dir: &Path, owner: PeerId) -> Result<(), StartError> {
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
-        .map_err(io_context(format!("cannot create {}", dir.display())))?;
-    let metadata =
-        fs::metadata(dir).map_err(io_context(format!("cannot read {}", dir.display())))?;
-    if metadata.uid() != owner {
-        return Err(StartError::ForeignDirectory(dir.to_path_buf()));
-    }
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(io_context(format!(
-        "cannot restrict {} to its owner",
-        dir.display()
-    )))
+/// A shared BSD lock on the runtime directory for the life of the server.
+fn hold_directory(dir: &Path) -> Result<File, StartError> {
+    let file = File::open(dir).map_err(io_context(format!("cannot open {}", dir.display())))?;
+    file.lock_shared()
+        .map_err(io_context(format!("cannot lock {}", dir.display())))?;
+    Ok(file)
 }
 
 /// With the lock held, a socket file in the way is left by a runtime that died.
@@ -188,38 +185,98 @@ fn serve_unix_stream(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::{MetadataExt, symlink};
+
     use super::*;
 
-    #[test]
-    fn a_directory_owned_by_another_user_is_refused_before_it_is_touched() {
-        let dir = std::env::temp_dir().join(format!("hr-foreign-{}", std::process::id()));
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("hr-dir-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
 
-        let outcome = prepare_directory(&dir, own_uid().wrapping_add(1));
-
-        assert!(matches!(outcome, Err(StartError::ForeignDirectory(_))));
-        assert_eq!(
-            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
-        let _ = fs::remove_dir_all(&dir);
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().mode() & 0o7777
     }
 
     #[test]
-    fn a_directory_of_the_own_user_is_taken_and_restricted() {
-        let dir = std::env::temp_dir().join(format!("hr-own-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+    fn a_missing_directory_is_created_private_to_its_owner() {
+        let base = scratch("fresh");
+        let dir = base.join("harness");
+
+        secure_directory(&dir, own_uid()).unwrap();
+
+        assert_eq!(mode(&dir), 0o700);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_directory_owned_by_another_user_is_refused_before_it_is_touched() {
+        let base = scratch("foreign");
+        let dir = base.join("harness");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let outcome = secure_directory(&dir, own_uid().wrapping_add(1));
+
+        assert!(matches!(outcome, Err(StartError::ForeignDirectory(_))));
+        assert_eq!(mode(&dir), 0o700);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_directory_open_to_others_is_refused_and_never_repaired() {
+        let base = scratch("open");
+        let dir = base.join("harness");
+        fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
 
-        prepare_directory(&dir, own_uid()).unwrap();
+        let outcome = secure_directory(&dir, own_uid());
 
-        assert_eq!(
-            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-            0o700
+        let Err(refused @ StartError::UnsafeDirectory { .. }) = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(refused.code(), contracts::ErrorCode::UnauthorizedPeer);
+        assert!(refused.remedy().contains("chmod 700"));
+        assert_eq!(mode(&dir), 0o755);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_symlink_to_a_private_directory_is_refused() {
+        let base = scratch("link");
+        let target = base.join("target");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        let dir = base.join("harness");
+        symlink(&target, &dir).unwrap();
+
+        let outcome = secure_directory(&dir, own_uid());
+
+        assert!(
+            matches!(&outcome, Err(StartError::UnsafeDirectory { reason, .. }) if reason.contains("symbolic link")),
+            "{outcome:?}"
         );
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_parent_that_others_may_write_needs_the_sticky_bit() {
+        let base = scratch("parent");
+        let dir = base.join("harness");
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let outcome = secure_directory(&dir, own_uid());
+
+        assert!(
+            matches!(&outcome, Err(StartError::UnsafeDirectory { reason, .. }) if reason.contains("sticky")),
+            "{outcome:?}"
+        );
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o1777)).unwrap();
+        secure_directory(&dir, own_uid()).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = fs::remove_dir_all(&base);
     }
 }

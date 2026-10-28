@@ -13,8 +13,8 @@ mod session;
 mod token;
 
 pub use paths::{
-    MAX_SOCKET_PATH_BYTES, PathError, RuntimePaths, git_common_dir, pipe_name, repo_id,
-    resolve_paths,
+    Environment, MAX_SOCKET_PATH_BYTES, PathError, Platform, RuntimePaths, git_common_dir,
+    pipe_name, repo_id, resolve_paths, runtime_dir,
 };
 pub use peer::{PeerId, same_user};
 pub use server::{StartError, hold_instance_lock};

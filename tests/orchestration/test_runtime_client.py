@@ -70,7 +70,7 @@ class Directories:
         self.repo = self.base / "repo"
         (self.repo / ".git").mkdir(parents=True)
         self.xdg = self.base / "run"
-        self.xdg.mkdir()
+        self.xdg.mkdir(mode=0o700)
 
     @property
     def environ(self) -> dict[str, str]:
@@ -391,16 +391,28 @@ def test_the_windows_pipe_name_is_the_shared_golden_vector() -> None:
 def test_on_windows_the_address_is_a_named_pipe_without_the_unix_path_limit(
     dirs: Directories,
 ) -> None:
-    long_xdg = dirs.xdg / ("x" * 100)
+    long_xdg = "C:\\run\\" + "x" * 100
 
     paths = runtime_client.runtime_paths(
-        dirs.repo, {"XDG_RUNTIME_DIR": str(long_xdg)}, platform="win32"
+        dirs.repo, {"XDG_RUNTIME_DIR": long_xdg}, platform="win32"
     )
 
     identity = runtime_client.repo_id(dirs.repo / ".git")
     assert str(paths.socket) == rf"\\.\pipe\harness-runtime-{identity}"
-    assert paths.directory == long_xdg / "harness"
-    assert paths.token == long_xdg / "harness" / f"{identity}.token"
+    assert paths.directory == Path(long_xdg + "\\harness")
+    assert paths.token == Path(long_xdg + "\\harness") / f"{identity}.token"
+
+
+def test_on_windows_without_an_absolute_directory_there_is_no_address(
+    dirs: Directories,
+) -> None:
+    with pytest.raises(RuntimeClientError) as caught:
+        runtime_client.runtime_paths(
+            dirs.repo, {"XDG_RUNTIME_DIR": "/run/user/1000"}, platform="win32"
+        )
+
+    assert caught.value.code == "runtime_unavailable"
+    assert "LOCALAPPDATA" in caught.value.remedy
 
 
 @UNIX_ONLY
@@ -415,13 +427,33 @@ def test_the_socket_and_the_token_sit_in_the_xdg_runtime_directory(
     assert paths.token == dirs.xdg / "harness" / f"{identity}.token"
 
 
-def test_without_xdg_the_runtime_directory_is_in_the_state_root(
+@UNIX_ONLY
+def test_without_xdg_the_runtime_directory_lies_outside_the_repository(
     dirs: Directories,
 ) -> None:
     for environ in ({}, {"XDG_RUNTIME_DIR": ""}, {"XDG_RUNTIME_DIR": "relative/run"}):
         paths = runtime_client.runtime_paths(dirs.repo, environ)
 
-        assert paths.directory == dirs.repo / ".harness/orchestration/state/runtime"
+        assert paths.directory == Path(f"/tmp/harness-{os.getuid()}")
+        assert dirs.repo not in paths.directory.parents
+
+
+def test_the_runtime_directory_follows_the_fixture_the_runtime_passes() -> None:
+    fixture = json.loads(
+        (
+            ROOT / "native/harness-runtime/crates/ipc/tests/fixtures/runtime_paths.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert len(fixture["cases"]) >= 10
+    for case in fixture["cases"]:
+        chosen = runtime_client.runtime_directory(
+            "win32" if case["platform"] == "windows" else "linux",
+            case["xdg_runtime_dir"],
+            case["local_app_data"],
+            case["uid"],
+        )
+
+        assert chosen == case["directory"], case["name"]
 
 
 def test_a_linked_worktree_shares_the_runtime_of_its_main_checkout(
@@ -475,13 +507,13 @@ def test_a_request_says_hello_with_the_token_then_asks(
     (hello,) = runtime.operations("hello")
     assert hello["payload"]["token"] == TOKEN
     assert hello["payload"]["protocol"] == {
-        "min": {"major": 1, "minor": 2},
-        "max": {"major": 1, "minor": 2},
+        "min": {"major": 1, "minor": 3},
+        "max": {"major": 1, "minor": 3},
     }
     assert hello["payload"]["repo_root"] == str(dirs.repo)
     (status,) = runtime.operations("status")
     assert status["operation_id"] == "op-1"
-    assert status["protocol_version"] == {"major": 1, "minor": 2}
+    assert status["protocol_version"] == {"major": 1, "minor": 3}
 
 
 def test_a_lost_transport_repeats_the_request_with_the_same_operation_id(
@@ -1139,6 +1171,31 @@ def test_a_wrong_token_is_unauthorized_peer(
 
 
 @UNIX_ONLY
+def test_a_runtime_directory_open_to_others_or_a_symlink_is_never_trusted(
+    dirs: Directories, runtimes: list[ScriptedRuntime]
+) -> None:
+    runtime = ScriptedRuntime(dirs)
+    runtimes.append(runtime)
+    directory = runtime.paths.directory
+    directory.chmod(0o755)
+
+    with pytest.raises(RuntimeClientError) as opened:
+        RuntimeClient(dirs.repo, environ=dirs.environ).call("status", operation_id="o")
+    directory.chmod(0o700)
+    moved = directory.with_name("elsewhere")
+    directory.rename(moved)
+    directory.symlink_to(moved)
+    with pytest.raises(RuntimeClientError) as linked:
+        RuntimeClient(dirs.repo, environ=dirs.environ).call("status", operation_id="l")
+
+    assert (opened.value.code, linked.value.code) == ("unauthorized_peer",) * 2
+    assert "open to the group or to others" in opened.value.message
+    assert "symbolic link" in linked.value.message
+    assert "XDG_RUNTIME_DIR" in linked.value.remedy
+    assert runtime.requests == []
+
+
+@UNIX_ONLY
 def test_a_platform_without_unix_sockets_is_runtime_unavailable(
     dirs: Directories, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1415,7 +1472,7 @@ def test_the_coordinator_cli_reads_the_state_of_a_real_runtime(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["protocol"] == {"major": 1, "minor": 2}
+    assert report["protocol"] == {"major": 1, "minor": 3}
     assert report["features"] == ["status"]
     assert report["store_id"] is None
     assert report["runtime"]["state"] == "serving"
@@ -1559,6 +1616,45 @@ def test_an_unknown_operation_is_unknown_operation(
 
     assert caught.value.code == "unknown_operation"
     assert caught.value.domain == "tooling"
+
+
+@UNIX_ONLY
+def test_without_xdg_the_runtime_and_the_client_meet_outside_the_repository(
+    dirs: Directories,
+) -> None:
+    """The real fallback ``/tmp/harness-<uid>``: the test removes only its own lock file."""
+    environ = {
+        key: value for key, value in os.environ.items() if key != "XDG_RUNTIME_DIR"
+    }
+    paths = runtime_client.runtime_paths(dirs.repo, {})
+    process = subprocess.Popen(
+        [str(_runtime_binary()), "serve", "--repo", str(dirs.repo)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=environ,
+    )
+    try:
+        stdout = process.stdout
+        assert stdout is not None
+        ready = json.loads(stdout.readline() or "{}")
+        reply = RuntimeClient(dirs.repo, environ={}).call(
+            "status", operation_id="fallback"
+        )
+    finally:
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=20)
+        for stream in (process.stdout, process.stderr):
+            if stream:
+                stream.close()
+        (paths.directory / f"{paths.repo_id}.lock").unlink(missing_ok=True)
+
+    assert ready.get("socket") == str(paths.socket), ready
+    assert paths.directory == Path(f"/tmp/harness-{os.getuid()}")
+    assert stat.S_IMODE(paths.directory.lstat().st_mode) == 0o700
+    assert reply.result["repo_id"] == paths.repo_id
+    assert not paths.socket.exists() and not paths.token.exists()
+    assert not (dirs.repo / ".harness").exists()
 
 
 def test_a_stopped_runtime_is_runtime_unavailable_and_leaves_no_socket(

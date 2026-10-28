@@ -214,3 +214,69 @@ Reconcile запускается при старте runtime, перед каж�
   переднем плане и завершается вместе с ним. Сторонний адаптер, который возвращается сразу после
   старта worker, завершает исполнение, и dispatch становится `blocked`. Worker наследует окружение
   runtime, а не coordinator.
+
+## Решения реализации #807
+
+**Принято оператором (2026-10-28).** Контейнерный worker (#807) реализует раздел 4 для worker-а
+с отступлениями ниже. QA-контейнер (#709), Windows Job Objects (#806), одобрение политики hooks
+при запуске (#808) и CI smoke Docker с базовым образом worker-а (#710) этот ticket не затрагивает.
+
+| Текст ADR | Решение #807 | Причина |
+|---|---|---|
+| ADR 0025: значения `environment` берутся из окружения coordinator | Значения берутся из окружения `harness-runtime serve`; в контейнер по-прежнему передаётся только имя (`--env NAME`) | Контейнер запускает runtime, а значение не проходит через IPC, store и evidence. |
+| ADR 0025: worker, sidecar и сеть удаляются при терминальном `DispatchState` | Объекты удаляются при выходе исполнения, когда логи сохранены, а выход с кодом записан в `executions`; незавершённое удаление повторяет reconcile | Rust не пишет `DispatchState` (ADR 0021, один писатель), а выход исполнения — его собственное наблюдение. |
+| ADR 0021 §4, ADR 0025: сбой запуска удаляет объекты, dispatch можно отправить снова | Неудачный staged launch — at-most-once: объекты откатываются от новых к старым, исполнение `lost`, операция `failed`, dispatch `blocked`; повторного запуска нет | Как в #805: отсутствие объекта не отличает «не создан» от «уже удалён», at-most-once важнее. |
+| ADR 0025: исполнитель работает в любой эпохе ledger и на любой платформе | Только эпоха runtime store и только Linux; на файловом ledger и вне Linux `dispatch preflight` блокирует его с remedy (`harness-runtime migrate`, затем `serve`) | Rust запускает только по сохранённому brief; Windows — #806. |
+| §1: асинхронное ядро Tokio | Синхронный `std::process`: команда движка опрашивается `try_wait` до 30 секунд, затем убивается | Так же, как в #805: runtime синхронный, IPC обслуживает соединение в своём потоке. |
+
+Как работает реализация:
+
+- **Крейт `engine`.** `Kind` (`docker`, `podman`), трейт `Engine` с реализациями `Docker`,
+  `Podman` и `Scripted` (ответы по префиксу argv и запись каждого argv для тестов) — единственная
+  граница процесса движка. Построители argv и разбор `info`, id образа и `inspect` перенесены из
+  Python 1:1; единственная дельта — метки `harness.operation` и `harness.execution` после
+  `harness.plan_digest`. Восемь строк `EngineMatrixChecks` (Docker и Podman, rootful и rootless,
+  с SELinux и без) экспортированы в `crates/engine/tests/fixtures/engine_matrix.json` и проходят
+  через `Scripted`.
+- **Хранилище.** Схема store 5 пересобирает `executions` с полями `kind` (`process`,
+  `container`), `engine` и `container_id`: исполнение-контейнер может быть `running` с id
+  контейнера вместо PID. `serve` повышает схему 4 до 5 при старте; сборка со схемой 4 store
+  схемы 5 не открывает.
+- **Политика монтирования.** Корень плана отвергается `policy_denied`, если его `realpath` равен
+  защищённому пути, лежит под ним или содержит его, независимо от существования защищённого пути.
+  Защищены сокеты движков (`/var/run/docker.sock`, `/run/docker.sock`,
+  `/run/podman/podman.sock`, `podman` и `docker.sock` в `$XDG_RUNTIME_DIR` и в
+  `/run/user/<uid>`, `/tmp/podman-run-<uid>`, Unix-путь из `DOCKER_HOST` и `CONTAINER_HOST`),
+  собственные каталог, сокет, токен и замок runtime и все известные каталоги runtime этого uid
+  (`$XDG_RUNTIME_DIR/harness`, `/run/user/<uid>/harness`, `/tmp/harness-<uid>`). Корень, который
+  не разрешается, корень с символами `,"\n\r` и пересечение с `/harness-home` тоже отвергаются.
+  Проверка идёт в `container.observe` и в шаге 1 `execution.launch` до любого вызова движка и
+  до записи строки.
+- **Запуск.** `execution.launch` выбирает контейнер, если `runtime_access.runtime_extension`
+  сохранённого brief — `docker`. Шаг 1 ничего не пишет: `git_common` плана равен общему
+  git-каталогу runtime, политика монтирования, имена `environment` есть в окружении runtime,
+  read-only observe движка; id образа, отличный от `runtime_images`, — `approval_mismatch` с
+  remedy о новом propose. Шаг 2 — intent с запланированными объектами, шаг 3 — staged launch
+  (сеть, sidecar, worker), шаг 4 — receipt с `container_id` и `engine`.
+- **Наблюдение и выход.** Reconcile, усыновление незавершённого запуска по меткам, остановка по
+  сроку (`stop --time <grace>`, затем `kill`, `stopped_by: "deadline"`), сохранение логов в
+  `executions/<id>/stdout.log` и `stderr.log` и удаление объектов всегда идут движком из строки
+  `executions`, поэтому на хосте с Podman ни одна команда не уходит в `docker`.
+- **Протокол 1.3.** `container.observe {plan}`, `container.objects {engines}` и
+  `container.remove {objects}` есть в `hello` только при подключённом store на Linux, как
+  `execution.*`. Метка репозитория — собственный канонический общий git-каталог runtime, а не
+  поле запроса. `container.remove` заново проверяет каждый объект и отказывает объекту другого
+  репозитория, нетерминального исполнения и снова запущенному worker-у; порядок — worker,
+  sidecar, сеть.
+- **Volumes.** Исполнитель не создаёт named volumes (ADR 0025), а runtime не перечисляет и не
+  удаляет volumes ни одной командой. Анонимные volumes из `VOLUME` образа остаются за `rm` без
+  `-v`.
+- **Python.** `container_executor.py` проверяет план, спрашивает `container.observe` и сравнивает
+  закреплённые digest; `run_engine`, argv движка и `workflow/container_status.py` удалены.
+  `dispatch send` применяет план supervised docker-dispatch без передачи провайдеру и запускает
+  его через `execution.launch`; `dispatch status` и `dispatch wait` показывают исполнение runtime
+  и движок не спрашивают. `harness cleanup` перечисляет и удаляет объекты только через
+  `container.objects` и `container.remove` с движками из `access_policy`.
+- **Каталог runtime.** Без `XDG_RUNTIME_DIR` каталог runtime — `/tmp/harness-<uid>` вне любого
+  репозитория (ADR 0021, раздел 2), поэтому обязательные корни плана его не содержат и запуск не
+  отвергается из-за runtime.

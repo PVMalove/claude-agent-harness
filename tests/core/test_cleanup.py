@@ -10,10 +10,8 @@ from pathlib import Path
 from unittest import mock
 
 from harness.cleanup import apply_cleanup, plan_cleanup
-from harness.orchestration import container_executor
-from harness.orchestration.core.utils import JsonObject
-from harness.orchestration.ledger.lifecycle import DispatchStatusRecord
-from tests.orchestration.test_container_executor import FakeEngine
+from tests.orchestration import runtime_store_support as support
+from tests.orchestration.scripted_engine import ScriptedEngine
 
 
 def git(repo: Path, *args: str) -> str:
@@ -420,13 +418,17 @@ class CleanupTests(unittest.TestCase):
 
 
 class ContainerCleanupTests(unittest.TestCase):
-    """Orphaned container resources of this repository: preview first, evidence before removal."""
+    """Orphaned container resources of this repository, listed and removed only by harness-runtime.
+
+    A real runtime serves a migrated store; its only engine is a scripted ``podman`` first on the
+    runtime's ``PATH``, so no ``docker`` is ever asked (ADR 0022, section 5).
+    """
 
     def setUp(self) -> None:
-        """Подготовить репозиторий с docker-исполнителем, ledger и скриптованный движок."""
+        """Подготовить репозиторий со store, docker-исполнителем, runtime и скриптованный podman."""
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.repo = Path(self.temporary.name) / "repo"
+        self.repo = (Path(self.temporary.name) / "repo").resolve()
         self.repo.mkdir()
         git(self.repo, "init", "-b", "main")
         git(self.repo, "config", "user.name", "Test")
@@ -435,11 +437,20 @@ class ContainerCleanupTests(unittest.TestCase):
         git(self.repo, "add", ".gitignore")
         git(self.repo, "commit", "-m", "test: initial fixture")
         self.root = self.repo / ".harness"
-        self.root.mkdir()
-        self.write_config({"extensions": {"runtime_access": "docker"}})
+        support.build_state(self.repo)
+        migrated = support.migrate(self.repo)
+        self.assertEqual(migrated.returncode, 0, migrated.stderr)
+        self.write_config(
+            {
+                "extensions": {"runtime_access": "docker"},
+                "access_policy": {"defaults": {"container": {"engine": "podman"}}},
+            }
+        )
         self.repository = str((self.repo / ".git").resolve())
-        self.engine = FakeEngine()
-        patcher = mock.patch.object(container_executor, "run_engine", self.engine)
+        self.engine = ScriptedEngine(Path(self.temporary.name) / "engine")
+        self.runtime = support.ServingRuntime(self.repo, env={"PATH": self.engine.path()})
+        self.addCleanup(self.runtime.stop)
+        patcher = mock.patch.dict(os.environ, self.runtime.environ)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -455,7 +466,6 @@ class ContainerCleanupTests(unittest.TestCase):
         worker: str = "exited",
         *,
         repository: str | None = None,
-        sidecar: bool = True,
     ) -> str:
         """Добавить в движок worker, sidecar и сеть dispatch; вернуть id dispatch."""
         dispatch_id = f"dispatch-{number:04d}"
@@ -465,36 +475,11 @@ class ContainerCleanupTests(unittest.TestCase):
         }
         name = f"harness-{dispatch_id}"
         self.engine.add_container(f"{number:02d}" * 32, name, labels, worker)
-        if sidecar:
-            self.engine.add_container(
-                f"{number:02d}" * 31 + "aa", f"{name}-proxy", labels, "running"
-            )
-            self.engine.objects[f"{number:02d}" * 31 + "bb"] = {
-                "kind": "network",
-                "id": f"{number:02d}" * 31 + "bb",
-                "name": f"{name}-net",
-                "labels": labels,
-            }
+        self.engine.add_container(
+            f"{number:02d}" * 31 + "aa", f"{name}-proxy", labels, "running"
+        )
+        self.engine.add_network(f"{number:02d}" * 31 + "bb", f"{name}-net", labels)
         return dispatch_id
-
-    def record(self, dispatch_id: str, state: str, **extra: JsonObject) -> Path:
-        """Записать статус dispatch в текущее поколение ledger."""
-        state_dir = self.root / "orchestration" / "state"
-        records = state_dir / "generations" / "generation-test" / "dispatch-status"
-        records.mkdir(parents=True, exist_ok=True)
-        (state_dir / "ledger.json").write_text(
-            json.dumps({"generation": "generation-test"}), encoding="utf-8"
-        )
-        path = records / f"{dispatch_id}.json"
-        path.write_text(
-            json.dumps(
-                DispatchStatusRecord.from_dict(
-                    {"dispatch_id": dispatch_id, "state": state, **extra}
-                ).to_dict()
-            ),
-            encoding="utf-8",
-        )
-        return path
 
     def planned(self) -> list[str]:
         """Имена ресурсов контейнеров в плане."""
@@ -522,62 +507,26 @@ class ContainerCleanupTests(unittest.TestCase):
             [f"harness-{own}", f"harness-{own}-proxy", f"harness-{own}-net"],
         )
         self.assertEqual(self.skipped(), {})
-
-    def test_a_label_that_only_the_engine_filter_would_match_is_rechecked(
-        self,
-    ) -> None:
-        """Проверить, что метку репозитория проверяют по самому объекту, а не по фильтру движка."""
-        self.dispatch(1, repository="/elsewhere/.git")
-        self.engine.ignore_label_filters = True
-
-        self.assertEqual(self.planned(), [])
+        self.assertTrue(all(call[0] == "podman" for call in self.engine.calls()))
 
     def test_a_worker_that_is_not_stopped_protects_its_whole_dispatch(self) -> None:
         """Проверить, что живой worker защищает все ресурсы dispatch и cleanup его не останавливает."""
         live = self.dispatch(1, worker="running")
 
         self.assertEqual(self.planned(), [])
-        self.assertIn("docker stop", self.skipped()[f"harness-{live}"])
+        self.assertIn("podman stop", self.skipped()[f"harness-{live}"])
         result = apply_cleanup(
             self.repo, plan_cleanup(self.repo, "soft", min_age_hours=0)
         )
         self.assertEqual(result["removed"], [])
         self.assertEqual(self.engine.removals(), [])
 
-    def test_the_ledger_decides_about_a_known_dispatch(self) -> None:
-        """Проверить правила для открытого dispatch и терминального без evidence."""
-        open_ = self.dispatch(1)
-        self.record(open_, "working")
-        bare = self.dispatch(2)
-        self.record(bare, "reported")
-        proven = self.dispatch(3)
-        self.record(proven, "reported", worker_exit={"state": "exited"})
-
-        self.assertEqual(
-            self.planned(),
-            [f"harness-{proven}", f"harness-{proven}-proxy", f"harness-{proven}-net"],
-        )
-        skipped = self.skipped()
-        self.assertEqual(skipped[f"harness-{open_}"], "dispatch is open in the ledger")
-        self.assertIn("dispatch status first", skipped[f"harness-{bare}"])
-
-    def test_a_terminal_dispatch_whose_worker_is_gone_needs_no_evidence_to_release_the_rest(
+    def test_apply_removes_the_orphans_with_podman_and_a_repeat_finds_nothing(
         self,
     ) -> None:
-        """Проверить, что без worker evidence не требуется для удаления sidecar и сети."""
-        gone = self.dispatch(1)
-        self.record(gone, "cancelled")
-        del self.engine.objects["01" * 32]
-
-        self.assertEqual(
-            self.planned(), [f"harness-{gone}-proxy", f"harness-{gone}-net"]
-        )
-
-    def test_apply_removes_the_orphans_and_keeps_persisted_evidence(self) -> None:
-        """Проверить удаление сирот, сохранность worker_exit и безопасность повторного запуска."""
-        proven = self.dispatch(1)
-        record = self.record(proven, "reported", worker_exit={"exit_code": 3})
-        before = record.read_bytes()
+        """Проверить удаление сирот через runtime, только podman и безопасность повторного запуска."""
+        own = self.dispatch(1)
+        foreign = self.dispatch(2, repository="/elsewhere/.git")
         plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
 
         result = apply_cleanup(self.repo, plan)
@@ -585,24 +534,24 @@ class ContainerCleanupTests(unittest.TestCase):
         self.assertEqual(result["failed"], [])
         self.assertEqual(
             result["removed"],
-            [f"harness-{proven}", f"harness-{proven}-proxy", f"harness-{proven}-net"],
+            [f"harness-{own}", f"harness-{own}-proxy", f"harness-{own}-net"],
         )
-        self.assertEqual(self.engine.objects, {})
-        self.assertEqual(record.read_bytes(), before)
-        self.engine.calls.clear()
+        names = {item["name"] for item in self.engine.state()["objects"].values()}
+        self.assertEqual(
+            names, {f"harness-{foreign}", f"harness-{foreign}-proxy", f"harness-{foreign}-net"}
+        )
+        self.assertTrue(all(call[0] == "podman" for call in self.engine.calls()))
+        self.assertFalse(any("volume" in call for call in self.engine.calls()))
         again = plan_cleanup(self.repo, "soft", min_age_hours=0)
         self.assertEqual(again["remove"], [])
-        self.assertEqual(
-            apply_cleanup(self.repo, again),
-            {"removed": [], "failed": [], "skipped": []},
-        )
-        self.assertEqual(self.engine.removals(), [])
 
     def test_apply_refuses_a_plan_that_changed_after_the_preview(self) -> None:
         """Проверить, что изменившийся набор ресурсов или состояние worker требуют нового просмотра."""
         self.dispatch(1)
         plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
-        self.engine.objects["01" * 32]["status"] = "running"
+        self.engine.update(
+            lambda state: state["objects"]["01" * 32].update(status="running")
+        )
 
         with self.assertRaises(ValueError) as refused:
             apply_cleanup(self.repo, plan)
@@ -610,56 +559,27 @@ class ContainerCleanupTests(unittest.TestCase):
         self.assertIn("cleanup plan changed", str(refused.exception))
         self.assertEqual(self.engine.removals(), [])
 
-    def test_a_resource_that_is_already_gone_counts_as_removed(self) -> None:
-        """Проверить, что отсутствующий ресурс не считается ошибкой, а отказ движка считается."""
-        orphan = self.dispatch(1)
-        plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
-        self.engine.failures["network-rm"] = "Error: No such network: x"
-
-        result = apply_cleanup(self.repo, plan)
-
-        self.assertEqual(result["failed"], [])
-        self.assertIn(f"harness-{orphan}-net", result["removed"])
-
-        refused = self.dispatch(2)
-        plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
-        self.engine.failures.clear()
-        self.engine.failures["rm"] = "container is in use"
-
-        result = apply_cleanup(self.repo, plan)
-
-        self.assertEqual(
-            [item["path"] for item in result["failed"]][:1], [f"harness-{refused}"]
-        )
-
     def test_a_project_without_the_docker_executor_never_reaches_the_engine(
         self,
     ) -> None:
-        """Проверить, что без выбранного docker-исполнителя движок не опрашивается."""
+        """Проверить, что без выбранного docker-исполнителя runtime и движок не опрашиваются."""
         self.dispatch(1)
         self.write_config({})
 
         plan = plan_cleanup(self.repo, "soft", min_age_hours=0)
 
         self.assertEqual(plan["remove"], [])
-        self.assertEqual(self.engine.calls, [])
+        self.assertEqual(self.engine.calls(), [])
 
-    def test_an_unavailable_engine_or_ledger_plans_nothing(self) -> None:
-        """Проверить пропуск при недоступном движке и нечитаемом ledger."""
+    def test_an_unavailable_engine_or_runtime_plans_nothing(self) -> None:
+        """Проверить пропуск при недоступном движке и недоступном runtime."""
         self.dispatch(1)
-        self.engine.failures["ps"] = OSError("docker vanished")
-        self.assertEqual(
-            self.skipped(), {"container resources": "container engine unavailable"}
-        )
+        self.engine.update(lambda state: state["failures"].update(ps="cannot connect"))
+        self.assertIn("engine_unavailable", self.skipped()["container resources"])
         self.assertEqual(self.planned(), [])
 
-        self.engine.failures.clear()
-        state = self.root / "orchestration" / "state"
-        state.mkdir(parents=True)
-        (state / "ledger.json").write_text("{broken", encoding="utf-8")
-        self.assertEqual(
-            self.skipped(), {"container resources": "Git or ledger state unavailable"}
-        )
+        self.runtime.stop()
+        self.assertIn("runtime_unavailable", self.skipped()["container resources"])
         self.assertEqual(self.planned(), [])
 
 

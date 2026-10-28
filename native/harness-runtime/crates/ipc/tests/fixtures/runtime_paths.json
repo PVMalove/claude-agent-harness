@@ -1,0 +1,101 @@
+{
+  "description": "The runtime directory of ADR 0021, section 2, chosen from the platform, XDG_RUNTIME_DIR, LOCALAPPDATA and the uid. The Rust runtime (crates/ipc/src/paths.rs) and the Python client (harness/orchestration/runtime_client.py) both pass every case; a null directory is a refusal.",
+  "cases": [
+    {
+      "name": "unix with XDG_RUNTIME_DIR",
+      "platform": "unix",
+      "xdg_runtime_dir": "/run/user/1000",
+      "local_app_data": null,
+      "uid": 1000,
+      "directory": "/run/user/1000/harness"
+    },
+    {
+      "name": "unix without XDG_RUNTIME_DIR",
+      "platform": "unix",
+      "xdg_runtime_dir": null,
+      "local_app_data": null,
+      "uid": 1000,
+      "directory": "/tmp/harness-1000"
+    },
+    {
+      "name": "unix with an empty XDG_RUNTIME_DIR",
+      "platform": "unix",
+      "xdg_runtime_dir": "",
+      "local_app_data": null,
+      "uid": 0,
+      "directory": "/tmp/harness-0"
+    },
+    {
+      "name": "unix with a relative XDG_RUNTIME_DIR",
+      "platform": "unix",
+      "xdg_runtime_dir": "run/user/1000",
+      "local_app_data": null,
+      "uid": 1000,
+      "directory": "/tmp/harness-1000"
+    },
+    {
+      "name": "unix ignores LOCALAPPDATA",
+      "platform": "unix",
+      "xdg_runtime_dir": null,
+      "local_app_data": "/home/user/.local",
+      "uid": 1001,
+      "directory": "/tmp/harness-1001"
+    },
+    {
+      "name": "windows with XDG_RUNTIME_DIR",
+      "platform": "windows",
+      "xdg_runtime_dir": "D:\\run",
+      "local_app_data": "C:\\Users\\user\\AppData\\Local",
+      "uid": 0,
+      "directory": "D:\\run\\harness"
+    },
+    {
+      "name": "windows with LOCALAPPDATA",
+      "platform": "windows",
+      "xdg_runtime_dir": null,
+      "local_app_data": "C:\\Users\\user\\AppData\\Local",
+      "uid": 0,
+      "directory": "C:\\Users\\user\\AppData\\Local\\harness"
+    },
+    {
+      "name": "windows with a relative XDG_RUNTIME_DIR and a trailing separator in LOCALAPPDATA",
+      "platform": "windows",
+      "xdg_runtime_dir": "run",
+      "local_app_data": "C:\\Users\\user\\AppData\\Local\\",
+      "uid": 0,
+      "directory": "C:\\Users\\user\\AppData\\Local\\harness"
+    },
+    {
+      "name": "windows with a UNC LOCALAPPDATA",
+      "platform": "windows",
+      "xdg_runtime_dir": null,
+      "local_app_data": "\\\\server\\share\\user",
+      "uid": 0,
+      "directory": "\\\\server\\share\\user\\harness"
+    },
+    {
+      "name": "windows with a POSIX XDG_RUNTIME_DIR and no LOCALAPPDATA",
+      "platform": "windows",
+      "xdg_runtime_dir": "/run/user/1000",
+      "local_app_data": null,
+      "uid": 0,
+      "directory": null
+    },
+    {
+      "name": "windows with a relative LOCALAPPDATA",
+      "platform": "windows",
+      "xdg_runtime_dir": null,
+      "local_app_data": "AppData\\Local",
+      "uid": 0,
+      "directory": null
+    },
+    {
+      "name": "windows without either",
+      "platform": "windows",
+      "xdg_runtime_dir": null,
+      "local_app_data": null,
+      "uid": 0,
+      "directory": null
+    }
+  ]
+}
