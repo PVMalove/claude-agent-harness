@@ -20,12 +20,8 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from harness.orchestration import container_executor
-from harness.orchestration.core.constants import TERMINAL_DISPATCH_STATES
-from harness.orchestration.ledger.lifecycle import (
-    DispatchStatusRecord,
-    LifecycleLedger,
-    store_is_authority,
-)
+from harness.orchestration.core.constants import CONTAINER_ENGINES
+from harness.orchestration.ledger.lifecycle import store_is_authority
 from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 from harness.repo_map.bundle_install import INSTALL_DIR_HASH_PREFIX
 from harness.repo_map.bundle_lock import LOCK_FILENAME, BundleFormatError, parse_lock
@@ -47,6 +43,7 @@ class CleanupItem(TypedDict):
     path: str
     branch: NotRequired[str | None]
     dispatch: NotRequired[str]
+    engine: NotRequired[str]
     engine_id: NotRequired[str]
 
 
@@ -335,30 +332,8 @@ def _active_worktrees(root: Path) -> set[Path] | None:
         return None
 
 
-def _dispatch_statuses(root: Path) -> dict[str, dict[str, object]] | None:
-    """Прочитать записи статусов dispatch текущего поколения ledger, не изменяя их."""
-    state = root / "orchestration" / "state"
-    if not state.exists():
-        return {}
-    base = LifecycleLedger(state).records_root_lenient()
-    if base is None:
-        return None
-    statuses: dict[str, dict[str, object]] = {}
-    try:
-        for record in sorted(
-            (base / DispatchStatusRecord.directory).glob("dispatch-*.json")
-        ):
-            status = LifecycleLedger.read_record_lenient(record)
-            if status is None:
-                return None
-            statuses[str(status["dispatch_id"])] = dict(status)
-    except (OSError, KeyError, TypeError):
-        return None
-    return statuses
-
-
 def _docker_selected(root: Path) -> bool:
-    """Проверить, что проект выбрал встроенный docker-исполнитель; иначе движок не опрашивается."""
+    """Проверить, что проект выбрал встроенный docker-исполнитель; иначе runtime не опрашивается."""
     try:
         config = json.loads((root / "orchestration.json").read_text(encoding="utf-8"))
         selected = config["extensions"]["runtime_access"]
@@ -367,31 +342,41 @@ def _docker_selected(root: Path) -> bool:
     return bool(selected == container_executor.EXTENSION_NAME)
 
 
-def _repository_label(checkout: Path) -> str | None:
-    """Метка `harness.repository` этого репозитория: разрешённый общий каталог Git."""
-    result = _git(checkout, "rev-parse", "--git-common-dir")
-    if result.returncode != 0 or not result.stdout.strip():
-        return None
-    common = Path(result.stdout.strip())
-    return str((common if common.is_absolute() else checkout / common).resolve())
+def _container_engines(root: Path) -> list[str]:
+    """Движки, которые называет access_policy проекта (defaults, roles.*, operations.*)."""
+    try:
+        config = json.loads((root / "orchestration.json").read_text(encoding="utf-8"))
+        policy = config.get("access_policy") or {}
+        layers = [policy.get("defaults") or {}]
+        for section in ("roles", "operations"):
+            layers.extend((policy.get(section) or {}).values())
+    except (OSError, ValueError, AttributeError, TypeError):
+        return [CONTAINER_ENGINES[0]]
+    engines = {
+        str(layer["container"].get("engine", CONTAINER_ENGINES[0]))
+        for layer in layers
+        if isinstance(layer, dict) and isinstance(layer.get("container"), dict)
+    }
+    return sorted(engines & set(CONTAINER_ENGINES)) or [CONTAINER_ENGINES[0]]
 
 
-def _container_group_reason(
-    group: list[dict[str, object]], status: dict[str, object] | None
-) -> str | None:
+def _container_group_reason(group: list[dict[str, object]]) -> str | None:
     """Причина, по которой ресурсы dispatch нельзя удалять, или `None`, если можно."""
     worker = next((item for item in group if item["role"] == "worker"), None)
     if worker is not None and worker["state"] not in {"exited", "dead"}:
         return (
             "worker is not stopped; harness never stops it: stop it explicitly "
-            f"(docker stop {worker['name']}) first"
+            f"({worker['engine']} stop {worker['name']}) first"
         )
-    if status is None:
-        return None
-    if status.get("state") not in TERMINAL_DISPATCH_STATES:
-        return "dispatch is open in the ledger"
-    if worker is not None and not isinstance(status.get("worker_exit"), dict):
-        return "terminal evidence not recorded; run coordinator dispatch status first"
+    live = sorted(
+        {
+            str(item["execution_state"])
+            for item in group
+            if item.get("execution_state") not in (None, "exited", "lost")
+        }
+    )
+    if live:
+        return f"its execution is {', '.join(live)} in the runtime"
     return None
 
 
@@ -401,20 +386,34 @@ def _plan_containers(
     remove: list[CleanupItem],
     skipped: list[dict[str, str]],
 ) -> None:
-    """Добавить в план ресурсы контейнеров этого репозитория, у которых нет живого владельца."""
+    """Добавить в план ресурсы контейнеров этого репозитория, у которых нет живого владельца.
+
+    Объекты перечисляет только harness-runtime (`container.objects`): он фильтрует их по
+    собственной метке репозитория и знает состояние исполнения каждого объекта.
+    """
     if not _docker_selected(root):
         return
-    repository = _repository_label(checkout)
-    statuses = _dispatch_statuses(root)
-    if repository is None or statuses is None:
+    try:
+        reply = RuntimeClient(checkout).call(
+            "container.objects",
+            operation_id=f"cleanup.container-objects-{uuid.uuid4().hex}",
+            payload={"engines": _container_engines(root)},
+            timeout_seconds=60,
+        )
+        objects = reply.result["objects"]
+        if not isinstance(objects, list):
+            raise ValueError("objects is not a list")
+    except RuntimeClientError as exc:
         skipped.append(
-            {"path": "container resources", "reason": "Git or ledger state unavailable"}
+            {
+                "path": "container resources",
+                "reason": f"harness-runtime did not list them: [{exc.code}] {exc.message}",
+            }
         )
         return
-    objects = container_executor.engine_objects(repository)
-    if objects is None:
+    except (KeyError, TypeError, ValueError):
         skipped.append(
-            {"path": "container resources", "reason": "container engine unavailable"}
+            {"path": "container resources", "reason": "harness-runtime answer unreadable"}
         )
         return
     groups: dict[str, list[dict[str, object]]] = {}
@@ -425,20 +424,16 @@ def _plan_containers(
         group = sorted(
             groups[dispatch_id], key=lambda item: order.index(str(item["role"]))
         )
-        reason = _container_group_reason(group, statuses.get(dispatch_id))
+        reason = _container_group_reason(group)
         if reason is not None:
-            skipped.append(
-                {
-                    "path": container_executor.container_name(dispatch_id),
-                    "reason": reason,
-                }
-            )
+            skipped.append({"path": f"harness-{dispatch_id}", "reason": reason})
             continue
         remove.extend(
             {
                 "kind": str(item["kind"]),
                 "path": str(item["name"]),
                 "dispatch": dispatch_id,
+                "engine": str(item["engine"]),
                 "engine_id": str(item["id"]),
             }
             for item in group
@@ -446,32 +441,34 @@ def _plan_containers(
 
 
 def _remove_containers(
-    items: list[CleanupItem],
+    checkout: Path, items: list[CleanupItem]
 ) -> tuple[list[str], list[dict[str, str]]]:
-    """Удалить планируемые ресурсы контейнеров через общий примитив; отсутствующий считается удалённым."""
-    objects = [
-        {
-            "kind": item["kind"],
-            "id": item["engine_id"],
-            "name": item["path"],
-            "dispatch": item["dispatch"],
-            "role": "network"
-            if item["kind"] == "network"
-            else (
-                "proxy"
-                if item["path"] == container_executor.proxy_name(item["dispatch"])
-                else "worker"
-            ),
-        }
-        for item in items
-    ]
-    result = container_executor.remove_objects(objects)
-    removed = [
-        str(label).split(" ", 1)[1]
-        for label in (*result["removed"], *result["missing"])
-    ]
+    """Удалить ресурсы контейнеров через `container.remove`; отсутствующий считается удалённым."""
+    by_id = {item["engine_id"]: item["path"] for item in items}
+    by_label = {f"{item['kind']} {item['path']}": item["path"] for item in items}
+    try:
+        reply = RuntimeClient(checkout).call(
+            "container.remove",
+            operation_id=f"cleanup.container-remove-{uuid.uuid4().hex}",
+            payload={
+                "objects": [
+                    {"engine": item["engine"], "id": item["engine_id"]} for item in items
+                ]
+            },
+            timeout_seconds=120,
+        )
+        result = reply.result
+    except RuntimeClientError as exc:
+        reason = f"harness-runtime did not remove them: [{exc.code}] {exc.message}"
+        return [], [{"path": item["path"], "reason": reason} for item in items]
+
+    def path(named: object) -> str:
+        text = str(named)
+        return by_label.get(text) or by_id.get(text) or text
+
+    removed = [path(label) for label in (*result["removed"], *result["missing"])]
     failed = [
-        {"path": str(item["object"]).split(" ", 1)[1], "reason": str(item["reason"])}
+        {"path": path(item["object"]), "reason": str(item["reason"])}
         for item in result["failed"]
     ]
     return removed, failed
@@ -825,7 +822,7 @@ def apply_cleanup(
         except OSError as exc:
             failed.append({"path": str(path), "reason": str(exc)})
     if containers:
-        container_removed, container_failed = _remove_containers(containers)
+        container_removed, container_failed = _remove_containers(checkout, containers)
         removed.extend(container_removed)
         failed.extend(container_failed)
     return {"removed": removed, "failed": failed, "skipped": fresh["skipped"]}
