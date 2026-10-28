@@ -27,6 +27,8 @@ pub struct Shared {
     pub state_dir: Option<PathBuf>,
     /// The read snapshots that span the requests of one command (ADR 0020, section 3).
     pub snapshots: Arc<state::read_session::Registry>,
+    /// The process supervisor of the executions (ADR 0022).
+    pub supervisor: Arc<supervisor::Supervisor>,
 }
 
 /// The answer to one frame.
@@ -138,6 +140,12 @@ impl Session {
             "state.write" => state_write(shared, &request, self.peer_pid),
             "qa.lane.inspect" => qa_lane_inspect(shared, &request),
             "state.validate" => state_validate(shared, &request),
+            "execution.launch" if supervised(shared) => {
+                answer(&request, shared.supervisor.launch(&request))
+            }
+            "execution.observe" if supervised(shared) => {
+                answer(&request, shared.supervisor.observe(&request))
+            }
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -212,6 +220,9 @@ impl Session {
             features.push("state.write".to_owned());
             features.push("state.validate".to_owned());
             features.push("qa.lane.inspect".to_owned());
+            if supervisor::Supervisor::supported() {
+                features.extend(supervisor::FEATURES.map(str::to_owned));
+            }
         }
         let result = HelloResult {
             protocol: version,
@@ -223,6 +234,23 @@ impl Session {
             response: Response::ok(id, json!(result)),
             close: false,
         }
+    }
+}
+
+/// Whether this runtime supervises the executions of its store: a platform with a supervisor
+/// and a state directory.
+fn supervised(shared: &Shared) -> bool {
+    supervisor::Supervisor::supported() && shared.state_dir.is_some()
+}
+
+/// The reply of an execution operation (ADR 0022).
+fn answer(request: &Request, outcome: Result<Value, ErrorBody>) -> Reply {
+    match outcome {
+        Ok(result) => Reply {
+            response: Response::ok(&request.operation_id, result),
+            close: false,
+        },
+        Err(error) => failure(&request.operation_id, error, false),
     }
 }
 
@@ -499,6 +527,7 @@ mod tests {
             server_version: "9.9.9".to_owned(),
             state_dir: None,
             snapshots: Default::default(),
+            supervisor: Default::default(),
         }
     }
 
@@ -577,7 +606,7 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
-        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 1}));
+        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 2}));
         assert!(error.remedy.contains("update harness"));
         assert!(reply.close);
     }
@@ -808,16 +837,18 @@ mod tests {
 
         let result = hello.response.result.unwrap();
         assert_eq!(result["store_id"], store_id.as_str());
-        assert_eq!(
-            result["features"],
-            json!([
-                "status",
-                "state.read",
-                "state.write",
-                "state.validate",
-                "qa.lane.inspect"
-            ])
-        );
+        let mut features = vec![
+            "status",
+            "state.read",
+            "state.write",
+            "state.validate",
+            "qa.lane.inspect",
+        ];
+        // The supervisor serves its operations where the platform supervises processes.
+        if supervisor::Supervisor::supported() {
+            features.extend(["execution.launch", "execution.observe"]);
+        }
+        assert_eq!(result["features"], json!(features));
         assert_eq!(reply.response.status, Status::Ok);
         assert_eq!(reply.response.revision, Some(1));
         let records = &reply.response.result.unwrap()["records"];

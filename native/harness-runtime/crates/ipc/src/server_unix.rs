@@ -63,6 +63,7 @@ impl Server {
             token,
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
+            supervisor: Arc::new(supervisor::Supervisor::new(state_dir.clone())),
             state_dir,
             snapshots: Arc::default(),
         });
@@ -76,6 +77,11 @@ impl Server {
 
     pub fn paths(&self) -> &RuntimePaths {
         &self.paths
+    }
+
+    /// The process supervisor of this server's executions (ADR 0022).
+    pub fn supervisor(&self) -> &Arc<supervisor::Supervisor> {
+        &self.shared.supervisor
     }
 
     /// Serve connections until `stop` is set. A connection runs on its own thread.

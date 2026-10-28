@@ -12,7 +12,8 @@
 //! of `migrate`.
 //!
 //! `harness-runtime serve [--repo <path>]` serves the local IPC of one repository until it gets
-//! SIGINT or SIGTERM (on Windows, Ctrl+C or Ctrl+Break). On Windows the `socket` key of the
+//! SIGINT or SIGTERM (on Windows, Ctrl+C or Ctrl+Break). Before it reports ready it reconciles the
+//! executions of the store, and a stop never signals an execution: they outlive the runtime. On Windows the `socket` key of the
 //! readiness line holds the name of the named pipe. ADR 0021, section 8 defines exit code 0 (a
 //! normal stop) and 2 (a refusal to start). The ADR leaves a failure of a server that is already
 //! ready undefined, so this implementation picks 1 for it. A supervisor learns that the start
@@ -165,6 +166,10 @@ fn serve(args: &Args) -> Result<(), Failure> {
         .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
     let server = Server::bind_serving(paths, Some(state_dir))
         .map_err(|err| Failure::Refused(Report::new(err.code(), &err, err.remedy())))?;
+    // With the instance lock held, the executions a dead runtime left are adopted or recorded
+    // lost before the first request (ADR 0022, section 2); then the periodic reconcile starts.
+    server.supervisor().reconcile_all();
+    server.supervisor().start(Arc::clone(&stop));
     let ready = json!({
         "status": "ready",
         "socket": server.paths().socket,

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use contracts::{ErrorBody, ErrorCode, ExecutionState, FailureDomain};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::audit;
 use crate::authority::{Epoch, STORE_NAME, epoch};
@@ -372,6 +372,34 @@ pub fn transition(
         load(tx, &current.id)?.ok_or_else(|| invariant("the execution is no longer stored"))?;
     record(tx, at, &execution, Some(current.state), &change.facts)?;
     Ok(execution)
+}
+
+/// A legacy record: a JSON object.
+pub type Record = Map<String, Value>;
+
+/// The stored brief `dispatches/<id>.json` and status `dispatch-status/<id>.json` of a dispatch,
+/// as the legacy records; `None` when the store has either not.
+///
+/// # Errors
+/// A store that cannot be read.
+pub fn dispatch_records(
+    connection: &Connection,
+    dispatch_id: &str,
+) -> Result<Option<(Record, Record)>, ErrorBody> {
+    let record = |spec: &crate::project::Spec| -> Result<Option<Record>, ErrorBody> {
+        let sql = spec
+            .select_sql()
+            .replace("ORDER BY id", "WHERE id = ?1 ORDER BY id");
+        sqlite(
+            connection
+                .query_row(&sql, [dispatch_id], |row| spec.join(row))
+                .optional(),
+        )
+        .map(|found| found.map(|(_, record)| record))
+    };
+    let brief = record(&crate::project::DISPATCH)?;
+    let status = record(&crate::project::DISPATCH_STATUS)?;
+    Ok(brief.zip(status))
 }
 
 /// Open the store of `state` for the supervisor: the store must be the authority; an older schema
