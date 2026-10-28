@@ -28,6 +28,73 @@ if TYPE_CHECKING:
 DIGEST = "0123456789abcdef" * 4
 
 
+def test_completed_jobs_append_client_and_result_to_command_journal(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        fake.finish.set()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                for origin in ("tui", "browser"):
+                    reply = await start(client, command_id="diff", client=origin)
+                    assert reply["ok"] is True
+                    await read_until_done(client, reply["job"]["id"])
+        finally:
+            await server.close()
+
+        journal = project / ".harness" / "console" / "commands.jsonl"
+        records = [json.loads(line) for line in journal.read_text().splitlines()]
+        assert [record["client"] for record in records] == ["tui", "browser"]
+        assert all(record["timestamp"] for record in records)
+        assert all(record["reversibility"] == "reversible" for record in records)
+        assert all(record["returncode"] == 7 for record in records)
+        assert all("diff" in record["argv"] for record in records)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        "client_secret: private-value",
+        "ordinary-worktree",
+        "e",
+        "worktree-remove",
+        "  first\nsecond  ",
+    ],
+)
+def test_journal_masks_all_user_values_and_preserves_command(
+    project: Path, target: str
+) -> None:
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        fake.finish.set()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                reply = await start(
+                    client,
+                    command_id="worktree-remove",
+                    values={"worktree": target},
+                    confirmed=True,
+                )
+                assert reply["ok"] is True, reply
+                await read_until_done(client, reply["job"]["id"])
+        finally:
+            await server.close()
+        journal = project / ".harness" / "console" / "commands.jsonl"
+        [record] = [json.loads(line) for line in journal.read_text().splitlines()]
+        assert record["command_id"] == "worktree-remove"
+        assert record["argv"][-3:] == ["worktree-remove", str(project), "••••••"]
+        assert fake.calls[0][0][-1] == target
+
+    asyncio.run(scenario())
+
+
 class FakeExecutor:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -103,9 +170,9 @@ async def read_until_done(  # type: ignore[no-untyped-def]
             return {**reply["job"], "output": output}
 
 
-async def start(client: ClientConnection, **fields: object):  # type: ignore[no-untyped-def]
-    await client.send(request("job.start", **fields))
-    return await receive(client)
+async def start(connection: ClientConnection, **fields: object):  # type: ignore[no-untyped-def]
+    await connection.send(request("job.start", **fields))
+    return await receive(connection)
 
 
 def _read_pid_pair(path: Path) -> tuple[int, int]:
