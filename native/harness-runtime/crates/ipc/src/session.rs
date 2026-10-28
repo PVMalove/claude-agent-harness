@@ -155,6 +155,10 @@ impl Session {
             "container.remove" if supervised(shared) => {
                 answer(&request, shared.supervisor.container_remove(&request))
             }
+            "qa.run" if supervised(shared) => answer(&request, shared.supervisor.qa_run(&request)),
+            "qa.stop" if supervised(shared) => {
+                answer(&request, shared.supervisor.qa_stop(&request))
+            }
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -615,7 +619,7 @@ mod tests {
 
         assert_eq!(code(&reply), ErrorCode::ProtocolUnsupported);
         let error = reply.response.error.unwrap();
-        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 3}));
+        assert_eq!(error.facts["server"], json!({"major": 1, "minor": 4}));
         assert!(error.remedy.contains("update harness"));
         assert!(reply.close);
     }

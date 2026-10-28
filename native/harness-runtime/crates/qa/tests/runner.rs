@@ -87,6 +87,7 @@ fn runner<'a>(
         run: qa,
         directory: dir,
         limits,
+        junit_dir: None,
     }
 }
 

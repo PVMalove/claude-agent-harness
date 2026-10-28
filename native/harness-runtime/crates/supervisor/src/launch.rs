@@ -44,6 +44,8 @@ pub(crate) struct Inner {
     children: Mutex<HashMap<String, Child>>,
     /// Executions a thread of this runtime waits for or stops; reconcile leaves them to it.
     pub(crate) watched: Mutex<HashSet<String>>,
+    /// The explicit stop of each QA run a thread of this runtime runs, by execution id.
+    pub(crate) qa_stops: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 pub(crate) fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -73,7 +75,7 @@ pub(crate) fn sql<T>(result: rusqlite::Result<T>) -> Result<T, ErrorBody> {
     })
 }
 
-fn store_busy(detail: &str) -> ErrorBody {
+pub(crate) fn store_busy(detail: &str) -> ErrorBody {
     ErrorBody::new(
         ErrorCode::StoreBusy,
         FailureDomain::Infrastructure,
@@ -83,7 +85,7 @@ fn store_busy(detail: &str) -> ErrorBody {
     )
 }
 
-fn injected(err: &state::Error) -> ErrorBody {
+pub(crate) fn injected(err: &state::Error) -> ErrorBody {
     ErrorBody::new(
         ErrorCode::Internal,
         FailureDomain::Infrastructure,
@@ -247,7 +249,7 @@ fn admit(
 }
 
 /// The stored row of an operation: its digest, state and result.
-fn stored_operation(
+pub(crate) fn stored_operation(
     connection: &Connection,
     id: &str,
 ) -> Result<Option<(String, String, Option<String>)>, ErrorBody> {
@@ -262,7 +264,7 @@ fn stored_operation(
 
 /// The answer a stored operation gives a repeat: its result, its failure, or `None` while it is
 /// an intent.
-fn replay(
+pub(crate) fn replay(
     stored: (String, String, Option<String>),
     digest: &str,
     id: &str,
@@ -668,6 +670,10 @@ impl Supervisor {
             self.settle_container(connection, &execution)?;
             return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
         }
+        if execution.kind == executions::KIND_QA {
+            self.settle_qa(connection, &execution)?;
+            return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
+        }
         match &execution.identity {
             None => {
                 let own = guard(&self.inner.children)
@@ -859,7 +865,7 @@ fn writer_start(execution: &Execution) -> Option<u64> {
 }
 
 /// Take the mutex of an operation, waiting until the deadline of the request.
-fn acquire(lock: &Mutex<()>, deadline_ms: u64) -> Result<MutexGuard<'_, ()>, ErrorBody> {
+pub(crate) fn acquire(lock: &Mutex<()>, deadline_ms: u64) -> Result<MutexGuard<'_, ()>, ErrorBody> {
     loop {
         match lock.try_lock() {
             Ok(held) => return Ok(held),

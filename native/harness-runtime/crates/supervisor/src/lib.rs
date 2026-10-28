@@ -20,6 +20,12 @@
 //! sockets and its own paths, the environment names and the pinned images before the intent,
 //! creates the worker's objects through the engine of the plan and records the container id.
 //! Every later engine command of the row uses the engine the row names.
+//!
+//! A QA dispatch whose approved brief pins `qa_execution` runs its commands through `qa.run`
+//! (ADR 0022, section 3): one `qa` execution per attempt, the run-wide sidecar and network, one
+//! foreground `run --rm --init` container per command on a thread of the runtime, and the exit
+//! evidence of every command; `qa.stop` stops it. A QA run no thread of this runtime holds after
+//! a restart is stopped and `lost`, never resumed.
 
 #[cfg(target_os = "linux")]
 mod container;
@@ -30,6 +36,8 @@ mod objects;
 #[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
+mod qa_run;
+#[cfg(target_os = "linux")]
 mod stop;
 
 use std::fmt;
@@ -37,12 +45,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The operations the supervisor serves, as `hello` lists them.
-pub const FEATURES: [&str; 5] = [
+pub const FEATURES: [&str; 7] = [
     "execution.launch",
     "execution.observe",
     "container.observe",
     "container.objects",
     "container.remove",
+    "qa.run",
+    "qa.stop",
 ];
 
 /// The engine of a kind: the CLI by default; tests script it.
@@ -174,6 +184,22 @@ impl Supervisor {
     /// # Errors
     /// Always `unknown_operation`.
     pub fn container_remove(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
+        Err(Self::unsupported(request))
+    }
+
+    /// `qa.run`: not served on this platform.
+    ///
+    /// # Errors
+    /// Always `unknown_operation`.
+    pub fn qa_run(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
+        Err(Self::unsupported(request))
+    }
+
+    /// `qa.stop`: not served on this platform.
+    ///
+    /// # Errors
+    /// Always `unknown_operation`.
+    pub fn qa_stop(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
         Err(Self::unsupported(request))
     }
 

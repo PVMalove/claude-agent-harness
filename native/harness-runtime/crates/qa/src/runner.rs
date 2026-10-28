@@ -107,6 +107,8 @@ pub struct Record {
     pub stop: Option<Value>,
     /// Why the CLI did not start, could not be waited for, or a stream could not be read.
     pub detail: Option<String>,
+    /// Where the command may write its JUnit report (`HARNESS_STAGE_JUNIT_XML`).
+    pub junit: Option<PathBuf>,
 }
 
 impl Record {
@@ -126,6 +128,7 @@ impl Record {
             duration_ms: 0,
             stop: None,
             detail: None,
+            junit: None,
         }
     }
 
@@ -149,6 +152,7 @@ impl Record {
             "duration_ms": self.duration_ms,
             "stop": self.stop,
             "detail": self.detail,
+            "junit": self.junit,
         })
     }
 }
@@ -189,13 +193,18 @@ pub fn recover(plan: &RunPlan, directory: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// The variable that names where a command may write its JUnit report (ADR 0023, section 4).
+pub const JUNIT_ENV: &str = "HARNESS_STAGE_JUNIT_XML";
+
 /// A runner of one QA run: its engine, the argv settings every command shares, the directory of
-/// its stream files and records, and its limits.
+/// its stream files and records, its limits, and the directory of the JUnit report of each
+/// command, if the run names one.
 pub struct Runner<'a> {
     pub engine: &'a dyn Engine,
     pub run: &'a QaRun<'a>,
     pub directory: &'a Path,
     pub limits: Limits,
+    pub junit_dir: Option<&'a Path>,
 }
 
 fn write_record(path: &Path, record: &Value) -> io::Result<()> {

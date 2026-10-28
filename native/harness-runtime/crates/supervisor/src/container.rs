@@ -54,7 +54,7 @@ fn policy_denied(message: String, remedy: &str) -> ErrorBody {
 }
 
 /// The host user of a rootful engine.
-fn host_user() -> HostUser {
+pub(crate) fn host_user() -> HostUser {
     HostUser {
         uid: nix::unistd::getuid().as_raw(),
         gid: nix::unistd::getgid().as_raw(),
@@ -99,7 +99,7 @@ impl Supervisor {
     }
 
     /// The engine an `executions` row names.
-    fn engine_of(&self, execution: &Execution) -> Option<Arc<dyn Engine>> {
+    pub(crate) fn engine_of(&self, execution: &Execution) -> Option<Arc<dyn Engine>> {
         Kind::parse(execution.engine.as_deref()?).map(|kind| self.engine(kind))
     }
 
@@ -443,7 +443,11 @@ impl Supervisor {
 
     /// The objects of this repository that carry the execution label of `execution`; `None`
     /// when the engine does not answer.
-    fn own_objects(&self, engine: &dyn Engine, execution: &Execution) -> Option<Vec<ops::Object>> {
+    pub(crate) fn own_objects(
+        &self,
+        engine: &dyn Engine,
+        execution: &Execution,
+    ) -> Option<Vec<ops::Object>> {
         let repository = self.repository.as_deref()?.to_str()?;
         let found = ops::objects(engine, repository, Some(&execution.dispatch_id))?;
         Some(
@@ -518,7 +522,7 @@ impl Supervisor {
     }
 
     /// Remove the objects of an exited execution, whose exit is stored, and record the result.
-    fn remove_after_exit(&self, engine: &dyn Engine, execution: &Execution) {
+    pub(crate) fn remove_after_exit(&self, engine: &dyn Engine, execution: &Execution) {
         let mut teardown = self.remove_objects(engine, execution);
         teardown["at"] = json!(iso_now());
         let Some(path) = self.teardown_record(&execution.id) else {
@@ -538,13 +542,18 @@ impl Supervisor {
         }
     }
 
-    /// Repeat the removal of every exited container execution without a complete record of it:
-    /// a runtime that died between the exit and the removal, or an engine that refused it.
+    /// Repeat the removal of every exited container execution or QA run without a complete
+    /// record of it: a runtime that died between the exit and the removal, or an engine that
+    /// refused it.
     pub(crate) fn finish_removals(self: &Arc<Self>, connection: &Connection) {
         let ids = connection
-            .prepare("SELECT id FROM executions WHERE kind = ?1 AND state = 'exited' ORDER BY id")
+            .prepare(
+                "SELECT id FROM executions WHERE kind IN (?1, ?2) AND state = 'exited' ORDER BY id",
+            )
             .and_then(|mut statement| {
-                let rows = statement.query_map([KIND_CONTAINER], |row| row.get::<_, String>(0))?;
+                let rows = statement.query_map([KIND_CONTAINER, executions::KIND_QA], |row| {
+                    row.get::<_, String>(0)
+                })?;
                 rows.collect::<rusqlite::Result<Vec<String>>>()
             });
         let Ok(ids) = ids else {
@@ -691,7 +700,7 @@ impl Supervisor {
         }
     }
 
-    fn to_unknown(
+    pub(crate) fn to_unknown(
         connection: &mut Connection,
         execution: &Execution,
         reason: &str,
