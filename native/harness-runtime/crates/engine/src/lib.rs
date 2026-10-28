@@ -3,8 +3,10 @@
 //! Every engine command of the runtime goes through the [`Engine`] trait: [`Docker`] and
 //! [`Podman`] run the CLI, [`Scripted`] answers by argv prefix in tests. The argv builders are a
 //! one-to-one port of the Python executor of ADR 0025; the only delta is the labels
-//! `harness.operation` and `harness.execution` after `harness.plan_digest`. Nothing here builds,
-//! pulls or runs an image attached, and nothing lists or removes a volume.
+//! `harness.operation` and `harness.execution` after `harness.plan_digest`. Nothing here builds or
+//! pulls an image, and nothing lists or removes a volume. The one attached run is the foreground
+//! `run --rm --init` of a QA command (ADR 0022, section 3): [`Engine::spawn`] writes its standard
+//! output and error into two files and answers a handle the caller waits on.
 
 pub mod argv;
 pub mod facts;
@@ -13,12 +15,13 @@ pub mod plan;
 pub mod policy;
 mod scripted;
 
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::fs::File;
+use std::io::{self, Read};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub use scripted::Scripted;
+pub use scripted::{Run, Scripted};
 
 /// One local engine query or container creation; a stuck daemon is the worst expected case.
 pub const ENGINE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -127,6 +130,25 @@ impl Answer {
     }
 }
 
+/// How an attached engine CLI ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Exit {
+    /// The exit code of the CLI; `None` when a signal ended it.
+    pub code: Option<i32>,
+}
+
+/// An engine CLI that runs attached: the foreground `run --rm` of one QA command.
+pub trait Attached: Send {
+    /// How the CLI ended, or `None` while it runs.
+    ///
+    /// # Errors
+    /// The CLI cannot be waited for.
+    fn try_wait(&mut self) -> io::Result<Option<Exit>>;
+
+    /// Kill the CLI itself and reap it; the container is stopped through the engine instead.
+    fn kill(&mut self);
+}
+
 /// The only process boundary of a container engine.
 pub trait Engine: Send + Sync {
     /// The engine this is.
@@ -134,6 +156,24 @@ pub trait Engine: Send + Sync {
 
     /// Run one command, `argv[0]` being the engine binary, and wait at most `timeout`.
     fn run(&self, argv: &[String], timeout: Duration) -> Answer;
+
+    /// Start one command attached, `argv[0]` being the engine binary, with its standard output
+    /// and error in the two files; the caller waits on the handle.
+    ///
+    /// # Errors
+    /// Why the CLI could not start.
+    fn spawn(
+        &self,
+        argv: &[String],
+        stdout: File,
+        stderr: File,
+    ) -> Result<Box<dyn Attached>, String> {
+        let _ = (argv, stdout, stderr);
+        Err(format!(
+            "the {} engine runs no attached command",
+            self.kind().as_str()
+        ))
+    }
 }
 
 /// The Docker CLI.
@@ -152,6 +192,15 @@ impl Engine for Docker {
     fn run(&self, argv: &[String], timeout: Duration) -> Answer {
         run_cli(Kind::Docker, argv, timeout)
     }
+
+    fn spawn(
+        &self,
+        argv: &[String],
+        stdout: File,
+        stderr: File,
+    ) -> Result<Box<dyn Attached>, String> {
+        spawn_cli(Kind::Docker, argv, stdout, stderr)
+    }
 }
 
 impl Engine for Podman {
@@ -161,6 +210,15 @@ impl Engine for Podman {
 
     fn run(&self, argv: &[String], timeout: Duration) -> Answer {
         run_cli(Kind::Podman, argv, timeout)
+    }
+
+    fn spawn(
+        &self,
+        argv: &[String],
+        stdout: File,
+        stderr: File,
+    ) -> Result<Box<dyn Attached>, String> {
+        spawn_cli(Kind::Podman, argv, stdout, stderr)
     }
 }
 
@@ -180,16 +238,63 @@ fn drain(mut stream: impl Read + Send + 'static) -> thread::JoinHandle<String> {
     })
 }
 
-fn run_cli(kind: Kind, argv: &[String], timeout: Duration) -> Answer {
+/// The binary and arguments of an engine command, when `argv[0]` is the binary of `kind`.
+fn own_binary(kind: Kind, argv: &[String]) -> Result<(&String, &[String]), String> {
     let Some((binary, args)) = argv.split_first() else {
-        return Answer::silent("an engine command needs its binary");
+        return Err("an engine command needs its binary".to_owned());
     };
     if binary != kind.as_str() {
-        return Answer::silent(format!(
+        return Err(format!(
             "the {} engine runs only its own binary, not {binary}",
             kind.as_str()
         ));
     }
+    Ok((binary, args))
+}
+
+/// An attached engine CLI: the leader of its own process group.
+struct CliRun {
+    child: Child,
+}
+
+impl Attached for CliRun {
+    fn try_wait(&mut self) -> io::Result<Option<Exit>> {
+        Ok(self.child.try_wait()?.map(|status| Exit {
+            code: status.code(),
+        }))
+    }
+
+    fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn spawn_cli(
+    kind: Kind,
+    argv: &[String],
+    stdout: File,
+    stderr: File,
+) -> Result<Box<dyn Attached>, String> {
+    let (binary, args) = own_binary(kind, argv)?;
+    let mut command = Command::new(binary);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    // Its own group: a signal to the runtime's group never reaches the CLI of a QA command.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    let child = command.spawn().map_err(|err| format!("{binary}: {err}"))?;
+    Ok(Box::new(CliRun { child }))
+}
+
+fn run_cli(kind: Kind, argv: &[String], timeout: Duration) -> Answer {
+    let (binary, args) = match own_binary(kind, argv) {
+        Ok(found) => found,
+        Err(detail) => return Answer::silent(detail),
+    };
     let mut child = match Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
