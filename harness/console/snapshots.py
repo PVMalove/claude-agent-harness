@@ -360,14 +360,11 @@ def error_reply(
     id: str | int | None,
     type: str | None,
     message: str | None = None,
-    details: dict[str, object] | None = None,
+    job_id: str | None = None,
 ) -> str:
-    error: dict[str, object] = {
-        "code": code,
-        "message": message or _ERRORS[code],
-    }
-    if details:
-        error.update(details)
+    error: dict[str, object] = {"code": code, "message": message or _ERRORS[code]}
+    if job_id is not None:
+        error["job_id"] = job_id
     return encode(
         {
             "v": PROTOCOL_VERSION,

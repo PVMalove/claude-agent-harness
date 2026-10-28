@@ -2,11 +2,11 @@
 
 Requests use ``job.start(command_id, values?, confirmed?, confirmation?, plan_digest?)``,
 ``job.cancel(job_id, confirmed?)``, ``job.get/job.subscribe(job_id, cursor=0)`` and ``job.list``.
-Replies carry a ``job`` snapshot, or
-the ``jobs`` summaries for ``job.list``. The cursor counts output fragments, starting at zero. Each
-snapshot contains the next bounded batch and its new cursor; ``done`` means execution and replay
-ended. Subscriptions own no execution task. A job keeps a bounded output, and ``truncated`` marks
-the cut. Jobs live until server exit, except that only the newest finished ones are kept.
+Replies carry a ``job`` snapshot, or the ``jobs`` summaries for ``job.list``. The cursor counts
+output fragments, starting at zero. Each snapshot contains the next bounded batch and its new
+cursor; ``done`` means execution and replay ended. Subscriptions own no execution task. A job keeps
+a bounded output, and ``truncated`` marks the cut. Jobs live until server exit, except that only
+the newest finished ones are kept.
 """
 
 from __future__ import annotations
@@ -21,12 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple, Protocol, cast
 
-from .catalog import (
-    HARNESS_COMMANDS,
-    MEMORY_COMMANDS,
-    CatalogEntry,
-    process_argv,
-)
+from .catalog import HARNESS_COMMANDS, MEMORY_COMMANDS, CatalogEntry, process_argv
 from .coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand
 from .runner import capturing_runner
 from .snapshots import (
@@ -136,14 +131,11 @@ class JobRejected(Exception):
     """A job request refused after its envelope was read; the message defaults to the code's."""
 
     def __init__(
-        self,
-        code: str,
-        message: str | None = None,
-        details: Mapping[str, object] | None = None,
+        self, code: str, message: str | None = None, *, job_id: str | None = None
     ) -> None:
         super().__init__(code)
         self.code, self.message = code, message or _ERRORS.get(code)
-        self.details = dict(details or {})
+        self.job_id = job_id
 
 
 class _Fragment(NamedTuple):
@@ -155,7 +147,6 @@ class _Fragment(NamedTuple):
 class _Job:
     id: str
     command_id: str
-    mutating: bool = False
     output: list[_Fragment] = field(default_factory=list)
     output_chars: int = 0
     truncated: bool = False
@@ -252,17 +243,6 @@ class JobService:
     def active_count(self) -> int:
         return sum(job.phase == "running" for job in self._jobs.values())
 
-    @property
-    def active_mutation_id(self) -> str | None:
-        """The id held by the project's one mutating job, if one is still running."""
-        job = self._active_mutation
-        return job.id if job is not None and job.phase == "running" else None
-
-    @staticmethod
-    def _is_mutating(entry: CatalogEntry | CoordinatorCommand) -> bool:
-        """Use the catalog's explicit mutation boundary, independent of confirmation UX."""
-        return entry.mutates
-
     def _start(self, body: Mapping[str, object]) -> _Job:
         command_id = body.get("command_id")
         if not isinstance(command_id, str):
@@ -307,21 +287,18 @@ class JobService:
             raise JobRejected("start_failed", type(exc).__name__) from None
         if not available:
             raise JobRejected("unavailable_command")
-        mutating = self._is_mutating(entry)
-        if mutating and self._active_mutation is not None:
-            active = self._active_mutation
-            if active.phase == "running":
-                raise JobRejected(
-                    "busy",
-                    f"Busy: {active.id}",
-                    {"job_id": active.id},
-                )
-            self._active_mutation = None
+        mutating = entry.mutates
+        # The slot is released in the same step that ends its job, so a holder is still running.
+        active = self._active_mutation
+        if mutating and active is not None:
+            raise JobRejected(
+                "busy", f"Busy: {active.id} ({active.command_id})", job_id=active.id
+            )
         if self.active_count >= _RUNNING_LIMIT:
             raise JobRejected("busy")
         if isinstance(digest, str):
             argv += ["--plan-digest", digest]
-        job = _Job(uuid.uuid4().hex, command_id, mutating)
+        job = _Job(uuid.uuid4().hex, command_id)
         self._jobs[job.id] = job
         task = asyncio.create_task(self._execute(job, argv))
         job.task = task
@@ -444,11 +421,7 @@ class JobService:
                     await asyncio.sleep(0)
         except JobRejected as rejected:
             yield error_reply(
-                rejected.code,
-                request_id,
-                echoed,
-                rejected.message,
-                rejected.details,
+                rejected.code, request_id, echoed, rejected.message, rejected.job_id
             )
 
     async def close(self) -> None:
