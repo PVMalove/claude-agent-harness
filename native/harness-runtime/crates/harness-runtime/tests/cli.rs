@@ -128,13 +128,20 @@ fn migrate_without_a_ledger_prints_the_not_found_code_first() {
 #[test]
 fn migrate_while_the_ledger_lock_is_held_prints_the_store_busy_code_first() {
     let repo = Scratch::repo_with_ledger("busy").without_qa_lane_entries();
-    // A lock directory without an owner record: its owner cannot be judged, so the lock stays.
+    // A lock directory without an owner record: its owner cannot be judged, so the lock stays
+    // until it is stale.
     fs::create_dir(repo.state().join(".coordinator.lock")).unwrap();
 
-    let (code, remedy) = refusal(&run(&["migrate", "--repo", repo.0.to_str().unwrap()]));
+    let output = run(&["migrate", "--repo", repo.0.to_str().unwrap()]);
+    let (code, remedy) = refusal(&output);
 
     assert_eq!(code, 2);
     assert!(remedy.starts_with("REMEDY: [store_busy] "), "{remedy}");
+    assert!(
+        stderr_lines(&output)[0].contains("(owner-unknown-recent)"),
+        "{:?}",
+        stderr_lines(&output)
+    );
 }
 
 #[test]

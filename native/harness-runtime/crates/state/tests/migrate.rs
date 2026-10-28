@@ -267,21 +267,96 @@ fn a_live_lock_owner_is_never_removed() {
     );
 }
 
+/// A time that is `seconds` old, in the form the Python ledger records.
+fn ago(seconds: i64) -> String {
+    state::time::iso_from_micros(state::time::now_micros() - seconds * 1_000_000)
+}
+
+/// The lock-audit records of automatic releases (the fixture holds one forced release).
+fn release_records(repo: &Repo) -> Vec<Value> {
+    fs::read_dir(repo.state().join("lock-audit"))
+        .map(|entries| {
+            entries
+                .map(|entry| read_json(&entry.unwrap().path()))
+                .filter(|record| {
+                    record["action"]
+                        .as_str()
+                        .is_some_and(|action| action != "ledger-lock-force-release")
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The verdicts of `_release_verdict` that keep a lock: migrate step 2 refuses with the verdict
+/// and changes nothing.
 #[test]
-fn a_lock_of_another_host_or_boot_is_not_removed_either() {
-    for owner in [
-        json!({"pid": 999_999, "host": "another-host", "acquired_at": "2026-10-22T00:00:00+00:00"}),
-        json!({"pid": 999_999, "host": platform::hostname(), "boot_id": "another-boot",
-               "pid_namespace": platform::environment().pid_namespace, "acquired_at": "2026-10-22T00:00:00+00:00"}),
-    ] {
-        let repo = Repo::new("foreign");
+fn a_lock_that_its_verdict_keeps_is_refused_with_the_verdict() {
+    let environment = platform::environment();
+    let cases = [
+        (
+            json!({"pid": 999_999, "host": "another-host", "acquired_at": ago(7200)}),
+            "owner-on-another-host",
+        ),
+        (
+            json!({"pid": 999_999, "host": platform::hostname(), "boot_id": "another-boot",
+                   "pid_namespace": environment.pid_namespace, "acquired_at": ago(60)}),
+            "owner-in-other-environment",
+        ),
+        (
+            json!({"host": platform::hostname(), "acquired_at": ago(60)}),
+            "owner-unknown-recent",
+        ),
+        (
+            json!({"pid": std::process::id(), "host": platform::hostname(),
+                   "pid_namespace": environment.pid_namespace, "boot_id": environment.boot_id,
+                   "acquired_at": ago(7200)}),
+            "owner-alive",
+        ),
+    ];
+    for (owner, verdict) in cases {
+        let repo = Repo::new("kept");
         write_owner(&repo, &owner);
         let before = repo.tree();
 
         let result = run(&repo.root);
 
         assert_eq!(code(&result), 2, "{owner}: {result:?}");
+        let message = result.unwrap_err().to_string();
+        assert!(message.contains(&format!("({verdict})")), "{message}");
         assert_eq!(repo.tree(), before);
+        assert!(release_records(&repo).is_empty());
+    }
+}
+
+/// An owner that cannot be checked is released once the lock is stale, and the audit record
+/// names the verdict, the owner and the time.
+#[test]
+fn a_stale_lock_whose_owner_cannot_be_checked_is_removed_with_its_verdict() {
+    let environment = platform::environment();
+    for owner in [
+        json!({"pid": 999_999, "host": platform::hostname(), "boot_id": "another-boot",
+               "pid_namespace": environment.pid_namespace, "acquired_at": ago(7200)}),
+        json!({"host": platform::hostname(), "acquired_at": ago(3600)}),
+    ] {
+        let repo = Repo::new("stale");
+        write_owner(&repo, &owner);
+
+        let outcome = run(&repo.root).unwrap();
+
+        assert!(!outcome.already_cut_over);
+        let release = release_records(&repo);
+        assert_eq!(release.len(), 1, "{owner}");
+        assert_eq!(release[0]["action"], "ledger-lock-stale-release");
+        assert_eq!(release[0]["details"]["verdict"], "owner-unknown-stale");
+        assert_eq!(release[0]["details"]["lock"]["owner"], owner);
+        assert!(
+            release[0]["details"]["lock"]["held_seconds"]
+                .as_i64()
+                .unwrap()
+                >= 3600
+        );
+        assert!(release[0]["at"].is_string());
     }
 }
 
@@ -319,6 +394,10 @@ fn a_dead_owner_is_removed_with_a_lock_audit_record_and_the_migration_goes_on() 
     assert_eq!(release.len(), 1);
     assert_eq!(release[0]["details"]["verdict"], "owner-dead");
     assert_eq!(release[0]["details"]["lock"]["owner"]["pid"], pid);
+    assert_eq!(
+        release[0]["details"]["lock"]["acquired_at"],
+        "2026-10-22T00:00:00+00:00"
+    );
     // The record is a valid lock audit record: its hash is the hash of the rest of it.
     let mut body = release[0].clone();
     let checksum = body
