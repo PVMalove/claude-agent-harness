@@ -61,6 +61,7 @@ class ContainerQa:
         timeout: int = 600,
         hosts: list[str] | None = None,
         cache: Path | None = None,
+        lease_ttl: int | None = None,
     ) -> None:
         self.fx = coordinator_tests.CoordinatorRetryRoutingTests()
         self.fx.setUp()
@@ -98,6 +99,8 @@ class ContainerQa:
                 "dispatch_poll_interval_seconds": 1,
             },
         }
+        if lease_ttl is not None:
+            config["lease_ttl_seconds"] = lease_ttl
         if preparation is not None:
             config["qa_preparation"] = preparation
             config["qa_environment_probes"] = ["probe registry"]
@@ -188,6 +191,7 @@ class Make(Protocol):
         timeout: int = ...,
         hosts: list[str] | None = ...,
         cache: Path | None = ...,
+        lease_ttl: int | None = ...,
     ) -> ContainerQa: ...
 
 
@@ -201,11 +205,11 @@ def qa(tmp_path: Path) -> Iterator[Make]:
         timeout: int = 600,
         hosts: list[str] | None = None,
         cache: Path | None = None,
+        lease_ttl: int | None = None,
     ) -> ContainerQa:
         root = tmp_path / f"q{len(made)}"
-        made.append(
-            ContainerQa(root, preparation=preparation, timeout=timeout, hosts=hosts, cache=cache)
-        )
+        options = {"timeout": timeout, "hosts": hosts, "cache": cache, "lease_ttl": lease_ttl}
+        made.append(ContainerQa(root, preparation=preparation, **options))  # type: ignore[arg-type]
         return made[-1]
 
     yield make

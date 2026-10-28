@@ -12,9 +12,13 @@ code beside its failure domain.
 from __future__ import annotations
 
 import hashlib
+import signal
+import threading
 import time
+import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -47,6 +51,19 @@ NO_REPORT_DOMAINS = frozenset(
     }
 )
 TERMINAL_STATES = frozenset({"exited", "lost", "unknown"})
+# The coordinator's backstop past the deadline the runtime gave the run, and how long a stopped
+# run may take to end beyond its grace.
+BACKSTOP_SECONDS = 60
+END_WAIT_SECONDS = 30
+
+
+class QaTerminated(SystemExit):
+    """SIGTERM during a container QA run: the run is stopped and recorded, then the command
+    exits with 128 + the signal number."""
+
+
+def _terminate(signum: int, frame: object) -> None:
+    raise QaTerminated(128 + signum)
 
 
 def container_brief(dispatch: Mapping[str, object]) -> bool:
@@ -75,6 +92,7 @@ class RuntimeQaPolicy:
         self.settings = cast(JsonObject, dispatch["qa_execution"])
         self.clean_room = CleanRoomPolicy(repo, str(dispatch["candidate_commit"]))
         self.domain: FailureDomain | None = None
+        self.interrupted: BaseException | None = None
 
     def checkout(self) -> AbstractContextManager[Path]:
         return self.clean_room.checkout()
@@ -82,8 +100,6 @@ class RuntimeQaPolicy:
     def run_groups(
         self, groups: Sequence[CommandGroup], checkout: Path, run: GroupContext
     ) -> list[GroupRun]:
-        from .runtime_client import RuntimeClient
-
         tmpdir = checkout.parent / "tmp"
         tmpdir.mkdir(exist_ok=True)
         ids = [_numbered(group.group, len(group.commands)) for group in groups]
@@ -109,13 +125,7 @@ class RuntimeQaPolicy:
         # The execution id of a QA run is its operation id; a refusal or a sidecar the engine
         # refused raises the runtime's typed error, and the lane records it as an attempt.
         execution_id = execution_operation_id(self.dispatch, self.attempt)
-        RuntimeClient(self.repo).call(
-            "qa.run",
-            operation_id=execution_id,
-            payload=payload,
-            fencing_token=self.fencing_token,
-        )
-        execution = self._wait(execution_id)
+        execution = self._execute(execution_id, payload)
         exit_ = execution.get("exit")
         found = {
             str(item["stage_id"]): item
@@ -130,9 +140,81 @@ class RuntimeQaPolicy:
             self.domain = FailureDomain.INFRASTRUCTURE
         return runs
 
-    def _wait(self, execution_id: str) -> JsonObject:
-        """Poll the run until the runtime records its end."""
+    def _execute(self, execution_id: str, payload: JsonObject) -> JsonObject:
+        """``qa.run`` and the wait for its end. SIGINT, SIGTERM and the coordinator's backstop
+        past the run's deadline stop the run with ``qa.stop``; the wait for its end keeps the
+        evidence of the commands that ran. ``interrupted`` keeps a signal to raise again."""
+        from .runtime_client import RuntimeClient
+
+        main = threading.current_thread() is threading.main_thread()
+        previous = signal.signal(signal.SIGTERM, _terminate) if main else None
+        try:
+            try:
+                receipt = (
+                    RuntimeClient(self.repo)
+                    .call(
+                        "qa.run",
+                        operation_id=execution_id,
+                        payload=payload,
+                        fencing_token=self.fencing_token,
+                    )
+                    .result
+                )
+                deadline = datetime.fromisoformat(str(receipt["execution_deadline"]))
+                left = (deadline - datetime.now(UTC)).total_seconds()
+                ended = self._wait(execution_id, left + self._grace() + BACKSTOP_SECONDS)
+                if ended is not None:
+                    return ended
+                self.domain = FailureDomain.TIMEOUT
+            except (KeyboardInterrupt, QaTerminated) as exc:
+                self.interrupted = exc
+                self.domain = FailureDomain.CANCELLED
+            self._stop()
+            return self._wait(execution_id, self._grace() + 2 * END_WAIT_SECONDS) or {
+                "state": "unknown"
+            }
+        finally:
+            if main:
+                signal.signal(signal.SIGTERM, previous)
+
+    def _grace(self) -> int:
+        return int(cast(int, self.settings["stop_grace_seconds"]))
+
+    def _stop(self) -> None:
+        """``qa.stop`` of this attempt; a run the runtime never started re-raises the signal."""
+        from .runtime_client import RuntimeClient, RuntimeClientError
+
+        try:
+            RuntimeClient(self.repo).call(
+                "qa.stop",
+                operation_id=f"qa.stop-{uuid.uuid4().hex}",
+                payload={"dispatch_id": self.dispatch["dispatch_id"], "attempt": self.attempt},
+            )
+        except RuntimeClientError as exc:
+            if exc.code == "not_found" and self.interrupted is not None:
+                raise self.interrupted from exc
+            raise
+
+    def stop(self) -> None:
+        """Stop the live run of this attempt, if there is one, and wait for its end: the run of
+        a lane owner whose lease was cleared or reaped."""
+        from .runtime_client import RuntimeClientError
+
+        try:
+            self._stop()
+        except RuntimeClientError as exc:
+            if exc.code == "not_found":
+                return
+            raise
+        self._wait(
+            execution_operation_id(self.dispatch, self.attempt),
+            self._grace() + 2 * END_WAIT_SECONDS,
+        )
+
+    def _wait(self, execution_id: str, seconds: float) -> JsonObject | None:
+        """Poll the run until the runtime records its end; ``None`` when ``seconds`` pass."""
         interval = int(cast(int, self.settings["poll_interval_seconds"]))
+        deadline = time.monotonic() + seconds
         while True:
             execution = observed_execution(self.repo, str(self.dispatch["dispatch_id"]))
             if execution is None or execution.get("execution_id") != execution_id:
@@ -142,7 +224,10 @@ class RuntimeQaPolicy:
                 )
             if execution.get("state") in TERMINAL_STATES:
                 return execution
-            time.sleep(interval)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            time.sleep(min(interval, left))
 
     def _group_run(
         self,

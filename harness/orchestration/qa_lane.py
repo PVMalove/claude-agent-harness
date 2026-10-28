@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
@@ -1285,7 +1285,9 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
                 "stage_evidence": trailer.strip() or None,
             },
         )
-        raise failure
+        # A signal stopped the run: its partial evidence is recorded, then the signal goes on.
+        interrupted = getattr(policy, "interrupted", None)
+        raise interrupted if interrupted is not None else failure
     try:
         report = _qa_report(dispatch, checks, artifact, checksum, stages)
         if domain is not None:
@@ -1371,6 +1373,12 @@ def _recover_cleared_owner(
     if owner is not None:
         _delete_record(ledger, owner[0], reason="clear stale QA lease queue entry")
     if running:
+        if container_brief(running) and store_is_authority(ledger.root):
+            # The owner's container QA run may still run in the runtime: it ends before the
+            # dispatch is approved again, so the next run is the next attempt.
+            attempt = ops._load_dispatch_status(root, running["dispatch_id"]).get("attempt")
+            repo = root.parents[len(STATE_REL.parts) - 1]
+            RuntimeQaPolicy(repo, running, int(cast(int, attempt or 1)), None).stop()
         _restore_approved(ledger, root, running, ops)
     return restored
 
