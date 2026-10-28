@@ -977,6 +977,12 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     ),
                     "adapter_receipt": status.get("adapter_receipt"),
                     **({"execution": execution} if dispatch.get("execution") else {}),
+                    # A report that waited for an execution that was lost (execution_reaction).
+                    **(
+                        {"held_report": status["held_report"]}
+                        if "held_report" in status
+                        else {}
+                    ),
                     "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),

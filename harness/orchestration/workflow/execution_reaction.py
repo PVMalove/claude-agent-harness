@@ -11,7 +11,9 @@ what the runtime observed:
   submit``.
 - ``exited`` without a report: ``blocked``, domain ``timeout`` when the runtime stopped the
   worker at its deadline, otherwise the classification ``worker-exited-without-report``.
-- ``lost``: ``blocked``, domain ``infrastructure``; the developer retry budget is untouched.
+- ``lost``: ``blocked``, domain ``infrastructure``; the developer retry budget is untouched. A
+  report that waited for the exit is never dropped: it stays on the status as ``held_report``,
+  and ``dispatch status`` shows it to the operator.
 
 ``dispatch status --dispatch``, ``dispatch wait`` and ``report submit`` call it.
 """
@@ -158,6 +160,7 @@ def react(repo: Path, root: Path, dispatch: JsonObject, execution: JsonObject) -
                 "state": "blocked",
                 "updated_at": utils._now(),
                 "runtime_failure": _failure(execution),
+                **({"held_report": pending} if isinstance(pending, dict) else {}),
             }
         )
         for item in batch["dispatches"]:

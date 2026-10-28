@@ -634,3 +634,29 @@ def test_a_lost_execution_blocks_the_dispatch_as_infrastructure(
     assert status["state"] == "blocked"
     assert dig(status, "runtime_failure", "kind") == "runtime-unavailable"
     assert dig(status, "runtime_failure", "execution_state") == "lost"
+
+
+def test_a_report_submitted_before_the_execution_is_lost_stays_for_the_operator(
+    supervised: Factory,
+) -> None:
+    repo = supervised()
+    _working(repo)
+    path = f"dispatches/{repo.dispatch}.json"
+    brief = store_records(repo.repo, repo.runtime, path)[path]
+    report = architect_report_file(repo.repo, repo.dispatch, brief)
+    submitted = repo.run("report", "submit", "--file", str(report))
+    assert submitted.returncode == 0, submitted.stderr
+    held = repo.status()["pending_report"]
+    repo.runtime.kill()
+    with sqlite3.connect(repo.database) as db:
+        db.execute("UPDATE executions SET start_time = '1'")
+    repo.restart_runtime()
+
+    (entry,) = cast(list[object], _status_of(repo))
+
+    status = repo.status()
+    assert status["state"] == "blocked"
+    assert dig(status, "runtime_failure", "execution_state") == "lost"
+    assert "pending_report" not in status
+    assert status["held_report"] == held
+    assert dig(entry, "held_report") == held
