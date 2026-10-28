@@ -182,3 +182,177 @@ fn the_store_id_of_a_cut_over_state_is_the_one_migrate_reported() {
 
     assert_eq!(store_id(&repo.state()), Some(outcome.authority.store_id));
 }
+
+mod snapshots {
+    //! Read snapshots that span the requests of one command (ADR 0020, section 3).
+
+    use std::time::{Duration, Instant};
+
+    use rusqlite::Connection;
+    use serde_json::{Value, json};
+    use state::read::ReadError;
+    use state::read_session::Registry;
+
+    use super::migrated;
+
+    const BATCH: &str = "batches/batch-aaaaaaaa-0000-4000-8000-000000000001.json";
+
+    fn ticket(answer: &state::read::Answer) -> Value {
+        answer.records[BATCH]["ticket"].clone()
+    }
+
+    fn open(registry: &Registry, state: &std::path::Path) -> state::read::Answer {
+        registry
+            .read(
+                state,
+                Some(&json!({"snapshot": "open", "paths": [BATCH]})),
+                None,
+            )
+            .unwrap()
+    }
+
+    fn named(
+        registry: &Registry,
+        state: &std::path::Path,
+        id: &str,
+    ) -> Result<state::read::Answer, ReadError> {
+        registry.read(
+            state,
+            Some(&json!({"snapshot": id, "paths": [BATCH]})),
+            None,
+        )
+    }
+
+    /// Change the ticket of the batch outside any snapshot, as another command's commit does.
+    fn commit_elsewhere(state: &std::path::Path) {
+        let connection = Connection::open(state.join("runtime.db")).unwrap();
+        connection
+            .execute(
+                "UPDATE batch SET body_json = json_set(body_json, '$.ticket', '#changed')",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn a_snapshot_keeps_its_answer_across_a_commit_of_another_command() {
+        let (repo, _) = migrated("snapshot-commit");
+        let state = repo.state();
+        let registry = Registry::default();
+        let first = open(&registry, &state);
+        let id = first.snapshot.clone().unwrap();
+
+        commit_elsewhere(&state);
+
+        let again = named(&registry, &state, &id).unwrap();
+        assert_eq!(ticket(&again), ticket(&first));
+        assert_eq!(again.revision, first.revision);
+        assert_eq!(again.generation_revision, first.generation_revision);
+        let fresh = state::read::read(&state, Some(&json!({"paths": [BATCH]})), None).unwrap();
+        assert_eq!(ticket(&fresh), "#changed");
+    }
+
+    #[test]
+    fn a_writer_inside_its_transaction_does_not_delay_a_snapshot_read() {
+        let (repo, _) = migrated("snapshot-writer");
+        let state = repo.state();
+        let registry = Registry::default();
+        let before = state::read::read(&state, Some(&json!({"paths": [BATCH]})), None).unwrap();
+        let writer = Connection::open(state.join("runtime.db")).unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        writer
+            .execute(
+                "UPDATE batch SET body_json = json_set(body_json, '$.ticket', '#half')",
+                [],
+            )
+            .unwrap();
+
+        let started = Instant::now();
+        let opened = open(&registry, &state);
+        let again = named(&registry, &state, opened.snapshot.as_deref().unwrap()).unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(ticket(&opened), ticket(&before));
+        assert_eq!(ticket(&again), ticket(&before));
+        writer.execute_batch("ROLLBACK").unwrap();
+    }
+
+    fn reason(error: &ReadError) -> &'static str {
+        match error {
+            ReadError::Snapshot { reason, .. } => reason,
+            other => panic!("not a snapshot refusal: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_idle_or_old_or_closed_snapshot_is_expired() {
+        let (repo, _) = migrated("snapshot-expiry");
+        let state = repo.state();
+        for registry in [
+            Registry::with_limits(Duration::from_millis(50), Duration::from_secs(60), 8),
+            Registry::with_limits(Duration::from_secs(60), Duration::from_millis(50), 8),
+        ] {
+            let id = open(&registry, &state).snapshot.unwrap();
+            std::thread::sleep(Duration::from_millis(120));
+
+            let error = named(&registry, &state, &id).unwrap_err();
+
+            assert_eq!(reason(&error), "snapshot_expired");
+            assert!(registry.is_empty());
+        }
+        let registry = Registry::default();
+        let id = open(&registry, &state).snapshot.unwrap();
+        registry
+            .read(&state, Some(&json!({"snapshot": id, "close": true})), None)
+            .unwrap();
+        assert_eq!(
+            reason(&named(&registry, &state, &id).unwrap_err()),
+            "snapshot_expired"
+        );
+    }
+
+    #[test]
+    fn no_more_snapshots_than_the_limit_are_open() {
+        let (repo, _) = migrated("snapshot-limit");
+        let state = repo.state();
+        let registry = Registry::with_limits(Duration::from_secs(60), Duration::from_secs(60), 2);
+        let first = open(&registry, &state).snapshot.unwrap();
+        open(&registry, &state);
+
+        let error = registry
+            .read(&state, Some(&json!({"snapshot": "open"})), None)
+            .unwrap_err();
+
+        assert_eq!(reason(&error), "snapshot_limit");
+        registry
+            .read(
+                &state,
+                Some(&json!({"snapshot": first, "close": true})),
+                None,
+            )
+            .unwrap();
+        open(&registry, &state);
+        assert_eq!(registry.len(), 2);
+    }
+
+    #[test]
+    fn a_read_without_a_snapshot_keeps_the_global_revision_check() {
+        let (repo, _) = migrated("snapshot-compat");
+        let state = repo.state();
+        let registry = Registry::default();
+        let answer = registry
+            .read(&state, Some(&json!({"paths": [BATCH]})), None)
+            .unwrap();
+        assert!(answer.snapshot.is_none());
+
+        let error = registry
+            .read(
+                &state,
+                Some(&json!({"paths": [BATCH]})),
+                Some(answer.revision + 1),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, ReadError::RevisionConflict { .. }));
+    }
+}

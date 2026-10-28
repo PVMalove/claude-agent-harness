@@ -440,6 +440,60 @@ fn a_lease_records_the_client_process_the_kernel_reports() {
     assert_eq!(inspected["stale_heartbeat"], false);
 }
 
+/// A snapshot of one connection answers its later reads from the moment it was opened, while
+/// another connection commits.
+#[test]
+fn a_read_snapshot_spans_requests_while_another_connection_commits() {
+    let fixture = Fixture::new("snapshot");
+    let state_dir = cut_over(&fixture);
+    let paths = resolve_paths(&fixture.root, Some(&fixture.xdg)).unwrap();
+    let runtime = Running::start(Server::bind_serving(paths, Some(state_dir)).unwrap());
+    let mut reader = runtime.connect();
+    let mut writer = runtime.connect();
+    for stream in [&mut reader, &mut writer] {
+        assert_eq!(
+            exchange(stream, &hello(&fixture.root, &runtime.token, 1, 1)).status,
+            Status::Ok
+        );
+    }
+    let path = "reports/snapshot.json";
+
+    let opened = exchange(
+        &mut reader,
+        &request(
+            "state.read",
+            Some(json!({"snapshot": "open", "paths": [path]})),
+        ),
+    );
+    let snapshot = opened.result.as_ref().unwrap()["snapshot"].clone();
+    let written = exchange(
+        &mut writer,
+        &request(
+            "state.write",
+            Some(json!({"mutations": [{"op": "create", "path": path,
+                "content": state::canonical::canonical_json(&json!({"dispatch_id": "d"}))}]})),
+        ),
+    );
+    let again = exchange(
+        &mut reader,
+        &request(
+            "state.read",
+            Some(json!({"snapshot": snapshot, "paths": [path], "close": true})),
+        ),
+    );
+    let closed = exchange(
+        &mut reader,
+        &request("state.read", Some(json!({"snapshot": snapshot}))),
+    );
+
+    assert!(snapshot.as_str().unwrap().starts_with("snapshot-"));
+    assert_eq!(written.status, Status::Ok, "{written:?}");
+    assert_eq!(again.revision, opened.revision);
+    assert_eq!(again.result.unwrap()["records"], json!({}));
+    assert_eq!(error_code(&closed), ErrorCode::StoreBusy);
+    assert_eq!(closed.error.unwrap().facts["reason"], "snapshot_expired");
+}
+
 #[test]
 fn simultaneous_starts_leave_one_runtime_with_its_own_token() {
     let fixture = Arc::new(Fixture::new("race"));

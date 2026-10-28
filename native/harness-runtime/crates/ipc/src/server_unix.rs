@@ -64,6 +64,7 @@ impl Server {
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
             state_dir,
+            snapshots: Arc::default(),
         });
         Ok(Self {
             listener,

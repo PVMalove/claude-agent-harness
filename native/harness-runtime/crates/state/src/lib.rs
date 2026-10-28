@@ -19,6 +19,7 @@ pub mod platform;
 pub mod policy;
 pub mod project;
 pub mod read;
+pub mod read_session;
 pub mod repair;
 pub mod rollback;
 pub mod route;

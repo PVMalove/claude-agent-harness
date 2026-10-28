@@ -5,6 +5,7 @@
 //! `state.read` answer from, so every rule is tested against a scratch state without a socket.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use contracts::{
     ErrorBody, ErrorCode, FailureDomain, HelloPayload, HelloResult, PROTOCOL_VERSION,
@@ -24,6 +25,8 @@ pub struct Shared {
     /// The state directory whose runtime store this runtime serves once the store is the
     /// authority (ADR 0020, section 1); `None` for a runtime that serves no state.
     pub state_dir: Option<PathBuf>,
+    /// The read snapshots that span the requests of one command (ADR 0020, section 3).
+    pub snapshots: Arc<state::read_session::Registry>,
 }
 
 /// The answer to one frame.
@@ -239,20 +242,21 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
             false,
         );
     };
-    match state::read::read(
+    match shared.snapshots.read(
         state_dir,
         request.payload.as_ref(),
         request.expected_revision,
     ) {
         Ok(answer) => {
-            let mut response = Response::ok(
-                id,
-                json!({
-                    "records": answer.records,
-                    "revisions": answer.revisions,
-                    "generation_revision": answer.generation_revision,
-                }),
-            );
+            let mut result = json!({
+                "records": answer.records,
+                "revisions": answer.revisions,
+                "generation_revision": answer.generation_revision,
+            });
+            if let Some(snapshot) = answer.snapshot {
+                result["snapshot"] = json!(snapshot);
+            }
+            let mut response = Response::ok(id, result);
             response.revision = Some(answer.revision);
             Reply {
                 response,
@@ -324,6 +328,18 @@ fn read_refusal(id: &str, error: state::read::ReadError) -> Reply {
             true,
             format!("the store is busy: {message}"),
             "repeat the command",
+        ),
+        ReadError::Snapshot { reason, detail } => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::StoreBusy,
+                FailureDomain::Infrastructure,
+                true,
+                format!("the read snapshot cannot answer: {detail}"),
+                "read again from a new snapshot",
+            )
+            .with_fact("reason", reason),
+            false,
         ),
         ReadError::Store {
             message,
@@ -482,6 +498,7 @@ mod tests {
             repo_id: id,
             server_version: "9.9.9".to_owned(),
             state_dir: None,
+            snapshots: Default::default(),
         }
     }
 

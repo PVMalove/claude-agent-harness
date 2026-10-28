@@ -35,6 +35,12 @@ pub enum ReadError {
     Broken(crate::audit::Broken),
     /// The store could not be read; `busy` says the reason is a lock another process holds.
     Store { message: String, busy: bool },
+    /// The snapshot the request names is closed or expired, or no other snapshot may be opened
+    /// (`reason` is `snapshot_expired` or `snapshot_limit`); a new snapshot answers.
+    Snapshot {
+        reason: &'static str,
+        detail: String,
+    },
 }
 
 impl From<rusqlite::Error> for ReadError {
@@ -60,6 +66,33 @@ pub struct Answer {
     pub records: Map<String, Value>,
     /// The `revision` of every row that has one, by the same path: the value a write expects.
     pub revisions: Map<String, Value>,
+    /// The snapshot the answer came from, when the request opened or named one.
+    pub snapshot: Option<String>,
+}
+
+/// One read transaction of the store: a read-only connection inside `BEGIN`, after its first
+/// `SELECT`, so every answer from it sees the store as it was at that moment (WAL), and no writer
+/// waits for it.
+pub struct Snapshot {
+    connection: Connection,
+    pub revision: u64,
+    pub generation_revision: u64,
+    selected: String,
+}
+
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot")
+            .field("revision", &self.revision)
+            .field("generation_revision", &self.generation_revision)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a request asks a read for: collections and paths, checked.
+pub struct Wanted {
+    collections: Vec<String>,
+    paths: Vec<String>,
 }
 
 /// The `store_id` of the store when it is the authority of the state directory.
@@ -357,28 +390,22 @@ fn meta(connection: &Connection, key: &str) -> Result<String, ReadError> {
         .map_err(ReadError::from)
 }
 
-/// Answer one `state.read` request for the store of `state`.
-///
-/// The payload is `{"collections": [...], "paths": [...]}`: a collection is a record directory of the
-/// legacy generation (`batches`, `dispatch-status`, `qa-lane`, `audit`, `reports`, ...), and a path
-/// is one record file relative to the generation. A path that holds no record is left out.
+fn attached(state: &Path) -> Result<(), ReadError> {
+    match epoch(state) {
+        Epoch::Store(_) => Ok(()),
+        Epoch::FileLedger => Err(ReadError::NotAttached(
+            "the file ledger is the authority of this repository".to_owned(),
+        )),
+        Epoch::Inconsistent(reason) => Err(ReadError::NotAttached(reason)),
+    }
+}
+
+/// The collections and paths of a `state.read` payload; `extra` names the other fields the
+/// caller reads from it.
 ///
 /// # Errors
-/// See [`ReadError`].
-pub fn read(
-    state: &Path,
-    payload: Option<&Value>,
-    expected_revision: Option<u64>,
-) -> Result<Answer, ReadError> {
-    match epoch(state) {
-        Epoch::Store(_) => {}
-        Epoch::FileLedger => {
-            return Err(ReadError::NotAttached(
-                "the file ledger is the authority of this repository".to_owned(),
-            ));
-        }
-        Epoch::Inconsistent(reason) => return Err(ReadError::NotAttached(reason)),
-    }
+/// `Malformed` for an unknown field, a list that holds no strings, or a bad path.
+pub fn wanted(payload: Option<&Value>, extra: &[&str]) -> Result<Wanted, ReadError> {
     let empty = Value::Object(Map::new());
     let payload = payload.unwrap_or(&empty);
     let Value::Object(members) = payload else {
@@ -386,10 +413,9 @@ pub fn read(
             "the payload must be an object".to_owned(),
         ));
     };
-    if let Some(unknown) = members
-        .keys()
-        .find(|key| !matches!(key.as_str(), "collections" | "paths"))
-    {
+    if let Some(unknown) = members.keys().find(|key| {
+        !matches!(key.as_str(), "collections" | "paths") && !extra.contains(&key.as_str())
+    }) {
         return Err(ReadError::Malformed(format!(
             "unknown payload field {unknown:?}"
         )));
@@ -406,6 +432,16 @@ pub fn read(
             "{bad:?} is not a record path"
         )));
     }
+    Ok(Wanted { collections, paths })
+}
+
+/// Open a read transaction of the store of `state`: a read-only connection, `BEGIN`, and the
+/// first `SELECT`s (the audit tail, the revision, the generation and the selected generation).
+///
+/// # Errors
+/// See [`ReadError`].
+pub fn open(state: &Path) -> Result<Snapshot, ReadError> {
+    attached(state)?;
     let connection = Connection::open_with_flags(
         state.join(STORE_NAME),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -418,41 +454,81 @@ pub fn read(
         connection.query_row("SELECT COALESCE(MAX(seq), 0) FROM audit", [], |row| {
             row.get(0)
         })?;
-    let revision = u64::try_from(revision).unwrap_or(0);
-    if let Some(expected) = expected_revision
-        && expected != revision
-    {
-        return Err(ReadError::RevisionConflict {
-            expected,
-            actual: revision,
-        });
-    }
     let generation_revision: i64 = connection.query_row(
         "SELECT COALESCE((SELECT revision FROM generation WHERE id = 1), 0)",
         [],
         |row| row.get(0),
     )?;
     let selected = meta(&connection, "selected_generation")?;
-    let mut found = Found::default();
-    for name in &collections {
-        collection(&connection, name, &selected, &mut found)?;
-    }
-    for path in &paths {
-        one_path(&connection, path, &selected, &mut found)?;
-    }
-    connection.execute_batch("COMMIT")?;
-    let Found { records, revisions } = found;
-    let size: usize = records
-        .iter()
-        .map(|(path, record)| path.len() + record.to_string().len())
-        .sum();
-    if size > MAX_ANSWER_BYTES {
-        return Err(ReadError::TooLarge);
-    }
-    Ok(Answer {
-        revision,
+    Ok(Snapshot {
+        connection,
+        revision: u64::try_from(revision).unwrap_or(0),
         generation_revision: u64::try_from(generation_revision).unwrap_or(0),
-        records,
-        revisions,
+        selected,
     })
+}
+
+impl Snapshot {
+    /// The records `wanted` names, as the store was when the snapshot was opened.
+    ///
+    /// # Errors
+    /// See [`ReadError`].
+    pub fn answer(&self, wanted: &Wanted) -> Result<Answer, ReadError> {
+        let mut found = Found::default();
+        for name in &wanted.collections {
+            collection(&self.connection, name, &self.selected, &mut found)?;
+        }
+        for path in &wanted.paths {
+            one_path(&self.connection, path, &self.selected, &mut found)?;
+        }
+        let Found { records, revisions } = found;
+        let size: usize = records
+            .iter()
+            .map(|(path, record)| path.len() + record.to_string().len())
+            .sum();
+        if size > MAX_ANSWER_BYTES {
+            return Err(ReadError::TooLarge);
+        }
+        Ok(Answer {
+            revision: self.revision,
+            generation_revision: self.generation_revision,
+            records,
+            revisions,
+            snapshot: None,
+        })
+    }
+
+    /// End the read transaction.
+    pub fn close(self) {
+        let _ = self.connection.execute_batch("COMMIT");
+    }
+}
+
+/// Answer one `state.read` request for the store of `state`, in a read transaction of its own.
+///
+/// The payload is `{"collections": [...], "paths": [...]}`: a collection is a record directory of the
+/// legacy generation (`batches`, `dispatch-status`, `qa-lane`, `audit`, `reports`, ...), and a path
+/// is one record file relative to the generation. A path that holds no record is left out.
+///
+/// # Errors
+/// See [`ReadError`].
+pub fn read(
+    state: &Path,
+    payload: Option<&Value>,
+    expected_revision: Option<u64>,
+) -> Result<Answer, ReadError> {
+    attached(state)?;
+    let wanted = wanted(payload, &[])?;
+    let snapshot = open(state)?;
+    if let Some(expected) = expected_revision
+        && expected != snapshot.revision
+    {
+        return Err(ReadError::RevisionConflict {
+            expected,
+            actual: snapshot.revision,
+        });
+    }
+    let answer = snapshot.answer(&wanted);
+    snapshot.close();
+    answer
 }
