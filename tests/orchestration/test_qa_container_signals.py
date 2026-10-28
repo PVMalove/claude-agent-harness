@@ -16,8 +16,13 @@ from collections.abc import Callable
 
 import pytest
 
-from tests.orchestration.runtime_store_support import coordinator_popen
-from tests.orchestration.test_qa_container import Make, qa  # noqa: F401
+from tests.orchestration.runtime_store_support import ServingRuntime, coordinator_popen
+from tests.orchestration.test_qa_container import (  # noqa: F401
+    SECRET,
+    SECRET_NAME,
+    Make,
+    qa,
+)
 
 pytestmark = pytest.mark.skipif(
     not sys.platform.startswith("linux"),
@@ -59,6 +64,58 @@ def test_a_signal_stops_the_running_container_and_keeps_the_partial_evidence(
     [attempt] = repo.attempts()
     assert (attempt["attempt"], attempt["domain"]) == (1, "cancelled")
     assert attempt["stage_evidence"].startswith("stage-evidence: qa-artifacts/")
+    assert repo.status()["state"] == "approved"
+    lane = repo.lane()
+    assert (lane["lease"], lane["queue"]) == (None, [])
+
+
+@pytest.mark.parametrize(
+    ("pause", "signum"),
+    [
+        # Admission is done: the runtime has no execution of the attempt yet.
+        ("qa.run:admitted", signal.SIGTERM),
+        # The execution is launching and has no receipt yet.
+        ("qa.run:intent", signal.SIGINT),
+    ],
+)
+def test_a_signal_before_the_receipt_stops_the_run_once_it_is_launched(
+    qa: Make,  # noqa: F811
+    pause: str,
+    signum: signal.Signals,
+) -> None:
+    repo = qa(timeout=5)
+    repo.engine.script("gate-1", stdout="testing\n", hang=True)
+    repo.runtime.stop()
+    repo.runtime = ServingRuntime(
+        repo.repo,
+        env={
+            "PATH": str(repo.engine.bin),
+            SECRET_NAME: SECRET,
+            "HARNESS_RUNTIME_TEST_PAUSE_AT": pause,
+        },
+    )
+    process = coordinator_popen(repo.repo, repo.runtime, "qa", "run", "--dispatch", repo.dispatch)
+    repo.runtime.wait_paused(pause)
+
+    process.send_signal(signum)
+    # The coordinator must not leave qa.run before its receipt: the runtime would go on with a
+    # run nobody stops.
+    time.sleep(1)
+    assert process.poll() is None
+    repo.runtime.resume()
+    _, stderr = process.communicate(timeout=120)
+
+    assert process.returncode == (143 if signum == signal.SIGTERM else -signal.SIGINT), stderr
+    execution = repo.execution()
+    assert (execution["state"], execution["exit"]["stopped_by"]) == ("exited", "command")
+    records = execution["exit"]["commands"]
+    assert [r["result"] for r in records[1:]] == ["not_run", "not_run"]
+    assert (records[0]["result"], records[0]["domain"]) in {
+        ("not_run", None), ("ran", "cancelled"),
+    }
+    [attempt] = repo.attempts()
+    assert (attempt["attempt"], attempt["domain"]) == (1, "cancelled")
+    assert repo.engine.state()["objects"] == {}
     assert repo.status()["state"] == "approved"
     lane = repo.lane()
     assert (lane["lease"], lane["queue"]) == (None, [])

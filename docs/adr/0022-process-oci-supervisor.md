@@ -306,7 +306,8 @@ Reconcile запускается при старте runtime, перед каж�
   иначе; любой другой код — собственный результат команды. `stopped_by` прогона — `command`
   после `qa.stop` и `deadline`, если хотя бы одна команда дошла до своего срока.
 - **`qa.stop`.** Запрос `{dispatch_id, attempt}` не требует fencing token и не пишет строку
-  `operations`: он только ставит флаг остановки потока прогона или запускает reconcile.
+  `operations`: он только ставит флаг остановки потока прогона или запускает reconcile. Флаг
+  появляется вместе с квитанцией `qa.run`; прогон без квитанции остановку не хранит.
 - **Python.** `qa run` для brief с `qa_execution` готовит clean-room checkout на хосте (Git вне
   контейнеров), пишет `attempt` при переходе в `working`, вызывает `qa.run` с fencing token lane и
   опрашивает `execution.observe`. Потоки читаются из `executions/<id>/commands`, сверяются по
@@ -314,9 +315,10 @@ Reconcile запускается при старте runtime, перед каж�
   `infrastructure`, `environment_preparation`, `cancelled` — без отчёта, повтор `qa run` — новая
   попытка без траты бюджета developer-а. Число таких попыток не ограничено, как у нынешних
   транзиентных сбоев `qa run`.
-- **Сигналы и страховочный срок.** На время прогона SIGTERM поднимает исключение с кодом 143,
-  SIGINT — `KeyboardInterrupt`; страховочный срок coordinator-а — `execution_deadline` квитанции
-  плюс grace и 60 секунд. Coordinator шлёт `qa.stop`, ждёт конца прогона (grace плюс 60 секунд),
+- **Сигналы и страховочный срок.** SIGINT и SIGTERM, пришедшие во время вызова `qa.run`,
+  coordinator откладывает до квитанции: брошенный вызов оставил бы runtime прогон без владельца.
+  После квитанции SIGTERM поднимает исключение с кодом 143, SIGINT — `KeyboardInterrupt`;
+  страховочный срок coordinator-а — `execution_deadline` квитанции плюс grace и 60 секунд. Coordinator шлёт `qa.stop`, ждёт конца прогона (grace плюс 60 секунд),
   записывает частичное evidence в `qa-lane/attempts`, освобождает lane и поднимает сигнал снова.
   Восстановление владельца очищенного или снятого lease останавливает его живой прогон до
   возврата dispatch в `approved`.

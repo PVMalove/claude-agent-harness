@@ -528,6 +528,7 @@ impl Supervisor {
                 "stop_grace_seconds": admitted.limits.stop_grace_seconds,
             },
         });
+        hooks_reach("qa.run:admitted")?;
         let execution = self.qa_intent(&mut connection, request, &qa, &admitted, &launch)?;
         hooks_reach("qa.run:intent")?;
         let engine = self.engine(admitted.checked.plan.engine);

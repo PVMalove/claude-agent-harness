@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -63,6 +63,31 @@ class QaTerminated(SystemExit):
 
 def _terminate(signum: int, frame: object) -> None:
     raise QaTerminated(128 + signum)
+
+
+@contextmanager
+def _signals_held(main: bool) -> Iterator[None]:
+    """Hold SIGINT and SIGTERM until the block ends, then raise the first one that came.
+
+    ``qa.run`` answers with its receipt once the run is launched, and ``qa.stop`` stops only a run
+    that has its receipt: a coordinator that left the call earlier would leave the runtime a run
+    nobody stops."""
+    if not main:
+        yield
+        return
+    held: list[int] = []
+
+    def hold(signum: int, frame: object) -> None:
+        held.append(signum)
+
+    previous = {signum: signal.signal(signum, hold) for signum in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        if held:
+            raise KeyboardInterrupt if held[0] == signal.SIGINT else QaTerminated(128 + held[0])
 
 
 def container_brief(dispatch: Mapping[str, object]) -> bool:
@@ -141,24 +166,26 @@ class RuntimeQaPolicy:
 
     def _execute(self, execution_id: str, payload: JsonObject) -> JsonObject:
         """``qa.run`` and the wait for its end. SIGINT, SIGTERM and the coordinator's backstop
-        past the run's deadline stop the run with ``qa.stop``; the wait for its end keeps the
-        evidence of the commands that ran. ``interrupted`` keeps a signal to raise again."""
+        past the run's deadline stop the run with ``qa.stop``; a signal that comes during
+        ``qa.run`` is held until its receipt. The wait for the end keeps the evidence of the
+        commands that ran. ``interrupted`` keeps a signal to raise again."""
         from .runtime_client import RuntimeClient
 
         main = threading.current_thread() is threading.main_thread()
         previous = signal.signal(signal.SIGTERM, _terminate) if main else None
         try:
             try:
-                receipt = (
-                    RuntimeClient(self.repo)
-                    .call(
-                        "qa.run",
-                        operation_id=execution_id,
-                        payload=payload,
-                        fencing_token=self.fencing_token,
+                with _signals_held(main):
+                    receipt = (
+                        RuntimeClient(self.repo)
+                        .call(
+                            "qa.run",
+                            operation_id=execution_id,
+                            payload=payload,
+                            fencing_token=self.fencing_token,
+                        )
+                        .result
                     )
-                    .result
-                )
                 deadline = datetime.fromisoformat(str(receipt["execution_deadline"]))
                 left = (deadline - datetime.now(UTC)).total_seconds()
                 ended = self._wait(execution_id, left + self._grace() + BACKSTOP_SECONDS)
