@@ -10,6 +10,7 @@ pub mod argv;
 pub mod facts;
 pub mod ops;
 pub mod plan;
+pub mod policy;
 mod scripted;
 
 use std::io::Read;
