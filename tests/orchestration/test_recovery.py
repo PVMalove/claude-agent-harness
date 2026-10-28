@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -580,6 +581,284 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
         # The historical handoff must not freeze legitimate post-startup writer progress.
         self._developer_commit("continued")
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_cli_rewind_preserves_files_missing_from_blocked_tooling_report(
+        self,
+    ) -> None:
+        self._configure_preserved_recovery()
+        batch = self._create_batch(allowed_paths=["services/**"])
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        pending = self.worktree / "services/pending.py"
+        pending.parent.mkdir(exist_ok=True)
+        pending.write_text("VALUE = 'unfinished'\n", encoding="utf-8")
+        original = pending.read_bytes()
+        self._submit(
+            brief["dispatch_id"],
+            self._base_report(
+                brief,
+                "developer",
+                outcome="blocked",
+                commit_sha=brief["snapshot_commit"],
+                checks_run=self._checks(brief, "not_run"),
+                blockers={"status": "present", "details": "native sandbox denied IPC"},
+                tooling_blocker={
+                    "tool": "native-sandbox",
+                    "command": "python -m pytest",
+                    "message": "Operation not permitted",
+                },
+            ),
+        )
+        immutable = self._records() / "reports" / f"{brief['dispatch_id']}.json"
+        original_report = immutable.read_bytes()
+        self._decide(batch["batch_id"], "retry", reason_category="tooling")
+        with self.assertRaisesRegex(coordinator.CoordinatorError, "not listed"):
+            coordinator.preflight_dispatch(
+                self._args(
+                    batch=batch["batch_id"],
+                    role="developer",
+                    purpose="work",
+                    runtime="claude",
+                    worktree=str(self.worktree),
+                    candidate_commit=None,
+                )
+            )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ORCHESTRATION_ROOT / "coordinator.py"),
+                "--repo",
+                str(self.repo),
+                "batch",
+                "rewind",
+                "--batch",
+                batch["batch_id"],
+                "--to",
+                "developer",
+                "--approved-by",
+                "Malove",
+                "--approved-at",
+                self.APPROVED_AT,
+                "--note",
+                "preserve inspected blocked work after repairing IPC",
+                "--preserved-commit",
+                brief["snapshot_commit"],
+                "--preserved-file",
+                "services/pending.py",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        renewed = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self.assertEqual(renewed["snapshot_commit"], brief["snapshot_commit"])
+        self.assertEqual(
+            renewed["preserved_progress"]["files"]["services/pending.py"]["sha256"],
+            hashlib.sha256(original).hexdigest(),
+        )
+        self.assertEqual(immutable.read_bytes(), original_report)
+        self._start(renewed["dispatch_id"])
+        self.assertEqual(pending.read_bytes(), original)
+        self.assertEqual(immutable.read_bytes(), original_report)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_abandoned_batch_keeps_blocked_writer_preservation_valid(self) -> None:
+        batch = self._create_batch(allowed_paths=["services/**"])
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        self._submit(
+            brief["dispatch_id"],
+            self._base_report(
+                brief,
+                "developer",
+                outcome="blocked",
+                commit_sha=brief["snapshot_commit"],
+                checks_run=self._checks(brief, "not_run"),
+                blockers={"status": "present", "details": "IPC unavailable"},
+            ),
+        )
+        immutable = self._records() / "reports" / f"{brief['dispatch_id']}.json"
+        original_report = immutable.read_bytes()
+        coordinator.rewind_batch(
+            self._args(
+                batch=batch["batch_id"],
+                to="developer",
+                preserved_commit=brief["snapshot_commit"],
+                preserved_file=[],
+                note="preserve the stopped writer boundary",
+                **self._approval(),
+            )
+        )
+        coordinator.abandon_batch(
+            self._args(
+                batch=batch["batch_id"],
+                reason="operator ended the recovered batch",
+                **self._approval(),
+            )
+        )
+
+        self.assertEqual(self._batch_record(batch["batch_id"])["state"], "abandoned")
+        self.assertEqual(immutable.read_bytes(), original_report)
+        self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+
+    def test_reported_writer_preservation_refuses_unapproved_or_foreign_files(
+        self,
+    ) -> None:
+        for scenario, message in (
+            ("missing-file", "does not match all pending"),
+            ("extra-file", "does not match all pending"),
+            ("outside", "dirty files exceed"),
+            ("wrong-head", "exact commit"),
+            ("failed-report", "blocked report"),
+            ("symlink", "symlink"),
+            ("policy", "explicit human approval"),
+        ):
+            with self.subTest(scenario=scenario):
+                self._configure_preserved_recovery()
+                batch = self._create_batch(allowed_paths=["services/**"])
+                self._accepted_architect(batch["batch_id"])
+                brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+                self._start(brief["dispatch_id"])
+                pending = self.worktree / "services/pending.py"
+                pending.parent.mkdir(exist_ok=True)
+                pending.write_text("unfinished\n", encoding="utf-8")
+                self._submit(
+                    brief["dispatch_id"],
+                    self._base_report(
+                        brief,
+                        "developer",
+                        outcome="failed" if scenario == "failed-report" else "blocked",
+                        commit_sha=brief["snapshot_commit"],
+                        checks_run=self._checks(brief, "not_run"),
+                        blockers={"status": "present", "details": "IPC unavailable"},
+                    ),
+                )
+                files = ["services/pending.py"]
+                commit = brief["snapshot_commit"]
+                if scenario == "missing-file":
+                    files = []
+                elif scenario == "extra-file":
+                    files.append("services/absent.py")
+                elif scenario == "outside":
+                    (self.worktree / "foreign.py").write_text("foreign\n")
+                    files.append("foreign.py")
+                elif scenario == "wrong-head":
+                    commit = _git(self.worktree, "rev-parse", "HEAD^")
+                elif scenario == "symlink":
+                    pending.unlink()
+                    pending.symlink_to(self.repo / "README.md")
+                before = self._ledger_bytes()
+                status = _git(self.worktree, "status", "--porcelain")
+
+                with self.assertRaisesRegex(coordinator.CoordinatorError, message):
+                    coordinator.rewind_batch(
+                        self._args(
+                            batch=batch["batch_id"],
+                            to="developer",
+                            preserved_commit=commit,
+                            preserved_file=files,
+                            note="preserve inspected blocked progress",
+                            approved_by="policy:auto"
+                            if scenario == "policy"
+                            else "Malove",
+                            approved_at=self.APPROVED_AT,
+                        )
+                    )
+
+                self.assertEqual(self._ledger_bytes(), before)
+                self.assertEqual(_git(self.worktree, "status", "--porcelain"), status)
+                self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
+            self.tearDown()
+            self.setUp()
+
+    def test_reported_writer_preservation_refuses_completed_or_accepted_work(
+        self,
+    ) -> None:
+        for outcome in ("completed", "blocked"):
+            with self.subTest(outcome=outcome):
+                batch = self._create_batch(allowed_paths=["services/**"])
+                self._accepted_architect(batch["batch_id"])
+                brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+                self._start(brief["dispatch_id"])
+                candidate, changed = self._developer_commit("finished")
+                self._submit(
+                    brief["dispatch_id"],
+                    self._developer_report(brief, candidate, changed, outcome=outcome),
+                )
+                if outcome == "blocked":
+                    self._decide(
+                        batch["batch_id"],
+                        "accept-conditional",
+                        infrastructure_failure=True,
+                        note="infrastructure failed after finished work",
+                    )
+                pending = self.worktree / "services/pending.py"
+                pending.write_text("unfinished\n", encoding="utf-8")
+                before = self._ledger_bytes()
+
+                with self.assertRaisesRegex(
+                    coordinator.CoordinatorError, "blocked report"
+                ):
+                    coordinator.rewind_batch(
+                        self._args(
+                            batch=batch["batch_id"],
+                            to="developer",
+                            preserved_commit=candidate,
+                            preserved_file=["services/pending.py"],
+                            note="cannot replace accepted work",
+                            **self._approval(),
+                        )
+                    )
+
+                self.assertEqual(self._ledger_bytes(), before)
+            self.tearDown()
+            self.setUp()
+
+    def test_reported_writer_handoff_refuses_changes_after_preservation(self) -> None:
+        batch = self._create_batch(allowed_paths=["services/**"])
+        self._accepted_architect(batch["batch_id"])
+        brief = self._dispatch(batch["batch_id"], "developer")["brief"]
+        self._start(brief["dispatch_id"])
+        pending = self.worktree / "services/pending.py"
+        pending.parent.mkdir(exist_ok=True)
+        pending.write_text("unfinished\n", encoding="utf-8")
+        self._submit(
+            brief["dispatch_id"],
+            self._base_report(
+                brief,
+                "developer",
+                outcome="blocked",
+                commit_sha=brief["snapshot_commit"],
+                checks_run=self._checks(brief, "not_run"),
+                blockers={"status": "present", "details": "IPC unavailable"},
+            ),
+        )
+        coordinator.rewind_batch(
+            self._args(
+                batch=batch["batch_id"],
+                to="developer",
+                preserved_commit=brief["snapshot_commit"],
+                preserved_file=["services/pending.py"],
+                note="continue inspected blocked work",
+                **self._approval(),
+            )
+        )
+        pending.write_text("changed after approval\n", encoding="utf-8")
+        before = self._ledger_bytes()
+
+        with self.assertRaisesRegex(
+            coordinator.CoordinatorError, "changed after human approval"
+        ):
+            self._propose(batch["batch_id"], "developer")
+
+        self.assertEqual(self._ledger_bytes(), before)
         self.assertTrue(coordinator.validate_ledger(self._args())["valid"])
 
     def test_preserved_handoff_refuses_drift_at_each_launch_boundary(self) -> None:
