@@ -38,18 +38,14 @@ _SKIPPED_DESTS = frozenset({"help", "repo", "state_dir"})
 
 @dataclass(frozen=True)
 class _Target:
-    """Целевая подкоманда и её server-side safety metadata.
-
-    ``reversibility`` controls confirmation wording. ``mutates`` independently marks commands
-    that can write ledger evidence or other project state, including commands whose result is
-    reversible.
-    """
+    """Целевая подкоманда координатора: путь CLI, заголовок, группа меню, класс обратимости и признак записи состояния проекта."""
 
     key: str
     path: tuple[str, ...]
     title: str
     group: str
     reversibility: Reversibility
+    # The same mutation slot as `CatalogEntry.mutates`.
     mutates: bool = False
 
 

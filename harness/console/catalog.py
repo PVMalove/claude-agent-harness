@@ -66,12 +66,7 @@ _REPO = "repo"
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """Запись команды и её server-side safety metadata.
-
-    ``reversibility`` describes the confirmation UX. ``mutates`` is a separate execution
-    boundary: a command can be reversible while still writing a cache, ledger record, or
-    generated project file, so those commands must still be serialized by the console server.
-    """
+    """Запись команды в каталоге: параметры CLI с плейсхолдерами `{repo}` и `{<входное поле>}`, класс обратимости, целевая функция и признак записи состояния проекта."""
 
     key: str
     title: str
@@ -82,7 +77,9 @@ class CatalogEntry:
     # Runs `python` under the repository's dev environment (`.harness/.venv`: pytest, mypy, ...)
     # instead of the console's own interpreter - only for this repository's verification script.
     dev_environment: bool = False
-    # True when the command can write project state, including reversible caches or generated files.
+    # True when the command writes project state and takes the console server's one mutation slot.
+    # Reversibility only chooses the confirmation: a reversible command that writes a cache, a
+    # ledger record or a generated file is still serialized.
     mutates: bool = False
 
     @property

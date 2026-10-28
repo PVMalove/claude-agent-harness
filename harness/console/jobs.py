@@ -7,6 +7,11 @@ output fragments, starting at zero. Each snapshot contains the next bounded batc
 cursor; ``done`` means execution and replay ended. Subscriptions own no execution task. A job keeps
 a bounded output, and ``truncated`` marks the cut. Jobs live until server exit, except that only
 the newest finished ones are kept.
+
+A project runs one mutating job at a time. A start refused for it is ``busy`` with the running
+job's ``job_id``; ``busy`` without ``job_id`` means the running-job limit. Reads start beside a
+mutation. ``job.cancel`` stops the command and its descendants: the job ends ``cancelled``, or with
+its own exit code when the command ended before the stop reached it.
 """
 
 from __future__ import annotations
@@ -208,9 +213,12 @@ def job_request_type(raw: str) -> str | None:
 class JobService:
     """One server's job admission, command execution, bounded output and independent readers.
 
-    The mutation slot is deliberately owned by this server instance. ``ConsoleServer`` acquires
-    the project's ``Discovery`` lock before exposing a ``JobService``, so two externally reachable
-    services for one project cannot run concurrently.
+    The mutation slot belongs to this server instance. ``ConsoleServer`` acquires the project's
+    ``Discovery`` lock before exposing a ``JobService``, so every client of a project shares one
+    slot. Processes outside the server (the CLI, a coordinator run directly) are serialized by the
+    ledger lock that ``ledger_lock.py`` reports. ``ledger-lock-status`` stays a read beside a
+    running mutation, while ``ledger-release-lock`` is ``busy`` like any other mutation: the slot
+    holder may own the lock, and a live owner is never released.
     """
 
     def __init__(
