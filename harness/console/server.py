@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import logging
 import secrets
 
 from .discovery import Discovery
+from .jobs import JobService, job_request_type
 from .snapshots import SnapshotService, busy, respond
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +24,8 @@ CLOSE_TIMEOUT = 0.5
 READ_CHUNK = 16384
 MESSAGE_LIMIT = 65536
 MAX_UNFINISHED_REQUESTS = 4
+# A subscription stays unfinished while its job runs, so it never takes a request slot.
+MAX_SUBSCRIPTIONS = 4
 
 # This independent logger never propagates protocol headers, even under root DEBUG.
 _PROTOCOL_LOGGER = logging.Logger("harness.console.protocol")
@@ -48,13 +51,13 @@ class ConsoleServer:
         repo: Path,
         *,
         idle_grace_seconds: float = 30,
-        active_jobs: Callable[[], int] = lambda: 0,
         snapshots: SnapshotService | None = None,
+        jobs: JobService | None = None,
     ) -> None:
         self.repo = repo.resolve()
         self._snapshots = snapshots or SnapshotService(self.repo)
+        self._jobs = jobs or JobService(self.repo)
         self._idle_grace = idle_grace_seconds
-        self._active_jobs = active_jobs
         self._clients = 0
         self._idle_task: asyncio.Task[None] | None = None
         self._listener: asyncio.Server | None = None
@@ -322,6 +325,7 @@ class ConsoleServer:
 
         send_lock = asyncio.Lock()
         requests: set[asyncio.Task[None]] = set()
+        subscriptions: set[asyncio.Task[None]] = set()
         closing_at: float | None = None
         try:
             while True:
@@ -334,14 +338,20 @@ class ConsoleServer:
                         except UnicodeDecodeError:
                             protocol.send_close(1007, "Invalid UTF-8")
                             continue
-                        if len(requests) >= MAX_UNFINISHED_REQUESTS:
+                        job_type = job_request_type(raw)
+                        pending, limit = (
+                            (subscriptions, MAX_SUBSCRIPTIONS)
+                            if job_type == "job.subscribe"
+                            else (requests, MAX_UNFINISHED_REQUESTS)
+                        )
+                        if len(pending) >= limit:
                             protocol.send_text(busy(raw).encode())
                             continue
                         request = asyncio.create_task(
-                            self._answer(raw, protocol, writer, send_lock)
+                            self._answer(raw, job_type, protocol, writer, send_lock)
                         )
-                        requests.add(request)
-                        request.add_done_callback(requests.discard)
+                        pending.add(request)
+                        request.add_done_callback(pending.discard)
                     elif event.opcode in (Opcode.TEXT, Opcode.BINARY, Opcode.CONT):
                         protocol.send_close(1003, "No application protocol")
                 async with send_lock:
@@ -362,29 +372,51 @@ class ConsoleServer:
                     return
                 protocol.receive_data(data)
         finally:
-            for request in requests:
+            unfinished = requests | subscriptions
+            for request in unfinished:
                 request.cancel()
-            await asyncio.gather(*requests, return_exceptions=True)
+            await asyncio.gather(*unfinished, return_exceptions=True)
 
     async def _answer(
         self,
         raw: str,
+        job_type: str | None,
         protocol: ServerProtocol,
         writer: asyncio.StreamWriter,
         send_lock: asyncio.Lock,
     ) -> None:
         """Answer one request frame beside the pump, so a slow check never stalls Ping or Close."""
-        reply = await respond(raw, self._snapshots)
         try:
-            async with send_lock:
-                if protocol.close_expected():
-                    return
-                protocol.send_text(reply.encode())
-                if await self._flush_websocket(protocol, writer):
-                    writer.close()
+            if job_type is not None:
+                async with contextlib.aclosing(self._jobs.replies(raw)) as replies:
+                    async for reply in replies:
+                        if not await self._send_reply(
+                            reply, protocol, writer, send_lock
+                        ):
+                            return
+            else:
+                await self._send_reply(
+                    await respond(raw, self._snapshots), protocol, writer, send_lock
+                )
         except Exception:
             # A reply that cannot be sent ends the connection; the pump sees the closed stream.
             writer.close()
+
+    async def _send_reply(
+        self,
+        reply: str,
+        protocol: ServerProtocol,
+        writer: asyncio.StreamWriter,
+        send_lock: asyncio.Lock,
+    ) -> bool:
+        async with send_lock:
+            if protocol.close_expected():
+                return False
+            protocol.send_text(reply.encode())
+            if await self._flush_websocket(protocol, writer):
+                writer.close()
+                return False
+        return True
 
     async def _exit_when_idle(self) -> None:
         """Close once no client and no job has been present for the grace period."""
@@ -393,7 +425,7 @@ class ConsoleServer:
         idle_since = loop.time()
         while True:
             await asyncio.sleep(poll)
-            if self._clients or self._active_jobs():
+            if self._clients or self._jobs.active_count:
                 idle_since = loop.time()
             elif loop.time() - idle_since >= self._idle_grace:
                 asyncio.create_task(self.close())
@@ -417,6 +449,7 @@ class ConsoleServer:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            await self._jobs.close()
         finally:
             try:
                 if self._discovery is not None:

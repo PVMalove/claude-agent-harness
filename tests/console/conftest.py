@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture
+def project(tmp_path: Path) -> Path:
+    """An empty Git repository for the console server tests."""
+    repo = tmp_path / "project"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    return repo
 
 
 @pytest.fixture(autouse=True)

@@ -99,6 +99,12 @@ class CatalogEntry:
                     names.append(name)
         return tuple(names)
 
+    def accepts(self, values: Mapping[str, str]) -> bool:
+        """Проверяет, что значения заданы ровно для входных полей команды и ни одно не пустое."""
+        return set(values) == set(self.inputs) and all(
+            value.strip() for value in values.values()
+        )
+
     def cli_argv(
         self, repo: Path, values: Mapping[str, str] | None = None
     ) -> list[str]:

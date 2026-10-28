@@ -179,6 +179,25 @@ class CoordinatorCommand:
         """Определяет, требует ли команда координатора подтверждения перед выполнением."""
         return self.reversibility is not Reversibility.REVERSIBLE
 
+    def available(self, repo: Path) -> bool:
+        """Проверяет, что в репозитории есть скрипт координатора."""
+        return (repo / _COORDINATOR_SCRIPT).is_file()
+
+    def accepts(self, values: Mapping[str, str]) -> bool:
+        """Проверяет, что значения заданы только для объявленных полей, обязательные поля
+        заполнены, а значения полей с `choices` взяты из допустимых."""
+        if set(values) - {field.dest for field in self.fields}:
+            return False
+        for field in self.fields:
+            raw = values.get(field.dest, "")
+            lines = raw.splitlines() if field.repeatable else [raw]
+            chosen = [line.strip() for line in lines if line.strip()]
+            if field.required and not chosen:
+                return False
+            if field.choices is not None and set(chosen) - set(field.choices):
+                return False
+        return True
+
     def cli_argv(
         self, repo: Path, values: Mapping[str, str] | None = None
     ) -> list[str]:

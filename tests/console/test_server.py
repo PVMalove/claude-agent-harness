@@ -29,14 +29,6 @@ from harness.console.snapshots import (
 from tests.console.test_snapshots import FakeClock
 
 
-@pytest.fixture
-def project(tmp_path: Path) -> Path:
-    repo = tmp_path / "project"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    return repo
-
-
 def test_server_dependencies_are_exact_dev_pins_only() -> None:
     config = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
     assert config["project"]["dependencies"] == []
@@ -866,24 +858,6 @@ def test_idle_server_exits_after_grace_and_removes_discovery(project: Path) -> N
         assert discovery_path(project).exists()
         await asyncio.wait_for(server.wait_closed(), 3)
         assert not discovery_path(project).exists()
-
-    asyncio.run(scenario())
-
-
-def test_active_job_keeps_server_alive_until_it_finishes(project: Path) -> None:
-    async def scenario() -> None:
-        jobs = 1
-        server = ConsoleServer(
-            project, idle_grace_seconds=0.2, active_jobs=lambda: jobs
-        )
-        await server.start()
-        try:
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(asyncio.shield(server.wait_closed()), 0.8)
-            jobs = 0
-            await asyncio.wait_for(server.wait_closed(), 3)
-        finally:
-            await server.close()
 
     asyncio.run(scenario())
 
