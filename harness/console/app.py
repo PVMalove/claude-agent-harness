@@ -52,7 +52,7 @@ class HarnessConsoleApp(App[None]):
     """Accepts an injected `command_runner`, threaded through to the screens that run catalog
     commands (Harness, Orchestration, Repo Map), so a Pilot test never spawns a real process."""
 
-    TITLE = " Harness console "
+    TITLE = f" {brand.PRODUCT} "
     BINDINGS = [
         Binding("f1", "open_help", "Справка"),
         Binding("f2", "toggle_language", "RU/EN"),

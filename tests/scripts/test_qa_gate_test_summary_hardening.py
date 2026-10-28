@@ -15,7 +15,7 @@ SCRIPT = (
     Path(__file__).resolve().parents[2]
     / "skills"
     / "first-party"
-    / "pvmalove"
+    / "engineering"
     / "qa-gate"
     / "scripts"
     / "test_summary.py"

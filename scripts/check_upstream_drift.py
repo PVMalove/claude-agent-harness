@@ -154,7 +154,7 @@ def main() -> int:
         else:
             capabilities = json.loads(CAPABILITIES_FILE.read_text(encoding="utf-8"))
             overridden = set(
-                capabilities.get("pvmalove-suite", {}).get("overrides", {}).keys()
+                capabilities.get("engineering-suite", {}).get("overrides", {}).keys()
             )
             safe = sorted(name for name in changed if name not in overridden)
             needs_review = sorted(name for name in changed if name in overridden)
@@ -165,7 +165,7 @@ def main() -> int:
                 )
             if needs_review:
                 print(
-                    f"\nNeeds manual review before resync (pvmalove-suite overrides these by name, "
+                    f"\nNeeds manual review before resync (engineering-suite overrides these by name, "
                     f"docs/adr/0001 - compare against the new upstream version before deciding whether "
                     f"the first-party fork needs rebasing): {', '.join(needs_review)}"
                 )

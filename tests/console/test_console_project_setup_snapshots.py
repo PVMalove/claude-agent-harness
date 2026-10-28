@@ -75,7 +75,7 @@ def _prepared(repo: Path, kind: str) -> Path:
     if kind == "update":
         (repo / ".harness").mkdir()
         (repo / ".harness/harness.lock").write_text(
-            json.dumps({"capabilities": ["pvmalove-suite"], "files": {}}),
+            json.dumps({"capabilities": ["engineering-suite"], "files": {}}),
             encoding="utf-8",
         )
     elif kind == "adopt":

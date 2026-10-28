@@ -100,7 +100,7 @@ def test_capability_removal_preserves_modified_and_unknown_adapters(repo: Path) 
     unknown = path.with_name("local.py")
     unknown.write_text("unknown\n")
     result = harness(
-        "update", str(repo), "--capability", "pvmalove-suite", "--force-managed-files"
+        "update", str(repo), "--capability", "engineering-suite", "--force-managed-files"
     )
     assert result.returncode == 0, result.stderr
     assert path.read_text() == "local edit\n"

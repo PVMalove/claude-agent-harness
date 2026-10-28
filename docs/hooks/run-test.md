@@ -8,7 +8,7 @@
 
 ## 2. Полное описание
 
-`run-test.sh` — не hook события: установка `pvmalove-suite` копирует его в
+`run-test.sh` — не hook события: установка `engineering-suite` копирует его в
 `.claude/hooks/run-test.sh`, но не подключает в `settings.local.json`. Скрипт запускает один тест,
 выбранный по идентификатору, внутри bubblewrap, поэтому тест и все его дочерние процессы не могут
 изменить production-код, `.git` и конфигурацию runner. Сам скрипт только находит Python и корень
@@ -36,7 +36,7 @@
 по флагам, а некорректное значение `init` отклоняет до записи файлов:
 
 ```bash
-harness init . --capability pvmalove-suite \
+harness init . --capability engineering-suite \
   --test-path 'tests/**' \
   --test-runner-command 'python3 -m unittest {test_id}'
 ```

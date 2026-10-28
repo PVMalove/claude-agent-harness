@@ -294,4 +294,4 @@ extra-prompt-file и ручная строка Retry reason больше не н
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/implement/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/implement/SKILL.md)

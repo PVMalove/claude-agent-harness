@@ -32,7 +32,7 @@ def repo(tmp_path: Path) -> Path:
     root = tmp_path / "project"
     root.mkdir()
     git(root, "init", "-b", "main")
-    result = harness("init", str(root), "--capability", "pvmalove-suite")
+    result = harness("init", str(root), "--capability", "engineering-suite")
     assert result.returncode == 0, result.stderr
     return root
 

@@ -12,7 +12,7 @@ def _text(path: Path) -> str:
     return " ".join(path.read_text(encoding="utf-8").split())
 
 
-SKILL = ROOT / "skills" / "first-party" / "pvmalove" / "qa-gate" / "SKILL.md"
+SKILL = ROOT / "skills" / "first-party" / "engineering" / "qa-gate" / "SKILL.md"
 DESCRIPTION = ROOT / "docs" / "skills" / "qa-gate.md"
 HOOK = ROOT / "harness" / "project" / "hooks" / "qa-gate-state.py"
 

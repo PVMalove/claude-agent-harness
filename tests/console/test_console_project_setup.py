@@ -138,7 +138,7 @@ def test_installed_capability_stays_selected_and_the_flow_shows_its_stages(
     subprocess.run(["git", "init", "-q", str(second)], check=True)
     (second / ".harness/harness.lock").write_text(
         json.dumps(
-            {"capabilities": ["pvmalove-suite", "backend-orchestration"], "files": {}}
+            {"capabilities": ["engineering-suite", "backend-orchestration"], "files": {}}
         ),
         encoding="utf-8",
     )
@@ -817,7 +817,7 @@ def test_a_lock_with_a_wrong_files_field_leaves_nothing_of_the_previous_run(
     project = _git_project(tmp_path / "backend")
     (project / ".harness").mkdir()
     (project / ".harness/harness.lock").write_text(
-        '{"capabilities": ["pvmalove-suite"], "files": []}', encoding="utf-8"
+        '{"capabilities": ["engineering-suite"], "files": []}', encoding="utf-8"
     )
 
     async def scenario() -> tuple[dict[str, object], str, bool]:
@@ -1008,7 +1008,7 @@ def test_git_and_the_snapshot_comparison_never_run_in_the_ui_thread(
 
     import harness.bin.harness as cli
 
-    project = _locked_project(tmp_path / "backend", "pvmalove-suite")
+    project = _locked_project(tmp_path / "backend", "engineering-suite")
     ui_thread = threading.get_ident()
     in_ui: list[str] = []
     calls: list[str] = []
@@ -1255,7 +1255,7 @@ def test_the_screen_follows_the_mockup_composition_at_every_size(
     assert seen.status == "✔ " + words["status"][0]
     assert "▶" in seen.stage
     assert seen.command == shlex.join(
-        ["harness", "init", str(project.resolve()), "--capability", "pvmalove-suite"]
+        ["harness", "init", str(project.resolve()), "--capability", "engineering-suite"]
     )
     assert seen.summary.startswith(f"✔ {words['summary'][0]}")
     assert seen.install
@@ -1330,7 +1330,7 @@ def test_y_copies_the_git_init_hint_and_then_the_installation_command(
     hint, command = asyncio.run(scenario())
     assert hint == "git init"
     assert command == shlex.join(
-        ["harness", "init", str(project.resolve()), "--capability", "pvmalove-suite"]
+        ["harness", "init", str(project.resolve()), "--capability", "engineering-suite"]
     )
 
 

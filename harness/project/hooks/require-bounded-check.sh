@@ -2,7 +2,7 @@
 # PreToolUse(Bash): blocks an unbounded full test/quality-gate run — one of the project's own
 # qa_gate_commands (.harness/project.json), or a full-suite pytest/unittest invocation with no
 # node-id/specific test — unless it already goes through the bounded-output wrapper
-# (skills/first-party/pvmalove/qa-gate/scripts/test_summary.py), which redacts and truncates output
+# (skills/first-party/engineering/qa-gate/scripts/test_summary.py), which redacts and truncates output
 # instead of dumping a raw multi-thousand-line run into the transcript. A point run of a single test
 # (a pytest node-id containing "::", or a fully-qualified unittest test path) is never blocked.
 # The shared shell parser keeps argv boundaries: literal text arguments, comments and inert

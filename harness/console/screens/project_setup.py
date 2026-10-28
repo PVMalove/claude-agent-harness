@@ -47,7 +47,7 @@ from .diagnostics import render_report, styled_log
 from .configuration import ConfirmConfiguration
 from .harness import CommandFormScreen
 
-DEFAULT_CAPABILITY = "pvmalove-suite"
+DEFAULT_CAPABILITY = "engineering-suite"
 _STAGES = (
     "Выбор проекта",
     "Предварительные проверки",

@@ -11,7 +11,7 @@ Backend-работа несколькими ролями нуждается в �
 
 ## Действующий контракт
 
-`backend-orchestration` — явная capability поверх `pvmalove-suite`. Она поставляет роли,
+`backend-orchestration` — явная capability поверх `engineering-suite`. Она поставляет роли,
 конфигурацию, coordinator, ledger, Context Builder и clean-room QA. Ядро в
 `harness/orchestration/` владеет batch, dispatch, approval, immutable audit, проверкой policy,
 очередью QA и решением о публикации. Ledger хранит versioned lifecycle и не переписывает

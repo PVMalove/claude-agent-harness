@@ -58,7 +58,7 @@ class UninstallTests(unittest.TestCase):
             "init",
             str(self.repo),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             "--capability",
             "backend-orchestration",
         )

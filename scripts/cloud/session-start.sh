@@ -35,7 +35,7 @@ if [ ! -f "$repo/.harness/harness.lock" ]; then
   fi
   # Cloud threads work on claude/... branches, so the pattern is set once, at install time.
   "$python_bin" "$repo/harness/bin/harness.py" init "$repo" --project-type software --stack python \
-    --capability pvmalove-suite --capability backend-orchestration \
+    --capability engineering-suite --capability backend-orchestration \
     --base-branch master --language ru \
     --pr-base-branch master --branch-pattern "^(feature/issue-[0-9]+-.+|claude/.+)" \
     --qa-gate-command "make verify" </dev/null >/dev/null

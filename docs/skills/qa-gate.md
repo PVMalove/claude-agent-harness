@@ -51,4 +51,4 @@ background: false
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/qa-gate/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/qa-gate/SKILL.md)

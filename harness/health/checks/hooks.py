@@ -14,6 +14,7 @@ from ..hook_settings import (
     HOOK_CATALOG,
     HookSpec,
     RuntimeAdapter,
+    canonical_integration_id,
     critical_wiring,
     is_wired,
     merge_hooks,
@@ -26,12 +27,13 @@ from ..project_files import (
     HOOK_PROFILES,
     INTEGRATIONS_REL,
     JSON_READ_ERRORS,
+    canonical_capability,
     hook_policy_problems,
 )
 
 GROUP = "hooks"
 CHECK_ID = "hooks.policy"
-HOOK_CAPABILITIES = ("pvmalove-suite", BACKEND_ORCHESTRATION_CAPABILITY)
+HOOK_CAPABILITIES = ("engineering-suite", BACKEND_ORCHESTRATION_CAPABILITY)
 HOOKS_DIR = ".claude/hooks"
 TEST_AUTHOR_AGENT = ".claude/agents/test-author.md"
 DEFAULT_SOURCE = "по умолчанию"
@@ -46,7 +48,10 @@ def recorded_managed_entries(repo: Path, identifier: str) -> list[str] | None:
         return None
     entries = data.get("integrations") if isinstance(data, dict) else None
     for entry in entries if isinstance(entries, list) else []:
-        if isinstance(entry, dict) and entry.get("id") == identifier:
+        if (
+            isinstance(entry, dict)
+            and canonical_integration_id(entry.get("id")) == identifier
+        ):
             recorded = entry.get("managed_entries")
             if isinstance(recorded, list) and all(
                 isinstance(item, str) for item in recorded
@@ -287,12 +292,14 @@ def check_policy(context: HealthContext) -> CheckResult:
             status="skipped",
             message=context.no_lock_message(),
         )
-    if not set(context.lock.get("capabilities") or []) & set(HOOK_CAPABILITIES):
+    if not {
+        canonical_capability(name) for name in context.lock.get("capabilities") or []
+    } & set(HOOK_CAPABILITIES):
         return CheckResult(
             id=CHECK_ID,
             group=GROUP,
             status="skipped",
-            message="hooks проекта не ставились (нет pvmalove-suite и backend-orchestration)",
+            message="hooks проекта не ставились (нет engineering-suite и backend-orchestration)",
         )
     fails: list[str] = []
     warns: list[str] = []

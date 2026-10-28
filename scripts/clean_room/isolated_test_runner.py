@@ -1,6 +1,6 @@
 """Изолированный runner одного теста: сценарий clean-room из `scripts/test_clean_room.py`.
 
-Свежий проект pvmalove-suite без сборки и без БД получает `test_paths` и `test_runner` флагами
+Свежий проект engineering-suite без сборки и без БД получает `test_paths` и `test_runner` флагами
 `init`, проходит `harness health`, а `.claude/hooks/run-test.sh` вызывается напрямую из шелла, без
 Claude Code и без guard: так проверяются ограничения уровня процесса. Если probe подтверждает
 песочницу, атаки теста на production, `.git` и конфигурацию runner проваливаются, а хэши защищённых
@@ -224,7 +224,7 @@ def _direct_execute(project: Path) -> Execute:
 
 
 def _install(project: Path) -> Path:
-    """A fresh pvmalove-suite project with src/, unittest tests and the runner settings."""
+    """A fresh engineering-suite project with src/, unittest tests and the runner settings."""
     project.mkdir(parents=True)
     run_step(["git", "init", "-q"], cwd=project, check=True)
     run_ok(
@@ -233,7 +233,7 @@ def _install(project: Path) -> Path:
             "init",
             str(project),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             "--base-branch",
             "main",
             "--language",
@@ -255,7 +255,7 @@ def _install(project: Path) -> Path:
         (project / ".harness" / "project.json").read_text(encoding="utf-8")
     )
     if config.get("test_runner") != {"command": RUNNER_COMMAND}:
-        sys.exit("pvmalove-suite init did not write the --test-* flags to project.json")
+        sys.exit("engineering-suite init did not write the --test-* flags to project.json")
     fill_agents(project)
     _write_project_files(project)
     run_health(project)
@@ -279,9 +279,9 @@ def _write_project_files(project: Path) -> None:
 def _check_shipped_files(project: Path) -> None:
     """Everything the installer must scaffold for the runner and the test author is present."""
     if not (project / ".claude" / "hooks" / "run-test.sh").is_file():
-        sys.exit("pvmalove-suite init did not scaffold run-test.sh")
+        sys.exit("engineering-suite init did not scaffold run-test.sh")
     if not (project / ".harness" / "health" / "isolated_runner.py").is_file():
-        sys.exit("pvmalove-suite init did not ship .harness/health/isolated_runner.py")
+        sys.exit("engineering-suite init did not ship .harness/health/isolated_runner.py")
     for relative in (
         ".claude/agents/test-author.md",
         ".claude/hooks/test-author-guard.py",
@@ -290,10 +290,10 @@ def _check_shipped_files(project: Path) -> None:
         ".harness/skills/tdd/SKILL.md",
     ):
         if not (project / relative).is_file():
-            sys.exit(f"pvmalove-suite init did not ship {relative}")
+            sys.exit(f"engineering-suite init did not ship {relative}")
     registry = project / ".harness" / "skills" / "REGISTRY.md"
     if "| `tdd` | `.harness/skills/tdd` |" not in registry.read_text(encoding="utf-8"):
-        sys.exit("pvmalove-suite init did not register first-party tdd")
+        sys.exit("engineering-suite init did not register first-party tdd")
 
 
 def _hook(

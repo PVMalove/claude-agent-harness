@@ -35,6 +35,12 @@ ORCHESTRATION_CONFIG_REL = Path(".harness/orchestration.json")
 ORCHESTRATION_SCHEMA_REL = Path(".harness/orchestration/orchestration.schema.json")
 BACKEND_ORCHESTRATION_CAPABILITY = "backend-orchestration"
 
+
+def canonical_capability(name: str) -> str:
+    """Accept installed snapshots and CLI commands using the former suite name."""
+    return "engineering-suite" if name == "pvmalove-suite" else name
+
+
 PROJECT_JSON_REQUIRED_FIELDS = (
     "language",
     "base_branch",
@@ -788,7 +794,7 @@ def _hook_escalation_problems(
 
 
 def validate_project_json(repo: Path, problems: list[str]) -> None:
-    """.harness/project.json не является обязательным (создаётся только pvmalove-suite), поэтому его
+    """.harness/project.json не является обязательным (создаётся только engineering-suite), поэтому его
     отсутствие не считается ошибкой; проверяется только при его наличии.
     Структура синхронизируется с `harness/project/project.schema.json`: редактор и мастер консоли
     проверяют эту схему (`harness/configuration_schema.py`, без зависимости `jsonschema`), а здесь

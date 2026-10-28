@@ -977,7 +977,7 @@ class ConfigurationScreen(ConsoleShell):
         try:
             if not (self.repo / ".harness/project.schema.json").is_file():
                 raise ValueError(
-                    "Сначала установите pvmalove-suite или backend-orchestration через меню подключения проекта"
+                    "Сначала установите engineering-suite или backend-orchestration через меню подключения проекта"
                 )
             ConfigurationStore(self.repo).recover()
             self.draft = ConfigurationDraft.load(self.repo, names)

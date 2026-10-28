@@ -2,8 +2,8 @@
 
 ## Интерактивный скилл `/architect`
 
-Источник: [`SKILL.md`](../../skills/first-party/pvmalove/architect/SKILL.md).
-Поставляется в `pvmalove-suite`, запускается вручную и возвращает brief решения в чате:
+Источник: [`SKILL.md`](../../skills/first-party/engineering/architect/SKILL.md).
+Поставляется в `engineering-suite`, запускается вручную и возвращает brief решения в чате:
 границы, варианты, рекомендацию, компромиссы, риски, критерии приёмки и первые TDD-seams.
 Скилл изучает свидетельства и не изменяет файлы репозитория.
 

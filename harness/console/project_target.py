@@ -12,6 +12,7 @@ from typing import Literal
 
 from harness.configuration_schema import PACKAGE
 from harness.health.model import JsonObject
+from harness.health.project_files import canonical_capability
 
 from .catalog import CatalogEntry, Reversibility
 
@@ -84,10 +85,12 @@ def inspect_target(value: str) -> ProjectTarget:
                 not isinstance(lock.get("files", {}), dict)
                 or not isinstance(capabilities, list)
                 or not all(isinstance(x, str) for x in capabilities)
-                or any(name not in known for name in capabilities)
+                or any(canonical_capability(name) not in known for name in capabilities)
             ):
                 raise ValueError
-            selected = tuple(capabilities)
+            selected = tuple(
+                dict.fromkeys(canonical_capability(name) for name in capabilities)
+            )
     except (ValueError, KeyError, TypeError):
         raise ValueError(LOCK_BROKEN) from None
     conflicts = tuple(
@@ -115,7 +118,7 @@ def inspect_target(value: str) -> ProjectTarget:
 _LABELS = {
     "project-foundation": "Основа — небольшой набор инструкций и навыков",
     "mattpocock-suite": "Upstream — полный закреплённый набор навыков",
-    "pvmalove-suite": "Workflow — задачи, QA и ручная настройка project.json",
+    "engineering-suite": "Workflow — задачи, QA и ручная настройка project.json",
     "backend-orchestration": "Backend — workflow и роли; добавляет orchestration.json",
 }
 
@@ -147,7 +150,7 @@ def capability_summary(name: str) -> str:
 _DETAILS = {
     "project-foundation": "Добавляет инструкции и базовые навыки. Не создаёт project.json и orchestration.json; подходит, когда нужен только общий каркас.",
     "mattpocock-suite": "Полный закреплённый upstream-набор навыков. Не содержит workflow project.json; подходит, когда нужны только навыки.",
-    "pvmalove-suite": "Workflow задач, QA и code-review; создаёт project.json. Нужен для мастера project.json; без ролей оркестрации.",
+    "engineering-suite": "Workflow задач, QA и code-review; создаёт project.json. Нужен для мастера project.json; без ролей оркестрации.",
     "backend-orchestration": "Всё из workflow плюс роли и координатор; добавляет orchestration.json. Выбирайте для backend-проекта с автоматизацией этапов.",
 }
 

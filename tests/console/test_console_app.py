@@ -353,7 +353,7 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
 
         banner = brand.BannerInfo(
             version="9.9.9",
-            capabilities=("pvmalove-suite",),
+            capabilities=("engineering-suite",),
             repo="~/work/app",
             branch="feature/issue-7-x",
         )
@@ -380,7 +380,7 @@ def test_dashboard_shows_the_mark_and_the_banner_beside_it(tmp_path: Path) -> No
     assert mark.splitlines() == list(brand.LOGO)
     assert f"{brand.PRODUCT} 9.9.9" in info
     # The installed Harness (its capabilities) lives on the Harness card, not beside the mark.
-    assert "pvmalove-suite" in card and "pvmalove-suite" not in info
+    assert "engineering-suite" in card and "engineering-suite" not in info
     assert "~/work/app" in info
     assert "ветка feature/issue-7-x · commit не определён" in info
 

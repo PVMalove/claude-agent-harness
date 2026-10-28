@@ -3,7 +3,7 @@
 Модуль capability `backend-orchestration` ведёт один тикет через роли
 `architect → developer → code-review → qa → publish`. Он даёт проверяемые переходы, неизменяемые
 brief и report, независимый review и clean-room QA. Capability выбирают явно: она расширяет
-`pvmalove-suite`, а проекты без неё не меняются.
+`engineering-suite`, а проекты без неё не меняются.
 
 Оркестрация — не автономный scheduler. Coordinator — это человек или назначенная им управляющая
 сессия: он создаёт batch, утверждает каждый dispatch и принимает или отклоняет каждый report согласно

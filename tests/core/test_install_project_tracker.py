@@ -70,8 +70,8 @@ def _harness(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def _install(repo: Path, *flags: str) -> None:
-    """Установить pvmalove-suite без интерактивного ввода."""
-    result = _harness("init", str(repo), "--capability", "pvmalove-suite", *flags)
+    """Установить engineering-suite без интерактивного ввода."""
+    result = _harness("init", str(repo), "--capability", "engineering-suite", *flags)
     assert result.returncode == 0, result.stderr
 
 
@@ -88,7 +88,7 @@ class _CharacterDevice:
 def _install_interactively(
     repo: Path, answers: list[str], monkeypatch: pytest.MonkeyPatch, *flags: str
 ) -> list[str]:
-    """Установить pvmalove-suite в терминале с ответами `answers`; вернуть заданные вопросы."""
+    """Установить engineering-suite в терминале с ответами `answers`; вернуть заданные вопросы."""
     prompts: list[str] = []
     replies = iter(answers)
 
@@ -99,7 +99,7 @@ def _install_interactively(
     monkeypatch.setattr(harness_cli, "_stdin_is_terminal", lambda: True)
     monkeypatch.setattr("builtins.input", answer)
     args = harness_cli.parser().parse_args(
-        ["init", str(repo), "--capability", "pvmalove-suite", *PROJECT_FLAGS, *flags]
+        ["init", str(repo), "--capability", "engineering-suite", *PROJECT_FLAGS, *flags]
     )
     assert args.func(args) == 0
     assert next(replies, None) is None, "not every answer was asked for"
@@ -282,7 +282,7 @@ def test_install_takes_no_origin_defaults_for_another_hosted_type(
     repo = _repo(tmp_path / "repo", remote=GITLAB_REMOTE)
 
     result = _harness(
-        "init", str(repo), "--capability", "pvmalove-suite", "--tracker-type", "github"
+        "init", str(repo), "--capability", "engineering-suite", "--tracker-type", "github"
     )
 
     assert result.returncode == 0, result.stderr
@@ -325,7 +325,7 @@ def test_install_rejects_an_invalid_tracker_flag_before_writing(
     """Проверить, что некорректный флаг трекера отклоняется до записи файлов и не печатается."""
     repo = _repo(tmp_path / "repo")
 
-    result = _harness("init", str(repo), "--capability", "pvmalove-suite", flag, value)
+    result = _harness("init", str(repo), "--capability", "engineering-suite", flag, value)
 
     assert result.returncode == 2
     assert flag in result.stderr
@@ -353,7 +353,7 @@ def test_install_leaves_out_an_incomplete_tracker_given_by_flags(
     repo = _repo(tmp_path / "repo")
 
     result = _harness(
-        "init", str(repo), "--capability", "pvmalove-suite", "--tracker-type", "gitlab"
+        "init", str(repo), "--capability", "engineering-suite", "--tracker-type", "gitlab"
     )
 
     assert result.returncode == 0, result.stderr

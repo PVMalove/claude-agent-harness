@@ -426,12 +426,22 @@ CODEX_SUPPORT: frozenset[EventTool] = frozenset(
     {("PreToolUse", "Bash"), ("Stop", "*"), ("SubagentStop", "*")}
 )
 
+
+def canonical_integration_id(identifier: object) -> object:
+    """Keep managed hook fingerprints usable across the suite rename."""
+    if identifier == "pvmalove-suite-hooks":
+        return "engineering-suite-hooks"
+    if identifier == "pvmalove-suite-codex-hooks":
+        return "engineering-suite-codex-hooks"
+    return identifier
+
+
 ADAPTERS: tuple[RuntimeAdapter, ...] = (
     RuntimeAdapter(
         runtime="claude",
         config=".claude/settings.local.json",
         template="settings.local.json.tmpl",
-        integration_id="pvmalove-suite-hooks",
+        integration_id="engineering-suite-hooks",
         verify=(
             "Open a fresh Claude Code session and confirm a guarded action "
             "(e.g. a direct commit to the base branch) is blocked by the wired hooks."
@@ -442,7 +452,7 @@ ADAPTERS: tuple[RuntimeAdapter, ...] = (
         runtime="codex",
         config=".codex/hooks.json",
         template="codex-hooks.json.tmpl",
-        integration_id="pvmalove-suite-codex-hooks",
+        integration_id="engineering-suite-codex-hooks",
         verify=(
             "Trust the project hooks layer in the second coding runtime, open a fresh session "
             "and confirm a guarded action (e.g. a direct commit to the base branch) is blocked."

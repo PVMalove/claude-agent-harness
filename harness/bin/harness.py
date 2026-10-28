@@ -69,6 +69,7 @@ from harness.health.checks.hooks import recorded_managed_entries
 from harness.health.hook_settings import (
     ADAPTERS,
     RuntimeAdapter,
+    canonical_integration_id,
     critical_wiring,
     merge_hooks,
     template_digests,
@@ -76,6 +77,7 @@ from harness.health.hook_settings import (
 from harness.health.model import JsonObject
 from harness.health.project_files import (
     BACKEND_ORCHESTRATION_CAPABILITY,
+    canonical_capability,
     DISCOVERY_LINKS,
     INTEGRATIONS_REL,
     JSON_READ_ERRORS,
@@ -178,7 +180,7 @@ def capabilities() -> dict[str, JsonObject]:
 
 def selected_capabilities(names: list[str] | None) -> list[str]:
     """Нормализовать и проверить переданный список возможностей."""
-    selected = names or [DEFAULT_CAPABILITY]
+    selected = [canonical_capability(name) for name in names or [DEFAULT_CAPABILITY]]
     catalog = capabilities()
     unknown = [name for name in selected if name not in catalog]
     if unknown:
@@ -209,6 +211,7 @@ def resolve_capability_skills(
 
     Обрабатывает наследование `extends`, переопределения `overrides` и дополнения `additions`.
     """
+    name = canonical_capability(name)
     if name in _stack:
         fail(f"capability cycle: {' -> '.join(_stack + (name,))}")
     definition = catalog[name]
@@ -249,6 +252,7 @@ def resolve_capability_resources(
 
     Ресурсы сохраняют свой относительный путь при развёртывании в проектной директории `.harness/`.
     """
+    name = canonical_capability(name)
     if name in _stack:
         fail(f"capability cycle: {' -> '.join(_stack + (name,))}")
     definition = catalog[name]
@@ -533,7 +537,10 @@ def record_integration(
     entries = [
         entry
         for entry in existing
-        if not (isinstance(entry, dict) and entry.get("id") == identifier)
+        if not (
+            isinstance(entry, dict)
+            and canonical_integration_id(entry.get("id")) == identifier
+        )
     ]
     entry: JsonObject = {
         "id": identifier,
@@ -636,7 +643,7 @@ def print_diff(result: JsonObject) -> None:
             print(f"  {key}: {path}")
 
 
-PVMALOVE_CAPABILITY = "pvmalove-suite"
+ENGINEERING_CAPABILITY = "engineering-suite"
 PROJECT_TEMPLATE_DIR = PACKAGE / "project"
 HARNESS_RUNTIME_GITIGNORE = """# Generated harness runtime data
 .sandboxes/
@@ -974,10 +981,10 @@ def _install_hook_config(
     return written
 
 
-def scaffold_pvmalove_extras(
+def scaffold_engineering_extras(
     repo: Path, args: argparse.Namespace, *, orchestration_enabled: bool = False
 ) -> list[str]:
-    """Развернуть дополнительные файлы и настройки для набора возможностей pvmalove-suite."""
+    """Развернуть дополнительные файлы и настройки для набора возможностей engineering-suite."""
     written: list[str] = []
     differing: list[Path] = []
     force_seed = getattr(args, "force_seed_files", False) or getattr(
@@ -1129,13 +1136,13 @@ def scaffold_pvmalove_extras(
 def seed_capability_extras(
     repo: Path, args: argparse.Namespace, selected: list[str]
 ) -> list[str]:
-    """Развернуть seed-файлы pvmalove-suite или backend-orchestration; [] — ни одна не выбрана."""
+    """Развернуть seed-файлы engineering-suite или backend-orchestration; [] — ни одна не выбрана."""
     if (
-        PVMALOVE_CAPABILITY not in selected
+        ENGINEERING_CAPABILITY not in selected
         and BACKEND_ORCHESTRATION_CAPABILITY not in selected
     ):
         return []
-    return scaffold_pvmalove_extras(
+    return scaffold_engineering_extras(
         repo,
         args,
         orchestration_enabled=BACKEND_ORCHESTRATION_CAPABILITY in selected,
@@ -1418,58 +1425,58 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
-def _add_pvmalove_args(sub: argparse.ArgumentParser) -> None:
-    """Добавить аргументы командной строки, специфичные для набора возможностей pvmalove-suite."""
+def _add_engineering_args(sub: argparse.ArgumentParser) -> None:
+    """Добавить аргументы командной строки, специфичные для набора возможностей engineering-suite."""
     sub.add_argument(
         "--language",
         choices=["ru", "en"],
         default=None,
-        help="pvmalove-suite: .harness/project.json language",
+        help="engineering-suite: .harness/project.json language",
     )
     sub.add_argument(
         "--pr-base-branch",
         default=None,
-        help="pvmalove-suite: release/base branch for epic integration branches (default: --base-branch)",
+        help="engineering-suite: release/base branch for epic integration branches (default: --base-branch)",
     )
     sub.add_argument(
-        "--branch-pattern", default=None, help="pvmalove-suite: branch name regex"
+        "--branch-pattern", default=None, help="engineering-suite: branch name regex"
     )
     sub.add_argument(
         "--qa-gate-command",
         action="append",
         default=None,
-        help="pvmalove-suite: repeatable, in run order",
+        help="engineering-suite: repeatable, in run order",
     )
     sub.add_argument(
         "--tracker-type",
         choices=TRACKER_TYPES,
         default=None,
-        help="pvmalove-suite: .harness/project.json tracker type (default: derived from origin)",
+        help="engineering-suite: .harness/project.json tracker type (default: derived from origin)",
     )
     sub.add_argument(
         "--tracker-host",
         type=_matching_arg(TRACKER_HOST_PATTERN, TRACKER_HOST_RULE),
         default=None,
-        help="pvmalove-suite: tracker web host with an optional :port (default: from origin)",
+        help="engineering-suite: tracker web host with an optional :port (default: from origin)",
     )
     sub.add_argument(
         "--tracker-project",
         type=_matching_arg(TRACKER_PROJECT_PATTERN, TRACKER_PROJECT_RULE),
         default=None,
-        help="pvmalove-suite: full tracker project path with subgroups (default: from origin)",
+        help="engineering-suite: full tracker project path with subgroups (default: from origin)",
     )
     sub.add_argument(
         "--test-path",
         action="append",
         type=_matching_arg(TEST_PATH_PATTERN, TEST_PATH_RULE),
         default=None,
-        help="pvmalove-suite: repeatable test_paths glob, the test author's write zone (default: none)",
+        help="engineering-suite: repeatable test_paths glob, the test author's write zone (default: none)",
     )
     sub.add_argument(
         "--test-runner-command",
         type=_test_runner_command,
         default=None,
-        help="pvmalove-suite: test_runner command, split without a shell; one argument is "
+        help="engineering-suite: test_runner command, split without a shell; one argument is "
         "{test_id} (default: none)",
     )
 
@@ -1670,7 +1677,7 @@ def parser() -> argparse.ArgumentParser:
     init.add_argument("--stack", action="append", help="informational project stack")
     init.add_argument("--capability", action="append")
     init.add_argument("--base-branch", default="main")
-    _add_pvmalove_args(init)
+    _add_engineering_args(init)
     init.set_defaults(func=cmd_init)
 
     diff = commands.add_parser("diff")
@@ -1683,7 +1690,7 @@ def parser() -> argparse.ArgumentParser:
     adopt.add_argument("repo")
     adopt.add_argument("--capability", action="append")
     adopt.add_argument("--replace-conflicts", action="store_true")
-    _add_pvmalove_args(adopt)
+    _add_engineering_args(adopt)
     adopt.set_defaults(func=cmd_adopt)
 
     update = commands.add_parser("update")
@@ -1707,7 +1714,7 @@ def parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help="overwrite only this seed file (path from the project root); repeatable",
     )
-    _add_pvmalove_args(update)
+    _add_engineering_args(update)
     update.set_defaults(func=cmd_update)
 
     registry = commands.add_parser("registry")

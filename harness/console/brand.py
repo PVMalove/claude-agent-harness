@@ -13,6 +13,8 @@ from string import hexdigits
 from dataclasses import dataclass
 from pathlib import Path
 
+from harness.health.project_files import canonical_capability
+
 from . import json_fields
 
 THEME_NAME = "harness-warm"
@@ -74,7 +76,7 @@ def shell_css(css: str) -> str:
     return _SHELL_TOKEN.sub(lambda match: SHELL_TOKENS[match.group(1)], css)
 
 
-# The harness mark: an "H" in a ring - the harness holding the parts together.
+# The Harness next mark: an H followed by a forward chevron.
 LOGO = (
     "   ╭─━━━━─╮   ",
     " ╭─╯ ┃  ┃ ╰─╮ ",
@@ -82,8 +84,10 @@ LOGO = (
     " ╰─╮ ┃  ┃ ╭─╯ ",
     "   ╰─━━━━─╯   ",
 )
+MARK = " * H› "
 
-PRODUCT = "Agent Harness console"
+
+PRODUCT = "Harness next console"
 
 # Status is never colour alone: every state also has a glyph (accessibility, monochrome terminals).
 STATUS_ICONS = {"ok": "✔", "warn": "⚠", "fail": "✖", "skipped": "○"}
@@ -163,7 +167,12 @@ def _installed_lock(repo: Path) -> dict[str, object]:
 
 def installed_capabilities(repo: Path) -> tuple[str, ...]:
     """The capabilities recorded in `.harness/harness.lock`; empty when there is no readable lock."""
-    return tuple(json_fields.strings(_installed_lock(repo).get("capabilities")))
+    return tuple(
+        dict.fromkeys(
+            canonical_capability(name)
+            for name in json_fields.strings(_installed_lock(repo).get("capabilities"))
+        )
+    )
 
 
 def _short_commit(value: object) -> str | None:
@@ -229,7 +238,7 @@ def collect_banner(repo: Path, version: str) -> BannerInfo:
     installed_version = lock.get("package_version")
     return BannerInfo(
         version=version,
-        capabilities=tuple(json_fields.strings(lock.get("capabilities"))),
+        capabilities=installed_capabilities(repo),
         repo=display_path(repo),
         branch=current_branch(repo),
         project_commit=project_commit(repo),

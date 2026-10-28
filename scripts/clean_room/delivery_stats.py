@@ -22,7 +22,7 @@ def run(ctx: SimpleNamespace) -> None:
     # delivery-stats reads local session logs and git history and must never invent a figure: a
     # missing rate card, a missing runtime log and an unattributable Codex session each have to come
     # back as "no data" rather than as zero.
-    # Run the resource from an actually installed pvmalove-suite harness, not the source tree.
+    # Run the resource from an actually installed engineering-suite harness, not the source tree.
     # This keeps delivery-stats coverage on the installed-harness seam it promises to users.
     stats_cli = pv_project / ".harness" / "reporting" / "delivery_stats.py"
     if not stats_cli.is_file():

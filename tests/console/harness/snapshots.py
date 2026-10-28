@@ -164,7 +164,7 @@ def prepare_repo(repo: Path, state: str) -> None:
                     "package_version": "0.0.1"
                     if state == "version-mismatch"
                     else VERSION,
-                    "capabilities": ["pvmalove-suite"],
+                    "capabilities": ["engineering-suite"],
                     "files": {"AGENTS.md": {}},
                 }
             ),

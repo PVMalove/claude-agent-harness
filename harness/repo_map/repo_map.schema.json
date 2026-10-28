@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Agent Harness Repo Map",
+  "title": "Harness next Repo Map",
   "type": "object",
   "required": [
     "schema_version",

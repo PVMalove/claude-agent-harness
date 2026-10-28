@@ -137,14 +137,14 @@ def _run(*args: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 
 
 def _project(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """Создать и инициализировать тестовый репозиторий с возможностью pvmalove-suite."""
+    """Создать и инициализировать тестовый репозиторий с возможностью engineering-suite."""
     home = tmp_path / "home"
     home.mkdir()
     env = _environment(home)
     repo = tmp_path / "project"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True, env=env)
-    init = _run("init", str(repo), "--capability", "pvmalove-suite", env=env)
+    init = _run("init", str(repo), "--capability", "engineering-suite", env=env)
     assert init.returncode == 0, init.stderr
     return repo, env
 

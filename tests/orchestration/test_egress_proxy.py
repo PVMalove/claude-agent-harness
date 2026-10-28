@@ -423,7 +423,7 @@ class PayloadDeliveryTests(unittest.TestCase):
         )
 
     def test_a_project_without_orchestration_does_not_receive_the_proxy(self) -> None:
-        payload = harness_cli.package_files(["pvmalove-suite"])
+        payload = harness_cli.package_files(["engineering-suite"])
 
         self.assertFalse([path for path in payload if "/container/" in path])
 

@@ -30,7 +30,7 @@ files = [
     "scripts/check_private_terms.py",
     "scripts/diff_coverage.py",
     "scripts/build_parser_bundle.py",
-    "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py",
+    "skills/first-party/engineering/qa-gate/scripts/test_summary.py",
 ]
 # Imports `tree_sitter*`, which only the parser bundle provides: checked by the separate mypy run in
 # the `repo-map-bundle` CI job with the bundle installed (ADR 0008).

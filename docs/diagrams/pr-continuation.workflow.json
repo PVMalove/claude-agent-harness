@@ -74,7 +74,7 @@
       "sources": [
         { "path": "harness/orchestration/workflow/integration.py", "line": 1080, "end_line": 1156, "label": "integration_next" },
         { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 15, "end_line": 24, "label": "шаги next" },
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 23, "end_line": 27, "label": "шаг 3" }
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 23, "end_line": 27, "label": "шаг 3" }
       ]
     },
     {
@@ -87,8 +87,8 @@
       "width": 148,
       "sources": [
         { "path": "harness/orchestration/workflow/integration.py", "line": 1108, "end_line": 1128, "label": "unavailable, resolver-open" },
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 16, "end_line": 16, "label": "unavailable" },
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 25, "end_line": 25, "label": "resolver-open" }
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 16, "end_line": 16, "label": "unavailable" },
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 25, "end_line": 25, "label": "resolver-open" }
       ]
     },
     {
@@ -101,7 +101,7 @@
       "tag": "отдельный вопрос",
       "width": 136,
       "sources": [
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 31, "end_line": 32, "label": "шаги 5–6" },
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 31, "end_line": 32, "label": "шаги 5–6" },
         { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 62, "end_line": 65, "label": "подтверждение пары" }
       ]
     },
@@ -115,7 +115,7 @@
       "tag": "--body-file",
       "width": 136,
       "sources": [
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 32, "end_line": 36, "label": "шаг 6" }
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 32, "end_line": 36, "label": "шаг 6" }
       ]
     },
     {
@@ -145,7 +145,7 @@
       "sources": [
         { "path": "harness/orchestration/workflow/local_qa.py", "line": 281, "end_line": 487, "label": "integration_local_qa" },
         { "path": "harness/docs/backend-orchestration.md", "line": 2118, "end_line": 2137, "label": "local-qa" },
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 40, "end_line": 40, "label": "шаг 6a" }
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 40, "end_line": 40, "label": "шаг 6a" }
       ]
     },
     {
@@ -172,7 +172,7 @@
       "width": 136,
       "sources": [
         { "path": "harness/orchestration/workflow/integration.py", "line": 1139, "end_line": 1180, "label": "verify, handoff" },
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 42, "end_line": 43, "label": "шаги 6a–7" }
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 42, "end_line": 43, "label": "шаги 6a–7" }
       ]
     },
     {
@@ -187,7 +187,7 @@
       "sources": [
         { "path": "harness/orchestration/workflow/integration.py", "line": 1025, "end_line": 1077, "label": "_route_failure" },
         { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 25, "end_line": 45, "label": "правило провала" },
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 26, "end_line": 26, "label": "route-failure" }
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 26, "end_line": 26, "label": "route-failure" }
       ]
     },
     {
@@ -200,7 +200,7 @@
       "tag": "handoff пары",
       "width": 136,
       "sources": [
-        { "path": "skills/first-party/pvmalove/to-pull-requests/SKILL.md", "line": 43, "end_line": 43, "label": "шаг 7" },
+        { "path": "skills/first-party/engineering/to-pull-requests/SKILL.md", "line": 43, "end_line": 43, "label": "шаг 7" },
         { "path": "docs/adr/0017-pr-continuation-routing.md", "line": 66, "end_line": 72, "label": "ручной merge" }
       ]
     },

@@ -28,4 +28,4 @@ disable-model-invocation: true
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/grill-with-docs/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/grill-with-docs/SKILL.md)

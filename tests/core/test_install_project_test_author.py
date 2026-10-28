@@ -39,7 +39,7 @@ def _repo(path: Path) -> Path:
 
 
 def _init(repo: Path, *flags: str) -> subprocess.CompletedProcess[str]:
-    """Install pvmalove-suite without interactive prompts."""
+    """Install engineering-suite without interactive prompts."""
     return subprocess.run(
         [
             sys.executable,
@@ -47,7 +47,7 @@ def _init(repo: Path, *flags: str) -> subprocess.CompletedProcess[str]:
             "init",
             str(repo),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             *PROJECT_FLAGS,
             *flags,
         ],

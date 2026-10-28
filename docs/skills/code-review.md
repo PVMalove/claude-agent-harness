@@ -130,4 +130,4 @@ review назначается вместо delta в пяти случаях: к�
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/code-review/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/code-review/SKILL.md)

@@ -1,4 +1,4 @@
-# Релизы Agent Harness
+# Релизы Harness next
 
 ## Версия и состав
 

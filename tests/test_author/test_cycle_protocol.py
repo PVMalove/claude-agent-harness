@@ -8,18 +8,22 @@ import pytest
 
 import importlib
 
-isolated_test_runner = importlib.import_module("scripts.clean_room.isolated_test_runner")
+isolated_test_runner = importlib.import_module(
+    "scripts.clean_room.isolated_test_runner"
+)
 test_author_cycle = importlib.import_module("scripts.clean_room.test_author_cycle")
 
 ROOT = Path(__file__).resolve().parents[2]
 DEVELOPER = ROOT / "harness" / "orchestration" / "roles" / "developer.md"
 COMMON = ROOT / "harness" / "orchestration" / "roles" / "_common.md"
 AGENT = ROOT / "harness" / "project" / "agents" / "test-author.md"
-IMPLEMENT = ROOT / "skills" / "first-party" / "pvmalove" / "implement" / "SKILL.md"
+IMPLEMENT = ROOT / "skills" / "first-party" / "engineering" / "implement" / "SKILL.md"
 IMPLEMENT_DESCRIPTION = ROOT / "docs" / "skills" / "implement.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
-FAST_IMPLEMENT = ROOT / "skills" / "first-party" / "pvmalove" / "fast-implement" / "SKILL.md"
-TDD = ROOT / "skills" / "first-party" / "pvmalove" / "tdd" / "SKILL.md"
+FAST_IMPLEMENT = (
+    ROOT / "skills" / "first-party" / "engineering" / "fast-implement" / "SKILL.md"
+)
+TDD = ROOT / "skills" / "first-party" / "engineering" / "tdd" / "SKILL.md"
 GUIDE = ROOT / "harness" / "project" / "docs-agents" / "test-author.md"
 ROOT_GUIDE = ROOT / "docs" / "agents" / "test-author.md"
 
@@ -44,7 +48,7 @@ FULL_ROUTE_MARKERS = (
 )
 FULL_ROUTE_GUIDE_MARKERS = (
     "Полный маршрут `/implement`",
-    "test-author-preflight.sh\" --worktree",
+    'test-author-preflight.sh" --worktree',
     "`checkout_mismatch`",
     "`transport_unsupported`",
     "обычный TDD",
@@ -71,7 +75,13 @@ FAST_MARKERS = (
     "no dispatch and no ledger state",
 )
 SHORT_ROUTE_MARKERS = ("/fast-implement", "short route")
-AGENT_MARKERS = ("`status`", "needs_skeleton", "contract_gap", "failed assertion", "already Green")
+AGENT_MARKERS = (
+    "`status`",
+    "needs_skeleton",
+    "contract_gap",
+    "failed assertion",
+    "already Green",
+)
 GUIDE_MARKERS = (
     "needs_skeleton",
     "contract_gap",
@@ -119,7 +129,9 @@ def test_changelog_records_the_full_route_worktree_fix() -> None:
 
 
 def test_common_contract_points_to_the_cycle() -> None:
-    assert "Red-Green-Refactor cycle in `developer.md`" in " ".join(_text(COMMON).split())
+    assert "Red-Green-Refactor cycle in `developer.md`" in " ".join(
+        _text(COMMON).split()
+    )
 
 
 def test_guide_copies_are_identical() -> None:
@@ -127,7 +139,11 @@ def test_guide_copies_are_identical() -> None:
 
 
 def test_target_guide_does_not_point_at_repository_root_docs() -> None:
-    assert not [ref for ref in ("docs/hooks/", "docs/adr/", "docs/skills/") if ref in _text(GUIDE)]
+    assert not [
+        ref
+        for ref in ("docs/hooks/", "docs/adr/", "docs/skills/")
+        if ref in _text(GUIDE)
+    ]
 
 
 def test_cycle_scenario_passes_on_a_minimal_project(tmp_path: Path) -> None:
@@ -136,7 +152,9 @@ def test_cycle_scenario_passes_on_a_minimal_project(tmp_path: Path) -> None:
         (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
     (tmp_path / ".harness").mkdir()
     (tmp_path / ".harness" / "project.json").write_text("{}", encoding="utf-8")
-    test_author_cycle.verify_cycle(tmp_path, isolated_test_runner._direct_execute(tmp_path))
+    test_author_cycle.verify_cycle(
+        tmp_path, isolated_test_runner._direct_execute(tmp_path)
+    )
     assert not list((tmp_path / "src").glob("cyc_*.py"))
     assert not list((tmp_path / "tests").glob("cyc_*.py"))
 

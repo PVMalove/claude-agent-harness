@@ -487,7 +487,7 @@ def test_installed_sync_uses_real_fake_cli_without_orchestration(
             "init",
             str(remote_repo),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             "--qa-gate-command",
             "true",
         ],

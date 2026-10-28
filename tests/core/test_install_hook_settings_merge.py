@@ -26,7 +26,7 @@ def repo(tmp_path: Path) -> Path:
 
 
 def install(repo: Path) -> None:
-    result = harness("init", str(repo), "--capability", "pvmalove-suite")
+    result = harness("init", str(repo), "--capability", "engineering-suite")
     assert result.returncode == 0, result.stderr
 
 
@@ -106,8 +106,10 @@ def test_update_restores_removed_managed_entries_and_keeps_user_hook(
     assert merged["permissions"] == document["permissions"]
 
 
+@pytest.mark.parametrize("legacy_inventory", [False, True])
 def test_update_replaces_outdated_managed_entry_recorded_in_baseline(
     repo: Path,
+    legacy_inventory: bool,
 ) -> None:
     install(repo)
     document = load(repo)
@@ -119,11 +121,18 @@ def test_update_replaces_outdated_managed_entry_recorded_in_baseline(
     entry = next(
         item
         for item in inventory["integrations"]
-        if item["id"] == "pvmalove-suite-hooks"
+        if item["id"] == "engineering-suite-hooks"
     )
     entry["managed_entries"] = sorted(
         [*entry.get("managed_entries", []), entry_digest(event, matcher, outdated)]
     )
+    if legacy_inventory:
+        for item in inventory["integrations"]:
+            item["id"] = item["id"].replace("engineering-suite", "pvmalove-suite")
+        lock_path = repo / ".harness/harness.lock"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["capabilities"] = ["pvmalove-suite"]
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
     (repo / INTEGRATIONS).write_text(json.dumps(inventory, indent=2), encoding="utf-8")
 
     result = harness("update", str(repo))
@@ -131,6 +140,13 @@ def test_update_replaces_outdated_managed_entry_recorded_in_baseline(
     assert result.returncode == 0, result.stderr
     ((_, _, current),) = handlers(load(repo), "block-dangerous-git.sh")
     assert current["command"].startswith("bash ")
+    updated = json.loads((repo / INTEGRATIONS).read_text(encoding="utf-8"))
+    identifiers = [item["id"] for item in updated["integrations"]]
+    assert identifiers.count("engineering-suite-hooks") == 1
+    assert identifiers.count("engineering-suite-codex-hooks") == 1
+    assert not any(
+        identifier.startswith("pvmalove-suite") for identifier in identifiers
+    )
 
 
 def test_update_leaves_user_modified_managed_entry_untouched(repo: Path) -> None:
@@ -171,7 +187,7 @@ def test_install_merges_into_existing_user_settings(repo: Path, command: str) ->
     }
     path.write_text(json.dumps(user), encoding="utf-8")
 
-    result = harness(command, str(repo), "--capability", "pvmalove-suite")
+    result = harness(command, str(repo), "--capability", "engineering-suite")
 
     assert result.returncode == 0, result.stderr
     merged = load(repo)
@@ -235,7 +251,7 @@ def test_conflict_is_not_adopted_into_the_recorded_baseline(repo: Path) -> None:
     entry = next(
         item
         for item in inventory["integrations"]
-        if item["id"] == "pvmalove-suite-hooks"
+        if item["id"] == "engineering-suite-hooks"
     )
 
     assert entry_digest(event, matcher, handler) not in entry["managed_entries"]
@@ -355,7 +371,7 @@ def test_init_installs_the_second_runtime_adapter_from_the_same_scripts(
     entry = next(
         item
         for item in inventory["integrations"]
-        if item["id"] == "pvmalove-suite-codex-hooks"
+        if item["id"] == "engineering-suite-codex-hooks"
     )
     assert entry["kind"] == "hook"
     assert entry["runtimes"] == ["codex"]

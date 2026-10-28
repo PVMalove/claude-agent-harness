@@ -14,5 +14,5 @@
 
 Точный порядок шагов, входные условия и ограничения задаёт исходный `SKILL.md`. Эта страница служит русским указателем на закреплённую upstream-версию.
 
-В `pvmalove-suite` используется [first-party override](../diagnosing-bugs.md) с opt-in поиском
+В `engineering-suite` используется [first-party override](../diagnosing-bugs.md) с opt-in поиском
 прошлых фиксов через `harness memory search`. Vendor-снапшот остаётся неизменным.

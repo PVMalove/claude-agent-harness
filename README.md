@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/assets/harness-banner.svg" alt="Agent Harness — for coding agents" width="800">
+  <img src="./docs/assets/harness-banner.svg" alt="Harness next — for coding agents" width="800">
 </p>
 
 <p align="center">
@@ -10,11 +10,11 @@
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-9C958C?labelColor=34312E" alt="License: MIT"></a>
 </p>
 
-# Agent Harness
+# Harness next
 
 ## Портативный фреймворк для оркестрации ИИ-агентов (Claude Code, Codex).
 
-Harness — это единый набор скиллов, системных правил, hooks и контекстных документов, который одна команда разворачивает в любой целевой проект. Установка создаёт проверяемый независимый snapshot (capability): он работает через нативные механизмы агентов и живёт в проекте автономно, без привязки к исходному репозиторию.
+Harness next — это единый набор скиллов, системных правил, hooks и контекстных документов, который одна команда разворачивает в любой целевой проект. Установка создаёт проверяемый независимый snapshot (capability): он работает через нативные механизмы агентов и живёт в проекте автономно, без привязки к исходному репозиторию.
 
 Совместимость и стабильность полностью проверены для `Claude Code` и `Codex`.
 
@@ -23,21 +23,23 @@ Harness — это единый набор скиллов, системных п
 
  - project-foundation (По умолчанию) — лёгкая доменно-нейтральная база из 5 ключевых скиллов для старта.
  - mattpocock-suite — полная upstream-сборка (25 скиллов от Matt Pocock / aihero.dev), жестко привязанная к проверенному коммиту.
- - pvmalove-suite — продвинутый инженерный workflow. Сборка добавляет нативную привязку эпиков и тикетов, изолированную (namespaced) таксономию для триажа задач и двухосевое review. Она также добавляет генерацию PR через /to-pull-requests, настраиваемый язык вывода и строгий контроль качества через qa-gate.
+ - engineering-suite — продвинутый инженерный workflow. Сборка добавляет нативную привязку эпиков и тикетов, изолированную (namespaced) таксономию для триажа задач и двухосевое review. Она также добавляет генерацию PR через /to-pull-requests, настраиваемый язык вывода и строгий контроль качества через qa-gate.
  - backend-orchestration — специализированная сборка для распределенных систем. Сборка работает через систему специализированных ролей (Архитектор, Разработчик, QA и др.). Она оркестрирует эти роли для совместного проектирования микросервисов, DDD, CQRS и сложных паттернов взаимодействия (Sagas через MassTransit, Outbox/Inbox).
+
+Старое имя `pvmalove-suite` поддерживается как совместимый alias; при обновлении lock записывается `engineering-suite`.
 
 CONTEXT.md определяет архитектурные термины. Полное руководство по интеграции доступно в docs/.
 
 ## Архитектура
 
 `harness/CAPABILITIES.json` задаёт capability `project-foundation`, `mattpocock-suite`,
-`pvmalove-suite` и опциональную `backend-orchestration`. `harness init` разрешает выбранные скиллы
+`engineering-suite` и опциональную `backend-orchestration`. `harness init` разрешает выбранные скиллы
 из закреплённых каталогов `skills/vendor/` и `skills/first-party/`. Команда копирует их вместе с
 ресурсами в `.harness/` проекта и записывает lock. Корневой `docs/` и внутренние документы относятся
 к исходному репозиторию; установщик их не переносит. Установщик устанавливает проектные руководства,
 hooks, агентов и конфигурацию из отдельных шаблонов `harness/project/`.
 
-В `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
+В `engineering-suite` переопределены в `skills/first-party/engineering/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 [![Граница исходного харнесса и целевого проекта](./docs/diagrams/previews/harness-topology.architecture.png)](./docs/diagrams/harness-topology.architecture.html)
 
@@ -66,12 +68,12 @@ reports. Tree-sitter parser работает в отдельном worker-про
 - `project-foundation` — базовые `grilling`, `handoff`, `writing-for-agents`, `research`,
   `domain-modeling`;
 - `mattpocock-suite` — полный закреплённый upstream-набор;
-- `pvmalove-suite` — upstream-набор с переопределениями и дополнениями, перечисленными ниже;
-- `backend-orchestration` — `pvmalove-suite`, дополненный coordinator и ролями.
+- `engineering-suite` — upstream-набор с переопределениями и дополнениями, перечисленными ниже;
+- `backend-orchestration` — `engineering-suite`, дополненный coordinator и ролями.
 
 [docs/skills/](./docs/skills/README.md) содержит подробные описания на русском языке.
 
-### Собственные скиллы `pvmalove-suite`
+### Собственные скиллы `engineering-suite`
 
 | Скилл | Назначение |
 |---|---|
@@ -97,7 +99,7 @@ reports. Tree-sitter parser работает в отдельном worker-про
 
 ### Закреплённые upstream-скиллы `mattpocock-suite`
 
-`pvmalove-suite` заменяет скиллы, отмеченные знаком *, собственными версиями из таблицы выше.
+`engineering-suite` заменяет скиллы, отмеченные знаком *, собственными версиями из таблицы выше.
 
 | Скилл | Назначение |
 |---|---|
@@ -155,7 +157,7 @@ python bin\install-global.py --target-home $HOME --runtime codex --runtime claud
 существующему. Прямая установка в Git-репозиторий:
 
 ```bash
-python3 harness/bin/harness.py init /path/to/repository --capability pvmalove-suite \
+python3 harness/bin/harness.py init /path/to/repository --capability engineering-suite \
   --project-type software --stack python --base-branch main --language ru \
   --qa-gate-command "make test"
 python3 harness/bin/harness.py health /path/to/repository
@@ -164,7 +166,7 @@ python3 harness/bin/harness.py health /path/to/repository
 В PowerShell задайте путь и команды аналогично:
 
 ```powershell
-python harness\bin\harness.py init C:\path\to\repository --capability pvmalove-suite `
+python harness\bin\harness.py init C:\path\to\repository --capability engineering-suite `
   --project-type software --stack python --base-branch main --language ru `
   --qa-gate-command "python -m pytest"
 python harness\bin\harness.py health C:\path\to\repository
@@ -172,7 +174,7 @@ python harness\bin\harness.py health C:\path\to\repository
 
 Без `--capability` команда устанавливает доменно-нейтральную `project-foundation`.
 `mattpocock-suite` даёт полный закреплённый upstream-набор, а `backend-orchestration` добавляет
-coordinator и роли поверх `pvmalove-suite`. `harness diff` показывает изменения управляемого
+coordinator и роли поверх `engineering-suite`. `harness diff` показывает изменения управляемого
 snapshot, `harness update` обновляет его и сохраняет локальные правки.
 
 `harness uninstall` полностью удаляет харнесс из проекта. Без `--apply` команда только показывает
@@ -186,7 +188,7 @@ snapshot, `harness update` обновляет его и сохраняет ло�
 [`backend-orchestration.md`](./docs/backend-orchestration.md) — остаётся в исходном репозитории и в
 целевой проект не попадает. Агентам доставляются только их собственные контракты:
 `.harness/docs/project-memory.md` (контракт интерактивного поиска по памяти) и
-`.harness/docs/technical-english.md`, а при `pvmalove-suite` и `backend-orchestration` ещё и шаблоны
+`.harness/docs/technical-english.md`, а при `engineering-suite` и `backend-orchestration` ещё и шаблоны
 проектных руководств из `harness/project/docs-agents/`, которые разворачиваются как
 `docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`. `harness update`
 обновляет эти файлы. Для существующего проекта следуйте

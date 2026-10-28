@@ -89,4 +89,4 @@ advisory модели.
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/grilling/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/grilling/SKILL.md)

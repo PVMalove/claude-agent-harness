@@ -22,7 +22,7 @@ from scripts.verification.text_checks import normalized_text
 
 RETIRED_PATH_INVENTORY_TERM = re.compile(r"filtered\s+Repo\s+Map", re.IGNORECASE)
 PATH_INVENTORY_ROOTS = (
-    ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets",
+    ROOT / "skills" / "first-party" / "engineering" / "to-tickets",
     ROOT / "docs" / "agents",
     DOCS_AGENTS_TEMPLATE,
     ROOT / "docs" / "skills",
@@ -33,20 +33,21 @@ PATH_INVENTORY_ROOTS = (
 
 
 @dataclass(frozen=True)
-class PvmaloveSuite:
-    """Состав pvmalove-suite из CAPABILITIES.json: переопределённые и добавленные скиллы."""
+class EngineeringSuite:
+    """Состав engineering-suite из CAPABILITIES.json: переопределённые и добавленные скиллы."""
 
     overrides: frozenset[str]
     additions: frozenset[str]
 
 
-def load_pvmalove_suite() -> PvmaloveSuite:
-    """Прочитать состав pvmalove-suite из CAPABILITIES.json — источника правды для документации."""
-    suite = json.loads(CAPABILITIES.read_text(encoding="utf-8"))["pvmalove-suite"]
-    return PvmaloveSuite(
+def load_engineering_suite() -> EngineeringSuite:
+    """Прочитать состав engineering-suite из CAPABILITIES.json — источника правды для документации."""
+    suite = json.loads(CAPABILITIES.read_text(encoding="utf-8"))["engineering-suite"]
+    return EngineeringSuite(
         overrides=frozenset(suite["overrides"].keys()),
         additions=frozenset(
-            entry.removeprefix("first-party/pvmalove/") for entry in suite["additions"]
+            entry.removeprefix("first-party/engineering/")
+            for entry in suite["additions"]
         ),
     )
 
@@ -59,8 +60,8 @@ def _documented(pattern: str, text: str) -> set[str]:
 def check_docs_agents_mirror() -> None:
     """Проверить, что docs/agents/*.md совпадают с harness/project/docs-agents/*.md.
 
-    docs/agents — собственная копия файлов, которые scaffold_pvmalove_extras разворачивает в каждый
-    проект pvmalove-suite. Обе копии правятся вручную, поэтому расхождение ловится здесь.
+    docs/agents — собственная копия файлов, которые scaffold_engineering_extras разворачивает в каждый
+    проект engineering-suite. Обе копии правятся вручную, поэтому расхождение ловится здесь.
     """
     for template in sorted(DOCS_AGENTS_TEMPLATE.glob("*.md")):
         counterpart = ROOT / "docs" / "agents" / template.name
@@ -104,7 +105,7 @@ def check_no_retired_path_inventory_term() -> None:
 def check_docs_agents_enumeration() -> None:
     """Проверить перечисление docs/agents/{...}.md в README.md и harness-guide.md.
 
-    Оба документа вручную перечисляют файлы, которые разворачивает scaffold_pvmalove_extras. Однажды
+    Оба документа вручную перечисляют файлы, которые разворачивает scaffold_engineering_extras. Однажды
     harness-guide.md уже отсутствовал в собственном перечислении.
     """
     names = {path.stem for path in DOCS_AGENTS_TEMPLATE.glob("*.md")}
@@ -129,11 +130,11 @@ def _guide_section(pattern: str, missing: str) -> str:
 
 
 def check_pvmalove_override_docs_sync() -> None:
-    """Сверить таблицу раздела 7 harness-guide.md с pvmalove-suite.overrides.
+    """Сверить таблицу раздела 7 harness-guide.md с engineering-suite.overrides.
 
     Однажды wayfinder попал в overrides без строки в таблице.
     """
-    expected = set(load_pvmalove_suite().overrides)
+    expected = set(load_engineering_suite().overrides)
     section = _guide_section(
         r"\n## 7\. .*?\n(.*?)\n## ",
         "harness-guide.md: could not find section 7 (local customizations)",
@@ -141,17 +142,17 @@ def check_pvmalove_override_docs_sync() -> None:
     documented = _documented(r"^\| `([a-z0-9-]+)` \|", section)
     if documented != expected:
         sys.exit(
-            "harness-guide.md section 7 table is out of sync with pvmalove-suite overrides in "
+            "harness-guide.md section 7 table is out of sync with engineering-suite overrides in "
             f"CAPABILITIES.json: missing={sorted(expected - documented)} extra={sorted(documented - expected)}"
         )
 
 
 def check_pvmalove_additions_docs_sync() -> None:
-    """Сверить таблицу проектных скиллов harness-guide.md с pvmalove-suite.additions.
+    """Сверить таблицу проектных скиллов harness-guide.md с engineering-suite.additions.
 
     Однажды setup-labels попал в additions без строки в таблице.
     """
-    expected = set(load_pvmalove_suite().additions)
+    expected = set(load_engineering_suite().additions)
     section = _guide_section(
         r"\n### Проектные \(first-party, вне апстрима\)\n(.*?)\n---\n",
         "harness-guide.md: could not find the project-specific skill catalog table",
@@ -159,7 +160,7 @@ def check_pvmalove_additions_docs_sync() -> None:
     documented = _documented(r"^\| `([a-z0-9-]+)` \(skill\) \|", section)
     if documented != expected:
         sys.exit(
-            "harness-guide.md project-specific skill table is out of sync with pvmalove-suite "
+            "harness-guide.md project-specific skill table is out of sync with engineering-suite "
             f"additions in CAPABILITIES.json: missing={sorted(expected - documented)} extra={sorted(documented - expected)}"
         )
 
@@ -170,7 +171,7 @@ def _check_listed(
     """Сверить список имён в прозе документа с ожидаемым набором из CAPABILITIES.json."""
     match = re.search(pattern, text)
     if not match:
-        sys.exit(f"{doc}: no pvmalove-suite {kind} list found")
+        sys.exit(f"{doc}: no engineering-suite {kind} list found")
     documented = set(re.findall(r"`([a-z0-9-]+)`", match.group(1)))
     if documented != expected:
         sys.exit(
@@ -185,13 +186,13 @@ def check_pvmalove_suite_summary_sync() -> None:
     Однажды устаревшие счётчики «5 overrides, 1 addition» прожили три дня после правки только
     раздела 7.
     """
-    suite = load_pvmalove_suite()
+    suite = load_engineering_suite()
     for doc in (ROOT / "README.md", ROOT / "CONTEXT.md"):
         text = normalized_text(doc)
         _check_listed(
             doc,
             text,
-            r"переопределены в `skills/first-party/pvmalove/`:\s*(.+?);",
+            r"переопределены в `skills/first-party/engineering/`:\s*(.+?);",
             "overrides",
             suite.overrides,
         )

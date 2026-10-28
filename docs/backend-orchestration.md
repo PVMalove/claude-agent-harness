@@ -1,7 +1,7 @@
 # Руководство по backend-оркестрации
 
 `backend-orchestration` — opt-in capability для согласованной backend-разработки несколькими
-ролями. Она расширяет `pvmalove-suite`, но это не автономный scheduler. Coordinator (человек или
+ролями. Она расширяет `engineering-suite`, но это не автономный scheduler. Coordinator (человек или
 назначенная им управляющая сессия) планирует batch и ведёт переходы по настроенной политике
 approval. Роли не расширяют свой scope, не выбирают модель и не мержат pull request.
 
@@ -10,7 +10,7 @@ approval. Роли не расширяют свой scope, не выбирают
 содержит подробную процедуру настройки и запуска.
 
 Используйте её, когда у задачи есть независимые backend-границы или обязательная независимая
-проверка. Для обычной одной задачи достаточно стандартного pipeline `pvmalove-suite`.
+проверка. Для обычной одной задачи достаточно стандартного pipeline `engineering-suite`.
 
 ## Владение правилами
 
@@ -66,7 +66,7 @@ Manifest определяет режим роли (`write` или `read-only`), 
 ## 1. Включение
 
 Для нового git-репозитория выберите только `backend-orchestration`. CLI разрешит зависимость от
-`pvmalove-suite` автоматически.
+`engineering-suite` автоматически.
 
 ```bash
 python3 harness/bin/harness.py init /path/to/repository \
@@ -79,7 +79,7 @@ python3 harness/bin/harness.py init /path/to/repository \
 ```
 
 В PowerShell замените `python3` на `python`, а `\` на обратную кавычку. Не передавайте отдельно
-`pvmalove-suite`: capability уже содержит её через `extends`.
+`engineering-suite`: capability уже содержит её через `extends`.
 
 Чтобы включить её в существующем проекте с харнессом, сначала посмотрите локальный drift, затем
 обновите выбранный набор capability:

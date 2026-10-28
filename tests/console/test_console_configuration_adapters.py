@@ -187,7 +187,7 @@ def test_console_updates_outdated_managed_adapter_after_confirmation(
 def _fake_preview(
     adapters: list[dict[str, str | None]],
     *,
-    text: str = "Обновить адаптеры runtime?\nВозможности: pvmalove-suite",
+    text: str = "Обновить адаптеры runtime?\nВозможности: engineering-suite",
     blocked: bool = False,
     reason: str = "",
 ) -> object:
@@ -195,7 +195,7 @@ def _fake_preview(
 
     return RuntimeAdapterPreview(
         adapters,  # type: ignore[arg-type]
-        ["pvmalove-suite"],
+        ["engineering-suite"],
         "fingerprint",
         text,
         blocked,
@@ -302,7 +302,7 @@ def test_the_confirmation_has_a_title_a_plan_block_and_the_reason_confirm_is_off
             self.push_screen(
                 ConfirmConfiguration(
                     "Обновить адаптеры runtime?\n"
-                    "Возможности: pvmalove-suite\n"
+                    "Возможности: engineering-suite\n"
                     "⚠ Capability backend-orchestration не выбрана. Выберите состав явно в CLI:",
                     enabled=False,
                     reason="⚠ Capability backend-orchestration не выбрана",
@@ -325,7 +325,7 @@ def test_the_confirmation_has_a_title_a_plan_block_and_the_reason_confirm_is_off
 
     title, plan, disabled, reason, tooltip = asyncio.run(scenario())
     assert title == "Обновить адаптеры runtime?"
-    assert plan.startswith("Возможности: pvmalove-suite")
+    assert plan.startswith("Возможности: engineering-suite")
     assert disabled
     assert reason == "«Подтвердить»: ⚠ Capability backend-orchestration не выбрана"
     assert tooltip == "⚠ Capability backend-orchestration не выбрана"

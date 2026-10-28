@@ -43,4 +43,4 @@ disable-model-invocation: true
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/setup-labels/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/setup-labels/SKILL.md)

@@ -24,7 +24,7 @@ def test_logo_rows_are_one_width_and_the_banner_has_a_line_per_row() -> None:
 def test_banner_names_version_capabilities_path_and_branch() -> None:
     info = brand.BannerInfo(
         version="1.0.0",
-        capabilities=("pvmalove-suite", "backend-orchestration"),
+        capabilities=("engineering-suite", "backend-orchestration"),
         repo="~/work/app",
         branch="feature/issue-1-x",
         console_commit="f4ad855d",
@@ -34,7 +34,7 @@ def test_banner_names_version_capabilities_path_and_branch() -> None:
     lines = brand.banner_lines(info)
     assert f"{brand.PRODUCT} 1.0.0 · commit f4ad855d" in lines
     assert "Installed Harness 0.9.0 · commit 7ac099a2" in lines[2]
-    assert "pvmalove-suite · backend-orchestration" in lines[2]
+    assert "engineering-suite · backend-orchestration" in lines[2]
     assert "~/work/app" in lines
     assert "ветка feature/issue-1-x · commit не определён" in lines
 
@@ -64,8 +64,8 @@ def test_capabilities_come_from_the_lock_and_tolerate_a_broken_one(
     lock.parent.mkdir()
     lock.write_text("{not json", encoding="utf-8")
     assert brand.installed_capabilities(tmp_path) == ()
-    lock.write_text(json.dumps({"capabilities": ["pvmalove-suite"]}), encoding="utf-8")
-    assert brand.installed_capabilities(tmp_path) == ("pvmalove-suite",)
+    lock.write_text(json.dumps({"capabilities": ["engineering-suite"]}), encoding="utf-8")
+    assert brand.installed_capabilities(tmp_path) == ("engineering-suite",)
 
 
 def test_current_branch_reads_git_and_is_none_outside_a_repository(

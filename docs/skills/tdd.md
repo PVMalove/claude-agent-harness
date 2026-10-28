@@ -1,7 +1,7 @@
 # tdd — Разработка через тесты
 
-Источник: [`SKILL.md`](../../skills/first-party/pvmalove/tdd/SKILL.md).
-В `pvmalove-suite` этот first-party override заменяет одноимённый vendor-скилл и задаёт общие
+Источник: [`SKILL.md`](../../skills/first-party/engineering/tdd/SKILL.md).
+В `engineering-suite` этот first-party override заменяет одноимённый vendor-скилл и задаёт общие
 правила тестов для developer и будущего тест-автора.
 
 Скилл ведёт цикл red → green → refactor на заранее согласованном публичном seam. Один тест
@@ -18,7 +18,7 @@ Refactor идёт после Green. Покрытие не служит цель�
 
 Vendor-версия держала примеры и правила подмен в отдельных `tests.md` и `mocking.md`. В first-party
 версии правила подмен вошли в `SKILL.md`, а примеры — в
-[`examples.md`](../../skills/first-party/pvmalove/tdd/examples.md).
+[`examples.md`](../../skills/first-party/engineering/tdd/examples.md).
 
 ## Необязательный тест-автор
 

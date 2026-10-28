@@ -148,4 +148,4 @@ disable-model-invocation: true
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/wayfinder/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/wayfinder/SKILL.md)

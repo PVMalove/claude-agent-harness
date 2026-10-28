@@ -41,7 +41,7 @@ def _harness(*args: str) -> subprocess.CompletedProcess[str]:
 def project(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     result = _harness(
-        "init", str(tmp_path), "--capability", "pvmalove-suite", *PROJECT_FLAGS
+        "init", str(tmp_path), "--capability", "engineering-suite", *PROJECT_FLAGS
     )
     assert result.returncode == 0, result.stderr
     for name in (RULES, OTHER):

@@ -1,6 +1,6 @@
-# Архитектура Agent Harness
+# Архитектура Harness next
 
-Agent Harness — переносимый runtime-native snapshot skills, правил, hooks и project-owned
+Harness next — переносимый runtime-native snapshot skills, правил, hooks и project-owned
 конфигурации. Исходный репозиторий поставляет capability, а целевой проект получает независимый
 `.harness`-слой: во время работы исходный клон харнесса не нужен.
 
@@ -45,7 +45,7 @@ Claude Code и Codex находят один snapshot через свои native
 
 ## Backend orchestration
 
-`backend-orchestration` — opt-in capability поверх `pvmalove-suite`. Coordinator владеет batch,
+`backend-orchestration` — opt-in capability поверх `engineering-suite`. Coordinator владеет batch,
 approval, scope changes, QA lane и принятием reports. Role manifest владеет режимом роли, границей записи,
 proof и risk triggers; `.harness/orchestration.json` только разрешает project-owned provider/model,
 transport, потолок записи, budget и команды проверки. Граница конкретного writer — явный

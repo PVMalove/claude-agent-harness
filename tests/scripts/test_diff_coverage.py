@@ -133,7 +133,7 @@ class SourceDirsTests(unittest.TestCase):
         changed = {
             "harness/a.py": {1},
             "harness/b.py": {1},
-            "skills/first-party/pvmalove/qa-gate/scripts/test_summary.py": {1},
+            "skills/first-party/engineering/qa-gate/scripts/test_summary.py": {1},
         }
 
         sources = diff_coverage.source_dirs(changed)
@@ -145,7 +145,7 @@ class SourceDirsTests(unittest.TestCase):
                     str(diff_coverage.ROOT / "harness"),
                     str(
                         diff_coverage.ROOT
-                        / "skills/first-party/pvmalove/qa-gate/scripts"
+                        / "skills/first-party/engineering/qa-gate/scripts"
                     ),
                 }
             ),

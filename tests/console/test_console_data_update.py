@@ -24,7 +24,7 @@ def project(tmp_path: Path) -> Path:
             "init",
             str(tmp_path),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             "--language",
             "ru",
             "--pr-base-branch",

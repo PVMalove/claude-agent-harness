@@ -1,7 +1,7 @@
 # diagnosing-bugs — Диагностика ошибок
 
-Источник: [`SKILL.md`](../../skills/first-party/pvmalove/diagnosing-bugs/SKILL.md).
-В `pvmalove-suite` этот first-party override сохраняет upstream-цикл диагностики.
+Источник: [`SKILL.md`](../../skills/first-party/engineering/diagnosing-bugs/SKILL.md).
+В `engineering-suite` этот first-party override сохраняет upstream-цикл диагностики.
 
 После фиксации симптома, перед ранжированием гипотез, интерактивная сессия при включённой
 памяти выполняет `harness memory search . "<симптом, ошибка и модуль>"` для поиска прошлых

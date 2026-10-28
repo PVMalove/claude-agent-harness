@@ -63,14 +63,14 @@ class TopBar(Horizontal):
         muted = brand.PALETTE["muted"]
         version = console_data.harness_version()
         crumbs = i18n.tr(getattr(self.app, "language", "ru"), self.crumbs)
-        left = f"[bold]☰ ◆ Harness {escape(version)}[/][{muted}] · {escape(crumbs)}[/]"
+        left = f"[bold]☰ {brand.MARK} {brand.PRODUCT} {escape(version)}[/][{muted}] · {escape(crumbs)}[/]"
         counts: HealthCounts | None = getattr(self.app, "health_counts", None)
         counters = health_counts_markup(counts) if counts is not None else ""
         right = ""
         branch = self._branch
         if branch:
             # The whole branch name whenever it fits; the breadcrumb already ellipsizes first.
-            left_cells = len(f"☰ ◆ Harness {version} · {crumbs}")
+            left_cells = len(f"☰ {brand.MARK} {brand.PRODUCT} {version} · {crumbs}")
             counter_cells = len(" ".join(f"x{v}" for v in counts)) if counts else 0
             room = self.size.width - 2 - left_cells - counter_cells - 8
             limit = max(len(branch) if room >= len(branch) else room, 14)
@@ -105,7 +105,7 @@ class WorkspaceHeader(TopBar):
             return
         primary, muted = brand.PALETTE["primary"], brand.PALETTE["muted"]
         self.query_one("#topbar-left", Static).update(
-            f"[{primary}]▏H▕[/]  Agent Harness console  [{muted}]{console_data.harness_version()}[/]"
+            f"[{primary}]{brand.MARK}[/]  {brand.PRODUCT}  [{muted}]{console_data.harness_version()}[/]"
         )
         repo = getattr(self.app, "repo", None)
         project = repo.name if repo else ""

@@ -93,4 +93,4 @@ disable-model-invocation: true
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/to-guide/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/to-guide/SKILL.md)

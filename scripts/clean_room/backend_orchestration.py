@@ -128,12 +128,12 @@ def run(ctx: SimpleNamespace) -> None:
     """
     pv_project = ctx.pv_project
     test_root = ctx.test_root
-    # backend-orchestration is opt-in: it extends pvmalove-suite with the portable
-    # role contracts, while a regular pvmalove-suite project receives none of them.
+    # backend-orchestration is opt-in: it extends engineering-suite with the portable
+    # role contracts, while a regular engineering-suite project receives none of them.
     if (pv_project / ".harness" / "orchestration").exists():
-        sys.exit("pvmalove-suite unexpectedly installed orchestration resources")
+        sys.exit("engineering-suite unexpectedly installed orchestration resources")
     if (pv_project / ".harness" / "orchestration.json").exists():
-        sys.exit("pvmalove-suite unexpectedly installed orchestration config")
+        sys.exit("engineering-suite unexpectedly installed orchestration config")
     regular_implement = (
         pv_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")
@@ -143,7 +143,7 @@ def run(ctx: SimpleNamespace) -> None:
         )
     fast_implement = pv_project / ".harness" / "skills" / "fast-implement" / "SKILL.md"
     if not fast_implement.is_file():
-        sys.exit("pvmalove-suite addition fast-implement missing")
+        sys.exit("engineering-suite addition fast-implement missing")
     if "no coordinator approval gates" not in fast_implement.read_text(
         encoding="utf-8"
     ):
@@ -194,7 +194,7 @@ def run(ctx: SimpleNamespace) -> None:
     if not (orchestration_root / "orchestration.schema.json").is_file():
         sys.exit("backend-orchestration schema missing")
     # Issue #706: the egress proxy and its Dockerfile are a byte-identical, drift-checked payload
-    # of backend-orchestration only; a pvmalove-suite project never receives the container directory.
+    # of backend-orchestration only; a engineering-suite project never receives the container directory.
     for proxy_file in ("egress_proxy.py", "Dockerfile.proxy"):
         installed_proxy = orchestration_project / ".harness" / "container" / proxy_file
         if not installed_proxy.is_file():
@@ -205,7 +205,7 @@ def run(ctx: SimpleNamespace) -> None:
         ):
             sys.exit(f"installed container/{proxy_file} differs from its source")
     if (pv_project / ".harness" / "container").exists():
-        sys.exit("pvmalove-suite unexpectedly installed container resources")
+        sys.exit("engineering-suite unexpectedly installed container resources")
     installed_implement = (
         orchestration_project / ".harness" / "skills" / "implement" / "SKILL.md"
     ).read_text(encoding="utf-8")

@@ -65,7 +65,7 @@ def test_harness_state_reads_the_lock_and_skills(tmp_path: Path) -> None:
         json.dumps(
             {
                 "package_version": "0.9.0",
-                "capabilities": ["pvmalove-suite"],
+                "capabilities": ["engineering-suite"],
                 "files": {"a": "1", "b": "2"},
             }
         ),
@@ -77,7 +77,7 @@ def test_harness_state_reads_the_lock_and_skills(tmp_path: Path) -> None:
 
     assert (state.skills, state.managed_files, state.orchestration) == (1, 2, False)
     assert "0.9.0 (версия пакета харнесса: 1.0.0)" in text
-    assert "Capability: pvmalove-suite" in text
+    assert "Capability: engineering-suite" in text
     assert "Оркестрация: не подключена" in text
 
 

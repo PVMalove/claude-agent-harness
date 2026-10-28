@@ -40,44 +40,44 @@ def run(ctx: SimpleNamespace) -> None:
     test_root = ctx.test_root
     project_json = pv_project / ".harness" / "project.json"
     if not project_json.is_file():
-        sys.exit("pvmalove-suite init did not scaffold .harness/project.json")
+        sys.exit("engineering-suite init did not scaffold .harness/project.json")
     if not (pv_project / ".harness" / "project.schema.json").is_file():
-        sys.exit("pvmalove-suite init did not scaffold .harness/project.schema.json")
+        sys.exit("engineering-suite init did not scaffold .harness/project.schema.json")
 
     hook = pv_project / ".claude" / "hooks" / "check-branch-name.sh"
     if not hook.is_file():
-        sys.exit("pvmalove-suite init did not scaffold check-branch-name.sh")
+        sys.exit("engineering-suite init did not scaffold check-branch-name.sh")
     metadata_hook = pv_project / ".claude" / "hooks" / "block-public-attribution.sh"
     if not metadata_hook.is_file():
-        sys.exit("pvmalove-suite init did not scaffold block-public-attribution.sh")
+        sys.exit("engineering-suite init did not scaffold block-public-attribution.sh")
     scratch_hook = (
         pv_project / ".claude" / "hooks" / "block-scratch-outside-docs-tasks.sh"
     )
     if not scratch_hook.is_file():
         sys.exit(
-            "pvmalove-suite init did not scaffold block-scratch-outside-docs-tasks.sh"
+            "engineering-suite init did not scaffold block-scratch-outside-docs-tasks.sh"
         )
     bounded_hook = pv_project / ".claude" / "hooks" / "require-bounded-check.sh"
     if not bounded_hook.is_file():
-        sys.exit("pvmalove-suite init did not scaffold require-bounded-check.sh")
+        sys.exit("engineering-suite init did not scaffold require-bounded-check.sh")
     dangerous_hook = pv_project / ".claude" / "hooks" / "block-dangerous-git.sh"
     if not dangerous_hook.is_file():
-        sys.exit("pvmalove-suite init did not scaffold block-dangerous-git.sh")
+        sys.exit("engineering-suite init did not scaffold block-dangerous-git.sh")
     qa_gate_hook = pv_project / ".claude" / "hooks" / "require-qa-gate.sh"
     if not qa_gate_hook.is_file():
-        sys.exit("pvmalove-suite init did not scaffold require-qa-gate.sh")
+        sys.exit("engineering-suite init did not scaffold require-qa-gate.sh")
     merge_hook = pv_project / ".claude" / "hooks" / "block-pr-merge.sh"
     if not merge_hook.is_file():
-        sys.exit("pvmalove-suite init did not scaffold block-pr-merge.sh")
+        sys.exit("engineering-suite init did not scaffold block-pr-merge.sh")
     if not (pv_project / ".claude" / "hooks" / "pr_commands.py").is_file():
-        sys.exit("pvmalove-suite init did not scaffold the pr_commands.py hook helper")
+        sys.exit("engineering-suite init did not scaffold the pr_commands.py hook helper")
     if not (pv_project / ".claude" / "hooks" / "hook_response.py").is_file():
-        sys.exit("pvmalove-suite init did not scaffold the hook_response.py envelope")
+        sys.exit("engineering-suite init did not scaffold the hook_response.py envelope")
     check_change_impact_hooks(pv_project)
     if json.loads(project_json.read_text(encoding="utf-8")).get("hook_policy") != {
         "profile": "standard"
     }:
-        sys.exit("pvmalove-suite init did not set hook_policy.profile standard")
+        sys.exit("engineering-suite init did not set hook_policy.profile standard")
     check_hooks_policy_health(pv_project)
     check_legacy_hook_policy(test_root / "legacy-hook-policy")
     for command, code, decision in (
@@ -98,7 +98,7 @@ def run(ctx: SimpleNamespace) -> None:
     protect_hook = pv_project / ".claude" / "hooks" / "protect-hook-policy.sh"
     for name in ("protect-hook-policy.sh", "protect_hook_policy.py"):
         if not (pv_project / ".claude" / "hooks" / name).is_file():
-            sys.exit(f"pvmalove-suite init did not scaffold {name}")
+            sys.exit(f"engineering-suite init did not scaffold {name}")
     settings_template = json.loads(
         (pv_project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
     )
@@ -414,18 +414,18 @@ def run(ctx: SimpleNamespace) -> None:
     scratch_gitignore = storage_path(pv_project, "scratch", ".gitignore")
     if not scratch_gitignore.is_file():
         sys.exit(
-            "pvmalove-suite init did not scaffold .harness/.sandboxes/scratch/.gitignore"
+            "engineering-suite init did not scaffold .harness/.sandboxes/scratch/.gitignore"
         )
     if scratch_gitignore.read_text(encoding="utf-8") != "*\n!.gitignore\n":
         sys.exit(
-            "pvmalove-suite init scaffolded .harness/.sandboxes/scratch/.gitignore with unexpected content"
+            "engineering-suite init scaffolded .harness/.sandboxes/scratch/.gitignore with unexpected content"
         )
 
     root_gitignore = pv_project / ".gitignore"
     if not root_gitignore.is_file():
-        sys.exit("pvmalove-suite init did not create a root .gitignore")
+        sys.exit("engineering-suite init did not create a root .gitignore")
     if "/docs/tasks/" not in root_gitignore.read_text(encoding="utf-8").splitlines():
-        sys.exit("pvmalove-suite init did not add /docs/tasks/ to the root .gitignore")
+        sys.exit("engineering-suite init did not add /docs/tasks/ to the root .gitignore")
 
     # Retrofit path: emulate a project harnessed before these two protections existed by
     # removing them, then confirm a plain `update` restores both without disturbing the
@@ -2024,7 +2024,7 @@ def check_change_impact_hooks(project: Path) -> None:
         "targeted-check-reminder.sh",
     ):
         if not (hooks / name).is_file():
-            sys.exit(f"pvmalove-suite init did not scaffold {name}")
+            sys.exit(f"engineering-suite init did not scaffold {name}")
     settings = json.loads(
         (project / ".claude" / "settings.local.json").read_text(encoding="utf-8")
     )
@@ -2092,7 +2092,7 @@ def check_legacy_hook_policy(legacy: Path) -> None:
     legacy.mkdir(parents=True)
     run_step(["git", "init", "-q"], cwd=legacy, check=True)
     run_ok(
-        HARNESS + ["init", str(legacy), "--capability", "pvmalove-suite"], quiet=True
+        HARNESS + ["init", str(legacy), "--capability", "engineering-suite"], quiet=True
     )
     config = legacy / ".harness" / "project.json"
     document = json.loads(config.read_text(encoding="utf-8"))

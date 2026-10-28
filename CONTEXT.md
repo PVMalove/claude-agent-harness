@@ -62,7 +62,7 @@ _Avoid_: шаблонные артефакты, foundation-файлы.
 заменять или добавлять скиллы.
 _Avoid_: пакет, набор скиллов.
 
-В текущем составе `pvmalove-suite` переопределены в `skills/first-party/pvmalove/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
+В текущем составе `engineering-suite` переопределены в `skills/first-party/engineering/`: `to-spec`, `to-tickets`, `implement`, `ask-matt`, `code-review`, `grilling`, `grill-me`, `grill-with-docs`, `triage`, `wayfinder`, `diagnosing-bugs`, `tdd`; доп. скиллы: `qa-gate`, `to-guide`, `setup-labels`, `to-pull-requests`, `fast-implement`, `delivery-stats`, `architect`.
 
 **Vendor-скилл**:
 Скилл из байт-в-байт snapshot закреплённого upstream-источника в `skills/vendor/`, связанный с
@@ -256,7 +256,7 @@ _Avoid_: общий рейтинг findings, один универсальный
 _Avoid_: специализация каждой сервисной правки, параллельные writers в одном batch.
 
 **Backend orchestration capability**:
-Необязательная capability `backend-orchestration`, расширяющая `pvmalove-suite` и доставляющая
+Необязательная capability `backend-orchestration`, расширяющая `engineering-suite` и доставляющая
 role manifests, config contract, lifecycle, handoff и optional runtime adapter без изменения
 существующих проектов. Практический порядок включения и запуска —
 `docs/backend-orchestration.md`.

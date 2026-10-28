@@ -1,6 +1,6 @@
 # Карта навыков и ролей
 
-Этот каталог — короткая статическая память харнесса. Каждый документ фиксирует локализованное название, триггеры, ответственность, Input/Output-контракт и PNG-схему Archify. Подробные первоисточники остаются в `skills/first-party/pvmalove/`, `harness/orchestration/roles/`, `harness/orchestration/playbook.md` и `harness/orchestration/pilot.md`.
+Этот каталог — короткая статическая память харнесса. Каждый документ фиксирует локализованное название, триггеры, ответственность, Input/Output-контракт и PNG-схему Archify. Подробные первоисточники остаются в `skills/first-party/engineering/`, `harness/orchestration/roles/`, `harness/orchestration/playbook.md` и `harness/orchestration/pilot.md`.
 
 ## Командные навыки
 
@@ -23,7 +23,7 @@
 
 Русские описания всех 25 skills из `skills/vendor/mattpocock/` находятся в [vendor/](./vendor/).
 Их исходные `SKILL.md` закреплены в upstream snapshot и вручную не правятся, а first-party
-overrides с совпадающими именами описаны здесь отдельно по действующей версии `pvmalove-suite`.
+overrides с совпадающими именами описаны здесь отдельно по действующей версии `engineering-suite`.
 
 ## Связанные документы
 

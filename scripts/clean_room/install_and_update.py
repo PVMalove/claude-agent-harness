@@ -315,15 +315,15 @@ def run(ctx: SimpleNamespace) -> None:
             "--capability",
             "mattpocock-suite",
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
         ],
         quiet_all=True,
     ):
         sys.exit(
-            "selecting mattpocock-suite and pvmalove-suite together unexpectedly succeeded"
+            "selecting mattpocock-suite and engineering-suite together unexpectedly succeeded"
         )
 
-    # pvmalove-suite inherits 25 upstream skills, overrides some of them in place, and adds 7 names;
+    # engineering-suite inherits 25 upstream skills, overrides some of them in place, and adds 7 names;
     # the clean-room check below expects 32 distinct installed skills (ADR 0001).
     pv_project = test_root / "pv_project"
     pv_project.mkdir(parents=True)
@@ -334,7 +334,7 @@ def run(ctx: SimpleNamespace) -> None:
             "init",
             str(pv_project),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             "--base-branch",
             "main",
             "--language",
@@ -350,7 +350,7 @@ def run(ctx: SimpleNamespace) -> None:
     # Provenance matters: target docs/agents are intentionally identical to their
     # templates, so comparing bytes against root docs/ would reject a valid install.
     root_docs = (ROOT / "docs").resolve()
-    selected = ["pvmalove-suite"]
+    selected = ["engineering-suite"]
     sources = harness_cli.selected_skills(selected) + harness_cli.selected_resources(
         selected
     )
@@ -496,9 +496,9 @@ def run(ctx: SimpleNamespace) -> None:
         or not (pv_project / ".harness" / "token_estimator.py").is_file()
         or not (pv_project / ".harness" / "repo_map" / "repo_map.schema.json").is_file()
     ):
-        sys.exit("pvmalove-suite Repo Map resource missing")
+        sys.exit("engineering-suite Repo Map resource missing")
     if not (pv_project / ".harness" / "health" / "registry.py").is_file():
-        sys.exit("pvmalove-suite health resource missing")
+        sys.exit("engineering-suite health resource missing")
     map_project = test_root / "map_project"
     map_project.mkdir()
     run_step(["git", "init", "-q"], cwd=map_project, check=True)
@@ -541,7 +541,7 @@ def run(ctx: SimpleNamespace) -> None:
     pv_skill_count = count_skill_files(pv_project / ".harness" / "skills")
     if pv_skill_count != 32:
         sys.exit(
-            f"expected 32 skills in a pvmalove-suite project (25 inherited, overrides replaced in place, + 7 additions), found {pv_skill_count}"
+            f"expected 32 skills in a engineering-suite project (25 inherited, overrides replaced in place, + 7 additions), found {pv_skill_count}"
         )
 
     # A failed older update could remove a retired managed skill's SKILL.md but leave
@@ -558,19 +558,19 @@ def run(ctx: SimpleNamespace) -> None:
     check_tracker_from_origin(test_root)
     check_package_root_without_init(test_root)
     if not filecmp.cmp(
-        ROOT / "skills" / "first-party" / "pvmalove" / "to-spec" / "SKILL.md",
+        ROOT / "skills" / "first-party" / "engineering" / "to-spec" / "SKILL.md",
         pv_project / ".harness" / "skills" / "to-spec" / "SKILL.md",
         shallow=False,
     ):
-        sys.exit("pvmalove-suite override did not install the first-party to-spec")
+        sys.exit("engineering-suite override did not install the first-party to-spec")
     to_tickets_source = (
-        ROOT / "skills" / "first-party" / "pvmalove" / "to-tickets" / "SKILL.md"
+        ROOT / "skills" / "first-party" / "engineering" / "to-tickets" / "SKILL.md"
     )
     to_tickets_installed = (
         pv_project / ".harness" / "skills" / "to-tickets" / "SKILL.md"
     )
     if not filecmp.cmp(to_tickets_source, to_tickets_installed, shallow=False):
-        sys.exit("pvmalove-suite override did not install the first-party to-tickets")
+        sys.exit("engineering-suite override did not install the first-party to-tickets")
     to_tickets_text = to_tickets_installed.read_text(encoding="utf-8")
     for required_text in (
         "enumerate every path under those directories",
@@ -599,15 +599,15 @@ def run(ctx: SimpleNamespace) -> None:
             sys.exit(f"installed to-pull-requests step lacks: {required_text}")
     for name in ("grill-me", "grill-with-docs", "diagnosing-bugs", "architect", "tdd"):
         if not filecmp.cmp(
-            ROOT / "skills" / "first-party" / "pvmalove" / name / "SKILL.md",
+            ROOT / "skills" / "first-party" / "engineering" / name / "SKILL.md",
             pv_project / ".harness" / "skills" / name / "SKILL.md",
             shallow=False,
         ):
-            sys.exit(f"pvmalove-suite override did not install the first-party {name}")
+            sys.exit(f"engineering-suite override did not install the first-party {name}")
     # Issue #552: the installed registry lists the first-party tdd, and the update baseline
     # records no drift for its files.
     _, tdd_description = frontmatter_metadata(
-        ROOT / "skills" / "first-party" / "pvmalove" / "tdd" / "SKILL.md"
+        ROOT / "skills" / "first-party" / "engineering" / "tdd" / "SKILL.md"
     )
     if f"| `tdd` | `.harness/skills/tdd` | {tdd_description} |" not in (
         pv_project / ".harness" / "skills" / "REGISTRY.md"
@@ -641,17 +641,17 @@ def run(ctx: SimpleNamespace) -> None:
         shallow=False,
     ):
         sys.exit(
-            "pvmalove-suite unexpectedly changed a skill it neither overrides nor adds"
+            "engineering-suite unexpectedly changed a skill it neither overrides nor adds"
         )
     if not filecmp.cmp(
         ROOT / "harness" / "docs" / "project-memory.md",
         pv_project / ".harness" / "docs" / "project-memory.md",
         shallow=False,
     ):
-        sys.exit("pvmalove-suite did not install the interactive memory contract")
+        sys.exit("engineering-suite did not install the interactive memory contract")
     for human_guide in ("harness-guide.md", "backend-orchestration.md"):
         if (pv_project / ".harness" / "docs" / human_guide).exists():
-            sys.exit(f"pvmalove-suite installed a developer guide: {human_guide}")
+            sys.exit(f"engineering-suite installed a developer guide: {human_guide}")
     # An older installation delivered the guides; update must retire them without touching others.
     stale_lock_path = pv_project / ".harness" / "harness.lock"
     stale_lock = json.loads(stale_lock_path.read_text(encoding="utf-8"))
@@ -670,7 +670,7 @@ def run(ctx: SimpleNamespace) -> None:
         sys.exit("update removed the interactive memory contract")
     qa_gate_skill = pv_project / ".harness" / "skills" / "qa-gate" / "SKILL.md"
     if not qa_gate_skill.is_file():
-        sys.exit("pvmalove-suite addition qa-gate missing")
+        sys.exit("engineering-suite addition qa-gate missing")
     if "test_summary.py" not in qa_gate_skill.read_text(encoding="utf-8"):
         sys.exit("qa-gate does not route quality commands through the summary wrapper")
     pytest_summary = (
@@ -833,7 +833,7 @@ def check_hook_settings_merge(pv_project) -> None:
     inventory = json.loads(
         (pv_project / ".harness/integrations.json").read_text(encoding="utf-8")
     )
-    if "pvmalove-suite-codex-hooks" not in {
+    if "engineering-suite-codex-hooks" not in {
         entry["id"] for entry in inventory["integrations"]
     }:
         sys.exit("the second runtime hook adapter is not recorded in the integrations")
@@ -855,7 +855,7 @@ def check_tracker_field(pv_project) -> None:
         sys.exit("install wrote a tracker field into a project without origin")
     if not (pv_project / ".harness" / "health" / "project_tracker.py").is_file():
         sys.exit(
-            "pvmalove-suite health resource is missing the project tracker resolver"
+            "engineering-suite health resource is missing the project tracker resolver"
         )
     if not (pv_project / ".agents" / "skills" / "qa-gate" / "SKILL.md").is_file():
         sys.exit("Codex discovery path .agents/skills does not expose installed skills")
@@ -926,7 +926,7 @@ def check_tracker_from_origin(test_root) -> None:
                 "init",
                 str(project),
                 "--capability",
-                "pvmalove-suite",
+                "engineering-suite",
                 "--language",
                 "ru",
                 "--pr-base-branch",
@@ -977,7 +977,7 @@ def check_package_root_without_init(test_root) -> None:
             "init",
             str(project),
             "--capability",
-            "pvmalove-suite",
+            "engineering-suite",
             "--language",
             "ru",
             "--pr-base-branch",

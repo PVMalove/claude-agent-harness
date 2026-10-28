@@ -14,5 +14,5 @@
 
 Точный порядок шагов, входные условия и ограничения задаёт исходный `SKILL.md`. Эта страница служит русским указателем на закреплённую upstream-версию.
 
-В `pvmalove-suite` используется [first-party override](../tdd.md) с Refactor после Green.
+В `engineering-suite` используется [first-party override](../tdd.md) с Refactor после Green.
 Vendor-снапшот остаётся неизменным.

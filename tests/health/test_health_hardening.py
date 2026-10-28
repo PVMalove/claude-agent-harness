@@ -52,8 +52,8 @@ def test_a_skill_inventory_that_does_not_answer_fails_with_a_message(
         (None, False),
         ({}, False),
         ({"capabilities": None}, False),
-        ({"capabilities": ["pvmalove-suite"]}, False),
-        ({"capabilities": ["pvmalove-suite", "backend-orchestration"]}, True),
+        ({"capabilities": ["engineering-suite"]}, False),
+        ({"capabilities": ["engineering-suite", "backend-orchestration"]}, True),
     ],
 )
 def test_orchestration_enabled_reads_the_lock_capabilities(

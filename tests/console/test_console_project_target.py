@@ -51,9 +51,9 @@ def test_a_corrupt_lock_is_an_error_with_a_next_step_not_a_process_exit(
         inspect_target(str(tmp_path))
     assert "«Диагностика» (3)" in str(checked.value)
     # The install path reads the same lock again: it must fail the same way, never exit.
-    target = ProjectTarget(tmp_path, "update", ("pvmalove-suite",), ())
+    target = ProjectTarget(tmp_path, "update", ("engineering-suite",), ())
     with pytest.raises(ValueError, match="harness.lock повреждён") as planned:
-        installation_blockers(target, "pvmalove-suite")
+        installation_blockers(target, "engineering-suite")
     assert "«Диагностика» (3)" in str(planned.value)
 
 
@@ -63,7 +63,7 @@ def test_a_lock_whose_files_are_not_a_mapping_is_an_error_on_the_check_path(
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".harness").mkdir()
     (tmp_path / ".harness/harness.lock").write_text(
-        '{"capabilities": ["pvmalove-suite"], "files": []}', encoding="utf-8"
+        '{"capabilities": ["engineering-suite"], "files": []}', encoding="utf-8"
     )
     with pytest.raises(ValueError, match="harness.lock повреждён") as checked:
         inspect_target(str(tmp_path))

@@ -11,7 +11,7 @@
 
 `harness/CAPABILITIES.json` задаёт состав, наследование, overrides, additions и ресурсы
 capability. `project-foundation` даёт небольшую доменно-нейтральную основу;
-`mattpocock-suite` использует полный закреплённый upstream-снимок; `pvmalove-suite` добавляет
+`mattpocock-suite` использует полный закреплённый upstream-снимок; `engineering-suite` добавляет
 проектный инженерный workflow; `backend-orchestration` выбирается явно поверх него.
 `selected_skills` разрешает каждое итоговое имя к одному источнику. `package_files()`
 копирует выбранные файлы в `.harness/skills/` и ресурсы из `harness/` в `.harness/`.

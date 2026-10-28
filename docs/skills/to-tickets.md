@@ -127,4 +127,4 @@ disable-model-invocation: true
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/to-tickets/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/to-tickets/SKILL.md)

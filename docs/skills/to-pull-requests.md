@@ -88,4 +88,4 @@ disable-model-invocation: true
 
 ## Источник
 
-[SKILL.md](../../skills/first-party/pvmalove/to-pull-requests/SKILL.md)
+[SKILL.md](../../skills/first-party/engineering/to-pull-requests/SKILL.md)

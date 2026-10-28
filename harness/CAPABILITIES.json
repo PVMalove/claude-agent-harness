@@ -39,31 +39,31 @@
       "vendor/mattpocock/productivity/writing-for-agents"
     ]
   },
-  "pvmalove-suite": {
-    "description": "Личная сборка поверх mattpocock-suite: first-party переопределения (status::*/hitl/afk triage-таксономия вместо канонических ролей апстрима, epic::<slug> заменён на native sub-issues в to-spec/to-tickets, подтверждаемое разработчиком двухосевое review перед commit и push с отдельным ручным to-pull-requests для PR, настраиваемый язык вывода code-review, вопросы grilling через AskUserQuestion и явный переход к to-spec либо возврат на доработку, тикеты wayfinder получают настоящие hitl/afk/status::ready→in-progress лейблы вместо одного лишь своего wayfinder:* пространства, tdd добавляет Refactor после Green и опциональный Claude Code test-author с fail-closed guard/runner) и семь новых скиллов (qa-gate, конфиг-драйвен через .harness/project.json; to-guide — hitl-аналог implement, готовит гайд с промптами для ручного кодинга вместо реализации агентом; setup-labels — создаёт/обновляет лейблы на GitHub из таблиц docs/agents/triage-labels.md; to-pull-requests — вручную открывает PR после завершённого implement; fast-implement — однопроходный путь без coordinator и approval-гейтов, тогда как сам implement стал coordinator-driven конвейером; delivery-stats — считает по закрытому эпику токены, кеш, стоимость и объём кода из локальных логов сессий; architect — ручное архитектурное решение с opt-in поиском прецедентов в памяти). Выбирается вместо mattpocock-suite, не вместе с ней — расширяет её через extends/overrides/additions вместо дублирования списка.",
+  "engineering-suite": {
+    "description": "Инженерный workflow поверх mattpocock-suite: планирование эпиков и тикетов, триаж задач, реализация, двухосевое code-review, проверки качества и подготовка PR. Поддерживает настраиваемый язык вывода и конфигурацию проекта в .harness/project.json. Выбирается вместо mattpocock-suite; backend-orchestration добавляет coordinator и роли.",
     "extends": "mattpocock-suite",
     "overrides": {
-      "to-spec": "first-party/pvmalove/to-spec",
-      "to-tickets": "first-party/pvmalove/to-tickets",
-      "implement": "first-party/pvmalove/implement",
-      "ask-matt": "first-party/pvmalove/ask-matt",
-      "code-review": "first-party/pvmalove/code-review",
-      "grilling": "first-party/pvmalove/grilling",
-      "grill-me": "first-party/pvmalove/grill-me",
-      "grill-with-docs": "first-party/pvmalove/grill-with-docs",
-      "triage": "first-party/pvmalove/triage",
-      "wayfinder": "first-party/pvmalove/wayfinder",
-      "diagnosing-bugs": "first-party/pvmalove/diagnosing-bugs",
-      "tdd": "first-party/pvmalove/tdd"
+      "to-spec": "first-party/engineering/to-spec",
+      "to-tickets": "first-party/engineering/to-tickets",
+      "implement": "first-party/engineering/implement",
+      "ask-matt": "first-party/engineering/ask-matt",
+      "code-review": "first-party/engineering/code-review",
+      "grilling": "first-party/engineering/grilling",
+      "grill-me": "first-party/engineering/grill-me",
+      "grill-with-docs": "first-party/engineering/grill-with-docs",
+      "triage": "first-party/engineering/triage",
+      "wayfinder": "first-party/engineering/wayfinder",
+      "diagnosing-bugs": "first-party/engineering/diagnosing-bugs",
+      "tdd": "first-party/engineering/tdd"
     },
     "additions": [
-      "first-party/pvmalove/qa-gate",
-      "first-party/pvmalove/to-guide",
-      "first-party/pvmalove/setup-labels",
-      "first-party/pvmalove/to-pull-requests",
-      "first-party/pvmalove/fast-implement",
-      "first-party/pvmalove/delivery-stats",
-      "first-party/pvmalove/architect"
+      "first-party/engineering/qa-gate",
+      "first-party/engineering/to-guide",
+      "first-party/engineering/setup-labels",
+      "first-party/engineering/to-pull-requests",
+      "first-party/engineering/fast-implement",
+      "first-party/engineering/delivery-stats",
+      "first-party/engineering/architect"
     ],
     "resources": [
       "reporting",
@@ -81,8 +81,8 @@
     ]
   },
   "backend-orchestration": {
-    "description": "Optional portable backend orchestration role manifests. Extends pvmalove-suite without changing projects that do not explicitly select it.",
-    "extends": "pvmalove-suite",
+    "description": "Optional portable backend orchestration role manifests. Extends engineering-suite without changing projects that do not explicitly select it.",
+    "extends": "engineering-suite",
     "resources": [
       "orchestration",
       "diagnostics.py",

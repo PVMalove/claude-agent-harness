@@ -1,6 +1,6 @@
-# Справочник Agent Harness
+# Справочник Harness next
 
-Agent Harness — переносимый набор скиллов, правил, hooks и документов для Claude Code и Codex. Одна
+Harness next — переносимый набор скиллов, правил, hooks и документов для Claude Code и Codex. Одна
 команда разворачивает его в проект ([раздел 0](#0-установка-и-подключение)). Дальше он живёт там
 независимо от исходного репозитория
 [PVMalove/claude-agent-harness](https://github.com/PVMalove/claude-agent-harness).
@@ -12,7 +12,7 @@ Agent Harness — переносимый набор скиллов, правил
 > lifecycle coordinator, роли, clean-room QA и локальный state целиком описывает
 > [backend-orchestration.md](./backend-orchestration.md).
 
-![Навигация по Agent Harness: установка, работа, проверка](./diagrams/previews/harness-guide-navigation.workflow.png)
+![Навигация по Harness next: установка, работа, проверка](./diagrams/previews/harness-guide-navigation.workflow.png)
 
 Редактируемая спецификация и интерактивная версия схемы:
 [Archify JSON](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/diagrams/harness-guide-navigation.workflow.json)
@@ -124,7 +124,7 @@ cd claude-agent-harness
 
 #### Какую capability выбрать
 
-| | `project-foundation` | `mattpocock-suite` | `pvmalove-suite` | `backend-orchestration` |
+| | `project-foundation` | `mattpocock-suite` | `engineering-suite` | `backend-orchestration` |
 |---|---|---|---|---|
 | Скиллов | 5 | 25 | 32 | 32 + роли |
 | Домен | Любой: software, content, research, operations, personal | Инженерный pipeline как в апстриме | Инженерный pipeline с доработками ([раздел 7](#7-локальные-кастомизации)) | Согласованная backend-работа несколькими ролями |
@@ -132,8 +132,8 @@ cd claude-agent-harness
 | Проектные файлы | Нет | Нет | `.harness/project.json`, hooks, `docs/agents/*.md` | То же + `.harness/orchestration.json` |
 
 Без `--capability` CLI ставит `project-foundation`. `backend-orchestration` расширяет
-`pvmalove-suite`, поэтому её выбирают одной capability (`--capability backend-orchestration`), а не
-вместе с `pvmalove-suite`. Она добавляет role manifests, `.harness/orchestration.json` и playbook,
+`engineering-suite`, поэтому её выбирают одной capability (`--capability backend-orchestration`), а не
+вместе с `engineering-suite`. Она добавляет role manifests, `.harness/orchestration.json` и playbook,
 но без явно одобренного dispatch воркеры не запускает. Полный порядок действий, пример конфигурации
 и immutable brief описаны в [отдельном руководстве](./backend-orchestration.md).
 
@@ -149,7 +149,7 @@ Standards и Spec и затем обязательно запускает пол
 `/to-pull-requests` вручную ведёт PR workflow. Adapter лишь транспортирует уже утверждённый
 dispatch: он не принимает report, не запускает следующий шаг и не создаёт и не мержит PR.
 
-| | `mattpocock-suite` как есть | Своя capability по образцу `pvmalove-suite` |
+| | `mattpocock-suite` как есть | Своя capability по образцу `engineering-suite` |
 |---|---|---|
 | Когда | Апстримный pipeline устраивает без изменений | Нужны свои правки: лейблы, язык, доп. скиллы |
 | Механизм | `--capability mattpocock-suite` | `extends`/`overrides`/`additions` в `harness/CAPABILITIES.json`, полные first-party файлы и проверяемый snapshot ([ADR 0001](https://github.com/PVMalove/claude-agent-harness/blob/master/docs/adr/0001-portable-capability-delivery.md)) |
@@ -242,7 +242,7 @@ manifest атомарна (rollback journal без WAL). Rebuild проверя�
 python3 harness/bin/harness.py init /path/to/repository \
   --project-type software \
   --stack python \
-  --capability pvmalove-suite \
+  --capability engineering-suite \
   --base-branch main \
   --language ru \
   --qa-gate-command "make check" \
@@ -256,7 +256,7 @@ python3 harness/bin/harness.py init /path/to/repository \
 python harness\bin\harness.py init C:\path\to\repository `
   --project-type software `
   --stack python `
-  --capability pvmalove-suite `
+  --capability engineering-suite `
   --base-branch main `
   --language ru `
   --qa-gate-command "make check" `
@@ -275,7 +275,7 @@ python harness\bin\harness.py init C:\path\to\repository `
 | `--tracker-type`, `--tracker-host`, `--tracker-project` | Поле `tracker`: тип (`github`, `gitlab`, `local`), веб-хост с необязательным портом и полный путь проекта с подгруппами (см. ниже) |
 | `--test-path`, `--test-runner-command` | Поля `test_paths` (glob, повторяем) и `test_runner` (команда теста, делится на аргументы без шелла, один аргумент — `{test_id}`) изолированного runner ([run-test](./hooks/run-test.md)) |
 
-Флаги от `--language` до `--test-runner-command` читает только `pvmalove-suite`, и CLI пишет их в
+Флаги от `--language` до `--test-runner-command` читает только `engineering-suite`, и CLI пишет их в
 `.harness/project.json`. Их можно опустить — тогда `init` спросит интерактивно. Флаги `--test-*`
 `init` не спрашивает: без них поля `test_paths` и `test_runner` не пишутся, и тест-автор выключен.
 Некорректное значение харнесс отклоняет до записи файлов.
@@ -327,11 +327,11 @@ python harness\bin\harness.py init C:\path\to\repository `
 продолжения PR: refresh, resolver, маршрут провала проверки, подтверждение, проверку или handoff для
 ручного merge. Подробности — в [руководстве по backend-оркестрации](./backend-orchestration.md).
 
-При выборе `pvmalove-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/{pr-composer,test-author}.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
+При выборе `engineering-suite` или `backend-orchestration` `init` дополнительно разворачивает в проект: `docs/agents/{artifacts,git-workflow,issue-tracker,test-author,triage-labels,worktrees}.md`, `.claude/hooks/*.sh` + их проводку в `.claude/settings.local.json` (заодно команда пишет её в `.harness/integrations.json`), `.claude/rules/karpathy-guidelines.md`, `.claude/agents/{pr-composer,test-author}.md` и само `.harness/project.json`. Каждый файл он пишет один раз, при отсутствии файла — как `AGENTS.md`/`CLAUDE.md`.
 
 - Этот справочник и руководство по backend-оркестрации — документация для разработчика: они лежат
   в `docs/` исходного репозитория и в целевой проект **не** попадают. Контракт интерактивного поиска
-  памяти — агентский документ, а не seed-файл. Он входит в управляемый снимок `pvmalove-suite` как
+  памяти — агентский документ, а не seed-файл. Он входит в управляемый снимок `engineering-suite` как
   `.harness/docs/project-memory.md`, и каждый `update` его обновляет.
 - Только `backend-orchestration` создаёт `.harness/orchestration/` и управляемый пример
   `.harness/orchestration.example.json` (входит в снимок, обновляется при каждом
@@ -346,7 +346,7 @@ python harness\bin\harness.py init C:\path\to\repository `
 остальное. Флаги `--capability` и pvmalove-флаги — как у `init`.
 
 ```bash
-python3 harness/bin/harness.py adopt /path/to/repository --capability pvmalove-suite --replace-conflicts
+python3 harness/bin/harness.py adopt /path/to/repository --capability engineering-suite --replace-conflicts
 ```
 
 #### `diff` — сверить с залоченным снимком
@@ -361,7 +361,7 @@ python3 harness/bin/harness.py diff /path/to/repository --json   # машино�
 #### `update` — подтянуть новую версию
 
 ```bash
-python3 harness/bin/harness.py update /path/to/repository --capability pvmalove-suite
+python3 harness/bin/harness.py update /path/to/repository --capability engineering-suite
 python3 harness/bin/harness.py update /path/to/repository --force-managed-files   # перезаписать snapshot
 python3 harness/bin/harness.py update /path/to/repository --force-seed-files      # перезаписать seed-файлы
 python3 harness/bin/harness.py update /path/to/repository --force-seed-file .claude/rules/token-efficiency.md   # только этот seed-файл
@@ -1778,7 +1778,7 @@ GITLAB_HOST=gitlab.example.com glab api projects/group%2Fproject/issues/102/note
 ├── .harness/            # управляемый снимок, lock, registry и optional overlays
 │   ├── docs/            # агентские контракты: technical-english.md и project-memory.md
 │   ├── skills/          # скиллы, видимые через .agents/skills и .claude/skills
-│   └── project.json     # язык, ветки, qa_gate_commands (pvmalove-suite)
+│   └── project.json     # язык, ветки, qa_gate_commands (engineering-suite)
 ├── .claude/             # rules, agents, hooks и локальные настройки Claude
 │   ├── rules/
 │   ├── agents/
