@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Доска задач веб-консоли</title>
+<style>
+:root{
+  --bg:#1f1e1c; --surface:#262523; --panel:#2e2c29; --row:#35302b; --sel:#45332c; --selfg:#f6baa3;
+  --fg:#ede8e1; --muted:#a39c92; --primary:#d97757; --ok:#8fb573; --warn:#e5a04b; --err:#e06c75; --info:#8fb3d9;
+  --rule:#3a3731; --edge:#7a7367;
+  --mono:"JetBrainsMono Nerd Font Mono","JetBrains Mono","DejaVu Sans Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body{margin:0;background:#12110f;color:var(--fg);font:14px/1.55 var(--mono);padding:28px 32px}
+button,select,input{font:inherit;color:inherit}
+a{color:var(--primary)}
+code{background:var(--bg);border:1px solid var(--rule);border-radius:4px;padding:0 4px;font-size:.95em}
+
+.caption{max-width:1440px;margin:0 auto 10px;color:#b9b2a7;font-size:13px;display:flex;flex-wrap:wrap;gap:6px 18px;justify-content:space-between}
+.caption b{color:#f0c9b8;font-weight:600}
+.demo{max-width:1440px;margin:0 auto 14px;display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;color:var(--muted);font-size:13px}
+.seg{display:inline-flex;border:1px solid var(--edge);border-radius:8px;overflow:hidden}
+.seg button{background:none;border:0;padding:5px 12px;cursor:pointer;color:var(--muted)}
+.seg button+button{border-left:1px solid var(--edge)}
+.seg button[aria-pressed="true"]{background:var(--sel);color:var(--selfg)}
+.btn{background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:6px 12px;cursor:pointer}
+.btn:hover{border-color:var(--primary)}
+.btn.primary{background:var(--sel);color:var(--selfg);border-color:#6b4a3c}
+.btn:disabled{opacity:.5;cursor:default}
+
+.app{margin:0 auto 32px;background:var(--bg);border:1px solid #000;border-radius:10px;overflow:hidden;display:grid;
+     grid-template-rows:56px 1fr 38px;box-shadow:0 20px 60px #0008;width:min(1440px,100%);height:920px}
+.app.narrow{width:min(780px,100%);height:880px}
+.top{background:var(--surface);border-bottom:1px solid var(--rule);display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 22px}
+.brand{display:flex;align-items:center;gap:12px;white-space:nowrap}
+.logo{width:26px;height:26px;border:1.5px solid var(--primary);border-radius:6px;color:var(--primary);display:grid;place-items:center;font-weight:700}
+.brand span{color:var(--muted)}
+.conn{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conn i{font-style:normal;color:var(--ok)}
+.conn.down i{color:var(--warn)}
+.body{display:grid;grid-template-columns:230px 1fr;min-height:0}
+.narrow .body{grid-template-columns:1fr}
+nav{background:var(--surface);border-right:1px solid var(--rule);padding:18px 14px}
+.narrow nav{display:none}
+nav h6{margin:2px 10px 14px;font-weight:400;color:var(--muted);font-size:13px;letter-spacing:.08em;text-transform:uppercase}
+nav a{display:flex;align-items:center;gap:10px;height:40px;padding:0 12px;border-radius:6px;color:var(--muted);text-decoration:none}
+nav a i{font-style:normal;width:14px;color:#827b71}
+nav a.on{background:var(--sel);color:var(--selfg);outline:1px solid #6b4a3c}
+nav a.on i{color:var(--selfg)}
+main{display:flex;flex-direction:column;min-width:0;min-height:0}
+.crumbs{padding:12px 24px;border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:10px;color:var(--muted);align-items:center}
+.crumbs b{color:var(--fg);font-weight:500}
+.crumbs select{background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:5px 10px;max-width:100%;min-width:0;flex:1 1 320px}
+.crumbs .count{margin-left:auto;white-space:nowrap}
+.tools{padding:10px 24px;border-bottom:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.tools input[type=search]{flex:1 1 240px;min-width:0;background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:6px 10px}
+.tools select{background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:6px 10px}
+.tools label{display:inline-flex;gap:6px;align-items:center;color:var(--muted);cursor:pointer;white-space:nowrap}
+.tools .age{color:var(--muted);margin-left:auto;white-space:nowrap}
+.banner{margin:10px 24px 0;padding:10px 14px;border:1px solid var(--rule);border-left:3px solid var(--warn);border-radius:8px;background:var(--surface)}
+.banner b{color:var(--warn)}
+.live{padding:6px 24px;color:var(--muted);font-size:13px;border-bottom:1px solid var(--rule);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.live i{font-style:normal;color:var(--primary)}
+
+.board{flex:1;min-height:0;display:grid;grid-template-columns:repeat(5,minmax(220px,1fr));gap:12px;padding:14px 24px 16px;overflow-x:auto}
+.narrow .board{grid-template-columns:repeat(5,minmax(250px,82%));scroll-snap-type:x mandatory}
+.col{background:var(--surface);border:1px solid var(--rule);border-radius:9px;display:flex;flex-direction:column;min-height:0;scroll-snap-align:start;transition:border-color .12s,background .12s}
+.col header{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid var(--rule)}
+.col header b{font-weight:600}
+.col header small{display:block;color:var(--muted);font-size:12px;font-weight:400}
+.col header .n{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:0 8px;color:var(--muted);font-size:12px}
+.col .cards{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
+.col.drop-ok{border-color:var(--ok);background:#2a2d25}
+.col.drop-no{border-color:var(--err);opacity:.65}
+.col .empty{color:var(--muted);font-size:13px;text-align:center;padding:18px 6px}
+.c-backlog header b{color:var(--muted)}.c-ready header b{color:var(--ok)}.c-progress header b{color:var(--primary)}
+.c-review header b{color:var(--warn)}.c-done header b{color:var(--info)}
+
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:8px;padding:10px 11px;cursor:grab;display:flex;flex-direction:column;gap:7px;outline:none}
+.card:hover,.card:focus-visible{border-color:var(--edge)}
+.card:focus-visible{box-shadow:0 0 0 2px var(--primary)}
+.card.dragging{opacity:.45}
+.card.flash{animation:flash 1.4s ease-out}
+@keyframes flash{0%{box-shadow:0 0 0 2px var(--primary);background:var(--sel)}100%{box-shadow:none}}
+.card .meta{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:12px}
+.card h4{margin:0;font-size:13.5px;font-weight:600;line-height:1.35}
+.card p{margin:0;color:var(--muted);font-size:12.5px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{border:1px solid var(--rule);background:var(--bg);border-radius:5px;padding:0 6px;font-size:12px;white-space:nowrap}
+.chip.cmd{color:var(--selfg);border-color:#6b4a3c}
+.chip.free{color:var(--ok)}
+.chip.blk{color:var(--warn)}
+.chip.role{color:var(--warn)}
+.chip.p0{color:var(--err);border-color:#6d3a3e}.chip.p1{color:var(--warn)}
+.chip.pending{color:var(--info)}
+.card .foot{display:flex;justify-content:space-between;color:var(--muted);font-size:12px}
+.card .foot a{text-decoration:none}
+
+.state{margin:auto;max-width:460px;text-align:center;color:var(--muted);padding:40px 20px}
+.state b{display:block;color:var(--fg);font-size:16px;margin-bottom:6px}
+.keys{background:var(--surface);border-top:1px solid var(--rule);display:flex;gap:18px;align-items:center;padding:0 22px;color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden}
+.keys b{color:var(--primary)}
+
+dialog{background:var(--surface);color:var(--fg);border:1px solid var(--edge);border-radius:12px;padding:0;box-shadow:0 30px 80px #000a}
+dialog::backdrop{background:#0009}
+#ticket{width:min(760px,calc(100vw - 32px));max-height:min(860px,calc(100vh - 40px))}
+#confirm{width:min(520px,calc(100vw - 32px))}
+.m-head{padding:18px 22px 12px;border-bottom:1px solid var(--rule);display:flex;flex-direction:column;gap:10px}
+.m-head .kicker{color:var(--primary);font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+.m-head h2{margin:0;font-size:18px;line-height:1.35}
+.m-head .x{position:absolute;top:14px;right:14px}
+.m-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.m-row select{background:var(--panel);border:1px solid var(--edge);border-radius:7px;padding:6px 10px}
+.m-row a.chip{text-decoration:none;color:var(--fg)}
+.tabs{display:flex;gap:4px;padding:0 22px;border-bottom:1px solid var(--rule)}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 12px;cursor:pointer;color:var(--muted)}
+.tabs button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--primary)}
+.m-body{padding:16px 22px 22px}
+.m-body h5{margin:14px 0 6px;color:var(--muted);font-weight:400;font-size:12px;letter-spacing:.08em;text-transform:uppercase}
+.m-body h5:first-child{margin-top:0}
+.m-body ul{margin:0;padding-left:18px}
+.m-body li{margin:3px 0}
+.m-body .what{white-space:pre-wrap}
+.pill{font-size:12px;border-radius:5px;padding:0 6px;border:1px solid var(--rule)}
+.pill.open{color:var(--warn)}.pill.closed{color:var(--ok)}.pill.ext{color:var(--muted)}
+pre.prompt{background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;white-space:pre-wrap;margin:0;font:13px/1.5 var(--mono)}
+.copyrow{display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px}
+.cf{padding:20px 22px;display:flex;flex-direction:column;gap:12px}
+.cf h3{margin:0;font-size:16px}
+.cf .diff{background:var(--bg);border:1px solid var(--rule);border-radius:8px;padding:10px 12px}
+.cf .diff s{color:var(--err)}.cf .diff ins{color:var(--ok);text-decoration:none}
+.cf small{color:var(--muted)}
+.cf .acts{display:flex;justify-content:flex-end;gap:8px}
+
+#toasts{position:fixed;right:18px;bottom:18px;display:flex;flex-direction:column;gap:8px;z-index:10;max-width:min(440px,calc(100vw - 36px))}
+.toast{background:var(--panel);border:1px solid var(--edge);border-left:3px solid var(--primary);border-radius:8px;padding:9px 12px;font-size:13px;box-shadow:0 10px 30px #0008}
+.toast.err{border-left-color:var(--err)}.toast.ok{border-left-color:var(--ok)}
+
+.sheet{max-width:1440px;margin:0 auto 32px;background:var(--surface);border:1px solid var(--rule);border-radius:10px;padding:22px 26px}
+.sheet h2{margin:0 0 4px;font-size:18px}
+.sheet h3{margin:22px 0 8px;font-size:15px}
+.sheet p,.sheet li{color:#cfc8be}
+.sheet table{border-collapse:collapse;width:100%;font-size:13px}
+.sheet th,.sheet td{border:1px solid var(--rule);padding:7px 10px;text-align:left;vertical-align:top}
+.sheet th{color:var(--muted);font-weight:400;background:var(--bg)}
+.sheet .yes{color:var(--ok)}.sheet .no{color:var(--err)}
+.tblwrap{overflow-x:auto}
+
+@media (max-width:820px){
+  body{padding:12px 16px}
+  .app{height:860px}
+  .body{grid-template-columns:1fr}
+  nav{display:none}
+  .board{grid-template-columns:repeat(5,minmax(250px,85%));scroll-snap-type:x mandatory}
+  .keys{display:none}
+  .app{grid-template-rows:56px 1fr 0}
+}
+</style>
+</head>
+<body>
+
+<div class="caption">
+  <span><b>RFC · Доска задач веб-консоли</b> · эпик #862 · референс к тикетам «макет доски» и «доска задач по спекам»</span>
+  <span>Демо-данные: подзадачи эпиков #862 и #784, снимок 2026-10-28</span>
+</div>
+<div class="demo" aria-label="Демо-управление">
+  <span>Ширина</span>
+  <span class="seg" id="demo-width">
+    <button type="button" data-v="wide" aria-pressed="true">широкая</button>
+    <button type="button" data-v="narrow" aria-pressed="false">узкая</button>
+  </span>
+  <span>Состояние</span>
+  <span class="seg" id="demo-state">
+    <button type="button" data-v="ok" aria-pressed="true">норма</button>
+    <button type="button" data-v="down" aria-pressed="false">трекер недоступен</button>
+    <button type="button" data-v="busy" aria-pressed="false">занято</button>
+    <button type="button" data-v="nospecs" aria-pressed="false">нет спек</button>
+  </span>
+  <button type="button" class="btn" id="simulate">▶ Симулировать: старт → QA → мердж</button>
+</div>
+
+<div class="app" id="app">
+  <div class="top">
+    <div class="brand"><span class="logo">H</span><b>Harness console</b><span>· claude-agent-harness</span></div>
+    <div class="conn" id="conn"><i>●</i> подключено к Серверу консоли</div>
+  </div>
+  <div class="body">
+    <nav aria-label="Разделы">
+      <h6>Разделы</h6>
+      <a href="#"><i>⌂</i>Главная</a>
+      <a href="#" class="on" aria-current="page"><i>▦</i>Доска задач</a>
+      <a href="#"><i>⇄</i>Оркестрация</a>
+      <a href="#"><i>≡</i>Отчёты</a>
+      <a href="#"><i>✚</i>Диагностика</a>
+      <a href="#"><i>◇</i>Repo Map</a>
+      <a href="#"><i>⚙</i>Настройка</a>
+      <a href="#"><i>?</i>Справка</a>
+    </nav>
+    <main>
+      <div class="crumbs">
+        <span>Доска задач</span><span>›</span>
+        <select id="spec" aria-label="Спека (эпик)"></select>
+        <span class="count" id="count"></span>
+      </div>
+      <div class="tools">
+        <input type="search" id="q" placeholder="Поиск: номер, заголовок, файл…" aria-label="Поиск по задачам">
+        <select id="prio" aria-label="Приоритет">
+          <option value="">Все приоритеты</option>
+          <option value="priority::p0">P0</option><option value="priority::p1">P1</option>
+          <option value="priority::p2">P2</option><option value="priority::p3">P3</option>
+        </select>
+        <label><input type="checkbox" id="free"> только без блокеров</label>
+        <button type="button" class="btn" id="reset">Сбросить</button>
+        <button type="button" class="btn" id="refresh">↻ Обновить</button>
+        <span class="age" id="age"></span>
+      </div>
+      <div id="banner"></div>
+      <div class="live" id="live"><i>●</i> события ledger и трекера появляются здесь</div>
+      <div class="board" id="board"></div>
+    </main>
+  </div>
+  <div class="keys"><span><b>/</b> поиск</span><span><b>Enter</b> открыть карточку</span><span><b>перетаскивание</b> или выбор статуса в карточке — смена status::*</span><span><b>Esc</b> закрыть</span></div>
+</div>
+
+<dialog id="ticket" aria-labelledby="t-title"></dialog>
+<dialog id="confirm" aria-labelledby="c-title"></dialog>
+<div id="toasts" aria-live="polite"></div>
+
+<section class="sheet" id="rules">
+  <h2>Правила доски</h2>
+  <p>Доска — проекция трекера и ledger. Статус тикета пишут <code>/implement</code>, <code>/fast-implement</code>,
+  <code>/to-pull-requests</code> и человек через перенос карточки. Других источников статуса нет.</p>
+
+  <h3>Спеки</h3>
+  <p>Одна доска на спеку (эпик). GitHub: открытые issue с sub-issues. GitLab: issue, на которые ссылается маркер
+  <code>## Parent: #N</code> подзадач. Локальный трекер: каталоги <code>.scratch/&lt;feature-slug&gt;/</code>.
+  Тикеты, которые создал <code>/to-tickets</code>, появляются на доске своей спеки при следующем обновлении.</p>
+
+  <h3>Колонки</h3>
+  <div class="tblwrap"><table>
+    <tr><th>Колонка</th><th>Тикет</th></tr>
+    <tr><td>Бэклог</td><td>открыт, <code>status::blocked</code> или без <code>status::*</code></td></tr>
+    <tr><td>Готово к работе</td><td>открыт, <code>status::ready</code></td></tr>
+    <tr><td>В работе</td><td>открыт, <code>status::in-progress</code>; <code>/implement</code> и <code>/fast-implement</code> ставят метку в pre-flight</td></tr>
+    <tr><td>Review / QA</td><td>открыт, <code>status::in-progress</code>, текущий dispatch его batch — ревью или QA, либо открыт PR/MR задачи</td></tr>
+    <tr><td>Готово</td><td>закрыт после подтверждённого мерджа; закрытые с <code>resolution::wontfix</code> не показываются</td></tr>
+  </table></div>
+  <p>После подтверждения мерджа <code>/to-pull-requests</code> закрывает тикет и переводит зависимые без открытых
+  блокеров в <code>status::ready</code>. Доска показывает оба перехода без перезагрузки страницы.</p>
+
+  <h3>Перенос карточки</h3>
+  <div class="tblwrap"><table>
+    <tr><th>Откуда → куда</th><th>Результат</th></tr>
+    <tr><td>Бэклог → Готово к работе</td><td class="yes">разрешён, если все блокеры закрыты; иначе отказ со списком открытых блокеров</td></tr>
+    <tr><td>Готово к работе → Бэклог</td><td class="yes">разрешён</td></tr>
+    <tr><td>Готово к работе → В работе</td><td class="yes">разрешён</td></tr>
+    <tr><td>В работе → Готово к работе</td><td class="yes">разрешён, если у тикета нет активного batch</td></tr>
+    <tr><td>Бэклог → В работе, В работе → Бэклог</td><td class="no">отказ: переход идёт через «Готово к работе»</td></tr>
+    <tr><td>любая → Review / QA, любая → Готово</td><td class="no">отказ: первую колонку вычисляют ledger и PR, вторую заполняет закрытие после мерджа</td></tr>
+    <tr><td>из Review / QA, из Готово</td><td class="no">отказ: активный batch или закрытый тикет</td></tr>
+  </table></div>
+  <p>Смена статуса — команда каталога консоли класса <code>external-change</code>. Сервер требует подтверждения,
+  запускает её как мутирующий job и заменяет метку, а не добавляет вторую: на GitLab прежняя метка снимается явно,
+  в локальном трекере меняется строка <code>**Workflow:**</code>. Пока идёт другая мутирующая команда, перенос
+  получает отказ «занято: &lt;job&gt;». Выбор статуса в модальном окне — те же переходы для клавиатуры и узкого экрана.</p>
+
+  <h3>Промпт агента</h3>
+  <div class="tblwrap"><table>
+    <tr><th>Метки тикета</th><th>Команда</th></tr>
+    <tr><td><code>afk</code> + <code>pipeline::fast</code></td><td><code>/fast-implement #N</code></td></tr>
+    <tr><td><code>afk</code> + <code>pipeline::full</code>, или <code>afk</code> без <code>pipeline::*</code></td><td><code>/implement #N</code> (полный цикл — безопасный вариант по умолчанию)</td></tr>
+    <tr><td><code>hitl</code></td><td><code>/to-guide #N</code></td></tr>
+  </table></div>
+  <p>После команды идут тикет, эпик, интеграционная ветка, блокеры, «What to build», критерии приёмки и Discovery
+  Context из тела тикета. Кнопка копирует промпт целиком.</p>
+
+  <h3>Данные и обновление</h3>
+  <ul>
+    <li>Снимок доски собирает слой снимков, клиент получает его по WebSocket от Сервера консоли.</li>
+    <li>Трекер читается через <code>gh</code>, <code>glab</code> или файлы <code>.scratch/</code> с кэшем по TTL и без изменения локального состояния.</li>
+    <li>Кэш сбрасывают кнопка «Обновить», успешная смена статуса и событие ledger по тикету открытой доски.</li>
+    <li>Если трекер недоступен, доска показывает последний снимок, его возраст и причину, а перенос получает отказ.</li>
+    <li>Текст тикета — недоверенные данные: страница выводит его как текст и не превращает Markdown в HTML.</li>
+    <li>Подписи ru/en идут через слой перевода консоли. Выбранная спека запоминается в браузере зрителя.</li>
+  </ul>
+
+  <h3>Вне рамок</h3>
+  <ul>
+    <li>Доска в TUI.</li>
+    <li>Создание и редактирование тикетов с доски.</li>
+    <li>Закрытие тикета с доски и перенос в «Review / QA» или «Готово».</li>
+    <li>Синхронизация с GitHub Projects и досками GitLab.</li>
+  </ul>
+</section>
+
+<script type="application/json" id="board-data">{"specs":[{"n":862,"title":"feat(console): Веб-консоль — полная браузерная альтернатива пульту","branch":"integration/web-console","tickets":[{"n":863,"title":"docs(adr): ADR «Веб-консоль» и термины глоссария","closed":true,"labels":["afk","task-report::required","pipeline::fast","type::chore"],"what":"Записан ADR «Веб-консоль» по шаблону ADR: модель Сервера консоли (один сервер на проект, клиенты — TUI и браузер, WebSocket на loopback с токеном, discovery-файл, выход при простое), частичная замена ADR 0009 (TUI больше не самодостаточен, fallback «текстовый health» сохраняется), модель безопасности (Host и Origin, токен, только GET для страниц), явно принятый остаточный риск самоодобрения неизолированным агентом по модели доверия ADR 0021 и отложенный Docker-режим. Заодно коммитятся правки `CONTEXT.md` с терминами «Веб-консоль» и «Сервер консоли», оставшиеся незакоммиченными после `/to-spec`.","criteria":["ADR создан, ссылается на ADR 0009, 0021 и 0025 и указывает, какие положения ADR 0009 заменены","Остаточный риск самоодобрения записан явно с принятой моделью доверия","Docker-режим назван вне поставки со ссылкой на причины","Термины «Веб-консоль» и «Сервер консоли» из `CONTEXT.md` попали в ветку интеграции"],"blockers":[],"files":[{"path":"docs/adr/0009-harness-console.md","why":"какая часть контракта заменяется"},{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"модель доверия и граница, на которую ссылается риск"},{"path":"docs/adr/0025-container-executor.md","why":"граница, из-за которой Docker-режим откладывается"}],"sp":2},{"n":864,"title":"feat(console): Сервер консоли — запуск, токен, проверки Host и Origin","closed":true,"labels":["afk","task-report::required","pipeline::full","type::feature"],"what":"Локальный сервер консоли на Python asyncio: слушает только `127.0.0.1` на случайном порту, пишет discovery-файл проекта (права 0600: порт, токен, pid), принимает WebSocket-подключения с токеном и проверкой Host и Origin на handshake, отвечает на ping, отдаёт страницы только по GET и HEAD, завершается после grace-периода простоя при отсутствии клиентов и активных job. Появляется сетевой тестовый шов: тесты поднимают сервер на эфемерном порту над фикстурой-проектом.","criteria":["Сервер привязан только к `127.0.0.1`, флага `--host` нет","Discovery-файл создаётся с правами 0600 и содержит порт, токен и pid; на Windows права выставляются через ACL","WebSocket без токена, с чужим Origin или Host отклоняется; методы кроме GET и HEAD для страниц дают 405","Сервер завершается после grace-периода, если нет клиентов и активных job, и не завершается при активном job","Сетевой тест на эфемерном порту проверяет перечисленное клиентом `websockets` и HTTP-клиентом"],"blockers":[],"files":[{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"модель токена и доверия, которую повторяет discovery-файл"},{"path":"harness/console/launcher.py","why":"клиент запускает сервер автоматически"}],"sp":8},{"n":865,"title":"feat(console): запуск `--web`, пины websockets и Jinja2, fallback","closed":true,"labels":["afk","task-report::required","pipeline::fast","type::feature"],"what":"`harness console --web` печатает URL с токеном, открывает браузер (`--no-open` отключает) и завершается; сервер живёт по правилу простоя. Зависимости `websockets` и Jinja2 поставляются через `uv run --with` по образцу Textual: единый pin, дубль в dev-группе, тест равенства. Если `uv` не найден или запуск не удался, команда (и запуск TUI) печатает причину и текстовый `harness health` с кодом 1; TUI без сервера не стартует.","criteria":["`--web` печатает URL с токеном, открывает браузер и завершается; `--no-open` не открывает браузер","Pins `websockets` и Jinja2 заданы в одном месте, продублированы в dev-группе, тест проверяет равенство","Без `uv` или при сбое запуска печатается причина и текстовый health, код возврата 1, для `--web` и для TUI","Существующие тесты launcher обновлены под новое поведение"],"blockers":[{"n":864,"why":"запускает точку входа сервера"}],"files":[{"path":"docs/adr/0009-harness-console.md","why":"прежний контракт fallback и launcher"},{"path":"harness/console/launcher.py","why":"точка входа `console` и перезапуск через `uv`"},{"path":"harness/console/app.py","why":"путь запуска TUI, который теперь требует сервера"}],"sp":3},{"n":866,"title":"feat(console): снимок «Главная» по WebSocket и слой снимков","closed":true,"labels":["afk","task-report::required","pipeline::full","type::feature"],"what":"Stdlib-слой типизированных снимков фактов без Rich и Textual и запрос снимка «Главная» по WebSocket: счётчики health, drift, батчи, кэш Repo Map, политика памяти. Дорогие проверки выполняются по запросу или с коротким TTL, повторные запросы в пределах TTL отдают кэш.","criteria":["Запрос снимка Home по WebSocket возвращает те же факты, что показывает TUI","Слой снимков импортируется без `textual` и `rich`","Дорогая проверка не запускается повторно в пределах TTL; принудительное обновление пересобирает снимок","Сетевой тест проверяет снимок на фикстурах: проект без `.harness/`, health с ошибкой, оркестрация не подключена"],"blockers":[{"n":864,"why":"доставка снимка идёт по протоколу сервера"}],"files":[{"path":"harness/console/data.py","why":"сбор health и drift, который переходит в слой снимков"},{"path":"harness/console/screens/dashboard.py","why":"сегодняшняя сборка контекста Home"},{"path":"harness/console/repo_map.py","why":"кэш Repo Map для карточки Home"},{"path":"harness/console/reports.py","why":"данные дашборда выполнения"}],"sp":5},{"n":867,"title":"feat(console): job команды — запуск, вывод с курсором, переподключение","closed":true,"labels":["afk","task-report::required","pipeline::full","type::feature"],"what":"Команда каталога запускается на сервере как job с id и буфером вывода. Вывод стримится клиентам по WebSocket с курсором; обрыв соединения job не останавливает, клиент переподключается и читает с нужного смещения. Job принадлежит серверу, а не клиенту.","criteria":["Запуск команды по её id из каталога создаёт job и возвращает его id","Вывод приходит потоком; клиент после обрыва получает недостающий вывод по курсору без дублей","Закрытие клиента не останавливает job; завершённый job доступен по id с кодом возврата","Тесты используют подменённый исполнитель команд, реальные процессы не запускаются"],"blockers":[{"n":864,"why":"транспорт и авторизация сервера"}],"files":[{"path":"harness/console/catalog.py","why":"декларативный каталог команд и их argv"},{"path":"harness/console/runner.py","why":"стык запуска процессов с перехватом вывода"},{"path":"harness/console/screens/commands.py","why":"как TUI запускает команды и показывает вывод"},{"path":"harness/console/coordinator_catalog.py","why":"coordinator-команды каталога"}],"sp":5},{"n":868,"title":"feat(console): подтверждения по обратимости, одна мутирующая команда, отмена","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::in-progress"],"what":"Сервер проверяет подтверждение по классу `Reversibility` команды так же, как TUI. На проект разрешена одна мутирующая команда; вторая получает отказ «занято: \u003cjob>», чтения и live-потоки не блокируются. Отмена идущего job — явное действие с подтверждением.","criteria":["Необратимая команда без подтверждения на сервере отклоняется, независимо от клиента","Вторая мутирующая команда при активной первой получает отказ «занято» с id активного job","Команды чтения запускаются параллельно с мутирующей","Отмена требует подтверждения и останавливает процесс job; статус job отражает отмену"],"blockers":[{"n":867,"why":"работает поверх job команды"}],"files":[{"path":"harness/console/catalog.py","why":"классы обратимости и причины подтверждения"},{"path":"harness/console/runner.py","why":"управление процессом при отмене"},{"path":"harness/console/screens/commands.py","why":"текущий поток подтверждений в TUI"},{"path":"harness/console/ledger_lock.py","why":"существующая блокировка ledger, с которой должна согласоваться новая"}],"sp":5,"dispatch":"qa"},{"n":869,"title":"feat(console): журнал команд","closed":false,"labels":["afk","task-report::required","pipeline::fast","type::feature","status::blocked"],"what":"Локальный append-only журнал команд, запущенных из любого клиента: время, клиент, argv с маскированием секретов, класс обратимости, код возврата. Audit-цепочка Rust и контракт coordinator не меняются.","criteria":["Каждый запуск job добавляет запись; записи только дописываются","Секреты в argv замаскированы в журнале","Журнал содержит клиент (TUI или браузер), класс обратимости и код возврата"],"blockers":[{"n":867,"why":"журналирует запуски job"}],"files":[{"path":"harness/console/runner.py","why":"точка, где известны argv и результат запуска"}],"sp":2},{"n":870,"title":"feat(console): решения человека через сервер","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Dispatch approval, ответ на native permission и терминальные решения coordinator выполняются из клиента через сервер, с теми же подтверждениями. Список ожидающих решений попадает в снимок.","criteria":["Ожидающие решения видны в снимке с достаточным контекстом","Approval, ответ на permission и терминальное решение выполняются через сервер с подтверждением","Решение записывается в журнал команд","Тесты не одобряют ничего вне подменённого окружения"],"blockers":[{"n":868,"why":"используют серверные подтверждения и блокировку"}],"files":[{"path":"harness/console/catalog.py","why":"команды решений и их классы обратимости"},{"path":"harness/orchestration/runtime_permissions.py","why":"запросы и ответы на native permission"},{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"граница доверия, в которой выполняются решения"},{"path":"harness/orchestration/coordinator.py","why":"поток approval dispatch"}],"sp":5},{"n":871,"title":"feat(console): live-события оркестрации","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Сервер опрашивает ledger и store оркестрации по курсору примерно раз в секунду и отправляет клиентам diff по WebSocket: переходы batch и dispatch, gates, QA. Rust runtime не меняется.","criteria":["Новое событие оркестрации доходит до подписанного клиента за интервал опроса","Клиент после переподключения получает пропущенные события по курсору","Источник недоступен — клиент получает понятное состояние, а не обрыв"],"blockers":[{"n":866,"why":"использует слой снимков и транспорт снимков"}],"files":[{"path":"harness/console/reports.py","why":"чтение ledger и модель событий"},{"path":"harness/console/screens/orchestration.py","why":"что экран показывает сегодня"},{"path":"harness/console/data.py","why":"загрузчики данных для снимков"}],"sp":5},{"n":872,"title":"feat(console): live-шаги агентов Claude и Codex","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Сервер читает шаги работающих worker по смещению и отправляет их клиентам. Для Claude — структурированные шаги из лога адаптера; для Codex — хвост plain-лога с пометкой «структура недоступна». Содержимое ограничено allowlist наблюдения: имена и текст инструментов, без thinking, входов и raw JSON.","criteria":["Шаги Claude приходят структурированно и не содержат thinking, входов инструментов и raw JSON","Для Codex приходит хвост лога с пометкой, что структура недоступна","Отсутствие или нечитаемость лога даёт явное состояние, исход worker не зависит от наблюдения","Наблюдение никого не вызывает и не меняет состояние"],"blockers":[{"n":871,"why":"использует канал живых событий"}],"files":[{"path":"harness/orchestration/worker_observation.py","why":"правила наблюдения и allowlist"},{"path":"harness/orchestration/adapters/claude_code.py","why":"структурированный лог Claude"},{"path":"harness/adapters/codex_worker.py","why":"только plain-лог Codex"},{"path":"harness/orchestration/runtime_permissions.py","why":"ожидающие запросы worker в потоке шагов"},{"path":"harness/adapters/claude_worker.py","why":"запуск worker и путь лога"},{"path":"harness/console/screens/worker_observation.py","why":"текущее представление шагов в TUI"}],"sp":8},{"n":873,"title":"feat(console): TUI — клиент сервера и экран «Главная»","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"TUI подключается к серверу консоли как клиент (discovery-файл и токен), экран «Главная» получает снимок от сервера вместо собственного сбора. Внешнее условие: тикет редизайна «Главной» в #720 закрыт. Существующие Pilot-тесты и SVG-снимки продолжают проходить с подменённым клиентом.","criteria":["TUI находит или запускает сервер и подключается; без сервера не стартует (fallback из ADR)","«Главная» получает данные от сервера; визуально и по тестам неизменна","Pilot-тесты и SVG-снимки Home проходят с подменённым клиентом"],"blockers":[{"n":865,"why":"запуск сервера для TUI и fallback"},{"n":866,"why":"снимок Home"}],"files":[{"path":"harness/console/screens/dashboard.py","why":"экран, который переходит на снимок сервера"},{"path":"harness/console/data.py","why":"сбор, переходящий в слой снимков"},{"path":"harness/console/app.py","why":"подключение клиента при старте TUI"},{"path":"harness/console/shell.py","why":"общая оболочка экранов"}],"sp":8},{"n":874,"title":"feat(console): «Диагностика» и «Harness» — снимок и TUI-клиент","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Снимки экранов «Диагностика» и «Harness» в слое снимков; TUI-экраны получают данные и запускают команды через клиент сервера. Внешнее условие: тикеты редизайна этих экранов в #720 закрыты.","criteria":["Снимки экранов доступны по WebSocket","TUI-экраны работают от клиента сервера и проходят существующие тесты","Применение исправлений health идёт как job на сервере"],"blockers":[{"n":873,"why":"клиент TUI и подключение к серверу"},{"n":868,"why":"команды этих экранов (исправления, запуск) идут через сервер"}],"files":[{"path":"harness/console/data.py","why":"сбор health и каталога"},{"path":"harness/console/screens/diagnostics.py","why":"экран «Диагностика»"},{"path":"harness/console/screens/harness.py","why":"экран «Harness»"}],"sp":5},{"n":875,"title":"feat(console): «Отчёты», «Оркестрация», «Восстановление», «Контейнерный запуск» — снимок и TUI-клиент","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Снимки экранов «Отчёты», «Оркестрация», «Восстановление» и «Контейнерный запуск»; TUI-экраны переходят на клиент сервера. Внешнее условие: тикеты редизайна этих экранов в #720 закрыты.","criteria":["Снимки четырёх групп экранов доступны по WebSocket","TUI-экраны проходят существующие тесты с подменённым клиентом","Действия восстановления идут через сервер с подтверждениями"],"blockers":[{"n":873,"why":"клиент TUI и подключение к серверу"},{"n":868,"why":"действия экранов идут через сервер"}],"files":[{"path":"harness/console/reports.py","why":"модель ledger и отчётов"},{"path":"harness/console/screens/reports.py","why":"экран «Отчёты»"},{"path":"harness/console/screens/orchestration.py","why":"экран «Оркестрация»"},{"path":"harness/orchestration/container_executor.py","why":"данные экрана «Контейнерный запуск»"}],"sp":8},{"n":876,"title":"feat(console): «Repo Map» и память — снимок и TUI-клиент","closed":false,"labels":["afk","task-report::required","pipeline::fast","type::feature","status::blocked"],"what":"Снимок экрана «Repo Map» (карта, настройки, статус памяти); экран получает данные и запускает построение через клиент сервера. Внешнее условие: тикет редизайна экрана в #720 закрыт.","criteria":["Снимок Repo Map доступен по WebSocket","Построение карты выполняется как job на сервере","Существующие тесты экрана проходят"],"blockers":[{"n":873,"why":"клиент TUI и подключение к серверу"},{"n":868,"why":"построение карты запускается как job"}],"files":[{"path":"harness/console/repo_map.py","why":"модель карты и кэш"},{"path":"harness/console/screens/repo_map.py","why":"экран «Repo Map»"},{"path":"harness/console/repo_map_settings.py","why":"настройки и статус памяти на экране"}],"sp":3},{"n":877,"title":"feat(console): «Открыть проект» и «Справка» — снимок и TUI-клиент","closed":false,"labels":["afk","task-report::required","pipeline::fast","type::feature","status::blocked"],"what":"Снимки экранов «Открыть проект» (кандидаты, состояние установки) и «Справка»; TUI-экраны переходят на клиент сервера. Внешнее условие: тикеты редизайна этих экранов в #720 закрыты.","criteria":["Снимки двух экранов доступны по WebSocket","Выбор проекта в браузере не поддерживается: сервер привязан к одному проекту, экран показывает команду для другого","Существующие тесты экранов проходят"],"blockers":[{"n":873,"why":"клиент TUI и подключение к серверу"},{"n":868,"why":"действия установки идут через сервер"}],"files":[{"path":"harness/console/screens/project_setup.py","why":"экран «Открыть проект»"},{"path":"harness/console/project_target.py","why":"выбор проекта и план установки"},{"path":"harness/console/screens/help.py","why":"экран «Справка»"},{"path":"harness/console/help_text.py","why":"текст справки"}],"sp":3},{"n":878,"title":"feat(console): «Обновить Harness» и «Настройка» — снимок и TUI-клиент","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Снимки экранов «Обновить Harness» (дрейф, diff обновления) и «Настройка»; TUI-экраны переходят на клиент сервера, изменяющие действия выполняются как job с подтверждением. Внешнее условие: тикеты редизайна экранов в #720 закрыты.","criteria":["Снимки двух экранов доступны по WebSocket","Обновление и запись настроек выполняются как job с подтверждением по классу обратимости","Существующие тесты экранов проходят"],"blockers":[{"n":873,"why":"клиент TUI и подключение к серверу"},{"n":868,"why":"обновление и запись настроек идут через сервер"}],"files":[{"path":"harness/console/data.py","why":"diff обновления и дрейф"},{"path":"harness/console/screens/update_harness.py","why":"экран «Обновить Harness»"},{"path":"harness/console/screens/configuration.py","why":"экран «Настройка»"},{"path":"harness/console/configuration.py","why":"логика экрана настройки"}],"sp":8},{"n":879,"title":"docs(design): UI/UX-аудит принятых макетов консоли","closed":false,"labels":["afk","task-report::required","pipeline::fast","type::chore","status::ready"],"what":"Аудит навыком `ui-ux-audit` принятых макетов консоли как основы веб-версии: избыточность, пробелы (узкая ширина, пустые и ошибочные состояния, отсутствие навигации и интерактива), список улучшений для веба. Результат — документ в `docs/design/`. Исходные макеты и TUI-редизайн #720 не меняются.","criteria":["Отчёт аудита сохранён в `docs/design/`","В отчёте перечислены пробелы и улучшения для веба с приоритетами","Исходные макеты не изменены"],"blockers":[],"files":[{"path":"docs/design/console-mockups/","why":"предмет аудита"}],"sp":2},{"n":880,"title":"docs(design): макеты веб-консоли — каркас, «Главная», команды, подтверждения, состояния","closed":false,"labels":["hitl","task-report::required","type::chore","status::blocked"],"what":"Новые HTML-макеты веб-консоли: каркас и навигация, «Главная», запуск команд и вывод, диалоги подтверждения, состояния соединения (подключено, переподключение, нет сервера), адаптивная вёрстка, пустые и ошибочные состояния. Макеты принимает человек; без приёмки веб-код не стартует.","criteria":["Макеты лежат в `docs/design/web-console-mockups/` и открываются локально без внешних ресурсов","Покрыты широкая и узкая ширина, пустые и ошибочные состояния, состояния соединения","Человек принял макеты (комментарий в тикете)"],"blockers":[{"n":879,"why":"выводы аудита входят в макеты"}],"files":[{"path":"docs/design/console-mockups/","why":"исходный дизайн и общий `console.css`"}],"sp":null},{"n":881,"title":"docs(design): макеты веб-консоли — остальные экраны и live-лист шагов","closed":false,"labels":["hitl","task-report::required","type::chore","status::blocked"],"what":"Макеты остальных экранов веб-консоли и нового листа живых шагов агентов и оркестрации (Claude структурно, Codex хвост лога с пометкой, шаги оркестрации). Макеты принимает человек.","criteria":["Макеты всех экранов и live-листа лежат рядом с макетами ядра","Для Codex показано состояние «структура недоступна»","Человек принял макеты (комментарий в тикете)"],"blockers":[{"n":880,"why":"переиспользует принятый каркас и компоненты"}],"files":[{"path":"docs/design/console-mockups/","why":"исходные макеты экранов"}],"sp":null},{"n":882,"title":"feat(console): веб — каркас и «Главная»","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Страницы Jinja2 по принятым макетам: каркас, навигация, «Главная» со снимком по WebSocket, состояние соединения, переключение ru/en, тонкий JS с переподключением. Копия CSS поставляется в пакете, отдельный тест проверяет её побайтное равенство с CSS новых макетов.","criteria":["Главная открывается по URL с токеном и обновляется по WebSocket","При обрыве страница показывает состояние переподключения и возвращается к работе","ru/en переключается и соответствует TUI","Тест равенства копии CSS с CSS макетов проходит","Сетевой тест проверяет состав блоков и подписи страницы; ручной чек-лист совпадения с макетом приложен к PR"],"blockers":[{"n":864,"why":"сервер и авторизация"},{"n":866,"why":"снимок Home"},{"n":880,"why":"принятые макеты каркаса"}],"files":[{"path":"docs/design/console-mockups/","why":"источник CSS для копии и ориентир дизайна"},{"path":"harness/console/i18n.py","why":"существующий слой перевода ru/en"},{"path":"harness/console/i18n_strings.py","why":"строки для переиспользования"}],"sp":8},{"n":883,"title":"feat(console): веб — запуск команд, вывод, подтверждения","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"В вебе можно запустить команду каталога, смотреть вывод в реальном времени, получать диалог подтверждения по классу обратимости, видеть состояние «занято» и отменять job с подтверждением. После обрыва вывод восстанавливается.","criteria":["Команда запускается из веба, вывод идёт потоком","Необратимая команда требует подтверждения, как в TUI","При «занято» показывается активный job; отмена требует подтверждения","После обрыва соединения вывод продолжается с нужного места"],"blockers":[{"n":882,"why":"каркас и страницы"},{"n":868,"why":"серверные подтверждения и блокировка"}],"files":[{"path":"harness/console/catalog.py","why":"команды и классы обратимости для интерфейса"},{"path":"harness/console/runner.py","why":"поведение вывода и отмены"},{"path":"harness/console/screens/commands.py","why":"поток запуска, который нужно повторить в вебе"}],"sp":5},{"n":884,"title":"feat(console): веб — решения человека","closed":false,"labels":["afk","task-report::required","pipeline::fast","type::feature","status::blocked"],"what":"Веб-интерфейс ожидающих решений: dispatch approval, ответ на native permission и терминальные решения coordinator с подтверждением.","criteria":["Ожидающие решения показаны с контекстом","Решения выполняются с подтверждением и попадают в журнал"],"blockers":[{"n":883,"why":"интерфейс запуска и подтверждений"},{"n":870,"why":"серверная часть решений"}],"files":[{"path":"harness/orchestration/runtime_permissions.py","why":"форма запросов, которую рисует интерфейс"}],"sp":3},{"n":885,"title":"feat(console): веб — live-лист шагов агентов и оркестрации","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Лист живых шагов: шаги Claude и хвост лога Codex с пометкой, шаги оркестрации (batch, dispatch, gates, QA) в одном понятном списке с фильтрами по dispatch и роли.","criteria":["Шаги появляются без перезагрузки страницы","Для Codex показана пометка «структура недоступна»","Лист не показывает thinking, входы инструментов и raw JSON","Ручной чек-лист совпадения с макетом приложен к PR"],"blockers":[{"n":882,"why":"каркас и страницы"},{"n":872,"why":"поток шагов агентов"},{"n":881,"why":"принятый макет live-листа"}],"files":[{"path":"harness/console/screens/worker_observation.py","why":"что показывает текущее наблюдение"},{"path":"harness/orchestration/worker_observation.py","why":"источник данных шагов"}],"sp":8},{"n":886,"title":"feat(console): веб — «Диагностика» и «Harness»","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Веб-страницы «Диагностика» и «Harness» по принятым макетам, команды выполняются через запуск команд.","criteria":["Страницы показывают те же факты, что TUI","Команды экранов запускаются из веба с подтверждениями","Ручной чек-лист совпадения с макетом приложен к PR"],"blockers":[{"n":882,"why":"каркас"},{"n":874,"why":"снимки группы"},{"n":881,"why":"принятые макеты"}],"files":[{"path":"harness/console/screens/diagnostics.py","why":"что экран показывает"},{"path":"harness/console/screens/harness.py","why":"что экран показывает"},{"path":"harness/console/data.py","why":"источник снимков группы"}],"sp":5},{"n":887,"title":"feat(console): веб — «Отчёты», «Оркестрация», «Восстановление», «Контейнерный запуск»","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Веб-страницы четырёх экранов по принятым макетам, действия восстановления идут через запуск команд с подтверждением.","criteria":["Страницы показывают те же факты, что TUI","Действия восстановления требуют подтверждения","Ручной чек-лист совпадения с макетом приложен к PR"],"blockers":[{"n":882,"why":"каркас"},{"n":875,"why":"снимки группы"},{"n":881,"why":"принятые макеты"}],"files":[{"path":"harness/console/screens/reports.py","why":"что экран показывает"},{"path":"harness/console/screens/orchestration.py","why":"что экран показывает"},{"path":"harness/console/reports.py","why":"модель данных отчётов"},{"path":"harness/orchestration/container_executor.py","why":"данные экрана контейнерного запуска"}],"sp":8},{"n":888,"title":"feat(console): веб — «Repo Map»","closed":false,"labels":["afk","task-report::required","pipeline::fast","type::feature","status::blocked"],"what":"Веб-страница «Repo Map» (карта, настройки, статус памяти), построение карты запускается как job.","criteria":["Страница показывает те же факты, что TUI","Построение карты запускается из веба","Ручной чек-лист совпадения с макетом приложен к PR"],"blockers":[{"n":882,"why":"каркас"},{"n":876,"why":"снимки группы"},{"n":881,"why":"принятые макеты"}],"files":[{"path":"harness/console/screens/repo_map.py","why":"что экран показывает"},{"path":"harness/console/repo_map_settings.py","why":"настройки на странице"}],"sp":3},{"n":889,"title":"feat(console): веб — «Открыть проект», «Обновить Harness», «Настройка», «Справка»","closed":false,"labels":["afk","task-report::required","pipeline::full","type::feature","status::blocked"],"what":"Веб-страницы четырёх экранов по принятым макетам. «Открыть проект» показывает кандидатов и команду для запуска веб-консоли в другом проекте; сервер остаётся привязанным к одному проекту. Изменяющие действия идут через запуск команд с подтверждением.","criteria":["Страницы показывают те же факты, что TUI","Обновление и запись настроек требуют подтверждения","Смена проекта из браузера невозможна","Ручной чек-лист совпадения с макетом приложен к PR"],"blockers":[{"n":882,"why":"каркас"},{"n":877,"why":"снимки «Открыть проект» и «Справка»"},{"n":878,"why":"снимки «Обновить» и «Настройка»"},{"n":881,"why":"принятые макеты"}],"files":[{"path":"harness/console/screens/project_setup.py","why":"что экран показывает"},{"path":"harness/console/screens/update_harness.py","why":"что экран показывает"},{"path":"harness/console/screens/configuration.py","why":"что экран показывает"},{"path":"harness/console/screens/help.py","why":"что экран показывает"}],"sp":8}]},{"n":784,"title":"Harness Next: Rust runtime, единый ledger, Release Gate","branch":"integration/harness-runtime-reliability","tickets":[{"n":781,"title":"Rewind, risk reassessment и инварианты состояний","closed":true,"labels":["type::feature","afk","pipeline::full","priority::p0"],"what":"Устранить нерешаемый цикл risk → review → QA после rewind; объявить допустимые transition invariants и обеспечить идемпотентность. Это логическая проблема, решаемая в той же целевой архитектуре.","criteria":["risk_reassessment_required=true только с достижимым candidate или явным pending marker","Повторный risk assess того же принятого candidate не отправляет в лишний review","QA после законного review достижим; illegal transition отвергается до записи","Rewind, новый кандидат и audit не стирают историю и approvals"],"blockers":[],"files":[{"path":"harness/orchestration/workflow/recovery.py","why":""},{"path":"harness/orchestration/workflow/risk.py","why":""},{"path":"harness/orchestration/workflow/dispatch.py","why":""},{"path":"tests/orchestration/test_recovery.py","why":""},{"path":"tests/orchestration/test_qa_lane.py","why":""}],"sp":8,"track":"State & Recovery"},{"n":788,"title":"chore(harness-next): импорт integration/orchestration-ledger","closed":true,"labels":["type::feature","afk","pipeline::fast","priority::p0"],"what":"В HN-ветке работает правило #780: `qa run` освобождает QA-lease после сбоя на занятом ledger. Ветка `integration/orchestration-ledger` (1 коммит, 7cef1d7) импортирована одним squash-PR по ADR 0026.","criteria":["Ветка импорта `feature/issue-\u003cID>-import-\u003cисточник>` создана по ADR 0026, раздел 2; исходная ветка не переписана, force push не использовался.","Тело PR перечисляет SHA источника и решение ADR 0026 (раздел 1) для каждого коммита.","`rg -n \"runtime_state_store|runtime_intent|runtime\\.(state|operation_kind|operation_phase|effect_state|failure_code)\" harness tests` на голове PR — без совпадений.","Полный `make verify` в CI на голове импорт-PR зелёный.","После merge #774 закрыт, если у него нет открытых подзадач."],"blockers":[],"files":[{"path":"harness/orchestration/qa_lane.py","why":"изменение #780"},{"path":"tests/orchestration/test_qa_lane.py","why":"тесты #780"},{"path":"harness/orchestration/workflow/local_qa.py","why":"потребитель QA-lease"},{"path":"tests/orchestration/test_integration_local_qa.py","why":"проверка lease через локальный QA"}],"sp":3,"track":"Integration"},{"n":789,"title":"chore(harness-next): импорт integration/container-executor и ADR 0025","closed":true,"labels":["type::feature","afk","pipeline::fast","priority::p0"],"what":"В HN-ветке есть контейнерный исполнитель (#704–#708, #752, #766, #770, #771, #775, #782), а ADR контейнерного исполнителя называется `0025-container-executor.md`. Номер 0018 остаётся за `0018-ci-windows-subset.md`.","criteria":["Ветка импорта `feature/issue-\u003cID>-import-\u003cисточник>` создана по ADR 0026, раздел 2; исходная ветка не переписана, force push не использовался.","Тело PR перечисляет SHA источника и решение ADR 0026 (раздел 1) для каждого коммита.","`rg -n \"runtime_state_store|runtime_intent|runtime\\.(state|operation_kind|operation_phase|effect_state|failure_code)\" harness tests` на голове PR — без совпадений.","Полный `make verify` в CI на голове импорт-PR зелёный.","`docs/adr/0018-container-executor.md` переименован в `docs/adr/0025-container-executor.md`; ссылки в самом ADR, `CONTEXT.md` и коде исправлены.","После merge Integration Branch открытых #710 и #711 изменён на `integration/harness-runtime-reliability`."],"blockers":[{"n":788,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0018-container-executor.md","why":"переименовывается в 0025"},{"path":"harness/orchestration/container_executor.py","why":"импортируемый исполнитель"},{"path":"harness/orchestration/workflow/container_status.py","why":"импортируемый статус контейнера"},{"path":"harness/orchestration/workflow/failure_classifier.py","why":"классификатор #771"},{"path":"harness/orchestration/runtime_access.py","why":"план доступа исполнителя"},{"path":"harness/orchestration/extensions.py","why":"точка подключения исполнителя"},{"path":"harness/cleanup.py","why":"очистка ресурсов dispatch"},{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"ссылки на ADR 0025"},{"path":"docs/adr/0022-process-oci-supervisor.md","why":"ссылки на ADR 0025"},{"path":"tests/orchestration/test_container_executor.py","why":"тесты исполнителя"},{"path":"tests/orchestration/test_container_lifecycle.py","why":"тесты жизненного цикла"},{"path":"tests/orchestration/test_failure_classifier.py","why":"тесты классификатора"}],"sp":3,"track":"Integration"},{"n":790,"title":"chore(harness-next): импорт systemFields.v1 (#690) без словарей runtime.*","closed":false,"labels":["type::feature","status::ready","afk","pipeline::full","priority::p0"],"what":"В HN-ветке работают реестр `systemFields.v1`, normalizer конфигурации и pinned configuration snapshot из ccc1d1e (#690). Словари Python store `runtime.*` и `runtime_state_contract` не импортированы.","criteria":["Тело PR перечисляет SHA источника и решение ADR 0026 (раздел 1) для каждого коммита.","`rg -n \"runtime_state_store|runtime_intent|runtime\\.(state|operation_kind|operation_phase|effect_state|failure_code)\" harness tests` на голове PR — без совпадений.","Полный `make verify` в CI на голове импорт-PR зелёный.","Ветка импорта создана от головы HN; ccc1d1e перенесён `git cherry-pick -x`; `core/runtime_state_contract.py` и поля `runtime.state`, `runtime.operation_kind`, `runtime.operation_phase`, `runtime.effect_state`, `runtime.failure_code` удалены вместе с их тестами.","Конфликты `contract.py`, `core/constants.py`, `configuration_schema.py` разрешены против кода container-executor.","ADR 0026, раздел 1, строка 7719682 (#746) уточнена: policy восстановления (`recovery_api.py`, `operational_hold.py`) переносится в тикет команд восстановления, на Rust заменяется только store; тесты Superseded-коммитов — сценарии приёмки тикетов store, супервизора и восстановления.","После merge Integration Branch #685 изменён на `integration/harness-runtime-reliability`."],"blockers":[{"n":789,"why":"результат предшественника"}],"files":[{"path":"harness/orchestration/contract.py","why":"конфликт с container-executor"},{"path":"harness/orchestration/operational_guards.py","why":"pinned configuration в approval"},{"path":"harness/orchestration/core/config.py","why":"normalizer конфигурации"},{"path":"harness/orchestration/core/constants.py","why":"конфликт с container-executor"},{"path":"tests/orchestration/test_contract.py","why":"контракт реестра"},{"path":"tests/orchestration/test_contract_hardening.py","why":"контракт констант"},{"path":"tests/orchestration/test_operational_guards.py","why":"guard-ы pinned configuration"}],"sp":8,"track":"Integration"},{"n":791,"title":"chore(harness-next): импорт integration/console-redesign","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"В HN-ветке есть редизайн консоли (#720). `integration/console-redesign` заморожена на голове, с которой импортирована.","criteria":["Ветка импорта `feature/issue-\u003cID>-import-\u003cисточник>` создана по ADR 0026, раздел 2; исходная ветка не переписана, force push не использовался.","Тело PR перечисляет SHA источника и решение ADR 0026 (раздел 1) для каждого коммита.","`rg -n \"runtime_state_store|runtime_intent|runtime\\.(state|operation_kind|operation_phase|effect_state|failure_code)\" harness tests` на голове PR — без совпадений.","Полный `make verify` в CI на голове импорт-PR зелёный.","Конфликты `runtime_access.py`, `workflow/delivery.py`, `CONTEXT.md`, `CHANGELOG.md` разрешены в merge-коммите ветки импорта.","После merge Integration Branch #725, #742, #743, #744 и #748 изменён на `integration/harness-runtime-reliability`, их метки `status::blocked` сняты по правилу трекера."],"blockers":[{"n":790,"why":"результат предшественника"}],"files":[{"path":"harness/orchestration/runtime_access.py","why":"конфликт пробного слияния"},{"path":"harness/orchestration/workflow/dispatch.py","why":"наблюдение запуска worker-а (#716)"},{"path":"harness/orchestration/workflow/delivery.py","why":"конфликт пробного слияния"},{"path":"tests/orchestration/test_runtime_access.py","why":"проверка разрешения конфликта"},{"path":"tests/orchestration/test_dispatch_hardening.py","why":"проверка dispatch после слияния"},{"path":"tests/orchestration/test_delivery_hardening.py","why":"проверка delivery после слияния"}],"sp":8,"track":"Integration"},{"n":792,"title":"feat(runtime): Rust workspace, Linux UDS IPC и runtime_client","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Coordinator подключается к `harness-runtime serve` по Unix domain socket: рукопожатие `hello` с проверкой peer и токена, версии протокола и каталог ошибок. Python-клиент `runtime_client` возвращает типизированные ошибки с кодом 2, а CI собирает и проверяет Rust.","criteria":["Cargo workspace `native/harness-runtime`: crate protocol, server, client-контракты; safe Rust; `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` в CI.","Сокет и токен по ADR 0021 §2 (`0700`/`0600`, `SO_PEERCRED`); чужой uid или неверный токен → `unauthorized_peer`.","Кадр u32 + JSON, `hello` с согласованием major/minor; несовместимый major → `protocol_unsupported`, код 2; неизвестное поле → `malformed_request`.","Коды ошибок и домены отказов (ADR 0021 §3) внесены в `systemFields.v1`; drift-проверка реестра против Rust и Python валит CI.","`runtime_client` повторяет запрос с тем же `operation_id` до `request_deadline`; недоступный runtime → `runtime_unavailable`, без fallback-записи.","Тесты на seam 1: настоящий процесс runtime и coordinator CLI."],"blockers":[{"n":791,"why":"результат предшественника"},{"n":790,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"транспорт, протокол, коды ошибок"},{"path":"docs/adr/0019-unified-rust-runtime-verification.md","why":"границы crate"},{"path":"harness/orchestration/contract.py","why":"типы контракта для клиента"},{"path":"harness/orchestration/extensions.py","why":"подключение runtime"},{"path":"harness/orchestration/runtime_access.py","why":"граница Python policy"},{"path":".github/workflows/verify.yml","why":"задачи cargo в CI"},{"path":"harness/errors.py","why":"контракт кода 2 и REMEDY"},{"path":"tests/orchestration/test_runtime_access.py","why":"prior art клиента"}],"sp":8,"track":"Rust Runtime"},{"n":796,"title":"feat(runtime): IPC через Windows named pipe","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"На Windows coordinator подключается к runtime через named pipe с DACL текущего пользователя и проверкой SID клиента; лёгкое Windows-задание CI проверяет контракт.","criteria":["`\\\\.\\pipe\\harness-runtime-\u003crepo-id>` с DACL только на SID пользователя и `PIPE_REJECT_REMOTE_CLIENTS`.","Чужой SID → `unauthorized_peer`.","Тот же протокол и тесты контракта, что на Linux; Windows-задание CI не запускает полный `make verify`."],"blockers":[{"n":792,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"транспорт Windows"},{"path":".github/workflows/verify.yml","why":"лёгкое Windows-задание"},{"path":"harness/health/checks/windows.py","why":"Windows-проверки health"},{"path":"tests/health/test_health_checks_windows.py","why":"тесты Windows-проверок"}],"sp":8,"track":"Rust Runtime"},{"n":797,"title":"feat(runtime): схема store и harness-runtime migrate с чтением через runtime","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"`harness-runtime migrate` переносит state-каталог 1.x в `runtime.db` одной операцией со снимком, сверкой паритета и точкой фиксации. После cutover команды чтения coordinator (`dispatch status`, `batch list`, `batch decision-packet`, `qa status`) отвечают из store.","criteria":["Шаги 1–7 ADR 0020 §5; коды выхода 0/2/3/4; повтор после commit → `already_cut_over`.","Паритет сверяет Rust по каноническим записям; legacy audit импортирован побайтно с `manifest_sha256`.","Repair #781 при импорте с audit-записью `migration-repair`.","Чтение при `version = 4` идёт только через `runtime_client`.","Каждый сценарий из `tests/orchestration/test_ledger_migration.py@b69eed1` и `tests/orchestration/test_ledger_migration_faults.py@b69eed1` имеет эквивалент на seam 1 или обоснованный отказ в PR.","SIGKILL на каждом шаге migrate с повтором; legacy-запись во время импорта → код 4."],"blockers":[{"n":792,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0020-runtime-store-cutover.md","why":"миграция, шаги 1–7"},{"path":"harness/orchestration/ledger/lifecycle.py","why":"формат legacy-записей"},{"path":"harness/orchestration/ledger/ledger_admin.py","why":"вердикты legacy-замка"},{"path":"harness/orchestration/ledger/ledger_ops.py","why":"точки захвата замка"},{"path":"harness/orchestration/qa_lane.py","why":"формат QA-lane"},{"path":"tests/orchestration/test_ledger.py","why":"prior art ledger"},{"path":"tests/orchestration/test_coordinator.py","why":"процессные тесты CLI"},{"path":"scripts/clean_room/ledger_migration.py","why":"clean-room сценарий миграции"},{"path":"tests/orchestration/test_lifecycle_hardening.py","why":"prior art записи"},{"path":"tests/orchestration/test_ledger_lock_environment.py","why":"замок в разных окружениях"}],"sp":8,"track":"State & Recovery"},{"n":801,"title":"feat(runtime): запись lifecycle через store — CAS, идемпотентность, audit-цепочка","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Все мутации batch и dispatch идут через Rust store: CAS по `revision`, таблица `operations`, audit-цепочка с checkpoint и CHECK-инварианты. `ledger validate --full` обнаруживает удаление, вставку и перестановку записей.","criteria":["Транзакции `BEGIN IMMEDIATE`, порядок `batch → qa_lane → generation`; `revision_conflict`, `store_busy`, `runtime_unavailable` различаются в REMEDY.","`operations.state = intent|committed|failed`; повтор с тем же `operation_id` → сохранённый результат; другой payload → `idempotency_conflict`.","Audit-цепочка и `audit_checkpoint`; удалённый checkpoint → полная проверка.","CHECK: `risk_reassessment_required ⇒ candidate OR pending_next`; терминальный `DispatchState` при исполнении `unknown|launching|running` → `invariant_violation`.","Каждый сценарий из `test_runtime_intent.py`, `test_runtime_state_store.py`, `test_runtime_state_faults.py`, `test_ledger_strict_boundaries.py` (`tests/orchestration/`@b69eed1) имеет эквивалент на seam 1 или обоснованный отказ в PR.","Принимает критерии #778."],"blockers":[{"n":797,"why":"результат предшественника"},{"n":781,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0003-orchestration-core.md","why":"граница lifecycle и approval"},{"path":"docs/adr/0020-runtime-store-cutover.md","why":"транзакции и audit"},{"path":"docs/adr/0021-runtime-authority-ipc.md","why":"идемпотентность и состояния"},{"path":"harness/orchestration/ledger/lifecycle.py","why":"текущая запись"},{"path":"harness/orchestration/ledger/ledger_ops.py","why":"точки записи"},{"path":"harness/orchestration/workflow/recovery.py","why":"rewind пишет через store"},{"path":"harness/orchestration/workflow/risk.py","why":"риск-флаги и CHECK"},{"path":"harness/orchestration/workflow/reports.py","why":"приём отчёта"},{"path":"harness/orchestration/workflow/dispatch.py","why":"переходы dispatch"},{"path":"tests/orchestration/test_ledger.py","why":"prior art"},{"path":"tests/orchestration/test_recovery.py","why":"prior art rewind"},{"path":"harness/orchestration/ledger/recovery_chain.py","why":"текущая цепочка recovery"},{"path":"harness/orchestration/workflow/recovery_events.py","why":"запись recovery-событий"},{"path":"tests/orchestration/test_lifecycle_hardening.py","why":"prior art записи"}],"sp":8,"track":"State & Recovery"},{"n":803,"title":"feat(runtime): откат в legacy, версии схемы store и golden-паритет CLI","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"`harness-runtime rollback --to-legacy` экспортирует store в новое поколение v3, которое проверяет `ledger validate` 1.x. Схема store мигрирует только вперёд, а golden-тест CI подтверждает одинаковые ответы CLI 1.x и 2.0.0.","criteria":["Откат требует human approval (`--approved-by`, `--approved-at`, `--reason`), остановленных исполнений и пустого QA-lane; архив `runtime-export/\u003cstore_id>.tar` с sha256 в audit.","Поколение v3 проходит `ledger validate` последнего релиза 1.x на фикстурах со всеми `DispatchState`.","`PRAGMA user_version`, только прямые миграции; схема новее runtime → код 2 без записи.","Golden-тест паритета CLI в CI."],"blockers":[{"n":801,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0020-runtime-store-cutover.md","why":"откат и версия схемы"},{"path":"harness/orchestration/ledger/lifecycle.py","why":"формат v3"},{"path":"tests/orchestration/test_coordinator.py","why":"процессные тесты CLI"},{"path":"scripts/clean_room/ledger_migration.py","why":"clean-room сценарий"},{"path":"tests/core/test_harness_cli_hardening.py","why":"CLI-контракт"},{"path":"tests/orchestration/test_lifecycle_hardening.py","why":"prior art записи"}],"sp":8,"track":"State & Recovery"},{"n":804,"title":"feat(runtime): параллельные batch, lease и fencing QA-lane","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Два coordinator пишут в разные batch без ожидания, чтение не блокируется, QA-lane остаётся singleton с fencing, а lease мёртвого владельца снимается без оператора.","criteria":["Два процесса coordinator пишут в разные batch → оба коммита без `ledger_busy`.","`expires_at` только запускает проверку живости по идентичности процесса; живой владелец → `lease_held` + `stale_heartbeat`; PID reuse и другой namespace не снимают lease.","Снятие QA-lease с чужим `fencing_token` → `fencing_mismatch`.","Принимает критерии #777 и #779."],"blockers":[{"n":801,"why":"результат предшественника"}],"files":[{"path":"harness/orchestration/qa_lane.py","why":"QA-lane"},{"path":"harness/orchestration/ledger/ledger_admin.py","why":"вердикты замка"},{"path":"tests/orchestration/test_qa_lane.py","why":"prior art"},{"path":"tests/orchestration/test_ledger_lock_environment.py","why":"PID namespace"},{"path":"scripts/clean_room/parallel_batches.py","why":"clean-room параллельных batch"},{"path":"harness/orchestration/workflow/batch.py","why":"граница batch"},{"path":"tests/orchestration/test_integration_local_qa.py","why":"fencing через локальный QA"},{"path":"tests/orchestration/test_workspace.py","why":"изоляция batch"}],"sp":8,"track":"State & Recovery"},{"n":805,"title":"feat(runtime): Rust-супервизор процессов на Linux и reconcile","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Runtime запускает и останавливает процессы исполнения по сохранённому brief в три шага (intent, запуск, receipt) и после SIGKILL или рестарта усыновляет их через reconcile без повторного запуска.","criteria":["Идентичность процесса: `boot_id`, PID-namespace, `pid`, время старта; PID сам по себе не доказательство.","Состояния `launching → running → stopping → exited | lost | unknown`; `unknown` не терминально.","Остановка по `execution_deadline` с `stop_grace_seconds`; lease освобождается после доказанной остановки.","Failpoint «commit, затем обрыв ответа» → движок видит один запуск; SIGKILL runtime между шагами 2 и 3 → receipt без второго запуска.","Каждый сценарий из `test_runtime_reconcile_faults.py`, `test_runtime_effect.py`, `test_runtime_effect_faults.py`, `test_runtime_emergency.py` (`tests/orchestration/`@b69eed1) имеет эквивалент на seam 1 или обоснованный отказ в PR."],"blockers":[{"n":801,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0022-process-oci-supervisor.md","why":"модель супервизора"},{"path":"harness/orchestration/extensions.py","why":"переход запуска к Rust"},{"path":"harness/orchestration/workflow/dispatch.py","why":"dispatch send"},{"path":"harness/orchestration/workflow/startup.py","why":"оценка запуска worker-а"},{"path":"tests/orchestration/test_startup_assessment.py","why":"prior art"},{"path":"scripts/clean_room/dispatch_watchdog.py","why":"наблюдение за зависшим запуском"},{"path":"harness/orchestration/runtime_probe.py","why":"идентичность процесса"}],"sp":8,"track":"Rust Runtime"},{"n":806,"title":"feat(runtime): супервизор на Windows Job Objects","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"На Windows исполнение живёт в именованном Job Object, переживает рестарт runtime и останавливается через `CTRL_BREAK`, затем `TerminateJobObject`.","criteria":["Job Object без `KILL_ON_JOB_CLOSE`, имя производное от `operation_id`; идентичность — `pid` и время создания.","Reconcile после рестарта runtime находит Job Object; Windows-задание CI проверяет контракт."],"blockers":[{"n":805,"why":"результат предшественника"},{"n":796,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0022-process-oci-supervisor.md","why":"платформа Windows"},{"path":"harness/health/checks/windows.py","why":"Windows-проверки"},{"path":"tests/health/test_health_checks_windows.py","why":"тесты Windows-проверок"}],"sp":8,"track":"Rust Runtime"},{"n":807,"title":"feat(runtime): OCI-контейнеры worker-а на Rust","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Worker-контейнер запускает, проверяет, останавливает и удаляет Rust через трейт `Engine` для Docker и Podman; Python больше не формирует argv и не вызывает движок.","criteria":["Матрица `EngineMatrixChecks` (8 комбинаций) экспортирована в golden-фикстуры и проходит `cargo test`.","Inspect, status и cleanup на Podman-хосте вызывают `podman`.","Сокет движка или runtime в плане монтирования (в том числе через symlink) → `policy_denied` по `realpath`.","Python-функция `run_engine` удалена; решения ADR 0025 о монтированиях, сети, env и digest сохранены.","Сироты чужого репозитория не затрагиваются."],"blockers":[{"n":805,"why":"результат предшественника"}],"files":[{"path":"harness/orchestration/container_executor.py","why":"переносимая граница run_engine"},{"path":"harness/orchestration/workflow/container_status.py","why":"статус через runtime"},{"path":"harness/cleanup.py","why":"очистка через runtime"},{"path":"harness/orchestration/runtime_access.py","why":"план остаётся в Python"},{"path":"docs/adr/0022-process-oci-supervisor.md","why":"контейнеры и запреты"},{"path":"harness/health/checks/runtime_sandbox.py","why":"доступность движка"},{"path":"tests/health/test_health_runtime_sandbox.py","why":"тесты доступности"},{"path":"tests/orchestration/test_container_executor.py","why":"EngineMatrixChecks → golden"},{"path":"tests/orchestration/test_container_lifecycle.py","why":"prior art жизненного цикла"}],"sp":8,"track":"Isolation"},{"n":793,"title":"feat(verification): ChangeImpact, VerificationPlan и impact-gate","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Developer и review получают focused-план проверок по изменённым модулям и их обратным зависимостям; неизвестное влияние расширяет план до полного. `dispatch propose` review и QA отказывает, если план не покрывает затронутые тесты.","criteria":["`ImpactSet`: `changed`, `impacted_modules`, `related_tests`, `unknown` с причинами по ADR 0023 §1.","План в brief; `verification_plan_sha256` в `OPTIONAL_TRANSITION_FIELDS`; изменение конфига после approval не меняет dispatch.","`conftest.py`, `pyproject.toml`, `uv.lock`, переименованный модуль, превышение порога → `full`.","Непокрытый impacted-тест → `impact_not_covered`, код 2.","Словари `selection` и `kind` внесены в реестр."],"blockers":[{"n":790,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0023-incremental-verification.md","why":"ChangeImpact и план"},{"path":"harness/context_builder/context_builder.py","why":"related_tests #757"},{"path":"harness/repo_map/","why":"граф импортов"},{"path":"harness/orchestration/core/config.py","why":"профили #756"},{"path":"harness/orchestration/workflow/batch.py","why":"заморозка команд"},{"path":"harness/orchestration/operational_guards.py","why":"verification_plan_sha256"},{"path":"tests/orchestration/test_verification_profiles.py","why":"prior art"},{"path":"tests/orchestration/test_retry_verification.py","why":"prior art"},{"path":"harness/repo_map/repo_map.py","why":"источник графа"},{"path":"harness/repo_map/graph.py","why":"обратное замыкание"},{"path":"harness/repo_map/repo_map.schema.json","why":"схема входа"},{"path":"tests/repo_map/test_repo_map.py","why":"тесты графа"}],"sp":8,"track":"Verification"},{"n":798,"title":"feat(verification): failed-only, stage evidence и кэши по fingerprint","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"После падения developer перезапускает только упавшие nodeid с кэшем своего worktree; пустой выбор даёт `not_run`, а не `pass`. Каждая стадия хранит evidence со ссылками на stdout и stderr.","criteria":["Кэш в `.harness/.sandboxes/cache/\u003cworktree-id>/\u003cenvironment_fingerprint>/`; кэш другого fingerprint игнорируется.","`--ff` не считается failed-only; исчезнувший nodeid → `focused`; пустой `--lf` → `not_run`.","Stage evidence: `stage_id`, `candidate_sha`, digest-ы, fingerprint, `pass|fail|not_run`, exit code, раздельные stdout/stderr с sha256, длительность, упавшие nodeid."],"blockers":[{"n":793,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0023-incremental-verification.md","why":"failed-only и кэши"},{"path":"scripts/verify.py","why":"кэши pytest и mypy"},{"path":"scripts/verification/process.py","why":"запуск стадий"},{"path":"harness/gate_runner/gate_runner.py","why":"stage evidence"},{"path":"tests/core/test_gate_runner.py","why":"prior art"},{"path":"harness/orchestration/core/report_evidence.py","why":"evidence отчёта"},{"path":"tests/scripts/test_verify_cli.py","why":"флаги verify"},{"path":"tests/scripts/test_verification_command_routing.py","why":"маршрутизация стадий"}],"sp":8,"track":"Verification"},{"n":810,"title":"feat(runtime): clean-room QA в контейнере через Rust","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Каждая команда QA выполняется в foreground-контейнере `--rm --init` из образа, закреплённого в brief QA-dispatch; stage evidence сохраняется, а SIGTERM останавливает контейнер и освобождает lane.","criteria":["Образ QA закрепляется при propose QA; отсутствующий или несовпавший digest → блокер с кодом 2 до запуска.","Exit code: 125 → `infrastructure`, 126/127 → `tooling`, 128+N → `cancelled` или `unknown`; таймаут → `timeout`.","Повтор QA после `infrastructure`/`environment_preparation` — новый `attempt`, бюджет developer-а не расходуется.","Недошедшие команды → `not_run` всегда.","Принимает критерии #709."],"blockers":[{"n":807,"why":"результат предшественника"},{"n":798,"why":"результат предшественника"},{"n":804,"why":"результат предшественника"}],"files":[{"path":"harness/gate_runner/gate_runner.py","why":"ExecutionPolicy для Rust"},{"path":"harness/orchestration/qa_lane.py","why":"lease QA"},{"path":"scripts/test_clean_room.py","why":"24 сценария целиком"},{"path":"harness/orchestration/runtime_access.py","why":"закрепление образа QA"},{"path":"tests/orchestration/test_qa_lane.py","why":"prior art"},{"path":"tests/core/test_gate_runner.py","why":"prior art"}],"sp":8,"track":"Isolation"},{"n":812,"title":"feat(runtime): Release Gate с привязкой к дереву и qa_evidence_verify","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p0"],"what":"Push и merge кандидата разрешены только при полном QA пары `{candidate_sha, target_sha}`; после squash-merge дерево сверяется с `candidate_tree_sha`.","criteria":["Запись пары хранит `candidate_tree_sha`; `qa_evidence_verify` возвращает вердикт и нарушения.","Голова цели ушла вперёд → merge отказан; дерево после squash не совпало → блокер; CI без `integration collect-ci` пару не подтверждает.","`to-pull-requests` сверяет дерево после подтверждённого merge."],"blockers":[{"n":801,"why":"результат предшественника"},{"n":810,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0026-harness-next-consolidation.md","why":"Release Gate"},{"path":"harness/orchestration/workflow/dispatch.py","why":"publish"},{"path":"harness/orchestration/workflow/integration.py","why":"integration next"},{"path":"harness/orchestration/workflow/qa_integration.py","why":"QA пары"},{"path":"tests/orchestration/test_integration_record.py","why":"prior art записи пары"}],"sp":8,"track":"Release"},{"n":794,"title":"feat(hooks): профили hooks, резолвер, привязка digest и protect-hook-policy","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"Проект выбирает `hook_policy.profile` (`minimal|standard|strict`, по умолчанию `standard`); резолвер считает `hook_policy_sha256`, который закрепляется в brief; агент не может изменить ключ `hook_policy`.","criteria":["Схема и `validate_project_json` меняются вместе; понижение через `escalations` отвергается.","`HOOK_PROFILE` из окружения и параметры инструментов игнорируются.","`hook_policy_sha256` в `OPTIONAL_TRANSITION_FIELDS`, `allowed_tools` в transition digest.","`protect-hook-policy`: Edit/Write разрешены при неизменном `hook_policy`, shell-запись в `.harness/project.json` блокируется.","Ответ hook — JSON `{hook_id, profile, decision, reason_code, remedy, evidence_ref}`; `hook_id` и `reason_code` в реестре.","Матрица 3 профиля × 4 роли для критических guard-ов."],"blockers":[{"n":790,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0024-hook-profiles.md","why":"профили и матрица"},{"path":"harness/project/project.schema.json","why":"ключ hook_policy"},{"path":"harness/health/project_files.py","why":"валидатор схемы"},{"path":"harness/project/hooks/","why":"hooks и ответ JSON"},{"path":"harness/orchestration/operational_guards.py","why":"digest в approval"},{"path":"harness/orchestration/contract.py","why":"brief"},{"path":"harness/project/project.json.tmpl","why":"шаблон проекта"},{"path":"tests/core/test_project_hooks_hardening.py","why":"prior art hooks"},{"path":"tests/orchestration/test_operational_guards.py","why":"approval-привязки"}],"sp":8,"track":"Hook Security"},{"n":808,"title":"feat(runtime): модуль политики Rust для операций runtime","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"Запуск и QA, которые исполняет Rust, проходят авторитетную проверку политики по сохранённому `hook_policy_sha256`, а не только hook-скрипты coding runtime.","criteria":["Несовпадение `hook_policy_sha256` с brief → `approval_mismatch`.","Изменение конфига после approval не меняет решение по запущенному dispatch."],"blockers":[{"n":794,"why":"результат предшественника"},{"n":805,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0024-hook-profiles.md","why":"граница Rust policy"},{"path":"harness/orchestration/operation_access.py","why":"доступ операций"},{"path":"tests/orchestration/test_operation_access.py","why":"prior art"}],"sp":8,"track":"Hook Security"},{"n":802,"title":"feat(hooks): ChangeImpact-hooks и fail-closed границы strict","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"`standard` предупреждает при первом касании рискованного пути и о неотчитанных targeted-проверках; `strict` перепроверяет чувствительные пути и отказывает на `dispatch propose` review/QA, `qa run` и publish без покрытия.","criteria":["`impact-first-touch`, `targeted-check-reminder`, `sensitive-path-recheck` по матрице ADR 0024 §2a; дедупликация по `(hook_id, событие, digest, operation_id)`.","`strict` не блокирует каждый вызов, не запускает полный набор и не блокирует команды восстановления.","Внутренняя ошибка поведенческого hook-а разрешает."],"blockers":[{"n":794,"why":"результат предшественника"},{"n":793,"why":"результат предшественника"}],"files":[{"path":"harness/project/hooks/","why":"новые hook_id"},{"path":"docs/adr/0024-hook-profiles.md","why":"матрица §2a"},{"path":"harness/project/hooks/require-bounded-check.sh","why":"соседний поведенческий hook"},{"path":"harness/project/hooks/require-qa-gate.sh","why":"граница publish"},{"path":"tests/core/test_project_hooks_hardening.py","why":"prior art"}],"sp":8,"track":"Hook Security"},{"n":799,"title":"feat(hooks): установка и обновление hooks, второй runtime, health","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"`harness init|update` сливает настройки hooks, сохраняя пользовательские, ставит адаптер второго coding runtime и через `harness health` показывает effective profile и отсутствующие hooks. `start-project` и `integrate-project` ставят `standard`.","criteria":["Слияние по пути команды managed hook; конфликт → предупреждение без перезаписи; повторный `update` идемпотентен.","Legacy-проект без ключа ведёт себя как сейчас.","`harness health` → `hooks.policy`: профиль, источник, эскалации, присутствие и исполняемость критических hooks, события, которых нет у runtime."],"blockers":[{"n":794,"why":"результат предшественника"}],"files":[{"path":"harness/project/settings.local.json.tmpl","why":"managed hooks"},{"path":"harness/bin/harness.py","why":"init/update"},{"path":"harness/health/","why":"проверка hooks.policy"},{"path":"global-skills/start-project/SKILL.md","why":"установка профиля"},{"path":"global-skills/integrate-project/SKILL.md","why":"установка профиля"},{"path":"scripts/clean_room/project_hooks.py","why":"clean-room hooks"},{"path":"scripts/clean_room/install_and_update.py","why":"clean-room обновления"},{"path":"tests/core/test_install_project_test_runner.py","why":"prior art установки"},{"path":"tests/core/test_project_hooks_hardening.py","why":"prior art hooks"}],"sp":8,"track":"Hook Security"},{"n":800,"title":"feat(runtime): типизированные домены отказов и retry-политика","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"Отказ на любом шаге получает домен из таксономии ADR 0019; `infrastructure`, `environment_preparation`, `policy`, `tooling` и `unknown` не расходуют retry developer-а без доказанного дефекта кода.","criteria":["Код ошибки протокола в первой строке `REMEDY:` как `[\u003ccode>]`.","Неизвестный отказ fail-closed как `unknown`, не как `code_test`.","Офлайн `uv sync` → `environment_preparation`."],"blockers":[{"n":792,"why":"результат предшественника"}],"files":[{"path":"harness/orchestration/workflow/failure_classifier.py","why":"классификатор #771"},{"path":"harness/orchestration/workflow/recovery.py","why":"retry-маршруты"},{"path":"harness/orchestration/infrastructure_retry.py","why":"infra retry"},{"path":"tests/orchestration/test_failure_classifier.py","why":"prior art"},{"path":"tests/orchestration/test_infrastructure_retry_policy.py","why":"prior art"}],"sp":8,"track":"State & Recovery"},{"n":809,"title":"feat(runtime): команды восстановления поверх Rust store","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"Оператор и консоль (#711) восстанавливают batch через команды, которые читают и пишут Rust store. Policy восстановления из #746 перенесена, а не переписана.","criteria":["`recovery_api.py` и `operational_hold.py` перенесены из 7719682 через `git cherry-pick -x` и переключены с `runtime_state_store` на `runtime_client`.","Каждый сценарий из `test_recovery_api.py`, `test_recovery_commands.py`, `test_runtime_compatibility.py` (`tests/orchestration/`@b69eed1) имеет эквивалент на seam 1 или обоснованный отказ в PR.","Approval- и liveness-gate-ы восстановления сохранены; агент не выполняет действия, требующие human approval.","#711 получает backend; связь добавлена."],"blockers":[{"n":801,"why":"результат предшественника"},{"n":805,"why":"результат предшественника"},{"n":791,"why":"результат предшественника"}],"files":[{"path":"harness/orchestration/workflow/recovery.py","why":"rewind и восстановление"},{"path":"harness/orchestration/ledger/ledger_admin.py","why":"lock-status, release-lock"},{"path":"harness/orchestration/workflow/recovery_events.py","why":"recovery-события"},{"path":"harness/orchestration/ledger/recovery_chain.py","why":"цепочка recovery"},{"path":"tests/console/test_console_orchestration.py","why":"backend консоли"},{"path":"tests/orchestration/test_recovery.py","why":"prior art"}],"sp":8,"track":"State & Recovery"},{"n":813,"title":"chore(ci): fault-injection и security CI","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::full","priority::p1"],"what":"CI проверяет сбои и границы безопасности на seam 1: SIGKILL coordinator и runtime, потерянный ACK, PID reuse, подменённый audit, сокеты в монтированиях, чужие lease.","criteria":["Матрица из #784 «Reliability and correctness»: SIGKILL, lost IPC, orphan worker, double start, PID reuse, stale lease, partial artifact, image mismatch, SELinux EPERM, offline install, conflicting batches.","Каждый сценарий — отдельный тест с понятным именем; падение не маскируется retry."],"blockers":[{"n":804,"why":"результат предшественника"},{"n":810,"why":"результат предшественника"},{"n":808,"why":"результат предшественника"},{"n":800,"why":"результат предшественника"}],"files":[{"path":".github/workflows/verify.yml","why":"задания CI"},{"path":"scripts/test_clean_room.py","why":"clean-room"},{"path":"harness/orchestration/ledger/recovery_chain.py","why":"подмена audit"},{"path":"harness/orchestration/runtime_probe.py","why":"PID reuse"},{"path":"tests/orchestration/test_runtime_probe.py","why":"prior art"}],"sp":8,"track":"Assurance"},{"n":811,"title":"chore(ci): smoke на Fedora SELinux с rootless Podman","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::hitl","priority::p1"],"what":"Self-hosted runner или VM с Fedora, SELinux enforcing и rootless Podman выполняет smoke запуска worker-а и QA-контейнера; до этого поддержка подтверждается только argv-матрицей.","criteria":["Runner зарегистрирован владельцем; smoke вне `make verify`.","Делегирование cgroup проверено; без него лимит из плана — блокер."],"blockers":[{"n":807,"why":"результат предшественника"}],"files":[{"path":".github/workflows/verify.yml","why":"задание smoke"},{"path":"harness/health/checks/runtime_sandbox.py","why":"окружение движка"},{"path":"tests/health/test_health_runtime_sandbox.py","why":"prior art"}],"sp":3,"track":"Assurance"},{"n":795,"title":"chore(perf): базовый замер производительности 1.x","closed":false,"labels":["type::feature","status::in-progress","afk","pipeline::fast","priority::p1"],"what":"Есть замер «до»: длительность `/implement`, число полных прогонов, время focused и failed-only, p50/p95/p99 команд coordinator и стоимость проверки audit на 1.x.","criteria":["Методика и сырые данные сохранены; числа без замера не публикуются.","Замер выполнен на коде до изменений Harness Next."],"blockers":[],"files":[{"path":"scripts/verify.py","why":"полный прогон"},{"path":"scripts/clean_room/baseline_metrics.py","why":"метрики clean-room"},{"path":"scripts/clean_room/delivery_stats.py","why":"длительность доставки"},{"path":"tests/reporting/test_delivery_stats.py","why":"prior art"}],"sp":3,"track":"Assurance","dispatch":"code-review"},{"n":814,"title":"chore(release): cutover и релиз 2.0.0","closed":false,"labels":["type::feature","status::blocked","afk","pipeline::hitl","priority::p0"],"what":"Релиз 2.0.0 выходит из `integration/harness-runtime-reliability` в `master`: `harness update` выполняет migrate, Python-writer файлового ledger удалён, rehearsal на реальном state пройден, полный QA восстановлен.","criteria":["`.harness/orchestration.json` и `.harness/project.json` восстановлены из `*.pre-harness-next`: полный QA вместо одного теста.","Rehearsal `migrate` и `rollback` на копии state этого репозитория; замер «после» против T26.","Release Gate (ADR 0026 §4) для PR в `master`."],"blockers":[{"n":803,"why":"результат предшественника"},{"n":806,"why":"результат предшественника"},{"n":812,"why":"результат предшественника"},{"n":802,"why":"результат предшественника"},{"n":799,"why":"результат предшественника"},{"n":809,"why":"результат предшественника"},{"n":813,"why":"результат предшественника"},{"n":811,"why":"результат предшественника"},{"n":795,"why":"результат предшественника"}],"files":[{"path":"docs/adr/0020-runtime-store-cutover.md","why":"cutover"},{"path":"harness/orchestration/ledger/lifecycle.py","why":"удаление Python-writer"},{"path":"harness/bin/harness.py","why":"update запускает migrate"},{"path":"scripts/clean_room/ledger_migration.py","why":"rehearsal"},{"path":"harness/VERSION","why":"версия 2.0.0"},{"path":"scripts/build_release.py","why":"сборка релиза"},{"path":"harness/orchestration.example.json","why":"восстановление полного QA"}],"sp":3,"track":"Release"}]}]}</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("board-data").textContent);
+const REPO = "PVMalove/claude-agent-harness";
+const COLS = [
+  {id: "backlog", name: "Бэклог", hint: "blocked / без статуса"},
+  {id: "ready", name: "Готово к работе", hint: "status::ready"},
+  {id: "progress", name: "В работе", hint: "status::in-progress"},
+  {id: "review", name: "Review / QA", hint: "ревью или QA, открытый PR"},
+  {id: "done", name: "Готово", hint: "закрыт после мерджа"},
+];
+const COL_NAME = Object.fromEntries(COLS.map(c => [c.id, c.name]));
+const LABEL_OF = {backlog: "status::blocked", ready: "status::ready", progress: "status::in-progress"};
+const REVIEW_ROLES = new Set(["code-review", "qa"]);
+const BUSY_JOB = "harness update (запущен из TUI)";
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage unavailable */ } },
+};
+const state = {
+  spec: Number(store.get("board.spec")) || DATA.specs[0].n,
+  q: "", prio: "", free: false, demo: "ok", snapshotAt: Date.now(), drag: null, openTicket: null, tab: "context",
+};
+
+const $ = id => document.getElementById(id);
+function el(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === false || v == null) continue;
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) node.append(kid instanceof Node ? kid : document.createTextNode(String(kid)));
+  return node;
+}
+// Ticket text is untrusted: only `code` spans become elements, everything else stays text.
+function richText(text) {
+  return String(text).split(/(`[^`]+`)/).map(part =>
+    part.startsWith("`") && part.endsWith("`") && part.length > 2 ? el("code", null, part.slice(1, -1)) : document.createTextNode(part));
+}
+
+const spec = () => DATA.specs.find(s => s.n === state.spec) || DATA.specs[0];
+const has = (t, l) => t.labels.includes(l);
+const statusLabel = t => t.labels.find(l => l.startsWith("status::")) || null;
+const byNumber = n => spec().tickets.find(t => t.n === n);
+function column(t) {
+  if (t.closed) return "done";
+  const s = statusLabel(t);
+  if (s === "status::in-progress") return REVIEW_ROLES.has(t.dispatch) || t.pr ? "review" : "progress";
+  return s === "status::ready" ? "ready" : "backlog";
+}
+const openBlockers = t => t.blockers.filter(b => { const x = byNumber(b.n); return x && !x.closed; });
+function command(t) {
+  if (has(t, "hitl")) return "/to-guide";
+  return has(t, "pipeline::fast") ? "/fast-implement" : "/implement";
+}
+const priority = t => (t.labels.find(l => l.startsWith("priority::")) || "").slice(10).toUpperCase();
+const issueUrl = n => `https://github.com/${REPO}/issues/${n}`;
+
+function transition(t, to) {
+  const from = column(t);
+  if (from === to) return {ok: false, same: true};
+  if (to === "review") return {ok: false, reason: "«Review / QA» вычисляют ledger и PR, карточки туда не переносятся"};
+  if (to === "done") return {ok: false, reason: "«Готово» заполняет закрытие тикета после подтверждённого мерджа (/to-pull-requests)"};
+  if (from === "done") return {ok: false, reason: "Закрытый тикет не переносится"};
+  if (from === "review") return {ok: false, reason: "Тикет на ревью или QA: у него активный batch"};
+  if (from === "backlog" && to === "ready") {
+    const ob = openBlockers(t);
+    return ob.length ? {ok: false, reason: "Открыты блокеры: " + ob.map(b => "#" + b.n).join(", ")} : {ok: true};
+  }
+  if (from === "ready") return {ok: true};
+  if (from === "progress" && to === "ready") return t.batch ? {ok: false, reason: `У тикета активный batch ${t.batch}`} : {ok: true};
+  return {ok: false, reason: "Переход идёт через «Готово к работе»"};
+}
+
+function visible(t) {
+  if (state.prio && !has(t, state.prio)) return false;
+  if (state.free && openBlockers(t).length) return false;
+  if (!state.q) return true;
+  const q = state.q.toLowerCase();
+  return ("#" + t.n + " " + t.title + " " + t.what + " " + t.files.map(f => f.path).join(" ")).toLowerCase().includes(q);
+}
+
+/* ---------- render ---------- */
+function renderSpecs() {
+  const sel = $("spec");
+  sel.replaceChildren(...DATA.specs.map(s => {
+    const open = s.tickets.filter(t => !t.closed).length;
+    return el("option", {value: s.n, selected: s.n === state.spec}, `#${s.n} · ${s.title} — открыто ${open} из ${s.tickets.length}`);
+  }));
+}
+
+function card(t) {
+  const ob = openBlockers(t), pr = priority(t);
+  const node = el("article", {
+    class: "card", tabindex: "0", draggable: "true", "data-n": t.n,
+    "aria-label": `#${t.n} ${t.title}`,
+    onclick: () => openTicket(t.n),
+    onkeydown: e => { if (e.key === "Enter") openTicket(t.n); },
+    ondragstart: e => startDrag(e, t), ondragend: endDrag,
+  },
+    el("div", {class: "meta"}, el("span", null, `#${t.n}` + (t.track ? ` · ${t.track}` : "")), pr ? el("span", {class: "chip " + pr.toLowerCase()}, pr) : null),
+    el("h4", null, t.title),
+    el("p", null, ...richText(t.what.split(/\n/)[0])),
+    el("div", {class: "chips"},
+      el("span", {class: "chip cmd"}, command(t)),
+      t.dispatch ? el("span", {class: "chip role"}, "dispatch: " + t.dispatch) : null,
+      t.closed ? null : ob.length ? el("span", {class: "chip blk"}, `⛓ блокеров: ${ob.length}`) : el("span", {class: "chip free"}, "✓ без блокеров"),
+      t.pending ? el("span", {class: "chip pending"}, "⟳ запись в трекер…") : null),
+    el("div", {class: "foot"}, el("span", null, `критериев: ${t.criteria.length}`),
+      el("a", {href: issueUrl(t.n), target: "_blank", rel: "noopener noreferrer", onclick: e => e.stopPropagation()}, "Открыть ↗")));
+  return node;
+}
+
+function render() {
+  const app = $("app"), board = $("board");
+  const s = spec();
+  $("conn").className = "conn" + (state.demo === "down" ? " down" : "");
+  $("conn").replaceChildren(el("i", null, "●"), state.demo === "down" ? " подключено · трекер недоступен" : " подключено к Серверу консоли");
+  renderBanner();
+  if (state.demo === "nospecs") {
+    $("count").textContent = "";
+    board.replaceChildren(el("div", {class: "state", style: "grid-column:1/-1"},
+      el("b", null, "Спек пока нет"),
+      "Спека появляется после /to-spec и /to-tickets: эпик с подзадачами. Доска покажет её при следующем обновлении."));
+    return;
+  }
+  const shown = s.tickets.filter(visible);
+  $("count").textContent = `${shown.length} из ${s.tickets.length} задач`;
+  if (!s.tickets.length) {
+    board.replaceChildren(el("div", {class: "state", style: "grid-column:1/-1"}, el("b", null, "У спеки нет подзадач"), "Разбейте её на тикеты через /to-tickets."));
+    return;
+  }
+  board.replaceChildren(...COLS.map(c => {
+    const items = shown.filter(t => column(t) === c.id).sort((a, b) => (priority(a) || "P9").localeCompare(priority(b) || "P9") || a.n - b.n);
+    return el("section", {
+      class: "col c-" + c.id, "data-col": c.id, "aria-label": c.name,
+      ondragover: onDragOver, ondrop: e => onDrop(e, c.id),
+    },
+      el("header", null, el("div", null, el("b", null, c.name), el("small", null, c.hint)), el("span", {class: "n"}, items.length)),
+      el("div", {class: "cards"}, items.length ? items.map(card) : el("div", {class: "empty"}, "пусто")));
+  }));
+  if (state.drag) markTargets(state.drag);
+}
+
+function renderBanner() {
+  const age = Math.max(0, Math.round((Date.now() - state.snapshotAt) / 60000));
+  $("age").textContent = state.demo === "down" ? "снимок 6 мин назад" : age ? `обновлено ${age} мин назад` : "обновлено только что";
+  $("banner").replaceChildren(state.demo === "down"
+    ? el("div", {class: "banner"}, el("b", null, "Трекер недоступен: "), "gh: authentication required (github.com). Показан последний снимок от 6 мин назад; перенос карточек недоступен до восстановления.")
+    : state.demo === "busy"
+      ? el("div", {class: "banner"}, el("b", null, "Идёт мутирующая команда: "), BUSY_JOB + ". Чтение и live-события работают, перенос получит отказ «занято».")
+      : "");
+}
+
+/* ---------- drag & drop ---------- */
+function startDrag(e, t) {
+  state.drag = t;
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", String(t.n));
+  e.currentTarget.classList.add("dragging");
+  markTargets(t);
+}
+function endDrag(e) {
+  e.currentTarget.classList.remove("dragging");
+  state.drag = null;
+  document.querySelectorAll(".col").forEach(c => c.classList.remove("drop-ok", "drop-no"));
+}
+function markTargets(t) {
+  document.querySelectorAll(".col").forEach(c => {
+    const r = transition(t, c.dataset.col);
+    c.classList.toggle("drop-ok", !!r.ok);
+    c.classList.toggle("drop-no", !r.ok && !r.same);
+  });
+}
+// Every column accepts the drop so a forbidden target can still report its reason.
+function onDragOver(e) {
+  if (state.drag) e.preventDefault();
+}
+function onDrop(e, to) {
+  e.preventDefault();
+  const t = state.drag;
+  if (t) requestMove(t, to);
+}
+
+function requestMove(t, to) {
+  const r = transition(t, to);
+  if (r.same) return;
+  if (!r.ok) return toast(`#${t.n} → «${COL_NAME[to]}»: ${r.reason}`, "err");
+  if (state.demo === "down") return toast("Трекер недоступен: смена статуса не записана", "err");
+  if (state.demo === "busy") return toast(`Занято: ${BUSY_JOB}`, "err");
+  confirmMove(t, to);
+}
+
+function confirmMove(t, to) {
+  const dlg = $("confirm");
+  const from = statusLabel(t) || "без status::*";
+  dlg.replaceChildren(el("form", {method: "dialog", class: "cf"},
+    el("h3", {id: "c-title"}, `Сменить статус #${t.n}?`),
+    el("div", null, t.title),
+    el("div", {class: "diff"}, el("s", null, "− " + from), el("br"), el("ins", null, "+ " + LABEL_OF[to])),
+    el("small", null, `Класс команды: external-change. Сервер консоли запустит смену метки в трекере GitHub (${REPO}) как мутирующий job и обновит доску.`),
+    el("div", {class: "acts"},
+      el("button", {class: "btn", value: "cancel"}, "Отмена"),
+      el("button", {class: "btn primary", value: "ok", autofocus: true}, "Сменить статус"))));
+  dlg.onclose = () => { if (dlg.returnValue === "ok") runMove(t, to); };
+  dlg.returnValue = "";
+  dlg.showModal();
+}
+
+function runMove(t, to) {
+  t.pending = true; render();
+  setTimeout(() => {
+    t.pending = false;
+    const old = statusLabel(t);
+    t.labels = t.labels.filter(l => !l.startsWith("status::")).concat(LABEL_OF[to]);
+    state.snapshotAt = Date.now();
+    render(); flash(t.n);
+    if (state.openTicket === t.n) openTicket(t.n);
+    toast(`#${t.n}: ${old || "—"} → ${LABEL_OF[to]} · job завершён`, "ok");
+  }, 900);
+}
+
+/* ---------- modal ---------- */
+function promptFor(t) {
+  const s = spec();
+  const blockers = t.blockers.length ? t.blockers.map(b => {
+    const x = byNumber(b.n);
+    return `- #${b.n} (${x ? (x.closed ? "closed" : "open") : "outside board"}) — ${b.why}`;
+  }).join("\n") : "- None";
+  return [
+    `${command(t)} #${t.n}`, "",
+    `TICKET: #${t.n} — ${t.title}`,
+    `EPIC: #${s.n} — ${s.title}`,
+    `INTEGRATION BRANCH: ${s.branch}`,
+    `LABELS: ${t.labels.join(", ")}`, "",
+    "BLOCKED BY:", blockers, "",
+    "WHAT TO BUILD:", t.what, "",
+    "ACCEPTANCE CRITERIA:", ...t.criteria.map((c, i) => `${i + 1}. ${c}`), "",
+    "DISCOVERY CONTEXT:", ...(t.files.length ? t.files.map(f => `- ${f.path}${f.why ? " — " + f.why : ""}`) : ["- None"]),
+  ].join("\n");
+}
+
+function copy(text, what) {
+  const done = () => toast(`${what} скопирован`, "ok");
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(text).then(done, () => toast("Буфер обмена недоступен: выделите текст вручную", "err"));
+  else toast("Буфер обмена недоступен: выделите текст вручную", "err");
+}
+
+function openTicket(n) {
+  const t = byNumber(n); if (!t) return;
+  state.openTicket = n;
+  const dlg = $("ticket");
+  const cur = column(t);
+  const statusSel = el("select", {"aria-label": "Статус", onchange: e => { const to = e.target.value; e.target.value = cur; requestMove(t, to); }},
+    COLS.map(c => {
+      const r = transition(t, c.id);
+      return el("option", {value: c.id, selected: c.id === cur, disabled: !r.ok && !r.same}, c.name + (!r.ok && !r.same ? " — недоступно" : ""));
+    }));
+  const tabBtn = (id, label) => el("button", {type: "button", role: "tab", "aria-selected": String(state.tab === id), onclick: () => { state.tab = id; openTicket(n); }}, label);
+  const reasons = COLS.map(c => [c, transition(t, c.id)]).filter(([, r]) => !r.ok && !r.same);
+  dlg.replaceChildren(
+    el("div", {class: "m-head", style: "position:relative"},
+      el("button", {class: "btn x", type: "button", "aria-label": "Закрыть", onclick: () => dlg.close()}, "✕"),
+      el("div", {class: "kicker"}, `#${t.n} · ${spec().title.split(":")[0]} · ${COL_NAME[cur]}`),
+      el("h2", {id: "t-title"}, t.title),
+      el("div", {class: "m-row"}, statusSel,
+        el("button", {type: "button", class: "btn primary", onclick: () => copy(promptFor(t), "Промпт")}, "⧉ Промпт агента"),
+        el("button", {type: "button", class: "btn", onclick: () => copy(t.criteria.map(c => "- [ ] " + c).join("\n"), "Acceptance")}, "⧉ Acceptance")),
+      el("div", {class: "m-row"},
+        t.labels.map(l => el("span", {class: "chip"}, l)),
+        t.sp != null && !has(t, "hitl") ? el("span", {class: "chip"}, `SP ${t.sp}`) : null,
+        el("a", {class: "chip", href: issueUrl(t.n), target: "_blank", rel: "noopener noreferrer"}, `GitHub #${t.n} ↗`),
+        t.batch ? el("span", {class: "chip role"}, "batch " + t.batch) : null,
+        t.dispatch ? el("span", {class: "chip role"}, "dispatch: " + t.dispatch) : null)),
+    el("div", {class: "tabs", role: "tablist"}, tabBtn("context", "Контекст"), tabBtn("acceptance", `Acceptance (${t.criteria.length})`), tabBtn("prompt", "Промпт")),
+    el("div", {class: "m-body", role: "tabpanel"}, ...tabBody(t, reasons)));
+  if (!dlg.open) dlg.showModal();
+}
+
+function tabBody(t, reasons) {
+  if (state.tab === "acceptance") return [el("ul", null, t.criteria.map(c => el("li", null, ...richText(c))))];
+  if (state.tab === "prompt") return [el("pre", {class: "prompt"}, promptFor(t))];
+  return [
+    el("h5", null, "What to build"), el("div", {class: "what"}, ...richText(t.what)),
+    el("h5", null, "Блокеры"),
+    t.blockers.length ? el("ul", null, t.blockers.map(b => {
+      const x = byNumber(b.n);
+      return el("li", null, `#${b.n} `, el("span", {class: "pill " + (x ? (x.closed ? "closed" : "open") : "ext")}, x ? (x.closed ? "закрыт" : "открыт") : "вне доски"), " — ", ...richText(b.why));
+    })) : el("div", null, "Нет — можно начинать."),
+    el("h5", null, "Discovery Context"),
+    t.files.length ? el("ul", null, t.files.map(f => el("li", null, el("code", null, f.path), f.why ? " — " : "", ...(f.why ? richText(f.why) : [])))) : el("div", null, "Не указан."),
+    el("h5", null, "Недоступные переходы"),
+    el("ul", null, reasons.map(([c, r]) => el("li", null, `${c.name}: ${r.reason}`))),
+  ];
+}
+$("ticket").addEventListener("close", () => { state.openTicket = null; state.tab = "context"; });
+
+/* ---------- live ---------- */
+function toast(text, kind) {
+  const node = el("div", {class: "toast " + (kind || "")}, text);
+  $("toasts").append(node);
+  setTimeout(() => node.remove(), 4200);
+}
+function liveEvent(text) {
+  const time = new Date().toTimeString().slice(0, 8);
+  $("live").replaceChildren(el("i", null, "●"), ` ${time} ${text}`);
+}
+function flash(n) {
+  const node = document.querySelector(`.card[data-n="${n}"]`);
+  if (node) { node.classList.remove("flash"); void node.offsetWidth; node.classList.add("flash"); node.scrollIntoView({block: "nearest", inline: "nearest"}); }
+}
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function simulate() {
+  const s = spec();
+  const t = s.tickets.find(x => column(x) === "ready");
+  if (!t) return toast("В «Готово к работе» нет тикета для симуляции", "err");
+  $("simulate").disabled = true;
+  try {
+    t.labels = t.labels.filter(l => !l.startsWith("status::")).concat("status::in-progress");
+    t.batch = `b-${t.n}-1`;
+    liveEvent(`${command(t)} #${t.n}: pre-flight ставит status::in-progress, ledger создал batch ${t.batch}`);
+    render(); flash(t.n); await sleep(2000);
+    t.dispatch = "qa";
+    liveEvent(`ledger: batch ${t.batch} — текущий dispatch qa`);
+    render(); flash(t.n); await sleep(2000);
+    t.closed = true; t.dispatch = null; t.batch = null;
+    const freed = s.tickets.filter(x => !x.closed && statusLabel(x) === "status::blocked" && x.blockers.some(b => b.n === t.n) && !openBlockers(x).length);
+    freed.forEach(x => { x.labels = x.labels.filter(l => !l.startsWith("status::")).concat("status::ready"); });
+    liveEvent(`/to-pull-requests: мердж подтверждён, #${t.n} закрыт` + (freed.length ? `; в status::ready: ${freed.map(x => "#" + x.n).join(", ")}` : ""));
+    state.snapshotAt = Date.now();
+    render(); flash(t.n); freed.forEach(x => flash(x.n));
+  } finally {
+    $("simulate").disabled = false;
+  }
+}
+
+/* ---------- wiring ---------- */
+$("spec").addEventListener("change", e => { state.spec = Number(e.target.value); store.set("board.spec", String(state.spec)); render(); });
+$("q").addEventListener("input", e => { state.q = e.target.value.trim(); render(); });
+$("prio").addEventListener("change", e => { state.prio = e.target.value; render(); });
+$("free").addEventListener("change", e => { state.free = e.target.checked; render(); });
+$("reset").addEventListener("click", () => { state.q = ""; state.prio = ""; state.free = false; $("q").value = ""; $("prio").value = ""; $("free").checked = false; render(); });
+$("refresh").addEventListener("click", () => {
+  if (state.demo === "down") return toast("Трекер недоступен: показан прежний снимок", "err");
+  state.snapshotAt = Date.now(); liveEvent("снимок доски обновлён принудительно, кэш трекера сброшен"); render();
+});
+$("simulate").addEventListener("click", simulate);
+function segment(id, apply) {
+  $(id).addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    $(id).querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+    apply(b.dataset.v);
+  });
+}
+segment("demo-width", v => $("app").classList.toggle("narrow", v === "narrow"));
+segment("demo-state", v => { state.demo = v; render(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "/" && document.activeElement.tagName !== "INPUT" && !$("ticket").open) { e.preventDefault(); $("q").focus(); }
+});
+setInterval(renderBanner, 30000);
+
+renderSpecs();
+render();
+</script>
+</body>
+</html>
