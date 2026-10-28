@@ -71,7 +71,7 @@ def _strings(value: object, label: str, *, allow_empty: bool = False) -> list[st
     return list(value)
 
 
-def _canonical(value: JsonObject) -> str:
+def _canonical(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 

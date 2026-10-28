@@ -276,13 +276,8 @@ def execution_operation_id(dispatch: JsonObject) -> str:
     """The deterministic operation id of the first launch of a supervised brief:
     ``sha256([dispatch_id, brief_sha256, 1])`` in the canonical digest form (ADR 0021, section 4)."""
     brief_sha256 = hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
-    key = json.dumps(
-        [dispatch["dispatch_id"], brief_sha256, 1],
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-    )
-    return hashlib.sha256(f"{key}\n".encode("utf-8")).hexdigest()
+    key = _canonical([dispatch["dispatch_id"], brief_sha256, 1])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def _launch_execution(repo: Path, dispatch: JsonObject) -> JsonObject:
