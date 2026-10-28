@@ -477,6 +477,7 @@ impl Supervisor {
             &NewExecution {
                 id: &request.operation_id,
                 dispatch_id: &admitted.dispatch_id,
+                attempt: 1,
                 kind: if engine.is_some() {
                     executions::KIND_CONTAINER
                 } else {

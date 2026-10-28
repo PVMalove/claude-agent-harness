@@ -1,4 +1,4 @@
-//! The schema of the store, version 5 (`PRAGMA user_version = 5`; ADR 0020, sections 3, 4 and 7).
+//! The schema of the store, version 6 (`PRAGMA user_version = 6`; ADR 0020, sections 3, 4 and 7).
 //!
 //! Version 2 adds the `operations` table of the idempotent writes (ADR 0021, section 4), a
 //! `revision` to every row that a command may change, the denormalised `execution_state` of a
@@ -10,8 +10,10 @@
 //! `executions` of the process supervisor (ADR 0022, section 2): one row per launch of a
 //! dispatch, its process identity, its receipt, its exit evidence and its lease, and a trigger
 //! that allows only the transitions of `executions::allowed`. Version 5 makes an execution a
-//! `process` or a `container` of an engine, proven by its container id (ADR 0022, section 4). A
-//! store of version 1 to 4 is upgraded in place by `upgrade` when the runtime starts or before
+//! `process` or a `container` of an engine, proven by its container id (ADR 0022, section 4).
+//! Version 6 adds the `qa` run of an engine: one execution per attempt of a QA dispatch, proven by
+//! its receipt, because each command of the run has its own container (ADR 0022, section 3). A
+//! store of version 1 to 5 is upgraded in place by `upgrade` when the runtime starts or before
 //! its first write.
 //!
 //! One table holds one kind of record. A column named like a field of the legacy record (`state`,
@@ -30,7 +32,7 @@ use crate::error::{Error, Result};
 use crate::time::iso_now;
 
 /// The schema version this build writes and the newest it serves.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 macro_rules! audit_checkpoint_table {
     () => {
@@ -126,8 +128,9 @@ macro_rules! execution_state_column {
 /// the operation id of the launch. A `process` execution names its host process: the identity
 /// columns (`host` to `start_time`, and `pgid`) are set once the process is known, and a state
 /// that names a process needs them. A `container` execution names its `engine`, and a state that
-/// names the container needs its `container_id` instead of a host pid. Only `exited` and `lost`
-/// are terminal: a terminal row never changes again, and only a terminal row releases its lease.
+/// names the container needs its `container_id` instead of a host pid. A `qa` run names its
+/// `engine` too, and a state after its launch needs its receipt: each command of the run has its
+/// own container, so no single container id proves it. Only `exited` and `lost` are terminal: a terminal row never changes again, and only a terminal row releases its lease.
 macro_rules! executions_table {
     ($name:literal) => {
         concat!(
@@ -140,7 +143,8 @@ macro_rules! executions_table {
     state                 TEXT NOT NULL CHECK (state IN
         ('launching', 'running', 'stopping', 'exited', 'lost', 'unknown')),
     revision              INTEGER NOT NULL DEFAULT 1,
-    kind                  TEXT NOT NULL DEFAULT 'process' CHECK (kind IN ('process', 'container')),
+    kind                  TEXT NOT NULL DEFAULT 'process'
+        CHECK (kind IN ('process', 'container', 'qa')),
     engine                TEXT CHECK (engine IN ('docker', 'podman')),
     container_id          TEXT,
     launch_json           TEXT NOT NULL,
@@ -162,11 +166,12 @@ macro_rules! executions_table {
     updated_at            TEXT NOT NULL,
     UNIQUE (dispatch_id, attempt),
     CHECK ((pid IS NULL) = (start_time IS NULL)),
-    CHECK ((kind = 'container') = (engine IS NOT NULL)),
+    CHECK ((kind IN ('container', 'qa')) = (engine IS NOT NULL)),
     CHECK (kind = 'container' OR container_id IS NULL),
     CHECK (state NOT IN ('running', 'stopping', 'exited')
         OR (kind = 'process' AND pid IS NOT NULL)
-        OR (kind = 'container' AND container_id IS NOT NULL)),
+        OR (kind = 'container' AND container_id IS NOT NULL)
+        OR (kind = 'qa' AND receipt_json IS NOT NULL)),
     CHECK (state <> 'exited' OR exit_json IS NOT NULL),
     CHECK (lease_released_at IS NULL OR state IN ('exited', 'lost'))
 ) STRICT;
@@ -423,19 +428,26 @@ fn upgrade_2_to_3(transaction: &Transaction<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Bring a store of version 4 to version 5: `executions` rebuilt with `kind`, `engine` and
-/// `container_id`. Every existing row is a `process`; the triggers go with the old table and are
-/// created again on the new one.
-fn upgrade_4_to_5(transaction: &Transaction<'_>) -> Result<()> {
-    const COLUMNS: &str = "id, dispatch_id, attempt, state, revision, launch_json,
-        execution_deadline, stop_grace_seconds, poll_interval_seconds, host, boot_id,
-        pid_namespace, pid, start_time, pgid, receipt_json, exit_json, observation_json,
-        lease_owner_json, lease_released_at, created_at, updated_at";
-    transaction.execute_batch(executions_table!("executions_v5"))?;
+/// The columns of `executions` in a store of version 4.
+const EXECUTIONS_V4_COLUMNS: &str = "id, dispatch_id, attempt, state, revision, launch_json,
+    execution_deadline, stop_grace_seconds, poll_interval_seconds, host, boot_id, pid_namespace,
+    pid, start_time, pgid, receipt_json, exit_json, observation_json, lease_owner_json,
+    lease_released_at, created_at, updated_at";
+/// The columns of `executions` in a store of version 5: version 4 and the container columns.
+const EXECUTIONS_V5_COLUMNS: &str = "id, dispatch_id, attempt, state, revision, launch_json,
+    execution_deadline, stop_grace_seconds, poll_interval_seconds, host, boot_id, pid_namespace,
+    pid, start_time, pgid, receipt_json, exit_json, observation_json, lease_owner_json,
+    lease_released_at, created_at, updated_at, kind, engine, container_id";
+
+/// Rebuild `executions` of a store of version 4 or 5 in the current shape, copying `columns`:
+/// version 5 added `kind`, `engine` and `container_id` (every row of version 4 is a `process`),
+/// version 6 the `qa` kind. The triggers go with the old table and are created again.
+fn rebuild_executions(transaction: &Transaction<'_>, columns: &str) -> Result<()> {
+    transaction.execute_batch(executions_table!("executions_rebuilt"))?;
     transaction.execute_batch(&format!(
-        "INSERT INTO executions_v5 ({COLUMNS}) SELECT {COLUMNS} FROM executions;
+        "INSERT INTO executions_rebuilt ({columns}) SELECT {columns} FROM executions;
          DROP TABLE executions;
-         ALTER TABLE executions_v5 RENAME TO executions;"
+         ALTER TABLE executions_rebuilt RENAME TO executions;"
     ))?;
     transaction.execute_batch(executions_triggers!())?;
     Ok(())
@@ -471,12 +483,14 @@ pub fn upgrade(connection: &mut Connection) -> Result<bool> {
     if from < 3 {
         upgrade_2_to_3(&transaction)?;
     }
-    if from < 4 {
-        // Version 4 (now 5): the executions of the supervisor; no row of an older store changes.
-        transaction.execute_batch(executions_table!("executions"))?;
-        transaction.execute_batch(executions_triggers!())?;
-    } else {
-        upgrade_4_to_5(&transaction)?;
+    match from {
+        // Version 4 (now 6): the executions of the supervisor; no row of an older store changes.
+        ..4 => {
+            transaction.execute_batch(executions_table!("executions"))?;
+            transaction.execute_batch(executions_triggers!())?;
+        }
+        4 => rebuild_executions(&transaction, EXECUTIONS_V4_COLUMNS)?,
+        _ => rebuild_executions(&transaction, EXECUTIONS_V5_COLUMNS)?,
     }
     audit::append(
         &transaction,

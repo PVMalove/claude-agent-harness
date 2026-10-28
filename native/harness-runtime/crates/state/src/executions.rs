@@ -74,9 +74,9 @@ pub struct Execution {
     pub attempt: i64,
     pub state: ExecutionState,
     pub revision: i64,
-    /// `process` or `container`.
+    /// `process`, `container` or `qa`.
     pub kind: String,
-    /// The engine of a container execution: every engine command of the row uses it.
+    /// The engine of a container or QA execution: every engine command of the row uses it.
     pub engine: Option<String>,
     pub container_id: Option<String>,
     pub launch: Value,
@@ -103,6 +103,8 @@ const COLUMNS: &str = "id, dispatch_id, attempt, state, revision, launch_json, e
 pub const KIND_PROCESS: &str = "process";
 /// The kind of an execution of a worker container.
 pub const KIND_CONTAINER: &str = "container";
+/// The kind of one attempt of a QA run: a container per command (ADR 0022, section 3).
+pub const KIND_QA: &str = "qa";
 
 fn json_column(text: Option<String>) -> Option<Value> {
     text.and_then(|text| serde_json::from_str(&text).ok())
@@ -202,8 +204,8 @@ pub fn load(connection: &Connection, id: &str) -> Result<Option<Execution>, Erro
     one(connection, "id = ?1", id)
 }
 
-/// The first execution of the dispatch `dispatch_id` (attempt 1, the only one this release
-/// writes).
+/// The latest execution of the dispatch `dispatch_id`: its highest attempt. A worker dispatch has
+/// only attempt 1; a QA dispatch has one execution per attempt.
 ///
 /// # Errors
 /// A store that cannot be read.
@@ -211,7 +213,11 @@ pub fn of_dispatch(
     connection: &Connection,
     dispatch_id: &str,
 ) -> Result<Option<Execution>, ErrorBody> {
-    one(connection, "dispatch_id = ?1 AND attempt = 1", dispatch_id)
+    one(
+        connection,
+        "dispatch_id = ?1 ORDER BY attempt DESC LIMIT 1",
+        dispatch_id,
+    )
 }
 
 /// Every execution that is not terminal, by id.
@@ -230,9 +236,11 @@ pub fn unfinished(connection: &Connection) -> Result<Vec<Execution>, ErrorBody> 
 pub struct NewExecution<'a> {
     pub id: &'a str,
     pub dispatch_id: &'a str,
-    /// `process` or `container`.
+    /// The attempt of the dispatch: 1 for a worker, the attempt of a QA run.
+    pub attempt: i64,
+    /// `process`, `container` or `qa`.
     pub kind: &'a str,
-    /// The engine of a container; `None` for a process.
+    /// The engine of a container or QA run; `None` for a process.
     pub engine: Option<&'a str>,
     pub launch: &'a Value,
     pub execution_deadline: &'a str,
@@ -309,7 +317,7 @@ pub fn insert(tx: &Connection, new: &NewExecution<'_>, at: &str) -> Result<Execu
         "INSERT INTO executions (id, dispatch_id, attempt, state, launch_json, execution_deadline,
              stop_grace_seconds, poll_interval_seconds, lease_owner_json, created_at, updated_at,
              kind, engine)
-         VALUES (?1, ?2, 1, 'launching', ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10)",
+         VALUES (?1, ?2, ?11, 'launching', ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10)",
         rusqlite::params![
             new.id,
             new.dispatch_id,
@@ -320,7 +328,8 @@ pub fn insert(tx: &Connection, new: &NewExecution<'_>, at: &str) -> Result<Execu
             new.lease_owner.to_string(),
             at,
             new.kind,
-            new.engine
+            new.engine,
+            new.attempt
         ],
     ))?;
     let execution =
