@@ -496,7 +496,7 @@ def _enqueue(
     counter_path = _counter_path(ledger)
     counter = (
         _read_object(counter_path, "QA queue sequence")
-        if counter_path.exists()
+        if state_view.exists(counter_path)
         else {"next": 1}
     )
     if (
@@ -516,7 +516,7 @@ def _enqueue(
     path = _queue_root(ledger) / f"{entry['sequence']:020d}-{dispatch_id}.json"
     _write_immutable(ledger, path, entry)
     next_counter = {"next": counter["next"] + 1}
-    if counter_path.exists():
+    if state_view.exists(counter_path):
         _replace_path(ledger, counter_path, next_counter)
     else:
         # The first queue entry in a fresh ledger has no mutable counter yet.  Seed it as an
@@ -802,7 +802,7 @@ def _recover_transient_failure(
                 "remedy": failure.remedy,
             },
         )
-        if queue_path.exists():
+        if state_view.exists(queue_path):
             _delete_record(
                 ledger, queue_path, reason="release transient QA queue entry"
             )
@@ -864,7 +864,7 @@ def _running_dispatch(
         / DispatchStatusRecord.directory
         / f"{_safe_id(dispatch_id, 'dispatch')}.json"
     )
-    if not status_path.exists():
+    if not state_view.exists(status_path):
         return None
     dispatch = ops._load_dispatch(root, dispatch_id)
     entry = _batch_entry(ops._load_batch(root, dispatch["batch_id"]), dispatch_id)

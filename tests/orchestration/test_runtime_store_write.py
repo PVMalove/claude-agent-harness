@@ -618,6 +618,22 @@ def test_a_qa_access_refusal_keeps_its_attempt_record(
     assert [(a["stage"], a["dispatch_id"]) for a in attempts] == [("access", store.dispatch)]
 
 
+def test_a_second_qa_enqueue_advances_the_sequence_record_held_by_the_store(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(store.runtime.xdg))
+    ledger = LifecycleLedger(store.repo / STATE_REL)
+
+    with ledger_ops._ledger_lock(ledger):
+        _, first = qa_lane._enqueue(ledger, store.dispatch)
+    with ledger_ops._ledger_lock(ledger):
+        _, second = qa_lane._enqueue(ledger, "dispatch-0123456789abcdef")
+
+    assert (first["sequence"], second["sequence"]) == (1, 2)
+    counter = store_records(store.repo, store.runtime, "qa-lane/sequence.json")
+    assert counter["qa-lane/sequence.json"] == {"next": 3}
+
+
 def test_a_batch_flagged_for_attention_keeps_the_flag_when_the_dispatch_is_refused(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
