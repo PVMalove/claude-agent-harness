@@ -1,4 +1,4 @@
-//! The schema of the store, version 4: what `create` writes, what its CHECKs refuse, and how a
+//! The schema of the store, version 5: what `create` writes, what its CHECKs refuse, and how a
 //! store of version 1, 2 or 3 is brought forward (ADR 0020, sections 3, 4 and 7; ADR 0021, sections
 //! 4 and 6).
 
@@ -88,11 +88,11 @@ fn is_check_violation(error: &rusqlite::Error) -> bool {
 }
 
 #[test]
-fn a_new_store_has_the_schema_version_four_and_its_generation_row() {
+fn a_new_store_has_the_schema_version_five_and_its_generation_row() {
     let connection = fresh();
 
-    assert_eq!(SCHEMA_VERSION, 4);
-    assert_eq!(version(&connection), 4);
+    assert_eq!(SCHEMA_VERSION, 5);
+    assert_eq!(version(&connection), 5);
     let generation: i64 = connection
         .query_row("SELECT revision FROM generation WHERE id = 1", [], |row| {
             row.get(0)

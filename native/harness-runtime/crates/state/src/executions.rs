@@ -74,6 +74,11 @@ pub struct Execution {
     pub attempt: i64,
     pub state: ExecutionState,
     pub revision: i64,
+    /// `process` or `container`.
+    pub kind: String,
+    /// The engine of a container execution: every engine command of the row uses it.
+    pub engine: Option<String>,
+    pub container_id: Option<String>,
     pub launch: Value,
     pub execution_deadline: String,
     pub stop_grace_seconds: i64,
@@ -92,7 +97,12 @@ pub struct Execution {
 const COLUMNS: &str = "id, dispatch_id, attempt, state, revision, launch_json, execution_deadline,
     stop_grace_seconds, poll_interval_seconds, host, boot_id, pid_namespace, pid, start_time, pgid,
     receipt_json, exit_json, observation_json, lease_owner_json, lease_released_at, created_at,
-    updated_at";
+    updated_at, kind, engine, container_id";
+
+/// The kind of an execution of a host process.
+pub const KIND_PROCESS: &str = "process";
+/// The kind of an execution of a worker container.
+pub const KIND_CONTAINER: &str = "container";
 
 fn json_column(text: Option<String>) -> Option<Value> {
     text.and_then(|text| serde_json::from_str(&text).ok())
@@ -126,6 +136,9 @@ impl Execution {
                 )
             })?,
             revision: row.get(4)?,
+            kind: row.get(22)?,
+            engine: row.get(23)?,
+            container_id: row.get(24)?,
             launch: json_column(row.get(5)?).unwrap_or(Value::Null),
             execution_deadline: row.get(6)?,
             stop_grace_seconds: row.get(7)?,
@@ -150,6 +163,9 @@ impl Execution {
             "attempt": self.attempt,
             "state": self.state.as_str(),
             "revision": self.revision,
+            "kind": self.kind,
+            "engine": self.engine,
+            "container_id": self.container_id,
             "launch": self.launch,
             "execution_deadline": self.execution_deadline,
             "stop_grace_seconds": self.stop_grace_seconds,
@@ -214,6 +230,10 @@ pub fn unfinished(connection: &Connection) -> Result<Vec<Execution>, ErrorBody> 
 pub struct NewExecution<'a> {
     pub id: &'a str,
     pub dispatch_id: &'a str,
+    /// `process` or `container`.
+    pub kind: &'a str,
+    /// The engine of a container; `None` for a process.
+    pub engine: Option<&'a str>,
     pub launch: &'a Value,
     pub execution_deadline: &'a str,
     pub stop_grace_seconds: i64,
@@ -225,6 +245,8 @@ pub struct NewExecution<'a> {
 #[derive(Clone, Debug, Default)]
 pub struct Change {
     pub identity: Option<Identity>,
+    /// The id of the worker container of a container execution.
+    pub container_id: Option<String>,
     pub pgid: Option<i64>,
     pub receipt: Option<Value>,
     pub exit: Option<Value>,
@@ -285,8 +307,9 @@ fn record(
 pub fn insert(tx: &Connection, new: &NewExecution<'_>, at: &str) -> Result<Execution, ErrorBody> {
     sqlite(tx.execute(
         "INSERT INTO executions (id, dispatch_id, attempt, state, launch_json, execution_deadline,
-             stop_grace_seconds, poll_interval_seconds, lease_owner_json, created_at, updated_at)
-         VALUES (?1, ?2, 1, 'launching', ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+             stop_grace_seconds, poll_interval_seconds, lease_owner_json, created_at, updated_at,
+             kind, engine)
+         VALUES (?1, ?2, 1, 'launching', ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10)",
         rusqlite::params![
             new.id,
             new.dispatch_id,
@@ -295,7 +318,9 @@ pub fn insert(tx: &Connection, new: &NewExecution<'_>, at: &str) -> Result<Execu
             new.stop_grace_seconds,
             new.poll_interval_seconds,
             new.lease_owner.to_string(),
-            at
+            at,
+            new.kind,
+            new.engine
         ],
     ))?;
     let execution =
@@ -336,7 +361,8 @@ pub fn transition(
              exit_json = COALESCE(?11, exit_json),
              observation_json = COALESCE(?12, observation_json),
              lease_owner_json = COALESCE(?13, lease_owner_json),
-             lease_released_at = ?14, updated_at = ?15
+             lease_released_at = ?14, updated_at = ?15,
+             container_id = COALESCE(?16, container_id)
          WHERE id = ?1 AND revision = ?2",
         rusqlite::params![
             current.id,
@@ -353,7 +379,8 @@ pub fn transition(
             text(change.observation.as_ref()),
             text(change.lease_owner.as_ref()),
             is_terminal(to).then_some(at),
-            at
+            at,
+            change.container_id
         ],
     ))?;
     if changed == 0 {

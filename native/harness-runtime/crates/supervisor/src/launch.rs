@@ -409,6 +409,8 @@ impl Supervisor {
             &NewExecution {
                 id: &request.operation_id,
                 dispatch_id: &admitted.dispatch_id,
+                kind: executions::KIND_PROCESS,
+                engine: None,
                 launch: &launch,
                 execution_deadline: &deadline,
                 stop_grace_seconds: admitted.limits.stop_grace_seconds,
