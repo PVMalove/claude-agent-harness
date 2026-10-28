@@ -309,7 +309,7 @@ impl Supervisor {
         Ok((directory.join("stdout.log"), directory.join("stderr.log")))
     }
 
-    fn is_watched(&self, id: &str) -> bool {
+    pub(crate) fn is_watched(&self, id: &str) -> bool {
         guard(&self.inner.watched).contains(id)
     }
 
@@ -786,7 +786,8 @@ impl Supervisor {
         self.reconcile();
     }
 
-    /// Reconcile, and return the smallest poll interval of the executions still live.
+    /// Reconcile, repeat the removals an exit left incomplete, and return the smallest poll
+    /// interval of the executions still live.
     fn reconcile(self: &Arc<Self>) -> Option<i64> {
         let state = self.state_dir.as_deref()?;
         let mut connection = executions::connect(state).ok()?;
@@ -809,6 +810,7 @@ impl Supervisor {
                 interval = Some(interval.map_or(poll, |found: i64| found.min(poll)));
             }
         }
+        self.finish_removals(&connection);
         interval
     }
 

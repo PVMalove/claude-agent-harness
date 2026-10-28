@@ -1,12 +1,15 @@
 //! The worker container of a docker brief, supervised with a scripted Podman (ADR 0022,
-//! section 4): launch from the stored brief, receipt, exit with logs and teardown, the deadline
-//! stop, an unfinished launch rolled back, and the refusals of step 1 that write nothing. Every
-//! engine command is `podman`, the engine of the plan and of the `executions` row.
+//! section 4): launch from the stored brief, receipt, exit with logs and teardown, the exit
+//! stored before the removal and a removal repeated after a crash, the deadline stop, an
+//! unfinished launch rolled back, and the refusals of step 1 that write nothing. Every engine
+//! command is `podman`, the engine of the plan and of the `executions` row.
 #![cfg(target_os = "linux")]
 
 use std::fs;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use contracts::{ErrorCode, ExecutionState, PROTOCOL_VERSION, Request};
@@ -172,15 +175,50 @@ impl Repo {
     }
 
     fn supervisor(&self, runtime: Vec<PathBuf>) -> Arc<Supervisor> {
-        let engine = Arc::clone(&self.engine);
+        self.supervisor_on(runtime, Arc::clone(&self.engine) as Arc<dyn Engine>)
+    }
+
+    fn supervisor_on(&self, runtime: Vec<PathBuf>, engine: Arc<dyn Engine>) -> Arc<Supervisor> {
         Arc::new(
             Supervisor::new(Some(self.state()))
                 .with_runtime(Some(self.git_common.clone()), runtime)
                 .with_engines(Arc::new(move |kind| {
                     assert_eq!(kind, Kind::Podman);
-                    Arc::clone(&engine) as Arc<dyn Engine>
+                    Arc::clone(&engine)
                 })),
         )
+    }
+
+    /// The engine shows the worker of the execution `id` exited, and lists it.
+    fn exited_worker(&self, id: &str) {
+        self.engine
+            .answer(
+                &["podman", "container", "inspect", "--format"],
+                inspected("exited", id, &self.git_common),
+            )
+            .answer(&["podman", "ps"], Answer::success(WORKER_ID))
+            .answer(&["podman", "network", "ls"], Answer::success(""))
+            .answer(
+                &["podman", "container", "inspect", WORKER_ID],
+                Answer::success(
+                    json!([{"Id": WORKER_ID, "Name": format!("/harness-{DISPATCH}"),
+                            "State": {"Status": "exited"},
+                            "Config": {"Labels": {"harness.dispatch": DISPATCH,
+                                                  "harness.repository": self.git_common,
+                                                  "harness.execution": id}}}])
+                    .to_string(),
+                ),
+            );
+    }
+
+    /// What the runtime recorded about the removal of the objects of the execution `id`.
+    fn teardown(&self, id: &str) -> Value {
+        let path = self
+            .state()
+            .join("executions")
+            .join(id)
+            .join("teardown.json");
+        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
     }
 
     fn operation_id(&self) -> String {
@@ -297,31 +335,16 @@ fn an_exited_worker_leaves_its_logs_and_exit_and_its_objects_are_removed() {
     let supervisor = repo.supervisor(Vec::new());
     repo.launch(&supervisor).unwrap();
     let id = repo.execution().unwrap().id;
-    repo.engine
-        .answer(
-            &["podman", "container", "inspect", "--format"],
-            inspected("exited", &id, &repo.git_common),
-        )
-        .answer(&["podman", "ps"], Answer::success(WORKER_ID))
-        .answer(&["podman", "network", "ls"], Answer::success(""))
-        .answer(
-            &["podman", "container", "inspect", WORKER_ID],
-            Answer::success(
-                json!([{"Id": WORKER_ID, "Name": format!("/harness-{DISPATCH}"),
-                        "State": {"Status": "exited"},
-                        "Config": {"Labels": {"harness.dispatch": DISPATCH,
-                                              "harness.repository": repo.git_common,
-                                              "harness.execution": id}}}])
-                .to_string(),
-            ),
-        );
+    repo.exited_worker(&id);
 
     let exited = repo.wait_for(&supervisor, ExecutionState::Exited);
 
     let exit = exited.exit.unwrap();
     assert_eq!(exit["exit_code"], 3);
+    let teardown = repo.teardown(&id);
+    assert_eq!(teardown["complete"], true, "{teardown}");
     assert_eq!(
-        exit["teardown"]["removed"],
+        teardown["removed"],
         json!([format!("container harness-{DISPATCH}")])
     );
     assert!(exited.lease_released_at.is_some());
@@ -342,20 +365,114 @@ fn an_exited_worker_leaves_its_logs_and_exit_and_its_objects_are_removed() {
     repo.only_podman();
 }
 
+/// A runtime that dies at its first `rm`; every `rm` first notes the execution as stored then.
+struct CrashAtRemoval {
+    scripted: Arc<Scripted>,
+    store: PathBuf,
+    crash: AtomicBool,
+    at_removal: Mutex<Vec<Option<Execution>>>,
+}
+
+impl CrashAtRemoval {
+    fn new(repo: &Repo, crash: bool) -> Arc<Self> {
+        Arc::new(Self {
+            scripted: Arc::clone(&repo.engine),
+            store: repo.state().join("runtime.db"),
+            crash: AtomicBool::new(crash),
+            at_removal: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn removals(&self) -> Vec<Option<Execution>> {
+        self.at_removal.lock().unwrap().clone()
+    }
+}
+
+impl Engine for CrashAtRemoval {
+    fn kind(&self) -> Kind {
+        self.scripted.kind()
+    }
+
+    fn run(&self, argv: &[String], timeout: Duration) -> Answer {
+        if argv.get(1).map(String::as_str) == Some("rm") {
+            let store = Connection::open(&self.store).unwrap();
+            let stored = executions::of_dispatch(&store, DISPATCH).unwrap();
+            self.at_removal.lock().unwrap().push(stored);
+            assert!(
+                !self.crash.swap(false, Ordering::SeqCst),
+                "the runtime dies before its first removal"
+            );
+        }
+        self.scripted.run(argv, timeout)
+    }
+}
+
+#[test]
+fn an_exit_is_stored_before_the_removal_and_a_restarted_runtime_repeats_the_removal() {
+    let repo = Repo::new("exit-first", 3600);
+    repo.launch(&repo.supervisor(Vec::new())).unwrap();
+    let id = repo.execution().unwrap().id;
+    repo.exited_worker(&id);
+    let engine = CrashAtRemoval::new(&repo, true);
+    let crashing = repo.supervisor_on(Vec::new(), Arc::clone(&engine) as Arc<dyn Engine>);
+
+    let died = catch_unwind(AssertUnwindSafe(|| crashing.reconcile_all()));
+
+    assert!(died.is_err(), "the runtime died at its first removal");
+    let removals = engine.removals();
+    let stored = removals[0].as_ref().unwrap();
+    assert_eq!(
+        stored.state,
+        ExecutionState::Exited,
+        "the exit is stored before any object is removed"
+    );
+    let exit = stored.exit.clone().unwrap();
+    assert_eq!(
+        (
+            &exit["exit_code"],
+            &exit["finished_at"],
+            &exit["oom_killed"]
+        ),
+        (&json!(3), &json!("2026-10-28T10:00:00Z"), &json!(false))
+    );
+
+    let restarted = repo.supervisor_on(Vec::new(), Arc::clone(&engine) as Arc<dyn Engine>);
+    restarted.reconcile_all();
+
+    let after = repo.execution().unwrap();
+    assert_eq!(after.state, ExecutionState::Exited);
+    assert_eq!(
+        after.exit,
+        Some(exit),
+        "the exit evidence survives the crash"
+    );
+    assert_eq!(engine.removals().len(), 2, "the removal is repeated");
+    let teardown = repo.teardown(&id);
+    assert_eq!(teardown["complete"], true, "{teardown}");
+    assert_eq!(
+        teardown["removed"],
+        json!([format!("container harness-{DISPATCH}")])
+    );
+    // A complete removal is not repeated.
+    restarted.reconcile_all();
+    assert_eq!(engine.removals().len(), 2);
+    repo.only_podman();
+}
+
 #[test]
 fn a_worker_past_its_deadline_is_stopped_with_its_grace_then_killed() {
     let repo = Repo::new("deadline", 1);
-    let supervisor = repo.supervisor(Vec::new());
+    let probe = CrashAtRemoval::new(&repo, false);
+    let supervisor = repo.supervisor_on(Vec::new(), Arc::clone(&probe) as Arc<dyn Engine>);
     repo.launch(&supervisor).unwrap();
     let id = repo.execution().unwrap().id;
+    repo.exited_worker(&id);
     repo.engine
         .answer(
             &["podman", "container", "inspect", "--format"],
             inspected("running", &id, &repo.git_common),
         )
-        .answer(&["podman", "stop"], Answer::success(WORKER_ID))
-        .answer(&["podman", "ps"], Answer::success(""))
-        .answer(&["podman", "network", "ls"], Answer::success(""));
+        .answer(&["podman", "stop"], Answer::success(WORKER_ID));
     let engine = Arc::clone(&repo.engine);
     let git_common = repo.git_common.clone();
     let stopped_id = id.clone();
@@ -393,6 +510,14 @@ fn a_worker_past_its_deadline_is_stopped_with_its_grace_then_killed() {
         "kill".to_owned(),
         WORKER_ID.to_owned()
     ]));
+    // The removal follows the stored exit.
+    let until = Instant::now() + Duration::from_secs(20);
+    while probe.removals().is_empty() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let stored = probe.removals()[0].clone().unwrap();
+    assert_eq!(stored.state, ExecutionState::Exited);
+    assert_eq!(stored.exit.unwrap()["stopped_by"], "deadline");
     repo.only_podman();
 }
 

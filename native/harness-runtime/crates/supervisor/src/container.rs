@@ -5,12 +5,16 @@
 //! is set in the runtime's environment, the engine answers in a supported mode and the images
 //! are the pinned ones. The intent records the planned objects; a failed staged launch removes
 //! them newest first and the execution is `lost`, never relaunched. Reconcile inspects the
-//! container with the engine of the row: an exit saves the logs, removes the objects of the
-//! execution and records the exit; a worker past its deadline is stopped with its grace, then
-//! killed. An answer whose labels name another execution or repository changes nothing.
+//! container with the engine of the row: an exit saves the logs and records the exit with its
+//! evidence, and only then removes the objects of the execution; a worker past its deadline is
+//! stopped with its grace, then killed. The result of the removal is `teardown.json` next to the
+//! logs; reconcile repeats the removal of an exited execution until that record is complete, so
+//! a runtime that dies between the exit and the removal loses neither. An answer whose labels
+//! name another execution or repository changes nothing.
 
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -450,8 +454,8 @@ impl Supervisor {
         )
     }
 
-    /// Save the worker's logs, then remove the objects of the execution.
-    fn teardown(&self, engine: &dyn Engine, execution: &Execution, worker: &str) -> (Value, Value) {
+    /// Save the worker's logs while its container is still there.
+    fn save_logs(&self, engine: &dyn Engine, execution: &Execution, worker: &str) -> Value {
         let paths = self.log_paths(&execution.id);
         let saved = paths
             .first()
@@ -468,8 +472,22 @@ impl Supervisor {
                 },
             );
         let logs = crate::stop::logs(&paths);
-        let removal = self.own_objects(engine, execution).map_or_else(
-            || json!({"error": "the engine did not list the objects of the execution"}),
+        match saved {
+            Ok(()) => logs,
+            Err(reason) => json!({"files": logs, "error": reason}),
+        }
+    }
+
+    /// Remove the objects of the execution. The removal is `complete` when the engine listed
+    /// them and every one is removed or already absent; a repeat is safe.
+    fn remove_objects(&self, engine: &dyn Engine, execution: &Execution) -> Value {
+        self.own_objects(engine, execution).map_or_else(
+            || {
+                json!({
+                    "complete": false,
+                    "error": "the engine did not list the objects of the execution",
+                })
+            },
             |objects| {
                 let removal = ops::remove(engine, &objects);
                 json!({
@@ -478,17 +496,81 @@ impl Supervisor {
                     "failed": removal.failed.iter()
                         .map(|(object, reason)| json!({"object": object, "reason": reason}))
                         .collect::<Vec<_>>(),
+                    "complete": removal.failed.is_empty(),
                 })
             },
-        );
-        let logs = match saved {
-            Ok(()) => logs,
-            Err(reason) => json!({"files": logs, "error": reason}),
-        };
-        (logs, removal)
+        )
     }
 
-    /// The exit evidence of an exited worker, after its logs and teardown.
+    /// Where the result of the removal after the exit of `id` is kept: next to its logs.
+    fn teardown_record(&self, id: &str) -> Option<PathBuf> {
+        self.log_paths(id)
+            .first()
+            .and_then(|stdout| stdout.parent())
+            .map(|dir| dir.join("teardown.json"))
+    }
+
+    fn teardown_complete(&self, id: &str) -> bool {
+        self.teardown_record(id)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|record| record["complete"] == true)
+    }
+
+    /// Remove the objects of an exited execution, whose exit is stored, and record the result.
+    fn remove_after_exit(&self, engine: &dyn Engine, execution: &Execution) {
+        let mut teardown = self.remove_objects(engine, execution);
+        teardown["at"] = json!(iso_now());
+        let Some(path) = self.teardown_record(&execution.id) else {
+            return;
+        };
+        let partial = path.with_extension("json.partial");
+        let written = path
+            .parent()
+            .map_or(Ok(()), crate::launch::log_directory)
+            .and_then(|()| fs::write(&partial, teardown.to_string()))
+            .and_then(|()| fs::rename(&partial, &path));
+        if let Err(err) = written {
+            eprintln!(
+                "harness-runtime: the removal after the exit of {} was not recorded: {err}",
+                execution.id
+            );
+        }
+    }
+
+    /// Repeat the removal of every exited container execution without a complete record of it:
+    /// a runtime that died between the exit and the removal, or an engine that refused it.
+    pub(crate) fn finish_removals(self: &Arc<Self>, connection: &Connection) {
+        let ids = connection
+            .prepare("SELECT id FROM executions WHERE kind = ?1 AND state = 'exited' ORDER BY id")
+            .and_then(|mut statement| {
+                let rows = statement.query_map([KIND_CONTAINER], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<String>>>()
+            });
+        let Ok(ids) = ids else {
+            return;
+        };
+        for id in ids {
+            if self.teardown_complete(&id) || self.is_watched(&id) {
+                continue;
+            }
+            let lock = self.lock_of(&id);
+            let _held = match lock.try_lock() {
+                Ok(held) => held,
+                Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+                Err(TryLockError::WouldBlock) => continue,
+            };
+            let Ok(Some(execution)) = executions::load(connection, &id) else {
+                continue;
+            };
+            if let Some(engine) = self.engine_of(&execution) {
+                self.remove_after_exit(engine.as_ref(), &execution);
+            }
+        }
+    }
+
+    /// The exit evidence of an exited worker, with its saved logs; its objects are removed only
+    /// after this evidence is stored.
     fn exit_of(
         &self,
         engine: &dyn Engine,
@@ -497,7 +579,7 @@ impl Supervisor {
         worker: &str,
         stopped_by: Option<&str>,
     ) -> Value {
-        let (logs, teardown) = self.teardown(engine, execution, worker);
+        let logs = self.save_logs(engine, execution, worker);
         let mut exit = json!({
             "exit_code": seen.exit_code,
             "finished_at": seen.finished_at,
@@ -505,7 +587,6 @@ impl Supervisor {
             "source": "engine-inspect",
             "ended_at": iso_now(),
             "logs": logs,
-            "teardown": teardown,
         });
         if let Some(by) = stopped_by {
             exit["stopped_by"] = json!(by);
@@ -585,10 +666,15 @@ impl Supervisor {
                     ExecutionState::Exited,
                     json!({"source": "engine-inspect"}),
                     Some(exit),
-                )
+                )?;
+                let stored = executions::load(connection, &execution.id)?;
+                if stored.is_some_and(|stored| stored.state == ExecutionState::Exited) {
+                    self.remove_after_exit(engine.as_ref(), execution);
+                }
+                Ok(())
             }
             WorkerState::Missing => {
-                let (_, teardown) = self.teardown(engine.as_ref(), execution, &worker);
+                let teardown = self.remove_objects(engine.as_ref(), execution);
                 Self::move_from(
                     connection,
                     execution,
@@ -769,7 +855,9 @@ impl Supervisor {
                 facts: json!({"source": "engine-inspect", "stopped_by": "deadline"}),
                 ..Change::default()
             };
-            self.record(id, from, ExecutionState::Exited, &change);
+            if self.record(id, from, ExecutionState::Exited, &change) {
+                self.remove_after_exit(engine, &current);
+            }
         } else {
             let change = Change {
                 facts: json!({"reason": "the stop of the worker cannot be proven", "stop": stop_detail}),

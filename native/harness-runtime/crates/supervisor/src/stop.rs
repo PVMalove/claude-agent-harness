@@ -245,20 +245,21 @@ impl Supervisor {
         Ok(Some(moved))
     }
 
-    /// Record `to`. A repeatable refusal of the store delays the evidence for a bounded time; a
-    /// refusal for good leaves the row `unknown` from `from` with the lease held, and the stderr
-    /// of the runtime names the cause. Reconcile observes the execution again afterwards.
+    /// Record `to`, and answer whether this call recorded it. A repeatable refusal of the store
+    /// delays the evidence for a bounded time; a refusal for good leaves the row `unknown` from
+    /// `from` with the lease held, and the stderr of the runtime names the cause. Reconcile
+    /// observes the execution again afterwards.
     pub(crate) fn record(
         &self,
         id: &str,
         from: ExecutionState,
         to: ExecutionState,
         change: &Change,
-    ) {
+    ) -> bool {
         let mut attempt = 1;
         let refused = loop {
             match self.locked(id, from, to, change.clone()) {
-                Ok(_) => return,
+                Ok(moved) => return moved.is_some(),
                 Err(err) if err.retryable && attempt < RECORD_ATTEMPTS => {
                     attempt += 1;
                     thread::sleep(RECORD_RETRY);
@@ -273,7 +274,7 @@ impl Supervisor {
             refused.message
         );
         if to == ExecutionState::Unknown {
-            return;
+            return false;
         }
         let unrecorded = Change {
             facts: json!({
@@ -289,6 +290,7 @@ impl Supervisor {
                 again.message
             );
         }
+        false
     }
 
     pub(crate) fn log_paths(&self, id: &str) -> Vec<PathBuf> {
