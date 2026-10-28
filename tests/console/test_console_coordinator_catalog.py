@@ -126,27 +126,14 @@ EXPECTED_REVERSIBILITY = {
     "ledger-release-lock": Reversibility.TERMINAL_COORDINATOR_ACTION,
 }
 
-EXPECTED_MUTATES = {
-    "batch-create": True,
-    "batch-approve": True,
-    "batch-abandon": True,
-    "batch-decide": True,
-    "batch-decision-packet": False,
-    "dispatch-create": True,
-    "dispatch-cancel": True,
-    "dispatch-send": True,
-    # dispatch status can persist the first observed worker-exit evidence.
-    "dispatch-status": True,
-    "risk-assess": True,
-    "context-package-register": True,
-    "batch-list": False,
-    "batch-resume": True,
-    "batch-attention-check": True,
-    "batch-attention-resolve": True,
-    "qa-status": False,
-    "ledger-status": False,
-    "ledger-lock-status": False,
-    "ledger-release-lock": True,
+# dispatch-status records only the first proof that a docker dispatch stopped; it stays a poll.
+EXPECTED_READS = {
+    "batch-list",
+    "batch-decision-packet",
+    "dispatch-status",
+    "qa-status",
+    "ledger-status",
+    "ledger-lock-status",
 }
 
 
@@ -163,13 +150,14 @@ def test_reversibility_matches_the_approved_architect_design() -> None:
     } == EXPECTED_REVERSIBILITY
 
 
-def test_mutation_boundary_is_independent_from_reversibility() -> None:
+def test_coordinator_commands_mutate_unless_declared_reads() -> None:
     """Reversible coordinator writers still occupy the server's project mutation slot."""
-    assert {key: entry.mutates for key, entry in ENTRIES.items()} == EXPECTED_MUTATES
+    assert {key for key, entry in ENTRIES.items() if entry.read_only} == EXPECTED_READS
+    assert all(
+        ENTRIES[key].reversibility is Reversibility.REVERSIBLE for key in EXPECTED_READS
+    )
     assert ENTRIES["batch-create"].reversibility is Reversibility.REVERSIBLE
-    assert ENTRIES["batch-resume"].reversibility is Reversibility.REVERSIBLE
-    assert ENTRIES["risk-assess"].reversibility is Reversibility.REVERSIBLE
-    assert ENTRIES["context-package-register"].reversibility is Reversibility.REVERSIBLE
+    assert not ENTRIES["batch-create"].read_only
 
 
 def _live_actions(entry: CoordinatorCommand) -> list[argparse.Action]:

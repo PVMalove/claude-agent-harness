@@ -79,34 +79,20 @@ def test_irreversible_commands_carry_their_confirmation_class() -> None:
     assert set(CONFIRMATION_REASONS) == set(Reversibility) - {Reversibility.REVERSIBLE}
 
 
-def test_mutation_boundary_is_explicit_and_includes_reversible_writers() -> None:
-    """Reversibility controls confirmation; mutation controls server serialization."""
-    expected_mutating = {
-        "init",
-        "update",
-        "update-force-managed",
-        "update-force-seed",
-        "adopt",
-        "cleanup-apply",
-        "cleanup-hard-apply",
-        "uninstall-apply",
-        "registry",
-        "lock-project-skills",
-        "health-fix",
-        "health-online-fix",
-        "repo-map",
-        "parser-bundle",
-        "verify",
-        "worktree-remove",
-        "ledger-migrate",
-        "ledger-clean",
-        "ledger-reset",
-    }
-    assert {entry.key for entry in HARNESS_COMMANDS if entry.mutates} == expected_mutating
-    assert all(entry.mutates for entry in MEMORY_COMMANDS)
+def test_commands_mutate_unless_declared_reads() -> None:
+    """Reversibility controls confirmation; only a declared read runs beside a mutation."""
+    reads = {"diff", "cleanup", "cleanup-hard", "uninstall", "list", "health"}
+    assert {entry.key for entry in HARNESS_COMMANDS if entry.read_only} == reads
+    assert not any(entry.read_only for entry in MEMORY_COMMANDS)
+    # A read never needs a confirmation: every irreversible class writes.
+    assert all(
+        entry.reversibility is Reversibility.REVERSIBLE
+        for entry in HARNESS_COMMANDS
+        if entry.read_only
+    )
+    # Reversible writers still take the mutation slot.
     assert ENTRIES["registry"].reversibility is Reversibility.REVERSIBLE
-    assert ENTRIES["health-fix"].reversibility is Reversibility.REVERSIBLE
-    assert not ENTRIES["health"].mutates
+    assert not ENTRIES["registry"].read_only and not ENTRIES["health-fix"].read_only
 
 
 def test_typed_confirmations_match_the_cli_safeguard_words() -> None:

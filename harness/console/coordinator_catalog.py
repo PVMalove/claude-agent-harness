@@ -45,8 +45,8 @@ class _Target:
     title: str
     group: str
     reversibility: Reversibility
-    # The same mutation slot as `CatalogEntry.mutates`.
-    mutates: bool = False
+    # The same mutation boundary as `CatalogEntry.read_only`.
+    read_only: bool = False
 
 
 _REVERSIBLE = Reversibility.REVERSIBLE
@@ -57,38 +57,23 @@ _TERMINAL = Reversibility.TERMINAL_COORDINATOR_ACTION
 # Terminal coordinator decisions and cancellation ask for confirmation, an external transport change
 # asks too (a different reason), and everything else stays reversible.
 _TARGETS: tuple[_Target, ...] = (
-    _Target("batch-list", ("batch", "list"), "Список batch", "batch", _REVERSIBLE),
     _Target(
-        "batch-create",
-        ("batch", "create"),
-        "Создать batch",
+        "batch-list",
+        ("batch", "list"),
+        "Список batch",
         "batch",
         _REVERSIBLE,
-        mutates=True,
+        read_only=True,
+    ),
+    _Target("batch-create", ("batch", "create"), "Создать batch", "batch", _REVERSIBLE),
+    _Target(
+        "batch-approve", ("batch", "approve"), "Утвердить batch", "batch", _TERMINAL
     ),
     _Target(
-        "batch-approve",
-        ("batch", "approve"),
-        "Утвердить batch",
-        "batch",
-        _TERMINAL,
-        mutates=True,
+        "batch-abandon", ("batch", "abandon"), "Отказаться от batch", "batch", _TERMINAL
     ),
     _Target(
-        "batch-abandon",
-        ("batch", "abandon"),
-        "Отказаться от batch",
-        "batch",
-        _TERMINAL,
-        mutates=True,
-    ),
-    _Target(
-        "batch-resume",
-        ("batch", "resume"),
-        "Возобновить batch",
-        "batch",
-        _REVERSIBLE,
-        mutates=True,
+        "batch-resume", ("batch", "resume"), "Возобновить batch", "batch", _REVERSIBLE
     ),
     _Target(
         "batch-attention-check",
@@ -96,7 +81,6 @@ _TARGETS: tuple[_Target, ...] = (
         "Проверить, требует ли batch внимания",
         "batch",
         _REVERSIBLE,
-        mutates=True,
     ),
     _Target(
         "batch-attention-resolve",
@@ -104,15 +88,9 @@ _TARGETS: tuple[_Target, ...] = (
         "Снять сигнал внимания с batch",
         "batch",
         _TERMINAL,
-        mutates=True,
     ),
     _Target(
-        "batch-decide",
-        ("batch", "decide"),
-        "Решение по batch",
-        "decide",
-        _TERMINAL,
-        mutates=True,
+        "batch-decide", ("batch", "decide"), "Решение по batch", "decide", _TERMINAL
     ),
     _Target(
         "batch-decision-packet",
@@ -120,14 +98,17 @@ _TARGETS: tuple[_Target, ...] = (
         "Пакет решения",
         "packet",
         _REVERSIBLE,
+        read_only=True,
     ),
+    # A liveness poll: it answers a busy ledger with a retry, and its one write is the first proof
+    # that a docker dispatch stopped. Blocking it behind a mutation would hide a stale worker.
     _Target(
         "dispatch-status",
         ("dispatch", "status"),
         "Статус dispatch",
         "dispatch",
         _REVERSIBLE,
-        mutates=True,
+        read_only=True,
     ),
     _Target(
         "dispatch-create",
@@ -135,7 +116,6 @@ _TARGETS: tuple[_Target, ...] = (
         "Создать dispatch",
         "dispatch",
         _TERMINAL,
-        mutates=True,
     ),
     _Target(
         "dispatch-cancel",
@@ -143,7 +123,6 @@ _TARGETS: tuple[_Target, ...] = (
         "Отменить dispatch",
         "dispatch",
         _TERMINAL,
-        mutates=True,
     ),
     _Target(
         "dispatch-send",
@@ -151,27 +130,30 @@ _TARGETS: tuple[_Target, ...] = (
         "Отправить dispatch",
         "dispatch",
         Reversibility.EXTERNAL_CHANGE,
-        mutates=True,
     ),
-    _Target("qa-status", ("qa", "status"), "Статус QA lane", "qa", _REVERSIBLE),
     _Target(
-        "risk-assess",
-        ("risk", "assess"),
-        "Оценить риск",
-        "risk",
+        "qa-status",
+        ("qa", "status"),
+        "Статус QA lane",
+        "qa",
         _REVERSIBLE,
-        mutates=True,
+        read_only=True,
     ),
+    _Target("risk-assess", ("risk", "assess"), "Оценить риск", "risk", _REVERSIBLE),
     _Target(
         "context-package-register",
         ("context-package", "register"),
         "Зарегистрировать Context Package",
         "context-package",
         _REVERSIBLE,
-        mutates=True,
     ),
     _Target(
-        "ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE
+        "ledger-status",
+        ("ledger", "status"),
+        "Состояние ledger",
+        "ledger",
+        _REVERSIBLE,
+        read_only=True,
     ),
     _Target(
         "ledger-lock-status",
@@ -179,6 +161,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Состояние lock ledger",
         "ledger",
         _REVERSIBLE,
+        read_only=True,
     ),
     # A forced release needs a human approval and leaves an audit record: it asks first.
     _Target(
@@ -187,7 +170,6 @@ _TARGETS: tuple[_Target, ...] = (
         "Снять lock ledger",
         "ledger",
         _TERMINAL,
-        mutates=True,
     ),
 )
 
@@ -217,7 +199,7 @@ class CoordinatorCommand:
     path: tuple[str, ...]
     reversibility: Reversibility
     fields: tuple[CoordinatorField, ...]
-    mutates: bool = False
+    read_only: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
@@ -339,7 +321,7 @@ def _build_commands() -> tuple[CoordinatorCommand, ...]:
                 path=target.path,
                 reversibility=target.reversibility,
                 fields=_fields(subparser(root, target.path)),
-                mutates=target.mutates,
+                read_only=target.read_only,
             )
         )
     return tuple(commands)

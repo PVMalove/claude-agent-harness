@@ -284,7 +284,7 @@ class JobService:
             raise JobRejected("start_failed", type(exc).__name__) from None
         if not available:
             raise JobRejected("unavailable_command")
-        mutating = entry.mutates
+        mutating = not entry.read_only
         # The slot is released in the same step that ends its job, so a holder is still running.
         active = self._active_mutation
         if mutating and active is not None:

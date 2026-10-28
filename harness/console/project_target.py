@@ -167,7 +167,6 @@ def installation_entry(target: ProjectTarget, capability: str) -> CatalogEntry:
         ("harness", target.action, "{repo}", "--capability", capability),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"harness/bin/harness.py:cmd_{target.action}",
-        mutates=True,
     )
 
 
