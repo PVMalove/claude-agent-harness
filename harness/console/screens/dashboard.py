@@ -43,7 +43,7 @@ from .. import reports
 from .. import data as console_data
 from ..data import DashboardData
 from ..runner import CommandRunner, capturing_runner
-from ..snapshots import HomeContext, collect_context
+from ..snapshots import HomeContext as HomeContext, collect_context
 from .commands import call_from_worker
 
 DRIFT_LABELS = {"clean": "нет", "drift": "есть", "missing": "не установлен"}
