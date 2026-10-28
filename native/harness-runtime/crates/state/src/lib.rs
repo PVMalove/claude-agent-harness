@@ -8,6 +8,7 @@ pub mod canonical;
 pub mod error;
 pub mod export;
 pub mod hooks;
+pub mod identity;
 pub mod import;
 pub mod legacy;
 pub mod lock;
