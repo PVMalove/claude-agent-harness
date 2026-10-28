@@ -126,6 +126,16 @@ EXPECTED_REVERSIBILITY = {
     "ledger-release-lock": Reversibility.TERMINAL_COORDINATOR_ACTION,
 }
 
+# dispatch-status records only the first proof that a docker dispatch stopped; it stays a poll.
+EXPECTED_READS = {
+    "batch-list",
+    "batch-decision-packet",
+    "dispatch-status",
+    "qa-status",
+    "ledger-status",
+    "ledger-lock-status",
+}
+
 
 def test_catalog_covers_exactly_the_operator_facing_coordinator_subcommands() -> None:
     """Проверить, что каталог содержит ровно все подкоманды координатора для оператора."""
@@ -138,6 +148,16 @@ def test_reversibility_matches_the_approved_architect_design() -> None:
     assert {
         key: entry.reversibility for key, entry in ENTRIES.items()
     } == EXPECTED_REVERSIBILITY
+
+
+def test_coordinator_commands_mutate_unless_declared_reads() -> None:
+    """Reversible coordinator writers still occupy the server's project mutation slot."""
+    assert {key for key, entry in ENTRIES.items() if entry.read_only} == EXPECTED_READS
+    assert all(
+        ENTRIES[key].reversibility is Reversibility.REVERSIBLE for key in EXPECTED_READS
+    )
+    assert ENTRIES["batch-create"].reversibility is Reversibility.REVERSIBLE
+    assert not ENTRIES["batch-create"].read_only
 
 
 def _live_actions(entry: CoordinatorCommand) -> list[argparse.Action]:

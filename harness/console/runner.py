@@ -12,9 +12,11 @@ from io import IncrementalNewlineDecoder
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass
-from threading import Lock
+from threading import Event, Lock
 from pathlib import Path
 from typing import Mapping, Protocol, Sequence, cast
+
+from .process_tree import wait_cancellable
 
 
 class CommandRunner(Protocol):
@@ -56,11 +58,14 @@ def capturing_runner(
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     on_output: Callable[[str, str], None] | None = None,
+    cancel_event: Event | None = None,
 ) -> "subprocess.CompletedProcess[str]":
     """Исполнитель команд, запускаемых изнутри TUI, владеющего терминалом: вывод перехватывается
     для отображения на экране, а stdin закрывается, чтобы команды с запросами подтверждения (например,
     `harness init`) использовали неинтерактивное поведение по умолчанию. Переменная `PYTHONUTF8`
-    обеспечивает кодировку UTF-8 для дочерних процессов Python."""
+    обеспечивает кодировку UTF-8 для дочерних процессов Python. С `cancel_event` команда
+    запускается в своей сессии: установленное событие останавливает её вместе с потомками, и
+    исполнитель поднимает `CommandCancelled` (см. process_tree.py)."""
     child_env = dict(env if env is not None else os.environ)
     child_env.setdefault("PYTHONUTF8", "1")
     child_env.setdefault("PYTHONUNBUFFERED", "1")
@@ -90,12 +95,20 @@ def capturing_runner(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
+        # Windows ignores it; there the Job Object of process_tree.py holds the descendants.
+        start_new_session=cancel_event is not None,
     ) as process:
         assert process.stdout is not None and process.stderr is not None
         with ThreadPoolExecutor(max_workers=2) as readers:
             stdout = readers.submit(drain, cast(_OutputPipe, process.stdout), "stdout")
             stderr = readers.submit(drain, cast(_OutputPipe, process.stderr), "stderr")
-            returncode = process.wait()
+            returncode = (
+                process.wait()
+                if cancel_event is None
+                else wait_cancellable(
+                    process, cancel_event, lambda: stdout.done() and stderr.done()
+                )
+            )
             return subprocess.CompletedProcess(
                 list(argv), returncode, stdout.result(), stderr.result()
             )

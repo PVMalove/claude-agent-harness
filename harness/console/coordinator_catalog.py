@@ -38,13 +38,15 @@ _SKIPPED_DESTS = frozenset({"help", "repo", "state_dir"})
 
 @dataclass(frozen=True)
 class _Target:
-    """Целевая подкоманда координатора: путь CLI, заголовок, группа меню и класс обратимости."""
+    """Целевая подкоманда координатора: путь CLI, заголовок, группа меню, класс обратимости и признак записи состояния проекта."""
 
     key: str
     path: tuple[str, ...]
     title: str
     group: str
     reversibility: Reversibility
+    # The same mutation boundary as `CatalogEntry.read_only`.
+    read_only: bool = False
 
 
 _REVERSIBLE = Reversibility.REVERSIBLE
@@ -55,7 +57,14 @@ _TERMINAL = Reversibility.TERMINAL_COORDINATOR_ACTION
 # Terminal coordinator decisions and cancellation ask for confirmation, an external transport change
 # asks too (a different reason), and everything else stays reversible.
 _TARGETS: tuple[_Target, ...] = (
-    _Target("batch-list", ("batch", "list"), "Список batch", "batch", _REVERSIBLE),
+    _Target(
+        "batch-list",
+        ("batch", "list"),
+        "Список batch",
+        "batch",
+        _REVERSIBLE,
+        read_only=True,
+    ),
     _Target("batch-create", ("batch", "create"), "Создать batch", "batch", _REVERSIBLE),
     _Target(
         "batch-approve", ("batch", "approve"), "Утвердить batch", "batch", _TERMINAL
@@ -89,13 +98,17 @@ _TARGETS: tuple[_Target, ...] = (
         "Пакет решения",
         "packet",
         _REVERSIBLE,
+        read_only=True,
     ),
+    # A liveness poll: it answers a busy ledger with a retry, and its one write is the first proof
+    # that a docker dispatch stopped. Blocking it behind a mutation would hide a stale worker.
     _Target(
         "dispatch-status",
         ("dispatch", "status"),
         "Статус dispatch",
         "dispatch",
         _REVERSIBLE,
+        read_only=True,
     ),
     _Target(
         "dispatch-create",
@@ -118,7 +131,14 @@ _TARGETS: tuple[_Target, ...] = (
         "dispatch",
         Reversibility.EXTERNAL_CHANGE,
     ),
-    _Target("qa-status", ("qa", "status"), "Статус QA lane", "qa", _REVERSIBLE),
+    _Target(
+        "qa-status",
+        ("qa", "status"),
+        "Статус QA lane",
+        "qa",
+        _REVERSIBLE,
+        read_only=True,
+    ),
     _Target("risk-assess", ("risk", "assess"), "Оценить риск", "risk", _REVERSIBLE),
     _Target(
         "context-package-register",
@@ -128,7 +148,12 @@ _TARGETS: tuple[_Target, ...] = (
         _REVERSIBLE,
     ),
     _Target(
-        "ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE
+        "ledger-status",
+        ("ledger", "status"),
+        "Состояние ledger",
+        "ledger",
+        _REVERSIBLE,
+        read_only=True,
     ),
     _Target(
         "ledger-lock-status",
@@ -136,6 +161,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Состояние lock ledger",
         "ledger",
         _REVERSIBLE,
+        read_only=True,
     ),
     # A forced release needs a human approval and leaves an audit record: it asks first.
     _Target(
@@ -173,6 +199,7 @@ class CoordinatorCommand:
     path: tuple[str, ...]
     reversibility: Reversibility
     fields: tuple[CoordinatorField, ...]
+    read_only: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
@@ -294,6 +321,7 @@ def _build_commands() -> tuple[CoordinatorCommand, ...]:
                 path=target.path,
                 reversibility=target.reversibility,
                 fields=_fields(subparser(root, target.path)),
+                read_only=target.read_only,
             )
         )
     return tuple(commands)

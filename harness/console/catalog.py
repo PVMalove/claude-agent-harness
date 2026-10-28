@@ -66,7 +66,7 @@ _REPO = "repo"
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """Запись команды в каталоге: параметры CLI с плейсхолдерами `{repo}` и `{<входное поле>}`, класс обратимости и целевая функция."""
+    """Запись команды в каталоге: параметры CLI с плейсхолдерами `{repo}` и `{<входное поле>}`, класс обратимости, целевая функция и признак записи состояния проекта."""
 
     key: str
     title: str
@@ -77,6 +77,11 @@ class CatalogEntry:
     # Runs `python` under the repository's dev environment (`.harness/.venv`: pytest, mypy, ...)
     # instead of the console's own interpreter - only for this repository's verification script.
     dev_environment: bool = False
+    # A read writes no project state and runs beside the console server's one mutating job. Every
+    # other command takes that slot, so a new entry is serialized until it is declared a read.
+    # Reversibility only chooses the confirmation: a reversible command that writes a cache, a
+    # ledger record or a generated file is still a mutation.
+    read_only: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
@@ -197,6 +202,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "diff", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_diff",
+        read_only=True,
     ),
     CatalogEntry(
         "adopt",
@@ -211,6 +217,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "cleanup", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_cleanup",
+        read_only=True,
     ),
     CatalogEntry(
         "cleanup-hard",
@@ -218,6 +225,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "cleanup", "{repo}", "--mode", "hard"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_cleanup",
+        read_only=True,
     ),
     CatalogEntry(
         "cleanup-apply",
@@ -249,6 +257,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "uninstall", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_uninstall",
+        read_only=True,
     ),
     CatalogEntry(
         "uninstall-apply",
@@ -278,6 +287,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "list", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_list",
+        read_only=True,
     ),
     CatalogEntry(
         "health",
@@ -285,6 +295,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "health", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_health",
+        read_only=True,
     ),
     CatalogEntry(
         "health-fix",
