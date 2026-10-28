@@ -14,7 +14,7 @@ use std::thread;
 use contracts::FrameError;
 
 use crate::paths::RuntimePaths;
-use crate::peer::{PeerId, own_uid, peer_uid, same_user};
+use crate::peer::{PeerId, own_uid, peer_pid, peer_uid, same_user};
 use crate::server::{
     ACCEPT_POLL, IDLE_TIMEOUT, StartError, io_context, serve_connection, take_lock,
 };
@@ -64,6 +64,7 @@ impl Server {
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
             state_dir,
+            snapshots: Arc::default(),
         });
         Ok(Self {
             listener,
@@ -175,7 +176,8 @@ fn serve_unix_stream(
         .set_read_timeout(Some(IDLE_TIMEOUT))
         .map_err(FrameError::Io)?;
     let permitted = peer_uid(&stream).is_ok_and(|uid| same_user(uid, own));
-    serve_connection(&mut stream, permitted, shared)
+    let pid = peer_pid(&stream);
+    serve_connection(&mut stream, permitted, pid, shared)
 }
 
 #[cfg(test)]

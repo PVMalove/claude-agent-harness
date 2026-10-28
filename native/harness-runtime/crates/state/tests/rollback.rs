@@ -198,7 +198,9 @@ fn a_qa_lease_or_a_queued_run_in_the_store_is_refused_without_a_change() {
     for (name, sql) in [
         (
             "lease",
-            "INSERT INTO qa_lane (id, body_json) VALUES (1, '{}')",
+            "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, expires_at,
+                                  heartbeat_at)
+             VALUES (1, '{}', 'dispatch', 'd', 't', 't', 't')",
         ),
         (
             "queue",
@@ -210,6 +212,32 @@ fn a_qa_lease_or_a_queued_run_in_the_store_is_refused_without_a_change() {
 
         assert_refused_without_a_change(&repo, &approval(), ErrorCode::LeaseHeld);
     }
+}
+
+/// The lane row outlives its leases (schema version 3): a row without an owner is a free lane,
+/// and its fencing token goes into the archive.
+#[test]
+fn a_free_qa_lane_row_is_no_lease_and_its_fencing_token_is_archived() {
+    let repo = cut_over("free-lane");
+    store(&repo)
+        .execute(
+            "INSERT INTO qa_lane (id, revision, fencing_token, body_json) VALUES (1, 4, 7, '{}')",
+            [],
+        )
+        .unwrap();
+
+    let outcome = rolled_back(&repo);
+
+    assert!(!outcome.already_rolled_back);
+    let pointer = read_pointer(&repo.state()).unwrap().unwrap();
+    assert!(
+        !repo
+            .state()
+            .join("generations")
+            .join(&pointer.generation)
+            .join("qa-lane/lease.json")
+            .exists()
+    );
 }
 
 #[test]

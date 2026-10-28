@@ -802,12 +802,16 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
         )
     ledger = LifecycleLedger(root)
     entries: list[JsonObject] | None = None
+    lane: JsonObject | None = None
     engine_reads = 0
     # The runtime store is read, never written, by this view: the engine is not asked, so no
     # evidence is persisted (ADR 0020, section 2).
     from_store = store_is_authority(root)
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
     with contextlib.suppress(LedgerBusyError), read_state(ledger, repo):
+        from harness.orchestration import qa_lane
+
+        lane = qa_lane.lane_summary(ledger)
         entries = []
         for path in state_view.glob(
             _records_root(root) / DispatchStatusRecord.directory, "dispatch-*.json"
@@ -888,6 +892,9 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
         "stale_after_seconds": threshold,
         "stale": [entry["dispatch_id"] for entry in entries if entry["stale"]],
         "dispatches": entries,
+        # The QA lane: its owner, its fencing token and whether the owner missed its heartbeat
+        # (``stale_heartbeat``); ``null`` while the lane is free.
+        "qa_lane": lane,
     }
 
 

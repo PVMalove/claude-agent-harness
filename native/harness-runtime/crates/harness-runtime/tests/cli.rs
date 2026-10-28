@@ -128,13 +128,20 @@ fn migrate_without_a_ledger_prints_the_not_found_code_first() {
 #[test]
 fn migrate_while_the_ledger_lock_is_held_prints_the_store_busy_code_first() {
     let repo = Scratch::repo_with_ledger("busy").without_qa_lane_entries();
-    // A lock directory without an owner record: its owner cannot be judged, so the lock stays.
+    // A lock directory without an owner record: its owner cannot be judged, so the lock stays
+    // until it is stale.
     fs::create_dir(repo.state().join(".coordinator.lock")).unwrap();
 
-    let (code, remedy) = refusal(&run(&["migrate", "--repo", repo.0.to_str().unwrap()]));
+    let output = run(&["migrate", "--repo", repo.0.to_str().unwrap()]);
+    let (code, remedy) = refusal(&output);
 
     assert_eq!(code, 2);
     assert!(remedy.starts_with("REMEDY: [store_busy] "), "{remedy}");
+    assert!(
+        stderr_lines(&output)[0].contains("(owner-unknown-recent)"),
+        "{:?}",
+        stderr_lines(&output)
+    );
 }
 
 #[test]
@@ -201,6 +208,14 @@ fn downgrade_to_version_one(store: &Path) {
              DROP TABLE operations;
              DROP TABLE audit_checkpoint;
              CREATE TABLE audit_checkpoint (seq INTEGER NOT NULL, chain_sha256 TEXT NOT NULL) STRICT;
+             DROP TABLE generation;
+             DROP TABLE qa_lane;
+             CREATE TABLE qa_lane (
+                 id            INTEGER PRIMARY KEY CHECK (id = 1),
+                 revision      INTEGER NOT NULL DEFAULT 1,
+                 fencing_token INTEGER NOT NULL DEFAULT 0,
+                 body_json     TEXT NOT NULL
+             ) STRICT;
              PRAGMA user_version = 1;",
         )
         .unwrap();
@@ -238,7 +253,7 @@ fn serve_upgrades_a_store_of_version_one_and_audits_the_step() {
 
     serve_once(&repo);
 
-    assert_eq!(user_version(&store), 2);
+    assert_eq!(user_version(&store), 3);
     let connection = rusqlite::Connection::open(&store).unwrap();
     let (action, details): (String, String) = connection
         .query_row(
@@ -250,7 +265,7 @@ fn serve_upgrades_a_store_of_version_one_and_audits_the_step() {
     assert_eq!(action, "schema-migrate");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
-        serde_json::json!({"from": 1, "to": 2})
+        serde_json::json!({"from": 1, "to": 3})
     );
 }
 
@@ -268,7 +283,7 @@ fn serve_leaves_a_current_store_unchanged() {
     serve_once(&repo);
 
     assert_eq!(records(&store), before);
-    assert_eq!(user_version(&store), 2);
+    assert_eq!(user_version(&store), 3);
 }
 
 #[test]
@@ -276,7 +291,7 @@ fn serve_of_a_store_of_a_newer_schema_prints_the_protocol_unsupported_code_and_w
     let (repo, store) = cut_over("serve-newer");
     rusqlite::Connection::open(&store)
         .unwrap()
-        .pragma_update(None, "user_version", 3)
+        .pragma_update(None, "user_version", 4)
         .unwrap();
 
     let output = serve_once(&repo);
@@ -287,7 +302,7 @@ fn serve_of_a_store_of_a_newer_schema_prints_the_protocol_unsupported_code_and_w
         remedy.starts_with("REMEDY: [protocol_unsupported] "),
         "{remedy}"
     );
-    assert_eq!(user_version(&store), 3);
+    assert_eq!(user_version(&store), 4);
 }
 
 #[test]

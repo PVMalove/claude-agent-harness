@@ -1,6 +1,8 @@
 //! The peer check: the client must run as the same user as the runtime (ADR 0021, section 2).
 //! On Unix a peer is a uid from `SO_PEERCRED`; on Windows it is the user SID of the client
-//! process (`GetNamedPipeClientProcessId`, then the SID of that process token).
+//! process (`GetNamedPipeClientProcessId`, then the SID of that process token). The pid of the
+//! client comes from the same kernel sources and names the owner of a QA lease (ADR 0020,
+//! section 7); a request never names it.
 
 #[cfg(unix)]
 mod imp {
@@ -32,6 +34,25 @@ mod imp {
             io::ErrorKind::Unsupported,
             "peer credentials are implemented for Linux only",
         ))
+    }
+
+    /// The pid of the process that connected (`SO_PEERCRED`), as numbered in the PID namespace
+    /// of the runtime; `None` when the kernel reports none (0 for a process the runtime cannot
+    /// see).
+    #[cfg(target_os = "linux")]
+    pub fn peer_pid(stream: &UnixStream) -> Option<u32> {
+        use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
+
+        getsockopt(stream, PeerCredentials)
+            .ok()
+            .and_then(|credentials| u32::try_from(credentials.pid()).ok())
+            .filter(|pid| *pid > 0)
+    }
+
+    /// Peer credentials are implemented for Linux only.
+    #[cfg(not(target_os = "linux"))]
+    pub fn peer_pid(_stream: &UnixStream) -> Option<u32> {
+        None
     }
 
     /// The uid of the runtime itself.

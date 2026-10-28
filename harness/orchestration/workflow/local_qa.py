@@ -22,8 +22,8 @@ from harness.orchestration.core.config import (
     _config,
     _verification_commands,
 )
-from harness.orchestration.core.config import _execution_policy
-from harness.orchestration import operation_access, qa_lane
+from harness.orchestration.core.config import _execution_policy, _lease_ttl
+from harness.orchestration import operation_access, qa_lane, qa_lease
 from harness.orchestration.core.constants import (
     INTEGRATION_SHA_PATTERN,
     LOCAL_QA_CI_CONDITIONS,
@@ -354,6 +354,11 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             }
             _write_record(ledger, IntegrationLocalQaRecord.from_dict(request))
     result_id = _result_id(request_id)
+    # In the store epoch an expired lease whose owner is provably dead is reaped before the
+    # admission below; a live owner keeps it.
+    from harness.orchestration.workflow import qa_integration
+
+    qa_lane.reap_dead_owner(ledger, root, qa_integration._ops())
     with _ledger_lock(ledger):
         result_path = _path(root, result_id)
         if state_view.exists(result_path):
@@ -428,7 +433,13 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             )
         seconds = getattr(args, "lease_seconds", None)
         if seconds is None:
-            seconds = _execution_policy(_config(repo))["qa_lease_seconds"]
+            # The runtime lease is renewed by a heartbeat and lives lease_ttl_seconds; the file
+            # lane keeps its long lease.
+            seconds = (
+                _lease_ttl(_config(repo))
+                if qa_lease.active(ledger)
+                else _execution_policy(_config(repo))["qa_lease_seconds"]
+            )
         admission = qa_lane.acquire(
             ledger, request_id, owner_kind=QaOwnerKind.LOCAL_QA, lease_seconds=seconds
         )
@@ -443,12 +454,13 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
     gate: GateResult | None = None
     stage = "gate-run"
     try:
-        gate = run_gate(
-            [command for command in commands],
-            CleanRoomPolicy(repo, pair["candidate_sha"]),
-            stop_on_failure=True,
-            evidence=qa_lane.evidence_context(repo, pair["candidate_sha"]),
-        )
+        with qa_lease.heartbeat(ledger, claimed, seconds):
+            gate = run_gate(
+                [command for command in commands],
+                CleanRoomPolicy(repo, pair["candidate_sha"]),
+                stop_on_failure=True,
+                evidence=qa_lane.evidence_context(repo, pair["candidate_sha"]),
+            )
         stage = "artifact-persistence"
         log = gate.artifact
         if gate.evidence is not None:

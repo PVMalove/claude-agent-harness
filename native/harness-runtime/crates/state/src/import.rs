@@ -70,9 +70,18 @@ fn insert_typed(
             connection.execute(&spec.insert_sql(), rusqlite::params_from_iter(params))?;
         }
         Target::QaLease(record) => {
+            let [kind, owner, acquired_at, expires_at] = crate::schema::lease_owner(&record);
             connection.execute(
-                "INSERT INTO qa_lane (id, body_json) VALUES (1, ?1)",
-                params![Value::Object(record).to_string()],
+                "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, expires_at,
+                                      heartbeat_at)
+                 VALUES (1, ?1, ?2, ?3, ?4, ?5, ?4)",
+                params![
+                    Value::Object(record).to_string(),
+                    kind,
+                    owner,
+                    acquired_at,
+                    expires_at
+                ],
             )?;
         }
         Target::QaQueue { id, record } => {

@@ -5,6 +5,7 @@
 //! `state.read` answer from, so every rule is tested against a scratch state without a socket.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use contracts::{
     ErrorBody, ErrorCode, FailureDomain, HelloPayload, HelloResult, PROTOCOL_VERSION,
@@ -24,6 +25,8 @@ pub struct Shared {
     /// The state directory whose runtime store this runtime serves once the store is the
     /// authority (ADR 0020, section 1); `None` for a runtime that serves no state.
     pub state_dir: Option<PathBuf>,
+    /// The read snapshots that span the requests of one command (ADR 0020, section 3).
+    pub snapshots: Arc<state::read_session::Registry>,
 }
 
 /// The answer to one frame.
@@ -34,10 +37,12 @@ pub struct Reply {
     pub close: bool,
 }
 
-/// The state of one connection: the protocol version `hello` negotiated, once it did.
+/// The state of one connection: the protocol version `hello` negotiated, once it did, and the
+/// pid of the client as the kernel reported it.
 #[derive(Debug, Default)]
 pub struct Session {
     negotiated: Option<ProtocolVersion>,
+    peer_pid: Option<u32>,
 }
 
 fn operation_id_of(body: &[u8]) -> String {
@@ -57,6 +62,14 @@ fn failure(operation_id: &str, error: ErrorBody, close: bool) -> Reply {
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A session of the client process `peer_pid` (`SO_PEERCRED`, `GetNamedPipeClientProcessId`).
+    pub fn for_peer(peer_pid: Option<u32>) -> Self {
+        Self {
+            negotiated: None,
+            peer_pid,
+        }
     }
 
     /// The reply to one frame body, given the current time in UTC milliseconds.
@@ -122,7 +135,8 @@ impl Session {
                 close: false,
             },
             "state.read" => state_read(shared, &request),
-            "state.write" => state_write(shared, &request),
+            "state.write" => state_write(shared, &request, self.peer_pid),
+            "qa.lane.inspect" => qa_lane_inspect(shared, &request),
             "state.validate" => state_validate(shared, &request),
             other => failure(
                 &request.operation_id,
@@ -197,6 +211,7 @@ impl Session {
             features.push("state.read".to_owned());
             features.push("state.write".to_owned());
             features.push("state.validate".to_owned());
+            features.push("qa.lane.inspect".to_owned());
         }
         let result = HelloResult {
             protocol: version,
@@ -213,106 +228,6 @@ impl Session {
 
 /// `state.read`: records of the runtime store in the form of the legacy ledger files.
 fn state_read(shared: &Shared, request: &Request) -> Reply {
-    use state::read::ReadError;
-
-    let id = &request.operation_id;
-    let refusal = |code, domain, retryable, message: String, remedy: &str| {
-        failure(
-            id,
-            ErrorBody::new(code, domain, retryable, message, remedy),
-            false,
-        )
-    };
-    let Some(state_dir) = shared.state_dir.as_deref() else {
-        return refusal(
-            ErrorCode::NotFound,
-            FailureDomain::Policy,
-            false,
-            "this runtime serves no state".to_owned(),
-            "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
-        );
-    };
-    match state::read::read(
-        state_dir,
-        request.payload.as_ref(),
-        request.expected_revision,
-    ) {
-        Ok(answer) => {
-            let mut response = Response::ok(
-                id,
-                json!({"records": answer.records, "revisions": answer.revisions}),
-            );
-            response.revision = Some(answer.revision);
-            Reply {
-                response,
-                close: false,
-            }
-        }
-        Err(ReadError::NotAttached(reason)) => refusal(
-            ErrorCode::NotFound,
-            FailureDomain::Policy,
-            false,
-            format!("the runtime store is not the authority of this repository: {reason}"),
-            "run `harness-runtime migrate --repo <repo>`, or use the installation that matches the state",
-        ),
-        Err(ReadError::Malformed(detail)) => {
-            let Reply { response, .. } = malformed(id, &detail);
-            Reply {
-                response,
-                close: false,
-            }
-        }
-        Err(ReadError::RevisionConflict { expected, actual }) => failure(
-            id,
-            ErrorBody::new(
-                ErrorCode::RevisionConflict,
-                FailureDomain::Infrastructure,
-                true,
-                "the store changed since the revision the request expected",
-                "read again",
-            )
-            .with_fact("expected_revision", expected)
-            .with_fact("actual_revision", actual),
-            false,
-        ),
-        Err(ReadError::Broken(broken)) => failure(id, broken.to_error(), false),
-        Err(ReadError::TooLarge) => failure(
-            id,
-            ErrorBody::new(
-                ErrorCode::MalformedRequest,
-                FailureDomain::Tooling,
-                false,
-                "the answer would not fit one frame",
-                "ask for fewer collections or paths in one request",
-            )
-            .with_fact("reason", "answer_too_large"),
-            false,
-        ),
-        Err(ReadError::Store {
-            message,
-            busy: true,
-        }) => refusal(
-            ErrorCode::StoreBusy,
-            FailureDomain::Infrastructure,
-            true,
-            format!("the store is busy: {message}"),
-            "repeat the command",
-        ),
-        Err(ReadError::Store {
-            message,
-            busy: false,
-        }) => refusal(
-            ErrorCode::Internal,
-            FailureDomain::Infrastructure,
-            false,
-            format!("the store cannot be read: {message}"),
-            "repeat the command; if the store stays unreadable, restore the state directory from the snapshot named in AUTHORITY.json",
-        ),
-    }
-}
-
-/// `state.write`: the mutations of one command, applied in one transaction (ADR 0020, section 3).
-fn state_write(shared: &Shared, request: &Request) -> Reply {
     let id = &request.operation_id;
     let Some(state_dir) = shared.state_dir.as_deref() else {
         return failure(
@@ -327,7 +242,161 @@ fn state_write(shared: &Shared, request: &Request) -> Reply {
             false,
         );
     };
-    match state::write::write(state_dir, request) {
+    match shared.snapshots.read(
+        state_dir,
+        request.payload.as_ref(),
+        request.expected_revision,
+    ) {
+        Ok(answer) => {
+            let mut result = json!({
+                "records": answer.records,
+                "revisions": answer.revisions,
+                "generation_revision": answer.generation_revision,
+            });
+            if let Some(snapshot) = answer.snapshot {
+                result["snapshot"] = json!(snapshot);
+            }
+            let mut response = Response::ok(id, result);
+            response.revision = Some(answer.revision);
+            Reply {
+                response,
+                close: false,
+            }
+        }
+        Err(error) => read_refusal(id, error),
+    }
+}
+
+/// The reply to a refused read of the store.
+fn read_refusal(id: &str, error: state::read::ReadError) -> Reply {
+    use state::read::ReadError;
+
+    let refusal = |code, domain, retryable, message: String, remedy: &str| {
+        failure(
+            id,
+            ErrorBody::new(code, domain, retryable, message, remedy),
+            false,
+        )
+    };
+    match error {
+        ReadError::NotAttached(reason) => refusal(
+            ErrorCode::NotFound,
+            FailureDomain::Policy,
+            false,
+            format!("the runtime store is not the authority of this repository: {reason}"),
+            "run `harness-runtime migrate --repo <repo>`, or use the installation that matches the state",
+        ),
+        ReadError::Malformed(detail) => {
+            let Reply { response, .. } = malformed(id, &detail);
+            Reply {
+                response,
+                close: false,
+            }
+        }
+        ReadError::RevisionConflict { expected, actual } => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::RevisionConflict,
+                FailureDomain::Infrastructure,
+                true,
+                "the store changed since the revision the request expected",
+                "read again",
+            )
+            .with_fact("expected_revision", expected)
+            .with_fact("actual_revision", actual),
+            false,
+        ),
+        ReadError::Broken(broken) => failure(id, broken.to_error(), false),
+        ReadError::TooLarge => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::MalformedRequest,
+                FailureDomain::Tooling,
+                false,
+                "the answer would not fit one frame",
+                "ask for fewer collections or paths in one request",
+            )
+            .with_fact("reason", "answer_too_large"),
+            false,
+        ),
+        ReadError::Store {
+            message,
+            busy: true,
+        } => refusal(
+            ErrorCode::StoreBusy,
+            FailureDomain::Infrastructure,
+            true,
+            format!("the store is busy: {message}"),
+            "repeat the command",
+        ),
+        ReadError::Snapshot { reason, detail } => failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::StoreBusy,
+                FailureDomain::Infrastructure,
+                true,
+                format!("the read snapshot cannot answer: {detail}"),
+                "read again from a new snapshot",
+            )
+            .with_fact("reason", reason),
+            false,
+        ),
+        ReadError::Store {
+            message,
+            busy: false,
+        } => refusal(
+            ErrorCode::Internal,
+            FailureDomain::Infrastructure,
+            false,
+            format!("the store cannot be read: {message}"),
+            "repeat the command; if the store stays unreadable, restore the state directory from the snapshot named in AUTHORITY.json",
+        ),
+    }
+}
+
+/// `qa.lane.inspect`: the QA lease, its fencing token, whether its expiry passed and the verdict on
+/// its owner (ADR 0020, section 7). It reads without a write lock.
+fn qa_lane_inspect(shared: &Shared, request: &Request) -> Reply {
+    let id = &request.operation_id;
+    let Some(state_dir) = shared.state_dir.as_deref() else {
+        return failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::NotFound,
+                FailureDomain::Policy,
+                false,
+                "this runtime serves no state",
+                "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
+            ),
+            false,
+        );
+    };
+    match state::lease::inspect(state_dir) {
+        Ok(answer) => Reply {
+            response: Response::ok(id, answer),
+            close: false,
+        },
+        Err(error) => read_refusal(id, error),
+    }
+}
+
+/// `state.write`: the mutations of one command, applied in one transaction (ADR 0020, section 3).
+fn state_write(shared: &Shared, request: &Request, peer_pid: Option<u32>) -> Reply {
+    let id = &request.operation_id;
+    let Some(state_dir) = shared.state_dir.as_deref() else {
+        return failure(
+            id,
+            ErrorBody::new(
+                ErrorCode::NotFound,
+                FailureDomain::Policy,
+                false,
+                "this runtime serves no state",
+                "start the runtime with `harness-runtime serve --repo <repo>` of the repository",
+            ),
+            false,
+        );
+    };
+    match state::write::write_for(state_dir, request, peer_pid) {
         Ok(written) => {
             let mut response = Response::ok(id, written.result);
             response.revision = Some(written.revision);
@@ -429,6 +498,7 @@ mod tests {
             repo_id: id,
             server_version: "9.9.9".to_owned(),
             state_dir: None,
+            snapshots: Default::default(),
         }
     }
 
@@ -740,7 +810,13 @@ mod tests {
         assert_eq!(result["store_id"], store_id.as_str());
         assert_eq!(
             result["features"],
-            json!(["status", "state.read", "state.write", "state.validate"])
+            json!([
+                "status",
+                "state.read",
+                "state.write",
+                "state.validate",
+                "qa.lane.inspect"
+            ])
         );
         assert_eq!(reply.response.status, Status::Ok);
         assert_eq!(reply.response.revision, Some(1));

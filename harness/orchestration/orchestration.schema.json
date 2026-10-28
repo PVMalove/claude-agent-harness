@@ -478,6 +478,12 @@
         "heartbeat_interval_seconds": {"type": "integer", "minimum": 1, "default": 300, "description": "Желаемый интервал heartbeat воркера в секундах; фактический интервал ограничен третью stale_dispatch_seconds."}
       }
     },
+    "lease_ttl_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400,
+      "description": "Цель: освобождение QA-lane после смерти владельца. За что отвечает: срок lease QA-lane в эпохе runtime store; владелец продлевает его heartbeat каждую треть срока, а runtime проверяет живость владельца только после истечения. Варианты: целое число от 1 до 86400 (по умолчанию 300)."
+    },
     "approval_ttl_seconds": {
       "type": "integer",
       "minimum": 1,

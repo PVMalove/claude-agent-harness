@@ -1,5 +1,6 @@
-//! The schema of the store, version 2: what `create` writes, what its CHECKs refuse, and how a
-//! store of version 1 is brought forward (ADR 0020, sections 3 and 4; ADR 0021, sections 4 and 6).
+//! The schema of the store, version 3: what `create` writes, what its CHECKs refuse, and how a
+//! store of version 1 or 2 is brought forward (ADR 0020, sections 3, 4 and 7; ADR 0021, sections
+//! 4 and 6).
 
 use std::collections::BTreeMap;
 
@@ -8,6 +9,7 @@ use rusqlite::Connection;
 use state::schema::{SCHEMA, SCHEMA_VERSION, create, upgrade};
 
 const SCHEMA_V1: &str = include_str!("fixtures/schema_v1.sql");
+const SCHEMA_V2: &str = include_str!("fixtures/schema_v2.sql");
 
 fn version(connection: &Connection) -> i64 {
     connection
@@ -86,11 +88,42 @@ fn is_check_violation(error: &rusqlite::Error) -> bool {
 }
 
 #[test]
-fn a_new_store_has_the_schema_version_two() {
+fn a_new_store_has_the_schema_version_three_and_its_generation_row() {
     let connection = fresh();
 
-    assert_eq!(SCHEMA_VERSION, 2);
-    assert_eq!(version(&connection), 2);
+    assert_eq!(SCHEMA_VERSION, 3);
+    assert_eq!(version(&connection), 3);
+    let generation: i64 = connection
+        .query_row("SELECT revision FROM generation WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(generation, 1);
+}
+
+#[test]
+fn the_owner_columns_of_the_qa_lane_are_all_set_or_all_null() {
+    let connection = fresh();
+    for broken in [
+        "INSERT INTO qa_lane (id, body_json, owner_id) VALUES (1, '{}', 'd')",
+        "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, expires_at)
+         VALUES (1, '{}', 'dispatch', 'd', 't', 't')",
+        "INSERT INTO qa_lane (id, body_json, host, pid, start_time) VALUES (1, '{}', 'h', 1, 's')",
+        "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, expires_at,
+                              heartbeat_at, host, pid)
+         VALUES (1, '{}', 'dispatch', 'd', 't', 't', 't', 'h', 1)",
+    ] {
+        let error = connection.execute(broken, []).unwrap_err();
+        assert!(is_check_violation(&error), "{broken}: {error}");
+    }
+    connection
+        .execute(
+            "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, expires_at,
+                                  heartbeat_at, host, pid, start_time)
+             VALUES (1, '{}', 'dispatch', 'd', 't', 't', 't', 'h', 1, 's')",
+            [],
+        )
+        .unwrap();
 }
 
 #[test]
@@ -283,7 +316,7 @@ fn a_store_of_version_one_is_upgraded_to_the_schema_a_new_store_has() {
     let changed = upgrade(&mut old).unwrap();
 
     assert!(changed);
-    assert_eq!(version(&old), 2);
+    assert_eq!(version(&old), 3);
     assert_eq!(columns(&old), columns(&fresh()));
 }
 
@@ -320,7 +353,115 @@ fn the_upgrade_keeps_every_row_and_appends_one_audit_record() {
     assert_eq!(last.1, "schema-migrate");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&last.2).unwrap(),
-        serde_json::json!({"from": 1, "to": 2})
+        serde_json::json!({"from": 1, "to": 3})
+    );
+}
+
+/// A store of version 2, with a held QA lease when `lease` names its body.
+fn store_of_version_two(lease: Option<&str>) -> Connection {
+    let path = tempdir("v2").join("runtime.db");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch("PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;")
+        .unwrap();
+    connection.execute_batch(SCHEMA_V2).unwrap();
+    connection.pragma_update(None, "user_version", 2).unwrap();
+    insert_dispatch(&connection);
+    if let Some(body) = lease {
+        connection
+            .execute(
+                "INSERT INTO qa_lane (id, revision, fencing_token, body_json) VALUES (1, 3, 0, ?1)",
+                [body],
+            )
+            .unwrap();
+    }
+    state::audit::append(
+        &connection,
+        "2026-10-01T00:00:00+00:00",
+        "legacy-import",
+        &serde_json::json!({}),
+    )
+    .unwrap();
+    connection
+}
+
+#[test]
+fn a_store_of_version_two_is_upgraded_to_the_schema_a_new_store_has() {
+    let mut old = store_of_version_two(None);
+
+    assert!(upgrade(&mut old).unwrap());
+
+    assert_eq!(version(&old), 3);
+    assert_eq!(columns(&old), columns(&fresh()));
+    let generation: i64 = old
+        .query_row("SELECT revision FROM generation WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(generation, 1);
+    let (action, details): (String, String) = old
+        .query_row(
+            "SELECT action, details_json FROM audit ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(action, "schema-migrate");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&details).unwrap(),
+        serde_json::json!({"from": 2, "to": 3})
+    );
+}
+
+#[test]
+fn a_lease_of_version_two_keeps_its_body_owner_and_expiry_and_has_no_identity() {
+    let body = r#"{"acquired_at":"2026-10-01T00:00:00+00:00","dispatch_id":"d","expires_at":"2026-10-01T00:30:00+00:00","host":"h","pid":7}"#;
+    let mut old = store_of_version_two(Some(body));
+
+    upgrade(&mut old).unwrap();
+
+    type Lane = (
+        i64,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+    );
+    let lane: Lane = old
+        .query_row(
+            "SELECT revision, body_json, owner_kind, owner_id, acquired_at, expires_at,
+                    heartbeat_at, pid
+             FROM qa_lane WHERE id = 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        lane,
+        (
+            3,
+            body.to_owned(),
+            "dispatch".to_owned(),
+            "d".to_owned(),
+            "2026-10-01T00:00:00+00:00".to_owned(),
+            "2026-10-01T00:30:00+00:00".to_owned(),
+            "2026-10-01T00:00:00+00:00".to_owned(),
+            None,
+        )
     );
 }
 
@@ -339,13 +480,13 @@ fn a_store_that_is_current_is_left_alone() {
 #[test]
 fn a_store_of_a_newer_version_is_refused_without_a_write() {
     let (mut newer, _) = store_of_version_one();
-    newer.pragma_update(None, "user_version", 3).unwrap();
+    newer.pragma_update(None, "user_version", 4).unwrap();
 
     let error = upgrade(&mut newer).unwrap_err();
 
     assert_eq!(error.exit_code(), 2);
     assert_eq!(error.code(), contracts::ErrorCode::ProtocolUnsupported);
-    assert_eq!(version(&newer), 3);
+    assert_eq!(version(&newer), 4);
     let records: i64 = newer
         .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
         .unwrap();

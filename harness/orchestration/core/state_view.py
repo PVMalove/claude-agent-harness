@@ -17,6 +17,14 @@ reaches the runtime until the command ends cleanly, and then one ``state.write``
 every staged mutation with the revision the command read (ADR 0020, section 3). A command that
 raises sends nothing.
 
+The reads of a view come from one read snapshot of the runtime (``state.read`` with
+``snapshot``): a commit of another batch between two reads of a command neither gives it half of
+two states nor refuses it, and no writer waits for it. The snapshot ends when the view is
+refreshed, when its unit commits and when the view is unbound. A decision over every batch (the
+concurrency budget, a duplicate batch) calls ``depend_on_shared``: every request of the unit then
+carries the generation revision of the snapshot the decision read, and the runtime refuses the
+request when another command created a batch or changed the state of one since.
+
 This module is a leaf. It imports nothing of the coordinator, so ``core.utils`` and the ledger may
 depend on it; the runtime client is passed in as ``fetch`` and ``commit``.
 """
@@ -27,7 +35,9 @@ import fnmatch
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from harness.json_types import JsonObject
 
@@ -78,10 +88,56 @@ type Fetch = Callable[
     tuple[dict[str, JsonObject], int | None, dict[str, int]],
 ]
 
+
+
+@runtime_checkable
+class SnapshotFetch(Protocol):
+    """A ``Fetch`` that answers from one read snapshot of the store until it is closed."""
+
+    def __call__(
+        self, collections: Sequence[str], paths: Sequence[str], revision: int | None, /
+    ) -> tuple[dict[str, JsonObject], int | None, dict[str, int]]: ...
+
+    @property
+    def generation_revision(self) -> int | None:
+        """The generation revision of the open snapshot, or ``None`` before the first read."""
+        ...
+
+    def close(self) -> None:
+        """End the snapshot; the next read opens a new one."""
+        ...
+
+
+@dataclass
+class Guard:
+    """The generation revision that the requests of a unit expect, once a decision of the unit
+    read every batch; a commit adopts the revision the runtime returns."""
+
+    expected: int | None
+
+
 # One ``state.write`` request: the batch of the mutations, the revision of its batch row that the
-# command read (0 for a batch that the mutations create) and the mutations. The answer is the
-# revision of every row the request created or changed.
-type Commit = Callable[[str | None, int | None, list[JsonObject]], dict[str, int]]
+# command read (0 for a batch that the mutations create), the mutations and, for a unit that
+# decided over every batch, its guard. The answer is the revision of every row the request created
+# or changed; ``answer``, when given, receives the whole result of the request (a request with a
+# QA lease operation answers the lease).
+class Commit(Protocol):
+    def __call__(
+        self,
+        batch_id: str | None,
+        expected_revision: int | None,
+        mutations: list[JsonObject],
+        /,
+        *,
+        guard: Guard | None = None,
+        answer: list[JsonObject] | None = None,
+    ) -> dict[str, int]: ...
+
+
+# The typed operations on the QA lease, which the runtime decides (ADR 0020, section 7).
+LEASE_OPERATIONS = frozenset(
+    {"lease_acquire", "lease_release", "lease_heartbeat", "lease_reap", "lease_clear"}
+)
 
 
 class StateView:
@@ -105,6 +161,18 @@ class StateView:
         self._staged_text: set[str] = set()
         self.unit: StoreUnit | None = None
 
+    @property
+    def generation_revision(self) -> int | None:
+        """The generation revision of the snapshot the view reads from, when it has one."""
+        if isinstance(self._fetch, SnapshotFetch):
+            return self._fetch.generation_revision
+        return None
+
+    def close(self) -> None:
+        """End the read snapshot of the view; the next read opens a new one."""
+        if isinstance(self._fetch, SnapshotFetch):
+            self._fetch.close()
+
     def relative(self, path: Path | str) -> str | None:
         """The ``/`` path of ``path`` below the virtual root, or ``None`` when it is not below it."""
         try:
@@ -126,6 +194,7 @@ class StateView:
         self._point_reads.clear()
         self.revisions.clear()
         self.revision = None
+        self.close()
 
     def _load(self, collections: Sequence[str], paths: Sequence[str]) -> None:
         records, revision, revisions = self._fetch(collections, paths, self.revision)
@@ -208,8 +277,10 @@ class StateView:
             self._asked.add(path)
         self._staged.clear()
         self._staged_text.clear()
-        # The commit moved the store on; the next read asks without a stale revision.
+        # The commit moved the store on: the next read asks a new snapshot, which holds the
+        # command's own writes, so an answer never replaces them with what they were before.
         self.revision = None
+        self.close()
 
 
 class StoreUnit:
@@ -222,6 +293,53 @@ class StoreUnit:
         self._mutations: list[tuple[str | None, JsonObject]] = []
         self._created: set[str] = set()
         self._touched: set[str] = set()
+        # Set once a decision of the unit read every batch (``depend_on_shared``).
+        self.guard: Guard | None = None
+        # The staged QA lease operations that wait for the lease the runtime answers.
+        self._lease_answers: list[tuple[JsonObject, Callable[[JsonObject | None], None]]] = []
+
+    def lease(
+        self,
+        mutation: JsonObject,
+        *,
+        on_answer: Callable[[JsonObject | None], None] | None = None,
+    ) -> None:
+        """Stage a typed operation on the QA lease (``lease_acquire``, ...). The runtime decides it
+        at the flush; ``on_answer`` then receives the lease it answered, or ``None`` for a free
+        lane. The view forgets the lease it read, so a later read asks the runtime again."""
+        self._mutations.append((None, mutation))
+        if on_answer is not None:
+            self._lease_answers.append((mutation, on_answer))
+        relative = str(mutation["path"])
+        self.view._records.pop(relative, None)
+        self.view._asked.discard(relative)
+
+    def cancel_lease(self, owner_kind: str, owner_id: str) -> bool:
+        """Drop a staged ``lease_acquire`` of this owner: the command never held the lane.
+        Returns whether there was one."""
+
+        def staged(mutation: JsonObject) -> bool:
+            lease = mutation.get("lease")
+            return (
+                mutation.get("op") == "lease_acquire"
+                and isinstance(lease, dict)
+                and (lease.get("owner_kind"), lease.get("owner_id")) == (owner_kind, owner_id)
+            )
+
+        before = len(self._mutations)
+        self._mutations = [(b, m) for b, m in self._mutations if not staged(m)]
+        self._lease_answers = [(m, f) for m, f in self._lease_answers if not staged(m)]
+        return len(self._mutations) != before
+
+    def depend_on_shared(self) -> None:
+        """Make every request of this unit expect the generation revision of the snapshot that
+        its decision read; the first decision of the unit fixes it."""
+        if self.guard is not None:
+            return
+        if self.view.generation_revision is None:
+            # The decision read nothing from the runtime yet: open the snapshot it reads from.
+            self.view._load([], [])
+        self.guard = Guard(self.view.generation_revision)
 
     def _batch_of(self, relative: str, record: JsonObject | None) -> str | None:
         directory, _, name = relative.partition("/")
@@ -357,13 +475,32 @@ class StoreUnit:
         aborts would drop it."""
         for batch, mutations in self._segments():
             self._carry_revisions(mutations)
-            revisions = self._commit(batch, self._guard(batch, mutations), mutations)
+            waiting = [
+                (mutation, on_answer)
+                for mutation, on_answer in self._lease_answers
+                if any(mutation is staged for staged in mutations)
+            ]
+            answers: list[JsonObject] = []
+            if self.guard is None and not waiting:
+                revisions = self._commit(batch, self._guard(batch, mutations), mutations)
+            else:
+                revisions = self._commit(
+                    batch,
+                    self._guard(batch, mutations),
+                    mutations,
+                    guard=self.guard,
+                    answer=answers if waiting else None,
+                )
+            for _, on_answer in waiting:
+                lease = answers[-1].get("lease") if answers else None
+                on_answer(lease if isinstance(lease, dict) else None)
             for mutation in mutations:
                 if mutation["op"] == "delete":
                     self.view.revisions.pop(str(mutation["path"]), None)
             self.view.revisions.update(revisions)
         self.view._settle()
         self._mutations = []
+        self._lease_answers = []
         self._created.clear()
         self._touched.clear()
 
@@ -390,6 +527,16 @@ def current_unit() -> StoreUnit | None:
     return None if view is None else view.unit
 
 
+def depend_on_shared() -> None:
+    """Guard the decision that the running command just made over every batch (ADR 0020,
+    section 3): the requests of its store unit expect the generation revision of the snapshot the
+    decision read, so of two commands that decided on the same state only one commits. Without a
+    store unit (the file epoch, whose lock excludes every other command) this does nothing."""
+    unit = current_unit()
+    if unit is not None:
+        unit.depend_on_shared()
+
+
 def view_for(path: Path | str) -> tuple[StateView, str] | None:
     """The bound view and the path relative to its virtual root, when ``path`` is below it."""
     view = _VIEW.get()
@@ -407,6 +554,7 @@ def bind(view: StateView) -> Iterator[StateView]:
         yield view
     finally:
         _VIEW.reset(token)
+        view.close()
 
 
 def glob(directory: Path, pattern: str) -> list[Path]:

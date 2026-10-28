@@ -45,10 +45,12 @@ from harness.orchestration.core.constants import (
     DEFAULT_CONTEXT_PACKAGE_POLICY,
     DEFAULT_CONTINUATION_POLICY,
     DEFAULT_EXECUTION_POLICY,
+    DEFAULT_LEASE_TTL_SECONDS,
     DEFAULT_PREFLIGHT_POLICY,
     DEFAULT_PROFILE,
     DEFAULT_RETRY_POLICY,
     DEFAULT_TEST_PATH_PATTERNS,
+    MAX_LEASE_TTL_SECONDS,
     ZERO_ALLOWED_POLICY_FIELDS,
 )
 from harness.orchestration.core.system_fields import enum_problem, enum_remedy
@@ -314,6 +316,18 @@ def _approval_ttl(config: JsonObject) -> int | None:
         value
         if isinstance(value, int) and not isinstance(value, bool) and value >= 1
         else None
+    )
+
+
+def _lease_ttl(config: JsonObject) -> int:
+    """Seconds a QA lease of the runtime store lives without a heartbeat (``lease_ttl_seconds``)."""
+    value = config.get("lease_ttl_seconds")
+    return (
+        value
+        if isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= MAX_LEASE_TTL_SECONDS
+        else DEFAULT_LEASE_TTL_SECONDS
     )
 
 

@@ -37,6 +37,10 @@ class _Words:
     release: str
     unavailable: str
     units: tuple[str, str, str]
+    lease: str
+    lease_free: str
+    lease_stale: str
+    lease_unavailable: str
     verdicts: dict[str, str] = field(default_factory=dict)
 
 
@@ -56,6 +60,10 @@ _RU = _Words(
     "оператора и причиной)",
     unavailable="Lock ledger: состояние недоступно: {error}",
     units=("ч", "мин", "с"),
+    lease="Lease QA-lane: {owner} · fencing {token} · срок до {expires}{stale}",
+    lease_free="Lease QA-lane свободен.",
+    lease_stale=" · heartbeat пропущен",
+    lease_unavailable="Lease QA-lane: состояние недоступно: {error}",
     verdicts={
         "owner-alive": "владелец жив; живой владелец не снимается",
         "owner-dead": "владелец завершился; ledger release-lock снимет lock",
@@ -65,6 +73,9 @@ _RU = _Words(
         "owner-unknown-recent": "запись владельца не читается; снятие по таймауту",
         "owner-unknown-stale": "владелец неизвестен, таймаут прошёл; ledger release-lock "
         "снимет lock",
+        "owner-pid-reused": "pid владельца занят другим процессом; это не доказывает смерть, "
+        "lease не снимается",
+        "owner-unknown": "идентичность владельца неизвестна; снять может только оператор",
     },
 )
 _EN = _Words(
@@ -83,6 +94,10 @@ _EN = _Words(
     "operator's approval and a reason)",
     unavailable="Ledger lock: state unavailable: {error}",
     units=("h", "min", "s"),
+    lease="QA lease: {owner} · fencing {token} · expires at {expires}{stale}",
+    lease_free="The QA lease is free.",
+    lease_stale=" · heartbeat missed",
+    lease_unavailable="QA lease: state unavailable: {error}",
     verdicts={
         "owner-alive": "the owner is alive; a live owner is never released",
         "owner-dead": "the owner has exited; ledger release-lock releases the lock",
@@ -92,6 +107,9 @@ _EN = _Words(
         "owner-unknown-recent": "the owner record cannot be read; released by the timeout",
         "owner-unknown-stale": "the owner is unknown and the timeout has passed; ledger "
         "release-lock releases it",
+        "owner-pid-reused": "another process holds the owner's pid; that never proves death, "
+        "so the lease stays",
+        "owner-unknown": "the owner's identity is unknown; only an operator can release it",
     },
 )
 _WORDS = {"ru": _RU, "en": _EN}
@@ -129,11 +147,42 @@ def _owner_line(owner: object, words: _Words) -> str:
     return words.owner.format(pid=owner.get("pid"), host=owner.get("host"), where=where)
 
 
+def _lease_lines(lease: object, words: _Words) -> list[str]:
+    """Строки lease QA-lane эпохи runtime store: владелец, fencing, срок и вердикт."""
+    if lease is None:
+        return [words.lease_free]
+    if not isinstance(lease, dict):
+        return []
+    if "error" in lease:
+        return [words.lease_unavailable.format(error=lease["error"])]
+    owner = lease.get("owner")
+    who = (
+        f"{owner.get('owner_kind')} {owner.get('owner_id')}"
+        if isinstance(owner, dict)
+        else words.no_operation
+    )
+    verdict = str(lease.get("verdict"))
+    return [
+        words.lease.format(
+            owner=who,
+            token=lease.get("fencing_token"),
+            expires=lease.get("expires_at"),
+            stale=words.lease_stale if lease.get("stale_heartbeat") else "",
+        ),
+        words.verdict.format(
+            verdict=verdict,
+            meaning=words.verdicts.get(verdict, words.unknown_verdict),
+        ),
+    ]
+
+
 def lock_text(status: JsonObject, language: str = "ru") -> str:
-    """Текст панели: кто держит lock, как долго, когда его можно снять и чем."""
+    """Текст панели: кто держит lock, как долго, когда его можно снять и чем; в эпохе
+    runtime store ещё и lease QA-lane."""
     words = _words(language)
+    lease = _lease_lines(status["qa_lease"], words) if "qa_lease" in status else []
     if not status.get("locked"):
-        return words.free
+        return "\n".join((words.free, *lease))
     held = int(status.get("held_seconds") or 0)
     remaining = int(status.get("remaining_seconds") or 0)
     verdict = str(status.get("verdict"))
@@ -155,6 +204,7 @@ def lock_text(status: JsonObject, language: str = "ru") -> str:
                 meaning=words.verdicts.get(verdict, words.unknown_verdict),
             ),
             words.release,
+            *lease,
         )
     )
 

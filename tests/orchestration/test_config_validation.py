@@ -404,3 +404,22 @@ def test_overlapping_alias_rule_is_diagnosed_without_guessing(
     assert result.returncode == 2
     assert json.loads(result.stdout)["diagnostics"][0]["code"] == "config-ambiguous"
     assert (project / ".harness/orchestration.json").read_bytes() == before
+
+
+def test_lease_ttl_seconds_is_an_optional_integer_from_one_second_to_a_day(
+    project: Path,
+) -> None:
+    from harness.orchestration.contract import configuration_problems
+    from harness.orchestration.core.config import _lease_ttl
+
+    roles = project / ".harness/orchestration/roles"
+    authored = read_config(project)
+    assert _lease_ttl(authored) == 300
+    for valid in (1, 300, 86_400):
+        assert not configuration_problems({**authored, "lease_ttl_seconds": valid}, roles)
+        assert _lease_ttl({"lease_ttl_seconds": valid}) == valid
+    for invalid in (0, 86_401, "300", True, 1.5):
+        problems = configuration_problems({**authored, "lease_ttl_seconds": invalid}, roles)
+        assert any("lease_ttl_seconds" in problem for problem in problems), invalid
+    write_config(project, {**authored, "lease_ttl_seconds": 0})
+    assert run_cli(project, "--json").returncode == 2

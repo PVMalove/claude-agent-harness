@@ -98,7 +98,8 @@ fn first_asked(step: &str, variables: &[&str]) -> bool {
 }
 
 /// Like `reach`, for a step of the serving runtime (`state.write:before-begin`,
-/// `state.write:in-transaction`): the pause and the failure happen once per process.
+/// `state.write:in-transaction`, and `state.read:in-snapshot`, after the first `SELECT` of a
+/// snapshot that a read opens): the pause and the failure happen once per process.
 #[cfg(debug_assertions)]
 pub fn reach_once(step: &str) -> Result<()> {
     if !first_asked(

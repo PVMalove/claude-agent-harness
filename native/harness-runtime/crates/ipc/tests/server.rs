@@ -370,6 +370,130 @@ fn a_peer_of_another_user_is_refused_with_unauthorized_peer() {
     assert!(read_frame(&mut stream).is_err());
 }
 
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for entry in fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), target).unwrap();
+        }
+    }
+}
+
+/// The fixture state of the Python 1.x ledger, without its QA lease and queue, cut over to the
+/// store of `fixture`; the state directory.
+fn cut_over(fixture: &Fixture) -> PathBuf {
+    let state_dir = fixture.root.join(".harness/orchestration/state");
+    copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../state/tests/fixtures/legacy_v3"),
+        &state_dir,
+    );
+    for generation in fs::read_dir(state_dir.join("generations")).unwrap() {
+        let lane = generation.unwrap().path().join("qa-lane");
+        let _ = fs::remove_file(lane.join("lease.json"));
+        if let Ok(queue) = fs::read_dir(lane.join("queue")) {
+            for entry in queue {
+                fs::remove_file(entry.unwrap().path()).unwrap();
+            }
+        }
+    }
+    state::migrate::run(&fixture.root).unwrap();
+    state_dir
+}
+
+/// The owner of a QA lease is the client process the kernel reports for the connection, never
+/// a pid the request names; `qa.lane.inspect` reads it back with the verdict on it.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn a_lease_records_the_client_process_the_kernel_reports() {
+    let fixture = Fixture::new("lease-peer");
+    let state_dir = cut_over(&fixture);
+    let paths = resolve_paths(&fixture.root, Some(&fixture.xdg)).unwrap();
+    let runtime = Running::start(Server::bind_serving(paths, Some(state_dir)).unwrap());
+    let mut stream = runtime.connect();
+    assert_eq!(
+        exchange(&mut stream, &hello(&fixture.root, &runtime.token, 1, 1)).status,
+        Status::Ok
+    );
+
+    let acquired = exchange(
+        &mut stream,
+        &request(
+            "state.write",
+            Some(json!({"mutations": [{
+                "op": "lease_acquire", "path": "qa-lane/lease.json",
+                "lease": {"owner_kind": "dispatch", "owner_id": "d1", "ttl_seconds": 60},
+            }]})),
+        ),
+    );
+    let inspected = exchange(&mut stream, &request("qa.lane.inspect", None));
+
+    assert_eq!(acquired.status, Status::Ok, "{acquired:?}");
+    let lease = &acquired.result.unwrap()["lease"];
+    assert_eq!(lease["identity"]["pid"], std::process::id());
+    let inspected = inspected.result.unwrap();
+    assert_eq!(inspected["lease"], *lease);
+    assert_eq!(inspected["verdict"], "owner-alive");
+    assert_eq!(inspected["stale_heartbeat"], false);
+}
+
+/// A snapshot of one connection answers its later reads from the moment it was opened, while
+/// another connection commits.
+#[test]
+fn a_read_snapshot_spans_requests_while_another_connection_commits() {
+    let fixture = Fixture::new("snapshot");
+    let state_dir = cut_over(&fixture);
+    let paths = resolve_paths(&fixture.root, Some(&fixture.xdg)).unwrap();
+    let runtime = Running::start(Server::bind_serving(paths, Some(state_dir)).unwrap());
+    let mut reader = runtime.connect();
+    let mut writer = runtime.connect();
+    for stream in [&mut reader, &mut writer] {
+        assert_eq!(
+            exchange(stream, &hello(&fixture.root, &runtime.token, 1, 1)).status,
+            Status::Ok
+        );
+    }
+    let path = "reports/snapshot.json";
+
+    let opened = exchange(
+        &mut reader,
+        &request(
+            "state.read",
+            Some(json!({"snapshot": "open", "paths": [path]})),
+        ),
+    );
+    let snapshot = opened.result.as_ref().unwrap()["snapshot"].clone();
+    let written = exchange(
+        &mut writer,
+        &request(
+            "state.write",
+            Some(json!({"mutations": [{"op": "create", "path": path,
+                "content": state::canonical::canonical_json(&json!({"dispatch_id": "d"}))}]})),
+        ),
+    );
+    let again = exchange(
+        &mut reader,
+        &request(
+            "state.read",
+            Some(json!({"snapshot": snapshot, "paths": [path], "close": true})),
+        ),
+    );
+    let closed = exchange(
+        &mut reader,
+        &request("state.read", Some(json!({"snapshot": snapshot}))),
+    );
+
+    assert!(snapshot.as_str().unwrap().starts_with("snapshot-"));
+    assert_eq!(written.status, Status::Ok, "{written:?}");
+    assert_eq!(again.revision, opened.revision);
+    assert_eq!(again.result.unwrap()["records"], json!({}));
+    assert_eq!(error_code(&closed), ErrorCode::StoreBusy);
+    assert_eq!(closed.error.unwrap().facts["reason"], "snapshot_expired");
+}
+
 #[test]
 fn simultaneous_starts_leave_one_runtime_with_its_own_token() {
     let fixture = Arc::new(Fixture::new("race"));

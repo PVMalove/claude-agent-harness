@@ -23,10 +23,10 @@ from typing import Protocol
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
-from . import hook_policy, operation_access, operational_guards, verification_plan
+from . import hook_policy, operation_access, operational_guards, qa_lease, verification_plan
 from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
-from .core.config import _execution_policy, _qa_preparation_commands
+from .core.config import _execution_policy, _lease_ttl, _qa_preparation_commands
 from .core.constants import (
     QA_NOT_RUN_RESULT,
     QA_OWNER_FIELDS,
@@ -406,6 +406,19 @@ def acquire(
         if _owner(entry) == (owner_kind, owner_id)
     )
     lease = _lease(ledger)
+    if qa_lease.active(ledger):
+        # The runtime owns the lease: an expired one was reaped before the admission, if its
+        # owner was provably dead, and the runtime grants the lane only while it is free.
+        if lease or position != 1:
+            return {"state": "queued", "position": position}
+        return {
+            "state": "acquired",
+            "position": position,
+            "lease": qa_lease.acquire(
+                ledger, owner_id, owner_kind=owner_kind, lease_seconds=lease_seconds
+            ),
+            "queue_path": str(queue_path),
+        }
     if lease and _lease_expired(lease):
         raise CoordinatorError(
             "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
@@ -433,6 +446,13 @@ def acquire(
 
 def release(ledger: LifecycleLedger, claimed: JsonObject) -> None:
     """Release exactly the acquired lease and its queue entry. Caller holds the lock."""
+    if qa_lease.active(ledger):
+        # The runtime releases the lease only for its owner and fencing token.
+        for path, entry in _queue_entries(ledger):
+            if _owner(entry) == _owner(claimed):
+                _delete_record(ledger, path, reason="complete QA queue entry")
+        qa_lease.release(ledger, claimed, reason="complete QA lease")
+        return
     current = _lease(ledger)
     if current != claimed:
         raise CoordinatorError(
@@ -462,7 +482,8 @@ def running_owner(
     current = _lease(ledger)
     if not current or _owner(current) != (owner_kind, owner_id):
         return None
-    if _lease_expired(current):
+    # In the store epoch the runtime decides whether an expired lease's owner lives.
+    if not qa_lease.active(ledger) and _lease_expired(current):
         raise CoordinatorError(
             "QA lease is stale; a coordinator must clear it explicitly before another gate runs",
             remedy="have a coordinator run 'qa clear-stale-lease' for the expired lease",
@@ -496,7 +517,7 @@ def _enqueue(
     counter_path = _counter_path(ledger)
     counter = (
         _read_object(counter_path, "QA queue sequence")
-        if counter_path.exists()
+        if state_view.exists(counter_path)
         else {"next": 1}
     )
     if (
@@ -516,7 +537,7 @@ def _enqueue(
     path = _queue_root(ledger) / f"{entry['sequence']:020d}-{dispatch_id}.json"
     _write_immutable(ledger, path, entry)
     next_counter = {"next": counter["next"] + 1}
-    if counter_path.exists():
+    if state_view.exists(counter_path):
         _replace_path(ledger, counter_path, next_counter)
     else:
         # The first queue entry in a fresh ledger has no mutable counter yet.  Seed it as an
@@ -544,6 +565,9 @@ def _lease(ledger: LifecycleLedger) -> JsonObject | None:
     if not state_view.exists(path):
         return None
     lease = _read_object(path, "QA lease")
+    if qa_lease.active(ledger):
+        # The runtime wrote the lease; the coordinator shows it in the shape of the file lane.
+        return qa_lease.normalize(lease)
     if (
         not _valid_owner_schema(lease, QA_LEASE_FIELDS)
         or not _non_empty(lease.get("host"))
@@ -561,6 +585,12 @@ def _lease(ledger: LifecycleLedger) -> JsonObject | None:
                 remedy=f"set a non-empty {field} in {path}",
             )
     return lease
+
+
+def lane_summary(ledger: LifecycleLedger) -> JsonObject | None:
+    """Who holds the QA lane and whether its owner missed its heartbeat, for ``dispatch status``;
+    ``None`` for a free lane. The caller reads the state."""
+    return qa_lease.summary(_lease(ledger))
 
 
 def _lease_expired(lease: JsonObject) -> bool:
@@ -802,7 +832,7 @@ def _recover_transient_failure(
                 "remedy": failure.remedy,
             },
         )
-        if queue_path.exists():
+        if state_view.exists(queue_path):
             _delete_record(
                 ledger, queue_path, reason="release transient QA queue entry"
             )
@@ -814,11 +844,19 @@ def _recover_transient_failure(
             QaOwnerKind.DISPATCH,
             dispatch["dispatch_id"],
         ):
-            if current != lease:
+            mine = (
+                current.get("fencing_token") == lease.get("fencing_token")
+                if qa_lease.active(ledger)
+                else current == lease
+            )
+            if not mine:
                 # A newer run of this dispatch took the lane after its lease was cleared; that run
                 # owns the lease and the dispatch state.
                 return
-            _delete_record(ledger, lease_path, reason="release transient QA lease")
+            if qa_lease.active(ledger):
+                qa_lease.release(ledger, lease, reason="release transient QA lease")
+            else:
+                _delete_record(ledger, lease_path, reason="release transient QA lease")
         _restore_approved(ledger, root, dispatch, ops)
 
 
@@ -864,7 +902,7 @@ def _running_dispatch(
         / DispatchStatusRecord.directory
         / f"{_safe_id(dispatch_id, 'dispatch')}.json"
     )
-    if not status_path.exists():
+    if not state_view.exists(status_path):
         return None
     dispatch = ops._load_dispatch(root, dispatch_id)
     entry = _batch_entry(ops._load_batch(root, dispatch["batch_id"]), dispatch_id)
@@ -962,6 +1000,7 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     ledger = LifecycleLedger(root)
     held: BaseException | None = None
     queue_path: Path | None = None
+    reap_dead_owner(ledger, root, ops)
     with _lock(ledger):
         dispatch = ops._load_dispatch(root, args.dispatch)
         batch = ops._load_batch(root, dispatch["batch_id"])
@@ -999,6 +1038,10 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             candidate=str(dispatch.get("candidate_commit")),
             plan=dispatch.get("verification_plan"),
         )
+        if qa_lease.active(ledger) and args.lease_seconds is None:
+            # The runtime lease is renewed by a heartbeat: its lifetime is the one the dispatch
+            # pinned (lease_ttl_seconds), not the long lease of the file lane.
+            lease_seconds = _lease_ttl(read_snapshot(dispatch)["config"])
         admission = acquire(
             ledger, dispatch["dispatch_id"], lease_seconds=lease_seconds
         )
@@ -1035,42 +1078,43 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
     try:
-        # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
-        # not consume CI time and coordinator context collecting unrelated failures afterwards.
-        policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
-        from .infrastructure_retry import pinned
+        with qa_lease.heartbeat(ledger, lease, lease_seconds):
+            # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
+            # not consume CI time and coordinator context collecting unrelated failures afterwards.
+            policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
+            from .infrastructure_retry import pinned
 
-        config = read_snapshot(dispatch)["config"]
-        pinned_commands = pinned(dispatch)
-        if pinned_commands is not None:
-            config = {**config, **pinned_commands}
-        preparation = _qa_preparation_commands(config)
-        context = evidence_context(repo, dispatch["candidate_commit"], dispatch)
-        if preparation:
-            staged = run_qa_stages(
-                preparation,
-                dispatch["verification_commands"],
-                policy,
-                environment_probes=_qa_preparation_commands(
-                    config, "qa_environment_probes"
-                ),
-                project_file_checks=_qa_preparation_commands(
-                    config, "qa_project_file_checks"
-                ),
-                evidence=context,
-            )
-            artifact_text, checks = staged.artifact, staged.gate_checks
-            bundle = staged.evidence
-        else:
-            staged = None
-            gate = run_gate(
-                dispatch["verification_commands"],
-                policy,
-                stop_on_failure=True,
-                evidence=context,
-            )
-            artifact_text, checks = gate.artifact, gate.checks
-            bundle = gate.evidence
+            config = read_snapshot(dispatch)["config"]
+            pinned_commands = pinned(dispatch)
+            if pinned_commands is not None:
+                config = {**config, **pinned_commands}
+            preparation = _qa_preparation_commands(config)
+            context = evidence_context(repo, dispatch["candidate_commit"], dispatch)
+            if preparation:
+                staged = run_qa_stages(
+                    preparation,
+                    dispatch["verification_commands"],
+                    policy,
+                    environment_probes=_qa_preparation_commands(
+                        config, "qa_environment_probes"
+                    ),
+                    project_file_checks=_qa_preparation_commands(
+                        config, "qa_project_file_checks"
+                    ),
+                    evidence=context,
+                )
+                artifact_text, checks = staged.artifact, staged.gate_checks
+                bundle = staged.evidence
+            else:
+                staged = None
+                gate = run_gate(
+                    dispatch["verification_commands"],
+                    policy,
+                    stop_on_failure=True,
+                    evidence=context,
+                )
+                artifact_text, checks = gate.artifact, gate.checks
+                bundle = gate.evidence
     except GateRunnerError as exc:
         failure = CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(
@@ -1168,11 +1212,100 @@ def status(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     with read_state(ledger, repo):
         queue, lease = _queue_entries(ledger), _lease(ledger)
+        stale = _lease_expired(lease) if lease else False
         return {
             "lease": lease,
-            "lease_stale": _lease_expired(lease) if lease else False,
+            "lease_stale": stale,
+            # The owner of an expired lease missed its heartbeat. In the store epoch the runtime
+            # keeps such a lease while its owner may live, and reaps only a dead owner's lease.
+            "stale_heartbeat": stale,
             "queue": [entry for _, entry in queue],
         }
+
+
+def _recover_cleared_owner(
+    ledger: LifecycleLedger,
+    root: Path,
+    lease: JsonObject,
+    ops: QaWorkflowOps,
+    *,
+    approval: JsonObject | None,
+    reason: str,
+    verdict: str | None = None,
+) -> str | None:
+    """The recovery of the owner of a cleared lease: a ``qa-lane/recoveries`` record, its queue
+    entry removed and its QA dispatch, if the run left it working, back to ``approved``. Returns
+    the restored state. Caller holds the lock."""
+    running = _running_dispatch(root, ledger, _owner(lease), ops)
+    restored = "approved" if running else None
+    recovery: JsonObject = {
+        "cleared_dispatch_id": _owner(lease)[1],
+        "lease": lease,
+        "approval": approval,
+        "reason": reason,
+        "cleared_at": _now(),
+        "restored_dispatch_state": restored,
+    }
+    if verdict is not None:
+        recovery["verdict"] = verdict
+    _write_immutable(
+        ledger,
+        _records_root(ledger) / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json",
+        recovery,
+    )
+    owner = next(
+        (
+            (path, entry)
+            for path, entry in _queue_entries(ledger)
+            if _owner(entry) == _owner(lease)
+        ),
+        None,
+    )
+    if owner is not None:
+        _delete_record(ledger, owner[0], reason="clear stale QA lease queue entry")
+    if running:
+        _restore_approved(ledger, root, running, ops)
+    return restored
+
+
+def reap_dead_owner(ledger: LifecycleLedger, root: Path, ops: QaWorkflowOps) -> None:
+    """In the store epoch, before an admission: reap an expired lease whose owner the runtime
+    proves dead, with the recovery of ``qa clear-stale-lease`` and no ``--force``. A live owner
+    keeps its lease: the command ends with ``[lease_held]`` and ``stale_heartbeat``."""
+
+    def recover(lease: JsonObject) -> None:
+        _recover_cleared_owner(
+            ledger,
+            root,
+            lease,
+            ops,
+            approval=None,
+            reason="the runtime reaped the expired QA lease of a dead owner",
+            verdict="owner-dead",
+        )
+
+    qa_lease.reap_expired(ledger, _lock, _lease, recover)
+
+
+def clear_lease(
+    ledger: LifecycleLedger,
+    root: Path,
+    ops: QaWorkflowOps,
+    *,
+    approval: JsonObject,
+    reason: str,
+) -> str | None:
+    """In the store epoch: clear the lease whatever its verdict, behind a human approval (the
+    ``--force`` of ``ledger release-lock``), with the recovery of ``qa clear-stale-lease``.
+    Returns the restored dispatch state."""
+    with _lock(ledger):
+        lease = _lease(ledger)
+        if lease is None:
+            return None
+        qa_lease.clear(ledger, lease, approval=approval, reason=reason)
+        return _recover_cleared_owner(
+            ledger, root, lease, ops, approval=approval, reason=reason
+        )
 
 
 def clear_stale_lease(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
@@ -1202,34 +1335,13 @@ def clear_stale_lease(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObjec
                 remedy="run 'qa status' and pass the current lease's host, pid and expiry as --expected-host, --expected-pid and --expected-expiry",
             )
         approval = ops._approval(args)
-        running = _running_dispatch(root, ledger, _owner(lease), ops)
-        restored = "approved" if running else None
-        recovery = {
-            "cleared_dispatch_id": _owner(lease)[1],
-            "lease": lease,
-            "approval": approval,
-            "reason": args.reason.strip(),
-            "cleared_at": _now(),
-            "restored_dispatch_state": restored,
-        }
-        _write_immutable(
-            ledger,
-            _records_root(ledger) / "qa-lane" / "recoveries" / f"{uuid.uuid4()}.json",
-            recovery,
+        if qa_lease.active(ledger):
+            qa_lease.clear(ledger, lease, approval=approval, reason=args.reason.strip())
+        else:
+            _delete_record(ledger, _lane_path(ledger), reason="clear stale QA lease")
+        restored = _recover_cleared_owner(
+            ledger, root, lease, ops, approval=approval, reason=args.reason.strip()
         )
-        owner = next(
-            (
-                (path, entry)
-                for path, entry in _queue_entries(ledger)
-                if _owner(entry) == _owner(lease)
-            ),
-            None,
-        )
-        if owner is not None:
-            _delete_record(ledger, owner[0], reason="clear stale QA lease queue entry")
-        _delete_record(ledger, _lane_path(ledger), reason="clear stale QA lease")
-        if running:
-            _restore_approved(ledger, root, running, ops)
     return {
         "state": "cleared",
         **_owner_document(*_owner(lease)),

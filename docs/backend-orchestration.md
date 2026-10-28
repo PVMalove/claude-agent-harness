@@ -1925,6 +1925,53 @@ lock при этом не трогается. Объект `lock` описыва
 | `acquired_at` | `acquired_at` из записи, иначе mtime `owner.json` для нечитаемой записи или каталога lock |
 | `held_seconds` | сколько секунд lock держится к моменту проверки |
 
+В эпохе runtime store (схема store 3) `ledger lock-status` сохраняет поля файлового lock и их
+вердикты и добавляет объект `qa_lease`: владелец lease QA-lane, идентичность его процесса,
+`fencing_token`, `expires_at`, `stale_heartbeat`, вердикт runtime и `release_available`. Если
+файловый lock не занят, `ledger release-lock` без `--force` снимает истёкший lease только при
+вердикте `owner-dead`. Живого владельца команда отклоняет кодом 2 и строкой
+`REMEDY: [lease_held] stale_heartbeat=… verdict=…`. `--force` с approval и причиной снимает lease
+при любом вердикте через `lease_clear`, и runtime записывает решение в audit.
+
+#### Параллельная запись, снимки чтения и lease QA-lane
+
+Команды разных batch пишут параллельно. Команда читает store из одного снимка (`state.read` с
+`snapshot`): коммит другого batch между двумя её чтениями не даёт ни отказа, ни половины двух
+состояний. Команды чтения (`dispatch status`, `batch auto-report`, `batch decision-packet`,
+`qa status`) не ждут писателя. Запись в один batch по-прежнему сериализует `revision` строки.
+Решение по всем batch (`concurrency_budget` в `dispatch create`, дубль ticket, branch или worktree в
+`batch create`) защищает ревизия строки `generation` из снимка этого решения. Из двух команд,
+решивших по одному состоянию, коммитит одна, а другая получает `revision_conflict` по `generation`
+и повторяется.
+
+QA-lane в store — singleton lease с `fencing_token`. `qa run` и `integration local-qa` берут его
+операцией `lease_acquire`. Runtime записывает идентичность процесса-владельца из ядра: host,
+boot, PID-namespace, pid и время старта процесса. Каждый новый lease увеличивает `fencing_token`.
+Владелец продлевает lease heartbeat каждую треть `lease_ttl_seconds` (по умолчанию 300 с;
+`--lease-seconds` переопределяет срок). Release или heartbeat с чужим владельцем или токеном
+получает `fencing_mismatch`. После `expires_at` runtime проверяет владельца только по
+идентичности:
+
+| Вердикт | Значение | Lease |
+| --- | --- | --- |
+| `owner-dead` | тот же host, boot и PID-namespace, процесса с этим pid нет | снимается без `--force` |
+| `owner-alive` | pid занят процессом с записанным временем старта | остаётся |
+| `owner-pid-reused` | pid занят процессом с другим временем старта | остаётся: это не доказывает смерть |
+| `owner-in-other-environment` | другой boot или PID-namespace | остаётся |
+| `owner-on-another-host` | другой host | остаётся |
+| `owner-unknown` | идентичности нет (lease схемы 2, клиент вне видимости runtime) | остаётся |
+
+Lease мёртвого владельца снимает следующий `qa run`, `integration local-qa` или `ledger
+release-lock`. Запись audit содержит владельца, идентичность, наблюдение, вердикт и время. Как и
+`qa clear-stale-lease`, снятие удаляет запись очереди владельца, возвращает его QA dispatch в
+`approved` и пишет `qa-lane/recoveries`. При другом вердикте запрос завершается кодом 2 с
+`[lease_held]` и `stale_heartbeat`. `qa status` показывает `stale_heartbeat`, а `dispatch status`
+показывает lane в объекте верхнего уровня `qa_lane`. Живого владельца не снимает ни автоматика, ни
+`ledger release-lock` без `--force`. Ручной override остаётся `ledger release-lock --force` или
+`qa clear-stale-lease`. `harness-runtime serve` нужно запускать в PID-namespace, который видит
+coordinator-ы (host или предок их песочниц). Runtime, который не видит клиента, не записывает его
+идентичность, и такой lease автоматически не снимается.
+
 Команда снимает только тот lock, который проверила: если владелец сменился во время снятия, она
 отказывает и просит повторить. Запуски `ledger release-lock` не пересекаются, потому что их
 сериализует файловая блокировка ОС (`.coordinator.lock.release` в каталоге state), которую система

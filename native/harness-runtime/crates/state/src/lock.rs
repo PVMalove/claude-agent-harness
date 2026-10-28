@@ -6,9 +6,12 @@
 //! process also keeps an exclusive `flock` on `owner.json` for the whole operation, so the kernel
 //! drops it when the process dies.
 //!
-//! A live owner is never removed. A dead owner is removed only by the verdict `owner-dead` that
-//! `coordinator.py ledger release-lock` also uses (same host, PID namespace and boot, and a pid that
-//! names no process), and the removal is written to `lock-audit/` first.
+//! A live owner is never removed. A lock is judged by the verdicts of `coordinator.py ledger
+//! release-lock` (`_release_verdict`): `owner-dead` (same host, PID namespace and boot, and a pid
+//! that names no process) and `owner-unknown-stale` (an owner that cannot be checked, held for
+//! `STALE_AFTER_SECONDS`) remove it; `owner-alive`, `owner-on-another-host`,
+//! `owner-in-other-environment` and `owner-unknown-recent` keep it. Every removal is written to
+//! `lock-audit/` first, with its verdict, its owner and its time.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -19,8 +22,9 @@ use serde_json::{Map, Value, json};
 
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::{Error, Result};
+use crate::identity::{self, Observer, Probe};
 use crate::platform;
-use crate::time::iso_now;
+use crate::time::{iso_from_micros, iso_now, now_micros, parse_rfc3339};
 
 pub const LOCK_DIRECTORY: &str = ".coordinator.lock";
 pub const LOCK_OWNER: &str = "owner.json";
@@ -60,33 +64,122 @@ fn read_owner(lock_dir: &Path) -> Option<Map<String, Value>> {
     }
 }
 
-/// Why a lock may not be removed, or `None` when its owner is provably dead.
-fn why_not_dead(owner: Option<&Map<String, Value>>) -> Option<&'static str> {
-    let Some(owner) = owner else {
-        return Some("owner-unknown");
-    };
-    let (Some(pid), Some(host)) = (
-        owner
+/// How long a lock whose owner cannot be checked is held before it may be removed, as
+/// `LEDGER_LOCK_STALE_SECONDS` of the Python ledger.
+pub const STALE_AFTER_SECONDS: i64 = 3600;
+
+/// A lock as it was observed: its owner record and its age.
+#[derive(Debug)]
+struct Observed {
+    owner: Option<Map<String, Value>>,
+    acquired_at: i64,
+    held_seconds: i64,
+}
+
+fn modified_micros(path: &Path) -> Option<i64> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(since_epoch.as_micros()).ok()
+}
+
+/// The lock at `lock_dir` as `LifecycleLedger.lock_state` sees it, or `None` when there is none.
+/// The age counts from the recorded `acquired_at`; without one, from the owner record of an owner
+/// that died before writing it, or else from the lock directory.
+fn observe(lock_dir: &Path) -> Option<Observed> {
+    let mut origin = modified_micros(lock_dir)?;
+    let owner = read_owner(lock_dir);
+    if owner.is_none()
+        && let Some(record) = modified_micros(&lock_dir.join(LOCK_OWNER))
+    {
+        origin = record;
+    }
+    let acquired_at = owner
+        .as_ref()
+        .and_then(|owner| owner.get("acquired_at"))
+        .and_then(Value::as_str)
+        .and_then(parse_rfc3339)
+        .unwrap_or(origin);
+    Some(Observed {
+        owner,
+        acquired_at,
+        held_seconds: ((now_micros() - acquired_at) / 1_000_000).max(0),
+    })
+}
+
+/// Whether the recorded owner names a PID namespace or a boot that differs from the observer's.
+/// Only a value both sides know is compared, as `_other_environment` of the Python ledger does.
+fn other_environment(owner: &Map<String, Value>, observer: &Observer) -> bool {
+    [
+        ("pid_namespace", &observer.pid_namespace),
+        ("boot_id", &observer.boot_id),
+    ]
+    .iter()
+    .any(|(key, ours)| {
+        matches!(
+            (owner.get(*key).and_then(Value::as_str), ours),
+            (Some(theirs), Some(ours)) if theirs != ours
+        )
+    })
+}
+
+/// Whether the lock may be removed, and the verdict: exactly `_release_verdict` of
+/// `coordinator.py ledger release-lock`. A recorded owner on this host, PID namespace and boot is
+/// judged by its process, and a live one is never removed. An owner that cannot be checked, from
+/// another environment or without a usable record, is removed only after `STALE_AFTER_SECONDS`.
+/// An owner of another host is never removed.
+fn legacy_verdict(
+    owner: Option<&Map<String, Value>>,
+    held_seconds: i64,
+    observer: &Observer,
+    probe: impl Fn(i64) -> Probe,
+) -> (bool, &'static str) {
+    let stale = held_seconds >= STALE_AFTER_SECONDS;
+    let recorded = owner.and_then(|owner| {
+        let pid = owner
             .get("pid")
             .and_then(Value::as_i64)
-            .filter(|pid| *pid > 0),
-        owner.get("host").and_then(Value::as_str),
-    ) else {
-        return Some("owner-unknown");
+            .filter(|pid| *pid > 0)?;
+        let host = owner.get("host").and_then(Value::as_str)?;
+        Some((owner, pid, host))
+    });
+    let Some((owner, pid, host)) = recorded else {
+        return if stale {
+            (true, "owner-unknown-stale")
+        } else {
+            (false, "owner-unknown-recent")
+        };
     };
-    if host != platform::hostname() {
-        return Some("owner-on-another-host");
+    if host != observer.host {
+        return (false, "owner-on-another-host");
     }
-    let here = platform::environment();
-    let differs = |key: &str, ours: &Option<String>| matches!((owner.get(key).and_then(Value::as_str), ours), (Some(theirs), Some(ours)) if theirs != ours);
-    if differs("pid_namespace", &here.pid_namespace) || differs("boot_id", &here.boot_id) {
-        return Some("owner-in-other-environment");
+    if other_environment(owner, observer) {
+        return if stale {
+            (true, "owner-unknown-stale")
+        } else {
+            (false, "owner-in-other-environment")
+        };
     }
-    match platform::process_alive(pid) {
-        Some(false) => None,
-        Some(true) => Some("owner-alive"),
-        None => Some("owner-unprovable"),
+    // A process the platform cannot see is treated as alive, as `_pid_active` does.
+    match probe(pid) {
+        Probe::Absent => (true, "owner-dead"),
+        Probe::Running(_) | Probe::Unknown => (false, "owner-alive"),
     }
+}
+
+fn judge(observed: &Observed) -> (bool, &'static str) {
+    legacy_verdict(
+        observed.owner.as_ref(),
+        observed.held_seconds,
+        &identity::observer(),
+        identity::probe,
+    )
+}
+
+fn not_released(verdict: &str) -> Error {
+    busy(&format!(
+        "the lock is not released ({verdict}); a live owner is never removed, and an owner that \
+         cannot be checked only once the lock has been held for {STALE_AFTER_SECONDS} seconds"
+    ))
 }
 
 fn write_lock_audit(state: &Path, action: &str, details: Value) -> Result<()> {
@@ -109,14 +202,16 @@ fn write_lock_audit(state: &Path, action: &str, details: Value) -> Result<()> {
     Ok(())
 }
 
-/// Remove the lock of a dead owner, after the removal is audited. The lock is judged and removed
-/// under the release guard, so a second release cannot interleave.
+/// Remove the lock of an owner that `legacy_verdict` releases, after the removal is audited with
+/// its verdict, its owner and its time. The lock is judged and removed under the release guard, so
+/// a second release cannot interleave.
 fn remove_dead(state: &Path, lock_dir: &Path, operation: &str) -> Result<()> {
     // A live or foreign owner is refused before the guard file is even created.
-    if let Some(reason) = why_not_dead(read_owner(lock_dir).as_ref()) {
-        return Err(busy(&format!(
-            "its owner is not provably dead ({reason}); a live owner is never removed"
-        )));
+    if let Some(observed) = observe(lock_dir) {
+        let (releasable, verdict) = judge(&observed);
+        if !releasable {
+            return Err(not_released(verdict));
+        }
     }
     let guard = OpenOptions::new()
         .read(true)
@@ -127,19 +222,30 @@ fn remove_dead(state: &Path, lock_dir: &Path, operation: &str) -> Result<()> {
     if guard.try_lock().is_err() {
         return Err(busy("another release of the ledger lock is in progress"));
     }
-    let observed = read_owner(lock_dir);
-    if let Some(reason) = why_not_dead(observed.as_ref()) {
-        return Err(busy(&format!(
-            "its owner is not provably dead ({reason}); a live owner is never removed"
-        )));
+    let Some(observed) = observe(lock_dir) else {
+        return Ok(());
+    };
+    let (releasable, verdict) = judge(&observed);
+    if !releasable {
+        return Err(not_released(verdict));
     }
+    let action = if verdict == "owner-dead" {
+        "ledger-lock-owner-dead-release"
+    } else {
+        "ledger-lock-stale-release"
+    };
     write_lock_audit(
         state,
-        "ledger-lock-owner-dead-release",
+        action,
         json!({
-            "verdict": "owner-dead",
+            "verdict": verdict,
             "released_by": operation,
-            "lock": {"path": lock_dir.to_string_lossy(), "owner": observed},
+            "lock": {
+                "path": lock_dir.to_string_lossy(),
+                "owner": observed.owner,
+                "acquired_at": iso_from_micros(observed.acquired_at),
+                "held_seconds": observed.held_seconds,
+            },
         }),
     )?;
     fs::remove_file(lock_dir.join(LOCK_OWNER)).or_else(|err| {
@@ -154,11 +260,11 @@ fn remove_dead(state: &Path, lock_dir: &Path, operation: &str) -> Result<()> {
     Ok(())
 }
 
-/// Remove the lock a dead migrate or 1.x coordinator left behind, if its owner is provably dead.
+/// Remove the lock a dead migrate or 1.x coordinator left behind, if its verdict releases it.
 /// `Ok(false)` when there is no lock.
 ///
 /// # Errors
-/// `Error::Refused` when the owner is alive or cannot be judged.
+/// `Error::Refused` with the verdict when the lock stays.
 pub fn release_if_dead(state: &Path) -> Result<bool> {
     let lock_dir = state.join(LOCK_DIRECTORY);
     if !lock_dir.is_dir() {
@@ -171,7 +277,7 @@ pub fn release_if_dead(state: &Path) -> Result<bool> {
 /// Take the lock of the legacy ledger for `operation`, which the owner record names.
 ///
 /// # Errors
-/// `Error::Refused` when another operation holds it and its owner is not provably dead.
+/// `Error::Refused` when another operation holds it and its verdict keeps it.
 pub fn acquire(state: &Path, operation: &str) -> Result<LegacyLock> {
     let lock_dir = state.join(LOCK_DIRECTORY);
     let mut removed_dead_owner = false;

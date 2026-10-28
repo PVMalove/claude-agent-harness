@@ -576,59 +576,208 @@ fn two_writers_in_opposite_orders_both_commit() {
     assert_eq!(count(&repo, "operations"), 2);
 }
 
+/// The batch `id`, a copy of the fixture batch in the state `state`.
+fn batch_record(repo: &Repo, id: &str, state: &str) -> String {
+    let (mut record, _) = stored(repo, &batch_path()).unwrap();
+    record.insert("batch_id".to_owned(), json!(id));
+    record.insert("state".to_owned(), json!(state));
+    canonical(&Value::Object(record))
+}
+
+const OTHER_BATCH: &str = "batch-bbbbbbbb-0000-4000-8000-000000000002";
+
+fn generation_revision(repo: &Repo) -> u64 {
+    read(&repo.state(), Some(&json!({"paths": []})), None)
+        .unwrap()
+        .generation_revision
+}
+
+fn guarded(id: &str, batch: &str, expected_generation: Option<u64>, mutations: Value) -> Request {
+    let mut request = request(id, Some(batch), None, mutations.clone());
+    request.payload = Some(json!({
+        "mutations": mutations,
+        "expected_generation_revision": expected_generation,
+    }));
+    request
+}
+
 #[test]
-fn a_qa_lease_is_created_replaced_and_deleted_with_its_evidence() {
-    let repo = cut_over("lease");
-    let lease = canonical(&json!({"owner": "a"}));
+fn a_new_batch_or_a_new_batch_state_moves_the_generation_and_nothing_else_does() {
+    let repo = cut_over("generation");
+    let start = generation_revision(&repo);
+
     let created = write(
         &repo.state(),
         &request(
             "op-1",
+            Some(OTHER_BATCH),
             None,
-            None,
-            json!([{"op": "create", "path": "qa-lane/lease.json", "content": lease}]),
+            json!([{"op": "create", "path": format!("batches/{OTHER_BATCH}.json"),
+                    "content": batch_record(&repo, OTHER_BATCH, "planned")}]),
         ),
     )
     .unwrap();
-    assert_eq!(created.result["revisions"]["qa-lane/lease.json"], 1);
-    let renewed = write(
-        &repo.state(),
-        &request(
-            "op-2",
-            None,
-            None,
-            json!([{"op": "replace", "path": "qa-lane/lease.json",
-                    "content": canonical(&json!({"owner": "b"})), "expected_revision": 1}]),
-        ),
-    )
-    .unwrap();
-    assert_eq!(renewed.result["revisions"]["qa-lane/lease.json"], 2);
+    assert_eq!(created.result["generation_revision"], start + 1);
 
-    let deleted = write(
+    let same_state = replace_batch(&repo, "op-2", "#2").unwrap();
+    assert_eq!(same_state.result["generation_revision"], start + 1);
+
+    let report = canonical(&json!({"dispatch_id": "d"}));
+    let other = write(
         &repo.state(),
         &request(
             "op-3",
             None,
             None,
-            json!([{"op": "delete", "path": "qa-lane/lease.json", "reason": "complete QA lease",
-                    "expected_revision": 2}]),
+            json!([{"op": "create", "path": "reports/g.json", "content": report}]),
         ),
     )
     .unwrap();
+    assert_eq!(other.result["generation_revision"], start + 1);
 
-    assert!(
-        deleted.result["revisions"]
-            .get("qa-lane/lease.json")
-            .is_none()
-    );
+    let path = format!("batches/{OTHER_BATCH}.json");
+    let changed = write(
+        &repo.state(),
+        &request(
+            "op-4",
+            Some(OTHER_BATCH),
+            None,
+            json!([{"op": "replace", "path": path, "expected_revision": 1,
+                    "content": batch_record(&repo, OTHER_BATCH, "active")}]),
+        ),
+    )
+    .unwrap();
+    assert_eq!(changed.result["generation_revision"], start + 2);
+    assert_eq!(generation_revision(&repo), start + 2);
+}
+
+#[test]
+fn a_stale_expected_generation_revision_is_a_conflict_on_the_generation_that_writes_nothing() {
+    let repo = cut_over("generation-guard");
+    let start = generation_revision(&repo);
+    let before = count(&repo, "audit");
+
+    let error = write(
+        &repo.state(),
+        &guarded(
+            "op-1",
+            OTHER_BATCH,
+            Some(start + 7),
+            json!([{"op": "create", "path": format!("batches/{OTHER_BATCH}.json"),
+                    "content": batch_record(&repo, OTHER_BATCH, "planned")}]),
+        ),
+    )
+    .unwrap_err();
+
+    assert_eq!(code(&error), ErrorCode::RevisionConflict);
+    assert_eq!(error.facts["path"], "generation");
+    assert_eq!(error.facts["expected_revision"], start + 7);
+    assert_eq!(error.facts["actual_revision"], start);
+    assert_eq!(count(&repo, "audit"), before);
+    assert_eq!(generation_revision(&repo), start);
+}
+
+/// Two requests in opposite orders over the typed rows of two batches and the QA queue, each
+/// moving its batch to another state. Without the guard both commit; with the generation
+/// revision both read, exactly one commits and the other meets the conflict on the generation.
+#[test]
+fn opposite_requests_over_two_batches_and_the_qa_queue_have_one_winner_under_the_guard() {
+    for guard in [false, true] {
+        let repo = cut_over(if guard { "guarded" } else { "unguarded" });
+        write(
+            &repo.state(),
+            &request(
+                "op-setup",
+                Some(OTHER_BATCH),
+                None,
+                json!([{"op": "create", "path": format!("batches/{OTHER_BATCH}.json"),
+                        "content": batch_record(&repo, OTHER_BATCH, "planned")}]),
+            ),
+        )
+        .unwrap();
+        let read_generation = generation_revision(&repo);
+        let expected = guard.then_some(read_generation);
+        let (_, revision_a) = stored(&repo, &batch_path()).unwrap();
+        let first = json!([
+            {"op": "replace", "path": batch_path(), "expected_revision": revision_a,
+             "content": batch_record(&repo, BATCH, "paused")},
+            {"op": "create", "path": "qa-lane/queue/qa.json",
+             "content": canonical(&json!({"dispatch_id": "a"}))},
+        ]);
+        let second = json!([
+            {"op": "create", "path": "qa-lane/queue/qb.json",
+             "content": canonical(&json!({"dispatch_id": "b"}))},
+            {"op": "replace", "path": format!("batches/{OTHER_BATCH}.json"),
+             "expected_revision": 1, "content": batch_record(&repo, OTHER_BATCH, "active")},
+        ]);
+        let state = repo.state();
+        let handles: Vec<_> = [(BATCH, first), (OTHER_BATCH, second)]
+            .into_iter()
+            .enumerate()
+            .map(|(n, (batch, mutations))| {
+                let state = state.clone();
+                std::thread::spawn(move || {
+                    write(
+                        &state,
+                        &guarded(&format!("op-{n}"), batch, expected, mutations),
+                    )
+                })
+            })
+            .collect();
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        let won: Vec<_> = outcomes.iter().filter_map(|o| o.as_ref().ok()).collect();
+        for written in &won {
+            assert_eq!(written.touched, ["batch", "qa_lane", "generation"]);
+        }
+        if guard {
+            assert_eq!(won.len(), 1, "{outcomes:?}");
+            let lost = outcomes.iter().find_map(|o| o.as_ref().err()).unwrap();
+            assert_eq!(code(lost), ErrorCode::RevisionConflict);
+            assert_eq!(lost.facts["path"], "generation");
+            assert_eq!(generation_revision(&repo), read_generation + 1);
+        } else {
+            assert_eq!(won.len(), 2, "{outcomes:?}");
+            assert_eq!(generation_revision(&repo), read_generation + 2);
+        }
+    }
+}
+
+/// The QA lease changes only through the lease operations (`tests/lease.rs`): its generic
+/// mutations are refused, and nothing is written.
+#[test]
+fn the_generic_mutations_of_the_qa_lease_are_refused() {
+    let repo = cut_over("lease");
+    let audit_before = count(&repo, "audit");
+    let lease = canonical(&json!({"owner": "a"}));
+    for (index, mutation) in [
+        json!({"op": "create", "path": "qa-lane/lease.json", "content": lease}),
+        json!({"op": "replace", "path": "qa-lane/lease.json", "content": lease,
+               "expected_revision": 1}),
+        json!({"op": "delete", "path": "qa-lane/lease.json", "reason": "complete QA lease",
+               "expected_revision": 1}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let error = write(
+            &repo.state(),
+            &request(&format!("op-{index}"), None, None, json!([mutation])),
+        )
+        .unwrap_err();
+
+        assert_eq!(code(&error), ErrorCode::MalformedRequest, "{mutation}");
+        assert!(
+            error.message.contains("lease operations"),
+            "{}",
+            error.message
+        );
+    }
+    assert_eq!(count(&repo, "audit"), audit_before);
     assert_eq!(count(&repo, "qa_lane"), 0);
-    let (action, details) = &audit_tail(&repo, 1)[0];
-    assert_eq!(action, "deletion");
-    assert_eq!(details["reason"], "complete QA lease");
-    assert_eq!(
-        details["sha256"],
-        sha256_hex(canonical(&json!({"owner": "b"})).as_bytes())
-    );
 }
 
 #[test]

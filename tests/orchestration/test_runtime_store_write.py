@@ -340,7 +340,14 @@ class _FakeStore:
         return found, 5, {path: self.revisions[path] for path in found if path in self.revisions}
 
     def commit(
-        self, batch_id: str | None, expected: int | None, mutations: list[JsonObject]
+        self,
+        batch_id: str | None,
+        expected: int | None,
+        mutations: list[JsonObject],
+        /,
+        *,
+        guard: state_view.Guard | None = None,
+        answer: list[JsonObject] | None = None,
     ) -> dict[str, int]:
         self.commits.append((batch_id, expected, [dict(mutation) for mutation in mutations]))
         return {
@@ -659,3 +666,110 @@ def test_a_block_that_raises_without_persisting_writes_nothing(
         raise CoordinatorError("refused", remedy="none")
 
     assert store.audit_records() == chain
+
+
+# -- the read snapshot of a view and the guard of a decision over every batch ---------------------
+
+
+class _SnapshotStore(_FakeStore):
+    """A fake store that answers from snapshots: each one is opened by a read and ended by
+    ``close``, with the generation revision of the moment it was opened."""
+
+    def __init__(self, records: dict[str, JsonObject], revisions: dict[str, int]) -> None:
+        super().__init__(records, revisions)
+        self.generation = 4
+        self.opened = 0
+        self.closed = 0
+        self._open: int | None = None
+        self.guards: list[int | None] = []
+
+    @property
+    def generation_revision(self) -> int | None:
+        return self._open
+
+    def __call__(
+        self, collections: Sequence[str], paths: Sequence[str], revision: int | None, /
+    ) -> tuple[dict[str, JsonObject], int | None, dict[str, int]]:
+        if self._open is None:
+            self.opened += 1
+            self._open = self.generation
+        return self.fetch(collections, paths, revision)
+
+    def close(self) -> None:
+        if self._open is not None:
+            self.closed += 1
+        self._open = None
+
+    def commit(
+        self,
+        batch_id: str | None,
+        expected: int | None,
+        mutations: list[JsonObject],
+        /,
+        *,
+        guard: state_view.Guard | None = None,
+        answer: list[JsonObject] | None = None,
+    ) -> dict[str, int]:
+        self.guards.append(None if guard is None else guard.expected)
+        if guard is not None:
+            self.generation += 1
+            guard.expected = self.generation
+        return super().commit(batch_id, expected, mutations)
+
+
+def test_a_view_ends_its_snapshot_at_a_refresh_after_a_commit_and_when_unbound(
+    tmp_path: Path,
+) -> None:
+    path = "dispatch-status/d.json"
+    store = _SnapshotStore({path: {"n": 1}}, {path: 1})
+    view = state_view.StateView(tmp_path, store)
+    assert isinstance(store, state_view.SnapshotFetch)
+
+    with state_view.bind(view):
+        view.read(path)
+        assert (store.opened, store.closed) == (1, 0)
+        view.refresh()
+        assert (store.opened, store.closed) == (1, 1)
+        view.read(path)
+        unit = view.begin_unit(store.commit)
+        unit.replace(path, {"n": 2}, '{"n": 2}\n')
+        unit.flush()
+        assert (store.opened, store.closed) == (2, 2)
+        view.read("dispatch-status/other.json")
+    assert (store.opened, store.closed) == (3, 3)
+
+
+def test_a_unit_that_decided_over_every_batch_carries_and_adopts_the_generation(
+    tmp_path: Path,
+) -> None:
+    a, b = "batches/batch-a.json", "batches/batch-b.json"
+    store = _SnapshotStore(
+        {a: {"batch_id": "batch-a"}, b: {"batch_id": "batch-b"}}, {a: 3, b: 7}
+    )
+    view = state_view.StateView(tmp_path, store)
+    with state_view.bind(view):
+        view.names("batches")
+        unit = view.begin_unit(store.commit)
+        state_view.depend_on_shared()
+        unit.replace(a, {"batch_id": "batch-a", "n": 1}, "{}\n")
+        unit.replace(b, {"batch_id": "batch-b", "n": 1}, "{}\n")
+        unit.flush()
+
+    # Both requests are guarded: the first by the snapshot's revision, the second by the one the
+    # first request left.
+    assert store.guards == [4, 5]
+
+
+def test_a_unit_without_a_decision_over_every_batch_carries_no_generation(
+    tmp_path: Path,
+) -> None:
+    path = "batches/batch-a.json"
+    store = _SnapshotStore({path: {"batch_id": "batch-a"}}, {path: 3})
+    view = state_view.StateView(tmp_path, store)
+    with state_view.bind(view):
+        view.read(path)
+        unit = view.begin_unit(store.commit)
+        unit.replace(path, {"batch_id": "batch-a", "n": 1}, "{}\n")
+        unit.flush()
+
+    assert store.guards == [None]

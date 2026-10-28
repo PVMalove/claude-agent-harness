@@ -64,6 +64,7 @@ impl Server {
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
             state_dir,
+            snapshots: Arc::default(),
         });
         Ok(Self {
             listener: Mutex::new(listener),
@@ -136,9 +137,10 @@ fn serve_pipe(
     shared: &Shared,
 ) -> Result<(), contracts::FrameError> {
     connection.set_timeout(Some(IDLE_TIMEOUT));
-    let permitted = connection
-        .client_process_id()
+    let pid = connection.client_process_id().ok().filter(|pid| *pid > 0);
+    let permitted = pid
+        .ok_or_else(|| std::io::Error::other("no client process id"))
         .and_then(process_user_sid)
         .is_ok_and(|sid| same_user(&sid, expected));
-    serve_connection(&mut connection, permitted, shared)
+    serve_connection(&mut connection, permitted, pid, shared)
 }

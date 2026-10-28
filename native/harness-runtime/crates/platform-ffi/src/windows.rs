@@ -11,10 +11,10 @@ use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_IO_PENDING, ERROR_NO_DATA,
-    ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
-    GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
-    WAIT_TIMEOUT,
+    ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_HANDLE_EOF, ERROR_INVALID_PARAMETER,
+    ERROR_IO_PENDING, ERROR_NO_DATA, ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY,
+    ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED, FILETIME, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    INVALID_HANDLE_VALUE, LocalFree, STILL_ACTIVE, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
@@ -40,8 +40,8 @@ use windows_sys::Win32::System::Pipes::{
     WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentProcess, INFINITE, OpenProcess, OpenProcessToken,
-    PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
+    CreateEventW, GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, INFINITE, OpenProcess,
+    OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION, WaitForSingleObject,
 };
 use windows_sys::core::PWSTR;
 
@@ -155,6 +155,51 @@ pub fn process_user_sid(pid: u32) -> io::Result<String> {
     // SAFETY: plain value arguments; the result is checked and owned below.
     let process = owned_handle(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
     process_token_user_sid(process.as_raw_handle())
+}
+
+/// The creation time of the running process `pid` (a `FILETIME`: 100 ns intervals since 1601),
+/// or `None` when no process has that pid or it has exited. A process that cannot be opened for
+/// another reason, such as one of another user, is an error.
+pub fn process_creation_time(pid: u32) -> io::Result<Option<u64>> {
+    // SAFETY: plain value arguments; the result is checked and owned below.
+    let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if raw.is_null() {
+        let err = io::Error::last_os_error();
+        return match err.raw_os_error() {
+            Some(code) if code == ERROR_INVALID_PARAMETER as i32 => Ok(None),
+            _ => Err(err),
+        };
+    }
+    let process = owned_handle(raw)?;
+    let mut exit_code = 0_u32;
+    // SAFETY: `process` is a valid handle with query access; `exit_code` is a valid out pointer.
+    if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut exit_code) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if exit_code != STILL_ACTIVE as u32 {
+        return Ok(None);
+    }
+    let empty = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (empty, empty, empty, empty);
+    // SAFETY: `process` is a valid handle with query access; the four out pointers are valid.
+    if unsafe {
+        GetProcessTimes(
+            process.as_raw_handle(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(Some(
+        (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime),
+    ))
 }
 
 /// A security descriptor whose only entry grants full access to one user, with no inheritance:

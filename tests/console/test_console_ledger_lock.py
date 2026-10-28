@@ -44,6 +44,36 @@ def test_a_free_lock_says_so() -> None:
     assert ledger_lock.lock_text({"locked": False}) == "Lock ledger свободен."
 
 
+def test_the_store_epoch_shows_the_qa_lease_with_its_verdict() -> None:
+    lease = {
+        "owner": {"owner_kind": "dispatch", "owner_id": "dispatch-1"},
+        "fencing_token": 7,
+        "expires_at": "2026-10-28T00:05:00+00:00",
+        "stale_heartbeat": True,
+        "verdict": "owner-dead",
+        "release_available": True,
+    }
+
+    free = ledger_lock.lock_text({"locked": False, "qa_lease": None})
+    held = ledger_lock.lock_text({"locked": False, "qa_lease": lease})
+    english = ledger_lock.lock_text({"locked": False, "qa_lease": lease}, "en")
+    reused = ledger_lock.lock_text(
+        {"locked": False, "qa_lease": {**lease, "verdict": "owner-pid-reused"}}
+    )
+    broken = ledger_lock.lock_text({"locked": False, "qa_lease": {"error": "x: y"}})
+
+    assert free == "Lock ledger свободен.\nLease QA-lane свободен."
+    assert "Lease QA-lane: dispatch dispatch-1 · fencing 7" in held
+    assert "heartbeat пропущен" in held
+    assert "owner-dead" in held
+    assert "QA lease: dispatch dispatch-1 · fencing 7" in english
+    assert "heartbeat missed" in english
+    assert "не доказывает смерть" in reused
+    assert "состояние недоступно: x: y" in broken
+    # A file-lock panel of the file epoch has no lease line.
+    assert "Lease" not in ledger_lock.lock_text(_status())
+
+
 def test_the_panel_names_the_holder_its_age_and_the_time_left() -> None:
     text = ledger_lock.lock_text(_status())
 
