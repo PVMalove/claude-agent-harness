@@ -3,15 +3,19 @@ and the real ``harness-runtime`` binary."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -124,8 +128,14 @@ def build_state(
         )
         for dispatch_id, role in ((first, "developer"), (second, "qa"))
     ]
-    report: JsonObject = {"dispatch_id": first, "outcome": "completed", "output": "done"}
-    ledger.write_immutable(generation / "reports" / f"{first}.json", report, artifact=True)
+    report: JsonObject = {
+        "dispatch_id": first,
+        "outcome": "completed",
+        "output": "done",
+    }
+    ledger.write_immutable(
+        generation / "reports" / f"{first}.json", report, artifact=True
+    )
     entries: list[JsonValue] = [
         {
             "dispatch_id": first,
@@ -164,7 +174,9 @@ def build_state(
     return ledger
 
 
-def migrate(repo: Path, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def migrate(
+    repo: Path, *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """``harness-runtime migrate --repo <repo>`` as its own process."""
     return subprocess.run(
         [str(runtime_binary()), "migrate", "--repo", str(repo)],
@@ -212,7 +224,9 @@ class PausedMigrate:
     ``HARNESS_RUNTIME_TEST_PAUSE_AT`` makes the process print ``PAUSED:<step>`` and wait for a line
     on stdin; a test kills it there, or changes the state first and then resumes it."""
 
-    def __init__(self, repo: Path, step: str, *, env: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, repo: Path, step: str, *, env: dict[str, str] | None = None
+    ) -> None:
         self.step = step
         self.process = subprocess.Popen(
             [str(runtime_binary()), "migrate", "--repo", str(repo)],
@@ -302,7 +316,9 @@ def coordinator_repository(tmp: Path) -> Path:
     """A git repository with an origin, a project config and the architect role manifest: what
     ``create_batch`` and ``create_dispatch`` touch for real."""
     origin = tmp / "origin.git"
-    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(origin)], check=True, capture_output=True
+    )
     repo = tmp / "work"
     repo.mkdir()
     _git(repo, "init")
@@ -557,7 +573,9 @@ class ServingRuntime:
         stdout = self.process.stdout
         assert stdout is not None
         lines: queue.Queue[str] = queue.Queue()
-        threading.Thread(target=lambda: lines.put(stdout.readline()), daemon=True).start()
+        threading.Thread(
+            target=lambda: lines.put(stdout.readline()), daemon=True
+        ).start()
         self._paused: queue.Queue[str] = queue.Queue()
         threading.Thread(target=self._read_stderr, daemon=True).start()
         try:
@@ -580,7 +598,9 @@ class ServingRuntime:
             reached = self._paused.get(timeout=timeout)
         except queue.Empty:
             self.stop()
-            pytest.fail(f"the runtime did not pause at {step!r} within {timeout} seconds")
+            pytest.fail(
+                f"the runtime did not pause at {step!r} within {timeout} seconds"
+            )
         assert reached == step
 
     def resume(self) -> None:
@@ -636,12 +656,16 @@ def store_call(
     return {**reply.result, "_revision": reply.revision}
 
 
-def store_records(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[str, JsonObject]:
+def store_records(
+    repo: Path, runtime: ServingRuntime, *paths: str
+) -> dict[str, JsonObject]:
     """The records of the runtime store at ``paths``."""
     answer = store_call(repo, runtime, "state.read", {"paths": list(paths)})
     records = answer["records"]
     assert isinstance(records, dict)
-    return {path: record for path, record in records.items() if isinstance(record, dict)}
+    return {
+        path: record for path, record in records.items() if isinstance(record, dict)
+    }
 
 
 def store_revisions(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[str, int]:
@@ -771,3 +795,256 @@ def coordinator_with(
         check=False,
         env={**os.environ, "PYTHONPATH": str(ROOT), **environ},
     )
+
+
+# -- an external dispatch the runtime supervises ------------------------------------------------------
+
+# The fake adapter of the supervised seam: it logs its launch, ignores SIGTERM when asked, waits in
+# the foreground for ``release`` and exits with the code in ``exit_code``.
+FAKE_ADAPTER = """
+import json, os, signal, sys, time
+from pathlib import Path
+control = Path({control!r})
+if (control / "ignore_term").exists():
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(control / "launches.log", "a", encoding="utf-8") as log:
+    log.write(json.dumps({{"pid": os.getpid(), "ppid": os.getppid(), "pgid": os.getpgid(0),
+                          "operation_id": os.environ.get("HARNESS_OPERATION_ID"),
+                          "argv": sys.argv[1:]}}) + "\\n")
+while not (control / "release").exists():
+    time.sleep(0.05)
+code = control / "exit_code"
+sys.exit(int(code.read_text()) if code.exists() else 0)
+"""
+
+
+def _supervised_config(execution_policy: JsonObject) -> JsonObject:
+    runtime: JsonObject = {
+        "claude": {"profiles": ["p"], "model": "sonnet", "effort": "high"}
+    }
+    return {
+        "provider_profiles": {
+            "p": {
+                "capabilities": [
+                    "architecture-analysis",
+                    "backend-development",
+                    "code-review",
+                ],
+                "fallback": [],
+                "known_limitations": ["none"],
+            }
+        },
+        "assignment_plans": {
+            "architect": {
+                "zone": "repository",
+                "runtimes": runtime,
+                "transport": "external",
+            },
+            "developer": {"zone": "repository", "runtimes": runtime},
+            "code-review": {"zone": "repository", "runtimes": runtime},
+        },
+        "backend_zones": {"repository": {"paths": ["**"]}},
+        "concurrency_budget": 1,
+        "verification_commands": ["true"],
+        "execution_policy": execution_policy,
+    }
+
+
+def labelled_groups(dispatch_id: str) -> set[int]:
+    """The process groups whose leader carries the label of ``dispatch_id``."""
+    groups: set[int] = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            environ = (entry / "environ").read_bytes().split(b"\0")
+            if f"HARNESS_DISPATCH_ID={dispatch_id}".encode() in environ:
+                groups.add(os.getpgid(int(entry.name)))
+        except OSError:
+            continue
+    return groups
+
+
+@dataclass(frozen=True)
+class Launch:
+    """One start of the fake adapter, as it logged itself."""
+
+    pid: int
+    ppid: int
+    pgid: int
+    operation_id: str | None
+
+
+class Supervised:
+    """A cut-over repository whose external architect dispatch was created after the cutover, so
+    its approved brief pins ``execution``; the runtime that serves it, and a fake foreground
+    adapter driven through ``control``. ``close`` kills every process group the dispatch left."""
+
+    def __init__(
+        self,
+        tmp: Path,
+        *,
+        timeout: int = 600,
+        grace: int = 1,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        repo = coordinator_repository(tmp)
+        role = repo / ".harness" / "orchestration" / "roles" / "code-review.md"
+        role.write_text(
+            (ORCHESTRATION_ROOT / "roles" / "code-review.md").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "the review role")
+        (repo / ".harness" / "orchestration.json").write_text(
+            json.dumps(
+                _supervised_config(
+                    {
+                        "worker_execution_timeout_seconds": timeout,
+                        "stop_grace_seconds": grace,
+                        "dispatch_poll_interval_seconds": 1,
+                    }
+                )
+            ),
+            encoding="utf-8",
+        )
+        ids, _ = add_coordinator_batch(
+            repo, tmp / "worktree", ticket="#805", dispatch=False
+        )
+        self.repo = repo
+        self.batch = ids["batch_id"]
+        assert migrate(repo).returncode == 0
+        self.control = tmp / "control"
+        self.control.mkdir()
+        self.adapter = tmp / "adapter.py"
+        self.adapter.write_text(
+            FAKE_ADAPTER.format(control=str(self.control)), encoding="utf-8"
+        )
+        self.runtime = ServingRuntime(repo, env=env)
+        self.dispatch = ""
+        self.dispatch = self._create()
+
+    def _create(self) -> str:
+        fields = ["--batch", self.batch, "--role", "architect", "--purpose", "work"]
+        proposal = self.run("dispatch", "propose", *fields)
+        assert proposal.returncode == 0, proposal.stderr
+        digest = json.loads(proposal.stdout)["transition_digest"]
+        created = self.run(
+            "dispatch",
+            "create",
+            *fields,
+            "--transition-digest",
+            digest,
+            "--approved-by",
+            APPROVAL["approved_by"],
+            "--approved-at",
+            APPROVAL["approved_at"],
+        )
+        assert created.returncode == 0, created.stderr
+        brief = json.loads(created.stdout)["brief"]
+        assert brief["execution"]["supervisor"] == "harness-runtime", brief
+        return str(brief["dispatch_id"])
+
+    def run(self, *command: str) -> subprocess.CompletedProcess[str]:
+        return coordinator_with(self.repo, self.runtime, *command)
+
+    def send_command(self) -> list[str]:
+        return [
+            "dispatch",
+            "send",
+            "--dispatch",
+            self.dispatch,
+            "--adapter",
+            str(self.adapter),
+        ]
+
+    def send(self) -> subprocess.CompletedProcess[str]:
+        return self.run(*self.send_command())
+
+    def start_send(self) -> subprocess.Popen[str]:
+        return coordinator_popen(self.repo, self.runtime, *self.send_command())
+
+    @property
+    def database(self) -> Path:
+        return self.repo / STATE_REL / "runtime.db"
+
+    def launches(self) -> list[Launch]:
+        log = self.control / "launches.log"
+        if not log.exists():
+            return []
+        found = []
+        for line in log.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            found.append(
+                Launch(
+                    entry["pid"], entry["ppid"], entry["pgid"], entry["operation_id"]
+                )
+            )
+        return found
+
+    def wait_launches(self, count: int, timeout: float = 30.0) -> list[Launch]:
+        deadline = time.monotonic() + timeout
+        while len(self.launches()) < count and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return self.launches()
+
+    def release(self, code: int = 0) -> None:
+        (self.control / "exit_code").write_text(str(code), encoding="utf-8")
+        (self.control / "release").write_text("", encoding="utf-8")
+
+    def ignore_term(self) -> None:
+        (self.control / "ignore_term").write_text("", encoding="utf-8")
+
+    def execution(self) -> JsonObject | None:
+        answer = store_call(
+            self.repo, self.runtime, "execution.observe", {"dispatch_id": self.dispatch}
+        )
+        execution = answer["execution"]
+        return execution if isinstance(execution, dict) else None
+
+    def wait_execution(self, state: str, timeout: float = 30.0) -> JsonObject:
+        deadline = time.monotonic() + timeout
+        while True:
+            execution = self.execution()
+            if (
+                execution and execution["state"] == state
+            ) or time.monotonic() > deadline:
+                assert execution and execution["state"] == state, execution
+                return execution
+            time.sleep(0.05)
+
+    def status(self) -> JsonObject:
+        path = f"dispatch-status/{self.dispatch}.json"
+        return store_records(self.repo, self.runtime, path)[path]
+
+    def rows(self, sql: str, *params: object) -> list[tuple[object, ...]]:
+        """Rows of the store, read directly: a test inspects what the runtime committed."""
+        import sqlite3
+
+        with contextlib.closing(
+            sqlite3.connect(f"file:{self.database}?mode=ro", uri=True)
+        ) as db:
+            return list(db.execute(sql, params))
+
+    def execution_actions(self) -> list[str]:
+        return [
+            str(action)
+            for (action,) in self.rows(
+                "SELECT action FROM audit WHERE action LIKE 'execution-%' ORDER BY seq"
+            )
+        ]
+
+    def restart_runtime(self, env: dict[str, str] | None = None) -> None:
+        """SIGKILL the runtime and start another in its directory with the hooks ``env``."""
+        xdg = self.runtime.xdg
+        self.runtime.kill()
+        self.runtime = ServingRuntime(self.repo, env=env, xdg=xdg)
+
+    def close(self) -> None:
+        self.release()
+        for group in labelled_groups(self.dispatch) if self.dispatch else set():
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
+        self.runtime.stop()

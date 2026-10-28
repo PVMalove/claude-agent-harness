@@ -475,13 +475,13 @@ def test_a_request_says_hello_with_the_token_then_asks(
     (hello,) = runtime.operations("hello")
     assert hello["payload"]["token"] == TOKEN
     assert hello["payload"]["protocol"] == {
-        "min": {"major": 1, "minor": 1},
-        "max": {"major": 1, "minor": 1},
+        "min": {"major": 1, "minor": 2},
+        "max": {"major": 1, "minor": 2},
     }
     assert hello["payload"]["repo_root"] == str(dirs.repo)
     (status,) = runtime.operations("status")
     assert status["operation_id"] == "op-1"
-    assert status["protocol_version"] == {"major": 1, "minor": 1}
+    assert status["protocol_version"] == {"major": 1, "minor": 2}
 
 
 def test_a_lost_transport_repeats_the_request_with_the_same_operation_id(
@@ -1415,7 +1415,7 @@ def test_the_coordinator_cli_reads_the_state_of_a_real_runtime(
 
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
-    assert report["protocol"] == {"major": 1, "minor": 1}
+    assert report["protocol"] == {"major": 1, "minor": 2}
     assert report["features"] == ["status"]
     assert report["store_id"] is None
     assert report["runtime"]["state"] == "serving"

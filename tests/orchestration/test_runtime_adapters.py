@@ -11,7 +11,14 @@ import time
 
 import pytest
 
+from tests.orchestration import test_claude_adapter as claude_adapter
+from tests.orchestration import test_recovery as recovery_tests
+
 ROOT = Path(__file__).resolve().parents[2]
+# The installed-example worker of a recovery repository and a reachable model endpoint: the
+# fixtures of the claude_code adapter tests.
+external_worker = claude_adapter.external_worker
+claude_endpoint = claude_adapter.reachable_endpoint
 
 
 @pytest.fixture
@@ -316,3 +323,52 @@ def test_codex_dispatch_help_exposes_adapter_arguments(
     assert result.returncode == 0
     for flag in ("--repo", "--brief", "--extra-prompt-file", "--codex-bin"):
         assert flag in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fake executable")
+def test_claude_code_runs_the_worker_in_the_foreground_under_the_runtime_supervisor(
+    external_worker: recovery_tests.RecoveryTests, claude_endpoint: str
+) -> None:
+    batch = external_worker._create_batch()
+    result = external_worker._dispatch(batch["batch_id"], "architect")
+    runtime = external_worker.tmp / "fake-claude"
+    runtime.write_text(
+        "#!/usr/bin/env python3\nimport json,sys\n"
+        "if '--help' in sys.argv:\n print('--verbose --output-format --model --effort --permission-mode --session-id --tools manual --input-format --permission-prompts');sys.exit(0)\n"
+        "init=json.loads(sys.stdin.readline())\n"
+        "print(json.dumps({'type':'control_response','response':{'subtype':'success','request_id':init['request_id'],'response':{}}}),flush=True)\n"
+        "sys.stdin.readline()\nsys.exit(3)\n"
+    )
+    runtime.chmod(0o755)
+    brief = (
+        external_worker._records() / "dispatches" / (result["dispatch_id"] + ".json")
+    )
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            str(claude_adapter.ADAPTER),
+            "dispatch",
+            "--repo",
+            str(external_worker.repo),
+            "--brief",
+            str(brief),
+            "--runtime-executable",
+            str(runtime),
+            "--visibility=background",
+            "--endpoint",
+            claude_endpoint,
+        ],
+        env={**os.environ, "HARNESS_OPERATION_ID": "operation-of-the-runtime"},
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    # The adapter returned only after its worker ended, and exits with the worker's code.
+    assert process.returncode == 3, process.stderr or process.stdout
+    receipt = json.loads(process.stdout)
+    assert receipt["worker_exit_code"] == 3
+    terminal = json.loads(Path(receipt["terminal_path"]).read_text())
+    assert terminal["exit_code"] == 3
+    assert not (Path(receipt["terminal_path"]).parent / "supervisor.log").exists()

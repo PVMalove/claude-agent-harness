@@ -624,6 +624,10 @@ DEFAULT_EXECUTION_POLICY = {
     "dispatch_poll_interval_seconds": 5,
     "qa_lease_seconds": 1_800,
     "rate_limit_retry_seconds": 60,
+    # The runtime supervisor stops a worker at this deadline (ADR 0022, section 3): the default
+    # approval TTL, since an approval older than that would not authorise a new send either.
+    "worker_execution_timeout_seconds": 14_400,
+    "stop_grace_seconds": 30,
 }
 # The lifetime of a QA lease of the runtime store (ADR 0021, section 5): its owner renews it every
 # third of it, and the runtime checks the owner's liveness only after it expired. The runtime

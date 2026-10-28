@@ -1364,6 +1364,9 @@ def _validate_dispatch(
     accepted |= {fields | {"verification_plan"} for fields in set(accepted)}
     # The pinned hook policy (issue #794) is one optional field of every new brief.
     accepted |= {fields | {"hook_policy_sha256"} for fields in set(accepted)}
+    # The execution the runtime supervises (ADR 0022) is one optional field of an external brief
+    # created on the runtime store.
+    accepted |= {fields | {"execution"} for fields in set(accepted)}
     if frozenset(dispatch) not in accepted:
         raise CoordinatorError(
             "dispatch record schema mismatch",

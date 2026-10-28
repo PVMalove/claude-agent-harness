@@ -77,6 +77,7 @@ from harness.orchestration.dispatch_preflight import (
     prepare as prepare_dispatch,
 )
 from harness.orchestration.ledger.ledger_ops import (
+    store_is_authority,
     _ledger_lock,
     _load_batch,
     _load_dispatch,
@@ -866,6 +867,37 @@ def _delta_review_eligibility(
     return "spec"
 
 
+def _execution_section(
+    repo: Path, root: Path, config: JsonObject, brief: JsonObject
+) -> JsonObject | None:
+    """The execution the runtime supervises, pinned into the approved brief (ADR 0022): for an
+    external worker dispatch on the runtime store whose runtime serves ``execution.launch``.
+    ``None`` keeps the adapter launch of ``dispatch send`` for every other dispatch."""
+    if (
+        brief.get("resolved_transport") != "external"
+        or brief.get("role") == "qa"
+        or brief.get("purpose") == "publish"
+        or not store_is_authority(root)
+    ):
+        return None
+    from harness.orchestration.runtime_client import RuntimeClient
+
+    client = RuntimeClient(repo)
+    hello = client.call(
+        "status", operation_id=f"status-{client.paths.repo_id}-{uuid.uuid4().hex}"
+    ).hello
+    features = hello.get("features")
+    if not isinstance(features, list) or "execution.launch" not in features:
+        return None
+    policy = _execution_policy(config)
+    return {
+        "supervisor": "harness-runtime",
+        "timeout_seconds": policy["worker_execution_timeout_seconds"],
+        "stop_grace_seconds": policy["stop_grace_seconds"],
+        "poll_interval_seconds": policy["dispatch_poll_interval_seconds"],
+    }
+
+
 def create_dispatch(args: argparse.Namespace) -> JsonObject:
     """Create one approved immutable dispatch brief, or, with ``propose``, render its transition.
 
@@ -1509,6 +1541,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
             )
         if progress is not None:
             brief["preserved_progress"] = progress
+        execution = _execution_section(repo, root, config, brief)
+        if execution is not None:
+            brief["execution"] = execution
         if policy_source is not None:
             infrastructure_retry.require_same_contract(policy_source, brief)
         if batch.get("environmental_restart"):
