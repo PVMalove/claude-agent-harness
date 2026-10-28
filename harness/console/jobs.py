@@ -1,12 +1,18 @@
 """Server-owned catalog commands and cursor-based WebSocket output.
 
-Requests use ``job.start(command_id, values?, confirmed?, confirmation?, plan_digest?)``,
+Requests use ``job.start(command_id, values?, confirmed?, confirmation?, plan_digest?, client?)``,
 ``job.cancel(job_id, confirmed?)``, ``job.get/job.subscribe(job_id, cursor=0)`` and ``job.list``.
 Replies carry a ``job`` snapshot, or the ``jobs`` summaries for ``job.list``. The cursor counts
 output fragments, starting at zero. Each snapshot contains the next bounded batch and its new
 cursor; ``done`` means execution and replay ended. Subscriptions own no execution task. A job keeps
 a bounded output, and ``truncated`` marks the cut. Jobs live until server exit, except that only
 the newest finished ones are kept.
+
+The optional ``client`` identifies the initiating surface as ``tui`` or ``browser``; older
+clients without it are recorded as ``unknown``. Completed, failed and cancelled jobs append a
+record to the project-local ``.harness/console/commands.jsonl`` journal. A missing exit code is null.
+All user-supplied values are masked, including non-secret values and the cleanup plan digest.
+The catalog command id and flags remain available to identify the operation.
 
 A project runs one mutating job at a time. A start refused for it is ``busy`` with the running
 job's ``job_id``; ``busy`` without ``job_id`` means the running-job limit. Reads start beside a
@@ -17,9 +23,13 @@ its own exit code when the command ended before the stop reached it.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
+import subprocess
 import threading
 import uuid
+from datetime import datetime, timezone
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,7 +38,9 @@ from typing import Literal, NamedTuple, Protocol, cast
 from .catalog import HARNESS_COMMANDS, MEMORY_COMMANDS, CatalogEntry, process_argv
 from .coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand
 from .process_tree import CommandCancelled
+from .discovery import discovery_path
 from .runner import capturing_runner
+from harness.configuration import SECRET_MASK, mask_secrets
 from .snapshots import (
     MAX_ID_CHARS,
     PROTOCOL_VERSION,
@@ -66,6 +78,7 @@ _FIELDS = {
         "confirmed",
         "confirmation",
         "plan_digest",
+        "client",
     },
     "job.get": {"id", "type", "job_id", "cursor"},
     "job.subscribe": {"id", "type", "job_id", "cursor"},
@@ -241,6 +254,9 @@ class JobService:
         return sum(job.phase == "running" for job in self._jobs.values())
 
     def _start(self, body: Mapping[str, object]) -> _Job:
+        client = body.get("client", "unknown")
+        if client not in ("tui", "browser", "unknown"):
+            raise JobRejected("bad_request")
         command_id = body.get("command_id")
         if not isinstance(command_id, str):
             raise JobRejected("bad_request")
@@ -280,6 +296,25 @@ class JobService:
                 self.repo,
                 dev_environment=dev_environment,
             )
+            # Render the journal command from masked inputs. Matching against the finished argv
+            # can either leak transformed values or hide unrelated tokens with the same value.
+            journal_values = {
+                name: SECRET_MASK if value.strip() else ""
+                for name, value in filled.items()
+            }
+            if isinstance(entry, CoordinatorCommand):
+                for field in entry.fields:
+                    if field.repeatable and field.dest in filled:
+                        journal_values[field.dest] = "\n".join(
+                            SECRET_MASK
+                            for line in filled[field.dest].splitlines()
+                            if line.strip()
+                        )
+            journal_argv = process_argv(
+                entry.cli_argv(self.repo, journal_values),
+                self.repo,
+                dev_environment=dev_environment,
+            )
         except Exception as exc:
             raise JobRejected("start_failed", type(exc).__name__) from None
         if not available:
@@ -295,9 +330,14 @@ class JobService:
             raise JobRejected("busy")
         if isinstance(digest, str):
             argv += ["--plan-digest", digest]
+            journal_argv += ["--plan-digest", SECRET_MASK]
         job = _Job(uuid.uuid4().hex, command_id)
         self._jobs[job.id] = job
-        task = asyncio.create_task(self._execute(job, argv))
+        task = asyncio.create_task(
+            self._execute(
+                job, argv, str(client), entry.reversibility.value, journal_argv
+            )
+        )
         job.task = task
         if mutating:
             self._active_mutation = job
@@ -305,7 +345,15 @@ class JobService:
         task.add_done_callback(self._tasks.discard)
         return job
 
-    async def _execute(self, job: _Job, argv: list[str]) -> None:
+    async def _execute(
+        self,
+        job: _Job,
+        argv: list[str],
+        client: str,
+        reversibility: str,
+        journal_argv: list[str],
+    ) -> None:
+        timestamp = datetime.now(timezone.utc).isoformat()
         try:
             job.returncode = await self._executor(
                 argv, cwd=self.repo, on_output=job.append, cancel_event=job.cancel_event
@@ -319,6 +367,17 @@ class JobService:
         except Exception as exc:
             job.phase, job.error = "failed", type(exc).__name__
         finally:
+            try:
+                self._append_journal(
+                    timestamp,
+                    client,
+                    journal_argv,
+                    reversibility,
+                    job.returncode,
+                    job.command_id,
+                )
+            except (OSError, ValueError, subprocess.SubprocessError):
+                job.phase, job.error = "failed", "journal_write_failed"
             if self._active_mutation is job:
                 self._active_mutation = None
             job.notify()
@@ -327,6 +386,53 @@ class JobService:
             ]
             for key in finished[:-_KEPT_FINISHED]:
                 del self._jobs[key]
+
+    def _append_journal(
+        self,
+        timestamp: str,
+        client: str,
+        argv: list[str],
+        reversibility: str,
+        returncode: int | None,
+        command_id: str,
+    ) -> None:
+        masked: list[object] = []
+        secret_next = False
+        for arg in argv:
+            key, separator, value = arg.partition("=")
+            secret_key = key.lstrip("-")
+            if secret_next:
+                masked.append(SECRET_MASK)
+                secret_next = False
+            elif separator and mask_secrets(value, secret_key) == SECRET_MASK:
+                masked.append(key + "=" + SECRET_MASK)
+            elif (
+                arg.startswith("-") and mask_secrets("value", secret_key) == SECRET_MASK
+            ):
+                masked.append(arg)
+                secret_next = True
+            else:
+                masked.append(mask_secrets(arg))
+        record = {
+            "timestamp": timestamp,
+            "client": client,
+            "command_id": command_id,
+            "argv": masked,
+            "reversibility": reversibility,
+            "returncode": returncode,
+        }
+        root = discovery_path(self.repo).parents[3]
+        directory = root / "console"
+        if directory.is_symlink() or directory.is_junction():
+            raise ValueError("console journal directory must not be a link")
+        path = directory / "commands.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt" and directory.stat().st_uid != os.getuid():
+            raise PermissionError("console journal directory has a foreign owner")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as journal:
+            journal.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     async def _cancel(self, body: Mapping[str, object]) -> _Job:
         """Stop a running job after an explicit confirmation and reply with its state once the
