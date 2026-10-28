@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 from pathlib import Path
@@ -15,13 +16,17 @@ import pytest
 
 from harness.console.pin import CONSOLE_SERVER_REQUIREMENTS
 from harness.console.data import DashboardData
+from harness.console.data import collect_dashboard
 from harness.console.server import ConsoleServer
 from harness.console.snapshots import (
+    HOME_TTL_SECONDS,
     HomeContext,
     HomeSnapshot,
     SnapshotService,
     build_home_snapshot,
+    collect_home,
 )
+from tests.console.test_snapshots import FakeClock
 
 
 @pytest.fixture
@@ -1123,3 +1128,156 @@ def test_a_disconnect_with_an_unfinished_request_releases_the_connection(
             await server.close()
 
     asyncio.run(scenario())
+
+
+async def _home(
+    project: Path, service: SnapshotService | None = None, **fields: object
+) -> dict[str, object]:
+    """One `home.snapshot` request to a real server over a real WebSocket."""
+    server = ConsoleServer(project, snapshots=service)
+    await server.start()
+    try:
+        async with _connect(server, project) as client:
+            await client.send(_request("n", **fields))
+            reply: dict[str, object] = json.loads(
+                await asyncio.wait_for(client.recv(), 120)
+            )
+            return reply
+    finally:
+        await server.close()
+
+
+def test_a_project_without_harness_is_reported_as_not_installed(
+    project: Path,
+) -> None:
+    reply = asyncio.run(_home(project))
+    snapshot = reply["snapshot"]
+    assert isinstance(snapshot, dict)
+    assert (reply["ok"], reply["cached"], reply["id"]) == (True, False, "n")
+    assert snapshot["drift"] == "missing"
+    assert snapshot["active_batches"] is None
+    assert snapshot["repo_map"]["tier"] is None
+    assert snapshot["repo_map"]["head_map"] is None
+    policy = snapshot["memory"]["policy"]
+    assert (policy["enabled"], policy["top_k"], policy["max_tokens"]) == (
+        False,
+        5,
+        1000,
+    )
+    expected = collect_dashboard(project)
+    health = snapshot["health"]
+    assert health == {
+        "ok": expected.ok,
+        "warn": expected.warn,
+        "fail": expected.fail,
+        "skipped": expected.skipped,
+    }
+    assert sum(health.values()) > 0
+
+
+def test_a_failing_health_check_is_listed_among_the_problems(project: Path) -> None:
+    (project / ".harness").mkdir()
+    (project / ".harness" / "harness.lock").write_text("not json")
+    snapshot = asyncio.run(_home(project))["snapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["health"]["fail"] >= 1
+    assert any(
+        problem["status"] == "fail" and problem["id"] == "files.lock"
+        for problem in snapshot["problems"]
+    )
+    assert snapshot["problems_total"] >= len(snapshot["problems"]) >= 1
+    assert isinstance(snapshot["drift"], str)
+
+
+def test_orchestration_that_is_not_connected_is_null_not_zero(project: Path) -> None:
+    (project / ".harness").mkdir()
+    snapshot = asyncio.run(_home(project))["snapshot"]
+    assert isinstance(snapshot, dict) and snapshot["active_batches"] is None
+
+
+def test_connected_orchestration_reports_its_open_batches(project: Path) -> None:
+    coordinator = project / ".harness" / "orchestration" / "coordinator.py"
+    coordinator.parent.mkdir(parents=True)
+    coordinator.write_text('import json\nprint(json.dumps({"batches": [{}, {}]}))\n')
+    snapshot = asyncio.run(_home(project))["snapshot"]
+    assert isinstance(snapshot, dict) and snapshot["active_batches"] == 2
+
+
+def test_a_failed_collect_is_an_error_reply_and_the_connection_survives(
+    project: Path,
+) -> None:
+    calls = 0
+
+    def flaky(repo: Path) -> HomeSnapshot:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("/private/path must not leak")
+        return build_home_snapshot(DATA, HomeContext())
+
+    async def scenario() -> None:
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=flaky)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send(_request("one"))
+                raw = await asyncio.wait_for(client.recv(), 5)
+                assert "private" not in str(raw)
+                error = json.loads(raw)["error"]
+                assert error == {
+                    "code": "collect_failed",
+                    "message": "OSError",
+                }
+                await client.send(_request("two"))
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (reply["id"], reply["ok"]) == ("two", True)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_expensive_checks_are_not_rerun_within_the_ttl_and_force_rebuilds(
+    project: Path,
+) -> None:
+    runs = 0
+
+    def dashboard(repo: Path) -> DashboardData:
+        nonlocal runs
+        runs += 1
+        return DATA
+
+    clock = FakeClock()
+    service = SnapshotService(
+        project,
+        clock=clock,
+        collect=functools.partial(
+            collect_home, dashboard=dashboard, context=lambda repo: HomeContext()
+        ),
+    )
+
+    async def scenario() -> list[dict[str, object]]:
+        server = ConsoleServer(project, snapshots=service)
+        await server.start()
+        replies: list[dict[str, object]] = []
+        try:
+            async with _connect(server, project) as client:
+                for step in ("first", "within-ttl", "after-ttl", "forced"):
+                    if step == "after-ttl":
+                        clock.advance(HOME_TTL_SECONDS)
+                    await client.send(_request(step, force=step == "forced"))
+                    replies.append(json.loads(await asyncio.wait_for(client.recv(), 5)))
+                    if step == "first":
+                        clock.advance(HOME_TTL_SECONDS / 3)
+        finally:
+            await server.close()
+        return replies
+
+    first, within, after, forced = asyncio.run(scenario())
+    assert (first["cached"], within["cached"]) == (False, True)
+    assert within["age_seconds"] == 5.0
+    assert (after["cached"], after["age_seconds"]) == (False, 0.0)
+    assert (forced["cached"], forced["age_seconds"]) == (False, 0.0)
+    assert runs == 3
