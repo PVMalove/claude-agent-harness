@@ -25,8 +25,9 @@ pub fn chain_sha256(prev: &str, record_sha256: &str) -> String {
     sha256_hex(format!("{prev}{record_sha256}").as_bytes())
 }
 
-/// The actions a record of the chain may name: the closed vocabulary of ADR 0020, section 4.
-pub const ACTIONS: [&str; 8] = [
+/// The actions a record of the chain may name: the closed vocabulary of ADR 0020, section 4, and
+/// one `execution-<state>` per state an execution of the supervisor enters (ADR 0022, section 2).
+pub const ACTIONS: [&str; 14] = [
     "legacy-import",
     "migration-repair",
     "schema-migrate",
@@ -35,6 +36,12 @@ pub const ACTIONS: [&str; 8] = [
     "transition",
     "deletion",
     "runtime-rollback",
+    "execution-launching",
+    "execution-running",
+    "execution-stopping",
+    "execution-exited",
+    "execution-lost",
+    "execution-unknown",
 ];
 
 /// What a check of the chain found wrong, and where.

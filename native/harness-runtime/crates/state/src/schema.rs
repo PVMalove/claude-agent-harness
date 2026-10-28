@@ -1,4 +1,4 @@
-//! The schema of the store, version 3 (`PRAGMA user_version = 3`; ADR 0020, sections 3, 4 and 7).
+//! The schema of the store, version 4 (`PRAGMA user_version = 4`; ADR 0020, sections 3, 4 and 7).
 //!
 //! Version 2 adds the `operations` table of the idempotent writes (ADR 0021, section 4), a
 //! `revision` to every row that a command may change, the denormalised `execution_state` of a
@@ -6,8 +6,11 @@
 //! adds the singleton `generation` row, whose revision guards the decisions that read every batch
 //! (ADR 0020, section 3), and makes the QA lane a singleton row that outlives its leases: the
 //! owner of the lease and the identity of its process are columns, and the row stays free after
-//! a release, so its `fencing_token` never goes back (ADR 0020, section 7). A store of version 1
-//! or 2 is upgraded in place by `upgrade` when the runtime starts or before its first write.
+//! a release, so its `fencing_token` never goes back (ADR 0020, section 7). Version 4 adds the
+//! `executions` of the process supervisor (ADR 0022, section 2): one row per launch of a
+//! dispatch, its process identity, its receipt, its exit evidence and its lease, and a trigger
+//! that allows only the transitions of `executions::allowed`. A store of version 1, 2 or 3 is
+//! upgraded in place by `upgrade` when the runtime starts or before its first write.
 //!
 //! One table holds one kind of record. A column named like a field of the legacy record (`state`,
 //! `batch_id`, the risk fields of a batch) carries that field when the field has the type the
@@ -25,7 +28,7 @@ use crate::error::{Error, Result};
 use crate::time::iso_now;
 
 /// The schema version this build writes and the newest it serves.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 macro_rules! audit_checkpoint_table {
     () => {
@@ -114,6 +117,56 @@ macro_rules! execution_state_column {
             execution_state IN ('unknown', 'launching', 'running')
             AND state IN ('reported', 'failed', 'blocked', 'cancelled', 'abandoned')
         )))"
+    };
+}
+
+/// The executions of the supervisor (ADR 0021, section 6; ADR 0022, section 2): `id` is the
+/// operation id of the launch. The identity columns (`host` to `start_time`, and `pgid`) are set
+/// once the process is known; a state that names a process needs them. Only `exited` and `lost`
+/// are terminal: a terminal row never changes again, and only a terminal row releases its lease.
+/// The trigger allows the edges of `executions::allowed` and nothing else.
+macro_rules! executions_table {
+    () => {
+        "CREATE TABLE executions (
+    id                    TEXT PRIMARY KEY,
+    dispatch_id           TEXT NOT NULL REFERENCES dispatch (id),
+    attempt               INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+    state                 TEXT NOT NULL CHECK (state IN
+        ('launching', 'running', 'stopping', 'exited', 'lost', 'unknown')),
+    revision              INTEGER NOT NULL DEFAULT 1,
+    launch_json           TEXT NOT NULL,
+    execution_deadline    TEXT NOT NULL,
+    stop_grace_seconds    INTEGER NOT NULL,
+    poll_interval_seconds INTEGER NOT NULL,
+    host                  TEXT,
+    boot_id               TEXT,
+    pid_namespace         TEXT,
+    pid                   INTEGER,
+    start_time            TEXT,
+    pgid                  INTEGER,
+    receipt_json          TEXT,
+    exit_json             TEXT,
+    observation_json      TEXT,
+    lease_owner_json      TEXT NOT NULL,
+    lease_released_at     TEXT,
+    created_at            TEXT NOT NULL,
+    updated_at            TEXT NOT NULL,
+    UNIQUE (dispatch_id, attempt),
+    CHECK ((pid IS NULL) = (start_time IS NULL)),
+    CHECK (state NOT IN ('running', 'stopping', 'exited') OR pid IS NOT NULL),
+    CHECK (state <> 'exited' OR exit_json IS NOT NULL),
+    CHECK (lease_released_at IS NULL OR state IN ('exited', 'lost'))
+) STRICT;
+CREATE TRIGGER executions_terminal BEFORE UPDATE ON executions
+WHEN OLD.state IN ('exited', 'lost')
+BEGIN SELECT RAISE(ABORT, 'a terminal execution never changes'); END;
+CREATE TRIGGER executions_transition BEFORE UPDATE OF state ON executions
+WHEN OLD.state <> NEW.state AND NOT (
+       (OLD.state = 'launching' AND NEW.state IN ('running', 'exited', 'lost', 'unknown'))
+    OR (OLD.state = 'running' AND NEW.state IN ('stopping', 'exited', 'lost', 'unknown'))
+    OR (OLD.state = 'stopping' AND NEW.state IN ('exited', 'lost', 'unknown'))
+    OR (OLD.state = 'unknown' AND NEW.state IN ('running', 'exited', 'lost')))
+BEGIN SELECT RAISE(ABORT, 'the execution state does not allow this transition'); END;"
     };
 }
 
@@ -246,6 +299,11 @@ CREATE TABLE audit (
 ",
     generation_table!(),
     "
+
+-- The executions of the process supervisor (ADR 0022, section 2).
+",
+    executions_table!(),
+    "
 "
 );
 
@@ -370,7 +428,11 @@ pub fn upgrade(connection: &mut Connection) -> Result<bool> {
             transaction.execute_batch(statement)?;
         }
     }
-    upgrade_2_to_3(&transaction)?;
+    if from < 3 {
+        upgrade_2_to_3(&transaction)?;
+    }
+    // Version 4: the executions of the supervisor; no row of an older store changes.
+    transaction.execute_batch(executions_table!())?;
     audit::append(
         &transaction,
         &iso_now(),

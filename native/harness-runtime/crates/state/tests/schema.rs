@@ -1,5 +1,5 @@
-//! The schema of the store, version 3: what `create` writes, what its CHECKs refuse, and how a
-//! store of version 1 or 2 is brought forward (ADR 0020, sections 3, 4 and 7; ADR 0021, sections
+//! The schema of the store, version 4: what `create` writes, what its CHECKs refuse, and how a
+//! store of version 1, 2 or 3 is brought forward (ADR 0020, sections 3, 4 and 7; ADR 0021, sections
 //! 4 and 6).
 
 use std::collections::BTreeMap;
@@ -88,11 +88,11 @@ fn is_check_violation(error: &rusqlite::Error) -> bool {
 }
 
 #[test]
-fn a_new_store_has_the_schema_version_three_and_its_generation_row() {
+fn a_new_store_has_the_schema_version_four_and_its_generation_row() {
     let connection = fresh();
 
-    assert_eq!(SCHEMA_VERSION, 3);
-    assert_eq!(version(&connection), 3);
+    assert_eq!(SCHEMA_VERSION, 4);
+    assert_eq!(version(&connection), 4);
     let generation: i64 = connection
         .query_row("SELECT revision FROM generation WHERE id = 1", [], |row| {
             row.get(0)
@@ -316,7 +316,7 @@ fn a_store_of_version_one_is_upgraded_to_the_schema_a_new_store_has() {
     let changed = upgrade(&mut old).unwrap();
 
     assert!(changed);
-    assert_eq!(version(&old), 3);
+    assert_eq!(version(&old), SCHEMA_VERSION);
     assert_eq!(columns(&old), columns(&fresh()));
 }
 
@@ -353,7 +353,7 @@ fn the_upgrade_keeps_every_row_and_appends_one_audit_record() {
     assert_eq!(last.1, "schema-migrate");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&last.2).unwrap(),
-        serde_json::json!({"from": 1, "to": 3})
+        serde_json::json!({"from": 1, "to": SCHEMA_VERSION})
     );
 }
 
@@ -391,7 +391,7 @@ fn a_store_of_version_two_is_upgraded_to_the_schema_a_new_store_has() {
 
     assert!(upgrade(&mut old).unwrap());
 
-    assert_eq!(version(&old), 3);
+    assert_eq!(version(&old), SCHEMA_VERSION);
     assert_eq!(columns(&old), columns(&fresh()));
     let generation: i64 = old
         .query_row("SELECT revision FROM generation WHERE id = 1", [], |row| {
@@ -409,7 +409,7 @@ fn a_store_of_version_two_is_upgraded_to_the_schema_a_new_store_has() {
     assert_eq!(action, "schema-migrate");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&details).unwrap(),
-        serde_json::json!({"from": 2, "to": 3})
+        serde_json::json!({"from": 2, "to": SCHEMA_VERSION})
     );
 }
 
@@ -480,13 +480,15 @@ fn a_store_that_is_current_is_left_alone() {
 #[test]
 fn a_store_of_a_newer_version_is_refused_without_a_write() {
     let (mut newer, _) = store_of_version_one();
-    newer.pragma_update(None, "user_version", 4).unwrap();
+    newer
+        .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
 
     let error = upgrade(&mut newer).unwrap_err();
 
     assert_eq!(error.exit_code(), 2);
     assert_eq!(error.code(), contracts::ErrorCode::ProtocolUnsupported);
-    assert_eq!(version(&newer), 4);
+    assert_eq!(version(&newer), SCHEMA_VERSION + 1);
     let records: i64 = newer
         .query_row("SELECT COUNT(*) FROM audit", [], |row| row.get(0))
         .unwrap();
