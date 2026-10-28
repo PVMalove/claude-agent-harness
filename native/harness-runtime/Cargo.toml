@@ -6,6 +6,7 @@ members = [
     "crates/ipc",
     "crates/harness-runtime",
     "crates/platform-ffi",
+    "crates/qa",
     "crates/state",
     "crates/supervisor",
 ]
