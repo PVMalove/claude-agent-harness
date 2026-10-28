@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol, cast
 from unittest import mock
@@ -20,7 +22,11 @@ from harness.storage import storage_path
 from harness.errors import HarnessError
 from harness.gate_runner.gate_runner import (
     CleanRoomPolicy,
+    CommandGroup,
     EvidenceContext,
+    GroupContext,
+    GroupRun,
+    _approved_text,
     GateRunnerError,
     LocalPolicy,
     _clean_room_python,
@@ -950,3 +956,94 @@ def test_the_log_trailer_links_to_the_evidence_document() -> None:
         digest,
     )
     assert parse_evidence_trailer(["$ x", "exit_code=0"]) is None
+
+
+class _GroupPolicy:
+    """An execution policy that carries its own executor of command groups: the seam a runtime
+    executor plugs into, recording what the gate runner handed it."""
+
+    def __init__(self, root: Path, results: dict[str, list[int]]) -> None:
+        self.root = root
+        self.results = results
+        self.groups: list[CommandGroup] = []
+
+    @contextmanager
+    def checkout(self) -> Iterator[Path]:
+        yield self.root
+
+    def run_groups(
+        self, groups: Sequence[CommandGroup], checkout: Path, run: GroupContext
+    ) -> list[GroupRun]:
+        self.groups = list(groups)
+        runs: list[GroupRun] = []
+        for group in groups:
+            codes = self.results.get(group.group)
+            if codes is None:
+                runs.append(
+                    GroupRun(group, [], [_approved_text(c) for c in group.commands], [], True)
+                )
+                continue
+            ran = [
+                StageCommand(
+                    command=_approved_text(command),
+                    executed=_approved_text(command),
+                    exit_code=code,
+                    output="",
+                )
+                for command, code in zip(group.commands, codes, strict=False)
+            ]
+            unreached = [_approved_text(c) for c in group.commands[len(ran) :]]
+            checks = [
+                {"command": item.command, "result": "pass" if item.exit_code == 0 else "fail", "evidence": ""}
+                for item in ran
+            ]
+            runs.append(GroupRun(group, ran, unreached, checks, False))
+        return runs
+
+
+def test_run_qa_stages_hands_its_command_groups_to_the_policy_executor(tmp_path: Path) -> None:
+    policy = _GroupPolicy(tmp_path, {"preparation": [0], "gate": [0, 1]})
+
+    result = run_qa_stages(
+        ["make bootstrap"],
+        ["make lint", "make test", "make docs"],
+        policy,
+        environment_probes=["probe"],
+        project_file_checks=["uv lock --check"],
+        evidence=EvidenceContext("a" * 40),
+    )
+
+    shown = [
+        (group.group, group.run_when, group.stop_on_failure, list(group.commands))
+        for group in policy.groups
+    ]
+    assert shown == [
+        ("preparation", "always", True, ["make bootstrap"]),
+        ("environment-probe", "after-failure", False, ["probe"]),
+        ("project-file-check", "after-failure", False, ["uv lock --check"]),
+        ("gate", "after-success", True, ["make lint", "make test", "make docs"]),
+    ]
+    assert result.failed_stage == "gate"
+    assert [check["result"] for check in result.gate_checks] == ["pass", "fail"]
+    assert result.evidence is not None
+    results = [
+        (stage.stage_id, stage.result)
+        for stage in result.evidence.document.stages
+    ]
+    assert results == [
+        ("preparation-1", "pass"),
+        ("gate-1", "pass"),
+        ("gate-2", "fail"),
+        ("gate-3", "not_run"),
+    ]
+
+
+def test_run_gate_hands_one_gate_group_to_the_policy_executor(tmp_path: Path) -> None:
+    policy = _GroupPolicy(tmp_path, {"gate": [1]})
+
+    result = run_gate(["make lint", "make test"], policy, stop_on_failure=True)
+
+    assert [(g.group, g.run_when, g.stop_on_failure) for g in policy.groups] == [
+        ("gate", "always", True)
+    ]
+    assert [check["result"] for check in result.checks] == ["fail"]

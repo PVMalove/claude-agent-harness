@@ -16,7 +16,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from ..errors import INTERNAL_INVARIANT_REMEDY, HarnessError
 from ..storage import storage_path
@@ -610,6 +610,108 @@ def _context(
     return None
 
 
+RUN_ALWAYS = "always"
+RUN_AFTER_FAILURE = "after-failure"
+RUN_AFTER_SUCCESS = "after-success"
+
+
+@dataclass(frozen=True)
+class CommandGroup:
+    """One group of a run: its commands, when it runs, and whether a failure stops the rest of it.
+
+    ``always`` runs whatever came before; ``after-failure`` runs only when a command of an earlier
+    group did not pass (the diagnostics of a failed preparation); ``after-success`` only when every
+    earlier command passed.
+    """
+
+    group: str
+    commands: Sequence[str | list[str]]
+    run_when: str
+    stop_on_failure: bool
+
+
+@dataclass(frozen=True)
+class GroupRun:
+    """What one group did: the commands that ran, the approved texts never reached, its checks,
+    and whether ``run_when`` kept the whole group from running."""
+
+    group: CommandGroup
+    ran: list[StageCommand]
+    unreached: list[str]
+    checks: list[dict[str, str]]
+    skipped: bool
+
+
+@dataclass(frozen=True)
+class GroupContext:
+    """What every group of a run shares: the artifact blocks, the start time and cold mode."""
+
+    outputs: list[str]
+    started: float
+    cold: bool
+
+
+@runtime_checkable
+class GroupExecutor(Protocol):
+    """The executor of the command groups of an execution policy (ADR 0022, section 3)."""
+
+    def run_groups(
+        self, groups: Sequence[CommandGroup], checkout: Path, run: GroupContext
+    ) -> list[GroupRun]:
+        """Run the groups in order in ``checkout`` and answer one ``GroupRun`` per group."""
+        ...
+
+
+def _runs(group: CommandGroup, failed: bool) -> bool:
+    """Whether a group runs after earlier groups that did or did not fail."""
+    if group.run_when == RUN_AFTER_FAILURE:
+        return failed
+    if group.run_when == RUN_AFTER_SUCCESS:
+        return not failed
+    return True
+
+
+class HostExecutor:
+    """The groups as host processes of the coordinator, in one temporary directory: the
+    historical behaviour of ``run_gate`` and ``run_qa_stages``."""
+
+    def run_groups(
+        self, groups: Sequence[CommandGroup], checkout: Path, run: GroupContext
+    ) -> list[GroupRun]:
+        runs: list[GroupRun] = []
+        failed = False
+        with _command_environment(checkout) as env:
+            for group in groups:
+                if not _runs(group, failed):
+                    unreached = [_approved_text(item) for item in group.commands]
+                    runs.append(GroupRun(group, [], unreached, [], True))
+                    continue
+                ran: list[StageCommand] = []
+                unreached = []
+                checks: list[dict[str, str]] = []
+                _execute_commands(
+                    group.commands,
+                    checkout,
+                    env=env,
+                    stop_on_failure=group.stop_on_failure,
+                    checks=checks,
+                    outputs=run.outputs,
+                    started=run.started,
+                    stage=ran,
+                    group=group.group,
+                    unreached=unreached,
+                    cold=run.cold,
+                )
+                failed = failed or any(item.exit_code != 0 for item in ran)
+                runs.append(GroupRun(group, ran, unreached, checks, False))
+        return runs
+
+
+def _executor(policy: ExecutionPolicy) -> GroupExecutor:
+    """The policy's own executor of command groups, or the host one."""
+    return policy if isinstance(policy, GroupExecutor) else HostExecutor()
+
+
 def run_gate(
     commands: list[str | list[str]],
     policy: ExecutionPolicy,
@@ -623,33 +725,24 @@ def run_gate(
     раздельные потоки, длительность и упавшие nodeid каждой команды, а недошедшие команды -- как
     ``not_run`` (ADR 0023, раздел 5).
     """
-    checks: list[dict[str, str]] = []
     outputs: list[str] = []
-    ran: list[StageCommand] = []
-    unreached: list[str] = []
     started: float = time.monotonic()
-    with policy.checkout() as checkout, _command_environment(checkout) as env:
-        _execute_commands(
-            commands,
+    group = CommandGroup(QA_STAGE_GATE, commands, RUN_ALWAYS, stop_on_failure)
+    with policy.checkout() as checkout:
+        (gate,) = _executor(policy).run_groups(
+            [group],
             checkout,
-            env=env,
-            stop_on_failure=stop_on_failure,
-            checks=checks,
-            outputs=outputs,
-            started=started,
-            stage=ran,
-            unreached=unreached,
-            cold=isinstance(policy, CleanRoomPolicy),
+            GroupContext(outputs, started, isinstance(policy, CleanRoomPolicy)),
         )
     context = _context(policy, evidence)
     return GateResult(
-        checks=checks,
+        checks=gate.checks,
         artifact="\n".join(outputs),
         duration_seconds=time.monotonic() - started,
         evidence=None
         if context is None
         else build_stage_evidence(
-            context, _gate_entries(QA_STAGE_GATE, ran, unreached)
+            context, _gate_entries(QA_STAGE_GATE, gate.ran, gate.unreached)
         ),
     )
 
@@ -933,57 +1026,40 @@ def run_qa_stages(
     probes and project-file checks run, in the same checkout, to diagnose the failure. The stage
     evidence lists every command of every group: those never reached are ``not_run``.
     """
-    checks: list[dict[str, str]] = []
     outputs: list[str] = []
     started = time.monotonic()
     stages: list[dict[str, object]] = []
     entries: list[tuple[str, StageCommand | None]] = []
     context = _context(policy, evidence)
-    cold = isinstance(policy, CleanRoomPolicy)
-    with policy.checkout() as checkout, _command_environment(checkout) as env:
-        prepared: list[StageCommand] = []
-        prepared_unreached: list[str] = []
-        _execute_commands(
-            preparation,
+    groups = [
+        CommandGroup(QA_STAGE_PREPARATION, preparation, RUN_ALWAYS, True),
+        CommandGroup(
+            QA_STAGE_ENVIRONMENT_PROBE, environment_probes, RUN_AFTER_FAILURE, False
+        ),
+        CommandGroup(
+            QA_STAGE_PROJECT_FILE_CHECK, project_file_checks, RUN_AFTER_FAILURE, False
+        ),
+        CommandGroup(QA_STAGE_GATE, gate, RUN_AFTER_SUCCESS, True),
+    ]
+    with policy.checkout() as checkout:
+        prepared, probed, checked, gated = _executor(policy).run_groups(
+            groups,
             checkout,
-            env=env,
-            stop_on_failure=True,
-            checks=[],
-            outputs=outputs,
-            started=started,
-            stage=prepared,
-            group=QA_STAGE_PREPARATION,
-            unreached=prepared_unreached,
-            cold=cold,
+            GroupContext(outputs, started, isinstance(policy, CleanRoomPolicy)),
         )
-        stages.extend(_stage_record(QA_STAGE_PREPARATION, item) for item in prepared)
+        stages.extend(_stage_record(QA_STAGE_PREPARATION, item) for item in prepared.ran)
         entries.extend(
-            _gate_entries(QA_STAGE_PREPARATION, prepared, prepared_unreached)
+            _gate_entries(QA_STAGE_PREPARATION, prepared.ran, prepared.unreached)
         )
-        broken = next((item for item in prepared if item.exit_code != 0), None)
+        broken = next((item for item in prepared.ran if item.exit_code != 0), None)
         if broken is not None:
-            probed: list[StageCommand] = []
-            checked: list[StageCommand] = []
-            for group, commands, found in (
-                (QA_STAGE_ENVIRONMENT_PROBE, environment_probes, probed),
-                (QA_STAGE_PROJECT_FILE_CHECK, project_file_checks, checked),
-            ):
-                _execute_commands(
-                    commands,
-                    checkout,
-                    env=env,
-                    stop_on_failure=False,
-                    checks=[],
-                    outputs=outputs,
-                    started=started,
-                    stage=found,
-                    group=group,
-                    cold=cold,
-                )
-                entries.extend(_gate_entries(group, found, ()))
-            stages.extend(_stage_record(QA_STAGE_ENVIRONMENT_PROBE, i) for i in probed)
+            for found in (probed, checked):
+                entries.extend(_gate_entries(found.group.group, found.ran, ()))
             stages.extend(
-                _stage_record(QA_STAGE_PROJECT_FILE_CHECK, i) for i in checked
+                _stage_record(QA_STAGE_ENVIRONMENT_PROBE, i) for i in probed.ran
+            )
+            stages.extend(
+                _stage_record(QA_STAGE_PROJECT_FILE_CHECK, i) for i in checked.ran
             )
             entries.extend(
                 _gate_entries(QA_STAGE_GATE, (), [_approved_text(c) for c in gate])
@@ -1000,38 +1076,23 @@ def run_qa_stages(
                     broken.exit_code,
                     broken.output,
                     _tracked_files(checkout),
-                    probed,
-                    checked,
+                    probed.ran,
+                    checked.ran,
                 ),
                 evidence=None
                 if context is None
                 else build_stage_evidence(context, entries),
             )
-        ran: list[StageCommand] = []
-        gate_unreached: list[str] = []
-        _execute_commands(
-            gate,
-            checkout,
-            env=env,
-            stop_on_failure=True,
-            checks=checks,
-            outputs=outputs,
-            started=started,
-            stage=ran,
-            group=QA_STAGE_GATE,
-            unreached=gate_unreached,
-            cold=cold,
-        )
-        stages.extend(_stage_record(QA_STAGE_GATE, item) for item in ran)
-        entries.extend(_gate_entries(QA_STAGE_GATE, ran, gate_unreached))
-    failed = any(item.exit_code != 0 for item in ran)
+        stages.extend(_stage_record(QA_STAGE_GATE, item) for item in gated.ran)
+        entries.extend(_gate_entries(QA_STAGE_GATE, gated.ran, gated.unreached))
+    failed = any(item.exit_code != 0 for item in gated.ran)
     return QAStagesResult(
         stages=stages,
-        gate_checks=checks,
+        gate_checks=gated.checks,
         artifact="\n".join(outputs),
         duration_seconds=time.monotonic() - started,
         failed_stage=QA_STAGE_GATE if failed else None,
-        code_checks_started=CODE_CHECKS_STARTED if ran else CODE_CHECKS_UNKNOWN,
+        code_checks_started=CODE_CHECKS_STARTED if gated.ran else CODE_CHECKS_UNKNOWN,
         diagnosis=None,
         evidence=None if context is None else build_stage_evidence(context, entries),
     )
