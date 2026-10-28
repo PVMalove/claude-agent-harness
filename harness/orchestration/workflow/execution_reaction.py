@@ -8,7 +8,8 @@ what the runtime observed:
   recorded on the status (``pending_report``) and waits for the exit, because the store refuses a
   terminal dispatch state while the execution may still run.
 - ``exited`` with a recorded report: ``reported``, through the transition code of ``report
-  submit``.
+  submit``. A refusal of that code keeps the report pending, and ``dispatch status --dispatch``
+  shows it as ``reaction_error``.
 - ``exited`` without a report: ``blocked``, domain ``timeout`` when the runtime stopped the
   worker at its deadline, otherwise the classification ``worker-exited-without-report``.
 - ``lost``: ``blocked``, domain ``infrastructure``; the developer retry budget is untouched. A

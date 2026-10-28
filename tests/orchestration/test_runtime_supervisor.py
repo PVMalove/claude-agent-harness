@@ -560,6 +560,8 @@ def test_a_broken_audit_chain_refuses_the_launch_before_any_process_starts(
 
     assert send.returncode == 2
     assert "invariant_violation" in err
+    # The refusal is not repeatable: the runtime's remedy, never the advice to repeat the send.
+    assert "repeat dispatch send" not in err
     assert repo.rows("SELECT COUNT(*) FROM executions") == [(0,)]
     assert repo.launches() == []
 
@@ -742,3 +744,36 @@ def test_a_report_submitted_before_the_execution_is_lost_stays_for_the_operator(
     assert "pending_report" not in status
     assert status["held_report"] == held
     assert dig(entry, "held_report") == held
+
+
+def test_a_report_refused_after_the_exit_is_shown_in_dispatch_status(
+    supervised: Factory,
+) -> None:
+    repo = supervised()
+    _working(repo)
+    path = f"dispatches/{repo.dispatch}.json"
+    brief = store_records(repo.repo, repo.runtime, path)[path]
+    report = architect_report_file(repo.repo, repo.dispatch, brief)
+    submitted = repo.run("report", "submit", "--file", str(report))
+    assert submitted.returncode == 0, submitted.stderr
+    # The pinned configuration breaks after the report waits: recording it at the exit fails.
+    with sqlite3.connect(repo.database) as db:
+        (body,) = db.execute(
+            "SELECT body_json FROM dispatch WHERE id = ?", (repo.dispatch,)
+        ).fetchone()
+        stored = json.loads(body)
+        stored["orchestration_policy"]["configuration"]["canonical_sha256"] = "0" * 64
+        db.execute(
+            "UPDATE dispatch SET body_json = ? WHERE id = ?",
+            (json.dumps(stored), repo.dispatch),
+        )
+    repo.release(0)
+    repo.wait_execution("exited")
+
+    (entry,) = cast(list[object], _status_of(repo))
+
+    assert "pinned configuration" in cast(str, dig(entry, "reaction_error", "error"))
+    assert dig(entry, "reaction_error", "remedy")
+    status = repo.status()
+    assert status["state"] == "working"
+    assert "pending_report" in status

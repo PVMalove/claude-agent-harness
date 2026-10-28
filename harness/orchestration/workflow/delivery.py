@@ -283,7 +283,8 @@ def execution_operation_id(dispatch: JsonObject) -> str:
 def _launch_execution(repo: Path, dispatch: JsonObject) -> JsonObject:
     """Ask the runtime to launch the execution of a supervised dispatch from its stored brief
     and status; the answer is the receipt. A launch the OS refused (``engine_unavailable``) is
-    a proven launch failure; any other refusal leaves the dispatch dispatched."""
+    a proven launch failure; any other refusal leaves the dispatch dispatched. Only a repeatable
+    refusal advises a repeat of ``dispatch send``; any other carries the remedy of the runtime."""
     from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
 
     try:
@@ -300,6 +301,12 @@ def _launch_execution(repo: Path, dispatch: JsonObject) -> JsonObject:
             raise error_type(
                 f"the runtime could not launch the worker: {exc.message}",
                 remedy=exc.remedy,
+            ) from exc
+        if not exc.retryable:
+            raise LaunchUnsettled(
+                f"the runtime refused the launch [{exc.code}]: {exc.message}",
+                remedy=f"{exc.remedy}; the dispatch stays dispatched, and a repeat of dispatch "
+                "send gets the same refusal",
             ) from exc
         raise LaunchUnsettled(
             f"the runtime did not confirm the launch [{exc.code}]: {exc.message}",
@@ -907,13 +914,20 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     # The execution of the named supervised dispatch is observed, and an ended one decides its
     # transition, before the view is read (ADR 0021, section 6).
     executions: dict[str, JsonObject | None] = {}
+    reaction_error: JsonObject | None = None
     if from_store and args.dispatch:
         from harness.orchestration.workflow import execution_reaction
 
-        with contextlib.suppress(CoordinatorError):
+        try:
             executions[args.dispatch] = execution_reaction.observe(
                 repo, root, args.dispatch
             )
+        except LedgerBusyError:
+            pass  # a busy ledger defers the reaction to the next view
+        except CoordinatorError as exc:
+            # A report that waited for the exit and is refused now stays pending: the operator
+            # sees why (execution_reaction), and the next view tries again.
+            reaction_error = {"error": exc.message, "remedy": exc.remedy}
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
     with contextlib.suppress(LedgerBusyError), read_state(ledger, repo):
         from harness.orchestration import qa_lane
@@ -983,6 +997,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                         if "held_report" in status
                         else {}
                     ),
+                    **({"reaction_error": reaction_error} if reaction_error else {}),
                     "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
