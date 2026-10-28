@@ -111,7 +111,9 @@ Python строит план при propose. План входит в brief, а 
 - Повтор QA на том же SHA после `infrastructure` или `environment_preparation` (#615, #769)
   допустим без расхода бюджета developer-а и без нового approval, если план и окружение заново
   проверены. Такой повтор — новый `attempt` того же dispatch (ADR 0021, раздел 4), поэтому у него
-  новый `operation_id`. Повтор после `code_test` требует нового кандидата.
+  новый `operation_id`. Повтор после `code_test` требует нового кандидата. Так повторяется
+  контейнерный QA; исторический хост-QA сохраняет отчёт `blocked` и policy-retry (ADR 0022,
+  раздел «Решения реализации #810»).
 - Каждая стадия и команда хранят `stage_id`, `candidate_sha`, digest-ы, `environment_fingerprint`,
   результат `pass`/`fail`/`not_run`, exit code, раздельные ссылки на stdout и stderr с sha256,
   длительность и упавшие nodeid из JUnit.

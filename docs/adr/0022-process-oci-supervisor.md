@@ -280,3 +280,48 @@ Reconcile запускается при старте runtime, перед каж�
 - **Каталог runtime.** Без `XDG_RUNTIME_DIR` каталог runtime — `/tmp/harness-<uid>` вне любого
   репозитория (ADR 0021, раздел 2), поэтому обязательные корни плана его не содержат и запуск не
   отвергается из-за runtime.
+
+## Решения реализации #810
+
+**Принято оператором (2026-10-28).** Контейнерный clean-room QA (#810) реализует раздел 3 и
+раздел 4 для команд QA с отступлениями ниже. Windows Job Objects (#806), одобрение политики hooks
+(#808) и CI smoke Docker (#710) этот ticket не затрагивает; detached worker-контейнер #807 не
+меняется.
+
+| Текст ADR | Решение #810 | Причина |
+|---|---|---|
+| ADR 0023 §5: повтор после `infrastructure` или `environment_preparation` — новый `attempt` | Для контейнерного QA так и есть: отчёта нет, есть запись `qa-lane/attempts`, `qa run` повторяется как attempt N+1. Исторический хост-QA сохраняет отчёт `blocked` и policy-retry новым dispatch | Объединение путей ломает поведение исторического QA (DoD 11). |
+| ADR 0021 §4: `attempt` хранится в строке dispatch | `attempt` — поле тела `dispatch-status`: его пишет Python через `state.write` с CAS, Rust только читает (нет поля — attempt 1) | Один писатель dispatch-status и без новой колонки схемы store. |
+| ADR 0025: ресурсы плана монтируются с их доступом | Сужение: `run_root` (каталог clean-room под `shared_storage`) на запись, `git_common` только на чтение, `cache` плана со своим доступом; `artifacts`, issue worktree и весь `shared_storage` не монтируются | Код кандидата не пишет ledger, `runtime.db` и refs. Шаг QA, которому нужна запись вне `run_root`, — повод пересмотреть решение, а не расширить монтирование молча. |
+| §3: срок команды берётся из `timeout_seconds` стадии `VerificationPlan` | Новый ключ `execution_policy.qa_command_timeout_seconds` (по умолчанию 3600) закрепляется в brief `qa_execution` | QA исполняет `verification_commands`, у которых нет стадий плана. |
+| `stage-evidence.v1`: результат команды — `pass`, `fail` или `not_run` | Домен окончания хранится в `qa_stages[].domain` и в exit evidence runtime; в stage evidence команда с доменом — `not_run` с реальным кодом выхода | В схеме stage evidence нет поля домена. |
+| §3: QA-команды исполняются в контейнере | Только если `access_policy.operations.qa.container` задан; проект с одним `defaults.container` остаётся на хост-QA | Исторический QA не меняется без явной настройки. |
+| §1: асинхронное ядро Tokio | Синхронный `std::process` и поток прогона; осиротевший после рестарта runtime QA-прогон становится `lost` и не возобновляется | Как в #805 и #807. |
+
+Как работает реализация:
+
+- **Классификация.** Crate `qa` проверяет срок команды первым: команда, остановленная по сроку
+  и не завершившаяся кодом 0, — `timeout`, даже без кода выхода. Дальше: нет кода или 125 —
+  `infrastructure`, 126 и 127 — `tooling`, 129–255 — `cancelled` после `qa.stop` и `unknown`
+  иначе; любой другой код — собственный результат команды. `stopped_by` прогона — `command`
+  после `qa.stop` и `deadline`, если хотя бы одна команда дошла до своего срока.
+- **`qa.stop`.** Запрос `{dispatch_id, attempt}` не требует fencing token и не пишет строку
+  `operations`: он только ставит флаг остановки потока прогона или запускает reconcile.
+- **Python.** `qa run` для brief с `qa_execution` готовит clean-room checkout на хосте (Git вне
+  контейнеров), пишет `attempt` при переходе в `working`, вызывает `qa.run` с fencing token lane и
+  опрашивает `execution.observe`. Потоки читаются из `executions/<id>/commands`, сверяются по
+  sha256 и санитизируются. Исходы: `tooling`, `timeout`, `unknown` — отчёт `blocked` с доменом;
+  `infrastructure`, `environment_preparation`, `cancelled` — без отчёта, повтор `qa run` — новая
+  попытка без траты бюджета developer-а. Число таких попыток не ограничено, как у нынешних
+  транзиентных сбоев `qa run`.
+- **Сигналы и страховочный срок.** На время прогона SIGTERM поднимает исключение с кодом 143,
+  SIGINT — `KeyboardInterrupt`; страховочный срок coordinator-а — `execution_deadline` квитанции
+  плюс grace и 60 секунд. Coordinator шлёт `qa.stop`, ждёт конца прогона (grace плюс 60 секунд),
+  записывает частичное evidence в `qa-lane/attempts`, освобождает lane и поднимает сигнал снова.
+  Восстановление владельца очищенного или снятого lease останавливает его живой прогон до
+  возврата dispatch в `approved`.
+- **Эпоха store.** Артефакты QA пишутся в единице store команды, а записи стадий сверяются с
+  текстом артефакта, который принял runtime; схема brief принимает `qa_execution` только рядом с
+  `runtime_images`.
+- **Проверки.** Fedora, SELinux и rootless Podman подтверждены argv-матрицей и scripted-движком;
+  живой smoke движка — #710.
