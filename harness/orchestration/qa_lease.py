@@ -232,6 +232,35 @@ def refusals() -> Iterator[None]:
         raise
 
 
+def inspect(repo: Path) -> JsonObject | None:
+    """The QA lease as ``qa.lane.inspect`` of the runtime answers it, without a write lock: the
+    owner, the identity of its process, the fencing token, the expiry, ``stale_heartbeat``, the
+    verdict on the owner now and whether ``ledger release-lock`` would release it
+    (``release_available``: an expired lease of a provably dead owner). ``None`` for a free lane."""
+    from harness.orchestration.runtime_client import RuntimeClient
+
+    answer = RuntimeClient(repo).call(
+        "qa.lane.inspect",
+        operation_id=f"qa.lane.inspect-{uuid.uuid4().hex}",
+        timeout_seconds=30.0,
+    ).result
+    if not isinstance(answer.get("lease"), dict):
+        return None
+    stale = answer.get("stale_heartbeat") is True
+    verdict = answer.get("verdict")
+    return {
+        "owner": answer.get("owner"),
+        "identity": answer.get("identity"),
+        "fencing_token": answer.get("fencing_token"),
+        "acquired_at": answer.get("acquired_at"),
+        "expires_at": answer.get("expires_at"),
+        "heartbeat_at": answer.get("heartbeat_at"),
+        "stale_heartbeat": stale,
+        "verdict": verdict,
+        "release_available": stale and verdict == "owner-dead",
+    }
+
+
 class Beat:
     """The heartbeat of one lease: ``lost`` once the runtime answered ``fencing_mismatch``,
     because an operator cleared the lease or another owner holds the lane."""

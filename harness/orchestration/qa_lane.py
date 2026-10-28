@@ -1287,6 +1287,27 @@ def reap_dead_owner(ledger: LifecycleLedger, root: Path, ops: QaWorkflowOps) -> 
     qa_lease.reap_expired(ledger, _lock, _lease, recover)
 
 
+def clear_lease(
+    ledger: LifecycleLedger,
+    root: Path,
+    ops: QaWorkflowOps,
+    *,
+    approval: JsonObject,
+    reason: str,
+) -> str | None:
+    """In the store epoch: clear the lease whatever its verdict, behind a human approval (the
+    ``--force`` of ``ledger release-lock``), with the recovery of ``qa clear-stale-lease``.
+    Returns the restored dispatch state."""
+    with _lock(ledger):
+        lease = _lease(ledger)
+        if lease is None:
+            return None
+        qa_lease.clear(ledger, lease, approval=approval, reason=reason)
+        return _recover_cleared_owner(
+            ledger, root, lease, ops, approval=approval, reason=reason
+        )
+
+
 def clear_stale_lease(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
     repo = ops._repo(args)
     root = _state_root(args, repo)

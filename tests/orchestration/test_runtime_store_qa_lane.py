@@ -324,3 +324,76 @@ def test_a_lease_cleared_under_a_heartbeat_stops_it_and_marks_it_lost(
     assert beat["lost"] is True
     assert owner.process.returncode == 2
     assert _remedy(stderr).startswith("REMEDY: [fencing_mismatch] ")
+
+
+def _lock_status(store: Store) -> JsonObject:
+    shown = store.run("ledger", "lock-status")
+    assert shown.returncode == 0, shown.stderr
+    status: JsonObject = json.loads(shown.stdout)
+    return status
+
+
+def test_a_live_owner_is_released_neither_automatically_nor_by_release_lock_without_force(
+    store: Store,
+) -> None:
+    stopped = Holder(store, _owner(), 1)
+    held = stopped.admission()
+    stopped.signal(signal.SIGSTOP)
+    try:
+        _wait_expired(held)
+        status = _lock_status(store)
+        refused = store.run("ledger", "release-lock")
+        still = _qa_status(store)
+        forced = store.run(
+            "ledger",
+            "release-lock",
+            "--force",
+            "--approved-by",
+            "Malove",
+            "--approved-at",
+            "2026-10-28T00:00:00+00:00",
+            "--reason",
+            "the owner sandbox is stopped for good",
+        )
+    finally:
+        stopped.signal(signal.SIGCONT)
+    _, stderr = stopped.finish()
+
+    assert status["locked"] is False
+    lease = status["qa_lease"]
+    assert lease["verdict"] == "owner-alive"
+    assert lease["stale_heartbeat"] is True
+    assert lease["release_available"] is False
+    assert lease["owner"] == {"owner_kind": "local-qa", "owner_id": stopped.owner}
+    assert refused.returncode == 2
+    assert _remedy(refused.stderr).startswith(
+        "REMEDY: [lease_held] stale_heartbeat=true verdict=owner-alive"
+    )
+    assert still["lease"]["owner_id"] == stopped.owner
+    assert forced.returncode == 0, forced.stderr
+    assert json.loads(forced.stdout)["reason"] == "forced"
+    assert _audit(store, "clear")[0]["verdict"] == "owner-alive"
+    assert _audit(store, "reap") == []
+    # The old owner's release meets the operator's decision.
+    assert _remedy(stderr).startswith("REMEDY: [fencing_mismatch] ")
+
+
+def test_lock_status_shows_owner_dead_for_a_killed_owner_and_release_lock_reaps_it(
+    store: Store,
+) -> None:
+    killed = Holder(store, _owner(), 1)
+    held = killed.admission()
+    killed.kill()
+    _wait_expired(held)
+
+    status = _lock_status(store)
+    released = store.run("ledger", "release-lock")
+
+    lease = status["qa_lease"]
+    assert lease["verdict"] == "owner-dead"
+    assert lease["release_available"] is True
+    assert lease["identity"]["pid"] == killed.process.pid
+    assert released.returncode == 0, released.stderr
+    assert json.loads(released.stdout)["reason"] == "owner-dead"
+    assert _audit(store, "reap")[0]["verdict"] == "owner-dead"
+    assert _lock_status(store)["qa_lease"] is None
