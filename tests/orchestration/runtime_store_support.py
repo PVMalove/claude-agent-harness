@@ -868,7 +868,11 @@ class Launch:
 class Supervised:
     """A cut-over repository whose external architect dispatch was created after the cutover, so
     its approved brief pins ``execution``; the runtime that serves it, and a fake foreground
-    adapter driven through ``control``. ``close`` kills every process group the dispatch left."""
+    adapter driven through ``control``. ``close`` kills every process group the dispatch left.
+
+    ``access_policy`` selects the built-in docker executor with that policy, so the runtime
+    launches the worker in a container of the engine on its ``PATH``; ``create=False`` leaves the
+    dispatch to ``create``."""
 
     def __init__(
         self,
@@ -877,6 +881,8 @@ class Supervised:
         timeout: int = 600,
         grace: int = 1,
         env: dict[str, str] | None = None,
+        access_policy: JsonObject | None = None,
+        create: bool = True,
     ) -> None:
         repo = coordinator_repository(tmp)
         role = repo / ".harness" / "orchestration" / "roles" / "code-review.md"
@@ -888,17 +894,20 @@ class Supervised:
         )
         _git(repo, "add", "-A")
         _git(repo, "commit", "-m", "the review role")
+        config = _supervised_config(
+            {
+                "worker_execution_timeout_seconds": timeout,
+                "stop_grace_seconds": grace,
+                "dispatch_poll_interval_seconds": 1,
+            }
+        )
+        if access_policy is not None:
+            config["access_policy"] = access_policy
+            config["extensions"] = {"runtime_access": "docker"}
+            # The artifacts root every container plan mounts, as `harness install` creates it.
+            (repo / ".harness" / ".sandboxes" / "scratch").mkdir(parents=True)
         (repo / ".harness" / "orchestration.json").write_text(
-            json.dumps(
-                _supervised_config(
-                    {
-                        "worker_execution_timeout_seconds": timeout,
-                        "stop_grace_seconds": grace,
-                        "dispatch_poll_interval_seconds": 1,
-                    }
-                )
-            ),
-            encoding="utf-8",
+            json.dumps(config), encoding="utf-8"
         )
         ids, _ = add_coordinator_batch(
             repo, tmp / "worktree", ticket="#805", dispatch=False
@@ -914,11 +923,21 @@ class Supervised:
         )
         self.runtime = ServingRuntime(repo, env=env)
         self.dispatch = ""
-        self.dispatch = self._create()
+        self.brief: JsonObject = {}
+        if create:
+            self.dispatch = self.create()
 
-    def _create(self) -> str:
+    def propose(self) -> subprocess.CompletedProcess[str]:
+        """``dispatch propose`` of the architect dispatch."""
+        return self.run(
+            "dispatch", "propose", "--batch", self.batch, "--role", "architect",
+            "--purpose", "work",
+        )
+
+    def create(self) -> str:
+        """Propose and create the architect dispatch; its brief is ``self.brief``."""
         fields = ["--batch", self.batch, "--role", "architect", "--purpose", "work"]
-        proposal = self.run("dispatch", "propose", *fields)
+        proposal = self.propose()
         assert proposal.returncode == 0, proposal.stderr
         digest = json.loads(proposal.stdout)["transition_digest"]
         created = self.run(
@@ -935,7 +954,9 @@ class Supervised:
         assert created.returncode == 0, created.stderr
         brief = json.loads(created.stdout)["brief"]
         assert brief["execution"]["supervisor"] == "harness-runtime", brief
-        return str(brief["dispatch_id"])
+        self.brief = brief
+        self.dispatch = str(brief["dispatch_id"])
+        return self.dispatch
 
     def run(self, *command: str) -> subprocess.CompletedProcess[str]:
         return coordinator_with(self.repo, self.runtime, *command)

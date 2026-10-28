@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import cast
 
 from harness.orchestration import (
+    container_executor,
     hook_policy,
     operation_access,
     runtime_access,
@@ -84,16 +85,7 @@ from harness.orchestration.ledger.lifecycle import (
 )
 from harness.orchestration.runtime_attestation import ISSUE_WORKTREE_WRITER_ROLES
 from harness.orchestration.workflow import failure_domains, rebase
-from harness.orchestration.workflow.attention import (
-    _flag_stale_dispatch,
-    staged_report,
-)
-from harness.orchestration.workflow.container_status import (
-    MAX_ENGINE_READS,
-    STOP_PROOFS,
-    needs_engine,
-    reconcile,
-)
+from harness.orchestration.workflow.attention import _flag_stale_dispatch
 from harness.orchestration.workflow.history import (
     _accepted_qa_for_candidate,
     _validate_batch_integrity,
@@ -426,6 +418,14 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         # A brief that pins ``execution`` is launched by the runtime supervisor (ADR 0022). Its
         # repeat from ``dispatched`` only asks the runtime again: the runtime never launches twice.
         supervised = bool(dispatch.get("execution"))
+        # The runtime launches the container of a supervised docker brief itself: its plan is
+        # applied here, but no provider hands it off (ADR 0022).
+        plan = dispatch.get("runtime_access")
+        container = (
+            supervised
+            and isinstance(plan, dict)
+            and plan.get("runtime_extension") == container_executor.EXTENSION_NAME
+        )
         relaunch = (
             supervised
             and status.get("state") == "dispatched"
@@ -488,11 +488,15 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         access_evidence = runtime_access.apply_plan(
             dispatch,
             transport,
-            handoff=True,
+            handoff=not container,
             defer_handoff=True,
             command=tuple(command) if command is not None else None,
         )
-        if supervised and access_evidence["status"] != "legacy-inherit":
+        if (
+            supervised
+            and not container
+            and access_evidence["status"] != "legacy-inherit"
+        ):
             raise CoordinatorError(
                 "a dispatch the runtime supervises takes no runtime_access provider hand-off",
                 remedy="create the dispatch without a runtime_access provider, or on the file "
@@ -641,11 +645,6 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
     }
 
 
-def _worker_stopped(worker: JsonObject | None) -> bool:
-    """Whether the engine proved the container worker stopped; silence never does."""
-    return worker is not None and worker["state"] in STOP_PROOFS
-
-
 def wait_dispatch(args: argparse.Namespace) -> JsonObject:
     """Wait locally for a significant event; heartbeat updates never reach the coordinator chat."""
     repo = _repo(args)
@@ -691,7 +690,6 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
             dispatch = _load_dispatch(root, args.dispatch)
             status = _load_dispatch_status(root, dispatch["dispatch_id"])
             state = status.get("state")
-            worker = reconcile(ledger, dispatch, status)
             from harness.orchestration.workflow.startup import assess_startup
 
             startup = assess_startup(dispatch, status, repo=repo)
@@ -763,38 +761,24 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
                     "event": "failed",
                     "state": state,
                 }
-            exited = _worker_stopped(worker)
-            if (
-                state in LIVE_DISPATCH_STATES
-                and startup["deadline_exceeded"]
-                and not exited
-            ):
+            if state in LIVE_DISPATCH_STATES and startup["deadline_exceeded"]:
                 return {
                     "dispatch_id": dispatch["dispatch_id"],
                     "event": "startup_timeout",
                     "startup": startup,
                 }
-            if state in LIVE_DISPATCH_STATES and (
-                exited or _silent_seconds(status) >= threshold
-            ):
+            if state in LIVE_DISPATCH_STATES and _silent_seconds(status) >= threshold:
                 _flag_stale_dispatch(
                     ledger,
                     repo,
                     root,
                     dispatch,
                     _silent_seconds(status),
-                    status.get("worker_exit") if exited else None,
                 )
                 return {
                     "dispatch_id": dispatch["dispatch_id"],
                     "event": "stale",
                     "silent_seconds": _silent_seconds(status),
-                    **({"worker": worker} if exited else {}),
-                    **(
-                        {"staged_report": staged}
-                        if exited and (staged := staged_report(dispatch))
-                        else {}
-                    ),
                 }
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -885,10 +869,8 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     """Liveness view the coordinator session polls; a stale entry is a blocker to surface, never a
     reason for the coordinator to change state on its own.
 
-    For a docker dispatch the view also asks the engine about the receipt's container and records
-    the first proof that it stopped. That evidence is the only write; it never changes the
-    lifecycle state. Without ``--dispatch`` at most ``MAX_ENGINE_READS`` dispatches reach the
-    engine per read; the rest show ``not_observed``."""
+    The worker of a supervised dispatch, a process or a container, is the execution the runtime
+    observes; this view never asks a container engine itself (ADR 0022)."""
     from harness.orchestration.workflow.startup import assess_startup
 
     repo = _repo(args)
@@ -907,9 +889,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     ledger = LifecycleLedger(root)
     entries: list[JsonObject] | None = None
     lane: JsonObject | None = None
-    engine_reads = 0
-    # The runtime store is read, never written, by this view: the engine is not asked, so no
-    # evidence is persisted (ADR 0020, section 2).
+    # The runtime store is read, never written, by this view (ADR 0020, section 2).
     from_store = store_is_authority(root)
     # The execution of the named supervised dispatch is observed, and an ended one decides its
     # transition, before the view is read (ADR 0021, section 6).
@@ -966,12 +946,6 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 if from_store and dispatch.get("execution")
                 else None
             )
-            asks_engine = needs_engine(status)
-            observe = not from_store and (
-                bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
-            )
-            worker = reconcile(ledger, dispatch, status, observe=observe)
-            engine_reads += asks_engine and observe
             live = status.get("state") in LIVE_DISPATCH_STATES
             silent = _silent_seconds(status) if live else 0
             entries.append(
@@ -1002,8 +976,7 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),
                     "silent_seconds": silent,
-                    "worker": worker,
-                    "stale": live and (silent >= threshold or _worker_stopped(worker)),
+                    "stale": live and silent >= threshold,
                     "telemetry": latest_telemetry,
                     "context_pressure": pressure[-1] if pressure else None,
                     "needs_attention": bool(batch.get("needs_attention", False)),
