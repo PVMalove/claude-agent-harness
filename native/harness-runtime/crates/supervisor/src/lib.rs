@@ -26,6 +26,8 @@ mod container;
 #[cfg(target_os = "linux")]
 mod launch;
 #[cfg(target_os = "linux")]
+mod objects;
+#[cfg(target_os = "linux")]
 pub mod process;
 #[cfg(target_os = "linux")]
 mod stop;
@@ -35,7 +37,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The operations the supervisor serves, as `hello` lists them.
-pub const FEATURES: [&str; 3] = ["execution.launch", "execution.observe", "container.observe"];
+pub const FEATURES: [&str; 5] = [
+    "execution.launch",
+    "execution.observe",
+    "container.observe",
+    "container.objects",
+    "container.remove",
+];
 
 /// The engine of a kind: the CLI by default; tests script it.
 pub type Engines = Arc<dyn Fn(engine::Kind) -> Arc<dyn engine::Engine> + Send + Sync>;
@@ -150,6 +158,22 @@ impl Supervisor {
     /// # Errors
     /// Always `unknown_operation`.
     pub fn container_observe(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
+        Err(Self::unsupported(request))
+    }
+
+    /// `container.objects`: not served on this platform.
+    ///
+    /// # Errors
+    /// Always `unknown_operation`.
+    pub fn container_objects(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
+        Err(Self::unsupported(request))
+    }
+
+    /// `container.remove`: not served on this platform.
+    ///
+    /// # Errors
+    /// Always `unknown_operation`.
+    pub fn container_remove(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
         Err(Self::unsupported(request))
     }
 

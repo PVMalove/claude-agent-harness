@@ -516,3 +516,182 @@ fn container_observe_reports_the_engine_facts_and_denies_a_protected_root() {
     assert_eq!(refused.code, ErrorCode::PolicyDenied);
     assert!(repo.engine.calls().is_empty());
 }
+
+const FOREIGN_ID: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+const PROXY_ID: &str = "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567";
+
+/// The engine lists a worker of this repository, a running sidecar of it and a worker of another
+/// repository; its label filter narrows nothing.
+fn two_repositories(repo: &Repo, worker_status: &str) {
+    let labels = |repository: &Path| {
+        json!({"harness.dispatch": DISPATCH, "harness.repository": repository,
+               "harness.execution": "exec-old"})
+    };
+    let object = |id: &str, name: String, status: &str, repository: &Path| {
+        json!({"Id": id, "Name": format!("/{name}"), "State": {"Status": status},
+               "Config": {"Labels": labels(repository)}})
+    };
+    let elsewhere = Path::new("/elsewhere/.git");
+    let listed = json!([
+        object(
+            WORKER_ID,
+            format!("harness-{DISPATCH}"),
+            worker_status,
+            &repo.git_common
+        ),
+        object(
+            PROXY_ID,
+            format!("harness-{DISPATCH}-proxy"),
+            "running",
+            &repo.git_common
+        ),
+        object(
+            FOREIGN_ID,
+            format!("harness-{DISPATCH}"),
+            "exited",
+            elsewhere
+        ),
+    ]);
+    repo.engine
+        .answer(
+            &["podman", "ps"],
+            Answer::success(format!("{WORKER_ID}\n{PROXY_ID}\n{FOREIGN_ID}\n")),
+        )
+        .answer(&["podman", "network", "ls"], Answer::success(""))
+        .answer(
+            &["podman", "container", "inspect"],
+            Answer::success(listed.to_string()),
+        )
+        .answer(
+            &["podman", "inspect", "--format", "{{.Id}}", FOREIGN_ID],
+            Answer::success(FOREIGN_ID),
+        )
+        .answer(
+            &["podman", "inspect", "--format", "{{.Id}}"],
+            Answer::failure("Error: no such object"),
+        );
+}
+
+#[test]
+fn container_objects_lists_only_this_repository_with_the_engines_asked_and_recorded() {
+    let repo = Repo::new("objects", 3600);
+    let supervisor = repo.supervisor(Vec::new());
+    two_repositories(&repo, "exited");
+
+    let listed = supervisor
+        .container_objects(&repo.request(
+            "container.objects",
+            "objects-1".to_owned(),
+            json!({"engines": ["podman"]}),
+        ))
+        .unwrap();
+
+    let objects = listed["objects"].as_array().unwrap();
+    let ids: Vec<&str> = objects.iter().map(|o| o["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, [WORKER_ID, PROXY_ID]);
+    assert_eq!(objects[0]["engine"], "podman");
+    assert_eq!(objects[0]["role"], "worker");
+    assert_eq!(objects[0]["execution"], "exec-old");
+    assert_eq!(objects[0]["execution_state"], Value::Null);
+    repo.only_podman();
+}
+
+#[test]
+fn container_remove_refuses_a_foreign_object_and_a_running_worker_and_never_a_volume() {
+    let repo = Repo::new("remove", 3600);
+    let supervisor = repo.supervisor(Vec::new());
+    two_repositories(&repo, "running");
+    let remove = |ids: &[&str]| {
+        let objects: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({"engine": "podman", "id": id}))
+            .collect();
+        supervisor
+            .container_remove(&repo.request(
+                "container.remove",
+                format!("remove-{}", ids.len()),
+                json!({"objects": objects}),
+            ))
+            .unwrap()
+    };
+
+    let refused = remove(&[FOREIGN_ID, WORKER_ID, PROXY_ID]);
+
+    let failed: Vec<&str> = refused["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["object"].as_str().unwrap())
+        .collect();
+    assert_eq!(failed.len(), 3, "{refused}");
+    assert!(failed[0].contains(FOREIGN_ID), "{refused}");
+    assert!(
+        !repo.engine.calls().iter().any(|argv| argv[1] == "rm"),
+        "nothing is removed"
+    );
+
+    repo.engine.clear();
+    two_repositories(&repo, "exited");
+    let missing = "0".repeat(64);
+    let done = remove(&[PROXY_ID, WORKER_ID, &missing]);
+
+    assert_eq!(
+        done["removed"],
+        json!([
+            format!("container harness-{DISPATCH}"),
+            format!("container harness-{DISPATCH}-proxy")
+        ])
+    );
+    assert_eq!(done["missing"], json!([missing]));
+    let removals: Vec<Vec<String>> = repo
+        .engine
+        .calls()
+        .into_iter()
+        .filter(|argv| argv[1] == "rm")
+        .collect();
+    assert_eq!(
+        removals,
+        [
+            vec!["podman".to_owned(), "rm".to_owned(), WORKER_ID.to_owned()],
+            vec![
+                "podman".to_owned(),
+                "rm".to_owned(),
+                "--force".to_owned(),
+                PROXY_ID.to_owned()
+            ],
+        ]
+    );
+    repo.only_podman();
+}
+
+#[test]
+fn container_remove_refuses_an_object_of_a_live_execution() {
+    let repo = Repo::new("live", 3600);
+    let supervisor = repo.supervisor(Vec::new());
+    repo.launch(&supervisor).unwrap();
+    let id = repo.execution().unwrap().id;
+    repo.engine
+        .answer(&["podman", "ps"], Answer::success(WORKER_ID))
+        .answer(&["podman", "network", "ls"], Answer::success(""))
+        .answer(
+            &["podman", "container", "inspect", WORKER_ID],
+            Answer::success(
+                json!([{"Id": WORKER_ID, "Name": format!("/harness-{DISPATCH}"), "State": {"Status": "exited"},
+                        "Config": {"Labels": {"harness.dispatch": DISPATCH, "harness.repository": repo.git_common,
+                                              "harness.execution": id}}}])
+                .to_string(),
+            ),
+        );
+    repo.engine.clear();
+
+    let refused = supervisor
+        .container_remove(&repo.request(
+            "container.remove",
+            "remove-live".to_owned(),
+            json!({"objects": [{"engine": "podman", "id": WORKER_ID}]}),
+        ))
+        .unwrap();
+
+    assert_eq!(refused["failed"].as_array().unwrap().len(), 1, "{refused}");
+    assert!(!repo.engine.calls().iter().any(|argv| argv[1] == "rm"));
+}

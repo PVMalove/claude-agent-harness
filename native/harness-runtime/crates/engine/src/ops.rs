@@ -594,6 +594,21 @@ pub fn objects(
     Some(found)
 }
 
+/// Whether the engine knows an object of any kind by this id; `None` when it does not answer.
+pub fn exists(engine: &dyn Engine, id: &str) -> Option<bool> {
+    let (ok, detail, answered) = ask(
+        engine,
+        &strings(&[engine.kind().as_str(), "inspect", "--format", "{{.Id}}", id]),
+    );
+    if ok {
+        Some(true)
+    } else if gone(&detail, answered) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// What a removal did: objects removed, already absent, and refused with a reason.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Removal {

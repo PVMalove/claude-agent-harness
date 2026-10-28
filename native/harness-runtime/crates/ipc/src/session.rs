@@ -149,6 +149,12 @@ impl Session {
             "container.observe" if supervised(shared) => {
                 answer(&request, shared.supervisor.container_observe(&request))
             }
+            "container.objects" if supervised(shared) => {
+                answer(&request, shared.supervisor.container_objects(&request))
+            }
+            "container.remove" if supervised(shared) => {
+                answer(&request, shared.supervisor.container_remove(&request))
+            }
             other => failure(
                 &request.operation_id,
                 ErrorBody::new(
@@ -849,7 +855,7 @@ mod tests {
         ];
         // The supervisor serves its operations where the platform supervises processes.
         if supervisor::Supervisor::supported() {
-            features.extend(["execution.launch", "execution.observe", "container.observe"]);
+            features.extend(supervisor::FEATURES);
         }
         assert_eq!(result["features"], json!(features));
         assert_eq!(reply.response.status, Status::Ok);
