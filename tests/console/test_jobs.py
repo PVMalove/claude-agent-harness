@@ -60,6 +60,9 @@ class CancellableExecutor:
     def __init__(self) -> None:
         self.started = asyncio.Event()
         self.cancelled = asyncio.Event()
+        # Cleared by a test that needs the stop still in progress.
+        self.stop = asyncio.Event()
+        self.stop.set()
 
     async def __call__(
         self,
@@ -74,6 +77,7 @@ class CancellableExecutor:
         while not cancel_event.is_set():
             await asyncio.sleep(0.01)
         self.cancelled.set()
+        await self.stop.wait()
         raise CommandCancelled
 
 
@@ -401,6 +405,11 @@ def test_running_job_limit_refuses_a_start_but_not_reads(project: Path) -> None:
                 ]
                 refused = await start(client, command_id="diff")
                 assert refused["error"]["code"] == "busy"
+                # No `job_id`: the limit refused it, not a running mutation.
+                assert "job_id" not in refused["error"]
+                mutation = await start(client, command_id="registry")
+                assert mutation["error"]["code"] == "busy"
+                assert "job_id" not in mutation["error"]
                 await client.send(request("job.get", job_id=ids[0]))
                 assert (await receive(client))["ok"] is True
                 assert len(fake.calls) == job_module._RUNNING_LIMIT
@@ -446,7 +455,7 @@ def test_mutating_jobs_are_exclusive_but_reads_run_beside_one(
     asyncio.run(scenario())
 
 
-def test_job_cancel_requires_confirmation_stops_task_and_releases_mutation(
+def test_job_cancel_requires_confirmation_then_frees_the_mutation_slot(
     project: Path,
 ) -> None:
     async def scenario() -> None:
@@ -460,19 +469,12 @@ def test_job_cancel_requires_confirmation_stops_task_and_releases_mutation(
                 job_id = started["job"]["id"]
                 await asyncio.wait_for(fake.started.wait(), 3)
 
-                missing = await start(
-                    client,
-                    command_id="diff",
-                )
-                assert missing["ok"] is True, missing
                 await client.send(request("job.cancel", job_id=job_id))
                 refused = await receive(client)
                 assert refused["error"]["code"] == "confirmation_required"
                 assert not fake.cancelled.is_set()
 
-                await client.send(
-                    request("job.cancel", job_id=job_id, confirmed=True)
-                )
+                await client.send(request("job.cancel", job_id=job_id, confirmed=True))
                 cancelled = await receive(client)
                 assert cancelled["ok"] is True, cancelled
                 assert cancelled["job"]["id"] == job_id
@@ -485,17 +487,169 @@ def test_job_cancel_requires_confirmation_stops_task_and_releases_mutation(
                 assert replacement["ok"] is True, replacement
                 await client.send(
                     request(
-                        "job.cancel",
-                        job_id=replacement["job"]["id"],
-                        confirmed=True,
+                        "job.cancel", job_id=replacement["job"]["id"], confirmed=True
                     )
                 )
                 assert (await receive(client))["job"]["phase"] == "cancelled"
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancelling_a_read_leaves_the_mutation_running(project: Path) -> None:
+    async def scenario() -> None:
+        fake = CancellableExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                mutation = (await start(client, command_id="registry"))["job"]["id"]
+                read = (await start(client, command_id="diff"))["job"]["id"]
+
+                await client.send(request("job.cancel", job_id=read))
+                refused = await receive(client)
+                # Only a mutation warns that its changes stay: a read made none.
+                assert (
+                    refused["error"]["message"]
+                    == job_module._ERRORS["confirmation_required"]
+                )
+                await client.send(request("job.cancel", job_id=read, confirmed=True))
+                assert (await receive(client))["job"]["phase"] == "cancelled"
+
+                await client.send(request("job.get", job_id=mutation))
+                assert (await receive(client))["job"]["phase"] == "running"
+                busy = await start(client, command_id="health-fix")
+                assert busy["error"]["job_id"] == mutation
                 await client.send(
-                    request("job.cancel", job_id=missing["job"]["id"], confirmed=True)
+                    request("job.cancel", job_id=mutation, confirmed=True)
                 )
                 assert (await receive(client))["job"]["phase"] == "cancelled"
         finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_job_cancel_refuses_unknown_and_finished_jobs(project: Path) -> None:
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send(
+                    request("job.cancel", job_id="f" * 32, confirmed=True)
+                )
+                assert (await receive(client))["error"]["code"] == "unknown_job"
+
+                job_id = (await start(client, command_id="registry"))["job"]["id"]
+                fake.finish.set()
+                assert (await read_until_done(client, job_id))["phase"] == "completed"
+                await client.send(request("job.cancel", job_id=job_id, confirmed=True))
+                assert (await receive(client))["error"]["code"] == "not_running"
+        finally:
+            fake.finish.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_two_cancels_of_one_job_both_answer_with_the_cancelled_job(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        fake = CancellableExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                job_id = (await start(client, command_id="registry"))["job"]["id"]
+                await asyncio.wait_for(fake.started.wait(), 3)
+                for request_id in ("first", "second"):
+                    await client.send(
+                        request("job.cancel", request_id, job_id=job_id, confirmed=True)
+                    )
+                replies = {}
+                for _ in range(2):
+                    reply = await receive(client)
+                    replies[reply["id"]] = reply
+                assert set(replies) == {"first", "second"}
+                assert all(
+                    reply["ok"] is True and reply["job"]["phase"] == "cancelled"
+                    for reply in replies.values()
+                )
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancel_completes_after_the_requesting_client_disconnects(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        fake = CancellableExecutor()
+        fake.stop.clear()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                job_id = (await start(client, command_id="registry"))["job"]["id"]
+                await asyncio.wait_for(fake.started.wait(), 3)
+                await client.send(request("job.cancel", job_id=job_id, confirmed=True))
+                # The requesting client leaves while `job.cancel` still waits for the stop.
+                await asyncio.wait_for(fake.cancelled.wait(), 3)
+            fake.stop.set()
+            async with _connect(server, project) as client:
+                assert (await read_until_done(client, job_id))["phase"] == "cancelled"
+        finally:
+            fake.stop.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_mutation_slot_frees_when_the_job_completes(project: Path) -> None:
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                job_id = (await start(client, command_id="registry"))["job"]["id"]
+                fake.finish.set()
+                assert (await read_until_done(client, job_id))["phase"] == "completed"
+                assert (await start(client, command_id="health-fix"))["ok"] is True
+        finally:
+            fake.finish.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_ledger_reads_run_beside_a_mutation_while_release_lock_is_busy(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        (project / ".harness/orchestration").mkdir(parents=True)
+        (project / ".harness/orchestration/coordinator.py").write_text("")
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                mutation = (await start(client, command_id="registry"))["job"]["id"]
+                for read in ("ledger-lock-status", "dispatch-status"):
+                    assert (await start(client, command_id=read))["ok"] is True, read
+
+                release = await start(
+                    client, command_id="ledger-release-lock", confirmed=True
+                )
+                assert release["error"]["code"] == "busy"
+                assert release["error"]["job_id"] == mutation
+        finally:
+            fake.finish.set()
             await server.close()
 
     asyncio.run(scenario())
@@ -565,14 +719,14 @@ def test_public_job_cancel_terminates_the_full_process_tree(
                 started = await start(client, command_id="registry")
                 assert started["ok"] is True, started
                 job_id = started["job"]["id"]
-                parent_pid, child_pid = await asyncio.to_thread(_read_pid_pair, pid_file)
+                parent_pid, child_pid = await asyncio.to_thread(
+                    _read_pid_pair, pid_file
+                )
                 assert parent_pid is not None and child_pid is not None
                 assert _pid_exists(parent_pid)
                 assert _pid_exists(child_pid)
 
-                await client.send(
-                    request("job.cancel", job_id=job_id, confirmed=True)
-                )
+                await client.send(request("job.cancel", job_id=job_id, confirmed=True))
                 cancelled = await receive(client)
                 assert cancelled["ok"] is True, cancelled
                 assert cancelled["job"]["phase"] == "cancelled"
