@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +20,7 @@ from harness.console.snapshots import (
     SCHEMA_VERSION,
     HomeContext,
     HomeSnapshot,
+    SnapshotService,
     build_home_snapshot,
 )
 from harness.health.model import CheckResult
@@ -225,3 +229,144 @@ def test_a_clipped_message_is_a_prefix_of_the_original(raw: str) -> None:
     )
     message = build_home_snapshot(data, HomeContext()).problems[0].message
     assert raw.startswith(message) and 0 < len(message) <= 300
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class CountingCollect:
+    """A collect seam that counts calls and can be slow or fail on chosen calls."""
+
+    def __init__(self, *, delay: float = 0.0, fail_on: tuple[int, ...] = ()) -> None:
+        self.calls = 0
+        self._delay = delay
+        self._fail_on = fail_on
+        self._lock = threading.Lock()
+
+    def __call__(self, repo: Path) -> HomeSnapshot:
+        with self._lock:
+            self.calls += 1
+            number = self.calls
+        time.sleep(self._delay)
+        if number in self._fail_on:
+            raise RuntimeError("collect failed")
+        return build_home_snapshot(DATA, HomeContext())
+
+
+def _service(
+    collect: CountingCollect, clock: FakeClock, ttl: float = 15.0
+) -> SnapshotService:
+    return SnapshotService(Path("."), ttl=ttl, clock=clock, collect=collect)
+
+
+def test_home_is_collected_once_within_the_ttl_and_again_at_its_boundary() -> None:
+    async def scenario() -> None:
+        clock, collect = FakeClock(), CountingCollect()
+        service = _service(collect, clock)
+        first = await service.home()
+        assert (first.cached, first.age_seconds, collect.calls) == (False, 0.0, 1)
+        clock.advance(14.5)
+        second = await service.home()
+        assert (second.cached, second.age_seconds, collect.calls) == (True, 14.5, 1)
+        assert second.snapshot is first.snapshot
+        clock.advance(0.5)
+        third = await service.home()
+        assert (third.cached, third.age_seconds, collect.calls) == (False, 0.0, 2)
+
+    asyncio.run(scenario())
+
+
+def test_default_ttl_is_the_documented_constant() -> None:
+    async def scenario() -> None:
+        clock, collect = FakeClock(), CountingCollect()
+        service = SnapshotService(Path("."), clock=clock, collect=collect)
+        await service.home()
+        clock.advance(HOME_TTL_SECONDS - 0.001)
+        assert (await service.home()).cached
+        clock.advance(0.001)
+        assert not (await service.home()).cached
+
+    asyncio.run(scenario())
+
+
+def test_force_rebuilds_inside_the_ttl_and_refreshes_the_cache() -> None:
+    async def scenario() -> None:
+        clock, collect = FakeClock(), CountingCollect()
+        service = _service(collect, clock)
+        await service.home()
+        clock.advance(10)
+        forced = await service.home(force=True)
+        assert (forced.cached, forced.age_seconds, collect.calls) == (False, 0.0, 2)
+        clock.advance(10)
+        # 20 s after the first build, but only 10 s after the forced one.
+        later = await service.home()
+        assert (later.cached, later.age_seconds, collect.calls) == (True, 10.0, 2)
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_requests_share_one_collect() -> None:
+    async def scenario() -> None:
+        collect = CountingCollect(delay=0.2)
+        service = _service(collect, FakeClock())
+        served = await asyncio.gather(*(service.home() for _ in range(5)))
+        assert collect.calls == 1
+        assert sorted(item.cached for item in served) == [False, True, True, True, True]
+        assert len({id(item.snapshot) for item in served}) == 1
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_forced_requests_each_rebuild_in_turn() -> None:
+    async def scenario() -> None:
+        collect = CountingCollect(delay=0.05)
+        service = _service(collect, FakeClock())
+        served = await asyncio.gather(
+            service.home(force=True), service.home(force=True)
+        )
+        assert collect.calls == 2 and not any(item.cached for item in served)
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_collect_is_not_cached() -> None:
+    async def scenario() -> None:
+        collect = CountingCollect(fail_on=(1,))
+        service = _service(collect, FakeClock())
+        with pytest.raises(RuntimeError):
+            await service.home()
+        served = await service.home()
+        assert (served.cached, collect.calls) == (False, 2)
+        assert (await service.home()).cached and collect.calls == 2
+
+    asyncio.run(scenario())
+
+
+def test_a_slow_collect_does_not_block_the_event_loop() -> None:
+    async def scenario() -> None:
+        collect = CountingCollect(delay=0.4)
+        service = _service(collect, FakeClock())
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
+
+        task = asyncio.create_task(ticker())
+        try:
+            await service.home()
+        finally:
+            task.cancel()
+        assert ticks >= 10
+
+    asyncio.run(scenario())

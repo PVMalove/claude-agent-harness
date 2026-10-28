@@ -6,7 +6,9 @@ values; the Home screen of the TUI shows the same facts. Nothing here imports `r
 
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -187,3 +189,52 @@ def collect_home(
 ) -> HomeSnapshot:
     """Run the offline checks and read the context cards; blocks until both are done."""
     return build_home_snapshot(dashboard(repo), context(repo))
+
+
+@dataclass(frozen=True)
+class Served:
+    """A snapshot as served: whether it came from the cache and how old it is."""
+
+    snapshot: HomeSnapshot
+    cached: bool
+    age_seconds: float
+
+
+class SnapshotService:
+    """Serves the Home snapshot from a short cache so that the expensive checks (health, drift)
+    do not rerun on every request. One rebuild runs at a time and never on the event loop."""
+
+    def __init__(
+        self,
+        repo: Path,
+        *,
+        ttl: float = HOME_TTL_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+        collect: Callable[[Path], HomeSnapshot] = collect_home,
+    ) -> None:
+        self._repo = repo
+        self._ttl = ttl
+        self._clock = clock
+        self._collect = collect
+        self._lock = asyncio.Lock()
+        self._snapshot: HomeSnapshot | None = None
+        self._stamp = 0.0
+
+    def _fresh(self) -> Served | None:
+        if self._snapshot is None:
+            return None
+        age = self._clock() - self._stamp
+        return Served(self._snapshot, True, age) if age < self._ttl else None
+
+    async def home(self, *, force: bool = False) -> Served:
+        """The cached snapshot while it is younger than the TTL, else a rebuilt one. `force`
+        always rebuilds. A failed collect raises and leaves the cache as it was."""
+        if not force and (served := self._fresh()) is not None:
+            return served
+        async with self._lock:
+            # A rebuild that finished while this request waited serves it too.
+            if not force and (served := self._fresh()) is not None:
+                return served
+            snapshot = await asyncio.to_thread(self._collect, self._repo)
+            self._snapshot, self._stamp = snapshot, self._clock()
+            return Served(snapshot, False, 0.0)
