@@ -252,7 +252,7 @@ class SnapshotService:
         self._ttl = ttl
         self._clock = clock
         self._collect = collect
-        self._lock = asyncio.Lock()
+        self._building: asyncio.Task[HomeSnapshot] | None = None
         self._snapshot: HomeSnapshot | None = None
         self._stamp = 0.0
 
@@ -262,18 +262,32 @@ class SnapshotService:
         age = self._clock() - self._stamp
         return Served(self._snapshot, True, age) if age < self._ttl else None
 
+    async def _rebuild(self) -> HomeSnapshot:
+        """The collect, as a task of its own: it records its result and ends the rebuild even
+        when every request that waited for it was cancelled."""
+        try:
+            snapshot = await asyncio.to_thread(self._collect, self._repo)
+            self._snapshot, self._stamp = snapshot, self._clock()
+            return snapshot
+        finally:
+            self._building = None
+
     async def home(self, *, force: bool = False) -> Served:
         """The cached snapshot while it is younger than the TTL, else a rebuilt one. `force`
-        always rebuilds. A failed collect raises and leaves the cache as it was."""
-        if not force and (served := self._fresh()) is not None:
-            return served
-        async with self._lock:
+        always rebuilds. A failed collect raises and leaves the cache as it was. A request that
+        is cancelled while it waits does not cancel the collect: the next one waits for it."""
+        while True:
             # A rebuild that finished while this request waited serves it too.
             if not force and (served := self._fresh()) is not None:
                 return served
-            snapshot = await asyncio.to_thread(self._collect, self._repo)
-            self._snapshot, self._stamp = snapshot, self._clock()
-            return Served(snapshot, False, 0.0)
+            if self._building is None:
+                break
+            await asyncio.wait({self._building})
+        task = self._building = asyncio.create_task(self._rebuild())
+        # Nobody may be left to read the outcome of a collect whose requester went away.
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        await asyncio.wait({task})
+        return Served(task.result(), False, 0.0)
 
 
 _ERRORS = {

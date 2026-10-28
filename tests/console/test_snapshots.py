@@ -406,6 +406,41 @@ def test_a_failed_collect_is_not_cached() -> None:
     asyncio.run(scenario())
 
 
+def test_a_cancelled_requester_neither_loses_nor_duplicates_the_collect() -> None:
+    """A client that disconnects cancels its request; the collect it started keeps running and
+    serves the next request instead of being repeated beside it."""
+    started, gate = threading.Event(), threading.Event()
+    calls = 0
+
+    def collect(repo: Path) -> HomeSnapshot:
+        nonlocal calls
+        calls += 1
+        started.set()
+        assert gate.wait(10)
+        return build_home_snapshot(DATA, HomeContext())
+
+    async def scenario() -> None:
+        service = SnapshotService(Path("."), clock=FakeClock(), collect=collect)
+        owner = asyncio.create_task(service.home())
+        assert await asyncio.to_thread(started.wait, 10)
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+        second = asyncio.create_task(service.home())
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        gate.set()
+        served = await asyncio.wait_for(second, 10)
+        assert calls == 1 and served.snapshot.health.ok == DATA.ok
+        # The result of that one collect is cached for the TTL.
+        assert (await service.home()).cached and calls == 1
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        gate.set()
+
+
 def test_a_slow_collect_does_not_block_the_event_loop() -> None:
     async def scenario() -> None:
         collect = CountingCollect(delay=0.4)
