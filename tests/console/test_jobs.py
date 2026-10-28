@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -17,6 +18,7 @@ import pytest
 
 from harness.console import jobs as job_module
 from harness.console.jobs import JobService
+from harness.console.process_tree import CommandCancelled
 from harness.console.server import MAX_SUBSCRIPTIONS, MESSAGE_LIMIT, ConsoleServer
 from tests.console.test_server import _connect
 
@@ -39,7 +41,10 @@ class FakeExecutor:
         *,
         cwd: Path,
         on_output: Callable[[str, str], None],
+        cancel_event: threading.Event,
     ) -> int:
+        # This command ignores cancellation, like one that ends before the stop reaches it.
+        del cancel_event
         self.calls.append((list(argv), cwd))
         self.emit = on_output
         on_output("stdout", "first\n")
@@ -50,7 +55,7 @@ class FakeExecutor:
 
 
 class CancellableExecutor:
-    """An async executor that records task cancellation without owning a subprocess."""
+    """An async executor whose command runs until the job's cancel event stops it."""
 
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -62,15 +67,14 @@ class CancellableExecutor:
         *,
         cwd: Path,
         on_output: Callable[[str, str], None],
+        cancel_event: threading.Event,
     ) -> int:
         del argv, cwd, on_output
         self.started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            self.cancelled.set()
-            raise
-        raise AssertionError("cancellable executor finished unexpectedly")
+        while not cancel_event.is_set():
+            await asyncio.sleep(0.01)
+        self.cancelled.set()
+        raise CommandCancelled
 
 
 def request(kind: str, request_id: object = "request", **fields: object) -> str:
@@ -497,6 +501,39 @@ def test_job_cancel_requires_confirmation_stops_task_and_releases_mutation(
     asyncio.run(scenario())
 
 
+def test_cancel_of_a_command_that_outlives_the_stop_keeps_its_own_result(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A command that ends on its own is reported with its exit code, not as cancelled."""
+    monkeypatch.setattr(job_module, "_CANCEL_WAIT_SECONDS", 0.05)
+
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                job_id = (await start(client, command_id="registry"))["job"]["id"]
+                await asyncio.wait_for(fake.started.wait(), 3)
+                await client.send(request("job.cancel", job_id=job_id))
+                warned = await receive(client)
+                assert warned["error"]["code"] == "confirmation_required"
+                assert "not rolled back" in warned["error"]["message"]
+
+                await client.send(request("job.cancel", job_id=job_id, confirmed=True))
+                answered = await receive(client)
+                assert answered["ok"] is True and answered["job"]["phase"] == "running"
+
+                fake.finish.set()
+                job = await read_until_done(client, job_id)
+                assert job["phase"] == "completed" and job["returncode"] == 7
+        finally:
+            fake.finish.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
 def test_public_job_cancel_terminates_the_full_process_tree(
     project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -578,7 +615,11 @@ def test_waiting_subscriptions_leave_request_slots_free(project: Path) -> None:
 
 def test_failed_execution_reports_only_the_failure_type(project: Path) -> None:
     async def failing(
-        argv: Sequence[str], *, cwd: Path, on_output: Callable[[str, str], None]
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        on_output: Callable[[str, str], None],
+        cancel_event: threading.Event,
     ) -> int:
         on_output("stderr", "boom\n")
         raise RuntimeError("private detail")
@@ -779,9 +820,12 @@ def test_default_job_executor_uses_the_existing_capturing_runner(
         *,
         cwd: Path | None = None,
         on_output: Callable[[str, str], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> subprocess.CompletedProcess[str]:
         assert cwd == project
         assert on_output is not None
+        # The job's own event, so `job.cancel` reaches the runner that owns the process.
+        assert isinstance(cancel_event, threading.Event)
         calls.append(list(argv))
         on_output("stdout", "from runner\n")
         return subprocess.CompletedProcess(list(argv), 0, "from runner\n", "")

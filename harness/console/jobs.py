@@ -12,7 +12,6 @@ the newest finished ones are kept.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import re
 import threading
 import uuid
@@ -23,6 +22,7 @@ from typing import Literal, NamedTuple, Protocol, cast
 
 from .catalog import HARNESS_COMMANDS, MEMORY_COMMANDS, CatalogEntry, process_argv
 from .coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand
+from .process_tree import CommandCancelled
 from .runner import capturing_runner
 from .snapshots import (
     MAX_ID_CHARS,
@@ -42,6 +42,12 @@ _OUTPUT_LIMIT_CHARS = 4 * 1024 * 1024
 _KEPT_FINISHED = 32
 # Each running job holds an event-loop worker thread; snapshot rebuilds need one as well.
 _RUNNING_LIMIT = 4
+# A stopped command ends within the runner's grace period. A descendant that left the command's
+# process group can keep the output open longer; `job.cancel` then answers with the job running.
+_CANCEL_WAIT_SECONDS = 5.0
+_CANCEL_KEEPS_CHANGES = (
+    "Cancelling stops the command; the changes it has already made are not rolled back."
+)
 # The TUI deletes only the cleanup set its preview approved (`--plan-digest`); a job demands the same.
 _PLAN_COMMANDS = frozenset({"cleanup-apply", "cleanup-hard-apply"})
 _PLAN_DIGEST = re.compile(r"[0-9a-f]{64}")
@@ -77,7 +83,11 @@ Phase = Literal["running", "completed", "failed", "cancelled"]
 
 
 class JobExecutor(Protocol):
-    """Emit on the event loop, and finish all output callbacks before returning an exit code."""
+    """Emit on the event loop, and finish all output callbacks before returning an exit code.
+
+    A set ``cancel_event`` asks to stop the command and its descendants. The executor raises
+    ``CommandCancelled`` only when it stopped a command that was still running; a command that
+    already ended returns its own exit code."""
 
     def __call__(
         self,
@@ -85,6 +95,7 @@ class JobExecutor(Protocol):
         *,
         cwd: Path,
         on_output: Callable[[str, str], None],
+        cancel_event: threading.Event,
     ) -> Awaitable[int]: ...
 
 
@@ -93,38 +104,17 @@ async def _default_executor(
     *,
     cwd: Path,
     on_output: Callable[[str, str], None],
-    cancel_event: threading.Event | None = None,
+    cancel_event: threading.Event,
 ) -> int:
     loop = asyncio.get_running_loop()
 
     def emit(channel: str, text: str) -> None:
         loop.call_soon_threadsafe(on_output, channel, text)
 
-    # Keep injected test runners and embedders compatible with the pre-cancellation signature.
-    supports_cancellation = _runner_supports_cancellation(cancel_event)
-    if supports_cancellation:
-        assert cancel_event is not None
-        result = await asyncio.to_thread(
-            capturing_runner,
-            argv,
-            cwd=cwd,
-            on_output=emit,
-            cancel_event=cancel_event,
-        )
-    else:
-        result = await asyncio.to_thread(capturing_runner, argv, cwd=cwd, on_output=emit)
-    return result.returncode
-
-
-def _runner_supports_cancellation(cancel_event: threading.Event | None) -> bool:
-    """Allow tests and embedders that inject the pre-cancellation runner signature."""
-    if cancel_event is None:
-        return False
-    parameters = inspect.signature(capturing_runner).parameters
-    return "cancel_event" in parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
+    result = await asyncio.to_thread(
+        capturing_runner, argv, cwd=cwd, on_output=emit, cancel_event=cancel_event
     )
+    return result.returncode
 
 
 class JobRejected(Exception):
@@ -153,7 +143,6 @@ class _Job:
     phase: Phase = "running"
     returncode: int | None = None
     error: str = ""
-    cancel_requested: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
     task: asyncio.Task[None] | None = None
     # Replaced on every change, so a reader waits on the event it saw before it read.
@@ -310,35 +299,17 @@ class JobService:
 
     async def _execute(self, job: _Job, argv: list[str]) -> None:
         try:
-            if self._executor is _default_executor:
-                job.returncode = await self._executor(
-                    argv,
-                    cwd=self.repo,
-                    on_output=job.append,
-                    cancel_event=job.cancel_event,
-                )
-            else:
-                job.returncode = await self._executor(
-                    argv, cwd=self.repo, on_output=job.append
-                )
-            if job.cancel_requested:
-                job.returncode = None
-                job.phase, job.error = "cancelled", "cancelled"
-            else:
-                job.phase = "completed"
-        except asyncio.CancelledError:
-            job.returncode = None
-            job.phase, job.error = (
-                ("cancelled", "cancelled")
-                if job.cancel_requested
-                else ("failed", "CancelledError")
+            job.returncode = await self._executor(
+                argv, cwd=self.repo, on_output=job.append, cancel_event=job.cancel_event
             )
+            job.phase = "completed"
+        except CommandCancelled:
+            job.phase = "cancelled"
+        except asyncio.CancelledError:
+            job.phase, job.error = "failed", "CancelledError"
+            raise
         except Exception as exc:
-            if job.cancel_requested:
-                job.returncode = None
-                job.phase, job.error = "cancelled", "cancelled"
-            else:
-                job.phase, job.error = "failed", type(exc).__name__
+            job.phase, job.error = "failed", type(exc).__name__
         finally:
             if self._active_mutation is job:
                 self._active_mutation = None
@@ -350,28 +321,22 @@ class JobService:
                 del self._jobs[key]
 
     async def _cancel(self, body: Mapping[str, object]) -> _Job:
-        """Confirm and stop one running job, waiting until its process/task has ended."""
+        """Stop a running job after an explicit confirmation and reply with its state once the
+        command ended, or after ``_CANCEL_WAIT_SECONDS`` with the job still running."""
         job = self._requested_job(body)
         confirmed = body.get("confirmed", False)
         if not isinstance(confirmed, bool):
             raise JobRejected("bad_request")
-        if not confirmed:
-            raise JobRejected("confirmation_required")
         if job.phase != "running" or job.task is None:
             raise JobRejected("not_running")
-        job.cancel_requested = True
+        if not confirmed:
+            raise JobRejected(
+                "confirmation_required",
+                _CANCEL_KEEPS_CHANGES if job is self._active_mutation else None,
+            )
         job.cancel_event.set()
-        if self._executor is _default_executor and _runner_supports_cancellation(
-            job.cancel_event
-        ):
-            # The default executor observes the event and terminates its child process. A shield
-            # keeps a client disconnect from cancelling the server-owned execution task.
-            await asyncio.shield(job.task)
-        else:
-            # Test and embedders may provide a plain async executor. Task cancellation is the
-            # only cancellation contract available to such an executor.
-            job.task.cancel()
-            await asyncio.gather(job.task, return_exceptions=True)
+        # `asyncio.wait` never cancels the task: a client disconnect leaves the execution running.
+        await asyncio.wait({job.task}, timeout=_CANCEL_WAIT_SECONDS)
         return job
 
     def _requested_job(self, body: Mapping[str, object]) -> _Job:

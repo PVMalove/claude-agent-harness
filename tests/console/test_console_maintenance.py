@@ -15,7 +15,7 @@ import pytest
 
 from harness import cleanup
 from harness.console.maintenance import load_maintenance
-from harness.console import runner as runner_module
+from harness.console import process_tree
 from harness.console.runner import HarnessRuns, capturing_runner
 from harness.orchestration.runtime_client import (
     RuntimeClient,
@@ -222,10 +222,10 @@ def test_streaming_decodes_split_utf8_and_preserves_text_newlines(
 def test_capturing_runner_terminates_the_child_when_cancelled(tmp_path: Path) -> None:
     started = Event()
     cancelled = Event()
-    results: list[subprocess.CompletedProcess[str]] = []
+    raised: list[BaseException] = []
 
     def capture() -> None:
-        results.append(
+        try:
             capturing_runner(
                 [
                     sys.executable,
@@ -239,7 +239,8 @@ def test_capturing_runner_terminates_the_child_when_cancelled(tmp_path: Path) ->
                 else None,
                 cancel_event=cancelled,
             )
-        )
+        except BaseException as exc:
+            raised.append(exc)
 
     worker = Thread(target=capture)
     worker.start()
@@ -247,7 +248,17 @@ def test_capturing_runner_terminates_the_child_when_cancelled(tmp_path: Path) ->
     cancelled.set()
     worker.join(3)
     assert not worker.is_alive()
-    assert len(results) == 1 and results[0].returncode != 0
+    assert len(raised) == 1 and isinstance(raised[0], process_tree.CommandCancelled)
+
+
+def test_cancel_after_the_command_ended_keeps_its_exit_code() -> None:
+    """A late cancellation must not report a finished command, and its changes, as cancelled."""
+    with subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"]) as process:
+        process.wait()
+        cancelled = Event()
+        cancelled.set()
+
+        assert process_tree.wait_cancellable(process, cancelled, lambda: True) == 3
 
 
 def test_windows_tree_stop_uses_job_object_after_root_exits(
@@ -276,26 +287,24 @@ def test_windows_tree_stop_uses_job_object_after_root_exits(
         taskkill_calls.append((args, kwargs))
         return subprocess.CompletedProcess([], 1)
 
-    monkeypatch.setattr(runner_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_tree, "is_windows", lambda: True)
     monkeypatch.setattr(subprocess, "run", taskkill)
     process = FakeProcess()
     job = FakeJob()
 
-    stopped = runner_module._stop_process_tree(
+    process_tree.ProcessTree(
         cast("subprocess.Popen[bytes]", process),
-        force=True,
-        windows_job=cast(runner_module._WindowsJob, job),
-    )
+        cast(process_tree.WindowsJobObject, job),
+    ).stop(force=False)
 
-    assert stopped is True
     assert job.terminated and not process.killed
     assert taskkill_calls == []
 
 
-def test_windows_tree_stop_reports_taskkill_failure(
+def test_windows_tree_stop_kills_the_root_when_taskkill_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The fallback must expose a failed taskkill instead of hiding it behind check=False."""
+    """Without a Job Object, a failed taskkill still leaves no live root behind."""
 
     class FakeProcess:
         pid = 1234
@@ -304,19 +313,21 @@ def test_windows_tree_stop_reports_taskkill_failure(
         def kill(self) -> None:
             self.killed = True
 
+    taskkill_calls: list[object] = []
+
     def taskkill(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        del args, kwargs
+        taskkill_calls.append((args, kwargs))
         return subprocess.CompletedProcess([], 1)
 
-    monkeypatch.setattr(runner_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(process_tree, "is_windows", lambda: True)
     monkeypatch.setattr(subprocess, "run", taskkill)
     process = FakeProcess()
 
-    stopped = runner_module._stop_process_tree(
-        cast("subprocess.Popen[bytes]", process), force=True
+    process_tree.ProcessTree(cast("subprocess.Popen[bytes]", process), None).stop(
+        force=True
     )
 
-    assert stopped is False and process.killed
+    assert len(taskkill_calls) == 1 and process.killed
 
 
 @pytest.mark.parametrize("state", ["active", "completed", "unavailable"])

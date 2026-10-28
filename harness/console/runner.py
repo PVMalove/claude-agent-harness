@@ -5,29 +5,18 @@
 
 from __future__ import annotations
 
-import codecs
-import ctypes
-from ctypes import wintypes
 import os
-import signal
 import subprocess
-import threading
-import time
+import codecs
+from io import IncrementalNewlineDecoder
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable
 from dataclasses import dataclass
-from io import IncrementalNewlineDecoder
+from threading import Event, Lock
 from pathlib import Path
-from threading import Lock
 from typing import Mapping, Protocol, Sequence, cast
 
-
-_CANCEL_GRACE_SECONDS = 0.5
-
-
-def _is_windows() -> bool:
-    """Return whether this process uses the native Windows process APIs."""
-    return os.name == "nt"
+from .process_tree import wait_cancellable
 
 
 class CommandRunner(Protocol):
@@ -63,129 +52,20 @@ class _OutputPipe(Protocol):
     def read1(self, size: int) -> bytes: ...
 
 
-class _WindowsJob:
-    """Own a Windows Job Object that follows descendants after the root exits."""
-
-    def __init__(self, process: "subprocess.Popen[bytes]") -> None:
-        loader = getattr(ctypes, "WinDLL", None)
-        if loader is None:
-            raise OSError("Windows Job Objects are unavailable")
-        self._kernel32 = loader("kernel32", use_last_error=True)
-        self._kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
-        self._kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        self._kernel32.AssignProcessToJobObject.argtypes = [
-            wintypes.HANDLE,
-            wintypes.HANDLE,
-        ]
-        self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-        self._kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
-        self._kernel32.TerminateJobObject.restype = wintypes.BOOL
-        self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        self._kernel32.CloseHandle.restype = wintypes.BOOL
-        self._handle: object | None = self._kernel32.CreateJobObjectW(None, None)
-        if not self._handle:
-            raise OSError(getattr(ctypes, "get_last_error")(), "CreateJobObjectW failed")
-        process_handle = getattr(process, "_handle", None)
-        if process_handle is None or not self._kernel32.AssignProcessToJobObject(
-            self._handle, process_handle
-        ):
-            self.close()
-            raise OSError(
-                getattr(ctypes, "get_last_error")(),
-                "AssignProcessToJobObject failed",
-            )
-
-    def terminate(self) -> bool:
-        """Terminate every process currently assigned to the job, including descendants."""
-        return bool(
-            self._handle is not None
-            and self._kernel32.TerminateJobObject(self._handle, 1)
-        )
-
-    def close(self) -> None:
-        if self._handle is not None:
-            self._kernel32.CloseHandle(self._handle)
-            self._handle = None
-
-
-def _create_windows_job(process: "subprocess.Popen[bytes]") -> _WindowsJob | None:
-    """Create the Windows descendant boundary, falling back when the host denies it."""
-    if not _is_windows():
-        return None
-    try:
-        return _WindowsJob(process)
-    except OSError:
-        return None
-
-
-def _stop_process_tree(
-    process: "subprocess.Popen[bytes]",
-    *,
-    force: bool,
-    windows_job: _WindowsJob | None = None,
-) -> bool:
-    """Signal the process and descendants started for a cancellable command.
-
-    Cancellable commands start a new POSIX session or Windows Job Object below.  The boundary
-    keeps a child that inherited stdout/stderr from keeping the job alive after its parent is
-    stopped. ``taskkill /T`` is the fallback when a Windows host refuses Job Object assignment;
-    its return code is checked so a failed tree stop cannot be reported as successful.
-    """
-    if _is_windows():
-        if force:
-            if windows_job is not None and windows_job.terminate():
-                return True
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    return True
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            try:
-                process.kill()
-            except OSError:
-                pass
-            return False
-        try:
-            process.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
-            return True
-        except (OSError, ValueError):
-            # A process created without a console cannot receive CTRL_BREAK.  Keep the parent
-            # alive until the force pass so taskkill can still walk its descendants.
-            return False
-
-    else:
-        try:
-            os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
-            return True
-        except OSError:
-            try:
-                (process.kill if force else process.terminate)()
-            except OSError:
-                pass
-            return False
-
-
 def capturing_runner(
     argv: Sequence[str],
     *,
     env: Mapping[str, str] | None = None,
     cwd: Path | None = None,
     on_output: Callable[[str, str], None] | None = None,
-    cancel_event: threading.Event | None = None,
+    cancel_event: Event | None = None,
 ) -> "subprocess.CompletedProcess[str]":
     """Исполнитель команд, запускаемых изнутри TUI, владеющего терминалом: вывод перехватывается
     для отображения на экране, а stdin закрывается, чтобы команды с запросами подтверждения (например,
     `harness init`) использовали неинтерактивное поведение по умолчанию. Переменная `PYTHONUTF8`
-    обеспечивает кодировку UTF-8 для дочерних процессов Python. При наличии ``cancel_event``
-    команда получает отдельную группу/сессию, чтобы отмена останавливала и её потомков."""
+    обеспечивает кодировку UTF-8 для дочерних процессов Python. С `cancel_event` команда
+    запускается в своей сессии: установленное событие останавливает её вместе с потомками, и
+    исполнитель поднимает `CommandCancelled` (см. process_tree.py)."""
     child_env = dict(env if env is not None else os.environ)
     child_env.setdefault("PYTHONUTF8", "1")
     child_env.setdefault("PYTHONUNBUFFERED", "1")
@@ -215,73 +95,23 @@ def capturing_runner(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.DEVNULL,
-        creationflags=(
-            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            if cancel_event is not None and _is_windows()
-            else 0
-        ),
-        start_new_session=cancel_event is not None and not _is_windows(),
+        # Windows ignores it; there the Job Object of process_tree.py holds the descendants.
+        start_new_session=cancel_event is not None,
     ) as process:
         assert process.stdout is not None and process.stderr is not None
-        windows_job: _WindowsJob | None = None
-        try:
-            if cancel_event is not None and _is_windows():
-                windows_job = _create_windows_job(process)
-            with ThreadPoolExecutor(max_workers=2) as readers:
-                stdout = readers.submit(drain, cast(_OutputPipe, process.stdout), "stdout")
-                stderr = readers.submit(drain, cast(_OutputPipe, process.stderr), "stderr")
-                cancelled = False
-                forced = False
-                cancel_started: float | None = None
-                returncode: int | None = None
-                while True:
-                    if cancel_event is not None and cancel_event.is_set() and not cancelled:
-                        cancelled = True
-                        cancel_started = time.monotonic()
-                        if _is_windows():
-                            # CTRL_BREAK may let the root exit before a later taskkill can find
-                            # its tree. Force the checked tree operation while the root PID is
-                            # still live; the Job Object covers descendants assigned after spawn.
-                            forced = _stop_process_tree(
-                                process, force=True, windows_job=windows_job
-                            )
-                        else:
-                            _stop_process_tree(
-                                process, force=False, windows_job=windows_job
-                            )
-                    if (
-                        cancelled
-                        and not forced
-                        and cancel_started is not None
-                        and time.monotonic() - cancel_started >= _CANCEL_GRACE_SECONDS
-                    ):
-                        forced = _stop_process_tree(
-                            process, force=True, windows_job=windows_job
-                        )
-                    if returncode is None:
-                        try:
-                            returncode = process.wait(
-                                timeout=0.1 if cancel_event else None
-                            )
-                        except subprocess.TimeoutExpired:
-                            continue
-                    # A parent can exit before a descendant closes an inherited output pipe. Keep
-                    # sampling the cancellation event while readers drain; on Windows the Job
-                    # Object remains valid after the parent exits, closing the taskkill race.
-                    if stdout.done() and stderr.done() and (
-                        not cancelled
-                        or forced
-                        or (not _is_windows() and returncode is not None)
-                    ):
-                        break
-                    time.sleep(0.05)
-                assert returncode is not None
-                return subprocess.CompletedProcess(
-                    list(argv), returncode, stdout.result(), stderr.result()
+        with ThreadPoolExecutor(max_workers=2) as readers:
+            stdout = readers.submit(drain, cast(_OutputPipe, process.stdout), "stdout")
+            stderr = readers.submit(drain, cast(_OutputPipe, process.stderr), "stderr")
+            returncode = (
+                process.wait()
+                if cancel_event is None
+                else wait_cancellable(
+                    process, cancel_event, lambda: stdout.done() and stderr.done()
                 )
-        finally:
-            if windows_job is not None:
-                windows_job.close()
+            )
+            return subprocess.CompletedProcess(
+                list(argv), returncode, stdout.result(), stderr.result()
+            )
 
 
 @dataclass
