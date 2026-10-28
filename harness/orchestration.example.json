@@ -270,7 +270,8 @@
     "dispatch_wait_timeout_seconds": 60,
     "dispatch_poll_interval_seconds": 5,
     "qa_lease_seconds": 1800,
-    "rate_limit_retry_seconds": 60
+    "rate_limit_retry_seconds": 60,
+    "qa_command_timeout_seconds": 3600
   },
   "attention_policy": {
     "retry_queue_seconds": 18000,

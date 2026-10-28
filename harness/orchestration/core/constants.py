@@ -628,6 +628,8 @@ DEFAULT_EXECUTION_POLICY = {
     # approval TTL, since an approval older than that would not authorise a new send either.
     "worker_execution_timeout_seconds": 14_400,
     "stop_grace_seconds": 30,
+    # The runtime stops one containerised QA command at this deadline (ADR 0022, section 3).
+    "qa_command_timeout_seconds": 3_600,
 }
 # The lifetime of a QA lease of the runtime store (ADR 0021, section 5): its owner renews it every
 # third of it, and the runtime checks the owner's liveness only after it expired. The runtime

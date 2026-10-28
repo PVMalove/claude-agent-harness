@@ -36,6 +36,10 @@ from .ledger.lifecycle import store_is_authority
 from .runtime_client import RuntimeClient, RuntimeClientError
 
 EXTENSION_NAME = "docker"
+# The coordinator's own QA operation (ADR 0022, section 3): ``qa run`` hands the approved commands
+# to harness-runtime, which runs each in its own container. No other coordinator operation, Git
+# and publish included, is proven by a container.
+QA_OPERATION_TRANSPORT = "qa-operation"
 # The worker environment the runtime sets itself (its home, the Git safe.directory override and
 # the executor marker of ADR 0025); preflight and send block a plan name that would replace it.
 RESERVED_ENV_NAMES = frozenset(
@@ -118,7 +122,7 @@ def _storage(plan: JsonObject) -> Path:
 
 def _plan_support(data: JsonObject, transport: str, block: _Block) -> None:
     """Block every plan property the executor cannot run; it reads only the plan."""
-    if transport != "external":
+    if transport not in ("external", QA_OPERATION_TRANSPORT):
         block(
             f"the docker executor launches only an external dispatch, not {transport}",
             "set the role's assignment_plans transport to external, then repeat dispatch "

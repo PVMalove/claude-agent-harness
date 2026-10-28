@@ -189,15 +189,60 @@ def validate_plan(plan: object) -> None:
         raise AccessError("runtime access plan digest mismatch", remedy=remedy)
 
 
-def _pins_images(plan: JsonObject, role: object, purpose: object) -> bool:
-    """A docker plan of a dispatch that ``dispatch send`` hands off pins its image digests.
+def qa_container(plan: Mapping[str, object], role: object) -> bool:
+    """Whether a QA dispatch runs its commands in containers (ADR 0022, section 3): its own
+    ``access_policy.operations.qa`` authors the container of a docker plan. A container that only
+    ``defaults`` authors keeps the historical host QA."""
+    sources = plan.get("sources")
+    return (
+        role == "qa"
+        and plan.get("runtime_extension") == container_executor.EXTENSION_NAME
+        and "container" in plan
+        and isinstance(sources, dict)
+        and sources.get("container") == "operations.qa"
+    )
 
-    QA and publish are coordinator operations that never go through send, so they pin none.
+
+QA_EXECUTION_FIELDS = frozenset(
+    {
+        "supervisor",
+        "command_timeout_seconds",
+        "stop_grace_seconds",
+        "poll_interval_seconds",
+    }
+)
+
+
+def valid_qa_execution(section: object) -> bool:
+    """Whether ``section`` is the ``qa_execution`` a container QA brief pins."""
+
+    def number(key: str, minimum: int) -> bool:
+        value = cast(dict[str, object], section).get(key)
+        return isinstance(value, int) and not isinstance(value, bool) and value >= minimum
+
+    return (
+        isinstance(section, dict)
+        and set(section) == QA_EXECUTION_FIELDS
+        and section["supervisor"] == "harness-runtime"
+        and number("command_timeout_seconds", 1)
+        and number("stop_grace_seconds", 0)
+        and number("poll_interval_seconds", 1)
+    )
+
+
+def _pins_images(plan: JsonObject, role: object, purpose: object) -> bool:
+    """A docker plan of a dispatch that ``dispatch send`` hands off pins its image digests, and
+    so does a container QA plan, whose commands harness-runtime runs in that image.
+
+    Publish and a host QA are coordinator operations that never go through send: they pin none.
     """
     return (
         plan["runtime_extension"] == container_executor.EXTENSION_NAME
         and "container" in plan
-        and dispatch_operation(str(role), str(purpose)) is None
+        and (
+            dispatch_operation(str(role), str(purpose)) is None
+            or qa_container(plan, role)
+        )
     )
 
 
@@ -233,6 +278,14 @@ def validate_binding(brief: Mapping[str, object]) -> None:
         raise AccessError(
             "runtime images are not pinned exactly for the brief's container plan",
             remedy="propose and approve a new dispatch so that it pins the current images",
+        )
+    if qa_container(plan, brief.get("role")) != ("qa_execution" in brief) or (
+        "qa_execution" in brief and not valid_qa_execution(brief["qa_execution"])
+    ):
+        raise AccessError(
+            "qa_execution is not pinned exactly: a container QA brief pins it and no other "
+            "brief does",
+            remedy="propose and approve a new QA dispatch on a harness-runtime that serves qa.run",
         )
     if plan["requirements"]:
         checkout = [
@@ -533,6 +586,9 @@ def pin_images(
     """
     if not _pins_images(plan, role, purpose):
         return None
+    # A container QA is observed as the coordinator's QA operation, never as a send transport.
+    if qa_container(plan, role):
+        transport = container_executor.QA_OPERATION_TRANSPORT
     verification, observation = verify_plan(plan, transport)
     if verification["status"] != "verified" or not isinstance(
         observation, container_executor.ContainerObservation

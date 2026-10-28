@@ -867,6 +867,53 @@ def _delta_review_eligibility(
     return "spec"
 
 
+def _qa_execution_section(
+    repo: Path, root: Path, config: JsonObject, brief: JsonObject
+) -> JsonObject | None:
+    """The QA run harness-runtime executes, pinned into a container QA brief (ADR 0022, section
+    3): the timeout of each command, the stop grace and the poll interval. ``None`` keeps the
+    historical host QA of every other brief. A container QA needs the runtime store and a runtime
+    that serves ``qa.run``; otherwise propose and create refuse it with a remedy."""
+    plan = brief.get("runtime_access")
+    if not isinstance(plan, dict) or not runtime_access.qa_container(
+        plan, brief.get("role")
+    ):
+        return None
+    if not store_is_authority(root):
+        raise CoordinatorError(
+            "a container QA runs only on the runtime store epoch, and this repository still "
+            "uses the file ledger",
+            remedy=f"cut the ledger over with `harness-runtime migrate --repo {repo}`, start "
+            f"`harness-runtime serve --repo {repo}`, then repeat dispatch propose",
+        )
+    from harness.orchestration import runtime_client
+
+    client = runtime_client.RuntimeClient(repo)
+    try:
+        hello = client.call(
+            "status", operation_id=f"status-{client.paths.repo_id}-{uuid.uuid4().hex}"
+        ).hello
+    except runtime_client.RuntimeClientError as exc:
+        raise CoordinatorError(
+            f"harness-runtime did not answer [{exc.code}]: {exc.message}",
+            remedy=exc.remedy,
+        ) from exc
+    features = hello.get("features")
+    if not isinstance(features, list) or "qa.run" not in features:
+        raise CoordinatorError(
+            "harness-runtime does not serve qa.run, so a container QA cannot run",
+            remedy="run the harness-runtime of this harness version on Linux, or remove "
+            "access_policy.operations.qa.container, then repeat dispatch propose",
+        )
+    policy = _execution_policy(config)
+    return {
+        "supervisor": "harness-runtime",
+        "command_timeout_seconds": policy["qa_command_timeout_seconds"],
+        "stop_grace_seconds": policy["stop_grace_seconds"],
+        "poll_interval_seconds": policy["dispatch_poll_interval_seconds"],
+    }
+
+
 def _execution_section(
     repo: Path, root: Path, config: JsonObject, brief: JsonObject
 ) -> JsonObject | None:
@@ -1306,6 +1353,9 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         runtime_images = runtime_access.pin_images(
             access_plan, transport, role_name, purpose
         )
+        qa_execution = _qa_execution_section(
+            repo, root, config, {"role": role_name, "runtime_access": access_plan}
+        )
         plan = _verification_plan(
             repo,
             batch,
@@ -1437,6 +1487,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
                 proposal["verification_plan"] = plan
             if runtime_images is not None:
                 proposal["runtime_images"] = runtime_images
+            if qa_execution is not None:
+                proposal["qa_execution"] = qa_execution
             return proposal
         if approval_mode is None:
             # Only a proposal skips the approval mode, and a proposal returned above.
@@ -1533,6 +1585,8 @@ def create_dispatch(args: argparse.Namespace) -> JsonObject:
         }
         if runtime_images is not None:
             brief["runtime_images"] = runtime_images
+        if qa_execution is not None:
+            brief["qa_execution"] = qa_execution
         if plan is not None:
             brief["verification_plan"] = plan
         if role_name == resolver_state.RESOLVER_ROLE:

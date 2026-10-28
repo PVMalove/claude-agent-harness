@@ -68,7 +68,7 @@ EXECUTION_STATES = ("launching", "running", "stopping", "exited", "lost", "unkno
 # minor 2 adds ``execution.launch`` and ``execution.observe`` of the process supervisor (ADR 0022);
 # minor 3 adds ``container.observe``, ``container.objects`` and ``container.remove`` of the
 # container executor in the runtime (ADR 0022, section 4).
-PROTOCOL_VERSION = (1, 3)
+PROTOCOL_VERSION = (1, 4)
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 MAX_SOCKET_PATH_BYTES = 100
 _FRAME_HEADER = struct.Struct(">I")

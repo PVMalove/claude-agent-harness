@@ -466,7 +466,8 @@
         "qa_lease_seconds": {"type": "integer", "minimum": 1, "default": 1800, "description": "Срок аренды QA lane в секундах."},
         "rate_limit_retry_seconds": {"type": "integer", "minimum": 1, "default": 60, "description": "Ожидание повторной попытки при rate limit, если провайдер не указал срок."},
         "worker_execution_timeout_seconds": {"type": "integer", "minimum": 1, "default": 14400, "description": "Срок исполнения worker под супервизором harness-runtime; по его истечении runtime останавливает группу процессов."},
-        "stop_grace_seconds": {"type": "integer", "minimum": 1, "default": 30, "description": "Пауза между SIGTERM и SIGKILL группе процессов при остановке по сроку."}
+        "stop_grace_seconds": {"type": "integer", "minimum": 1, "default": 30, "description": "Пауза между SIGTERM и SIGKILL группе процессов при остановке по сроку."},
+        "qa_command_timeout_seconds": {"type": "integer", "minimum": 1, "default": 3600, "description": "Срок одной QA-команды в контейнере под harness-runtime; по его истечении runtime останавливает контейнер команды с паузой stop_grace_seconds."}
       }
     },
     "attention_policy": {
