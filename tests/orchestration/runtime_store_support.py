@@ -3,15 +3,19 @@ and the real ``harness-runtime`` binary."""
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -771,3 +775,295 @@ def coordinator_with(
         check=False,
         env={**os.environ, "PYTHONPATH": str(ROOT), **environ},
     )
+
+
+# -- an external dispatch the runtime supervises ------------------------------------------------------
+
+# The fake adapter of the supervised seam: it logs its launch, ignores SIGTERM when asked (or counts
+# it in ``terms.log``), starts a member of its group that waits for ``member_release`` when asked,
+# waits in the foreground for ``release`` and exits with the code in ``exit_code``.
+FAKE_ADAPTER = """
+import json, os, signal, subprocess, sys, time
+from pathlib import Path
+control = Path({control!r})
+if (control / "ignore_term").exists():
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+def count_term(*_):
+    with open(control / "terms.log", "a", encoding="utf-8") as log:
+        log.write("TERM\\n")
+if (control / "count_term").exists():
+    signal.signal(signal.SIGTERM, count_term)
+if (control / "member").exists():
+    wait = "while [ ! -e member_release ]; do sleep 0.05; done"
+    member = subprocess.Popen(["sh", "-c", wait], cwd=control, stdin=subprocess.DEVNULL)
+    (control / "member.pid").write_text(str(member.pid), encoding="utf-8")
+with open(control / "launches.log", "a", encoding="utf-8") as log:
+    log.write(json.dumps({{"pid": os.getpid(), "ppid": os.getppid(), "pgid": os.getpgid(0),
+                          "operation_id": os.environ.get("HARNESS_OPERATION_ID"),
+                          "argv": sys.argv[1:]}}) + "\\n")
+while not (control / "release").exists():
+    time.sleep(0.05)
+code = control / "exit_code"
+sys.exit(int(code.read_text()) if code.exists() else 0)
+"""
+
+
+def _supervised_config(execution_policy: JsonObject) -> JsonObject:
+    runtime: JsonObject = {
+        "claude": {"profiles": ["p"], "model": "sonnet", "effort": "high"}
+    }
+    return {
+        "provider_profiles": {
+            "p": {
+                "capabilities": [
+                    "architecture-analysis",
+                    "backend-development",
+                    "code-review",
+                ],
+                "fallback": [],
+                "known_limitations": ["none"],
+            }
+        },
+        "assignment_plans": {
+            "architect": {
+                "zone": "repository",
+                "runtimes": runtime,
+                "transport": "external",
+            },
+            "developer": {"zone": "repository", "runtimes": runtime},
+            "code-review": {"zone": "repository", "runtimes": runtime},
+        },
+        "backend_zones": {"repository": {"paths": ["**"]}},
+        "concurrency_budget": 1,
+        "verification_commands": ["true"],
+        "execution_policy": execution_policy,
+    }
+
+
+def labelled_groups(dispatch_id: str) -> set[int]:
+    """The process groups whose leader carries the label of ``dispatch_id``."""
+    groups: set[int] = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            environ = (entry / "environ").read_bytes().split(b"\0")
+            if f"HARNESS_DISPATCH_ID={dispatch_id}".encode() in environ:
+                groups.add(os.getpgid(int(entry.name)))
+        except OSError:
+            continue
+    return groups
+
+
+@dataclass(frozen=True)
+class Launch:
+    """One start of the fake adapter, as it logged itself."""
+
+    pid: int
+    ppid: int
+    pgid: int
+    operation_id: str | None
+
+
+class Supervised:
+    """A cut-over repository whose external architect dispatch was created after the cutover, so
+    its approved brief pins ``execution``; the runtime that serves it, and a fake foreground
+    adapter driven through ``control``. ``close`` kills every process group the dispatch left."""
+
+    def __init__(
+        self,
+        tmp: Path,
+        *,
+        timeout: int = 600,
+        grace: int = 1,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        repo = coordinator_repository(tmp)
+        role = repo / ".harness" / "orchestration" / "roles" / "code-review.md"
+        role.write_text(
+            (ORCHESTRATION_ROOT / "roles" / "code-review.md").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-m", "the review role")
+        (repo / ".harness" / "orchestration.json").write_text(
+            json.dumps(
+                _supervised_config(
+                    {
+                        "worker_execution_timeout_seconds": timeout,
+                        "stop_grace_seconds": grace,
+                        "dispatch_poll_interval_seconds": 1,
+                    }
+                )
+            ),
+            encoding="utf-8",
+        )
+        ids, _ = add_coordinator_batch(
+            repo, tmp / "worktree", ticket="#805", dispatch=False
+        )
+        self.repo = repo
+        self.batch = ids["batch_id"]
+        assert migrate(repo).returncode == 0
+        self.control = tmp / "control"
+        self.control.mkdir()
+        self.adapter = tmp / "adapter.py"
+        self.adapter.write_text(
+            FAKE_ADAPTER.format(control=str(self.control)), encoding="utf-8"
+        )
+        self.runtime = ServingRuntime(repo, env=env)
+        self.dispatch = ""
+        self.dispatch = self._create()
+
+    def _create(self) -> str:
+        fields = ["--batch", self.batch, "--role", "architect", "--purpose", "work"]
+        proposal = self.run("dispatch", "propose", *fields)
+        assert proposal.returncode == 0, proposal.stderr
+        digest = json.loads(proposal.stdout)["transition_digest"]
+        created = self.run(
+            "dispatch",
+            "create",
+            *fields,
+            "--transition-digest",
+            digest,
+            "--approved-by",
+            APPROVAL["approved_by"],
+            "--approved-at",
+            APPROVAL["approved_at"],
+        )
+        assert created.returncode == 0, created.stderr
+        brief = json.loads(created.stdout)["brief"]
+        assert brief["execution"]["supervisor"] == "harness-runtime", brief
+        return str(brief["dispatch_id"])
+
+    def run(self, *command: str) -> subprocess.CompletedProcess[str]:
+        return coordinator_with(self.repo, self.runtime, *command)
+
+    def send_command(self) -> list[str]:
+        return [
+            "dispatch",
+            "send",
+            "--dispatch",
+            self.dispatch,
+            "--adapter",
+            str(self.adapter),
+        ]
+
+    def send(self) -> subprocess.CompletedProcess[str]:
+        return self.run(*self.send_command())
+
+    def start_send(self) -> subprocess.Popen[str]:
+        return coordinator_popen(self.repo, self.runtime, *self.send_command())
+
+    @property
+    def database(self) -> Path:
+        return self.repo / STATE_REL / "runtime.db"
+
+    def launches(self) -> list[Launch]:
+        log = self.control / "launches.log"
+        if not log.exists():
+            return []
+        found = []
+        for line in log.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            found.append(
+                Launch(
+                    entry["pid"], entry["ppid"], entry["pgid"], entry["operation_id"]
+                )
+            )
+        return found
+
+    def wait_launches(self, count: int, timeout: float = 30.0) -> list[Launch]:
+        deadline = time.monotonic() + timeout
+        while len(self.launches()) < count and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return self.launches()
+
+    def release(self, code: int = 0) -> None:
+        (self.control / "exit_code").write_text(str(code), encoding="utf-8")
+        (self.control / "release").write_text("", encoding="utf-8")
+
+    def ignore_term(self) -> None:
+        (self.control / "ignore_term").write_text("", encoding="utf-8")
+
+    def count_term(self) -> None:
+        """The adapter survives SIGTERM and logs each one it receives."""
+        (self.control / "count_term").write_text("", encoding="utf-8")
+
+    def terms(self) -> int:
+        log = self.control / "terms.log"
+        return len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
+
+    def wait_terms(self, count: int, timeout: float = 30.0) -> int:
+        deadline = time.monotonic() + timeout
+        while self.terms() < count and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return self.terms()
+
+    def add_member(self) -> None:
+        """The adapter starts a member of its group that outlives it until ``release_member``."""
+        (self.control / "member").write_text("", encoding="utf-8")
+
+    def member(self, timeout: float = 30.0) -> int:
+        path = self.control / "member.pid"
+        deadline = time.monotonic() + timeout
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return int(path.read_text(encoding="utf-8"))
+
+    def release_member(self) -> None:
+        (self.control / "member_release").write_text("", encoding="utf-8")
+
+    def execution(self) -> JsonObject | None:
+        answer = store_call(
+            self.repo, self.runtime, "execution.observe", {"dispatch_id": self.dispatch}
+        )
+        execution = answer["execution"]
+        return execution if isinstance(execution, dict) else None
+
+    def wait_execution(self, state: str, timeout: float = 30.0) -> JsonObject:
+        deadline = time.monotonic() + timeout
+        while True:
+            execution = self.execution()
+            if (
+                execution and execution["state"] == state
+            ) or time.monotonic() > deadline:
+                assert execution and execution["state"] == state, execution
+                return execution
+            time.sleep(0.05)
+
+    def status(self) -> JsonObject:
+        path = f"dispatch-status/{self.dispatch}.json"
+        return store_records(self.repo, self.runtime, path)[path]
+
+    def rows(self, sql: str, *params: object) -> list[tuple[object, ...]]:
+        """Rows of the store, read directly: a test inspects what the runtime committed."""
+        import sqlite3
+
+        with contextlib.closing(
+            sqlite3.connect(f"file:{self.database}?mode=ro", uri=True)
+        ) as db:
+            return list(db.execute(sql, params))
+
+    def execution_actions(self) -> list[str]:
+        return [
+            str(action)
+            for (action,) in self.rows(
+                "SELECT action FROM audit WHERE action LIKE 'execution-%' ORDER BY seq"
+            )
+        ]
+
+    def restart_runtime(self, env: dict[str, str] | None = None) -> None:
+        """SIGKILL the runtime and start another in its directory with the hooks ``env``."""
+        xdg = self.runtime.xdg
+        self.runtime.kill()
+        self.runtime = ServingRuntime(self.repo, env=env, xdg=xdg)
+
+    def close(self) -> None:
+        self.release()
+        self.release_member()
+        for group in labelled_groups(self.dispatch) if self.dispatch else set():
+            with contextlib.suppress(OSError):
+                os.killpg(group, signal.SIGKILL)
+        self.runtime.stop()

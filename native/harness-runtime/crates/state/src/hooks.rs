@@ -98,8 +98,11 @@ fn first_asked(step: &str, variables: &[&str]) -> bool {
 }
 
 /// Like `reach`, for a step of the serving runtime (`state.write:before-begin`,
-/// `state.write:in-transaction`, and `state.read:in-snapshot`, after the first `SELECT` of a
-/// snapshot that a read opens): the pause and the failure happen once per process.
+/// `state.write:in-transaction`, `state.read:in-snapshot`, after the first `SELECT` of a snapshot
+/// that a read opens, the steps of a launch of the supervisor: `execution.launch:before-begin`,
+/// `execution.launch:in-transaction`, `execution.launch:intent`, `execution.launch:launched` and
+/// `execution.launch:receipt`, and the pause `execution.stop:signalled` of a deadline stop): the
+/// pause and the failure happen once per process.
 #[cfg(debug_assertions)]
 pub fn reach_once(step: &str) -> Result<()> {
     if !first_asked(
@@ -120,7 +123,8 @@ pub fn reach_once(_step: &str) -> Result<()> {
 }
 
 /// Whether a test asked, once, for the failure at `step` that has no error to return: the
-/// response of `state.write` is dropped after the commit (`state.write:respond`).
+/// response of an operation is dropped after it succeeded (`state.write:respond`,
+/// `execution.launch:respond`).
 #[cfg(debug_assertions)]
 pub fn fail_once(step: &str) -> bool {
     first_asked(step, &["HARNESS_RUNTIME_TEST_FAIL_AT"])

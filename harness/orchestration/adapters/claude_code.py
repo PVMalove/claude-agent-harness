@@ -505,6 +505,15 @@ def dispatch(args: argparse.Namespace, brief: JsonObject) -> JsonObject:
     )
     root.mkdir(parents=True, mode=0o700)
     receipt_file = root / "receipt.json"
+    if os.environ.get("HARNESS_OPERATION_ID"):
+        # The runtime supervisor started this adapter (ADR 0022): the worker runs in the
+        # foreground and the adapter exits with it, so the runtime watches the worker itself.
+        foreground = argparse.Namespace(**{**vars(args), "receipt": str(receipt_file)})
+        receipt = supervise(foreground, brief)
+        receipt["preflight"]["adapter_network"] = network
+        terminal = _read_object(Path(receipt["terminal_path"]), "terminal record")
+        receipt["worker_exit_code"] = terminal.get("exit_code")
+        return receipt
     command = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -590,9 +599,14 @@ def main() -> int:
             return 0 if evidence["ready"] else 2
         if args.command == "supervise":
             supervise(args, brief)
-        else:
-            print(json.dumps(dispatch(args, brief)))
-        return 0
+            return 0
+        result = dispatch(args, brief)
+        print(json.dumps(result))
+        # In the foreground of the runtime supervisor the adapter exits with its worker.
+        code = result.get("worker_exit_code")
+        return (
+            code if isinstance(code, int) and 0 <= code < 256 else int(code is not None)
+        )
     except (CoordinatorError, OSError, subprocess.TimeoutExpired) as exc:
         print(
             json.dumps(

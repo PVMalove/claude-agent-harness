@@ -160,6 +160,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "state",
+ "supervisor",
 ]
 
 [[package]]
@@ -208,6 +209,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "state",
+ "supervisor",
 ]
 
 [[package]]
@@ -442,6 +444,18 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "supervisor"
+version = "0.1.0"
+dependencies = [
+ "contracts",
+ "nix",
+ "rusqlite",
+ "serde_json",
+ "sha2",
+ "state",
 ]
 
 [[package]]

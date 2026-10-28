@@ -6,6 +6,7 @@ members = [
     "crates/harness-runtime",
     "crates/platform-ffi",
     "crates/state",
+    "crates/supervisor",
 ]
 
 [workspace.package]

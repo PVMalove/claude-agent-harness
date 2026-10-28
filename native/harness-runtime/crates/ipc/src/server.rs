@@ -159,17 +159,20 @@ pub(crate) fn refusal(
 
 /// Serve one connection of any byte stream. A peer that is not `permitted` gets
 /// `unauthorized_peer` and the connection ends before the client has sent anything.
-/// Test hook of a debug build (`HARNESS_RUNTIME_TEST_FAIL_AT=state.write:respond`): once, the
-/// runtime closes the connection after a `state.write` was committed and before it answers, so a
-/// test can lose the response of a committed write. A release build never drops a response.
+/// Test hook of a debug build (`HARNESS_RUNTIME_TEST_FAIL_AT=<operation>:respond`, such as
+/// `state.write:respond` or `execution.launch:respond`): once, the runtime closes the connection
+/// after the operation succeeded and before it answers, so a test can lose the response of a
+/// committed write or launch. A release build never drops a response.
 #[cfg(debug_assertions)]
 fn drops_the_response(body: &[u8], reply: &crate::session::Reply) -> bool {
     use contracts::{Status, decode};
 
     reply.response.status == Status::Ok
-        && decode::<serde_json::Value>(body)
-            .is_ok_and(|request| request["operation"] == "state.write")
-        && state::hooks::fail_once("state.write:respond")
+        && decode::<serde_json::Value>(body).is_ok_and(|request| {
+            request["operation"]
+                .as_str()
+                .is_some_and(|operation| state::hooks::fail_once(&format!("{operation}:respond")))
+        })
 }
 
 #[cfg(not(debug_assertions))]
@@ -269,6 +272,7 @@ mod tests {
             server_version: "test".to_owned(),
             state_dir: None,
             snapshots: Default::default(),
+            supervisor: Default::default(),
         }
     }
 

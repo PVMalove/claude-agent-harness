@@ -111,3 +111,26 @@ def test_capacity_while_the_worker_is_live_is_not_restartable() -> None:
 
     assert assessment["classification"] == "capacity"
     assert assessment["restart_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    ("execution", "state"),
+    [
+        ("launching", "live"),
+        ("running", "live"),
+        ("stopping", "live"),
+        ("exited", "stopped"),
+        ("lost", "stopped"),
+        ("unknown", "unknown"),
+    ],
+)
+def test_a_supervised_worker_is_what_the_runtime_observed_of_its_execution(
+    execution: str, state: str
+) -> None:
+    status = {"state": "working", **MATCHED}
+
+    assert worker_process_state(status, execution={"state": execution}) == state
+    assessed = assess_startup(DISPATCH, status, execution={"state": execution})
+    assert assessed["worker_state"] == state
+    if execution in {"exited", "lost"}:
+        assert assessed["classification"] == "worker-exited-without-report"

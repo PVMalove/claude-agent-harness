@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import os
 import subprocess
@@ -267,6 +268,67 @@ def _run_adapter(command: list[str], *, cwd: Path | None = None) -> JsonObject |
     return safe
 
 
+class LaunchUnsettled(CoordinatorError):
+    """The runtime did not confirm a launch; a repeat of ``dispatch send`` never launches twice."""
+
+
+def execution_operation_id(dispatch: JsonObject) -> str:
+    """The deterministic operation id of the first launch of a supervised brief:
+    ``sha256([dispatch_id, brief_sha256, 1])`` in the canonical digest form (ADR 0021, section 4)."""
+    brief_sha256 = hashlib.sha256(_canonical(dispatch).encode("utf-8")).hexdigest()
+    key = _canonical([dispatch["dispatch_id"], brief_sha256, 1])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _launch_execution(repo: Path, dispatch: JsonObject) -> JsonObject:
+    """Ask the runtime to launch the execution of a supervised dispatch from its stored brief
+    and status; the answer is the receipt. A launch the OS refused (``engine_unavailable``) is
+    a proven launch failure; any other refusal leaves the dispatch dispatched. Only a repeatable
+    refusal advises a repeat of ``dispatch send``; any other carries the remedy of the runtime."""
+    from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
+
+    try:
+        reply = RuntimeClient(repo).call(
+            "execution.launch",
+            operation_id=execution_operation_id(dispatch),
+            payload={"dispatch_id": dispatch["dispatch_id"]},
+        )
+    except RuntimeClientError as exc:
+        if exc.code == "engine_unavailable":
+            error_type = (
+                AdapterUnavailable if "spawn_error" in exc.facts else CoordinatorError
+            )
+            raise error_type(
+                f"the runtime could not launch the worker: {exc.message}",
+                remedy=exc.remedy,
+            ) from exc
+        if not exc.retryable:
+            raise LaunchUnsettled(
+                f"the runtime refused the launch [{exc.code}]: {exc.message}",
+                remedy=f"{exc.remedy}; the dispatch stays dispatched, and a repeat of dispatch "
+                "send gets the same refusal",
+            ) from exc
+        raise LaunchUnsettled(
+            f"the runtime did not confirm the launch [{exc.code}]: {exc.message}",
+            remedy="repeat dispatch send; it never launches twice: the runtime answers the "
+            "stored receipt, or adopts the process it started",
+        ) from exc
+    return reply.result
+
+
+def observed_execution(repo: Path, dispatch_id: str) -> JsonObject | None:
+    """The execution of a supervised dispatch, as the runtime observes it now."""
+    from harness.orchestration.runtime_client import RuntimeClient
+
+    reply = RuntimeClient(repo).call(
+        "execution.observe",
+        operation_id=f"execution.observe-{dispatch_id}-{time.time_ns()}",
+        payload={"dispatch_id": dispatch_id},
+    )
+    execution = reply.result.get("execution")
+    return cast(JsonObject, execution) if isinstance(execution, dict) else None
+
+
 def send_dispatch(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     root = _state_root(args, repo)
@@ -361,7 +423,15 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
                     remedy="select one canonical review checkout for both arguments",
                 )
         status = _load_dispatch_status(root, dispatch["dispatch_id"])
-        if status.get("state") != "approved":
+        # A brief that pins ``execution`` is launched by the runtime supervisor (ADR 0022). Its
+        # repeat from ``dispatched`` only asks the runtime again: the runtime never launches twice.
+        supervised = bool(dispatch.get("execution"))
+        relaunch = (
+            supervised
+            and status.get("state") == "dispatched"
+            and isinstance(status.get("launch"), dict)
+        )
+        if status.get("state") != "approved" and not relaunch:
             raise CoordinatorError(
                 "only an approved dispatch may be sent to a runtime adapter",
                 remedy="only send an approved dispatch to a runtime adapter",
@@ -374,7 +444,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             ),
             None,
         )
-        if not entry or entry.get("state") != "approved":
+        if not relaunch and (not entry or entry.get("state") != "approved"):
             raise CoordinatorError(
                 "dispatch was already sent or is not registered in its batch",
                 remedy="the dispatch was already sent or is not registered in its batch -- "
@@ -422,34 +492,59 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
             defer_handoff=True,
             command=tuple(command) if command is not None else None,
         )
-        # The guard above proved this is the batch's own entry for the dispatch.
-        entry["state"] = "dispatched"
-        sent_at = utils._now()
-        _safe_id(dispatch["dispatch_id"], "dispatch")
-        _replace_record(
-            ledger,
-            DispatchStatusRecord.from_dict(
-                {
-                    **status,
-                    "dispatch_id": dispatch["dispatch_id"],
-                    "state": "dispatched",
-                    "updated_at": sent_at,
-                    "heartbeat_at": sent_at,
-                    "sent_at": sent_at,
-                    "runtime_access": access_evidence,
-                    **({"adapter_receipt": adapter_receipt} if adapter_receipt else {}),
-                    "worker_worktree": launch["worktree"],
-                    "worker_snapshot_commit": launch["head_commit"],
-                }
-            ),
-        )
-        _safe_id(batch["batch_id"], "batch")
-        _replace_record(ledger, BatchRecord.from_dict(batch))
+        if supervised and access_evidence["status"] != "legacy-inherit":
+            raise CoordinatorError(
+                "a dispatch the runtime supervises takes no runtime_access provider hand-off",
+                remedy="create the dispatch without a runtime_access provider, or on the file "
+                "ledger; nothing was handed off and the brief is unchanged",
+            )
+        if not relaunch and entry is not None:
+            # The guard above proved this is the batch's own entry for the dispatch.
+            entry["state"] = "dispatched"
+            sent_at = utils._now()
+            _safe_id(dispatch["dispatch_id"], "dispatch")
+            _replace_record(
+                ledger,
+                DispatchStatusRecord.from_dict(
+                    {
+                        **status,
+                        "dispatch_id": dispatch["dispatch_id"],
+                        "state": "dispatched",
+                        "updated_at": sent_at,
+                        "heartbeat_at": sent_at,
+                        "sent_at": sent_at,
+                        "runtime_access": access_evidence,
+                        **(
+                            {"adapter_receipt": adapter_receipt}
+                            if adapter_receipt
+                            else {}
+                        ),
+                        # The launch spec the runtime reads: never a value of the request.
+                        **(
+                            {
+                                "launch": {
+                                    "argv": list(command),
+                                    "cwd": launch["worktree"],
+                                }
+                            }
+                            if supervised and command is not None
+                            else {}
+                        ),
+                        "worker_worktree": launch["worktree"],
+                        "worker_snapshot_commit": launch["head_commit"],
+                    }
+                ),
+            )
+            _safe_id(batch["batch_id"], "batch")
+            _replace_record(ledger, BatchRecord.from_dict(batch))
     # Reserve this handoff before launching. A concurrent send is now refused, and a worker
     # may acquire the ledger lock for its self-report while the adapter is still returning.
+    execution_receipt: JsonObject | None = None
     if command is not None or access_evidence["status"] != "legacy-inherit":
         try:
-            if access_evidence["status"] == "legacy-inherit":
+            if supervised:
+                execution_receipt = _launch_execution(repo, dispatch)
+            elif access_evidence["status"] == "legacy-inherit":
                 if command is not None:
                     adapter_receipt = _run_adapter(
                         command, cwd=Path(launch["worktree"])
@@ -473,6 +568,8 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
                             item["state"] = "approved"
                     _replace_record(ledger, DispatchStatusRecord.from_dict(status))
                     _replace_record(ledger, BatchRecord.from_dict(current_batch))
+            raise
+        except LaunchUnsettled:
             raise
         except (CoordinatorError, runtime_access.AccessError) as exc:
             with _ledger_lock(ledger):
@@ -520,6 +617,7 @@ def send_dispatch(args: argparse.Namespace) -> JsonObject:
         "runtime_access": access_evidence,
         "transport": transport,
         **({"adapter_receipt": adapter_receipt} if adapter_receipt else {}),
+        **({"execution": execution_receipt} if execution_receipt else {}),
         "brief": str(brief_path),
         "expected_model": dispatch["resolved_model"],
         "worker_worktree": launch["worktree"],
@@ -579,7 +677,13 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
         )
     deadline = time.monotonic() + timeout
     ledger = LifecycleLedger(root)
+    from harness.orchestration.workflow import execution_reaction
+
     while True:
+        # The ended execution of a supervised dispatch decides its transition first (ADR 0021,
+        # section 6); a busy ledger defers that to the next poll.
+        with contextlib.suppress(LedgerBusyError):
+            execution_reaction.observe(repo, root, args.dispatch)
         # A ledger busy with another coordinator operation is a missed poll, not a failure: the
         # next poll retries it until this wait's own timeout.  Only the lock acquisition is
         # tolerated -- nothing below takes the lock again.
@@ -807,6 +911,23 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     # The runtime store is read, never written, by this view: the engine is not asked, so no
     # evidence is persisted (ADR 0020, section 2).
     from_store = store_is_authority(root)
+    # The execution of the named supervised dispatch is observed, and an ended one decides its
+    # transition, before the view is read (ADR 0021, section 6).
+    executions: dict[str, JsonObject | None] = {}
+    reaction_error: JsonObject | None = None
+    if from_store and args.dispatch:
+        from harness.orchestration.workflow import execution_reaction
+
+        try:
+            executions[args.dispatch] = execution_reaction.observe(
+                repo, root, args.dispatch
+            )
+        except LedgerBusyError:
+            pass  # a busy ledger defers the reaction to the next view
+        except CoordinatorError as exc:
+            # A report that waited for the exit and is refused now stays pending: the operator
+            # sees why (execution_reaction), and the next view tries again.
+            reaction_error = {"error": exc.message, "remedy": exc.remedy}
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
     with contextlib.suppress(LedgerBusyError), read_state(ledger, repo):
         from harness.orchestration import qa_lane
@@ -836,6 +957,15 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 for item in batch.get("context_pressure", [])
                 if item.get("dispatch_id") == dispatch["dispatch_id"]
             ]
+            execution = (
+                (
+                    executions[dispatch["dispatch_id"]]
+                    if dispatch["dispatch_id"] in executions
+                    else observed_execution(repo, dispatch["dispatch_id"])
+                )
+                if from_store and dispatch.get("execution")
+                else None
+            )
             asks_engine = needs_engine(status)
             observe = not from_store and (
                 bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
@@ -856,8 +986,18 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "transport": dispatch.get("resolved_transport"),
                     "resolved_model": dispatch["resolved_model"],
                     "model_self_report": status.get("model_self_report"),
-                    "startup": assess_startup(dispatch, status, repo=repo),
+                    "startup": assess_startup(
+                        dispatch, status, repo=repo, execution=execution
+                    ),
                     "adapter_receipt": status.get("adapter_receipt"),
+                    **({"execution": execution} if dispatch.get("execution") else {}),
+                    # A report that waited for an execution that was lost (execution_reaction).
+                    **(
+                        {"held_report": status["held_report"]}
+                        if "held_report" in status
+                        else {}
+                    ),
+                    **({"reaction_error": reaction_error} if reaction_error else {}),
                     "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),

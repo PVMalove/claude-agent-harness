@@ -6,6 +6,7 @@ pub mod audit;
 pub mod authority;
 pub mod canonical;
 pub mod error;
+pub mod executions;
 pub mod export;
 pub mod hooks;
 pub mod identity;
