@@ -1,0 +1,591 @@
+{
+  "source": "EngineMatrixChecks of tests/orchestration/test_container_executor.py at f9768d10fb70156852c4318807597467813917ad, exported through container_executor._engine_mode, _image_id and _launch with a scripted engine",
+  "delta": "the Rust builders add --label harness.operation=<operation id> and --label harness.execution=<execution id> right after harness.plan_digest on the network, the sidecar and the worker (ADR 0022, section 2); the argv here is the Python argv without them",
+  "uid": 1000,
+  "gid": 1000,
+  "dispatch_id": "dispatch-00000000-0000-4000-8000-000000000807",
+  "repository": "/work/repo/.git",
+  "command": ["/work/adapter.sh", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+  "runtime_images": {
+    "worker": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "proxy": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "rows": [
+    {
+      "name": "rootful-docker",
+      "engine": "docker",
+      "plan": {
+        "container": {
+          "engine": "docker",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "ID": "5c5e2d3f-docker-daemon",
+        "ServerVersion": "29.9.0",
+        "SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin"]
+      },
+      "images": {
+        "harness-worker:local": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootful",
+      "selinux": false,
+      "environment_id": "docker:5c5e2d3f-docker-daemon",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["docker", "info", "--format", "{{json .}}"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["docker", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["docker", "network", "connect", "bridge", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["docker", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootful-docker-selinux",
+      "engine": "docker",
+      "plan": {
+        "container": {
+          "engine": "docker",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "ID": "5c5e2d3f-docker-daemon",
+        "ServerVersion": "29.9.0",
+        "SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin", "name=selinux"]
+      },
+      "images": {
+        "harness-worker:local": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootful",
+      "selinux": true,
+      "environment_id": "docker:5c5e2d3f-docker-daemon",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["docker", "info", "--format", "{{json .}}"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["docker", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["docker", "network", "connect", "bridge", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["docker", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootless-docker",
+      "engine": "docker",
+      "plan": {
+        "container": {
+          "engine": "docker",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "ID": "5c5e2d3f-docker-daemon",
+        "ServerVersion": "29.9.0",
+        "SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin", "name=rootless"]
+      },
+      "images": {
+        "harness-worker:local": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootless",
+      "selinux": false,
+      "environment_id": "docker:5c5e2d3f-docker-daemon",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["docker", "info", "--format", "{{json .}}"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["docker", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["docker", "network", "connect", "bridge", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["docker", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootless-docker-selinux",
+      "engine": "docker",
+      "plan": {
+        "container": {
+          "engine": "docker",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "ID": "5c5e2d3f-docker-daemon",
+        "ServerVersion": "29.9.0",
+        "SecurityOptions": ["name=apparmor", "name=seccomp,profile=builtin", "name=rootless", "name=selinux"]
+      },
+      "images": {
+        "harness-worker:local": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootless",
+      "selinux": true,
+      "environment_id": "docker:5c5e2d3f-docker-daemon",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["docker", "info", "--format", "{{json .}}"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["docker", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["docker", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["docker", "network", "connect", "bridge", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["docker", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "0:0", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["docker", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootful-podman",
+      "engine": "podman",
+      "plan": {
+        "container": {
+          "engine": "podman",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "host": {
+          "hostname": "podman-host",
+          "serviceIsRemote": false,
+          "security": {
+            "rootless": false,
+            "selinuxEnabled": false
+          }
+        },
+        "version": {
+          "Version": "5.4.0"
+        }
+      },
+      "images": {
+        "harness-worker:local": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootful",
+      "selinux": false,
+      "environment_id": "podman:podman-host",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["podman", "info", "--format", "{{json .}}"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["podman", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["podman", "network", "connect", "podman", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["podman", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootful-podman-selinux",
+      "engine": "podman",
+      "plan": {
+        "container": {
+          "engine": "podman",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "host": {
+          "hostname": "podman-host",
+          "serviceIsRemote": false,
+          "security": {
+            "rootless": false,
+            "selinuxEnabled": true
+          }
+        },
+        "version": {
+          "Version": "5.4.0"
+        }
+      },
+      "images": {
+        "harness-worker:local": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootful",
+      "selinux": true,
+      "environment_id": "podman:podman-host",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["podman", "info", "--format", "{{json .}}"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["podman", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["podman", "network", "connect", "podman", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--user", "1000:1000", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["podman", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootless-podman",
+      "engine": "podman",
+      "plan": {
+        "container": {
+          "engine": "podman",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "host": {
+          "hostname": "podman-host",
+          "serviceIsRemote": false,
+          "security": {
+            "rootless": true,
+            "selinuxEnabled": false
+          }
+        },
+        "version": {
+          "Version": "5.4.0"
+        }
+      },
+      "images": {
+        "harness-worker:local": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootless",
+      "selinux": false,
+      "environment_id": "podman:podman-host",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["podman", "info", "--format", "{{json .}}"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["podman", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--userns=keep-id", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["podman", "network", "connect", "podman", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--userns=keep-id", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["podman", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    },
+    {
+      "name": "rootless-podman-selinux",
+      "engine": "podman",
+      "plan": {
+        "container": {
+          "engine": "podman",
+          "worker_image": "harness-worker:local",
+          "proxy_image": "harness-proxy:local"
+        },
+        "network": {
+          "hosts": ["api.example.com", "files.example.org"]
+        },
+        "requirements": [
+          {
+            "resource": "checkout",
+            "path": "/work/repo-wt",
+            "access": "read"
+          },
+          {
+            "resource": "git_common",
+            "path": "/work/repo/.git",
+            "access": "read"
+          },
+          {
+            "resource": "shared_storage",
+            "path": "/work/repo/.harness",
+            "access": "read"
+          },
+          {
+            "resource": "artifacts",
+            "path": "/work/repo/.harness/.sandboxes/artifacts",
+            "access": "write"
+          }
+        ],
+        "environment": ["API_TOKEN"],
+        "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "info": {
+        "host": {
+          "hostname": "podman-host",
+          "serviceIsRemote": false,
+          "security": {
+            "rootless": true,
+            "selinuxEnabled": true
+          }
+        },
+        "version": {
+          "Version": "5.4.0"
+        }
+      },
+      "images": {
+        "harness-worker:local": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "harness-proxy:local": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "mode": "rootless",
+      "selinux": true,
+      "environment_id": "podman:podman-host",
+      "worker_image_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "proxy_image_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "worker_container_id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "proxy_container_id": "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+      "network_id": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "observe_argv": [
+        ["podman", "info", "--format", "{{json .}}"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-worker:local"],
+        ["podman", "image", "inspect", "--format", "{{.Id}}", "harness-proxy:local"]
+      ],
+      "launch_argv": [
+        ["podman", "network", "create", "--internal", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "harness-dispatch-00000000-0000-4000-8000-000000000807-net"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807-proxy", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--userns=keep-id", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--env", "HARNESS_EGRESS_ALLOWED_HOSTS=api.example.com,files.example.org", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        ["podman", "network", "connect", "podman", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "start", "89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"],
+        ["podman", "create", "--pull", "never", "--name", "harness-dispatch-00000000-0000-4000-8000-000000000807", "--network", "harness-dispatch-00000000-0000-4000-8000-000000000807-net", "--userns=keep-id", "--security-opt", "label=disable", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--tmpfs", "/harness-home:rw,exec,nosuid,nodev,mode=1777", "--env", "HOME=/harness-home", "--env", "GIT_CONFIG_COUNT=1", "--env", "GIT_CONFIG_KEY_0=safe.directory", "--env", "GIT_CONFIG_VALUE_0=*", "--env", "HARNESS_EXECUTOR=docker", "--env", "HTTP_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "HTTPS_PROXY=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "http_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "https_proxy=http://harness-dispatch-00000000-0000-4000-8000-000000000807-proxy:3128", "--env", "NO_PROXY=localhost,127.0.0.1,::1", "--env", "no_proxy=localhost,127.0.0.1,::1", "--env", "API_TOKEN", "--label", "harness.dispatch=dispatch-00000000-0000-4000-8000-000000000807", "--label", "harness.repository=/work/repo/.git", "--label", "harness.plan_digest=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "--workdir", "/work/repo-wt", "--mount", "type=bind,source=/work/repo-wt,target=/work/repo-wt,readonly", "--mount", "type=bind,source=/work/repo/.git,target=/work/repo/.git,readonly", "--mount", "type=bind,source=/work/repo/.harness,target=/work/repo/.harness,readonly", "--mount", "type=bind,source=/work/repo/.harness/.sandboxes/artifacts,target=/work/repo/.harness/.sandboxes/artifacts", "--entrypoint", "/work/adapter.sh", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dispatch", "--repo", "/work/repo", "--brief", "/work/repo/.harness/brief.json"],
+        ["podman", "start", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"]
+      ]
+    }
+  ]
+}
