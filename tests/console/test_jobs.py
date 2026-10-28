@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import subprocess
+import sys
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,6 +49,30 @@ class FakeExecutor:
         return 7
 
 
+class CancellableExecutor:
+    """An async executor that records task cancellation without owning a subprocess."""
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def __call__(
+        self,
+        argv: Sequence[str],
+        *,
+        cwd: Path,
+        on_output: Callable[[str, str], None],
+    ) -> int:
+        del argv, cwd, on_output
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        raise AssertionError("cancellable executor finished unexpectedly")
+
+
 def request(kind: str, request_id: object = "request", **fields: object) -> str:
     return json.dumps({"id": request_id, "type": kind, **fields})
 
@@ -70,6 +98,65 @@ async def read_until_done(  # type: ignore[no-untyped-def]
 async def start(client: ClientConnection, **fields: object):  # type: ignore[no-untyped-def]
     await client.send(request("job.start", **fields))
     return await receive(client)
+
+
+def _read_pid_pair(path: Path) -> tuple[int, int]:
+    """Wait for the public test command to publish its parent and child process ids."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            parent, child = (int(value) for value in path.read_text().split())
+            return parent, child
+        except (OSError, ValueError):
+            time.sleep(0.01)
+    raise AssertionError(f"process ids were not written to {path}")
+
+
+def _pid_exists(pid: int) -> bool:
+    """Check process existence without treating a permission error as process death."""
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return any(
+            token == str(pid)
+            for line in result.stdout.splitlines()
+            for token in line.split()
+        )
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _kill_pid(pid: int) -> None:
+    """Best-effort test cleanup for a command left alive after a failed assertion."""
+    if pid <= 1 or pid == os.getpid() or not _pid_exists(pid):
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+    else:
+        os.kill(pid, signal.SIGKILL)
+
+
+def _wait_for_exit(pid: int) -> None:
+    """Wait briefly for a cancelled process tree to disappear, or fail with its pid."""
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if not _pid_exists(pid):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"cancelled process {pid} is still alive")
 
 
 @pytest.mark.parametrize("abort", [False, True], ids=["close", "abort"])
@@ -315,6 +402,150 @@ def test_running_job_limit_refuses_a_start_but_not_reads(project: Path) -> None:
                 assert len(fake.calls) == job_module._RUNNING_LIMIT
         finally:
             fake.finish.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_mutating_jobs_are_exclusive_but_reads_run_beside_one(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        fake = FakeExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                # Both commands are reversible in the confirmation UX, but each writes project
+                # state and must therefore share the mutation slot.
+                first = await start(client, command_id="registry")
+                assert first["ok"] is True, first
+                active_id = first["job"]["id"]
+                await asyncio.wait_for(fake.started.wait(), 3)
+
+                refused = await start(client, command_id="health-fix")
+                assert refused["error"]["code"] == "busy"
+                assert refused["error"]["job_id"] == active_id
+                assert active_id in refused["error"]["message"]
+
+                read = await start(client, command_id="diff")
+                assert read["ok"] is True, read
+                await asyncio.sleep(0)
+                assert len(fake.calls) == 2
+                fake.finish.set()
+                await read_until_done(client, active_id)
+                await read_until_done(client, read["job"]["id"])
+        finally:
+            fake.finish.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_job_cancel_requires_confirmation_stops_task_and_releases_mutation(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        fake = CancellableExecutor()
+        server = ConsoleServer(project, jobs=JobService(project, executor=fake))
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                started = await start(client, command_id="registry")
+                assert started["ok"] is True, started
+                job_id = started["job"]["id"]
+                await asyncio.wait_for(fake.started.wait(), 3)
+
+                missing = await start(
+                    client,
+                    command_id="diff",
+                )
+                assert missing["ok"] is True, missing
+                await client.send(request("job.cancel", job_id=job_id))
+                refused = await receive(client)
+                assert refused["error"]["code"] == "confirmation_required"
+                assert not fake.cancelled.is_set()
+
+                await client.send(
+                    request("job.cancel", job_id=job_id, confirmed=True)
+                )
+                cancelled = await receive(client)
+                assert cancelled["ok"] is True, cancelled
+                assert cancelled["job"]["id"] == job_id
+                assert cancelled["job"]["phase"] == "cancelled"
+                assert cancelled["job"]["done"] is True
+                assert cancelled["job"]["returncode"] is None
+                assert fake.cancelled.is_set()
+
+                replacement = await start(client, command_id="health-fix")
+                assert replacement["ok"] is True, replacement
+                await client.send(
+                    request(
+                        "job.cancel",
+                        job_id=replacement["job"]["id"],
+                        confirmed=True,
+                    )
+                )
+                assert (await receive(client))["job"]["phase"] == "cancelled"
+                await client.send(
+                    request("job.cancel", job_id=missing["job"]["id"], confirmed=True)
+                )
+                assert (await receive(client))["job"]["phase"] == "cancelled"
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_public_job_cancel_terminates_the_full_process_tree(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid_file = project / "cancel-tree.pids"
+    script = (
+        "import os, pathlib, subprocess, sys, time; "
+        "path = pathlib.Path(sys.argv[1]); "
+        "child = subprocess.Popen([sys.executable, '-u', '-c', "
+        "'import time; time.sleep(60)']); "
+        "path.write_text(f'{os.getpid()} {child.pid}'); "
+        "print('ready', flush=True); child.wait()"
+    )
+
+    def process_tree_command(
+        _argv: Sequence[str], _repo: Path, *, dev_environment: bool = False
+    ) -> list[str]:
+        del _argv, _repo, dev_environment
+        return [sys.executable, "-u", "-c", script, str(pid_file)]
+
+    monkeypatch.setattr(job_module, "process_argv", process_tree_command)
+
+    async def scenario() -> None:
+        server = ConsoleServer(project)
+        parent_pid: int | None = None
+        child_pid: int | None = None
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                started = await start(client, command_id="registry")
+                assert started["ok"] is True, started
+                job_id = started["job"]["id"]
+                parent_pid, child_pid = await asyncio.to_thread(_read_pid_pair, pid_file)
+                assert parent_pid is not None and child_pid is not None
+                assert _pid_exists(parent_pid)
+                assert _pid_exists(child_pid)
+
+                await client.send(
+                    request("job.cancel", job_id=job_id, confirmed=True)
+                )
+                cancelled = await receive(client)
+                assert cancelled["ok"] is True, cancelled
+                assert cancelled["job"]["phase"] == "cancelled"
+                assert cancelled["job"]["done"] is True
+                await asyncio.to_thread(_wait_for_exit, child_pid)
+        finally:
+            if parent_pid is not None:
+                await asyncio.to_thread(_kill_pid, parent_pid)
+            if child_pid is not None:
+                await asyncio.to_thread(_kill_pid, child_pid)
             await server.close()
 
     asyncio.run(scenario())

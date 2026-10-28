@@ -66,7 +66,12 @@ _REPO = "repo"
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """Запись команды в каталоге: параметры CLI с плейсхолдерами `{repo}` и `{<входное поле>}`, класс обратимости и целевая функция."""
+    """Запись команды и её server-side safety metadata.
+
+    ``reversibility`` describes the confirmation UX. ``mutates`` is a separate execution
+    boundary: a command can be reversible while still writing a cache, ledger record, or
+    generated project file, so those commands must still be serialized by the console server.
+    """
 
     key: str
     title: str
@@ -77,6 +82,8 @@ class CatalogEntry:
     # Runs `python` under the repository's dev environment (`.harness/.venv`: pytest, mypy, ...)
     # instead of the console's own interpreter - only for this repository's verification script.
     dev_environment: bool = False
+    # True when the command can write project state, including reversible caches or generated files.
+    mutates: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
@@ -129,6 +136,7 @@ def seed_update_entry(paths: Sequence[str]) -> CatalogEntry:
         ("harness", "update", "{repo}", *flags),
         Reversibility.OVERWRITES_MANAGED_FILES,
         "harness/bin/harness.py:cmd_update",
+        mutates=True,
     )
 
 
@@ -141,6 +149,7 @@ def parsers_install_entry(languages: Sequence[str]) -> CatalogEntry:
         ("harness", "parsers", "install", "{repo}", *flags),
         Reversibility.DOWNLOADS_FILES,
         "harness/bin/harness.py:cmd_parsers",
+        mutates=True,
     )
 
 
@@ -169,6 +178,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "init", "{repo}"),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"{_HARNESS_CLI}:cmd_init",
+        mutates=True,
     ),
     CatalogEntry(
         "update",
@@ -176,6 +186,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "update", "{repo}"),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"{_HARNESS_CLI}:cmd_update",
+        mutates=True,
     ),
     CatalogEntry(
         "update-force-managed",
@@ -183,6 +194,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "update", "{repo}", "--force-managed-files"),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"{_HARNESS_CLI}:cmd_update",
+        mutates=True,
     ),
     CatalogEntry(
         "update-force-seed",
@@ -190,6 +202,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "update", "{repo}", "--force-seed-files"),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"{_HARNESS_CLI}:cmd_update",
+        mutates=True,
     ),
     CatalogEntry(
         "diff",
@@ -204,6 +217,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "adopt", "{repo}"),
         Reversibility.OVERWRITES_MANAGED_FILES,
         f"{_HARNESS_CLI}:cmd_adopt",
+        mutates=True,
     ),
     CatalogEntry(
         "cleanup",
@@ -225,6 +239,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "cleanup", "{repo}", "--apply"),
         Reversibility.DELETES_LOCAL_DATA,
         f"{_HARNESS_CLI}:cmd_cleanup",
+        mutates=True,
     ),
     CatalogEntry(
         "cleanup-hard-apply",
@@ -242,6 +257,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         Reversibility.DELETES_LOCAL_DATA,
         f"{_HARNESS_CLI}:cmd_cleanup",
         typed_confirmation="HARD",
+        mutates=True,
     ),
     CatalogEntry(
         "uninstall",
@@ -257,6 +273,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         Reversibility.DELETES_LOCAL_DATA,
         f"{_HARNESS_CLI}:cmd_uninstall",
         typed_confirmation="UNINSTALL",
+        mutates=True,
     ),
     CatalogEntry(
         "registry",
@@ -264,6 +281,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "registry", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_registry",
+        mutates=True,
     ),
     CatalogEntry(
         "lock-project-skills",
@@ -271,6 +289,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "lock-project-skills", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_lock_project_skills",
+        mutates=True,
     ),
     CatalogEntry(
         "list",
@@ -292,6 +311,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "health", "{repo}", "--fix"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_health",
+        mutates=True,
     ),
     CatalogEntry(
         "health-online-fix",
@@ -299,6 +319,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "health", "{repo}", "--online", "--fix"),
         Reversibility.EXTERNAL_CHANGE,
         f"{_HARNESS_CLI}:cmd_health",
+        mutates=True,
     ),
     CatalogEntry(
         "repo-map",
@@ -313,6 +334,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ),
         Reversibility.REVERSIBLE,
         "harness/repo_map/repo_map.py:main",
+        mutates=True,
     ),
     CatalogEntry(
         "parser-bundle",
@@ -327,6 +349,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ),
         Reversibility.REVERSIBLE,
         "scripts/build_parser_bundle.py:main",
+        mutates=True,
     ),
     CatalogEntry(
         "verify",
@@ -335,6 +358,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         Reversibility.REVERSIBLE,
         "scripts/verify.py:main",
         dev_environment=True,
+        mutates=True,
     ),
     CatalogEntry(
         "worktree-remove",
@@ -342,6 +366,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "worktree-remove", "{repo}", "{worktree}"),
         Reversibility.DELETES_LOCAL_DATA,
         f"{_HARNESS_CLI}:cmd_worktree_remove",
+        mutates=True,
     ),
     CatalogEntry(
         "ledger-migrate",
@@ -349,6 +374,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("python", _COORDINATOR_SCRIPT, "--repo", "{repo}", "ledger", "migrate"),
         Reversibility.REVERSIBLE,
         f"{_COORDINATOR}:migrate_ledger",
+        mutates=True,
     ),
     CatalogEntry(
         "ledger-clean",
@@ -356,6 +382,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         ("python", _COORDINATOR_SCRIPT, "--repo", "{repo}", "ledger", "clean"),
         Reversibility.DELETES_LOCAL_DATA,
         f"{_COORDINATOR}:clean_ledger",
+        mutates=True,
     ),
     CatalogEntry(
         "ledger-reset",
@@ -373,6 +400,7 @@ HARNESS_COMMANDS: tuple[CatalogEntry, ...] = (
         Reversibility.DELETES_LOCAL_DATA,
         f"{_COORDINATOR}:reset_ledger",
         typed_confirmation="RESET",
+        mutates=True,
     ),
 )
 
@@ -384,6 +412,7 @@ MEMORY_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "memory", "build", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_memory",
+        mutates=True,
     ),
     CatalogEntry(
         "memory-sync",
@@ -391,6 +420,7 @@ MEMORY_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "memory", "sync", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_memory",
+        mutates=True,
     ),
     CatalogEntry(
         "memory-rebuild",
@@ -398,5 +428,6 @@ MEMORY_COMMANDS: tuple[CatalogEntry, ...] = (
         ("harness", "memory", "rebuild", "{repo}"),
         Reversibility.REVERSIBLE,
         f"{_HARNESS_CLI}:cmd_memory",
+        mutates=True,
     ),
 )

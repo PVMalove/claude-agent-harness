@@ -38,13 +38,19 @@ _SKIPPED_DESTS = frozenset({"help", "repo", "state_dir"})
 
 @dataclass(frozen=True)
 class _Target:
-    """Целевая подкоманда координатора: путь CLI, заголовок, группа меню и класс обратимости."""
+    """Целевая подкоманда и её server-side safety metadata.
+
+    ``reversibility`` controls confirmation wording. ``mutates`` independently marks commands
+    that can write ledger evidence or other project state, including commands whose result is
+    reversible.
+    """
 
     key: str
     path: tuple[str, ...]
     title: str
     group: str
     reversibility: Reversibility
+    mutates: bool = False
 
 
 _REVERSIBLE = Reversibility.REVERSIBLE
@@ -56,15 +62,37 @@ _TERMINAL = Reversibility.TERMINAL_COORDINATOR_ACTION
 # asks too (a different reason), and everything else stays reversible.
 _TARGETS: tuple[_Target, ...] = (
     _Target("batch-list", ("batch", "list"), "Список batch", "batch", _REVERSIBLE),
-    _Target("batch-create", ("batch", "create"), "Создать batch", "batch", _REVERSIBLE),
     _Target(
-        "batch-approve", ("batch", "approve"), "Утвердить batch", "batch", _TERMINAL
+        "batch-create",
+        ("batch", "create"),
+        "Создать batch",
+        "batch",
+        _REVERSIBLE,
+        mutates=True,
     ),
     _Target(
-        "batch-abandon", ("batch", "abandon"), "Отказаться от batch", "batch", _TERMINAL
+        "batch-approve",
+        ("batch", "approve"),
+        "Утвердить batch",
+        "batch",
+        _TERMINAL,
+        mutates=True,
     ),
     _Target(
-        "batch-resume", ("batch", "resume"), "Возобновить batch", "batch", _REVERSIBLE
+        "batch-abandon",
+        ("batch", "abandon"),
+        "Отказаться от batch",
+        "batch",
+        _TERMINAL,
+        mutates=True,
+    ),
+    _Target(
+        "batch-resume",
+        ("batch", "resume"),
+        "Возобновить batch",
+        "batch",
+        _REVERSIBLE,
+        mutates=True,
     ),
     _Target(
         "batch-attention-check",
@@ -72,6 +100,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Проверить, требует ли batch внимания",
         "batch",
         _REVERSIBLE,
+        mutates=True,
     ),
     _Target(
         "batch-attention-resolve",
@@ -79,9 +108,15 @@ _TARGETS: tuple[_Target, ...] = (
         "Снять сигнал внимания с batch",
         "batch",
         _TERMINAL,
+        mutates=True,
     ),
     _Target(
-        "batch-decide", ("batch", "decide"), "Решение по batch", "decide", _TERMINAL
+        "batch-decide",
+        ("batch", "decide"),
+        "Решение по batch",
+        "decide",
+        _TERMINAL,
+        mutates=True,
     ),
     _Target(
         "batch-decision-packet",
@@ -96,6 +131,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Статус dispatch",
         "dispatch",
         _REVERSIBLE,
+        mutates=True,
     ),
     _Target(
         "dispatch-create",
@@ -103,6 +139,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Создать dispatch",
         "dispatch",
         _TERMINAL,
+        mutates=True,
     ),
     _Target(
         "dispatch-cancel",
@@ -110,6 +147,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Отменить dispatch",
         "dispatch",
         _TERMINAL,
+        mutates=True,
     ),
     _Target(
         "dispatch-send",
@@ -117,15 +155,24 @@ _TARGETS: tuple[_Target, ...] = (
         "Отправить dispatch",
         "dispatch",
         Reversibility.EXTERNAL_CHANGE,
+        mutates=True,
     ),
     _Target("qa-status", ("qa", "status"), "Статус QA lane", "qa", _REVERSIBLE),
-    _Target("risk-assess", ("risk", "assess"), "Оценить риск", "risk", _REVERSIBLE),
+    _Target(
+        "risk-assess",
+        ("risk", "assess"),
+        "Оценить риск",
+        "risk",
+        _REVERSIBLE,
+        mutates=True,
+    ),
     _Target(
         "context-package-register",
         ("context-package", "register"),
         "Зарегистрировать Context Package",
         "context-package",
         _REVERSIBLE,
+        mutates=True,
     ),
     _Target(
         "ledger-status", ("ledger", "status"), "Состояние ledger", "ledger", _REVERSIBLE
@@ -144,6 +191,7 @@ _TARGETS: tuple[_Target, ...] = (
         "Снять lock ledger",
         "ledger",
         _TERMINAL,
+        mutates=True,
     ),
 )
 
@@ -173,6 +221,7 @@ class CoordinatorCommand:
     path: tuple[str, ...]
     reversibility: Reversibility
     fields: tuple[CoordinatorField, ...]
+    mutates: bool = False
 
     @property
     def needs_confirmation(self) -> bool:
@@ -294,6 +343,7 @@ def _build_commands() -> tuple[CoordinatorCommand, ...]:
                 path=target.path,
                 reversibility=target.reversibility,
                 fields=_fields(subparser(root, target.path)),
+                mutates=target.mutates,
             )
         )
     return tuple(commands)

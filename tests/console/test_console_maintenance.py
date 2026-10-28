@@ -8,12 +8,14 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
+from typing import cast
 
 import pytest
 
 from harness import cleanup
 from harness.console.maintenance import load_maintenance
+from harness.console import runner as runner_module
 from harness.console.runner import HarnessRuns, capturing_runner
 from harness.orchestration.runtime_client import (
     RuntimeClient,
@@ -215,6 +217,106 @@ def test_streaming_decodes_split_utf8_and_preserves_text_newlines(
     )
     assert result.stdout == "Я\nend\n"
     assert result.stderr == "�" and result.returncode == 0
+
+
+def test_capturing_runner_terminates_the_child_when_cancelled(tmp_path: Path) -> None:
+    started = Event()
+    cancelled = Event()
+    results: list[subprocess.CompletedProcess[str]] = []
+
+    def capture() -> None:
+        results.append(
+            capturing_runner(
+                [
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    "import time; print('ready', flush=True); time.sleep(60)",
+                ],
+                cwd=tmp_path,
+                on_output=lambda channel, text: started.set()
+                if channel == "stdout" and "ready" in text
+                else None,
+                cancel_event=cancelled,
+            )
+        )
+
+    worker = Thread(target=capture)
+    worker.start()
+    assert started.wait(3)
+    cancelled.set()
+    worker.join(3)
+    assert not worker.is_alive()
+    assert len(results) == 1 and results[0].returncode != 0
+
+
+def test_windows_tree_stop_uses_job_object_after_root_exits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A returned root PID must not make Windows cancellation lose its descendants."""
+
+    class FakeProcess:
+        pid = 1234
+        returncode = 0
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    class FakeJob:
+        terminated = False
+
+        def terminate(self) -> bool:
+            self.terminated = True
+            return True
+
+    taskkill_calls: list[object] = []
+
+    def taskkill(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        taskkill_calls.append((args, kwargs))
+        return subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(runner_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(subprocess, "run", taskkill)
+    process = FakeProcess()
+    job = FakeJob()
+
+    stopped = runner_module._stop_process_tree(
+        cast("subprocess.Popen[bytes]", process),
+        force=True,
+        windows_job=cast(runner_module._WindowsJob, job),
+    )
+
+    assert stopped is True
+    assert job.terminated and not process.killed
+    assert taskkill_calls == []
+
+
+def test_windows_tree_stop_reports_taskkill_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback must expose a failed taskkill instead of hiding it behind check=False."""
+
+    class FakeProcess:
+        pid = 1234
+        killed = False
+
+        def kill(self) -> None:
+            self.killed = True
+
+    def taskkill(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        del args, kwargs
+        return subprocess.CompletedProcess([], 1)
+
+    monkeypatch.setattr(runner_module, "_is_windows", lambda: True)
+    monkeypatch.setattr(subprocess, "run", taskkill)
+    process = FakeProcess()
+
+    stopped = runner_module._stop_process_tree(
+        cast("subprocess.Popen[bytes]", process), force=True
+    )
+
+    assert stopped is False and process.killed
 
 
 @pytest.mark.parametrize("state", ["active", "completed", "unavailable"])

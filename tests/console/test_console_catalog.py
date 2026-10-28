@@ -13,6 +13,7 @@ import pytest
 from harness.console.catalog import (
     CONFIRMATION_REASONS,
     HARNESS_COMMANDS,
+    MEMORY_COMMANDS,
     CatalogEntry,
     Reversibility,
     process_argv,
@@ -76,6 +77,36 @@ def test_irreversible_commands_carry_their_confirmation_class() -> None:
         "worktree-remove": Reversibility.DELETES_LOCAL_DATA,
     }
     assert set(CONFIRMATION_REASONS) == set(Reversibility) - {Reversibility.REVERSIBLE}
+
+
+def test_mutation_boundary_is_explicit_and_includes_reversible_writers() -> None:
+    """Reversibility controls confirmation; mutation controls server serialization."""
+    expected_mutating = {
+        "init",
+        "update",
+        "update-force-managed",
+        "update-force-seed",
+        "adopt",
+        "cleanup-apply",
+        "cleanup-hard-apply",
+        "uninstall-apply",
+        "registry",
+        "lock-project-skills",
+        "health-fix",
+        "health-online-fix",
+        "repo-map",
+        "parser-bundle",
+        "verify",
+        "worktree-remove",
+        "ledger-migrate",
+        "ledger-clean",
+        "ledger-reset",
+    }
+    assert {entry.key for entry in HARNESS_COMMANDS if entry.mutates} == expected_mutating
+    assert all(entry.mutates for entry in MEMORY_COMMANDS)
+    assert ENTRIES["registry"].reversibility is Reversibility.REVERSIBLE
+    assert ENTRIES["health-fix"].reversibility is Reversibility.REVERSIBLE
+    assert not ENTRIES["health"].mutates
 
 
 def test_typed_confirmations_match_the_cli_safeguard_words() -> None:

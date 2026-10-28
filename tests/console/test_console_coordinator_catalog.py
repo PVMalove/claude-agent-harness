@@ -126,6 +126,29 @@ EXPECTED_REVERSIBILITY = {
     "ledger-release-lock": Reversibility.TERMINAL_COORDINATOR_ACTION,
 }
 
+EXPECTED_MUTATES = {
+    "batch-create": True,
+    "batch-approve": True,
+    "batch-abandon": True,
+    "batch-decide": True,
+    "batch-decision-packet": False,
+    "dispatch-create": True,
+    "dispatch-cancel": True,
+    "dispatch-send": True,
+    # dispatch status can persist the first observed worker-exit evidence.
+    "dispatch-status": True,
+    "risk-assess": True,
+    "context-package-register": True,
+    "batch-list": False,
+    "batch-resume": True,
+    "batch-attention-check": True,
+    "batch-attention-resolve": True,
+    "qa-status": False,
+    "ledger-status": False,
+    "ledger-lock-status": False,
+    "ledger-release-lock": True,
+}
+
 
 def test_catalog_covers_exactly_the_operator_facing_coordinator_subcommands() -> None:
     """Проверить, что каталог содержит ровно все подкоманды координатора для оператора."""
@@ -138,6 +161,15 @@ def test_reversibility_matches_the_approved_architect_design() -> None:
     assert {
         key: entry.reversibility for key, entry in ENTRIES.items()
     } == EXPECTED_REVERSIBILITY
+
+
+def test_mutation_boundary_is_independent_from_reversibility() -> None:
+    """Reversible coordinator writers still occupy the server's project mutation slot."""
+    assert {key: entry.mutates for key, entry in ENTRIES.items()} == EXPECTED_MUTATES
+    assert ENTRIES["batch-create"].reversibility is Reversibility.REVERSIBLE
+    assert ENTRIES["batch-resume"].reversibility is Reversibility.REVERSIBLE
+    assert ENTRIES["risk-assess"].reversibility is Reversibility.REVERSIBLE
+    assert ENTRIES["context-package-register"].reversibility is Reversibility.REVERSIBLE
 
 
 def _live_actions(entry: CoordinatorCommand) -> list[argparse.Action]:

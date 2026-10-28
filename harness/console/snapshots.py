@@ -356,15 +356,25 @@ def encode(reply: dict[str, object]) -> str:
 
 
 def error_reply(
-    code: str, id: str | int | None, type: str | None, message: str | None = None
+    code: str,
+    id: str | int | None,
+    type: str | None,
+    message: str | None = None,
+    details: dict[str, object] | None = None,
 ) -> str:
+    error: dict[str, object] = {
+        "code": code,
+        "message": message or _ERRORS[code],
+    }
+    if details:
+        error.update(details)
     return encode(
         {
             "v": PROTOCOL_VERSION,
             "id": id,
             "type": type,
             "ok": False,
-            "error": {"code": code, "message": message or _ERRORS[code]},
+            "error": error,
         }
     )
 

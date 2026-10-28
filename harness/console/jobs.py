@@ -1,7 +1,8 @@
 """Server-owned catalog commands and cursor-based WebSocket output.
 
 Requests use ``job.start(command_id, values?, confirmed?, confirmation?, plan_digest?)``,
-``job.get/job.subscribe(job_id, cursor=0)`` and ``job.list``. Replies carry a ``job`` snapshot, or
+``job.cancel(job_id, confirmed?)``, ``job.get/job.subscribe(job_id, cursor=0)`` and ``job.list``.
+Replies carry a ``job`` snapshot, or
 the ``jobs`` summaries for ``job.list``. The cursor counts output fragments, starting at zero. Each
 snapshot contains the next bounded batch and its new cursor; ``done`` means execution and replay
 ended. Subscriptions own no execution task. A job keeps a bounded output, and ``truncated`` marks
@@ -11,14 +12,21 @@ the cut. Jobs live until server exit, except that only the newest finished ones 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
+import threading
 import uuid
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple, Protocol, cast
 
-from .catalog import HARNESS_COMMANDS, MEMORY_COMMANDS, CatalogEntry, process_argv
+from .catalog import (
+    HARNESS_COMMANDS,
+    MEMORY_COMMANDS,
+    CatalogEntry,
+    process_argv,
+)
 from .coordinator_catalog import COORDINATOR_COMMANDS, CoordinatorCommand
 from .runner import capturing_runner
 from .snapshots import (
@@ -55,6 +63,7 @@ _FIELDS = {
     },
     "job.get": {"id", "type", "job_id", "cursor"},
     "job.subscribe": {"id", "type", "job_id", "cursor"},
+    "job.cancel": {"id", "type", "job_id", "confirmed"},
     "job.list": {"id", "type"},
 }
 _ERRORS = {
@@ -64,11 +73,12 @@ _ERRORS = {
     "unavailable_command": "The command is unavailable in this project.",
     "start_failed": "The command could not be prepared.",
     "busy": "Too many running jobs.",
+    "not_running": "The job is not running.",
     "unknown_job": "Unknown job.",
     "invalid_cursor": "Cursor is outside the job output.",
 }
 
-Phase = Literal["running", "completed", "failed"]
+Phase = Literal["running", "completed", "failed", "cancelled"]
 
 
 class JobExecutor(Protocol):
@@ -84,23 +94,56 @@ class JobExecutor(Protocol):
 
 
 async def _default_executor(
-    argv: Sequence[str], *, cwd: Path, on_output: Callable[[str, str], None]
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    on_output: Callable[[str, str], None],
+    cancel_event: threading.Event | None = None,
 ) -> int:
     loop = asyncio.get_running_loop()
 
     def emit(channel: str, text: str) -> None:
         loop.call_soon_threadsafe(on_output, channel, text)
 
-    result = await asyncio.to_thread(capturing_runner, argv, cwd=cwd, on_output=emit)
+    # Keep injected test runners and embedders compatible with the pre-cancellation signature.
+    supports_cancellation = _runner_supports_cancellation(cancel_event)
+    if supports_cancellation:
+        assert cancel_event is not None
+        result = await asyncio.to_thread(
+            capturing_runner,
+            argv,
+            cwd=cwd,
+            on_output=emit,
+            cancel_event=cancel_event,
+        )
+    else:
+        result = await asyncio.to_thread(capturing_runner, argv, cwd=cwd, on_output=emit)
     return result.returncode
+
+
+def _runner_supports_cancellation(cancel_event: threading.Event | None) -> bool:
+    """Allow tests and embedders that inject the pre-cancellation runner signature."""
+    if cancel_event is None:
+        return False
+    parameters = inspect.signature(capturing_runner).parameters
+    return "cancel_event" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
 
 
 class JobRejected(Exception):
     """A job request refused after its envelope was read; the message defaults to the code's."""
 
-    def __init__(self, code: str, message: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str | None = None,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
         super().__init__(code)
         self.code, self.message = code, message or _ERRORS.get(code)
+        self.details = dict(details or {})
 
 
 class _Fragment(NamedTuple):
@@ -112,12 +155,16 @@ class _Fragment(NamedTuple):
 class _Job:
     id: str
     command_id: str
+    mutating: bool = False
     output: list[_Fragment] = field(default_factory=list)
     output_chars: int = 0
     truncated: bool = False
     phase: Phase = "running"
     returncode: int | None = None
     error: str = ""
+    cancel_requested: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event)
+    task: asyncio.Task[None] | None = None
     # Replaced on every change, so a reader waits on the event it saw before it read.
     next_change: asyncio.Event = field(default_factory=asyncio.Event)
 
@@ -179,7 +226,12 @@ def job_request_type(raw: str) -> str | None:
 
 
 class JobService:
-    """One server's job admission, command execution, bounded output and independent readers."""
+    """One server's job admission, command execution, bounded output and independent readers.
+
+    The mutation slot is deliberately owned by this server instance. ``ConsoleServer`` acquires
+    the project's ``Discovery`` lock before exposing a ``JobService``, so two externally reachable
+    services for one project cannot run concurrently.
+    """
 
     def __init__(
         self, repo: Path, *, executor: JobExecutor = _default_executor
@@ -194,10 +246,22 @@ class JobService:
         self._catalog = {entry.key: entry for entry in entries}
         self._jobs: dict[str, _Job] = {}
         self._tasks: set[asyncio.Task[None]] = set()
+        self._active_mutation: _Job | None = None
 
     @property
     def active_count(self) -> int:
         return sum(job.phase == "running" for job in self._jobs.values())
+
+    @property
+    def active_mutation_id(self) -> str | None:
+        """The id held by the project's one mutating job, if one is still running."""
+        job = self._active_mutation
+        return job.id if job is not None and job.phase == "running" else None
+
+    @staticmethod
+    def _is_mutating(entry: CatalogEntry | CoordinatorCommand) -> bool:
+        """Use the catalog's explicit mutation boundary, independent of confirmation UX."""
+        return entry.mutates
 
     def _start(self, body: Mapping[str, object]) -> _Job:
         command_id = body.get("command_id")
@@ -232,8 +296,6 @@ class JobService:
             isinstance(digest, str) and _PLAN_DIGEST.fullmatch(digest)
         ):
             raise JobRejected("plan_required")
-        if self.active_count >= _RUNNING_LIMIT:
-            raise JobRejected("busy")
         try:
             available = entry.available(self.repo)
             argv = process_argv(
@@ -245,33 +307,95 @@ class JobService:
             raise JobRejected("start_failed", type(exc).__name__) from None
         if not available:
             raise JobRejected("unavailable_command")
+        mutating = self._is_mutating(entry)
+        if mutating and self._active_mutation is not None:
+            active = self._active_mutation
+            if active.phase == "running":
+                raise JobRejected(
+                    "busy",
+                    f"Busy: {active.id}",
+                    {"job_id": active.id},
+                )
+            self._active_mutation = None
+        if self.active_count >= _RUNNING_LIMIT:
+            raise JobRejected("busy")
         if isinstance(digest, str):
             argv += ["--plan-digest", digest]
-        job = _Job(uuid.uuid4().hex, command_id)
+        job = _Job(uuid.uuid4().hex, command_id, mutating)
         self._jobs[job.id] = job
         task = asyncio.create_task(self._execute(job, argv))
+        job.task = task
+        if mutating:
+            self._active_mutation = job
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return job
 
     async def _execute(self, job: _Job, argv: list[str]) -> None:
         try:
-            job.returncode = await self._executor(
-                argv, cwd=self.repo, on_output=job.append
-            )
-            job.phase = "completed"
+            if self._executor is _default_executor:
+                job.returncode = await self._executor(
+                    argv,
+                    cwd=self.repo,
+                    on_output=job.append,
+                    cancel_event=job.cancel_event,
+                )
+            else:
+                job.returncode = await self._executor(
+                    argv, cwd=self.repo, on_output=job.append
+                )
+            if job.cancel_requested:
+                job.returncode = None
+                job.phase, job.error = "cancelled", "cancelled"
+            else:
+                job.phase = "completed"
         except asyncio.CancelledError:
-            job.phase, job.error = "failed", "CancelledError"
-            raise
+            job.returncode = None
+            job.phase, job.error = (
+                ("cancelled", "cancelled")
+                if job.cancel_requested
+                else ("failed", "CancelledError")
+            )
         except Exception as exc:
-            job.phase, job.error = "failed", type(exc).__name__
+            if job.cancel_requested:
+                job.returncode = None
+                job.phase, job.error = "cancelled", "cancelled"
+            else:
+                job.phase, job.error = "failed", type(exc).__name__
         finally:
+            if self._active_mutation is job:
+                self._active_mutation = None
             job.notify()
             finished = [
                 key for key, kept in self._jobs.items() if kept.phase != "running"
             ]
             for key in finished[:-_KEPT_FINISHED]:
                 del self._jobs[key]
+
+    async def _cancel(self, body: Mapping[str, object]) -> _Job:
+        """Confirm and stop one running job, waiting until its process/task has ended."""
+        job = self._requested_job(body)
+        confirmed = body.get("confirmed", False)
+        if not isinstance(confirmed, bool):
+            raise JobRejected("bad_request")
+        if not confirmed:
+            raise JobRejected("confirmation_required")
+        if job.phase != "running" or job.task is None:
+            raise JobRejected("not_running")
+        job.cancel_requested = True
+        job.cancel_event.set()
+        if self._executor is _default_executor and _runner_supports_cancellation(
+            job.cancel_event
+        ):
+            # The default executor observes the event and terminates its child process. A shield
+            # keeps a client disconnect from cancelling the server-owned execution task.
+            await asyncio.shield(job.task)
+        else:
+            # Test and embedders may provide a plain async executor. Task cancellation is the
+            # only cancellation contract available to such an executor.
+            job.task.cancel()
+            await asyncio.gather(job.task, return_exceptions=True)
+        return job
 
     def _requested_job(self, body: Mapping[str, object]) -> _Job:
         job_id = body.get("job_id")
@@ -300,9 +424,12 @@ class JobService:
                 jobs = [job.summary() for job in self._jobs.values()]
                 yield encode({**envelope, "ok": True, "jobs": jobs})
                 return
-            job = (
-                self._start(body) if kind == "job.start" else self._requested_job(body)
-            )
+            if kind == "job.start":
+                job = self._start(body)
+            elif kind == "job.cancel":
+                job = await self._cancel(body)
+            else:
+                job = self._requested_job(body)
             cursor = body.get("cursor", 0)
             while True:
                 next_change = job.next_change
@@ -316,7 +443,13 @@ class JobService:
                 else:
                     await asyncio.sleep(0)
         except JobRejected as rejected:
-            yield error_reply(rejected.code, request_id, echoed, rejected.message)
+            yield error_reply(
+                rejected.code,
+                request_id,
+                echoed,
+                rejected.message,
+                rejected.details,
+            )
 
     async def close(self) -> None:
         """An explicit server shutdown waits for its executions, so no command is abandoned
