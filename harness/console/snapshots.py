@@ -27,6 +27,7 @@ MAX_ID_CHARS = 64
 HOME_REQUEST = "home.snapshot"
 
 PROBLEMS_LIMIT = 100
+SOURCE_TYPES_LIMIT = 32
 MESSAGE_BYTES = 300
 ID_BYTES = 100
 
@@ -125,9 +126,27 @@ class HomeSnapshot:
         return asdict(self)
 
 
+_SHORT_ESCAPES = frozenset('"\\\b\f\n\r\t')
+
+
+def _wire_cost(char: str) -> int:
+    """Bytes `char` takes inside a JSON string: a quote, a backslash or a short escape is two,
+    any other control character is six, everything else is its UTF-8 length."""
+    if char in _SHORT_ESCAPES:
+        return 2
+    if char < " ":
+        return 6
+    return len(char.encode("utf-8", errors="replace"))
+
+
 def _clip(text: str, limit: int) -> str:
-    """At most `limit` UTF-8 bytes of `text`, cut on a character boundary."""
-    return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
+    """The longest prefix of `text` that takes at most `limit` bytes as a JSON string."""
+    used = 0
+    for index, char in enumerate(text[:limit]):
+        used += _wire_cost(char)
+        if used > limit:
+            return text[:index]
+    return text[:limit]
 
 
 def _repo_map_card(data: DashboardData, view: RepoMapView | None) -> RepoMapCard:
@@ -135,8 +154,8 @@ def _repo_map_card(data: DashboardData, view: RepoMapView | None) -> RepoMapCard
     tier = found.group(1) if found else (view.tier if view is not None else None)
     head_map = (
         HeadMap(
-            origin=view.origin,
-            commit=view.commit,
+            origin=_clip(view.origin, ID_BYTES),
+            commit=_clip(view.commit, ID_BYTES),
             files=len(view.files),
             edges=len(view.edges),
             estimated_tokens=view.estimated_tokens,
@@ -150,16 +169,20 @@ def _repo_map_card(data: DashboardData, view: RepoMapView | None) -> RepoMapCard
 def _memory_card(data: DashboardData, status: MemoryStatus | None) -> MemoryCard:
     check = data.memory_index
     return MemoryCard(
-        state=MemoryState(check.status, _clip(check.message, MESSAGE_BYTES))
+        state=MemoryState(
+            _clip(check.status, ID_BYTES), _clip(check.message, MESSAGE_BYTES)
+        )
         if check is not None
         else None,
         policy=MemoryPolicy(
             enabled=status.enabled,
             active=status.active,
-            source_types=status.source_types,
+            source_types=tuple(
+                _clip(name, ID_BYTES) for name in status.source_types[:SOURCE_TYPES_LIMIT]
+            ),
             indexed=status.indexed,
             problem=_clip(status.problem, MESSAGE_BYTES),
-            inactive=status.inactive,
+            inactive=_clip(status.inactive, MESSAGE_BYTES),
             top_k=status.top_k,
             max_tokens=status.max_tokens,
         )
@@ -175,12 +198,16 @@ def build_home_snapshot(data: DashboardData, context: HomeContext) -> HomeSnapsh
         version=SCHEMA_VERSION,
         health=HealthCounters(data.ok, data.warn, data.fail, data.skipped),
         problems=tuple(
-            Problem(status, _clip(check_id, ID_BYTES), _clip(message, MESSAGE_BYTES))
+            Problem(
+                _clip(status, ID_BYTES),
+                _clip(check_id, ID_BYTES),
+                _clip(message, MESSAGE_BYTES),
+            )
             for status, check_id, message in data.problems[:PROBLEMS_LIMIT]
         ),
         problems_total=len(data.problems),
-        harness_version=data.harness_version,
-        drift=data.drift_state,
+        harness_version=_clip(data.harness_version, ID_BYTES),
+        drift=_clip(data.drift_state, ID_BYTES),
         active_batches=data.active_batches,
         repo_map=_repo_map_card(data, context.repo_map),
         memory=_memory_card(data, context.memory),

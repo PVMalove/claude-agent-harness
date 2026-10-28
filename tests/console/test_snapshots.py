@@ -218,6 +218,58 @@ def test_problems_are_capped_and_the_reply_stays_below_the_message_limit() -> No
     assert len(encoded) < MESSAGE_LIMIT
 
 
+@pytest.mark.parametrize("char", ['"', "\\", "\x01", "\n", "я", "😀"])
+def test_the_whole_reply_stays_below_the_message_limit_whatever_the_text(
+    char: str,
+) -> None:
+    """JSON escaping inflates quotes, backslashes (x2) and control characters (x6): the limit
+    holds for the serialized reply of any text, not for the raw text."""
+    from harness.console.server import MESSAGE_LIMIT
+
+    text = char * 500
+    data = DashboardData(
+        ok=0,
+        warn=0,
+        fail=250,
+        skipped=0,
+        repo_map_tier=text,
+        harness_version=text,
+        drift_state=text,
+        active_batches=None,
+        problems=tuple((text, text, text) for _ in range(250)),
+        memory_index=CheckResult(id="memory.index", group="memory", status="ok", message=text),
+    )
+    memory = MemoryStatus(
+        True, False, (text,) * 40, 3, problem=text, inactive=text, top_k=5, max_tokens=9
+    )
+    view = RepoMapView(
+        payload={},
+        origin=text,
+        commit=text,
+        tier="minimal",
+        parser="tree-sitter",
+        degradation_reason="",
+        estimated_tokens=1,
+        provenance={},
+        files=(),
+        edges=(),
+        diagnostics=(),
+    )
+    snapshot = build_home_snapshot(data, HomeContext(repo_map=view, memory=memory))
+
+    def collect(repo: Path) -> HomeSnapshot:
+        return snapshot
+
+    service = SnapshotService(Path("."), clock=FakeClock(), collect=collect)
+    raw = asyncio.run(respond('{"id": "x", "type": "home.snapshot"}', service))
+    assert len(raw.encode("utf-8")) < MESSAGE_LIMIT
+    reply = json.loads(raw)
+    assert reply["ok"] is True and reply["snapshot"]["problems_total"] == 250
+    shown = reply["snapshot"]["problems"]
+    assert 0 < len(shown) <= 100
+    assert shown[0]["message"] and text.startswith(shown[0]["message"])
+
+
 @pytest.mark.parametrize("raw", ["a" * 5000, "ё" * 400])
 def test_a_clipped_message_is_a_prefix_of_the_original(raw: str) -> None:
     data = DashboardData(
