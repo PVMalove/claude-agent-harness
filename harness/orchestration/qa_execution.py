@@ -23,19 +23,18 @@ from pathlib import Path
 from typing import cast
 
 from ..gate_runner.gate_runner import (
-    STAGE_ENV_JUNIT,
     CleanRoomPolicy,
     CommandGroup,
     GateRunnerError,
     GroupContext,
     GroupRun,
     StageCommand,
-    _approved_text,
-    _junit_failures,
-    _numbered,
+    approved_command_text,
     concise_evidence,
     format_command_log,
+    junit_failures,
     sanitise,
+    stage_ids,
 )
 from .contract import JsonObject
 from .core.constants import STATE_REL, FailureDomain
@@ -102,7 +101,7 @@ class RuntimeQaPolicy:
     ) -> list[GroupRun]:
         tmpdir = checkout.parent / "tmp"
         tmpdir.mkdir(exist_ok=True)
-        ids = [_numbered(group.group, len(group.commands)) for group in groups]
+        ids = [stage_ids(group.group, len(group.commands)) for group in groups]
         payload: JsonObject = {
             "dispatch_id": self.dispatch["dispatch_id"],
             "attempt": self.attempt,
@@ -242,7 +241,7 @@ class RuntimeQaPolicy:
         unreached: list[str] = []
         checks: list[dict[str, str]] = []
         for stage, command in zip(stages, group.commands, strict=True):
-            text = _approved_text(command)
+            text = approved_command_text(command)
             record = found.get(stage, {})
             domain = _domain(record.get("domain"))
             if domain is not None and self.domain is None:
@@ -275,7 +274,7 @@ class RuntimeQaPolicy:
                     stdout=sanitise(stdout),
                     stderr=sanitise(stderr),
                     duration_ms=int(cast(int, record.get("duration_ms", 0))),
-                    failed_nodeids=_junit_failures({STAGE_ENV_JUNIT: str(junit)}, checkout)
+                    failed_nodeids=junit_failures(junit, checkout)
                     if code != 0 and isinstance(junit, str)
                     else (),
                     not_run=domain is not None,

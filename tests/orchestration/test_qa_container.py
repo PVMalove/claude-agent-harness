@@ -243,7 +243,12 @@ def test_each_command_runs_in_its_own_container_and_a_failed_gate_fails_the_repo
         assert run[:4] == ["podman", "run", "--rm", "--init"]
         assert _flag(run, "--network") == ["none"]
         assert "--detach" not in run and not any("volume" in part for part in run)
-    assert runs[0][-3:] == ["-c", "make lint"][:0] + runs[0][-3:]
+    # The approved command text runs verbatim through /bin/sh -c of the pinned image.
+    images = repo.brief["runtime_images"]
+    assert isinstance(images, dict)
+    assert _flag(runs[0], "--entrypoint") == ["/bin/sh"]
+    assert runs[0][-3:] == [images["worker"], "-c", "make lint"]
+    assert runs[1][-3:] == [images["worker"], "-c", "make test"]
     assert not any(call[1] in ("commit", "push", "fetch") for call in repo.engine.calls())
     lane = repo.lane()
     assert (lane["lease"], lane["queue"]) == (None, [])

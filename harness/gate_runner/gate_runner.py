@@ -484,9 +484,9 @@ def _stage_environment(
     return command_env
 
 
-def _junit_failures(command_env: Mapping[str, str], checkout: Path) -> tuple[str, ...]:
-    """Exact failed nodeids from the JUnit report the command wrote; none for a missing or broken one."""
-    report = command_env.get(STAGE_ENV_JUNIT)
+def junit_failures(report: str | None, checkout: Path) -> tuple[str, ...]:
+    """Exact failed nodeids from the JUnit report a command wrote at ``report``; none for a missing
+    or broken one."""
     if not report:
         return ()
     try:
@@ -523,7 +523,7 @@ def _execute_commands(
         command_text = (
             prepared if isinstance(prepared, str) else subprocess.list2cmdline(prepared)
         )
-        approved_text = _approved_text(command)
+        approved_text = approved_command_text(command)
         command_env = _stage_environment(env, group, index, cold=cold)
         began = time.monotonic()
         try:
@@ -573,23 +573,23 @@ def _execute_commands(
                     stdout=sanitise(result.stdout or ""),
                     stderr=sanitise(result.stderr or ""),
                     duration_ms=duration_ms,
-                    failed_nodeids=_junit_failures(command_env, checkout)
+                    failed_nodeids=junit_failures(command_env.get(STAGE_ENV_JUNIT), checkout)
                     if result.returncode != 0
                     else (),
                 )
             )
         if result.returncode != 0 and stop_on_failure:
             if unreached is not None:
-                unreached.extend(_approved_text(item) for item in commands[index + 1 :])
+                unreached.extend(approved_command_text(item) for item in commands[index + 1 :])
             break
 
 
-def _approved_text(command: str | list[str]) -> str:
+def approved_command_text(command: str | list[str]) -> str:
     """The approved command as text: a string verbatim, an argument list as one command line."""
     return command if isinstance(command, str) else subprocess.list2cmdline(command)
 
 
-def _numbered(group: str, count: int) -> list[str]:
+def stage_ids(group: str, count: int) -> list[str]:
     """Stage ids of a group's commands: ``gate-1``, ``gate-2`` ..."""
     return [f"{group}-{number}" for number in range(1, count + 1)]
 
@@ -598,7 +598,7 @@ def _gate_entries(
     group: str, ran: Sequence[StageCommand], unreached: Sequence[str]
 ) -> list[tuple[str, StageCommand | None]]:
     """Evidence entries of one command group: the commands that ran, then those never reached."""
-    ids = _numbered(group, len(ran) + len(unreached))
+    ids = stage_ids(group, len(ran) + len(unreached))
     return [*zip(ids, ran, strict=False), *((i, None) for i in ids[len(ran) :])]
 
 
@@ -686,7 +686,7 @@ class HostExecutor:
         with _command_environment(checkout) as env:
             for group in groups:
                 if not _runs(group, failed):
-                    unreached = [_approved_text(item) for item in group.commands]
+                    unreached = [approved_command_text(item) for item in group.commands]
                     runs.append(GroupRun(group, [], unreached, [], True))
                     continue
                 ran: list[StageCommand] = []
@@ -1067,7 +1067,7 @@ def run_qa_stages(
                 _stage_record(QA_STAGE_PROJECT_FILE_CHECK, i) for i in checked.ran
             )
             entries.extend(
-                _gate_entries(QA_STAGE_GATE, (), [_approved_text(c) for c in gate])
+                _gate_entries(QA_STAGE_GATE, (), [approved_command_text(c) for c in gate])
             )
             return QAStagesResult(
                 stages=stages,

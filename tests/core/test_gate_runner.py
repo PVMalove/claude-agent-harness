@@ -26,7 +26,7 @@ from harness.gate_runner.gate_runner import (
     EvidenceContext,
     GroupContext,
     GroupRun,
-    _approved_text,
+    approved_command_text,
     GateRunnerError,
     LocalPolicy,
     _clean_room_python,
@@ -980,19 +980,19 @@ class _GroupPolicy:
             codes = self.results.get(group.group)
             if codes is None:
                 runs.append(
-                    GroupRun(group, [], [_approved_text(c) for c in group.commands], [], True)
+                    GroupRun(group, [], [approved_command_text(c) for c in group.commands], [], True)
                 )
                 continue
             ran = [
                 StageCommand(
-                    command=_approved_text(command),
-                    executed=_approved_text(command),
+                    command=approved_command_text(command),
+                    executed=approved_command_text(command),
                     exit_code=code,
                     output="",
                 )
                 for command, code in zip(group.commands, codes, strict=False)
             ]
-            unreached = [_approved_text(c) for c in group.commands[len(ran) :]]
+            unreached = [approved_command_text(c) for c in group.commands[len(ran) :]]
             checks = [
                 {"command": item.command, "result": "pass" if item.exit_code == 0 else "fail", "evidence": ""}
                 for item in ran
