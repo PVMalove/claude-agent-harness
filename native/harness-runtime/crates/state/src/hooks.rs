@@ -99,9 +99,10 @@ fn first_asked(step: &str, variables: &[&str]) -> bool {
 
 /// Like `reach`, for a step of the serving runtime (`state.write:before-begin`,
 /// `state.write:in-transaction`, `state.read:in-snapshot`, after the first `SELECT` of a snapshot
-/// that a read opens, and the steps of a launch of the supervisor: `execution.launch:before-begin`,
+/// that a read opens, the steps of a launch of the supervisor: `execution.launch:before-begin`,
 /// `execution.launch:in-transaction`, `execution.launch:intent`, `execution.launch:launched` and
-/// `execution.launch:receipt`): the pause and the failure happen once per process.
+/// `execution.launch:receipt`, and the pause `execution.stop:signalled` of a deadline stop): the
+/// pause and the failure happen once per process.
 #[cfg(debug_assertions)]
 pub fn reach_once(step: &str) -> Result<()> {
     if !first_asked(

@@ -232,6 +232,88 @@ def test_a_stop_begun_before_a_runtime_restart_is_driven_to_its_proof_by_reconci
     ]
 
 
+def test_a_stop_resumed_within_its_grace_sends_sigterm_again(
+    supervised: Factory,
+) -> None:
+    repo = supervised(timeout=2, grace=8)
+    repo.count_term()
+    sent(repo.send())
+    (launch,) = repo.wait_launches(1)
+    repo.wait_execution("stopping", timeout=10)
+    assert repo.wait_terms(1, timeout=5) == 1
+
+    repo.restart_runtime()
+
+    assert repo.wait_terms(2, timeout=6) == 2
+    exited = repo.wait_execution("exited", timeout=30)
+    assert dig(exited, "exit", "kill_sent_at") is not None
+    assert not alive(launch.pid)
+
+
+def test_a_runtime_killed_after_the_sigterm_and_before_its_record_stops_the_execution_again(
+    supervised: Factory,
+) -> None:
+    repo = supervised(
+        timeout=2,
+        grace=2,
+        env={"HARNESS_RUNTIME_TEST_PAUSE_AT": "execution.stop:signalled"},
+    )
+    repo.count_term()
+    sent(repo.send())
+    (launch,) = repo.wait_launches(1)
+    repo.runtime.wait_paused("execution.stop:signalled", timeout=15)
+    assert repo.wait_terms(1, timeout=5) == 1
+
+    # The SIGTERM went out, its record did not: the row still says running.
+    assert repo.rows(
+        "SELECT state FROM executions WHERE dispatch_id = ?", repo.dispatch
+    ) == [("running",)]
+    repo.restart_runtime()
+
+    exited = repo.wait_execution("exited", timeout=30)
+    assert repo.terms() == 2
+    assert dig(exited, "exit", "stopped_by") == "deadline"
+    assert not alive(launch.pid)
+    assert repo.execution_actions() == [
+        "execution-launching",
+        "execution-running",
+        "execution-stopping",
+        "execution-exited",
+    ]
+
+
+def test_an_adopted_leader_that_exits_before_its_group_keeps_the_lease_until_the_group_ends(
+    supervised: Factory,
+) -> None:
+    repo = supervised()
+    repo.add_member()
+    sent(repo.send())
+    (launch,) = repo.wait_launches(1)
+    member = repo.member()
+    repo.restart_runtime()
+
+    repo.release(0)
+    deadline = time.monotonic() + 10
+    while alive(launch.pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not alive(launch.pid)
+    # Reconcile observes the adopted execution every second.
+    time.sleep(2.5)
+
+    running = repo.execution()
+    assert running is not None and running["state"] == "running", running
+    assert dig(running, "lease", "released_at") is None
+    assert alive(member)
+    repo.release_member()
+    lost = repo.wait_execution("lost", timeout=20)
+    assert dig(lost, "lease", "released_at") is not None
+    assert repo.execution_actions() == [
+        "execution-launching",
+        "execution-running",
+        "execution-lost",
+    ]
+
+
 def test_a_lost_response_after_the_receipt_is_answered_from_the_stored_receipt_with_one_launch(
     supervised: Factory,
 ) -> None:

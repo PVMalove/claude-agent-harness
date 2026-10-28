@@ -799,14 +799,24 @@ def coordinator_with(
 
 # -- an external dispatch the runtime supervises ------------------------------------------------------
 
-# The fake adapter of the supervised seam: it logs its launch, ignores SIGTERM when asked, waits in
-# the foreground for ``release`` and exits with the code in ``exit_code``.
+# The fake adapter of the supervised seam: it logs its launch, ignores SIGTERM when asked (or counts
+# it in ``terms.log``), starts a member of its group that waits for ``member_release`` when asked,
+# waits in the foreground for ``release`` and exits with the code in ``exit_code``.
 FAKE_ADAPTER = """
-import json, os, signal, sys, time
+import json, os, signal, subprocess, sys, time
 from pathlib import Path
 control = Path({control!r})
 if (control / "ignore_term").exists():
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
+def count_term(*_):
+    with open(control / "terms.log", "a", encoding="utf-8") as log:
+        log.write("TERM\\n")
+if (control / "count_term").exists():
+    signal.signal(signal.SIGTERM, count_term)
+if (control / "member").exists():
+    wait = "while [ ! -e member_release ]; do sleep 0.05; done"
+    member = subprocess.Popen(["sh", "-c", wait], cwd=control, stdin=subprocess.DEVNULL)
+    (control / "member.pid").write_text(str(member.pid), encoding="utf-8")
 with open(control / "launches.log", "a", encoding="utf-8") as log:
     log.write(json.dumps({{"pid": os.getpid(), "ppid": os.getppid(), "pgid": os.getpgid(0),
                           "operation_id": os.environ.get("HARNESS_OPERATION_ID"),
@@ -997,6 +1007,34 @@ class Supervised:
     def ignore_term(self) -> None:
         (self.control / "ignore_term").write_text("", encoding="utf-8")
 
+    def count_term(self) -> None:
+        """The adapter survives SIGTERM and logs each one it receives."""
+        (self.control / "count_term").write_text("", encoding="utf-8")
+
+    def terms(self) -> int:
+        log = self.control / "terms.log"
+        return len(log.read_text(encoding="utf-8").splitlines()) if log.exists() else 0
+
+    def wait_terms(self, count: int, timeout: float = 30.0) -> int:
+        deadline = time.monotonic() + timeout
+        while self.terms() < count and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return self.terms()
+
+    def add_member(self) -> None:
+        """The adapter starts a member of its group that outlives it until ``release_member``."""
+        (self.control / "member").write_text("", encoding="utf-8")
+
+    def member(self, timeout: float = 30.0) -> int:
+        path = self.control / "member.pid"
+        deadline = time.monotonic() + timeout
+        while not path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return int(path.read_text(encoding="utf-8"))
+
+    def release_member(self) -> None:
+        (self.control / "member_release").write_text("", encoding="utf-8")
+
     def execution(self) -> JsonObject | None:
         answer = store_call(
             self.repo, self.runtime, "execution.observe", {"dispatch_id": self.dispatch}
@@ -1044,6 +1082,7 @@ class Supervised:
 
     def close(self) -> None:
         self.release()
+        self.release_member()
         for group in labelled_groups(self.dispatch) if self.dispatch else set():
             with contextlib.suppress(OSError):
                 os.killpg(group, signal.SIGKILL)

@@ -251,6 +251,29 @@ fn a_natural_exit_records_the_wait_status_and_releases_the_lease() {
 }
 
 #[test]
+fn an_exit_the_store_refuses_for_good_leaves_the_execution_unknown_with_the_lease_held() {
+    let mut repo = Repo::new("refused", "sleep 1; exit 3", 60, 1);
+    let supervisor = Arc::new(Supervisor::new(Some(repo.state())));
+
+    repo.launch(&supervisor);
+    // The store refuses the exit for good: no retry of the watcher can record it.
+    repo.store()
+        .execute_batch(
+            "CREATE TRIGGER refuse_exit BEFORE UPDATE OF state ON executions
+             WHEN NEW.state = 'exited' BEGIN SELECT RAISE(ABORT, 'the exit is refused'); END;",
+        )
+        .unwrap();
+
+    let unknown = repo.wait_for(ExecutionState::Unknown, 10);
+    assert_eq!(unknown.lease_released_at, None);
+    assert_eq!(unknown.exit, None);
+    assert_eq!(
+        audit_actions(&repo).last().map(String::as_str),
+        Some("execution-unknown")
+    );
+}
+
+#[test]
 fn a_group_that_outlives_its_leader_keeps_the_lease_until_the_deadline_stops_it() {
     let mut repo = Repo::new("outlived", "sleep 30 & exit 3", 2, 1);
     let supervisor = Arc::new(Supervisor::new(Some(repo.state())));
