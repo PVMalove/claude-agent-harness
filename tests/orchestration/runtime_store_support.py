@@ -128,14 +128,8 @@ def build_state(
         )
         for dispatch_id, role in ((first, "developer"), (second, "qa"))
     ]
-    report: JsonObject = {
-        "dispatch_id": first,
-        "outcome": "completed",
-        "output": "done",
-    }
-    ledger.write_immutable(
-        generation / "reports" / f"{first}.json", report, artifact=True
-    )
+    report: JsonObject = {"dispatch_id": first, "outcome": "completed", "output": "done"}
+    ledger.write_immutable(generation / "reports" / f"{first}.json", report, artifact=True)
     entries: list[JsonValue] = [
         {
             "dispatch_id": first,
@@ -174,9 +168,7 @@ def build_state(
     return ledger
 
 
-def migrate(
-    repo: Path, *, env: dict[str, str] | None = None
-) -> subprocess.CompletedProcess[str]:
+def migrate(repo: Path, *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     """``harness-runtime migrate --repo <repo>`` as its own process."""
     return subprocess.run(
         [str(runtime_binary()), "migrate", "--repo", str(repo)],
@@ -224,9 +216,7 @@ class PausedMigrate:
     ``HARNESS_RUNTIME_TEST_PAUSE_AT`` makes the process print ``PAUSED:<step>`` and wait for a line
     on stdin; a test kills it there, or changes the state first and then resumes it."""
 
-    def __init__(
-        self, repo: Path, step: str, *, env: dict[str, str] | None = None
-    ) -> None:
+    def __init__(self, repo: Path, step: str, *, env: dict[str, str] | None = None) -> None:
         self.step = step
         self.process = subprocess.Popen(
             [str(runtime_binary()), "migrate", "--repo", str(repo)],
@@ -316,9 +306,7 @@ def coordinator_repository(tmp: Path) -> Path:
     """A git repository with an origin, a project config and the architect role manifest: what
     ``create_batch`` and ``create_dispatch`` touch for real."""
     origin = tmp / "origin.git"
-    subprocess.run(
-        ["git", "init", "--bare", str(origin)], check=True, capture_output=True
-    )
+    subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True)
     repo = tmp / "work"
     repo.mkdir()
     _git(repo, "init")
@@ -573,9 +561,7 @@ class ServingRuntime:
         stdout = self.process.stdout
         assert stdout is not None
         lines: queue.Queue[str] = queue.Queue()
-        threading.Thread(
-            target=lambda: lines.put(stdout.readline()), daemon=True
-        ).start()
+        threading.Thread(target=lambda: lines.put(stdout.readline()), daemon=True).start()
         self._paused: queue.Queue[str] = queue.Queue()
         threading.Thread(target=self._read_stderr, daemon=True).start()
         try:
@@ -598,9 +584,7 @@ class ServingRuntime:
             reached = self._paused.get(timeout=timeout)
         except queue.Empty:
             self.stop()
-            pytest.fail(
-                f"the runtime did not pause at {step!r} within {timeout} seconds"
-            )
+            pytest.fail(f"the runtime did not pause at {step!r} within {timeout} seconds")
         assert reached == step
 
     def resume(self) -> None:
@@ -656,16 +640,12 @@ def store_call(
     return {**reply.result, "_revision": reply.revision}
 
 
-def store_records(
-    repo: Path, runtime: ServingRuntime, *paths: str
-) -> dict[str, JsonObject]:
+def store_records(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[str, JsonObject]:
     """The records of the runtime store at ``paths``."""
     answer = store_call(repo, runtime, "state.read", {"paths": list(paths)})
     records = answer["records"]
     assert isinstance(records, dict)
-    return {
-        path: record for path, record in records.items() if isinstance(record, dict)
-    }
+    return {path: record for path, record in records.items() if isinstance(record, dict)}
 
 
 def store_revisions(repo: Path, runtime: ServingRuntime, *paths: str) -> dict[str, int]:
