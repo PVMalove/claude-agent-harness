@@ -3,17 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import tomllib
 
 import pytest
 
 from harness.console.pin import CONSOLE_SERVER_REQUIREMENTS
+from harness.console.data import DashboardData
+from harness.console.data import collect_dashboard
 from harness.console.server import ConsoleServer
+from harness.console.snapshots import (
+    HOME_TTL_SECONDS,
+    HomeContext,
+    HomeSnapshot,
+    SnapshotService,
+    build_home_snapshot,
+    collect_home,
+)
+from tests.console.test_snapshots import FakeClock
 
 
 @pytest.fixture
@@ -803,7 +816,7 @@ def test_debug_logging_never_contains_credentials(
 
 
 @pytest.mark.parametrize(
-    "masked,opcode,code", [(False, "PING", 1002), (True, "TEXT", 1003)]
+    "masked,opcode,code", [(False, "PING", 1002), (True, "BINARY", 1003)]
 )
 def test_frame_errors_and_unanswered_close_have_bounded_cleanup(
     project: Path, masked: bool, opcode: str, code: int
@@ -900,3 +913,408 @@ def test_connected_client_keeps_server_alive_until_it_disconnects(
             await server.close()
 
     asyncio.run(scenario())
+
+
+DATA = DashboardData(
+    ok=1,
+    warn=0,
+    fail=0,
+    skipped=0,
+    repo_map_tier="не установлен",
+    harness_version="1.0.0",
+    drift_state="clean",
+    active_batches=None,
+)
+
+
+class GatedCollect:
+    """A collect seam that waits on a gate, so a request can stay unfinished on purpose."""
+
+    def __init__(self, *, open_gate: bool = False) -> None:
+        self.gate = threading.Event()
+        if open_gate:
+            self.gate.set()
+        self.calls = 0
+
+    def __call__(self, repo: Path) -> HomeSnapshot:
+        self.calls += 1
+        assert self.gate.wait(10)
+        return build_home_snapshot(DATA, HomeContext())
+
+
+def _connect(server: ConsoleServer, repo: Path):  # type: ignore[no-untyped-def]
+    from harness.console.discovery import discovery_path
+    from websockets.asyncio.client import connect
+
+    token = json.loads(discovery_path(repo).read_text())["token"]
+    return connect(
+        f"ws://127.0.0.1:{server.port}/ws",
+        proxy=None,
+        additional_headers={"Authorization": "Bearer " + token},
+        open_timeout=2,
+        close_timeout=1,
+    )
+
+
+def _request(id: object = 1, **fields: object) -> str:
+    return json.dumps({"id": id, "type": "home.snapshot", **fields})
+
+
+def test_home_snapshot_is_answered_on_the_websocket(project: Path) -> None:
+    async def scenario() -> None:
+        collect = GatedCollect(open_gate=True)
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=collect)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send(_request("a"))
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (reply["id"], reply["ok"], reply["cached"]) == ("a", True, False)
+                assert reply["snapshot"]["harness_version"] == "1.0.0"
+                await client.send(_request("b"))
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (reply["id"], reply["cached"], collect.calls) == ("b", True, 1)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_server_without_an_injected_service_owns_its_own_cache(
+    project: Path,
+) -> None:
+    first, second = ConsoleServer(project), ConsoleServer(project)
+    assert first._snapshots is not second._snapshots
+
+
+def test_text_that_is_not_json_is_answered_and_the_connection_stays_open(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        server = ConsoleServer(project)
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send("data")
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert reply["ok"] is False and reply["error"]["code"] == "bad_json"
+                assert reply["id"] is None and reply["type"] is None
+                await asyncio.wait_for(await client.ping(b"alive"), 2)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "frames,code",
+    [
+        ([("TEXT", False, b"da"), ("CONT", True, b"ta")], 1003),
+        ([("TEXT", True, b"\xff\xfe")], 1007),
+    ],
+    ids=["fragmented-text", "invalid-utf8"],
+)
+def test_fragmented_and_malformed_text_frames_close_the_connection(
+    project: Path, frames: list[tuple[str, bool, bytes]], code: int
+) -> None:
+    from harness.console.discovery import discovery_path
+    from websockets.client import ClientProtocol
+    from websockets.frames import Close, Frame, Opcode
+    from websockets.uri import parse_uri
+
+    async def scenario() -> None:
+        server = ConsoleServer(project)
+        await server.start()
+        protocol = ClientProtocol(parse_uri(f"ws://127.0.0.1:{server.port}/ws"))
+        request = protocol.connect()
+        request.headers["Authorization"] = (
+            "Bearer " + json.loads(discovery_path(project).read_text())["token"]
+        )
+        protocol.send_request(request)
+        envelope = b"".join(protocol.data_to_send())
+        body = b"".join(
+            Frame(Opcode[name], data, fin=fin).serialize(mask=True)
+            for name, fin, data in frames
+        )
+        try:
+            answer = await _raw(server.port, envelope + body)
+            protocol.receive_data(answer)
+            closes = [
+                event
+                for event in protocol.events_received()
+                if isinstance(event, Frame) and event.opcode == Opcode.CLOSE
+            ]
+            assert len(closes) == 1 and Close.parse(closes[0].data).code == code
+            assert b'"ok"' not in answer
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_ping_is_answered_while_a_slow_check_is_still_running(project: Path) -> None:
+    async def scenario() -> None:
+        collect = GatedCollect()
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=collect)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send(_request())
+                await asyncio.wait_for(await client.ping(b"alive"), 2)
+                assert not collect.gate.is_set()
+                collect.gate.set()
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert reply["ok"] is True
+        finally:
+            collect.gate.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_the_fifth_unfinished_request_gets_busy(project: Path) -> None:
+    async def scenario() -> None:
+        collect = GatedCollect()
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=collect)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                for id in range(1, 6):
+                    await client.send(_request(id))
+                refused = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert refused["id"] == 5 and refused["ok"] is False
+                assert refused["error"]["code"] == "busy"
+                collect.gate.set()
+                answered = [
+                    json.loads(await asyncio.wait_for(client.recv(), 5))
+                    for _ in range(4)
+                ]
+                assert all(reply["ok"] for reply in answered)
+                assert {reply["id"] for reply in answered} == {1, 2, 3, 4}
+                # Finished requests free their slots.
+                await client.send(_request(6))
+                assert json.loads(await asyncio.wait_for(client.recv(), 5))["ok"]
+        finally:
+            collect.gate.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_lone_surrogate_id_is_echoed_and_the_connection_stays_open(
+    project: Path,
+) -> None:
+    """json.loads accepts the id "\\ud800", which UTF-8 cannot encode: it is echoed escaped."""
+
+    async def scenario() -> None:
+        collect = GatedCollect()
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=collect)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                for id in (1, 2, 3):
+                    await client.send(_request(id))
+                await client.send(_request("\ud800"))
+                await client.send(_request("\ud800"))  # the fifth: busy
+                refused = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (refused["id"], refused["error"]["code"]) == ("\ud800", "busy")
+                await asyncio.wait_for(await client.ping(b"alive"), 2)
+                collect.gate.set()
+                answered = [
+                    json.loads(await asyncio.wait_for(client.recv(), 5))
+                    for _ in range(4)
+                ]
+                assert all(reply["ok"] for reply in answered)
+                assert {reply["id"] for reply in answered} == {1, 2, 3, "\ud800"}
+                await client.send(_request("\ud800"))
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (reply["id"], reply["ok"]) == ("\ud800", True)
+        finally:
+            collect.gate.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_a_disconnect_with_an_unfinished_request_releases_the_connection(
+    project: Path,
+) -> None:
+    async def scenario() -> None:
+        collect = GatedCollect()
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=collect)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send(_request())
+                await asyncio.sleep(0.1)
+                assert collect.calls == 1
+            await asyncio.wait_for(server.close(), 3)
+            assert not server._connections
+        finally:
+            collect.gate.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+async def _home(
+    project: Path, service: SnapshotService | None = None, **fields: object
+) -> dict[str, object]:
+    """One `home.snapshot` request to a real server over a real WebSocket."""
+    server = ConsoleServer(project, snapshots=service)
+    await server.start()
+    try:
+        async with _connect(server, project) as client:
+            await client.send(_request("n", **fields))
+            reply: dict[str, object] = json.loads(
+                await asyncio.wait_for(client.recv(), 120)
+            )
+            return reply
+    finally:
+        await server.close()
+
+
+def test_a_project_without_harness_is_reported_as_not_installed(
+    project: Path,
+) -> None:
+    reply = asyncio.run(_home(project))
+    snapshot = reply["snapshot"]
+    assert isinstance(snapshot, dict)
+    assert (reply["ok"], reply["cached"], reply["id"]) == (True, False, "n")
+    assert snapshot["drift"] == "missing"
+    assert snapshot["active_batches"] is None
+    assert snapshot["repo_map"]["tier"] is None
+    assert snapshot["repo_map"]["head_map"] is None
+    policy = snapshot["memory"]["policy"]
+    assert (policy["enabled"], policy["top_k"], policy["max_tokens"]) == (
+        False,
+        5,
+        1000,
+    )
+    expected = collect_dashboard(project)
+    health = snapshot["health"]
+    assert health == {
+        "ok": expected.ok,
+        "warn": expected.warn,
+        "fail": expected.fail,
+        "skipped": expected.skipped,
+    }
+    assert sum(health.values()) > 0
+
+
+def test_a_failing_health_check_is_listed_among_the_problems(project: Path) -> None:
+    (project / ".harness").mkdir()
+    (project / ".harness" / "harness.lock").write_text("not json")
+    snapshot = asyncio.run(_home(project))["snapshot"]
+    assert isinstance(snapshot, dict)
+    assert snapshot["health"]["fail"] >= 1
+    assert any(
+        problem["status"] == "fail" and problem["id"] == "files.lock"
+        for problem in snapshot["problems"]
+    )
+    assert snapshot["problems_total"] >= len(snapshot["problems"]) >= 1
+    assert isinstance(snapshot["drift"], str)
+
+
+def test_orchestration_that_is_not_connected_is_null_not_zero(project: Path) -> None:
+    (project / ".harness").mkdir()
+    snapshot = asyncio.run(_home(project))["snapshot"]
+    assert isinstance(snapshot, dict) and snapshot["active_batches"] is None
+
+
+def test_connected_orchestration_reports_its_open_batches(project: Path) -> None:
+    coordinator = project / ".harness" / "orchestration" / "coordinator.py"
+    coordinator.parent.mkdir(parents=True)
+    coordinator.write_text('import json\nprint(json.dumps({"batches": [{}, {}]}))\n')
+    snapshot = asyncio.run(_home(project))["snapshot"]
+    assert isinstance(snapshot, dict) and snapshot["active_batches"] == 2
+
+
+def test_a_failed_collect_is_an_error_reply_and_the_connection_survives(
+    project: Path,
+) -> None:
+    calls = 0
+
+    def flaky(repo: Path) -> HomeSnapshot:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("/private/path must not leak")
+        return build_home_snapshot(DATA, HomeContext())
+
+    async def scenario() -> None:
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=flaky)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                await client.send(_request("one"))
+                raw = await asyncio.wait_for(client.recv(), 5)
+                assert "private" not in str(raw)
+                error = json.loads(raw)["error"]
+                assert error == {
+                    "code": "collect_failed",
+                    "message": "OSError",
+                }
+                await client.send(_request("two"))
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (reply["id"], reply["ok"]) == ("two", True)
+        finally:
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_expensive_checks_are_not_rerun_within_the_ttl_and_force_rebuilds(
+    project: Path,
+) -> None:
+    runs = 0
+
+    def dashboard(repo: Path) -> DashboardData:
+        nonlocal runs
+        runs += 1
+        return DATA
+
+    clock = FakeClock()
+    service = SnapshotService(
+        project,
+        clock=clock,
+        collect=functools.partial(
+            collect_home, dashboard=dashboard, context=lambda repo: HomeContext()
+        ),
+    )
+
+    async def scenario() -> list[dict[str, object]]:
+        server = ConsoleServer(project, snapshots=service)
+        await server.start()
+        replies: list[dict[str, object]] = []
+        try:
+            async with _connect(server, project) as client:
+                for step in ("first", "within-ttl", "after-ttl", "forced"):
+                    if step == "after-ttl":
+                        clock.advance(HOME_TTL_SECONDS)
+                    await client.send(_request(step, force=step == "forced"))
+                    replies.append(json.loads(await asyncio.wait_for(client.recv(), 5)))
+                    if step == "first":
+                        clock.advance(HOME_TTL_SECONDS / 3)
+        finally:
+            await server.close()
+        return replies
+
+    first, within, after, forced = asyncio.run(scenario())
+    assert (first["cached"], within["cached"]) == (False, True)
+    assert within["age_seconds"] == 5.0
+    assert (after["cached"], after["age_seconds"]) == (False, 0.0)
+    assert (forced["cached"], forced["age_seconds"]) == (False, 0.0)
+    assert runs == 3

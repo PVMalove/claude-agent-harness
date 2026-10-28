@@ -4,7 +4,6 @@ and a numbered section menu - Diagnostics, Harness, Orchestration, Reports, Repo
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable, Protocol
@@ -43,9 +42,8 @@ from ..shell import (
 from .. import reports
 from .. import data as console_data
 from ..data import DashboardData
-from ..repo_map import RepoMapView, cached_map, head_commit
-from ..repo_map_settings import MemoryStatus, memory_status
 from ..runner import CommandRunner, capturing_runner
+from ..snapshots import HomeContext as HomeContext, collect_context
 from .commands import call_from_worker
 
 DRIFT_LABELS = {"clean": "нет", "drift": "есть", "missing": "не установлен"}
@@ -54,23 +52,6 @@ DRIFT_LABELS_EN = {"clean": "none", "drift": "yes", "missing": "not installed"}
 
 class _CollectDashboard(Protocol):
     def __call__(self, repo: Path, /, *, online: bool = False) -> DashboardData: ...
-
-
-@dataclass(frozen=True)
-class HomeContext:
-    """What the context cards show beside the health facts: the Repo Map cached for HEAD and the
-    state of project memory. Either is None when the console cannot read it."""
-
-    repo_map: RepoMapView | None = None
-    memory: MemoryStatus | None = None
-
-
-def collect_context(repo: Path) -> HomeContext:
-    """Read the Repo Map cached for the project's HEAD and the memory status; builds nothing."""
-    head = head_commit(repo)
-    return HomeContext(
-        repo_map=cached_map(repo, head) if head else None, memory=memory_status(repo)
-    )
 
 
 def _status_label(status: str) -> str:

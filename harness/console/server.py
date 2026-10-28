@@ -8,6 +8,7 @@ import logging
 import secrets
 
 from .discovery import Discovery
+from .snapshots import SnapshotService, busy, respond
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +22,7 @@ HEADER_TIMEOUT = 5.0
 CLOSE_TIMEOUT = 0.5
 READ_CHUNK = 16384
 MESSAGE_LIMIT = 65536
+MAX_UNFINISHED_REQUESTS = 4
 
 # This independent logger never propagates protocol headers, even under root DEBUG.
 _PROTOCOL_LOGGER = logging.Logger("harness.console.protocol")
@@ -47,8 +49,10 @@ class ConsoleServer:
         *,
         idle_grace_seconds: float = 30,
         active_jobs: Callable[[], int] = lambda: 0,
+        snapshots: SnapshotService | None = None,
     ) -> None:
         self.repo = repo.resolve()
+        self._snapshots = snapshots or SnapshotService(self.repo)
         self._idle_grace = idle_grace_seconds
         self._active_jobs = active_jobs
         self._clients = 0
@@ -316,30 +320,71 @@ class ConsoleServer:
     ) -> None:
         from websockets.frames import Frame, Opcode
 
+        send_lock = asyncio.Lock()
+        requests: set[asyncio.Task[None]] = set()
         closing_at: float | None = None
-        while True:
-            for event in protocol.events_received():
-                if isinstance(event, Frame) and event.opcode in (
-                    Opcode.TEXT,
-                    Opcode.BINARY,
-                    Opcode.CONT,
-                ):
-                    if not protocol.close_expected():
+        try:
+            while True:
+                for event in protocol.events_received():
+                    if not isinstance(event, Frame) or protocol.close_expected():
+                        continue
+                    if event.opcode == Opcode.TEXT and event.fin:
+                        try:
+                            raw = bytes(event.data).decode("utf-8")
+                        except UnicodeDecodeError:
+                            protocol.send_close(1007, "Invalid UTF-8")
+                            continue
+                        if len(requests) >= MAX_UNFINISHED_REQUESTS:
+                            protocol.send_text(busy(raw).encode())
+                            continue
+                        request = asyncio.create_task(
+                            self._answer(raw, protocol, writer, send_lock)
+                        )
+                        requests.add(request)
+                        request.add_done_callback(requests.discard)
+                    elif event.opcode in (Opcode.TEXT, Opcode.BINARY, Opcode.CONT):
                         protocol.send_close(1003, "No application protocol")
-            if await self._flush_websocket(protocol, writer):
-                return
-            if protocol.close_expected():
-                if closing_at is None:
-                    closing_at = asyncio.get_running_loop().time() + CLOSE_TIMEOUT
-                async with asyncio.timeout_at(closing_at):
+                async with send_lock:
+                    ended = await self._flush_websocket(protocol, writer)
+                if ended:
+                    return
+                if protocol.close_expected():
+                    if closing_at is None:
+                        closing_at = asyncio.get_running_loop().time() + CLOSE_TIMEOUT
+                    async with asyncio.timeout_at(closing_at):
+                        data = await reader.read(READ_CHUNK)
+                else:
                     data = await reader.read(READ_CHUNK)
-            else:
-                data = await reader.read(READ_CHUNK)
-            if not data:
-                protocol.receive_eof()
-                await self._flush_websocket(protocol, writer)
-                return
-            protocol.receive_data(data)
+                if not data:
+                    protocol.receive_eof()
+                    async with send_lock:
+                        await self._flush_websocket(protocol, writer)
+                    return
+                protocol.receive_data(data)
+        finally:
+            for request in requests:
+                request.cancel()
+            await asyncio.gather(*requests, return_exceptions=True)
+
+    async def _answer(
+        self,
+        raw: str,
+        protocol: ServerProtocol,
+        writer: asyncio.StreamWriter,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Answer one request frame beside the pump, so a slow check never stalls Ping or Close."""
+        reply = await respond(raw, self._snapshots)
+        try:
+            async with send_lock:
+                if protocol.close_expected():
+                    return
+                protocol.send_text(reply.encode())
+                if await self._flush_websocket(protocol, writer):
+                    writer.close()
+        except Exception:
+            # A reply that cannot be sent ends the connection; the pump sees the closed stream.
+            writer.close()
 
     async def _exit_when_idle(self) -> None:
         """Close once no client and no job has been present for the grace period."""
