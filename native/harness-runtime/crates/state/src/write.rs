@@ -34,6 +34,7 @@ use crate::authority::{Epoch, STORE_NAME, epoch};
 use crate::canonical::{canonical_json, sha256_hex};
 use crate::error::Error;
 use crate::hooks;
+use crate::lease::{self, LeaseRequest};
 use crate::project::{BATCH, DISPATCH, DISPATCH_STATUS, PLAN, Spec};
 use crate::read::valid_path;
 use crate::route::{Target, classify};
@@ -57,6 +58,8 @@ enum Op {
     CreateArtifact,
     Replace,
     Delete,
+    /// A typed operation on the QA lease (`lease_acquire`, ...); see `lease`.
+    Lease(lease::Kind),
 }
 
 #[derive(Debug)]
@@ -67,6 +70,7 @@ struct Mutation {
     expected_revision: Option<i64>,
     decision: Option<Value>,
     reason: Option<String>,
+    lease: Option<LeaseRequest>,
 }
 
 /// The place of the row a path names.
@@ -113,7 +117,7 @@ pub struct Written {
     pub touched: Vec<&'static str>,
 }
 
-fn failure(
+pub(crate) fn failure(
     code: ErrorCode,
     domain: FailureDomain,
     retryable: bool,
@@ -214,7 +218,7 @@ fn from_state(err: &Error) -> ErrorBody {
     }
 }
 
-fn sqlite<T>(result: rusqlite::Result<T>) -> Result<T, ErrorBody> {
+pub(crate) fn sqlite<T>(result: rusqlite::Result<T>) -> Result<T, ErrorBody> {
     result.map_err(|err| from_sqlite(&err))
 }
 
@@ -254,7 +258,7 @@ fn parse_mutation(index: usize, item: &Value) -> Result<Mutation, ErrorBody> {
     if let Some(unknown) = members.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "op" | "path" | "content" | "expected_revision" | "decision" | "reason"
+            "op" | "path" | "content" | "expected_revision" | "decision" | "reason" | "lease"
         )
     }) {
         return Err(at(&format!("unknown field {unknown:?}")));
@@ -269,9 +273,14 @@ fn parse_mutation(index: usize, item: &Value) -> Result<Mutation, ErrorBody> {
         Some("create_artifact") => Op::CreateArtifact,
         Some("replace") => Op::Replace,
         Some("delete") => Op::Delete,
-        _ => {
-            return Err(at("op must be create, create_artifact, replace or delete"));
-        }
+        other => match other.and_then(lease::Kind::of) {
+            Some(kind) => Op::Lease(kind),
+            None => {
+                return Err(at(
+                    "op must be create, create_artifact, replace, delete or a lease operation",
+                ));
+            }
+        },
     };
     let Some(path) = text("path")? else {
         return Err(at("path is required"));
@@ -291,6 +300,30 @@ fn parse_mutation(index: usize, item: &Value) -> Result<Mutation, ErrorBody> {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.clone()),
     };
+    if let Op::Lease(kind) = op {
+        if path != lease::LEASE_PATH || content.is_some() || expected_revision.is_some() {
+            return Err(at(&format!(
+                "a lease operation names {} and carries no content and no expected_revision",
+                lease::LEASE_PATH
+            )));
+        }
+        if decision.is_some() && kind != lease::Kind::Clear {
+            return Err(at("only lease_clear carries a decision"));
+        }
+        let lease = lease::parse(kind, members.get("lease")).map_err(|detail| at(&detail))?;
+        return Ok(Mutation {
+            op,
+            path,
+            content,
+            expected_revision,
+            decision,
+            reason,
+            lease: Some(lease),
+        });
+    }
+    if members.contains_key("lease") {
+        return Err(at("only a lease operation carries a lease object"));
+    }
     match op {
         Op::Delete => {
             if content.is_some() || reason.is_none() {
@@ -313,6 +346,7 @@ fn parse_mutation(index: usize, item: &Value) -> Result<Mutation, ErrorBody> {
         expected_revision,
         decision,
         reason,
+        lease: None,
     })
 }
 
@@ -589,11 +623,11 @@ fn load(tx: &Connection, place: &Place, path: &str) -> Result<Option<Stored>, Er
     }
 }
 
-fn sha_of(record: &Map<String, Value>) -> String {
+pub(crate) fn sha_of(record: &Map<String, Value>) -> String {
     sha256_hex(canonical_json(&Value::Object(record.clone())).as_bytes())
 }
 
-fn compact(record: &Map<String, Value>) -> String {
+pub(crate) fn compact(record: &Map<String, Value>) -> String {
     Value::Object(record.clone()).to_string()
 }
 
@@ -611,6 +645,10 @@ struct Applying<'a> {
     seen: BTreeSet<String>,
     /// The request created a batch or changed the state of one: the generation moves.
     moves_generation: bool,
+    /// The pid of the IPC client, as the kernel reported it.
+    peer_pid: Option<u32>,
+    /// The QA lease after the last lease operation of the request.
+    lease: Option<Value>,
 }
 
 /// Write the lease body `record` and its owner columns to the lane row, which keeps its
@@ -878,11 +916,31 @@ impl Applying<'_> {
         })
     }
 
+    fn lease(&mut self, item: &Planned) -> Result<Effect, ErrorBody> {
+        let Some(request) = &item.mutation.lease else {
+            return Err(malformed("a lease operation carries a lease object"));
+        };
+        let applied = lease::apply(
+            self.tx,
+            request,
+            item.mutation.reason.as_deref(),
+            item.mutation.decision.as_ref(),
+            self.peer_pid,
+        )?;
+        self.lease = Some(applied.lease);
+        Ok(Effect {
+            action: applied.action,
+            details: applied.details,
+            revision: applied.revision,
+        })
+    }
+
     fn apply(&mut self, item: &Planned) -> Result<Effect, ErrorBody> {
         let effect = match item.mutation.op {
             Op::Create | Op::CreateArtifact => self.create(item)?,
             Op::Replace => self.replace(item)?,
             Op::Delete => self.delete(item)?,
+            Op::Lease(_) => self.lease(item)?,
         };
         self.seen.insert(item.mutation.path.clone());
         Ok(effect)
@@ -980,6 +1038,7 @@ fn run(
     request: &Request,
     digest: &str,
     parsed: Parsed,
+    peer_pid: Option<u32>,
 ) -> Result<Step, ErrorBody> {
     let Parsed {
         mutations,
@@ -1018,6 +1077,8 @@ fn run(
         tx,
         seen: BTreeSet::new(),
         moves_generation: false,
+        peer_pid,
+        lease: None,
     };
     let mut effects: Vec<Option<Effect>> = planned.iter().map(|_| None).collect();
     let mut touched: Vec<&'static str> = Vec::new();
@@ -1052,11 +1113,14 @@ fn run(
         sqlite(audit::move_checkpoint(tx, seq, &chain))?;
     }
     touched.push(CLASS_GENERATION);
-    let result = json!({
+    let mut result = json!({
         "revisions": revisions,
         "audit_seq": audit_seq,
         "generation_revision": generation_revision,
     });
+    if let Some(lease) = applying.lease {
+        result["lease"] = lease;
+    }
     sqlite(tx.execute(
         "INSERT INTO operations (operation_id, operation, request_digest, state, result_json, created_at, completed_at)
          VALUES (?1, ?2, ?3, 'committed', ?4, ?5, ?5)",
@@ -1115,12 +1179,27 @@ fn is_recorded(error: &ErrorBody) -> bool {
         || (error.code == ErrorCode::InvariantViolation && error.domain == FailureDomain::Tooling)
 }
 
-/// Apply one `state.write` request to the store of `state`.
+/// Apply one `state.write` request to the store of `state`, from a client whose pid is unknown.
+///
+/// # Errors
+/// See [`write_for`].
+pub fn write(state: &Path, request: &Request) -> Result<Written, ErrorBody> {
+    write_for(state, request, None)
+}
+
+/// Apply one `state.write` request to the store of `state`. `peer_pid` is the pid of the client
+/// process as the kernel reported it to the IPC server; a lease the request acquires records the
+/// identity of that process.
 ///
 /// # Errors
 /// The typed error the response carries: `malformed_request`, `not_found`, `revision_conflict`,
-/// `idempotency_conflict`, `store_busy`, `invariant_violation` or `internal`.
-pub fn write(state: &Path, request: &Request) -> Result<Written, ErrorBody> {
+/// `idempotency_conflict`, `store_busy`, `invariant_violation`, `lease_held`,
+/// `fencing_mismatch`, `policy_denied` or `internal`.
+pub fn write_for(
+    state: &Path,
+    request: &Request,
+    peer_pid: Option<u32>,
+) -> Result<Written, ErrorBody> {
     match epoch(state) {
         Epoch::Store(_) => {}
         Epoch::FileLedger => {
@@ -1136,7 +1215,7 @@ pub fn write(state: &Path, request: &Request) -> Result<Written, ErrorBody> {
     let mut connection = open(state)?;
     // A store without a checkpoint is verified whole here, outside the transaction.
     audit::ensure_checkpoint(&mut connection).map_err(|broken| broken.to_error())?;
-    let outcome = transact(&mut connection, request, &digest, parsed);
+    let outcome = transact(&mut connection, request, &digest, parsed, peer_pid);
     // The transaction is rolled back by now; a refusal that a repeat would meet again is kept.
     if let Err(error) = &outcome
         && is_recorded(error)
@@ -1151,10 +1230,11 @@ fn transact(
     request: &Request,
     digest: &str,
     parsed: Parsed,
+    peer_pid: Option<u32>,
 ) -> Result<Written, ErrorBody> {
     let tx = sqlite(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
     hooks::reach_once("state.write:in-transaction").map_err(|err| internal(err.to_string()))?;
-    match run(&tx, request, digest, parsed)? {
+    match run(&tx, request, digest, parsed, peer_pid)? {
         Step::Done(written) => {
             sqlite(tx.commit())?;
             Ok(written)

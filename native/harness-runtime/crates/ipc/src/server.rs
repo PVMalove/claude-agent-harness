@@ -180,6 +180,7 @@ fn drops_the_response(_body: &[u8], _reply: &crate::session::Reply) -> bool {
 pub(crate) fn serve_connection<S: Read + Write>(
     stream: &mut S,
     permitted: bool,
+    peer_pid: Option<u32>,
     shared: &Shared,
 ) -> Result<(), FrameError> {
     if !permitted {
@@ -193,7 +194,7 @@ pub(crate) fn serve_connection<S: Read + Write>(
             ),
         );
     }
-    let mut session = Session::new();
+    let mut session = Session::for_peer(peer_pid);
     loop {
         let body = match read_frame(stream) {
             Ok(body) => body,
@@ -281,7 +282,7 @@ mod tests {
     fn a_refused_peer_gets_unauthorized_peer_before_anything_is_read() {
         let mut stream = Duplex::new(vec![0xff; 16]);
 
-        serve_connection(&mut stream, false, &shared()).unwrap();
+        serve_connection(&mut stream, false, None, &shared()).unwrap();
 
         assert_eq!(first_error(&stream.output), ErrorCode::UnauthorizedPeer);
         assert_eq!(stream.input.position(), 0);
@@ -291,7 +292,7 @@ mod tests {
     fn a_permitted_peer_is_served_over_any_byte_stream() {
         let mut stream = Duplex::new((MAX_FRAME_LEN + 1).to_be_bytes().to_vec());
 
-        serve_connection(&mut stream, true, &shared()).unwrap();
+        serve_connection(&mut stream, true, None, &shared()).unwrap();
 
         assert_eq!(first_error(&stream.output), ErrorCode::MalformedRequest);
     }
