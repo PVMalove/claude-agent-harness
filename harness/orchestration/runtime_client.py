@@ -19,13 +19,15 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import socket
+import stat
 import struct
 import sys
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePath
+from pathlib import Path, PurePath, PurePosixPath
 from types import TracebackType
 from typing import Protocol, cast
 
@@ -74,8 +76,14 @@ _FRAME_HEADER = struct.Struct(">I")
 BACKOFF_START_SECONDS = 0.1
 BACKOFF_CAP_SECONDS = 5.0
 DEFAULT_TIMEOUT_SECONDS = 30.0
-# Without XDG_RUNTIME_DIR the runtime directory sits in the state root of the repository.
-_STATE_RUNTIME_DIR = Path(".harness/orchestration/state/runtime")
+# A Windows path with a drive (``C:\\``) or a UNC server (``\\\\server``), read as text so that
+# every platform applies the same rule as the runtime.
+_WINDOWS_ABSOLUTE = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}[^\\/]")
+_NO_DIRECTORY_REMEDY = "set XDG_RUNTIME_DIR or LOCALAPPDATA to an absolute directory"
+_UNSAFE_DIRECTORY_REMEDY = (
+    "remove the runtime directory, or set XDG_RUNTIME_DIR to a private directory of this user, "
+    "then restart harness-runtime"
+)
 _NO_RUNTIME_REMEDY = (
     "start the runtime with `harness-runtime serve --repo <repo>`; the coordinator never writes "
     "state without it"
@@ -113,7 +121,7 @@ class _TransportFailure(Exception):
 
 @dataclass(frozen=True)
 class RuntimePaths:
-    """Where one repository's runtime keeps its socket and its token."""
+    """Where one repository's runtime keeps its socket and its token; its runtime directory."""
 
     repo_id: str
     directory: Path
@@ -168,6 +176,25 @@ def pipe_name(identity: str) -> str:
     return rf"\\.\pipe\harness-runtime-{identity}"
 
 
+def runtime_directory(
+    platform: str, xdg_runtime_dir: str | None, local_app_data: str | None, uid: int
+) -> str | None:
+    """The runtime directory of ADR 0021, section 2, the same pure rule as the runtime's.
+
+    ``$XDG_RUNTIME_DIR/harness`` when the variable is absolute; otherwise ``/tmp/harness-<uid>``
+    on Unix (the literal ``/tmp``, never ``TMPDIR``) and ``%LOCALAPPDATA%\\harness`` on Windows.
+    ``None`` on Windows when neither variable is absolute.
+    """
+    if platform != "win32":
+        if xdg_runtime_dir and xdg_runtime_dir.startswith("/"):
+            return str(PurePosixPath(xdg_runtime_dir) / "harness")
+        return f"/tmp/harness-{uid}"
+    for base in (xdg_runtime_dir, local_app_data):
+        if base and _WINDOWS_ABSOLUTE.match(base):
+            return base.rstrip("\\/") + "\\harness"
+    return None
+
+
 def runtime_paths(
     repo_root: Path,
     environ: Mapping[str, str] | None = None,
@@ -176,16 +203,27 @@ def runtime_paths(
 ) -> RuntimePaths:
     """The socket (on Windows, the pipe) and the token of a repository's runtime (ADR 0021).
 
-    The runtime directory is ``$XDG_RUNTIME_DIR/harness``, or ``<repo>/.harness/orchestration/
-    state/runtime`` when the variable is unset, empty or not absolute. ``platform`` is a seam
-    that lets a test read the Windows address on another system.
+    The runtime directory is the one ``runtime_directory`` chooses: outside every repository, so
+    a linked worktree and its main checkout reach one runtime. ``platform`` is a seam that lets
+    a test read the Windows address on another system.
     """
     root = repo_root.resolve()
     identity = repo_id(git_common_dir(root))
-    xdg = (os.environ if environ is None else environ).get("XDG_RUNTIME_DIR", "")
-    directory = (
-        Path(xdg) / "harness" if xdg and Path(xdg).is_absolute() else root / _STATE_RUNTIME_DIR
+    variables = os.environ if environ is None else environ
+    chosen = runtime_directory(
+        platform,
+        variables.get("XDG_RUNTIME_DIR"),
+        variables.get("LOCALAPPDATA"),
+        os.getuid() if hasattr(os, "getuid") else 0,
     )
+    if chosen is None:
+        raise RuntimeClientError(
+            "runtime_unavailable",
+            "neither XDG_RUNTIME_DIR nor LOCALAPPDATA names an absolute runtime directory",
+            remedy=_NO_DIRECTORY_REMEDY,
+            domain="environment_preparation",
+        )
+    directory = Path(chosen)
     if platform == "win32":
         # A pipe name is no file path, so the Unix socket limit does not apply.
         return RuntimePaths(
@@ -199,7 +237,7 @@ def runtime_paths(
         raise RuntimeClientError(
             "runtime_unavailable",
             f"the socket path {sock} is longer than {MAX_SOCKET_PATH_BYTES} bytes",
-            remedy="set XDG_RUNTIME_DIR to a shorter absolute path and restart the runtime",
+            remedy="set XDG_RUNTIME_DIR to a shorter absolute directory and restart the runtime",
             domain="environment_preparation",
         )
     return RuntimePaths(
@@ -510,6 +548,36 @@ def _typed_error(response: Mapping[str, object]) -> RuntimeClientError:
     )
 
 
+def _check_directory(directory: Path) -> None:
+    """Trust the runtime directory before its token: a directory of this user that no one else
+    may open. Another user could create ``/tmp/harness-<uid>`` first and pose as the runtime
+    (ADR 0021, section 2). A missing directory is a runtime that does not run yet."""
+    try:
+        info = os.lstat(directory)
+    except FileNotFoundError as exc:
+        raise _TransportFailure(f"the runtime directory {directory} does not exist") from exc
+    except OSError as exc:
+        raise _TransportFailure(f"cannot read the runtime directory: {exc}") from exc
+    problem = (
+        "is a symbolic link"
+        if stat.S_ISLNK(info.st_mode)
+        else "is not a directory"
+        if not stat.S_ISDIR(info.st_mode)
+        else "belongs to another user"
+        if info.st_uid != os.getuid()
+        else "is open to the group or to others"
+        if info.st_mode & 0o077
+        else None
+    )
+    if problem:
+        raise RuntimeClientError(
+            "unauthorized_peer",
+            f"the runtime directory {directory} {problem}; its token is not trusted",
+            remedy=_UNSAFE_DIRECTORY_REMEDY,
+            domain="policy",
+        )
+
+
 class RuntimeClient:
     """Asks ``harness-runtime`` for one operation, repeating it while the transport fails."""
 
@@ -588,6 +656,8 @@ class RuntimeClient:
                 remedy="run the coordinator on Linux or macOS",
                 domain="environment_preparation",
             )
+        if sys.platform != "win32":
+            _check_directory(self.paths.directory)
         try:
             token = self.paths.token.read_text(encoding="utf-8").strip()
         except OSError as exc:

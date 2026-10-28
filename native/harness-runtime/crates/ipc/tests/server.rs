@@ -16,7 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use contracts::{
     ErrorCode, MAX_FRAME_LEN, Response, Status, decode, encode, read_frame, write_frame,
 };
-use ipc::{PeerId, Server, StartError, resolve_paths};
+use ipc::{Environment, PeerId, Server, StartError, resolve_paths};
 use serde_json::{Value, json};
 
 /// The client end of the transport under test.
@@ -61,6 +61,9 @@ impl Fixture {
         let xdg = base.join("run");
         fs::create_dir_all(root.join(".git")).unwrap();
         fs::create_dir_all(&xdg).unwrap();
+        // Private whatever the umask: a runtime directory refuses a parent others may write.
+        #[cfg(unix)]
+        fs::set_permissions(&xdg, fs::Permissions::from_mode(0o700)).unwrap();
         Self {
             root: fs::canonicalize(root).unwrap(),
             xdg: fs::canonicalize(xdg).unwrap(),
@@ -68,7 +71,7 @@ impl Fixture {
     }
 
     fn bind(&self) -> Result<Server, StartError> {
-        let paths = resolve_paths(&self.root, Some(&self.xdg)).unwrap();
+        let paths = resolve_paths(&self.root, &Environment::with_xdg(&self.xdg)).unwrap();
         Server::bind(paths)
     }
 }
@@ -326,8 +329,9 @@ fn a_second_runtime_for_the_same_repository_is_refused() {
 #[test]
 fn a_stale_socket_file_is_replaced() {
     let fixture = Fixture::new("stale");
-    let paths = resolve_paths(&fixture.root, Some(&fixture.xdg)).unwrap();
+    let paths = resolve_paths(&fixture.root, &Environment::with_xdg(&fixture.xdg)).unwrap();
     fs::create_dir_all(&paths.dir).unwrap();
+    fs::set_permissions(&paths.dir, fs::Permissions::from_mode(0o700)).unwrap();
     // A runtime that was killed leaves its socket file behind; nothing listens on it.
     drop(UnixListener::bind(&paths.socket).unwrap());
     let socket = paths.socket;
@@ -411,7 +415,7 @@ fn cut_over(fixture: &Fixture) -> PathBuf {
 fn a_lease_records_the_client_process_the_kernel_reports() {
     let fixture = Fixture::new("lease-peer");
     let state_dir = cut_over(&fixture);
-    let paths = resolve_paths(&fixture.root, Some(&fixture.xdg)).unwrap();
+    let paths = resolve_paths(&fixture.root, &Environment::with_xdg(&fixture.xdg)).unwrap();
     let runtime = Running::start(Server::bind_serving(paths, Some(state_dir)).unwrap());
     let mut stream = runtime.connect();
     assert_eq!(
@@ -446,7 +450,7 @@ fn a_lease_records_the_client_process_the_kernel_reports() {
 fn a_read_snapshot_spans_requests_while_another_connection_commits() {
     let fixture = Fixture::new("snapshot");
     let state_dir = cut_over(&fixture);
-    let paths = resolve_paths(&fixture.root, Some(&fixture.xdg)).unwrap();
+    let paths = resolve_paths(&fixture.root, &Environment::with_xdg(&fixture.xdg)).unwrap();
     let runtime = Running::start(Server::bind_serving(paths, Some(state_dir)).unwrap());
     let mut reader = runtime.connect();
     let mut writer = runtime.connect();

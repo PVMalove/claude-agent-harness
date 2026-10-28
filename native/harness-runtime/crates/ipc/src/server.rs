@@ -29,6 +29,14 @@ pub enum StartError {
     AlreadyRunning(PathBuf),
     /// The runtime directory belongs to another user.
     ForeignDirectory(PathBuf),
+    /// The runtime directory, or its parent, would let another user replace the runtime: a
+    /// symlink, not a directory, group or other permission bits, or a parent that others may
+    /// write without the sticky bit.
+    UnsafeDirectory {
+        dir: PathBuf,
+        reason: &'static str,
+        remedy: &'static str,
+    },
     Io {
         context: String,
         source: io::Error,
@@ -49,6 +57,9 @@ impl fmt::Display for StartError {
                     dir.display()
                 )
             }
+            Self::UnsafeDirectory { dir, reason, .. } => {
+                write!(f, "the runtime directory {} {reason}", dir.display())
+            }
             Self::Io { context, source } => write!(f, "{context}: {source}"),
         }
     }
@@ -62,7 +73,7 @@ impl StartError {
         match self {
             Self::Paths(err) => err.code(),
             Self::AlreadyRunning(_) => ErrorCode::LeaseHeld,
-            Self::ForeignDirectory(_) => ErrorCode::UnauthorizedPeer,
+            Self::ForeignDirectory(_) | Self::UnsafeDirectory { .. } => ErrorCode::UnauthorizedPeer,
             Self::Io { .. } => ErrorCode::Internal,
         }
     }
@@ -74,9 +85,8 @@ impl StartError {
             Self::AlreadyRunning(_) => {
                 "use the runtime that already serves the repository, or stop it first"
             }
-            Self::ForeignDirectory(_) => {
-                "set XDG_RUNTIME_DIR to a directory that this user owns, then repeat the command"
-            }
+            Self::ForeignDirectory(_) => FOREIGN_REMEDY,
+            Self::UnsafeDirectory { remedy, .. } => remedy,
             Self::Io { .. } => {
                 "check the permissions of the runtime directory, then repeat the command"
             }
@@ -89,6 +99,8 @@ impl From<PathError> for StartError {
         Self::Paths(err)
     }
 }
+
+const FOREIGN_REMEDY: &str = "remove the runtime directory, or set XDG_RUNTIME_DIR to a private directory of this user, then repeat the command";
 
 pub(crate) fn io_context(context: impl Into<String>) -> impl FnOnce(io::Error) -> StartError {
     let context = context.into();
@@ -108,14 +120,13 @@ pub(crate) fn supervisor_of(
     let repository = state_dir
         .and_then(|dir| dir.ancestors().nth(depth))
         .and_then(|root| crate::paths::git_common_dir(root).ok());
-    let lock = paths.dir.join(format!("{}.lock", paths.repo_id));
     supervisor::Supervisor::new(state_dir.map(std::path::Path::to_path_buf)).with_runtime(
         repository,
         vec![
             paths.dir.clone(),
             paths.socket.clone(),
             paths.token.clone(),
-            lock,
+            paths.lock.clone(),
         ],
     )
 }
@@ -123,13 +134,13 @@ pub(crate) fn supervisor_of(
 /// Take the exclusive lock of the repository's runtime. It is held while the server lives, and
 /// the kernel drops it when the process dies, so a crash never leaves the repository locked.
 pub(crate) fn take_lock(paths: &RuntimePaths) -> Result<File, StartError> {
-    let path = paths.dir.join(format!("{}.lock", paths.repo_id));
+    let path = &paths.lock;
     let mut options = OpenOptions::new();
     options.write(true).create(true).truncate(false);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     let file = options
-        .open(&path)
+        .open(path)
         .map_err(io_context(format!("cannot open {}", path.display())))?;
     match file.try_lock() {
         Ok(()) => Ok(file),
@@ -148,16 +159,77 @@ pub(crate) fn take_lock(paths: &RuntimePaths) -> Result<File, StartError> {
 ///
 /// # Errors
 /// `StartError::AlreadyRunning` when a runtime serves the repository; `StartError::Io` when the
-/// runtime directory or the lock file cannot be created.
+/// runtime directory or the lock file cannot be created; `StartError::ForeignDirectory` or
+/// `StartError::UnsafeDirectory` for a runtime directory that is not private to this user.
 pub fn hold_instance_lock(paths: &RuntimePaths) -> Result<File, StartError> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder
-        .create(&paths.dir)
-        .map_err(io_context(format!("cannot create {}", paths.dir.display())))?;
+    secure_directory(&paths.dir, crate::paths::process_uid())?;
     take_lock(paths)
+}
+
+/// Create the runtime directory `0700` when it is missing, then refuse it unless it is private to
+/// `owner`: a symlink, not a directory, another owner, any group or other permission bit, or a
+/// parent that the group or others may write without the sticky bit. Nothing is repaired: in a
+/// shared `/tmp` another user's files may have appeared while the rights were wider. The parent's
+/// owner is not checked, because `/tmp` belongs to `nobody` in a user namespace.
+#[cfg(unix)]
+pub(crate) fn secure_directory(dir: &std::path::Path, owner: u32) -> Result<(), StartError> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+
+    const REMOVE: &str = "remove the runtime directory, or set XDG_RUNTIME_DIR to a private directory of this user, then repeat the command";
+    let unsafe_dir = |reason, remedy| StartError::UnsafeDirectory {
+        dir: dir.to_path_buf(),
+        reason,
+        remedy,
+    };
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(io_context(format!("cannot create {}", dir.display())))?;
+    let metadata = std::fs::symlink_metadata(dir)
+        .map_err(io_context(format!("cannot read {}", dir.display())))?;
+    if metadata.file_type().is_symlink() {
+        return Err(unsafe_dir("is a symbolic link", REMOVE));
+    }
+    if !metadata.is_dir() {
+        return Err(unsafe_dir("is not a directory", REMOVE));
+    }
+    if metadata.uid() != owner {
+        return Err(StartError::ForeignDirectory(dir.to_path_buf()));
+    }
+    if metadata.mode() & 0o077 != 0 {
+        return Err(unsafe_dir(
+            "is open to the group or to others",
+            "restrict the runtime directory to its owner (chmod 700), or remove it, then repeat the command",
+        ));
+    }
+    let parent = dir
+        .parent()
+        .map(std::fs::canonicalize)
+        .transpose()
+        .map_err(io_context(format!(
+            "cannot resolve the parent of {}",
+            dir.display()
+        )))?;
+    if let Some(parent) = parent {
+        let mode = std::fs::metadata(&parent)
+            .map_err(io_context(format!("cannot read {}", parent.display())))?
+            .mode();
+        if mode & 0o022 != 0 && mode & 0o1000 == 0 {
+            return Err(unsafe_dir(
+                "lies in a directory that others may write and that has no sticky bit",
+                REMOVE,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Create the runtime directory; on Windows the token and the pipe are closed to other users by
+/// their DACL.
+#[cfg(not(unix))]
+pub(crate) fn secure_directory(dir: &std::path::Path, _owner: u32) -> Result<(), StartError> {
+    std::fs::create_dir_all(dir).map_err(io_context(format!("cannot create {}", dir.display())))
 }
 
 pub(crate) fn now_ms() -> u64 {

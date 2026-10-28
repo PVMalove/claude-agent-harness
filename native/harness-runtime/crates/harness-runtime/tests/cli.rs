@@ -24,6 +24,13 @@ impl Scratch {
         let root = std::env::temp_dir().join(format!("hr-cli-{name}-{}-{n}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
+        // Private whatever the umask: a runtime directory refuses a parent others may write.
+        #[cfg(unix)]
+        fs::set_permissions(
+            &root,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
+        )
+        .unwrap();
         Self(root)
     }
 
@@ -81,10 +88,13 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+/// The binary with a scratch runtime directory: a test never touches the real
+/// `/tmp/harness-<uid>` of the user.
 fn run(args: &[&str]) -> Output {
+    let runtime_dir = Scratch::new("run-xdg");
     Command::new(env!("CARGO_BIN_EXE_harness-runtime"))
         .args(args)
-        .env_remove("XDG_RUNTIME_DIR")
+        .env("XDG_RUNTIME_DIR", &runtime_dir.0)
         .output()
         .unwrap()
 }
@@ -368,10 +378,11 @@ fn rollback_args(repo: &Scratch, approved_by: &str) -> Vec<String> {
 }
 
 fn run_rollback(repo: &Scratch, approved_by: &str, env: &[(&str, &std::ffi::OsStr)]) -> Output {
+    let runtime_dir = Scratch::new("rollback-xdg");
     let mut command = Command::new(env!("CARGO_BIN_EXE_harness-runtime"));
     command
         .args(rollback_args(repo, approved_by))
-        .env_remove("XDG_RUNTIME_DIR");
+        .env("XDG_RUNTIME_DIR", &runtime_dir.0);
     for (key, value) in env {
         command.env(key, value);
     }

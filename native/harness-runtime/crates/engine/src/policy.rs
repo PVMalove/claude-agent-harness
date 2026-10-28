@@ -58,8 +58,10 @@ pub fn protected_paths(inputs: &Protected) -> Vec<PathBuf> {
             base.join("harness"),
         ]);
     }
-    // Rootless Podman without XDG_RUNTIME_DIR keeps its socket here.
+    // Rootless Podman without XDG_RUNTIME_DIR keeps its socket here, and a harness runtime
+    // without it its directory (ADR 0021, section 2).
     paths.push(PathBuf::from(format!("/tmp/podman-run-{uid}")));
+    paths.push(PathBuf::from(format!("/tmp/harness-{uid}")));
     paths.extend(unix_path(inputs.docker_host.as_deref()));
     paths.extend(unix_path(inputs.container_host.as_deref()));
     paths.extend(inputs.runtime.iter().cloned());

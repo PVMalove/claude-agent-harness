@@ -450,6 +450,29 @@ fn a_failed_start_rolls_back_newest_first_and_the_execution_is_lost_for_good() {
 }
 
 #[test]
+fn the_fallback_runtime_directory_never_denies_the_mandatory_plan_roots() {
+    let repo = Repo::new("fallback", 3600);
+    // The runtime without XDG_RUNTIME_DIR (ADR 0021, section 2): outside every repository.
+    let dir = PathBuf::from(format!("/tmp/harness-{}", nix::unistd::getuid().as_raw()));
+    let supervisor = repo.supervisor(
+        [
+            "",
+            "0123456789abcdef.sock",
+            "0123456789abcdef.token",
+            "0123456789abcdef.lock",
+        ]
+        .into_iter()
+        .map(|name| dir.join(name))
+        .collect(),
+    );
+
+    let receipt = repo.launch(&supervisor).unwrap();
+
+    assert_eq!(receipt["container_id"], WORKER_ID);
+    assert!(repo.engine.calls().iter().any(|argv| argv[1] == "create"));
+}
+
+#[test]
 fn a_mount_of_the_runtime_or_a_changed_image_is_refused_before_any_write() {
     let repo = Repo::new("refused", 3600);
     // The runtime's own socket would lie under the storage root of the plan.

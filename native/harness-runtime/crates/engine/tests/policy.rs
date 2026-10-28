@@ -125,6 +125,7 @@ fn the_protected_list_names_every_engine_socket_and_runtime_directory() {
         "/run/user/1000/docker.sock",
         "/run/user/1000/harness",
         "/tmp/podman-run-1000",
+        "/tmp/harness-1000",
         "/srv/docker/docker.sock",
         "/srv/runtime/repo.sock",
     ] {

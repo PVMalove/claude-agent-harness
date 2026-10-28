@@ -55,17 +55,42 @@ Python не пишет в store и не запускает процессы и �
 
 ### 2. Транспорт и аутентификация
 
-- **Linux и macOS:** Unix domain socket `$XDG_RUNTIME_DIR/harness/<repo-id>.sock`, где
-  `<repo-id>` — первые 16 hex sha256 абсолютного пути общего git-каталога; без
-  `XDG_RUNTIME_DIR` — `<state root>/runtime/` с проверкой длины пути (не больше 100 байт), иначе
-  отказ запуска. Каталог `0700`, сокет `0600`.
+- **Каталог runtime** выбирает одно чистое правило от платформы, `XDG_RUNTIME_DIR`,
+  `LOCALAPPDATA` и uid, одинаковое в Rust (`crates/ipc/src/paths.rs`) и в Python-клиенте
+  (`runtime_client.runtime_directory`); обе стороны проходят общую фикстуру
+  `crates/ipc/tests/fixtures/runtime_paths.json`:
+  1. `XDG_RUNTIME_DIR` задан и абсолютен → `$XDG_RUNTIME_DIR/harness`;
+  2. иначе на Unix → `/tmp/harness-<uid>` (литерал `/tmp`, не `TMPDIR`);
+  3. иначе на Windows → `%LOCALAPPDATA%\harness`; без абсолютного `LOCALAPPDATA` — отказ с
+     remedy «set XDG_RUNTIME_DIR or LOCALAPPDATA to an absolute directory».
+
+  Каталог лежит вне любого репозитория, поэтому ни один корень плана монтирования (ADR 0022) его
+  не содержит. Корень рабочего дерева в адрес не входит: linked worktree и основной checkout
+  получают один runtime. `serve` и `rollback` читают окружение один раз.
+- **Файлы:** `<repo-id>.sock` (Unix), `<repo-id>.token` и замок экземпляра `<repo-id>.lock`, где
+  `<repo-id>` — первые 16 hex sha256 абсолютного пути общего git-каталога. Путь сокета не длиннее
+  100 байт, иначе отказ запуска (запасной путь не длиннее 45 байт).
+- **Linux и macOS:** Unix domain socket `<каталог runtime>/<repo-id>.sock`, сокет `0600`.
+  Runtime создаёт каталог `0700` и отказывает (`unauthorized_peer`), если каталог — symlink, не
+  каталог, принадлежит другому uid или открыт группе или прочим; права не исправляются, потому
+  что в общем `/tmp` чужие файлы могли появиться, пока права были шире. Родитель каталога,
+  доступный на запись группе или прочим, обязан иметь sticky bit; владелец родителя не
+  проверяется (в user namespace `/tmp` принадлежит `nobody`). Правило одно для
+  `XDG_RUNTIME_DIR` и запасного каталога. Сервер держит разделяемый `flock` на каталоге всё время
+  работы, поэтому `systemd-tmpfiles` не удаляет сокет, токен и замок живого runtime; исключительный
+  `flock` на `<repo-id>.lock` остаётся замком экземпляра.
+- **Клиент** до чтения токена проверяет каталог через `lstat`: каталог, не symlink, свой uid, нет
+  прав группы и прочих. Отсутствующий каталог — `runtime_unavailable`, небезопасный —
+  `unauthorized_peer`: иначе чужой пользователь мог бы заранее создать `/tmp/harness-<uid>` и
+  выдать себя за runtime.
 - **Windows:** named pipe `\\.\pipe\harness-runtime-<repo-id>` с DACL только на SID текущего
   пользователя и `PIPE_REJECT_REMOTE_CLIENTS`.
 - **Peer-проверка:** Linux — `SO_PEERCRED`, uid клиента равен uid runtime; macOS —
   `getpeereid`; Windows — `GetNamedPipeClientProcessId` и SID токена клиента. Несовпадение —
   `unauthorized_peer`, соединение закрывается.
 - **Capability-токен:** при старте runtime пишет случайный 256-битный токен в
-  `<socket dir>/token` (`0600`); клиент предъявляет его в `hello`. Ни сокет, ни токен, ни каталог
+  `<каталог runtime>/<repo-id>.token` (`0600`); клиент предъявляет его в `hello`. На Windows
+  токен и pipe закрыты DACL на SID пользователя, проверок владельца каталога нет. Ни сокет, ни токен, ни каталог
   runtime не монтируются в контейнеры: ADR 0022 отвергает такие пути в плане монтирования.
 - **Модель угроз.** Процесс того же пользователя на хосте может прочитать токен, так же как сейчас
   может переписать файлы ledger; регресса нет. Контейнерный worker доступа к runtime не имеет — это
