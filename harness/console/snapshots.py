@@ -307,7 +307,7 @@ class _Request:
     force: bool
 
 
-class _Rejected(Exception):
+class Rejected(Exception):
     """A request that cannot be served, with whatever of its id and type could be trusted."""
 
     def __init__(
@@ -317,42 +317,48 @@ class _Rejected(Exception):
         self.code, self.id, self.type = code, id, type
 
 
-def _parse(raw: str) -> _Request:
+def parse_envelope(raw: str) -> tuple[dict[str, object], str | int | None, str]:
+    """The request object with its id and type; `Rejected` carries what of them could be trusted."""
     if len(raw.encode("utf-8", errors="replace")) > MAX_REQUEST_BYTES:
-        raise _Rejected("too_large")
+        raise Rejected("too_large")
     try:
         body = json.loads(raw)
     except (ValueError, RecursionError):
-        raise _Rejected("bad_json") from None
+        raise Rejected("bad_json") from None
     if not isinstance(body, dict):
-        raise _Rejected("bad_request")
+        raise Rejected("bad_request")
     request_id = body.get("id")
     if "id" in body and not (
         (isinstance(request_id, str) and len(request_id) <= MAX_ID_CHARS)
         or (isinstance(request_id, int) and not isinstance(request_id, bool))
     ):
-        raise _Rejected("bad_request")
+        raise Rejected("bad_request")
     kind = body.get("type")
     if not isinstance(kind, str):
-        raise _Rejected("bad_request", request_id)
+        raise Rejected("bad_request", request_id)
+    return body, request_id, kind
+
+
+def _parse(raw: str) -> _Request:
+    body, request_id, kind = parse_envelope(raw)
     if kind != HOME_REQUEST:
-        raise _Rejected("unknown_type", request_id, kind[:MAX_ID_CHARS])
+        raise Rejected("unknown_type", request_id, kind[:MAX_ID_CHARS])
     force = body.get("force", False)
     if not isinstance(force, bool):
-        raise _Rejected("bad_request", request_id, kind)
+        raise Rejected("bad_request", request_id, kind)
     return _Request(request_id, kind, force)
 
 
-def _encode(reply: dict[str, object]) -> str:
+def encode(reply: dict[str, object]) -> str:
     """The reply as text that encodes as UTF-8 whatever it echoes."""
     text = json.dumps(reply, separators=(",", ":"), ensure_ascii=False)
     return _LONE_SURROGATE.sub(lambda found: f"\\u{ord(found.group()):04x}", text)
 
 
-def _error(
+def error_reply(
     code: str, id: str | int | None, type: str | None, message: str | None = None
 ) -> str:
-    return _encode(
+    return encode(
         {
             "v": PROTOCOL_VERSION,
             "id": id,
@@ -367,22 +373,24 @@ def busy(raw: str) -> str:
     """The reply to a request that arrived while too many were unfinished; echoes what it can."""
     try:
         request = _parse(raw)
-    except _Rejected as rejected:
-        return _error("busy", rejected.id, rejected.type)
-    return _error("busy", request.id, request.type)
+    except Rejected as rejected:
+        return error_reply("busy", rejected.id, rejected.type)
+    return error_reply("busy", request.id, request.type)
 
 
 async def respond(raw: str, snapshots: SnapshotService) -> str:
     """The reply to one request frame. Never raises: every failure is an error reply."""
     try:
         request = _parse(raw)
-    except _Rejected as rejected:
-        return _error(rejected.code, rejected.id, rejected.type)
+    except Rejected as rejected:
+        return error_reply(rejected.code, rejected.id, rejected.type)
     try:
         served = await snapshots.home(force=request.force)
     except Exception as exc:
-        return _error("collect_failed", request.id, request.type, type(exc).__name__)
-    return _encode(
+        return error_reply(
+            "collect_failed", request.id, request.type, type(exc).__name__
+        )
+    return encode(
         {
             "v": PROTOCOL_VERSION,
             "id": request.id,
