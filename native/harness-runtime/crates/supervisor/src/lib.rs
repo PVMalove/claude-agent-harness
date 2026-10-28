@@ -14,7 +14,15 @@
 //! exit evidence. The supervisor never writes a `DispatchState`, and nothing it does kills an
 //! execution when the runtime ends. Other platforms build a stub that serves no execution
 //! operation; `hello` does not list them there.
+//!
+//! A brief whose `runtime_access` names the built-in `docker` extension runs as a `container`
+//! execution (ADR 0022, section 4): the runtime checks the plan's mounts against the engine
+//! sockets and its own paths, the environment names and the pinned images before the intent,
+//! creates the worker's objects through the engine of the plan and records the container id.
+//! Every later engine command of the row uses the engine the row names.
 
+#[cfg(target_os = "linux")]
+mod container;
 #[cfg(target_os = "linux")]
 mod launch;
 #[cfg(target_os = "linux")]
@@ -22,18 +30,48 @@ pub mod process;
 #[cfg(target_os = "linux")]
 mod stop;
 
+use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// The operations the supervisor serves, as `hello` lists them.
-pub const FEATURES: [&str; 2] = ["execution.launch", "execution.observe"];
+pub const FEATURES: [&str; 3] = ["execution.launch", "execution.observe", "container.observe"];
 
-/// The supervisor of one runtime: the state directory it launches from, and what it holds in
-/// memory about the executions it serves.
-#[derive(Debug, Default)]
+/// The engine of a kind: the CLI by default; tests script it.
+pub type Engines = Arc<dyn Fn(engine::Kind) -> Arc<dyn engine::Engine> + Send + Sync>;
+
+/// The supervisor of one runtime: the state directory it launches from, the repository and
+/// runtime paths a container must never see, its engines, and what it holds in memory about the
+/// executions it serves.
 pub struct Supervisor {
     state_dir: Option<PathBuf>,
+    /// The runtime's own canonical Git common directory: the repository label of its objects.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    repository: Option<PathBuf>,
+    /// The runtime's own directory, socket, token and lock.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    runtime_paths: Vec<PathBuf>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    engines: Engines,
     #[cfg(target_os = "linux")]
     inner: launch::Inner,
+}
+
+impl fmt::Debug for Supervisor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Supervisor")
+            .field("state_dir", &self.state_dir)
+            .field("repository", &self.repository)
+            .field("runtime_paths", &self.runtime_paths)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Supervisor {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 
 impl Supervisor {
@@ -41,9 +79,32 @@ impl Supervisor {
     pub fn new(state_dir: Option<PathBuf>) -> Self {
         Self {
             state_dir,
+            repository: None,
+            runtime_paths: Vec::new(),
+            engines: Arc::new(engine::cli),
             #[cfg(target_os = "linux")]
             inner: launch::Inner::default(),
         }
+    }
+
+    /// The same supervisor for the repository of the canonical Git common directory
+    /// `repository`, whose runtime keeps `runtime_paths`.
+    #[must_use]
+    pub fn with_runtime(
+        mut self,
+        repository: Option<PathBuf>,
+        runtime_paths: Vec<PathBuf>,
+    ) -> Self {
+        self.repository = repository;
+        self.runtime_paths = runtime_paths;
+        self
+    }
+
+    /// The same supervisor with other engines.
+    #[must_use]
+    pub fn with_engines(mut self, engines: Engines) -> Self {
+        self.engines = engines;
+        self
     }
 
     /// Whether this platform supervises processes.
@@ -53,7 +114,7 @@ impl Supervisor {
 }
 
 #[cfg(not(target_os = "linux"))]
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::atomic::AtomicBool;
 
 #[cfg(not(target_os = "linux"))]
 use contracts::{ErrorBody, Request};
@@ -81,6 +142,14 @@ impl Supervisor {
     /// Always `unknown_operation`.
     pub fn launch(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
         let _ = &self.state_dir;
+        Err(Self::unsupported(request))
+    }
+
+    /// `container.observe`: not served on this platform.
+    ///
+    /// # Errors
+    /// Always `unknown_operation`.
+    pub fn container_observe(self: &Arc<Self>, request: &Request) -> Result<Value, ErrorBody> {
         Err(Self::unsupported(request))
     }
 

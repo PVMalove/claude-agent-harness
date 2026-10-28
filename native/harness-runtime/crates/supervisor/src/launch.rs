@@ -179,6 +179,29 @@ struct Admitted<'a> {
     digest: String,
     spec: Value,
     limits: Limits,
+    /// The `runtime_access` plan and `runtime_images` of a brief the built-in docker extension
+    /// runs: the execution is a container.
+    container: Option<(Value, Value)>,
+}
+
+/// The plan and pinned images of a brief whose `runtime_access` names the built-in `docker`
+/// extension.
+fn container_of(brief: &Map<String, Value>) -> Option<(Value, Value)> {
+    let plan = brief.get("runtime_access")?;
+    (plan.get("runtime_extension")?.as_str()? == "docker").then(|| {
+        (
+            plan.clone(),
+            brief.get("runtime_images").cloned().unwrap_or(Value::Null),
+        )
+    })
+}
+
+/// Create the log directory of an execution, private to the runtime's user.
+pub(crate) fn log_directory(dir: &Path) -> std::io::Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
 }
 
 /// What a launch request finds in the store: the answer of an operation stored before, or a new
@@ -307,13 +330,65 @@ impl Supervisor {
             Found::Stored(answer) => return answer,
             Found::New(admitted) => admitted,
         };
-        let execution = self.intent(&mut connection, &admitted)?;
+        if let Some((plan, images)) = &admitted.container {
+            return self.launch_container(&mut connection, &admitted, plan, images);
+        }
+        let (stdout, stderr) = self.logs(&request.operation_id)?;
+        let launch = json!({
+            "argv": admitted.spec["argv"],
+            "cwd": admitted.spec["cwd"],
+            "labels": {
+                process::LABEL_OPERATION: request.operation_id,
+                process::LABEL_DISPATCH: admitted.dispatch_id,
+            },
+            "logs": {"stdout": stdout, "stderr": stderr},
+        });
+        let execution = self.intent(&mut connection, &admitted, &launch, None)?;
         hooks::reach_once("execution.launch:intent").map_err(|err| injected(&err))?;
         let child = self.start_process(&mut connection, &execution, &admitted)?;
         let pid = i64::from(child.id());
         guard(&self.inner.children).insert(execution.id.clone(), child);
         hooks::reach_once("execution.launch:launched").map_err(|err| injected(&err))?;
         self.receipt(&mut connection, &execution, pid, false, None)
+    }
+
+    /// A container launch: step 1 without a write, the intent, the staged launch and the
+    /// receipt. A failed staged launch is rolled back and the execution is `lost`.
+    fn launch_container(
+        self: &Arc<Self>,
+        connection: &mut Connection,
+        admitted: &Admitted<'_>,
+        plan: &Value,
+        images: &Value,
+    ) -> Result<Value, ErrorBody> {
+        let (checked, observation) = self.admit_container(plan, images)?;
+        let (stdout, stderr) = self.logs(&admitted.request.operation_id)?;
+        let launch = Self::container_launch(
+            &admitted.request.operation_id,
+            &admitted.dispatch_id,
+            &admitted.spec,
+            &checked,
+            &observation,
+            (&stdout, &stderr),
+        );
+        let execution = self.intent(
+            connection,
+            admitted,
+            &launch,
+            Some(checked.plan.engine.as_str()),
+        )?;
+        hooks::reach_once("execution.launch:intent").map_err(|err| injected(&err))?;
+        match self.start_container(&execution, &checked, &observation) {
+            Ok(launched) => {
+                hooks::reach_once("execution.launch:launched").map_err(|err| injected(&err))?;
+                self.container_receipt(connection, &execution, &launched, false)
+            }
+            Err(error) => {
+                let facts = json!({"launch_failure": error.message});
+                self.fail(connection, &execution, &error, facts)?;
+                Err(error)
+            }
+        }
     }
 
     /// Step 1 up to its write: the stored records of the dispatch, then the answer of an
@@ -349,6 +424,7 @@ impl Supervisor {
             digest,
             spec,
             limits,
+            container: container_of(&brief),
         }))
     }
 
@@ -383,18 +459,10 @@ impl Supervisor {
         &self,
         connection: &mut Connection,
         admitted: &Admitted<'_>,
+        launch: &Value,
+        engine: Option<&str>,
     ) -> Result<Execution, ErrorBody> {
         let request = admitted.request;
-        let (stdout, stderr) = self.logs(&request.operation_id)?;
-        let launch = json!({
-            "argv": admitted.spec["argv"],
-            "cwd": admitted.spec["cwd"],
-            "labels": {
-                process::LABEL_OPERATION: request.operation_id,
-                process::LABEL_DISPATCH: admitted.dispatch_id,
-            },
-            "logs": {"stdout": stdout, "stderr": stderr},
-        });
         let at = iso_now();
         let deadline = iso_from_micros(now_micros() + admitted.limits.timeout_seconds * 1_000_000);
         let tx = executions::begin(connection)?;
@@ -409,9 +477,13 @@ impl Supervisor {
             &NewExecution {
                 id: &request.operation_id,
                 dispatch_id: &admitted.dispatch_id,
-                kind: executions::KIND_PROCESS,
-                engine: None,
-                launch: &launch,
+                kind: if engine.is_some() {
+                    executions::KIND_CONTAINER
+                } else {
+                    executions::KIND_PROCESS
+                },
+                engine,
+                launch,
                 execution_deadline: &deadline,
                 stop_grace_seconds: admitted.limits.stop_grace_seconds,
                 poll_interval_seconds: admitted.limits.poll_interval_seconds,
@@ -443,20 +515,16 @@ impl Supervisor {
             })
             .unwrap_or_default();
         let cwd = PathBuf::from(admitted.spec["cwd"].as_str().unwrap_or_default());
-        let spawned = std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(stdout.parent().unwrap_or(self.state()?))
-            .and_then(|()| {
-                process::spawn(&Spec {
-                    argv: &argv,
-                    cwd: &cwd,
-                    operation_id: &execution.id,
-                    dispatch_id: &admitted.dispatch_id,
-                    stdout: &stdout,
-                    stderr: &stderr,
-                })
-            });
+        let spawned = log_directory(stdout.parent().unwrap_or(self.state()?)).and_then(|()| {
+            process::spawn(&Spec {
+                argv: &argv,
+                cwd: &cwd,
+                operation_id: &execution.id,
+                dispatch_id: &admitted.dispatch_id,
+                stdout: &stdout,
+                stderr: &stderr,
+            })
+        });
         spawned.or_else(|err| {
             let error = ErrorBody::new(
                 ErrorCode::EngineUnavailable,
@@ -537,7 +605,7 @@ impl Supervisor {
     }
 
     /// The execution becomes `lost` and its operation `failed` with `error`, in one transaction.
-    fn fail(
+    pub(crate) fn fail(
         &self,
         connection: &mut Connection,
         execution: &Execution,
@@ -571,7 +639,7 @@ impl Supervisor {
     }
 
     /// One transition of a row this thread holds the mutex of, from the state it was read in.
-    fn move_to(
+    pub(crate) fn move_to(
         connection: &mut Connection,
         execution: &Execution,
         to: ExecutionState,
@@ -594,6 +662,10 @@ impl Supervisor {
     ) -> Result<Execution, ErrorBody> {
         if is_terminal(execution.state) || self.is_watched(&execution.id) {
             return Ok(execution);
+        }
+        if execution.kind == executions::KIND_CONTAINER {
+            self.settle_container(connection, &execution)?;
+            return Ok(executions::load(connection, &execution.id)?.unwrap_or(execution));
         }
         match &execution.identity {
             None => {
@@ -758,7 +830,7 @@ impl Supervisor {
 }
 
 /// The owner of the lease of an execution: this runtime process, by its identity.
-fn owner() -> Value {
+pub(crate) fn owner() -> Value {
     let pid = i64::from(std::process::id());
     let identity = process::identity_of(pid, &identity::observer())
         .map(|(identity, _)| identity.to_json())

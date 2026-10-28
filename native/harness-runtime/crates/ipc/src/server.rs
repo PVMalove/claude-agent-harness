@@ -95,6 +95,31 @@ pub(crate) fn io_context(context: impl Into<String>) -> impl FnOnce(io::Error) -
     move |source| StartError::Io { context, source }
 }
 
+/// The supervisor of a serving runtime: the repository is the Git common directory of the
+/// checkout that holds `state_dir`, and the runtime's own directory, socket, token and lock are
+/// protected from every container mount (ADR 0022, section 4).
+pub(crate) fn supervisor_of(
+    paths: &RuntimePaths,
+    state_dir: Option<&std::path::Path>,
+) -> supervisor::Supervisor {
+    let depth = std::path::Path::new(state::migrate::STATE_REL)
+        .components()
+        .count();
+    let repository = state_dir
+        .and_then(|dir| dir.ancestors().nth(depth))
+        .and_then(|root| crate::paths::git_common_dir(root).ok());
+    let lock = paths.dir.join(format!("{}.lock", paths.repo_id));
+    supervisor::Supervisor::new(state_dir.map(std::path::Path::to_path_buf)).with_runtime(
+        repository,
+        vec![
+            paths.dir.clone(),
+            paths.socket.clone(),
+            paths.token.clone(),
+            lock,
+        ],
+    )
+}
+
 /// Take the exclusive lock of the repository's runtime. It is held while the server lives, and
 /// the kernel drops it when the process dies, so a crash never leaves the repository locked.
 pub(crate) fn take_lock(paths: &RuntimePaths) -> Result<File, StartError> {

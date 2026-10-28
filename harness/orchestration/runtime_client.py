@@ -63,8 +63,10 @@ EXECUTION_STATES = ("launching", "running", "stopping", "exited", "lost", "unkno
 
 # The protocol version this client speaks; the runtime accepts a common major (ADR 0021). Minor 1
 # adds ``state.write``, ``state.validate`` and the registry vocabularies of the operations table;
-# minor 2 adds ``execution.launch`` and ``execution.observe`` of the process supervisor (ADR 0022).
-PROTOCOL_VERSION = (1, 2)
+# minor 2 adds ``execution.launch`` and ``execution.observe`` of the process supervisor (ADR 0022);
+# minor 3 adds ``container.observe``, ``container.objects`` and ``container.remove`` of the
+# container executor in the runtime (ADR 0022, section 4).
+PROTOCOL_VERSION = (1, 3)
 MAX_FRAME_BYTES = 16 * 1024 * 1024
 MAX_SOCKET_PATH_BYTES = 100
 _FRAME_HEADER = struct.Struct(">I")

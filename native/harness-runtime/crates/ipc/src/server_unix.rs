@@ -63,7 +63,7 @@ impl Server {
             token,
             repo_id: paths.repo_id.clone(),
             server_version: env!("CARGO_PKG_VERSION").to_owned(),
-            supervisor: Arc::new(supervisor::Supervisor::new(state_dir.clone())),
+            supervisor: Arc::new(crate::server::supervisor_of(&paths, state_dir.as_deref())),
             state_dir,
             snapshots: Arc::default(),
         });

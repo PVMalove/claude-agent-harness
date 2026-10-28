@@ -210,7 +210,7 @@ fn digest(path: &Path) -> io::Result<(u64, String)> {
 }
 
 /// The size and SHA-256 of each log of an execution, as far as it was written.
-fn logs(paths: &[PathBuf]) -> Value {
+pub(crate) fn logs(paths: &[PathBuf]) -> Value {
     Value::Array(
         paths
             .iter()
@@ -248,7 +248,13 @@ impl Supervisor {
     /// Record `to`. A repeatable refusal of the store delays the evidence for a bounded time; a
     /// refusal for good leaves the row `unknown` from `from` with the lease held, and the stderr
     /// of the runtime names the cause. Reconcile observes the execution again afterwards.
-    fn record(&self, id: &str, from: ExecutionState, to: ExecutionState, change: &Change) {
+    pub(crate) fn record(
+        &self,
+        id: &str,
+        from: ExecutionState,
+        to: ExecutionState,
+        change: &Change,
+    ) {
         let mut attempt = 1;
         let refused = loop {
             match self.locked(id, from, to, change.clone()) {
@@ -285,7 +291,7 @@ impl Supervisor {
         }
     }
 
-    fn log_paths(&self, id: &str) -> Vec<PathBuf> {
+    pub(crate) fn log_paths(&self, id: &str) -> Vec<PathBuf> {
         self.logs(id)
             .map(|(stdout, stderr)| vec![stdout, stderr])
             .unwrap_or_default()
