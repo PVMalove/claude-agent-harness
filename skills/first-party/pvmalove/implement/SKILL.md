@@ -283,6 +283,16 @@ lock. For the lock of a stopped sandboxed worker, show the operator a copyable
 `ledger release-lock --force --approved-by <operator> --approved-at <time> --reason <why>`; it is
 their action, never yours, under every `approval_policy`.
 
+In the runtime-store epoch, coordinators of different batches write in parallel and read from
+snapshots; a `revision_conflict` on `generation` means another command decided over every batch
+first: repeat the command. The QA lane is a lease with a fencing token and a heartbeat
+(`lease_ttl_seconds`). An expired lease of a dead owner (`owner-dead`) needs no `--force`: the next
+`qa run` or a plain `ledger release-lock` reaps it. `[lease_held]` with `stale_heartbeat=true`
+means the owner may live (`owner-alive`, `owner-pid-reused`, `owner-in-other-environment`,
+`owner-unknown`): it is never released automatically, and only the operator's
+`ledger release-lock --force` or `qa clear-stale-lease` clears it. `harness-runtime serve` must run
+in a PID namespace that sees the coordinators.
+
 ## External launch and observation
 
 Use the shipped example explicitly with `--adapter .harness/orchestration/adapters/claude_code.py`;

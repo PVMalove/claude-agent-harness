@@ -381,7 +381,7 @@ that stage. The coordinator chooses a route by this table:
 | A human selects a reached earlier gate, or resumes the pending report boundary of a no-route pause | `rewind` | Human `batch rewind --to` or `resume-stop`; fresh approvals; no budget reset and a new writing attempt spends developer retry budget | Sealed event binds before/after state, target, preserved writer SHA, superseded evidence and human approval; unchanged Git history |
 | After a forced abandon (a dead end), the work resumes in a new batch for the same ticket and issue branch from the abandoned batch's `abandoned.last_accepted` record: `batch create --supersedes <batch>` | `supersede` | A human only, with `--approved-by` and `--approved-at` on `batch create`; a `policy:` approver is refused. The new batch still needs `batch approve`, its dispatches are approved under `approval_policy`, and a first developer-retry that carries a rebase target always needs an explicit approval except under `auto`; no `retry_policy.max_developer_retries` is spent | The superseded batch ID and its `abandoned.last_accepted`; for the same Definition of Done, the carried architect reference (`dispatch_id`, `report`, `report_sha256`, `commit_plan_sha256`); the `start_commit` and the `rebase_target_commit`. No risk, review, QA or operator decision evidence is copied |
 | `report submit` recorded the report but its policy chain stopped (`completion.failed_step`: `policy-decide`, `risk-assess` or `next-dispatch`) | `report-completion` | No human approval: the coordinator runs `report complete` itself; it replays only the `auto_accept_policy` decision recorded at submit, and a step that needs a human stops with that step's remedy | Dispatch ID, `report_sha256`, the submit `completion` object and the `report complete` steps |
-| Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status`, or a `qa run` failure `QA dispatch <id> was not released` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner. `qa run` waits up to 30 seconds for a busy lock before it releases its own QA lease and queue entry. If the lock frees after a failure, the dispatch is `approved` again: run `qa run` for it again. If the lock stays held, the dispatch stays `working`: after the lease expires, a coordinator runs `qa clear-stale-lease`, which also returns that dispatch to `approved`, and then runs `qa run` again | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict; after a released `qa run` failure, its QA attempt record; after `was not released`, the lease owner and `expires_at` in the error and `restored_dispatch_state` in the `qa clear-stale-lease` answer and recovery record |
+| Ledger busy: `ledger is locked by another operation`, or a `ledger_busy` answer from `dispatch status`, or a `qa run` failure `QA dispatch <id> was not released` | `report-completion` | No approval: repeat `dispatch wait`/`dispatch status`, run `report complete` when a recorded report's chain stopped, and never remove the lock by hand; a lock that stays held goes to `ledger release-lock`, which refuses a live owner. In the runtime-store epoch an expired QA lease of a dead owner (`owner-dead`) needs no `--force`: the next `qa run` or `ledger release-lock` reaps it; `[lease_held]` means the owner may live and only an operator clears it. `qa run` waits up to 30 seconds for a busy lock before it releases its own QA lease and queue entry. If the lock frees after a failure, the dispatch is `approved` again: run `qa run` for it again. If the lock stays held, the dispatch stays `working`: after the lease expires, a coordinator runs `qa clear-stale-lease`, which also returns that dispatch to `approved`, and then runs `qa run` again | Lock owner (`pid`, `host`, `acquired_at`, `held_seconds`) and the `ledger release-lock` verdict; after a released `qa run` failure, its QA attempt record; after `was not released`, the lease owner and `expires_at` in the error and `restored_dispatch_state` in the `qa clear-stale-lease` answer and recovery record |
 
 `batch decision-packet` shows the route before the decision is recorded: its `route_preview` holds
 the `retry` routing record computed as `batch decide` computes it (it takes the same
@@ -916,6 +916,38 @@ holds times, and gets `revision_conflict`; the remedy is to run the command agai
 `revision_conflict` and `runtime_unavailable` are different errors: exit code 2 and the code in
 brackets on the first `REMEDY:` line. `coordinator.py ledger validate --full` recomputes the whole
 audit chain without the checkpoint; the details are in `docs/backend-orchestration.md`.
+
+Parallel batches in the runtime-store epoch (store schema 3). Commands of different batches write
+in parallel: each command reads from one read snapshot of the store (`state.read` with
+`snapshot`), so a commit of another batch between two of its reads neither refuses it nor shows it
+half of two states, and a read command (`dispatch status`, `batch auto-report`,
+`batch decision-packet`, `qa status`) never waits for a writer. Writes to one batch stay
+serialised by the row `revision`. A decision over every batch (the `concurrency_budget` of
+`dispatch create`, a duplicate ticket, branch or worktree of `batch create`) is guarded by the
+`generation` revision of the snapshot it read: of two commands that decided on the same state
+only one commits, and the other gets `revision_conflict` on `generation`; repeat it.
+
+The QA lane of the store is a singleton lease with a fencing token. `qa run` and
+`integration local-qa` take it with `lease_acquire`; the runtime records the identity of the
+owner process from the kernel (host, boot, PID namespace, pid and start time) and raises the
+`fencing_token` with every lease. The owner renews the lease with a heartbeat every third of
+`lease_ttl_seconds` (default 300; `--lease-seconds` overrides it), and a release or heartbeat
+with another owner or token is `fencing_mismatch`. After `expires_at` the runtime checks the owner
+only by its identity: `owner-dead` (same host, boot and PID namespace, and no process with the
+pid) lets the next `qa run`, `integration local-qa` or plain `ledger release-lock` reap the lease
+without `--force`, with an audit record (owner, identity, observation, verdict and time) and the
+recovery of `qa clear-stale-lease` (the owner's queue entry, its QA dispatch back to `approved`, a
+`qa-lane/recoveries` record). Any other verdict keeps the lease: `owner-alive`,
+`owner-pid-reused`, `owner-in-other-environment`, `owner-on-another-host` and `owner-unknown`
+(a lease of store schema 2 has no identity). The requester then ends with exit code 2 and
+`REMEDY: [lease_held] stale_heartbeat=true verdict=<verdict>`; `qa status` shows
+`stale_heartbeat`, and `dispatch status` shows the lane in its top-level `qa_lane`. A live owner is
+never released automatically or by `ledger release-lock` without `--force`. The human override
+stays `ledger release-lock --force --approved-by --approved-at --reason` or
+`qa clear-stale-lease`; `ledger lock-status` shows the lease as `qa_lease` with its verdict and
+`release_available`. Run `harness-runtime serve` in a PID namespace that sees the coordinators
+(the host, or the namespace that contains their sandboxes): a runtime that cannot see a client
+records no identity, and the lease of that client is never reaped.
 
 When a new fact appears after dispatch, the coordinator appends a new coordinator decision before
 acting on it. The decision records the dispatch ID, fact and evidence, impact on scope or risk,
