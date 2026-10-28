@@ -12,14 +12,16 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 import pytest
 
 from tests.orchestration.runtime_store_support import (
     APPROVAL,
     Supervised,
+    architect_report_file,
     store_call,
+    store_records,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -523,3 +525,83 @@ def test_an_unknown_dispatch_is_refused_and_launches_nothing(
     assert refused.value.code == "not_found"
     assert repo.rows("SELECT MAX(seq) FROM audit") == before
     assert repo.launches() == []
+
+
+def _working(repo: Supervised) -> None:
+    worktree = dig(sent(repo.send()), "worker_worktree")
+    reported = repo.run(
+        "dispatch",
+        "self-report",
+        "--dispatch",
+        repo.dispatch,
+        "--model",
+        "sonnet",
+        "--worktree",
+        str(worktree),
+    )
+    assert reported.returncode == 0, reported.stderr
+
+
+def _status_of(repo: Supervised) -> object:
+    viewed = repo.run("dispatch", "status", "--dispatch", repo.dispatch)
+    assert viewed.returncode == 0, viewed.stderr
+    return dig(json.loads(viewed.stdout), "dispatches")
+
+
+def test_a_report_submitted_while_the_execution_runs_is_accepted_after_it_exits(
+    supervised: Factory,
+) -> None:
+    repo = supervised()
+    _working(repo)
+    path = f"dispatches/{repo.dispatch}.json"
+    brief = store_records(repo.repo, repo.runtime, path)[path]
+
+    submitted = repo.run(
+        "report",
+        "submit",
+        "--file",
+        str(architect_report_file(repo.repo, repo.dispatch, brief)),
+    )
+
+    assert submitted.returncode == 0, submitted.stderr
+    answer = json.loads(submitted.stdout)
+    assert (answer["state"], answer["awaiting"]) == ("working", "execution-exit")
+    assert repo.status()["state"] == "working"
+    repo.release(0)
+    repo.wait_execution("exited")
+    _status_of(repo)
+    assert repo.status()["state"] == "reported"
+    assert "pending_report" not in repo.status()
+
+
+def test_an_execution_that_exits_without_a_report_blocks_the_dispatch_with_its_domain(
+    supervised: Factory,
+) -> None:
+    repo = supervised(timeout=2, grace=1)
+    _working(repo)
+    repo.wait_execution("exited", timeout=20)
+
+    (entry,) = cast(list[object], _status_of(repo))
+
+    status = repo.status()
+    assert status["state"] == "blocked"
+    assert dig(status, "runtime_failure", "kind") == "timeout"
+    assert dig(entry, "execution", "state") == "exited"
+
+
+def test_a_lost_execution_blocks_the_dispatch_as_infrastructure(
+    supervised: Factory,
+) -> None:
+    repo = supervised()
+    _working(repo)
+    repo.runtime.kill()
+    with sqlite3.connect(repo.database) as db:
+        db.execute("UPDATE executions SET start_time = '1'")
+    repo.restart_runtime()
+
+    _status_of(repo)
+
+    status = repo.status()
+    assert status["state"] == "blocked"
+    assert dig(status, "runtime_failure", "kind") == "runtime-unavailable"
+    assert dig(status, "runtime_failure", "execution_state") == "lost"

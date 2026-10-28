@@ -675,7 +675,13 @@ def wait_dispatch(args: argparse.Namespace) -> JsonObject:
         )
     deadline = time.monotonic() + timeout
     ledger = LifecycleLedger(root)
+    from harness.orchestration.workflow import execution_reaction
+
     while True:
+        # The ended execution of a supervised dispatch decides its transition first (ADR 0021,
+        # section 6); a busy ledger defers that to the next poll.
+        with contextlib.suppress(LedgerBusyError):
+            execution_reaction.observe(repo, root, args.dispatch)
         # A ledger busy with another coordinator operation is a missed poll, not a failure: the
         # next poll retries it until this wait's own timeout.  Only the lock acquisition is
         # tolerated -- nothing below takes the lock again.
@@ -903,6 +909,16 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
     # The runtime store is read, never written, by this view: the engine is not asked, so no
     # evidence is persisted (ADR 0020, section 2).
     from_store = store_is_authority(root)
+    # The execution of the named supervised dispatch is observed, and an ended one decides its
+    # transition, before the view is read (ADR 0021, section 6).
+    executions: dict[str, JsonObject | None] = {}
+    if from_store and args.dispatch:
+        from harness.orchestration.workflow import execution_reaction
+
+        with contextlib.suppress(CoordinatorError):
+            executions[args.dispatch] = execution_reaction.observe(
+                repo, root, args.dispatch
+            )
     # A busy ledger answers with a structured retry instead of an error: the caller polls again.
     with contextlib.suppress(LedgerBusyError), read_state(ledger, repo):
         from harness.orchestration import qa_lane
@@ -932,6 +948,15 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                 for item in batch.get("context_pressure", [])
                 if item.get("dispatch_id") == dispatch["dispatch_id"]
             ]
+            execution = (
+                (
+                    executions[dispatch["dispatch_id"]]
+                    if dispatch["dispatch_id"] in executions
+                    else observed_execution(repo, dispatch["dispatch_id"])
+                )
+                if from_store and dispatch.get("execution")
+                else None
+            )
             asks_engine = needs_engine(status)
             observe = not from_store and (
                 bool(args.dispatch) or engine_reads < MAX_ENGINE_READS
@@ -952,13 +977,11 @@ def dispatch_status(args: argparse.Namespace) -> JsonObject:
                     "transport": dispatch.get("resolved_transport"),
                     "resolved_model": dispatch["resolved_model"],
                     "model_self_report": status.get("model_self_report"),
-                    "startup": assess_startup(dispatch, status, repo=repo),
-                    "adapter_receipt": status.get("adapter_receipt"),
-                    **(
-                        {"execution": observed_execution(repo, dispatch["dispatch_id"])}
-                        if from_store and dispatch.get("execution")
-                        else {}
+                    "startup": assess_startup(
+                        dispatch, status, repo=repo, execution=execution
                     ),
+                    "adapter_receipt": status.get("adapter_receipt"),
+                    **({"execution": execution} if dispatch.get("execution") else {}),
                     "runtime_access": status.get("runtime_access"),
                     "heartbeat_at": status.get("heartbeat_at")
                     or status.get("updated_at"),

@@ -1870,6 +1870,70 @@ def _report_markdown(report: JsonObject) -> str:
     return "\n".join(lines)
 
 
+def _record_report(
+    repo: Path,
+    ledger: LifecycleLedger,
+    root: Path,
+    batch: JsonObject,
+    dispatch: JsonObject,
+    report: JsonObject,
+    role: JsonObject,
+    config: JsonObject,
+    report_relay: JsonObject | None,
+) -> tuple[Path, str | None]:
+    """Record a validated report under the held coordinator lock: the retry candidate, the risk
+    reassessment binding, the immutable report and the ``reported`` transition. ``report submit``
+    and the reaction to an exited execution (``execution_reaction``) share it."""
+    from harness.orchestration.workflow.decisions import _auto_accept_policy
+
+    auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
+    retry_candidate: str | None = None
+    was_retry = False
+    if (
+        role["name"] == "developer"
+        and report.get("outcome") == "completed"
+        and batch.get("retry_candidate_required")
+    ):
+        retry_candidate = _candidate_commit(repo, report["commit_sha"])
+        was_retry = True
+        prior_candidates = {
+            item.get("candidate_commit")
+            for item in batch.get("risk_assessments", [])
+            if isinstance(item.get("candidate_commit"), str)
+        }
+        if retry_candidate in prior_candidates:
+            raise CoordinatorError(
+                "a retry must produce a new candidate commit before review or QA",
+                remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch",
+            )
+        batch["retry_candidate_required"] = False
+    # Only a work report reaches this point with risk_triggers: a publish dispatch is refused by
+    # `send` and recorded by `publish_dispatch` (delivery.py) without a submitted report, and it
+    # runs after QA, so it has no reassessment to bind (issue #781).  A blocked writer report
+    # binds too: it carries the commit that `accept-conditional` or an infrastructure retry
+    # then makes the batch's candidate, and no later step would bind it.
+    if (
+        role["name"] in {"developer", "conflict-resolver"}
+        and report.get("outcome") in {"completed", "blocked"}
+        and dispatch.get("purpose", "work") == "work"
+    ):
+        _bind_reassessment(
+            repo, batch, dispatch, report, was_retry, retry_candidate
+        )
+    report_json = _persist_report(
+        ledger,
+        root,
+        batch,
+        dispatch,
+        report,
+        auto_accept_policy=auto_accept_policy,
+        report_relay=report_relay,
+    )
+    if resolver_state.is_resolver_brief(dispatch):
+        resolver_state.record_report(ledger, root, batch, dispatch, report)
+    return report_json, auto_accept_policy
+
+
 def submit_report(args: argparse.Namespace) -> JsonObject:
     repo = _repo(args)
     path = _agent_authored_file(repo, args.file, "a completion report")
@@ -2014,53 +2078,21 @@ def submit_report(args: argparse.Namespace) -> JsonObject:
         rebase_check = rebase.rebase_check(repo, report, dispatch)
         # Only a new report must carry its closure: one recorded earlier is decided as a gap.
         carried_items.require_closure(report, dispatch)
-        from harness.orchestration.workflow.decisions import _auto_accept_policy
+        from harness.orchestration.workflow import execution_reaction
 
-        auto_accept_policy = _auto_accept_policy(config, batch, dispatch, report)
-        retry_candidate: str | None = None
-        was_retry = False
-        if (
-            role["name"] == "developer"
-            and report.get("outcome") == "completed"
-            and batch.get("retry_candidate_required")
-        ):
-            retry_candidate = _candidate_commit(repo, report["commit_sha"])
-            was_retry = True
-            prior_candidates = {
-                item.get("candidate_commit")
-                for item in batch.get("risk_assessments", [])
-                if isinstance(item.get("candidate_commit"), str)
+        if execution_reaction.awaits_exit(repo, root, dispatch):
+            # The store refuses a terminal state while the execution may run: the report is
+            # recorded now and the transition waits for the observed exit (ADR 0021, section 6).
+            execution_reaction.hold_report(ledger, status, report, report_relay)
+            return {
+                "dispatch_id": dispatch["dispatch_id"],
+                "state": status.get("state"),
+                "report": "recorded",
+                "awaiting": "execution-exit",
             }
-            if retry_candidate in prior_candidates:
-                raise CoordinatorError(
-                    "a retry must produce a new candidate commit before review or QA",
-                    remedy="produce a new candidate commit (developer retry) before the next review or QA dispatch",
-                )
-            batch["retry_candidate_required"] = False
-        # Only a work report reaches this point with risk_triggers: a publish dispatch is refused by
-        # `send` and recorded by `publish_dispatch` (delivery.py) without a submitted report, and it
-        # runs after QA, so it has no reassessment to bind (issue #781).  A blocked writer report
-        # binds too: it carries the commit that `accept-conditional` or an infrastructure retry
-        # then makes the batch's candidate, and no later step would bind it.
-        if (
-            role["name"] in {"developer", "conflict-resolver"}
-            and report.get("outcome") in {"completed", "blocked"}
-            and dispatch.get("purpose", "work") == "work"
-        ):
-            _bind_reassessment(
-                repo, batch, dispatch, report, was_retry, retry_candidate
-            )
-        report_json = _persist_report(
-            ledger,
-            root,
-            batch,
-            dispatch,
-            report,
-            auto_accept_policy=auto_accept_policy,
-            report_relay=report_relay,
+        report_json, auto_accept_policy = _record_report(
+            repo, ledger, root, batch, dispatch, report, role, config, report_relay
         )
-        if resolver_state.is_resolver_brief(dispatch):
-            resolver_state.record_report(ledger, root, batch, dispatch, report)
     response: JsonObject = {
         "dispatch_id": dispatch["dispatch_id"],
         "state": "reported",

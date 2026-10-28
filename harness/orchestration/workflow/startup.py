@@ -51,11 +51,23 @@ RESTARTABLE_WORKER_STATES: frozenset[WorkerProcessState] = frozenset(
 )
 
 
+# The worker state of a supervised dispatch, from the execution the runtime observed (ADR 0022).
+EXECUTION_WORKER_STATES: dict[str, WorkerProcessState] = {
+    "launching": "live",
+    "running": "live",
+    "stopping": "live",
+    "exited": "stopped",
+    "lost": "stopped",
+    "unknown": "unknown",
+}
+
+
 def worker_process_state(
     status: Mapping[str, object],
     *,
     runtime_stopped: bool = False,
     repo: Path | None = None,
+    execution: Mapping[str, object] | None = None,
 ) -> WorkerProcessState:
     """Return the strongest recorded fact about the worker process, never a guess from silence.
 
@@ -69,6 +81,10 @@ def worker_process_state(
     state = status.get("state")
     if state == "reported":
         return "reported"
+    observed = execution.get("state") if execution is not None else None
+    if isinstance(observed, str) and observed in EXECUTION_WORKER_STATES:
+        # The runtime supervises the worker: its observation replaces the adapter receipt.
+        return EXECUTION_WORKER_STATES[observed]
     observation = observe_worker(
         status.get("adapter_receipt"), status.get("dispatch_id"), repo=repo
     )
@@ -103,6 +119,7 @@ def assess_startup(
     *,
     runtime_stopped: bool = False,
     repo: Path | None = None,
+    execution: Mapping[str, object] | None = None,
 ) -> JsonObject:
     """Explain a stopped startup from recorded facts without inventing a model or an exit.
 
@@ -127,7 +144,9 @@ def assess_startup(
     runtime_failure = failure_classifier.classify_runtime_failure(
         failure if isinstance(failure, Mapping) else None
     )
-    worker = worker_process_state(status, runtime_stopped=runtime_stopped, repo=repo)
+    worker = worker_process_state(
+        status, runtime_stopped=runtime_stopped, repo=repo, execution=execution
+    )
     if model_match is False:
         classification: str | None = "model-mismatch"
     elif model_match is True and not tree_match:
