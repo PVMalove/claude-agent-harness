@@ -600,12 +600,14 @@ impl Supervisor {
         let observer = identity::observer();
         let verdict = identity::verdict(Some(recorded), &observer, &identity::probe(recorded.pid));
         let to = executions::observed(verdict, false);
-        // A process another runtime started is stopped at its deadline from here; never one
-        // whose state is unknown.
-        if to == ExecutionState::Running
+        // A process another runtime started is stopped at its deadline from here, and a stop
+        // another runtime began is driven to its proof from here; never one whose state is
+        // unknown.
+        let due = to == ExecutionState::Running
             && execution.state == ExecutionState::Running
-            && crate::stop::past(&execution.execution_deadline)
-        {
+            && crate::stop::past(&execution.execution_deadline);
+        let begun = execution.state == ExecutionState::Stopping && to != ExecutionState::Unknown;
+        if due || begun {
             self.stop_adopted(execution);
             return Ok(());
         }

@@ -1,7 +1,8 @@
 //! The deadline stop of an execution the supervisor launched from a cut-over store: SIGTERM to
 //! the process group, SIGKILL after the grace when the group is still there, the row `stopping`
 //! with the lease held meanwhile, and the exit evidence recorded with the lease release in one
-//! transition (ADR 0022, section 3).
+//! transition; a group that outlives its leader holds the lease until the stop ends it (ADR 0022,
+//! section 3).
 #![cfg(target_os = "linux")]
 
 use std::fs;
@@ -247,4 +248,25 @@ fn a_natural_exit_records_the_wait_status_and_releases_the_lease() {
     let exited = repo.wait_for(ExecutionState::Exited, 10);
     assert_eq!(exited.exit.unwrap()["exit_code"], 3);
     assert!(exited.lease_released_at.is_some());
+}
+
+#[test]
+fn a_group_that_outlives_its_leader_keeps_the_lease_until_the_deadline_stops_it() {
+    let mut repo = Repo::new("outlived", "sleep 30 & exit 3", 2, 1);
+    let supervisor = Arc::new(Supervisor::new(Some(repo.state())));
+
+    let receipt = repo.launch(&supervisor);
+    let pgid = receipt["pgid"].as_i64().unwrap();
+
+    std::thread::sleep(Duration::from_millis(1_000));
+    let running = repo.execution();
+    assert_eq!(running.state, ExecutionState::Running);
+    assert_eq!(running.lease_released_at, None);
+    assert!(group_alive(pgid));
+    let exited = repo.wait_for(ExecutionState::Exited, 20);
+    let exit = exited.exit.unwrap();
+    assert_eq!(exit["exit_code"], 3);
+    assert_eq!(exit["stopped_by"], "deadline");
+    assert!(exited.lease_released_at.is_some());
+    assert!(!group_alive(pgid));
 }

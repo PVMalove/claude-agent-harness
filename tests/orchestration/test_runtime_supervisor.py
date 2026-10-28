@@ -203,6 +203,35 @@ def test_a_deadline_stop_signals_the_group_and_releases_the_lease_only_after_the
     assert not alive(launch.pid)
 
 
+def test_a_stop_begun_before_a_runtime_restart_is_driven_to_its_proof_by_reconcile(
+    supervised: Factory,
+) -> None:
+    repo = supervised(timeout=2, grace=4)
+    repo.ignore_term()
+    sent(repo.send())
+    (launch,) = repo.wait_launches(1)
+    stopping = repo.wait_execution("stopping", timeout=10)
+
+    # The runtime dies after SIGTERM and before SIGKILL; the worker ignores SIGTERM.
+    repo.restart_runtime()
+
+    exited = repo.wait_execution("exited", timeout=30)
+    assert dig(exited, "exit", "stopped_by") == "deadline"
+    assert dig(exited, "exit", "source") == "stop-observed"
+    assert dig(exited, "exit", "term_sent_at") == dig(
+        stopping, "observation", "term_sent_at"
+    )
+    assert dig(exited, "exit", "kill_sent_at") is not None
+    assert dig(exited, "lease", "released_at") is not None
+    assert not alive(launch.pid)
+    assert repo.execution_actions() == [
+        "execution-launching",
+        "execution-running",
+        "execution-stopping",
+        "execution-exited",
+    ]
+
+
 def test_a_lost_response_after_the_receipt_is_answered_from_the_stored_receipt_with_one_launch(
     supervised: Factory,
 ) -> None:

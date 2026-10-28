@@ -18,3 +18,4 @@ state = { version = "0.1.0", path = "../state" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["process", "signal"] }
+sha2 = "0.11.1"

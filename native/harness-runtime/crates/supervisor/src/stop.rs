@@ -8,9 +8,17 @@
 //! wait status of a child of this runtime, or `stop-observed` for an adopted process, the signal
 //! times and the size and SHA-256 of both logs) and releases the lease. An observation that fails
 //! during the stop moves the row to `unknown` and keeps the lease. The group id comes only from
-//! the recorded identity, never from a bare pid.
+//! the recorded identity, never from a bare pid, and the leader is looked at again right before
+//! each signal. A stop that a runtime before this one began is driven to its proof by reconcile:
+//! SIGKILL once the grace has passed since the recorded SIGTERM, then the same evidence.
+//!
+//! A leader that exits by itself ends its execution only with its group: a member that outlives
+//! it keeps the row `running` and the lease held until it ends, or until the deadline stops it.
 
+use std::fs::File;
+use std::io::{self, Read};
 use std::os::unix::process::ExitStatusExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus};
 use std::sync::Arc;
 use std::thread;
@@ -21,9 +29,9 @@ use nix::errno::Errno;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use serde_json::{Value, json};
-use state::canonical::sha256_hex;
+use sha2::{Digest, Sha256};
 use state::executions::{self, Change, Execution};
-use state::identity::{self, Identity, Verdict};
+use state::identity::{self, Identity, Probe, Verdict};
 use state::time::{iso_now, now_micros, parse_rfc3339};
 
 use crate::Supervisor;
@@ -75,6 +83,11 @@ impl Leader<'_> {
     }
 }
 
+/// The process group of a recorded group id.
+fn group_of(pgid: i64) -> Option<Pid> {
+    i32::try_from(pgid).ok().map(Pid::from_raw)
+}
+
 /// Whether a process of the group `pgid` is still there; `Err` when the kernel cannot tell.
 fn group_alive(pgid: Pid) -> Result<bool, Errno> {
     match killpg(pgid, None) {
@@ -82,6 +95,16 @@ fn group_alive(pgid: Pid) -> Result<bool, Errno> {
         Err(Errno::ESRCH) => Ok(false),
         Err(err) => Err(err),
     }
+}
+
+/// Whether a member of the group `pgid` outlives its gone leader. The kernel gives the number of
+/// a group to another process only once the group is empty, and that process may lead a group of
+/// the same number: a live process at the leader's pid proves the execution's group gone.
+fn members_alive(pgid: Pid) -> Result<bool, Errno> {
+    if matches!(identity::probe(i64::from(pgid.as_raw())), Probe::Running(_)) {
+        return Ok(false);
+    }
+    group_alive(pgid)
 }
 
 /// Send `signal` to the group; a group that is gone already is no failure.
@@ -92,17 +115,37 @@ fn signal_group(pgid: Pid, signal: Signal) -> Result<(), String> {
     }
 }
 
+/// The size and SHA-256 of one log, read in blocks: a large log never sits in memory whole.
+fn digest(path: &Path) -> io::Result<(u64, String)> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut block = vec![0_u8; 64 * 1024];
+    let mut bytes = 0_u64;
+    loop {
+        let read = match file.read(&mut block) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        };
+        hasher.update(&block[..read]);
+        bytes += u64::try_from(read).unwrap_or(u64::MAX);
+    }
+    let hex = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    Ok((bytes, hex))
+}
+
 /// The size and SHA-256 of each log of an execution, as far as it was written.
-fn logs(paths: &[std::path::PathBuf]) -> Value {
+fn logs(paths: &[PathBuf]) -> Value {
     Value::Array(
         paths
             .iter()
-            .map(|path| match std::fs::read(path) {
-                Ok(bytes) => json!({
-                    "path": path,
-                    "bytes": bytes.len(),
-                    "sha256": sha256_hex(&bytes),
-                }),
+            .map(|path| match digest(path) {
+                Ok((bytes, sha256)) => json!({"path": path, "bytes": bytes, "sha256": sha256}),
                 Err(err) => json!({"path": path, "error": err.to_string()}),
             })
             .collect(),
@@ -110,26 +153,26 @@ fn logs(paths: &[std::path::PathBuf]) -> Value {
 }
 
 impl Supervisor {
-    /// One transition of the execution `id` from `from`, under its mutex. Returns whether the row
-    /// was still in `from`.
+    /// One transition of the execution `id` from `from`, under its mutex. Returns the row after
+    /// the transition, or `None` when it was no longer in `from`.
     fn locked(
         &self,
         id: &str,
         from: ExecutionState,
         to: ExecutionState,
         change: Change,
-    ) -> Result<bool, ErrorBody> {
+    ) -> Result<Option<Execution>, ErrorBody> {
         let lock = self.lock_of(id);
         let _held = guard(&lock);
         let mut connection = executions::connect(self.state()?)?;
         let tx = executions::begin(&mut connection)?;
         let Some(current) = executions::load(&tx, id)?.filter(|current| current.state == from)
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        executions::transition(&tx, &current, to, change, &iso_now())?;
+        let moved = executions::transition(&tx, &current, to, change, &iso_now())?;
         sql(tx.commit())?;
-        Ok(true)
+        Ok(Some(moved))
     }
 
     /// Record `to` until the store takes it: a busy store delays the evidence, it never drops it
@@ -140,7 +183,7 @@ impl Supervisor {
         }
     }
 
-    fn log_paths(&self, id: &str) -> Vec<std::path::PathBuf> {
+    fn log_paths(&self, id: &str) -> Vec<PathBuf> {
         self.logs(id)
             .map(|(stdout, stderr)| vec![stdout, stderr])
             .unwrap_or_default()
@@ -158,9 +201,11 @@ impl Supervisor {
     }
 
     fn wait_for(&self, id: &str, mut child: Child, pgid: i64, deadline: &str) {
+        let outlived =
+            || group_of(pgid).is_some_and(|group| matches!(members_alive(group), Ok(true)));
         loop {
             match child.try_wait() {
-                Ok(Some(status)) => {
+                Ok(Some(status)) if !outlived() => {
                     let exit = json!({
                         "exit_code": status.code(),
                         "signal": status.signal(),
@@ -177,18 +222,21 @@ impl Supervisor {
                     self.record(id, ExecutionState::Running, ExecutionState::Exited, &change);
                     return;
                 }
-                Ok(None) if past(deadline) => {
-                    self.stop(id, pgid, Leader::Child(&mut child));
-                    return;
+                // The leader runs, or a member of its group outlives it: both end at the deadline.
+                Ok(_) if past(deadline) => {
+                    if self.stop(id, pgid, Leader::Child(&mut child)) {
+                        return;
+                    }
                 }
-                Ok(None) => thread::sleep(POLL),
+                Ok(_) => thread::sleep(POLL),
                 // The wait status is lost: reconcile observes the identity from now on.
                 Err(_) => return,
             }
         }
     }
 
-    /// Stop an adopted `running` execution past its deadline on its own thread.
+    /// Stop an adopted execution on its own thread: a `running` one past its deadline, or a
+    /// `stopping` one whose stop a runtime before this one began.
     pub(crate) fn stop_adopted(self: &Arc<Self>, execution: &Execution) {
         let (Some(recorded), Some(pgid)) = (execution.identity.clone(), execution.pgid) else {
             return;
@@ -197,42 +245,97 @@ impl Supervisor {
             return;
         }
         let supervisor = Arc::clone(self);
-        let id = execution.id.clone();
+        let execution = execution.clone();
         thread::spawn(move || {
-            supervisor.stop(&id, pgid, Leader::Adopted(&recorded));
-            guard(&supervisor.inner.watched).remove(&id);
+            let leader = Leader::Adopted(&recorded);
+            if execution.state == ExecutionState::Stopping {
+                supervisor.resume(&execution, pgid, leader);
+            } else {
+                supervisor.stop(&execution.id, pgid, leader);
+            }
+            guard(&supervisor.inner.watched).remove(&execution.id);
         });
     }
 
-    /// The deadline stop of a `running` execution.
-    fn stop(&self, id: &str, pgid: i64, mut leader: Leader<'_>) {
+    /// The deadline stop of a `running` execution. Returns `false` when it did not begin because
+    /// the leader is gone and no member of its group is left: its exit is recorded elsewhere.
+    fn stop(&self, id: &str, pgid: i64, mut leader: Leader<'_>) -> bool {
+        let group = group_of(pgid);
+        // The leader and its group again, right before the first signal: an adopted leader may
+        // have ended since reconcile saw it, and the number of an empty group may be reused.
+        if !matches!(leader.look(), Seen::Alive)
+            && !group.is_some_and(|group| matches!(members_alive(group), Ok(true)))
+        {
+            return false;
+        }
         let term_sent_at = iso_now();
         let stopping = Change {
             observation: Some(json!({"stopped_by": "deadline", "term_sent_at": term_sent_at})),
             facts: json!({"stopped_by": "deadline", "term_sent_at": term_sent_at}),
             ..Change::default()
         };
-        if !matches!(
-            self.locked(
-                id,
-                ExecutionState::Running,
-                ExecutionState::Stopping,
-                stopping
-            ),
-            Ok(true)
-        ) {
-            return;
-        }
-        let Ok(group) = i32::try_from(pgid).map(Pid::from_raw) else {
-            self.unproven(id, "the recorded process group is not a pid");
-            return;
+        let Ok(Some(execution)) = self.locked(
+            id,
+            ExecutionState::Running,
+            ExecutionState::Stopping,
+            stopping,
+        ) else {
+            return true;
         };
+        let Some(group) = group else {
+            self.unproven(id, "the recorded process group is not a pid");
+            return true;
+        };
+        // The grace is the one the row pins, read before the signal.
+        let grace = execution.stop_grace_seconds;
         if let Err(reason) = signal_group(group, Signal::SIGTERM) {
             self.unproven(id, &reason);
-            return;
+            return true;
         }
-        let grace = self.grace_of(id);
-        let term_at = now_micros();
+        self.conclude(id, group, leader, &term_sent_at, now_micros(), grace);
+        true
+    }
+
+    /// Drive the stop of a `stopping` execution that a runtime before this one began to its
+    /// proof, from the SIGTERM time it recorded.
+    fn resume(&self, execution: &Execution, pgid: i64, leader: Leader<'_>) {
+        let term_sent_at = execution
+            .observation
+            .as_ref()
+            .and_then(|observation| observation.get("term_sent_at"))
+            .and_then(Value::as_str);
+        let Some((term_sent_at, term_at)) =
+            term_sent_at.and_then(|at| parse_rfc3339(at).map(|micros| (at.to_owned(), micros)))
+        else {
+            self.unproven(&execution.id, "the stop recorded no SIGTERM time");
+            return;
+        };
+        let Some(group) = group_of(pgid) else {
+            self.unproven(&execution.id, "the recorded process group is not a pid");
+            return;
+        };
+        self.conclude(
+            &execution.id,
+            group,
+            leader,
+            &term_sent_at,
+            term_at,
+            execution.stop_grace_seconds,
+        );
+    }
+
+    /// The rest of a stop after its SIGTERM at `term_at`: SIGKILL after `grace` seconds when a
+    /// member is still there, the wait until the leader is gone and the group is empty, then
+    /// `exited` with the exit evidence and the lease released, in one transition.
+    fn conclude(
+        &self,
+        id: &str,
+        group: Pid,
+        mut leader: Leader<'_>,
+        term_sent_at: &str,
+        term_at: i64,
+        grace: i64,
+    ) {
         let mut kill_sent_at: Option<String> = None;
         let mut kill_at = 0;
         let mut status = None;
@@ -251,12 +354,14 @@ impl Supervisor {
                     }
                 }
             }
-            match group_alive(group) {
-                Ok(false) if leader_gone => break,
-                Ok(_) => {}
-                Err(err) => {
-                    self.unproven(id, &format!("the process group cannot be observed: {err}"));
-                    return;
+            if leader_gone {
+                match members_alive(group) {
+                    Ok(false) => break,
+                    Ok(true) => {}
+                    Err(err) => {
+                        self.unproven(id, &format!("the process group cannot be observed: {err}"));
+                        return;
+                    }
                 }
             }
             let now = now_micros();
@@ -300,15 +405,6 @@ impl Supervisor {
             ExecutionState::Exited,
             &change,
         );
-    }
-
-    /// The pinned grace of the execution `id`; 0 when it cannot be read.
-    fn grace_of(&self, id: &str) -> i64 {
-        self.state()
-            .ok()
-            .and_then(|state| executions::connect(state).ok())
-            .and_then(|connection| executions::load(&connection, id).ok().flatten())
-            .map_or(0, |execution| execution.stop_grace_seconds)
     }
 
     /// A stop that cannot prove its outcome: `unknown`, and the lease stays held.
