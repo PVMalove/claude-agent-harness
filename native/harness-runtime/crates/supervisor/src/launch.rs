@@ -172,6 +172,22 @@ fn text<'a>(record: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
     record.get(key).and_then(Value::as_str)
 }
 
+/// A launch that passed the checks of step 1: what its intent records and its spawn starts.
+struct Admitted<'a> {
+    request: &'a Request,
+    dispatch_id: String,
+    digest: String,
+    spec: Value,
+    limits: Limits,
+}
+
+/// What a launch request finds in the store: the answer of an operation stored before, or a new
+/// launch.
+enum Found<'a> {
+    Stored(Result<Value, ErrorBody>),
+    New(Admitted<'a>),
+}
+
 /// The refusals of step 1: nothing is written for any of them.
 fn admit(
     brief: &Map<String, Value>,
@@ -287,8 +303,29 @@ impl Supervisor {
         let _held = acquire(&lock, request.request_deadline)?;
         hooks::reach_once("execution.launch:before-begin").map_err(|err| injected(&err))?;
         let mut connection = executions::connect(&state)?;
+        let admitted = match self.admit_launch(&mut connection, request, dispatch_id)? {
+            Found::Stored(answer) => return answer,
+            Found::New(admitted) => admitted,
+        };
+        let execution = self.intent(&mut connection, &admitted)?;
+        hooks::reach_once("execution.launch:intent").map_err(|err| injected(&err))?;
+        let child = self.start_process(&mut connection, &execution, &admitted)?;
+        let pid = i64::from(child.id());
+        guard(&self.inner.children).insert(execution.id.clone(), child);
+        hooks::reach_once("execution.launch:launched").map_err(|err| injected(&err))?;
+        self.receipt(&mut connection, &execution, pid, false, None)
+    }
+
+    /// Step 1 up to its write: the stored records of the dispatch, then the answer of an
+    /// operation stored before, or the checks of a new launch.
+    fn admit_launch<'a>(
+        self: &Arc<Self>,
+        connection: &mut Connection,
+        request: &'a Request,
+        dispatch_id: String,
+    ) -> Result<Found<'a>, ErrorBody> {
         let (brief, status) =
-            executions::dispatch_records(&connection, &dispatch_id)?.ok_or_else(|| {
+            executions::dispatch_records(connection, &dispatch_id)?.ok_or_else(|| {
                 ErrorBody::new(
                     ErrorCode::NotFound,
                     FailureDomain::Tooling,
@@ -301,33 +338,100 @@ impl Supervisor {
         let digest = sha256_hex(
             canonical_json(&json!([state::write::request_digest(request), spec])).as_bytes(),
         );
-        if let Some(stored) = stored_operation(&connection, &request.operation_id)? {
-            if let Some(answer) = replay(stored, &digest, &request.operation_id) {
-                return answer;
-            }
-            // An intent that no launch of this runtime holds: a runtime died after it.
-            if let Some(execution) = executions::load(&connection, &request.operation_id)? {
-                self.settle(&mut connection, execution)?;
-            }
-            let stored = stored_operation(&connection, &request.operation_id)?;
-            return stored
-                .and_then(|stored| replay(stored, &digest, &request.operation_id))
-                .unwrap_or_else(|| Err(store_busy("the launch is not settled yet")));
+        if let Some(answer) = self.repeat(connection, &request.operation_id, &digest)? {
+            return Ok(Found::Stored(answer));
         }
         let limits = admit(&brief, &status, request, &dispatch_id)?;
         let spec = spec.ok_or_else(|| denied("the dispatch status names no launch spec"))?;
-        let execution = self.intent(
-            &mut connection,
+        Ok(Found::New(Admitted {
             request,
-            &dispatch_id,
-            &digest,
-            &spec,
-            &limits,
-        )?;
-        hooks::reach_once("execution.launch:intent").map_err(|err| injected(&err))?;
+            dispatch_id,
+            digest,
+            spec,
+            limits,
+        }))
+    }
 
+    /// The answer to a repeat of the stored operation `id`, after reconcile settled an intent
+    /// that no launch of this runtime holds; `None` for an operation never stored.
+    fn repeat(
+        self: &Arc<Self>,
+        connection: &mut Connection,
+        id: &str,
+        digest: &str,
+    ) -> Result<Option<Result<Value, ErrorBody>>, ErrorBody> {
+        let Some(stored) = stored_operation(connection, id)? else {
+            return Ok(None);
+        };
+        if let Some(answer) = replay(stored, digest, id) {
+            return Ok(Some(answer));
+        }
+        // An intent that no launch of this runtime holds: a runtime died after it.
+        if let Some(execution) = executions::load(connection, id)? {
+            self.settle(connection, execution)?;
+        }
+        let answer =
+            stored_operation(connection, id)?.and_then(|stored| replay(stored, digest, id));
+        Ok(Some(answer.unwrap_or_else(|| {
+            Err(store_busy("the launch is not settled yet"))
+        })))
+    }
+
+    /// Step 1: the operation intent, the execution in `launching` and its audit record, in one
+    /// transaction.
+    fn intent(
+        &self,
+        connection: &mut Connection,
+        admitted: &Admitted<'_>,
+    ) -> Result<Execution, ErrorBody> {
+        let request = admitted.request;
+        let (stdout, stderr) = self.logs(&request.operation_id)?;
+        let launch = json!({
+            "argv": admitted.spec["argv"],
+            "cwd": admitted.spec["cwd"],
+            "labels": {
+                process::LABEL_OPERATION: request.operation_id,
+                process::LABEL_DISPATCH: admitted.dispatch_id,
+            },
+            "logs": {"stdout": stdout, "stderr": stderr},
+        });
+        let at = iso_now();
+        let deadline = iso_from_micros(now_micros() + admitted.limits.timeout_seconds * 1_000_000);
+        let tx = executions::begin(connection)?;
+        hooks::reach_once("execution.launch:in-transaction").map_err(|err| injected(&err))?;
+        sql(tx.execute(
+            "INSERT INTO operations (operation_id, operation, request_digest, state, created_at)
+             VALUES (?1, ?2, ?3, 'intent', ?4)",
+            rusqlite::params![request.operation_id, request.operation, admitted.digest, at],
+        ))?;
+        let execution = executions::insert(
+            &tx,
+            &NewExecution {
+                id: &request.operation_id,
+                dispatch_id: &admitted.dispatch_id,
+                launch: &launch,
+                execution_deadline: &deadline,
+                stop_grace_seconds: admitted.limits.stop_grace_seconds,
+                poll_interval_seconds: admitted.limits.poll_interval_seconds,
+                lease_owner: &owner(),
+            },
+            &at,
+        )?;
+        sql(tx.commit())?;
+        Ok(execution)
+    }
+
+    /// Step 2: the process of an admitted launch, the leader of its own group with the labels.
+    /// A spawn the OS refuses makes the execution `lost` and its operation `failed` with
+    /// `engine_unavailable`; nothing started then.
+    fn start_process(
+        &self,
+        connection: &mut Connection,
+        execution: &Execution,
+        admitted: &Admitted<'_>,
+    ) -> Result<Child, ErrorBody> {
         let (stdout, stderr) = self.logs(&execution.id)?;
-        let argv: Vec<String> = spec["argv"]
+        let argv: Vec<String> = admitted.spec["argv"]
             .as_array()
             .map(|items| {
                 items
@@ -336,90 +440,36 @@ impl Supervisor {
                     .collect()
             })
             .unwrap_or_default();
-        let cwd = PathBuf::from(spec["cwd"].as_str().unwrap_or_default());
+        let cwd = PathBuf::from(admitted.spec["cwd"].as_str().unwrap_or_default());
         let spawned = std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(stdout.parent().unwrap_or(&state))
+            .create(stdout.parent().unwrap_or(self.state()?))
             .and_then(|()| {
                 process::spawn(&Spec {
                     argv: &argv,
                     cwd: &cwd,
                     operation_id: &execution.id,
-                    dispatch_id: &dispatch_id,
+                    dispatch_id: &admitted.dispatch_id,
                     stdout: &stdout,
                     stderr: &stderr,
                 })
             });
-        let child = match spawned {
-            Ok(child) => child,
-            Err(err) => {
-                let error = ErrorBody::new(
-                    ErrorCode::EngineUnavailable,
-                    FailureDomain::Tooling,
-                    false,
-                    format!("the OS refused to start the execution: {err}"),
-                    "repair the launch command of the dispatch; nothing started, and a new launch needs a new dispatch",
-                )
-                .with_fact("spawn_error", err.to_string())
-                .with_fact("errno", err.raw_os_error())
-                .with_fact("execution_state", ExecutionState::Lost.as_str());
-                let facts = json!({"spawn_error": err.to_string(), "errno": err.raw_os_error()});
-                self.fail(&mut connection, &execution, &error, facts)?;
-                return Err(error);
-            }
-        };
-        let pid = i64::from(child.id());
-        guard(&self.inner.children).insert(execution.id.clone(), child);
-        hooks::reach_once("execution.launch:launched").map_err(|err| injected(&err))?;
-        self.receipt(&mut connection, &execution, pid, false, None)
-    }
-
-    /// Step 1: the operation intent, the execution in `launching` and its audit record, in one
-    /// transaction.
-    fn intent(
-        &self,
-        connection: &mut Connection,
-        request: &Request,
-        dispatch_id: &str,
-        digest: &str,
-        spec: &Value,
-        limits: &Limits,
-    ) -> Result<Execution, ErrorBody> {
-        let (stdout, stderr) = self.logs(&request.operation_id)?;
-        let launch = json!({
-            "argv": spec["argv"],
-            "cwd": spec["cwd"],
-            "labels": {
-                process::LABEL_OPERATION: request.operation_id,
-                process::LABEL_DISPATCH: dispatch_id,
-            },
-            "logs": {"stdout": stdout, "stderr": stderr},
-        });
-        let at = iso_now();
-        let deadline = iso_from_micros(now_micros() + limits.timeout_seconds * 1_000_000);
-        let tx = executions::begin(connection)?;
-        hooks::reach_once("execution.launch:in-transaction").map_err(|err| injected(&err))?;
-        sql(tx.execute(
-            "INSERT INTO operations (operation_id, operation, request_digest, state, created_at)
-             VALUES (?1, ?2, ?3, 'intent', ?4)",
-            rusqlite::params![request.operation_id, request.operation, digest, at],
-        ))?;
-        let execution = executions::insert(
-            &tx,
-            &NewExecution {
-                id: &request.operation_id,
-                dispatch_id,
-                launch: &launch,
-                execution_deadline: &deadline,
-                stop_grace_seconds: limits.stop_grace_seconds,
-                poll_interval_seconds: limits.poll_interval_seconds,
-                lease_owner: &owner(),
-            },
-            &at,
-        )?;
-        sql(tx.commit())?;
-        Ok(execution)
+        spawned.or_else(|err| {
+            let error = ErrorBody::new(
+                ErrorCode::EngineUnavailable,
+                FailureDomain::Tooling,
+                false,
+                format!("the OS refused to start the execution: {err}"),
+                "repair the launch command of the dispatch; nothing started, and a new launch needs a new dispatch",
+            )
+            .with_fact("spawn_error", err.to_string())
+            .with_fact("errno", err.raw_os_error())
+            .with_fact("execution_state", ExecutionState::Lost.as_str());
+            let facts = json!({"spawn_error": err.to_string(), "errno": err.raw_os_error()});
+            self.fail(connection, execution, &error, facts)?;
+            Err(error)
+        })
     }
 
     /// Step 3, or the adoption of a labelled process (`scanned`: the start time the label scan

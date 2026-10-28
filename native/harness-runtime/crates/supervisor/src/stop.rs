@@ -55,6 +55,14 @@ enum Leader<'a> {
     Adopted(&'a Identity),
 }
 
+/// The SIGTERM of a stop: the time it was sent, as recorded and in microseconds, and the grace
+/// before SIGKILL.
+struct StopPlan {
+    term_sent_at: String,
+    term_at: i64,
+    grace_seconds: i64,
+}
+
 /// What the stop saw of the leader: gone (with the wait status of a child), alive, or nothing
 /// it can prove.
 enum Seen {
@@ -292,7 +300,12 @@ impl Supervisor {
             self.unproven(id, &reason);
             return true;
         }
-        self.conclude(id, group, leader, &term_sent_at, now_micros(), grace);
+        let plan = StopPlan {
+            term_sent_at,
+            term_at: now_micros(),
+            grace_seconds: grace,
+        };
+        self.conclude(id, group, leader, &plan);
         true
     }
 
@@ -304,9 +317,13 @@ impl Supervisor {
             .as_ref()
             .and_then(|observation| observation.get("term_sent_at"))
             .and_then(Value::as_str);
-        let Some((term_sent_at, term_at)) =
-            term_sent_at.and_then(|at| parse_rfc3339(at).map(|micros| (at.to_owned(), micros)))
-        else {
+        let Some(plan) = term_sent_at.and_then(|at| {
+            parse_rfc3339(at).map(|term_at| StopPlan {
+                term_sent_at: at.to_owned(),
+                term_at,
+                grace_seconds: execution.stop_grace_seconds,
+            })
+        }) else {
             self.unproven(&execution.id, "the stop recorded no SIGTERM time");
             return;
         };
@@ -314,28 +331,13 @@ impl Supervisor {
             self.unproven(&execution.id, "the recorded process group is not a pid");
             return;
         };
-        self.conclude(
-            &execution.id,
-            group,
-            leader,
-            &term_sent_at,
-            term_at,
-            execution.stop_grace_seconds,
-        );
+        self.conclude(&execution.id, group, leader, &plan);
     }
 
-    /// The rest of a stop after its SIGTERM at `term_at`: SIGKILL after `grace` seconds when a
-    /// member is still there, the wait until the leader is gone and the group is empty, then
-    /// `exited` with the exit evidence and the lease released, in one transition.
-    fn conclude(
-        &self,
-        id: &str,
-        group: Pid,
-        mut leader: Leader<'_>,
-        term_sent_at: &str,
-        term_at: i64,
-        grace: i64,
-    ) {
+    /// The rest of a stop after the SIGTERM of `plan`: SIGKILL after its grace when a member is
+    /// still there, the wait until the leader is gone and the group is empty, then `exited` with
+    /// the exit evidence and the lease released, in one transition.
+    fn conclude(&self, id: &str, group: Pid, mut leader: Leader<'_>, plan: &StopPlan) {
         let mut kill_sent_at: Option<String> = None;
         let mut kill_at = 0;
         let mut status = None;
@@ -365,7 +367,7 @@ impl Supervisor {
                 }
             }
             let now = now_micros();
-            if kill_sent_at.is_none() && now >= term_at + grace * 1_000_000 {
+            if kill_sent_at.is_none() && now >= plan.term_at + plan.grace_seconds * 1_000_000 {
                 if let Err(reason) = signal_group(group, Signal::SIGKILL) {
                     self.unproven(id, &reason);
                     return;
@@ -389,7 +391,7 @@ impl Supervisor {
             "signal": status.and_then(|status| status.signal()),
             "source": source,
             "stopped_by": "deadline",
-            "term_sent_at": term_sent_at,
+            "term_sent_at": plan.term_sent_at,
             "kill_sent_at": kill_sent_at,
             "ended_at": iso_now(),
             "logs": logs(&self.log_paths(id)),
