@@ -25,23 +25,25 @@ import pytest
 
 from harness.json_types import JsonObject
 
-from .runtime_store_support import ROOT, STATE_REL, Store
+from .runtime_store_support import ROOT, STATE_REL, Store, store_call
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="the seam tests drive a Unix-socket runtime and signals"
+    sys.platform == "win32",
+    reason="the seam tests drive a Unix-socket runtime and signals",
 )
 
 HOLDER = """
 import json, sys
 from pathlib import Path
 from harness.errors import HarnessError, print_and_exit
-from harness.orchestration import qa_lane
+from harness.orchestration import qa_lane, qa_lease
 from harness.orchestration.core.constants import STATE_REL, QaOwnerKind
 from harness.orchestration.ledger.ledger_ops import _ledger_lock
 from harness.orchestration.ledger.lifecycle import LifecycleLedger
 from harness.orchestration.workflow import qa_integration
 
 repo, owner, seconds = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
+beating = sys.argv[4] == "heartbeat"
 ledger = LifecycleLedger(repo / STATE_REL)
 try:
     qa_lane.reap_dead_owner(ledger, ledger.root, qa_integration._ops())
@@ -52,7 +54,12 @@ try:
     print(json.dumps(admission), flush=True)
     if admission["state"] != "acquired":
         sys.exit(0)
-    sys.stdin.readline()
+    if beating:
+        with qa_lease.heartbeat(ledger, admission["lease"], seconds) as beat:
+            sys.stdin.readline()
+        print(json.dumps({"lost": beat.lost, "beats": beat.beats}), flush=True)
+    else:
+        sys.stdin.readline()
     with _ledger_lock(ledger):
         qa_lane.release(ledger, admission["lease"])
     print("released", flush=True)
@@ -68,10 +75,13 @@ def _owner() -> str:
 class Holder:
     """A coordinator process that holds the QA lane of ``store`` until it is told to release."""
 
-    def __init__(self, store: Store, owner: str, seconds: int) -> None:
+    def __init__(
+        self, store: Store, owner: str, seconds: int, *, heartbeat: bool = False
+    ) -> None:
         self.owner = owner
+        mode = "heartbeat" if heartbeat else "hold"
         self.process = subprocess.Popen(
-            [sys.executable, "-c", HOLDER, str(store.repo), owner, str(seconds)],
+            [sys.executable, "-c", HOLDER, str(store.repo), owner, str(seconds), mode],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -206,7 +216,9 @@ def test_a_stopped_owner_keeps_its_expired_lease_and_the_next_admission_is_lease
 
     assert refused.process.returncode == 2, stderr
     remedy = _remedy(stderr)
-    assert remedy.startswith("REMEDY: [lease_held] stale_heartbeat=true verdict=owner-alive")
+    assert remedy.startswith(
+        "REMEDY: [lease_held] stale_heartbeat=true verdict=owner-alive"
+    )
     assert status["stale_heartbeat"] is True
     assert status["lease"]["owner_id"] == stopped.owner
     assert shown.returncode == 0, shown.stderr
@@ -252,3 +264,63 @@ def test_a_lease_cleared_by_an_operator_makes_the_old_owner_release_a_fencing_mi
     assert len(clear) == 1
     assert clear[0]["decision"]["approved_by"] == "Malove"
     assert (store.repo / STATE_REL / "runtime.db").is_file()
+
+
+def test_a_heartbeating_owner_never_shows_a_stale_heartbeat_past_its_lifetime(
+    store: Store,
+) -> None:
+    owner = Holder(store, _owner(), 2, heartbeat=True)
+    held = owner.admission()
+    assert held["state"] == "acquired"
+    time.sleep(3.5)
+
+    status = _qa_status(store)
+    stdout, stderr = owner.finish()
+
+    assert status["stale_heartbeat"] is False
+    assert status["lease"]["owner_id"] == owner.owner
+    assert owner.process.returncode == 0, stderr
+    beat = json.loads(stdout.splitlines()[0])
+    assert beat["lost"] is False
+    assert beat["beats"] >= 2
+    assert _audit(store, "heartbeat")
+
+
+def test_a_lease_cleared_under_a_heartbeat_stops_it_and_marks_it_lost(
+    store: Store,
+) -> None:
+    owner = Holder(store, _owner(), 3, heartbeat=True)
+    held = owner.admission()
+    lease = held["lease"]
+    assert isinstance(lease, dict)
+    store_call(
+        store.repo,
+        store.runtime,
+        "state.write",
+        {
+            "mutations": [
+                {
+                    "op": "lease_clear",
+                    "path": "qa-lane/lease.json",
+                    "reason": "the operator took the lane back",
+                    "lease": {
+                        "owner_kind": "local-qa",
+                        "owner_id": owner.owner,
+                        "fencing_token": lease["fencing_token"],
+                    },
+                    "decision": {
+                        "approved_by": "Malove",
+                        "approved_at": "2026-10-28T00:00:00+00:00",
+                    },
+                }
+            ]
+        },
+    )
+    time.sleep(2.5)
+
+    stdout, stderr = owner.finish()
+
+    beat = json.loads(stdout.splitlines()[0])
+    assert beat["lost"] is True
+    assert owner.process.returncode == 2
+    assert _remedy(stderr).startswith("REMEDY: [fencing_mismatch] ")

@@ -14,9 +14,12 @@ The file-ledger epoch keeps the lane of ``qa_lane.py`` unchanged.
 
 from __future__ import annotations
 
+import threading
+import uuid
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 
 from harness.json_types import JsonObject
 from harness.orchestration.core import state_view
@@ -155,7 +158,12 @@ def release(ledger: LifecycleLedger, lease: JsonObject, *, reason: str) -> None:
         unit.cancel_lease(*owner_of(lease))
         return
     unit.lease(
-        {"op": "lease_release", "path": LEASE_PATH, "lease": _named(lease), "reason": reason}
+        {
+            "op": "lease_release",
+            "path": LEASE_PATH,
+            "lease": _named(lease),
+            "reason": reason,
+        }
     )
 
 
@@ -178,7 +186,12 @@ def reap(ledger: LifecycleLedger, lease: JsonObject, *, reason: str) -> None:
     """Stage ``lease_reap`` of the expired ``lease``: the runtime clears it only when its owner is
     provably dead, and answers ``lease_held`` otherwise."""
     _unit(ledger).lease(
-        {"op": "lease_reap", "path": LEASE_PATH, "lease": _named(lease), "reason": reason}
+        {
+            "op": "lease_reap",
+            "path": LEASE_PATH,
+            "lease": _named(lease),
+            "reason": reason,
+        }
     )
 
 
@@ -217,6 +230,73 @@ def refusals() -> Iterator[None]:
         if exc.code == "lease_held":
             raise held_error(exc, exc.facts) from exc
         raise
+
+
+class Beat:
+    """The heartbeat of one lease: ``lost`` once the runtime answered ``fencing_mismatch``,
+    because an operator cleared the lease or another owner holds the lane."""
+
+    def __init__(self) -> None:
+        self.lost = False
+        self.beats = 0
+
+
+def _beat(repo: Path, lease: JsonObject, ttl_seconds: int, beat: Beat) -> bool:
+    """Send one ``lease_heartbeat``; whether the heartbeat goes on."""
+    from harness.orchestration.runtime_client import RuntimeClient, RuntimeClientError
+
+    try:
+        RuntimeClient(repo).call(
+            "state.write",
+            operation_id=f"lease-heartbeat-{uuid.uuid4().hex}",
+            payload={
+                "mutations": [
+                    {
+                        "op": "lease_heartbeat",
+                        "path": LEASE_PATH,
+                        "lease": {**_named(lease), "ttl_seconds": ttl_seconds},
+                    }
+                ]
+            },
+            timeout_seconds=max(1.0, ttl_seconds / 3),
+        )
+    except RuntimeClientError as exc:
+        if exc.code == "fencing_mismatch":
+            beat.lost = True
+            return False
+        # A busy store or a lost transport is repeated at the next beat.
+        return True
+    beat.beats += 1
+    return True
+
+
+@contextmanager
+def heartbeat(
+    ledger: LifecycleLedger, lease: JsonObject, ttl_seconds: int
+) -> Iterator[Beat]:
+    """Renew ``lease`` while the block runs (the QA gate): a background thread with its own
+    runtime client sends ``lease_heartbeat`` every third of ``ttl_seconds`` and stops when the
+    block ends. ``fencing_mismatch`` stops it and marks the lease lost. A lease of the file lane,
+    which has no fencing token, gets no heartbeat."""
+    beat = Beat()
+    if not active(ledger) or not isinstance(lease.get("fencing_token"), int):
+        yield beat
+        return
+    repo = ledger.repository()
+    stop = threading.Event()
+
+    def renew() -> None:
+        while not stop.wait(ttl_seconds / 3):
+            if not _beat(repo, lease, ttl_seconds, beat):
+                return
+
+    thread = threading.Thread(target=renew, name="qa-lease-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield beat
+    finally:
+        stop.set()
+        thread.join(timeout=max(1.0, ttl_seconds / 3) + 5)
 
 
 def reap_expired(

@@ -24,6 +24,7 @@ from .core.constants import (
     DEFAULT_EXECUTION_POLICY,
     DEFAULT_PREFLIGHT_POLICY,
     DEFAULT_RETRY_POLICY,
+    MAX_LEASE_TTL_SECONDS,
     SENSITIVE_KEY,
     VERIFICATION_STAGE_KINDS,
 )
@@ -89,6 +90,7 @@ CONFIG_ALLOWED_FIELDS = frozenset(CONFIG_REQUIRED_FIELDS) | {
     "attention_policy",
     "execution_policy",
     "approval_ttl_seconds",
+    "lease_ttl_seconds",
     "extensions",
     "access_policy",
     "infrastructure_retry_policy",
@@ -1200,6 +1202,16 @@ def _operational_policy_problems(config: Mapping[str, object]) -> list[str]:
         isinstance(ttl, bool) or not isinstance(ttl, int) or ttl < 1
     ):
         problems.append("orchestration approval_ttl_seconds must be a positive integer")
+    lease_ttl = config.get("lease_ttl_seconds")
+    if lease_ttl is not None and (
+        isinstance(lease_ttl, bool)
+        or not isinstance(lease_ttl, int)
+        or not 1 <= lease_ttl <= MAX_LEASE_TTL_SECONDS
+    ):
+        problems.append(
+            "orchestration lease_ttl_seconds must be an integer from 1 to "
+            f"{MAX_LEASE_TTL_SECONDS}"
+        )
     selected = config.get("extensions")
     if selected is not None:
         if not isinstance(selected, dict):

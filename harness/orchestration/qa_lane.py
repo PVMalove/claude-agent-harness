@@ -26,7 +26,7 @@ from ..storage import storage_path
 from . import hook_policy, operation_access, operational_guards, qa_lease, verification_plan
 from .core import state_view
 from .pinned_configuration import read_snapshot, capture_unaccepted
-from .core.config import _execution_policy, _qa_preparation_commands
+from .core.config import _execution_policy, _lease_ttl, _qa_preparation_commands
 from .core.constants import (
     QA_NOT_RUN_RESULT,
     QA_OWNER_FIELDS,
@@ -1038,6 +1038,10 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             candidate=str(dispatch.get("candidate_commit")),
             plan=dispatch.get("verification_plan"),
         )
+        if qa_lease.active(ledger) and args.lease_seconds is None:
+            # The runtime lease is renewed by a heartbeat: its lifetime is the one the dispatch
+            # pinned (lease_ttl_seconds), not the long lease of the file lane.
+            lease_seconds = _lease_ttl(read_snapshot(dispatch)["config"])
         admission = acquire(
             ledger, dispatch["dispatch_id"], lease_seconds=lease_seconds
         )
@@ -1074,42 +1078,43 @@ def run(args: argparse.Namespace, ops: QaWorkflowOps) -> JsonObject:
             remedy=INTERNAL_INVARIANT_REMEDY,
         )
     try:
-        # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
-        # not consume CI time and coordinator context collecting unrelated failures afterwards.
-        policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
-        from .infrastructure_retry import pinned
+        with qa_lease.heartbeat(ledger, lease, lease_seconds):
+            # The first failed deterministic gate is sufficient evidence for a developer retry.  Do
+            # not consume CI time and coordinator context collecting unrelated failures afterwards.
+            policy = CleanRoomPolicy(repo, dispatch["candidate_commit"])
+            from .infrastructure_retry import pinned
 
-        config = read_snapshot(dispatch)["config"]
-        pinned_commands = pinned(dispatch)
-        if pinned_commands is not None:
-            config = {**config, **pinned_commands}
-        preparation = _qa_preparation_commands(config)
-        context = evidence_context(repo, dispatch["candidate_commit"], dispatch)
-        if preparation:
-            staged = run_qa_stages(
-                preparation,
-                dispatch["verification_commands"],
-                policy,
-                environment_probes=_qa_preparation_commands(
-                    config, "qa_environment_probes"
-                ),
-                project_file_checks=_qa_preparation_commands(
-                    config, "qa_project_file_checks"
-                ),
-                evidence=context,
-            )
-            artifact_text, checks = staged.artifact, staged.gate_checks
-            bundle = staged.evidence
-        else:
-            staged = None
-            gate = run_gate(
-                dispatch["verification_commands"],
-                policy,
-                stop_on_failure=True,
-                evidence=context,
-            )
-            artifact_text, checks = gate.artifact, gate.checks
-            bundle = gate.evidence
+            config = read_snapshot(dispatch)["config"]
+            pinned_commands = pinned(dispatch)
+            if pinned_commands is not None:
+                config = {**config, **pinned_commands}
+            preparation = _qa_preparation_commands(config)
+            context = evidence_context(repo, dispatch["candidate_commit"], dispatch)
+            if preparation:
+                staged = run_qa_stages(
+                    preparation,
+                    dispatch["verification_commands"],
+                    policy,
+                    environment_probes=_qa_preparation_commands(
+                        config, "qa_environment_probes"
+                    ),
+                    project_file_checks=_qa_preparation_commands(
+                        config, "qa_project_file_checks"
+                    ),
+                    evidence=context,
+                )
+                artifact_text, checks = staged.artifact, staged.gate_checks
+                bundle = staged.evidence
+            else:
+                staged = None
+                gate = run_gate(
+                    dispatch["verification_commands"],
+                    policy,
+                    stop_on_failure=True,
+                    evidence=context,
+                )
+                artifact_text, checks = gate.artifact, gate.checks
+                bundle = gate.evidence
     except GateRunnerError as exc:
         failure = CoordinatorError(exc.message, remedy=exc.remedy)
         _recover_transient_failure(

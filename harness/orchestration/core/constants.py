@@ -625,6 +625,11 @@ DEFAULT_EXECUTION_POLICY = {
     "qa_lease_seconds": 1_800,
     "rate_limit_retry_seconds": 60,
 }
+# The lifetime of a QA lease of the runtime store (ADR 0021, section 5): its owner renews it every
+# third of it, and the runtime checks the owner's liveness only after it expired. The runtime
+# grants at most a day. `execution_policy.qa_lease_seconds` keeps governing the file lane.
+DEFAULT_LEASE_TTL_SECONDS = 300
+MAX_LEASE_TTL_SECONDS = 86_400
 DEFAULT_CONTINUATION_POLICY = {"max_continuations": 2, "max_rate_limit_resumes": 1}
 DEFAULT_RETRY_POLICY = {"max_developer_retries": 1}
 DEFAULT_PREFLIGHT_POLICY = {
