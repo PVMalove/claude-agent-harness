@@ -55,6 +55,7 @@ impl Drop for Scratch {
         for group in &self.groups {
             let _ = Command::new("kill")
                 .args(["-KILL", "--", &format!("-{group}")])
+                .stderr(std::process::Stdio::null())
                 .status();
         }
         let _ = std::fs::remove_dir_all(&self.dir);

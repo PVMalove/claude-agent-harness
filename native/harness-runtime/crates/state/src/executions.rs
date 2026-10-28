@@ -222,7 +222,7 @@ pub struct NewExecution<'a> {
 }
 
 /// What a transition writes besides the state. A field that is `None` keeps the stored value.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Change {
     pub identity: Option<Identity>,
     pub pgid: Option<i64>,

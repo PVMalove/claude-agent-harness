@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::DirBuilderExt;
-use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,8 +33,6 @@ use state::time::{iso_from_micros, iso_now, now_micros};
 use crate::Supervisor;
 use crate::process::{self, Spec};
 
-/// How often a watcher looks at its child.
-const WAIT_POLL: Duration = Duration::from_millis(100);
 /// The periodic reconcile when no execution pins its own interval.
 const DEFAULT_POLL_SECONDS: i64 = 1;
 
@@ -45,11 +42,11 @@ pub(crate) struct Inner {
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Children spawned by this runtime whose receipt is not written yet.
     children: Mutex<HashMap<String, Child>>,
-    /// Executions whose child a watcher thread of this runtime waits for.
-    watched: Mutex<HashSet<String>>,
+    /// Executions a thread of this runtime waits for or stops; reconcile leaves them to it.
+    pub(crate) watched: Mutex<HashSet<String>>,
 }
 
-fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn guard<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -252,7 +249,7 @@ fn replay(
 }
 
 impl Supervisor {
-    fn state(&self) -> Result<&Path, ErrorBody> {
+    pub(crate) fn state(&self) -> Result<&Path, ErrorBody> {
         self.state_dir.as_deref().ok_or_else(|| {
             ErrorBody::new(
                 ErrorCode::NotFound,
@@ -264,11 +261,11 @@ impl Supervisor {
         })
     }
 
-    fn lock_of(&self, id: &str) -> Arc<Mutex<()>> {
+    pub(crate) fn lock_of(&self, id: &str) -> Arc<Mutex<()>> {
         Arc::clone(guard(&self.inner.locks).entry(id.to_owned()).or_default())
     }
 
-    fn logs(&self, id: &str) -> Result<(PathBuf, PathBuf), ErrorBody> {
+    pub(crate) fn logs(&self, id: &str) -> Result<(PathBuf, PathBuf), ErrorBody> {
         let directory = self.state()?.join("executions").join(id);
         Ok((directory.join("stdout.log"), directory.join("stderr.log")))
     }
@@ -478,7 +475,7 @@ impl Supervisor {
         sql(tx.commit())?;
         let child = guard(&self.inner.children).remove(&current.id);
         if let Some(child) = child {
-            self.watch(current.id.clone(), child);
+            self.watch(&current.id, child, pgid, &current.execution_deadline);
         }
         Ok(receipt)
     }
@@ -584,7 +581,7 @@ impl Supervisor {
 
     /// Map the verdict on the recorded identity to a state and record a change of state.
     fn observe_identity(
-        &self,
+        self: &Arc<Self>,
         connection: &mut Connection,
         execution: &Execution,
         recorded: &Identity,
@@ -592,6 +589,15 @@ impl Supervisor {
         let observer = identity::observer();
         let verdict = identity::verdict(Some(recorded), &observer, &identity::probe(recorded.pid));
         let to = executions::observed(verdict, false);
+        // A process another runtime started is stopped at its deadline from here; never one
+        // whose state is unknown.
+        if to == ExecutionState::Running
+            && execution.state == ExecutionState::Running
+            && crate::stop::past(&execution.execution_deadline)
+        {
+            self.stop_adopted(execution);
+            return Ok(());
+        }
         if to == execution.state || !allowed(execution.state, to) {
             return Ok(());
         }
@@ -673,62 +679,6 @@ impl Supervisor {
                 interval = supervisor.reconcile().unwrap_or(DEFAULT_POLL_SECONDS);
             }
         });
-    }
-
-    /// Wait for a child of this runtime on its own thread.
-    fn watch(self: &Arc<Self>, id: String, child: Child) {
-        guard(&self.inner.watched).insert(id.clone());
-        let supervisor = Arc::clone(self);
-        thread::spawn(move || supervisor.wait_for(&id, child));
-    }
-
-    fn wait_for(&self, id: &str, mut child: Child) {
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => thread::sleep(WAIT_POLL),
-                Err(_) => break None,
-            }
-        };
-        if let Some(status) = status {
-            let exit = json!({
-                "exit_code": status.code(),
-                "signal": status.signal(),
-                "source": "wait-status",
-                "ended_at": iso_now(),
-            });
-            // A busy store delays the evidence; it is never dropped while the runtime lives.
-            while self.record_exit(id, &exit).is_err() {
-                thread::sleep(Duration::from_millis(500));
-            }
-        }
-        guard(&self.inner.watched).remove(id);
-    }
-
-    /// Record the exit evidence of a child: `exited`, and the lease released with it.
-    fn record_exit(&self, id: &str, exit: &Value) -> Result<(), ErrorBody> {
-        let lock = self.lock_of(id);
-        let _held = guard(&lock);
-        let mut connection = executions::connect(self.state()?)?;
-        let tx = executions::begin(&mut connection)?;
-        let Some(current) = executions::load(&tx, id)? else {
-            return Ok(());
-        };
-        if !allowed(current.state, ExecutionState::Exited) || current.identity.is_none() {
-            return Ok(());
-        }
-        executions::transition(
-            &tx,
-            &current,
-            ExecutionState::Exited,
-            Change {
-                exit: Some(exit.clone()),
-                facts: json!({"source": "wait-status"}),
-                ..Change::default()
-            },
-            &iso_now(),
-        )?;
-        sql(tx.commit())
     }
 }
 

@@ -19,6 +19,8 @@
 mod launch;
 #[cfg(target_os = "linux")]
 pub mod process;
+#[cfg(target_os = "linux")]
+mod stop;
 
 use std::path::PathBuf;
 
