@@ -1107,6 +1107,43 @@ def test_the_fifth_unfinished_request_gets_busy(project: Path) -> None:
     asyncio.run(scenario())
 
 
+def test_a_lone_surrogate_id_is_echoed_and_the_connection_stays_open(
+    project: Path,
+) -> None:
+    """json.loads accepts the id "\\ud800", which UTF-8 cannot encode: it is echoed escaped."""
+
+    async def scenario() -> None:
+        collect = GatedCollect()
+        server = ConsoleServer(
+            project, snapshots=SnapshotService(project, collect=collect)
+        )
+        await server.start()
+        try:
+            async with _connect(server, project) as client:
+                for id in (1, 2, 3):
+                    await client.send(_request(id))
+                await client.send(_request("\ud800"))
+                await client.send(_request("\ud800"))  # the fifth: busy
+                refused = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (refused["id"], refused["error"]["code"]) == ("\ud800", "busy")
+                await asyncio.wait_for(await client.ping(b"alive"), 2)
+                collect.gate.set()
+                answered = [
+                    json.loads(await asyncio.wait_for(client.recv(), 5))
+                    for _ in range(4)
+                ]
+                assert all(reply["ok"] for reply in answered)
+                assert {reply["id"] for reply in answered} == {1, 2, 3, "\ud800"}
+                await client.send(_request("\ud800"))
+                reply = json.loads(await asyncio.wait_for(client.recv(), 5))
+                assert (reply["id"], reply["ok"]) == ("\ud800", True)
+        finally:
+            collect.gate.set()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
 def test_a_disconnect_with_an_unfinished_request_releases_the_connection(
     project: Path,
 ) -> None:

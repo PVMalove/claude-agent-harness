@@ -127,16 +127,19 @@ class HomeSnapshot:
 
 
 _SHORT_ESCAPES = frozenset('"\\\b\f\n\r\t')
+# json.loads accepts "\ud800"; the str cannot be encoded as UTF-8, so a reply carries it escaped.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def _wire_cost(char: str) -> int:
     """Bytes `char` takes inside a JSON string: a quote, a backslash or a short escape is two,
-    any other control character is six, everything else is its UTF-8 length."""
+    any other control character and a lone surrogate (sent as `\\udXXX`) is six, everything
+    else is its UTF-8 length."""
     if char in _SHORT_ESCAPES:
         return 2
-    if char < " ":
+    if char < " " or _LONE_SURROGATE.match(char):
         return 6
-    return len(char.encode("utf-8", errors="replace"))
+    return len(char.encode("utf-8"))
 
 
 def _clip(text: str, limit: int) -> str:
@@ -327,7 +330,9 @@ def _parse(raw: str) -> _Request:
 
 
 def _encode(reply: dict[str, object]) -> str:
-    return json.dumps(reply, separators=(",", ":"), ensure_ascii=False)
+    """The reply as text that encodes as UTF-8 whatever it echoes."""
+    text = json.dumps(reply, separators=(",", ":"), ensure_ascii=False)
+    return _LONE_SURROGATE.sub(lambda found: f"\\u{ord(found.group()):04x}", text)
 
 
 def _error(

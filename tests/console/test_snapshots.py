@@ -218,7 +218,7 @@ def test_problems_are_capped_and_the_reply_stays_below_the_message_limit() -> No
     assert len(encoded) < MESSAGE_LIMIT
 
 
-@pytest.mark.parametrize("char", ['"', "\\", "\x01", "\n", "я", "😀"])
+@pytest.mark.parametrize("char", ['"', "\\", "\x01", "\n", "я", "😀", "\ud800"])
 def test_the_whole_reply_stays_below_the_message_limit_whatever_the_text(
     char: str,
 ) -> None:
@@ -572,6 +572,54 @@ def test_a_failed_collect_names_only_the_exception_class() -> None:
     raw = asyncio.run(respond('{"id": "z", "type": "home.snapshot"}', service))
     assert "secret" not in raw
     assert _failure(json.loads(raw)) == ("z", "home.snapshot", "collect_failed", "Boom")
+
+
+def test_a_lone_surrogate_in_the_text_still_gives_an_encodable_snapshot_reply() -> None:
+    data = DashboardData(
+        ok=0,
+        warn=1,
+        fail=0,
+        skipped=0,
+        repo_map_tier="x",
+        harness_version="1",
+        drift_state="clean",
+        active_batches=None,
+        problems=(("warn", "a.b", "broken \ud800 text"),),
+    )
+    snapshot = build_home_snapshot(data, HomeContext())
+
+    def collect(repo: Path) -> HomeSnapshot:
+        return snapshot
+
+    service = SnapshotService(Path("."), clock=FakeClock(), collect=collect)
+    raw = asyncio.run(respond('{"id": "s", "type": "home.snapshot"}', service))
+    reply = json.loads(raw.encode("utf-8"))
+    assert reply["ok"] is True
+    assert reply["snapshot"]["problems"][0]["message"] == "broken \ud800 text"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"id": "\\ud800", "type": "home.snapshot"}',
+        '{"id": "q", "type": "\\ud800"}',
+        '{"id": "\\udfff", "type": 1}',
+    ],
+)
+def test_replies_to_a_lone_surrogate_request_are_encodable_and_echo_it_exactly(
+    raw: str,
+) -> None:
+    sent = json.loads(raw)
+    for text in (_ask_raw(raw), busy(raw)):
+        reply = json.loads(text.encode("utf-8"))
+        assert reply["id"] == sent["id"]
+        if isinstance(sent["type"], str):
+            assert reply["type"] == sent["type"]
+
+
+def _ask_raw(raw: str) -> str:
+    service = _service(CountingCollect(), FakeClock())
+    return asyncio.run(respond(raw, service))
 
 
 def test_busy_is_an_error_reply_that_echoes_the_request_id() -> None:
