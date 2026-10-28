@@ -372,7 +372,7 @@ impl Supervisor {
         let pid = i64::from(child.id());
         guard(&self.inner.children).insert(execution.id.clone(), child);
         hooks::reach_once("execution.launch:launched").map_err(|err| injected(&err))?;
-        self.receipt(&mut connection, &execution, pid, false)
+        self.receipt(&mut connection, &execution, pid, false, None)
     }
 
     /// Step 1: the operation intent, the execution in `launching` and its audit record, in one
@@ -422,17 +422,21 @@ impl Supervisor {
         Ok(execution)
     }
 
-    /// Step 3, or the adoption of a labelled process: the identity, `running`, the receipt and
-    /// the committed operation, in one transaction. A child of this runtime gets its watcher.
+    /// Step 3, or the adoption of a labelled process (`scanned`: the start time the label scan
+    /// found it with): the identity, `running`, the receipt and the committed operation, in one
+    /// transaction. A child of this runtime gets its watcher.
     fn receipt(
         self: &Arc<Self>,
         connection: &mut Connection,
         execution: &Execution,
         pid: i64,
         adopted: bool,
+        scanned: Option<&str>,
     ) -> Result<Value, ErrorBody> {
         let observer = identity::observer();
+        // An adopted identity is the one the scan matched: a pid reused since is never recorded.
         let (identity, pgid) = process::identity_of(pid, &observer)
+            .filter(|(identity, _)| scanned.is_none_or(|start| identity.start_time == start))
             .ok_or_else(|| store_busy("the identity of the launched process cannot be read yet"))?;
         let at = iso_now();
         let tx = executions::begin(connection)?;
@@ -544,9 +548,16 @@ impl Supervisor {
                 let own = guard(&self.inner.children)
                     .get(&execution.id)
                     .map(|child| i64::from(child.id()));
-                match own.map_or_else(|| process::scan(&execution.id), |pid| Ok(Some(pid))) {
-                    Ok(Some(pid)) => {
-                        self.receipt(connection, &execution, pid, true)?;
+                let found = own.map_or_else(
+                    || {
+                        process::scan(&execution.id, writer_start(&execution))
+                            .map(|found| found.map(|(pid, start)| (pid, Some(start))))
+                    },
+                    |pid| Ok(Some((pid, None))),
+                );
+                match found {
+                    Ok(Some((pid, scanned))) => {
+                        self.receipt(connection, &execution, pid, true, scanned.as_deref())?;
                     }
                     Ok(None) => {
                         let reason = "no labelled process; never relaunched";
@@ -689,6 +700,23 @@ fn owner() -> Value {
         .map(|(identity, _)| identity.to_json())
         .unwrap_or(Value::Null);
     json!({"kind": "harness-runtime", "identity": identity})
+}
+
+/// The start time, in clock ticks of this boot, of the runtime that wrote the intent of
+/// `execution`: no process of its launch started before it. `None` when the intent names no
+/// identity of this boot and PID namespace.
+fn writer_start(execution: &Execution) -> Option<u64> {
+    let writer = execution.lease_owner.get("identity")?;
+    let observer = identity::observer();
+    let here = |key: &str, value: Option<&String>| {
+        value.is_some_and(|value| writer.get(key).and_then(Value::as_str) == Some(value.as_str()))
+    };
+    if !(here("boot_id", observer.boot_id.as_ref())
+        && here("pid_namespace", observer.pid_namespace.as_ref()))
+    {
+        return None;
+    }
+    writer.get("start_time")?.as_str()?.parse().ok()
 }
 
 /// Take the mutex of an operation, waiting until the deadline of the request.

@@ -1,6 +1,7 @@
 //! The Linux processes of the supervisor: a launched process leads its own group, its recorded
 //! identity is the one `/proc` shows, it outlives its handle, the label scan finds the group
-//! leader only, and an observer of another boot sees an execution it must not touch.
+//! leader only (the first started one, never one older than the intent), and an observer of
+//! another boot sees an execution it must not touch.
 #![cfg(target_os = "linux")]
 
 use std::path::{Path, PathBuf};
@@ -101,8 +102,36 @@ fn the_label_scan_finds_the_group_leader_and_never_a_labelled_child() {
     };
     assert!(!children.trim().is_empty(), "the leader has no child");
 
-    assert_eq!(process::scan("op-scan").unwrap(), Some(pid));
-    assert_eq!(process::scan("op-nobody").unwrap(), None);
+    let (found, _) = process::scan("op-scan", None).unwrap().unwrap();
+    assert_eq!(found, pid);
+    assert_eq!(process::scan("op-nobody", None).unwrap(), None);
+}
+
+#[test]
+fn the_label_scan_chooses_the_first_started_leader_and_never_one_older_than_the_intent() {
+    let mut scratch = Scratch::new("first");
+    let first = scratch.spawn("op-first", "sleep 30");
+    // A later labelled leader: a process of the execution that leads its own group.
+    std::thread::sleep(Duration::from_millis(100));
+    let later = scratch.spawn("op-first", "sleep 30");
+    let observer = identity::observer();
+    let start = |pid: i64| {
+        let (recorded, _) = process::identity_of(pid, &observer).unwrap();
+        recorded.start_time
+    };
+    let (first_start, later_start) = (start(first), start(later));
+    assert!(first_start.parse::<u64>().unwrap() < later_start.parse::<u64>().unwrap());
+
+    assert_eq!(
+        process::scan("op-first", None).unwrap(),
+        Some((first, first_start))
+    );
+    let bound = later_start.parse::<u64>().unwrap();
+    assert_eq!(
+        process::scan("op-first", Some(bound)).unwrap(),
+        Some((later, later_start))
+    );
+    assert_eq!(process::scan("op-first", Some(bound + 1)).unwrap(), None);
 }
 
 #[test]
@@ -152,5 +181,5 @@ fn a_spawn_the_os_refuses_starts_nothing() {
     .unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
-    assert_eq!(process::scan("op-refused").unwrap(), None);
+    assert_eq!(process::scan("op-refused", None).unwrap(), None);
 }

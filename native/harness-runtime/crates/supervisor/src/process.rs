@@ -100,12 +100,16 @@ fn labelled(environ: &[u8], name: &str, value: &str) -> bool {
         .any(|entry| entry == wanted.as_bytes())
 }
 
-/// The pid of the process group leader whose environment carries the label of `operation_id`.
-/// A labelled process that does not lead its group (a child of the execution) is never chosen.
+/// The pid and start time of the process group leader whose environment carries the label of
+/// `operation_id`. A labelled process that does not lead its group (a child of the execution) is
+/// never chosen. Of several labelled leaders the one that started first is chosen: the launch
+/// precedes every process it starts. A leader that started before `not_before` (a start time of
+/// this boot, in clock ticks) is never chosen.
 ///
 /// # Errors
 /// `/proc` cannot be listed: the scan proves nothing.
-pub fn scan(operation_id: &str) -> io::Result<Option<i64>> {
+pub fn scan(operation_id: &str, not_before: Option<u64>) -> io::Result<Option<(i64, String)>> {
+    let mut first: Option<(u64, i64, String)> = None;
     for entry in fs::read_dir("/proc")? {
         let Ok(entry) = entry else { continue };
         let Some(pid) = entry
@@ -122,15 +126,29 @@ pub fn scan(operation_id: &str) -> io::Result<Option<i64>> {
         if !labelled(&environ, LABEL_OPERATION, operation_id) {
             continue;
         }
-        let leads = fs::read_to_string(entry.path().join("stat"))
+        let Some((state, pgid, start_time)) = fs::read_to_string(entry.path().join("stat"))
             .ok()
             .and_then(|line| parse_stat(&line))
-            .is_some_and(|(state, pgid, _)| pgid == pid && !matches!(state, 'Z' | 'X'));
-        if leads {
-            return Ok(Some(pid));
+        else {
+            continue;
+        };
+        let Ok(started) = start_time.parse::<u64>() else {
+            continue;
+        };
+        if pgid != pid
+            || matches!(state, 'Z' | 'X')
+            || not_before.is_some_and(|bound| started < bound)
+        {
+            continue;
+        }
+        if first
+            .as_ref()
+            .is_none_or(|(earliest, _, _)| started < *earliest)
+        {
+            first = Some((started, pid, start_time));
         }
     }
-    Ok(None)
+    Ok(first.map(|(_, pid, start_time)| (pid, start_time)))
 }
 
 #[cfg(test)]

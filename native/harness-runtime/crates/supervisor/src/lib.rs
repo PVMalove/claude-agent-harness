@@ -41,7 +41,8 @@ impl Supervisor {
     pub fn new(state_dir: Option<PathBuf>) -> Self {
         Self {
             state_dir,
-            ..Self::default()
+            #[cfg(target_os = "linux")]
+            inner: launch::Inner::default(),
         }
     }
 

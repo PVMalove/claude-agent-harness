@@ -13,12 +13,12 @@
 //!
 //! `harness-runtime serve [--repo <path>]` serves the local IPC of one repository until it gets
 //! SIGINT or SIGTERM (on Windows, Ctrl+C or Ctrl+Break). Before it reports ready it reconciles the
-//! executions of the store, and a stop never signals an execution: they outlive the runtime. On Windows the `socket` key of the
-//! readiness line holds the name of the named pipe. ADR 0021, section 8 defines exit code 0 (a
-//! normal stop) and 2 (a refusal to start). The ADR leaves a failure of a server that is already
-//! ready undefined, so this implementation picks 1 for it. A supervisor learns that the start
-//! worked from the readiness line, so a failure to write that line is a refusal to start (2), not
-//! a failure of a running server.
+//! executions of the store, and a stop never signals an execution: they outlive the runtime. On
+//! Windows the `socket` key of the readiness line holds the name of the named pipe. ADR 0021,
+//! section 8 defines exit code 0 (a normal stop) and 2 (a refusal to start). The ADR leaves a
+//! failure of a server that is already ready undefined, so this implementation picks 1 for it. A
+//! supervisor learns that the start worked from the readiness line, so a failure to write that
+//! line is a refusal to start (2), not a failure of a running server.
 
 use std::env;
 use std::ffi::OsString;
