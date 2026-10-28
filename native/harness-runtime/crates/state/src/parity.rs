@@ -133,9 +133,11 @@ fn projection(connection: &Connection) -> Result<Vec<(String, Projected)>> {
             ));
         }
     }
-    for (body,) in rows(connection, "SELECT body_json FROM qa_lane", |row| {
-        Ok((row.get::<_, String>(0)?,))
-    })? {
+    for (body,) in rows(
+        connection,
+        "SELECT body_json FROM qa_lane WHERE owner_id IS NOT NULL",
+        |row| Ok((row.get::<_, String>(0)?,)),
+    )? {
         found.push((
             "qa-lane/lease.json".to_owned(),
             Projected::Record(json_record(&body)?),

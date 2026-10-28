@@ -1,9 +1,13 @@
-//! The schema of the store, version 2 (`PRAGMA user_version = 2`; ADR 0020, sections 3 and 4).
+//! The schema of the store, version 3 (`PRAGMA user_version = 3`; ADR 0020, sections 3, 4 and 7).
 //!
 //! Version 2 adds the `operations` table of the idempotent writes (ADR 0021, section 4), a
 //! `revision` to every row that a command may change, the denormalised `execution_state` of a
-//! dispatch with the CHECK of ADR 0021, section 6, and a singleton `audit_checkpoint`. A store of
-//! version 1 is upgraded in place by `upgrade` when the runtime starts or before its first write.
+//! dispatch with the CHECK of ADR 0021, section 6, and a singleton `audit_checkpoint`. Version 3
+//! adds the singleton `generation` row, whose revision guards the decisions that read every batch
+//! (ADR 0020, section 3), and makes the QA lane a singleton row that outlives its leases: the
+//! owner of the lease and the identity of its process are columns, and the row stays free after
+//! a release, so its `fencing_token` never goes back (ADR 0020, section 7). A store of version 1
+//! or 2 is upgraded in place by `upgrade` when the runtime starts or before its first write.
 //!
 //! One table holds one kind of record. A column named like a field of the legacy record (`state`,
 //! `batch_id`, the risk fields of a batch) carries that field when the field has the type the
@@ -12,8 +16,8 @@
 //! bytes it had. `id` is the file name of the legacy record without `.json`.
 
 use contracts::ErrorCode;
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
-use serde_json::json;
+use rusqlite::{Connection, OpenFlags, Transaction, TransactionBehavior};
+use serde_json::{Map, Value, json};
 
 use crate::audit;
 use crate::authority::{Epoch, STORE_NAME, epoch};
@@ -21,7 +25,7 @@ use crate::error::{Error, Result};
 use crate::time::iso_now;
 
 /// The schema version this build writes and the newest it serves.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 macro_rules! audit_checkpoint_table {
     () => {
@@ -44,6 +48,57 @@ macro_rules! operations_table {
     created_at     TEXT NOT NULL,
     completed_at   TEXT
 ) STRICT;"
+    };
+}
+
+/// The QA lane (ADR 0020, section 7): one row, `id = 1`, created by the first lease and kept
+/// after every release. The owner columns are all set while a lease is held and all NULL while
+/// the lane is free; the identity of the owner's process (`host`, `pid` and `start_time`, with
+/// the `boot_id` and the `pid_namespace` the platform reveals) is NULL while the lane is free and
+/// for a lease of version 2. `body_json` is the projection `qa-lane/lease.json` while a lease is
+/// held.
+macro_rules! qa_lane_table {
+    ($name:literal) => {
+        concat!(
+            "CREATE TABLE ",
+            $name,
+            " (
+    id                  INTEGER PRIMARY KEY CHECK (id = 1),
+    revision            INTEGER NOT NULL DEFAULT 1,
+    fencing_token       INTEGER NOT NULL DEFAULT 0,
+    body_json           TEXT NOT NULL,
+    owner_kind          TEXT,
+    owner_id            TEXT,
+    acquired_at         TEXT,
+    expires_at          TEXT,
+    heartbeat_at        TEXT,
+    host                TEXT,
+    boot_id             TEXT,
+    pid_namespace       TEXT,
+    pid                 INTEGER,
+    start_time          TEXT,
+    owner_pid_namespace TEXT,
+    CHECK ((owner_kind IS NULL) = (owner_id IS NULL)
+       AND (owner_id IS NULL) = (acquired_at IS NULL)
+       AND (owner_id IS NULL) = (expires_at IS NULL)
+       AND (owner_id IS NULL) = (heartbeat_at IS NULL)),
+    CHECK ((host IS NULL) = (pid IS NULL) AND (pid IS NULL) = (start_time IS NULL)),
+    CHECK (owner_id IS NOT NULL OR (host IS NULL AND boot_id IS NULL AND pid_namespace IS NULL
+       AND owner_pid_namespace IS NULL))
+) STRICT;"
+        )
+    };
+}
+
+/// The revision of the shared state (ADR 0020, section 3): a request that creates a batch or
+/// changes the state of one moves it, and a request that decided over every batch expects it.
+macro_rules! generation_table {
+    () => {
+        "CREATE TABLE generation (
+    id       INTEGER PRIMARY KEY CHECK (id = 1),
+    revision INTEGER NOT NULL
+) STRICT;
+INSERT INTO generation (id, revision) VALUES (1, 1);"
     };
 }
 
@@ -124,12 +179,9 @@ CREATE TABLE checkpoint (
     body_json TEXT NOT NULL
 ) STRICT;
 
-CREATE TABLE qa_lane (
-    id            INTEGER PRIMARY KEY CHECK (id = 1),
-    revision      INTEGER NOT NULL DEFAULT 1,
-    fencing_token INTEGER NOT NULL DEFAULT 0,
-    body_json     TEXT NOT NULL
-) STRICT;
+",
+    qa_lane_table!("qa_lane"),
+    "
 
 CREATE TABLE qa_queue (
     id        TEXT PRIMARY KEY,
@@ -189,6 +241,11 @@ CREATE TABLE audit (
 ",
     operations_table!(),
     "
+
+-- The singleton revision of the shared state (ADR 0020, section 3).
+",
+    generation_table!(),
+    "
 "
 );
 
@@ -232,6 +289,60 @@ const UPGRADE_1_TO_2: [&str; 7] = [
     operations_table!(),
 ];
 
+/// The owner of a lease body that a command wrote with a generic mutation, or that the import
+/// read from the legacy lane: `owner_kind` (a legacy lease names a `dispatch_id` only),
+/// `owner_id`, `acquired_at` and `expires_at`. A field the body lacks is an empty text, so the
+/// owner columns stay all set while the lease is held.
+pub(crate) fn lease_owner(record: &Map<String, Value>) -> [String; 4] {
+    let text = |key: &str| record.get(key).and_then(Value::as_str).map(str::to_owned);
+    [
+        text("owner_kind").unwrap_or_else(|| "dispatch".to_owned()),
+        text("owner_id")
+            .or_else(|| text("dispatch_id"))
+            .unwrap_or_default(),
+        text("acquired_at").unwrap_or_default(),
+        text("expires_at").unwrap_or_default(),
+    ]
+}
+
+/// Bring a store of version 2 to version 3: the generation row, and the QA lane rebuilt with its
+/// owner columns. A held lease keeps its body, its owner and its expiry; its identity is unknown
+/// (NULL), so only an operator clears it.
+fn upgrade_2_to_3(transaction: &Transaction<'_>) -> Result<()> {
+    transaction.execute_batch(generation_table!())?;
+    transaction.execute_batch(qa_lane_table!("qa_lane_v3"))?;
+    let rows: Vec<(i64, i64, i64, String)> = transaction
+        .prepare("SELECT id, revision, fencing_token, body_json FROM qa_lane")?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, revision, fencing_token, body) in rows {
+        let record = match serde_json::from_str::<Value>(&body) {
+            Ok(Value::Object(record)) => record,
+            _ => Map::new(),
+        };
+        let [kind, owner, acquired_at, expires_at] = lease_owner(&record);
+        transaction.execute(
+            "INSERT INTO qa_lane_v3 (id, revision, fencing_token, body_json, owner_kind, owner_id,
+                                     acquired_at, expires_at, heartbeat_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?7)",
+            rusqlite::params![
+                id,
+                revision,
+                fencing_token,
+                body,
+                kind,
+                owner,
+                acquired_at,
+                expires_at
+            ],
+        )?;
+    }
+    transaction.execute_batch("DROP TABLE qa_lane; ALTER TABLE qa_lane_v3 RENAME TO qa_lane;")?;
+    Ok(())
+}
+
 fn user_version(connection: &Connection) -> Result<i64> {
     Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
 }
@@ -254,9 +365,12 @@ pub fn upgrade(connection: &mut Connection) -> Result<bool> {
     if from == SCHEMA_VERSION {
         return Ok(false);
     }
-    for statement in UPGRADE_1_TO_2 {
-        transaction.execute_batch(statement)?;
+    if from < 2 {
+        for statement in UPGRADE_1_TO_2 {
+            transaction.execute_batch(statement)?;
+        }
     }
+    upgrade_2_to_3(&transaction)?;
     audit::append(
         &transaction,
         &iso_now(),

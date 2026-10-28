@@ -13,6 +13,12 @@
 //! CHECK and foreign-key invariants of the schema, one batch per request, and the audit chain,
 //! one record per mutation. The operation row makes a repeat of a request return its stored
 //! result instead of a second effect.
+//!
+//! The generation class also guards the shared state (ADR 0020, section 3): a request that creates
+//! a batch or changes the state of one moves the revision of the singleton `generation` row, and a
+//! request whose command decided over every batch (the concurrency budget, a duplicate batch)
+//! carries `expected_generation_revision`. Two such requests in different batches cannot both
+//! commit, while requests of different batches that decide nothing shared do not conflict.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -89,12 +95,19 @@ struct Planned {
     record: Option<Map<String, Value>>,
 }
 
+/// The mutations of a request and the generation revision its command read, if it decided over
+/// every batch.
+struct Parsed {
+    mutations: Vec<Mutation>,
+    expected_generation_revision: Option<i64>,
+}
+
 /// What a committed request did.
 #[derive(Debug)]
 pub struct Written {
     /// The `seq` of the last audit record: the revision of the store after the request.
     pub revision: u64,
-    /// `{"revisions": {path: revision}, "audit_seq": n}`.
+    /// `{"revisions": {path: revision}, "audit_seq": n, "generation_revision": g}`.
     pub result: Value,
     /// The classes of the rows the transaction touched, in order (a test reads it).
     pub touched: Vec<&'static str>,
@@ -303,13 +316,27 @@ fn parse_mutation(index: usize, item: &Value) -> Result<Mutation, ErrorBody> {
     })
 }
 
-fn parse_mutations(payload: Option<&Value>) -> Result<Vec<Mutation>, ErrorBody> {
+fn parse_payload(payload: Option<&Value>) -> Result<Parsed, ErrorBody> {
     let Some(Value::Object(members)) = payload else {
         return Err(malformed("state.write needs a payload object"));
     };
-    if let Some(unknown) = members.keys().find(|key| key.as_str() != "mutations") {
+    if let Some(unknown) = members
+        .keys()
+        .find(|key| !matches!(key.as_str(), "mutations" | "expected_generation_revision"))
+    {
         return Err(malformed(format!("unknown payload field {unknown:?}")));
     }
+    let expected_generation_revision = match members.get("expected_generation_revision") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .and_then(|revision| i64::try_from(revision).ok())
+                .ok_or_else(|| {
+                    malformed("expected_generation_revision must be a non-negative integer")
+                })?,
+        ),
+    };
     let Some(Value::Array(items)) = members.get("mutations") else {
         return Err(malformed("mutations must be a list"));
     };
@@ -318,11 +345,15 @@ fn parse_mutations(payload: Option<&Value>) -> Result<Vec<Mutation>, ErrorBody> 
             "a request holds from 1 to {MAX_MUTATIONS} mutations"
         )));
     }
-    items
+    let mutations = items
         .iter()
         .enumerate()
         .map(|(index, item)| parse_mutation(index, item))
-        .collect()
+        .collect::<Result<_, _>>()?;
+    Ok(Parsed {
+        mutations,
+        expected_generation_revision,
+    })
 }
 
 /// The record that `content` is, when it is a JSON object in the canonical form of the ledger.
@@ -541,8 +572,9 @@ fn load(tx: &Connection, place: &Place, path: &str) -> Result<Option<Stored>, Er
             )?;
             Ok(found)
         }
+        // The lane row stays after a release; only a held lease is a row of `qa-lane/lease.json`.
         Place::QaLease => body_row(
-            "SELECT body_json, revision FROM qa_lane WHERE id = ?1",
+            "SELECT body_json, revision FROM qa_lane WHERE id = ?1 AND owner_id IS NOT NULL",
             Sql::Integer(1),
         ),
         Place::QaQueue(id) => body_row(
@@ -577,6 +609,44 @@ struct Applying<'a> {
     tx: &'a Transaction<'a>,
     /// The paths this request touched already: a repeat touch carries no revision.
     seen: BTreeSet<String>,
+    /// The request created a batch or changed the state of one: the generation moves.
+    moves_generation: bool,
+}
+
+/// Write the lease body `record` and its owner columns to the lane row, which keeps its
+/// `fencing_token`; the row is created when the lane never had one. Returns the new revision.
+fn put_generic_lease(tx: &Transaction<'_>, record: &Map<String, Value>) -> Result<i64, ErrorBody> {
+    let [kind, owner, acquired_at, expires_at] = schema::lease_owner(record);
+    sqlite(tx.execute(
+        "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, expires_at,
+                              heartbeat_at)
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?4)
+         ON CONFLICT (id) DO UPDATE SET
+             revision = revision + 1, body_json = excluded.body_json,
+             owner_kind = excluded.owner_kind, owner_id = excluded.owner_id,
+             acquired_at = excluded.acquired_at, expires_at = excluded.expires_at,
+             heartbeat_at = excluded.heartbeat_at, host = NULL, boot_id = NULL,
+             pid_namespace = NULL, pid = NULL, start_time = NULL, owner_pid_namespace = NULL",
+        rusqlite::params![compact(record), kind, owner, acquired_at, expires_at],
+    ))?;
+    sqlite(
+        tx.query_row("SELECT revision FROM qa_lane WHERE id = 1", [], |row| {
+            row.get(0)
+        }),
+    )
+}
+
+/// Free the lane row: no owner, no identity, a new revision, the same `fencing_token`.
+pub(crate) fn free_lane(tx: &Transaction<'_>) -> Result<(), ErrorBody> {
+    sqlite(tx.execute(
+        "UPDATE qa_lane SET revision = revision + 1, body_json = '{}', owner_kind = NULL,
+             owner_id = NULL, acquired_at = NULL, expires_at = NULL, heartbeat_at = NULL,
+             host = NULL, boot_id = NULL, pid_namespace = NULL, pid = NULL, start_time = NULL,
+             owner_pid_namespace = NULL
+         WHERE id = 1",
+        [],
+    ))?;
+    Ok(())
 }
 
 impl Applying<'_> {
@@ -594,7 +664,7 @@ impl Applying<'_> {
         }
     }
 
-    fn create(&self, item: &Planned) -> Result<Effect, ErrorBody> {
+    fn create(&mut self, item: &Planned) -> Result<Effect, ErrorBody> {
         let path = &item.mutation.path;
         let content = item.mutation.content.as_deref().unwrap_or_default();
         let artifact = item.mutation.op == Op::CreateArtifact;
@@ -626,8 +696,12 @@ impl Applying<'_> {
             return Err(revision_conflict(path, 0, stored.revision));
         }
         let record = item.record.clone().unwrap_or_default();
+        let mut revision = 1;
         match &item.place {
             Place::Typed(spec, id) => {
+                if spec.table == BATCH.table {
+                    self.moves_generation = true;
+                }
                 let params = spec.split(id, record);
                 sqlite(
                     self.tx
@@ -635,10 +709,7 @@ impl Applying<'_> {
                 )?;
             }
             Place::QaLease => {
-                sqlite(self.tx.execute(
-                    "INSERT INTO qa_lane (id, body_json) VALUES (1, ?1)",
-                    [compact(&record)],
-                ))?;
+                revision = put_generic_lease(self.tx, &record)?;
             }
             Place::QaQueue(id) => {
                 sqlite(self.tx.execute(
@@ -657,7 +728,7 @@ impl Applying<'_> {
         Ok(Effect {
             action,
             details,
-            revision: Some(1),
+            revision: Some(revision),
         })
     }
 
@@ -698,7 +769,7 @@ impl Applying<'_> {
         })
     }
 
-    fn replace(&self, item: &Planned) -> Result<Effect, ErrorBody> {
+    fn replace(&mut self, item: &Planned) -> Result<Effect, ErrorBody> {
         let path = &item.mutation.path;
         let immutable = match &item.place {
             Place::Typed(spec, _) => !spec.replaceable(),
@@ -716,6 +787,9 @@ impl Applying<'_> {
         let record = item.record.clone().unwrap_or_default();
         match &item.place {
             Place::Typed(spec, id) => {
+                if spec.table == BATCH.table && stored.record.get("state") != record.get("state") {
+                    self.moves_generation = true;
+                }
                 let mut params = spec.split(id, record.clone());
                 let id_param = params.remove(0);
                 params.push(id_param);
@@ -725,10 +799,7 @@ impl Applying<'_> {
                 )?;
             }
             Place::QaLease => {
-                sqlite(self.tx.execute(
-                    "UPDATE qa_lane SET body_json = ?1, revision = revision + 1 WHERE id = 1",
-                    [compact(&record)],
-                ))?;
+                put_generic_lease(self.tx, &record)?;
             }
             Place::QaQueue(id) => {
                 sqlite(self.tx.execute(
@@ -784,9 +855,7 @@ impl Applying<'_> {
         };
         self.check_revision(item, stored.revision)?;
         match &item.place {
-            Place::QaLease => {
-                sqlite(self.tx.execute("DELETE FROM qa_lane WHERE id = 1", []))?;
-            }
+            Place::QaLease => free_lane(self.tx)?,
             Place::QaQueue(id) => {
                 sqlite(self.tx.execute("DELETE FROM qa_queue WHERE id = ?1", [id]))?;
             }
@@ -878,12 +947,44 @@ fn replay(
     }
 }
 
+/// The generation class of a request: check the revision its command read, then move it when the
+/// request created a batch or changed the state of one. Returns the revision after the request.
+fn guard_generation(
+    tx: &Transaction<'_>,
+    expected: Option<i64>,
+    moves: bool,
+) -> Result<i64, ErrorBody> {
+    let current: i64 = sqlite(tx.query_row(
+        "SELECT COALESCE((SELECT revision FROM generation WHERE id = 1), 0)",
+        [],
+        |row| row.get(0),
+    ))?;
+    if let Some(expected) = expected
+        && expected != current
+    {
+        return Err(revision_conflict("generation", expected, current));
+    }
+    if !moves {
+        return Ok(current);
+    }
+    sqlite(tx.execute(
+        "INSERT INTO generation (id, revision) VALUES (1, 1)
+         ON CONFLICT (id) DO UPDATE SET revision = revision + 1",
+        [],
+    ))?;
+    Ok(current + 1)
+}
+
 fn run(
     tx: &Transaction<'_>,
     request: &Request,
     digest: &str,
-    mutations: Vec<Mutation>,
+    parsed: Parsed,
 ) -> Result<Step, ErrorBody> {
+    let Parsed {
+        mutations,
+        expected_generation_revision,
+    } = parsed;
     if let Some(written) = replay(tx, &request.operation_id, digest)? {
         return Ok(Step::Replayed(written));
     }
@@ -916,6 +1017,7 @@ fn run(
     let mut applying = Applying {
         tx,
         seen: BTreeSet::new(),
+        moves_generation: false,
     };
     let mut effects: Vec<Option<Effect>> = planned.iter().map(|_| None).collect();
     let mut touched: Vec<&'static str> = Vec::new();
@@ -935,7 +1037,10 @@ fn run(
         effects[index] = Some(effect);
     }
 
-    // The generation class: one audit record per mutation, in the order of the request.
+    // The generation class: the guard of the shared state, then one audit record per mutation, in
+    // the order of the request.
+    let generation_revision =
+        guard_generation(tx, expected_generation_revision, applying.moves_generation)?;
     let at = iso_now();
     let mut audit_seq = 0;
     for effect in effects.into_iter().flatten() {
@@ -947,7 +1052,11 @@ fn run(
         sqlite(audit::move_checkpoint(tx, seq, &chain))?;
     }
     touched.push(CLASS_GENERATION);
-    let result = json!({"revisions": revisions, "audit_seq": audit_seq});
+    let result = json!({
+        "revisions": revisions,
+        "audit_seq": audit_seq,
+        "generation_revision": generation_revision,
+    });
     sqlite(tx.execute(
         "INSERT INTO operations (operation_id, operation, request_digest, state, result_json, created_at, completed_at)
          VALUES (?1, ?2, ?3, 'committed', ?4, ?5, ?5)",
@@ -1021,13 +1130,13 @@ pub fn write(state: &Path, request: &Request) -> Result<Written, ErrorBody> {
         }
         Epoch::Inconsistent(reason) => return Err(not_attached(&reason)),
     }
-    let mutations = parse_mutations(request.payload.as_ref())?;
+    let parsed = parse_payload(request.payload.as_ref())?;
     let digest = request_digest(request);
     hooks::reach_once("state.write:before-begin").map_err(|err| internal(err.to_string()))?;
     let mut connection = open(state)?;
     // A store without a checkpoint is verified whole here, outside the transaction.
     audit::ensure_checkpoint(&mut connection).map_err(|broken| broken.to_error())?;
-    let outcome = transact(&mut connection, request, &digest, mutations);
+    let outcome = transact(&mut connection, request, &digest, parsed);
     // The transaction is rolled back by now; a refusal that a repeat would meet again is kept.
     if let Err(error) = &outcome
         && is_recorded(error)
@@ -1041,11 +1150,11 @@ fn transact(
     connection: &mut Connection,
     request: &Request,
     digest: &str,
-    mutations: Vec<Mutation>,
+    parsed: Parsed,
 ) -> Result<Written, ErrorBody> {
     let tx = sqlite(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
     hooks::reach_once("state.write:in-transaction").map_err(|err| internal(err.to_string()))?;
-    match run(&tx, request, digest, mutations)? {
+    match run(&tx, request, digest, parsed)? {
         Step::Done(written) => {
             sqlite(tx.commit())?;
             Ok(written)

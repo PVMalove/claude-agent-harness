@@ -240,7 +240,11 @@ fn state_read(shared: &Shared, request: &Request) -> Reply {
         Ok(answer) => {
             let mut response = Response::ok(
                 id,
-                json!({"records": answer.records, "revisions": answer.revisions}),
+                json!({
+                    "records": answer.records,
+                    "revisions": answer.revisions,
+                    "generation_revision": answer.generation_revision,
+                }),
             );
             response.revision = Some(answer.revision);
             Reply {

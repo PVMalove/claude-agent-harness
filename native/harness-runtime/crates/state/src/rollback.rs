@@ -339,10 +339,10 @@ fn open_store(state: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
-/// Step 5: nothing runs and the QA lane is empty.
+/// Step 5: nothing runs and the QA lane is free: its row may stay, without an owner.
 fn preconditions(connection: &Connection) -> Result<()> {
     let count = |sql: &str| -> Result<i64> { Ok(connection.query_row(sql, [], |row| row.get(0))?) };
-    if count("SELECT COUNT(*) FROM qa_lane")? > 0 {
+    if count("SELECT COUNT(*) FROM qa_lane WHERE owner_id IS NOT NULL")? > 0 {
         return Err(refused(
             ErrorCode::LeaseHeld,
             "the QA lane of the store holds a lease",

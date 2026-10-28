@@ -207,7 +207,10 @@ def test_a_running_serve_is_refused(cut_over: tuple[Path, dict[str, str]]) -> No
 def test_a_qa_lease_in_the_store_is_refused(cut_over: tuple[Path, dict[str, str]]) -> None:
     repo, _ = cut_over
     with sqlite3.connect(_store(repo)) as connection:
-        connection.execute("INSERT INTO qa_lane (id, body_json) VALUES (1, '{}')")
+        connection.execute(
+            "INSERT INTO qa_lane (id, body_json, owner_kind, owner_id, acquired_at, "
+            "expires_at, heartbeat_at) VALUES (1, '{}', 'dispatch', 'd', 't', 't', 't')"
+        )
     before = _state(repo)
 
     result = rollback(repo)

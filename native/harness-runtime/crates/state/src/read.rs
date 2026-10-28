@@ -4,7 +4,8 @@
 //! answers records in the form the legacy file ledger had them: the same path (`batches/<id>.json`)
 //! and the same JSON object, so the Python policy layer renders the same text from either epoch.
 //! The revision of the answer is the sequence number of the last audit record: it moves with every
-//! change of the store.
+//! change of the store. The generation revision of the answer is the one a write expects when its
+//! command decided over every batch (`expected_generation_revision`).
 
 use std::path::Path;
 
@@ -53,6 +54,8 @@ impl From<rusqlite::Error> for ReadError {
 #[derive(Debug)]
 pub struct Answer {
     pub revision: u64,
+    /// The revision of the `generation` row in the same snapshot.
+    pub generation_revision: u64,
     /// Legacy path (relative to the generation) to record.
     pub records: Map<String, Value>,
     /// The `revision` of every row that has one, by the same path: the value a write expects.
@@ -234,7 +237,7 @@ fn collection(
     if name == "qa-lane" {
         table_rows(
             connection,
-            "SELECT 'qa-lane/lease.json', body_json, revision FROM qa_lane",
+            "SELECT 'qa-lane/lease.json', body_json, revision FROM qa_lane WHERE owner_id IS NOT NULL",
             None,
             |path, body, revision| {
                 found.add(path, parse(&body)?, revision);
@@ -284,7 +287,7 @@ fn one_path(
         ["qa-lane", "lease.json"] => {
             return table_rows(
                 connection,
-                "SELECT 'qa-lane/lease.json', body_json, revision FROM qa_lane",
+                "SELECT 'qa-lane/lease.json', body_json, revision FROM qa_lane WHERE owner_id IS NOT NULL",
                 None,
                 |path, body, revision| {
                     found.add(path, parse(&body)?, revision);
@@ -424,6 +427,11 @@ pub fn read(
             actual: revision,
         });
     }
+    let generation_revision: i64 = connection.query_row(
+        "SELECT COALESCE((SELECT revision FROM generation WHERE id = 1), 0)",
+        [],
+        |row| row.get(0),
+    )?;
     let selected = meta(&connection, "selected_generation")?;
     let mut found = Found::default();
     for name in &collections {
@@ -443,6 +451,7 @@ pub fn read(
     }
     Ok(Answer {
         revision,
+        generation_revision: u64::try_from(generation_revision).unwrap_or(0),
         records,
         revisions,
     })
