@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import importlib
 import logging
@@ -16,10 +15,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import h11
     from websockets.server import ServerProtocol
-
-H11_PIN = "0.16.0"
-WEBSOCKETS_PIN = "17.3"
-CONSOLE_SERVER_REQUIREMENTS = (f"h11=={H11_PIN}", f"websockets=={WEBSOCKETS_PIN}")
 
 HEADER_LIMIT = 16384
 HEADER_TIMEOUT = 5.0
@@ -397,15 +392,9 @@ async def _serve(repo: Path) -> None:
         await server.close()
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the project-bound console server")
-    parser.add_argument("project", type=Path)
-    args = parser.parse_args()
+def run(repo: Path) -> None:
+    """Serve the project until the idle rule stops the server; Ctrl-C ends it quietly."""
     try:
-        asyncio.run(_serve(args.project))
+        asyncio.run(_serve(repo))
     except KeyboardInterrupt:
         pass
-
-
-if __name__ == "__main__":
-    main()

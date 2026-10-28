@@ -1405,7 +1405,15 @@ def cmd_console(args: argparse.Namespace) -> int:
     from harness.console.launcher import run_console
 
     repo = Path(args.repo).expanduser().resolve()
-    return run_console(repo)
+    return run_console(repo, web=args.web, no_open=args.no_open)
+
+
+def cmd_console_server(args: argparse.Namespace) -> int:
+    """Запустить Сервер консоли проекта; его стартует `harness console` под `uv run --with`."""
+    from harness.console.server import run
+
+    run(Path(args.repo).expanduser().resolve())
+    return 0
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -1779,10 +1787,25 @@ def parser() -> argparse.ArgumentParser:
 
     console = commands.add_parser(
         "console",
-        help="interactive TUI diagnostics console (needs uv + network for textual)",
+        help="interactive TUI diagnostics console or --web URL (needs uv + network)",
     )
     console.add_argument("repo")
+    console.add_argument(
+        "--web",
+        action="store_true",
+        help="start the console server, print its URL with a token and exit",
+    )
+    console.add_argument(
+        "--no-open", action="store_true", help="with --web, do not open the browser"
+    )
     console.set_defaults(func=cmd_console)
+
+    console_server = commands.add_parser(
+        "console-server",
+        help="project-bound console server (started by `harness console` under `uv run --with`)",
+    )
+    console_server.add_argument("repo")
+    console_server.set_defaults(func=cmd_console_server)
     return root
 
 

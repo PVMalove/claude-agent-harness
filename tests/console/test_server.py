@@ -12,7 +12,8 @@ import tomllib
 
 import pytest
 
-from harness.console.server import CONSOLE_SERVER_REQUIREMENTS, ConsoleServer
+from harness.console.pin import CONSOLE_SERVER_REQUIREMENTS
+from harness.console.server import ConsoleServer
 
 
 @pytest.fixture
@@ -27,7 +28,6 @@ def test_server_dependencies_are_exact_dev_pins_only() -> None:
     config = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
     assert config["project"]["dependencies"] == []
     assert set(CONSOLE_SERVER_REQUIREMENTS) <= set(config["dependency-groups"]["dev"])
-    assert CONSOLE_SERVER_REQUIREMENTS == ("h11==0.16.0", "websockets==17.3")
 
 
 def test_server_binds_ipv4_loopback_and_ephemeral_port(project: Path) -> None:
@@ -65,9 +65,10 @@ def test_server_binds_ipv4_loopback_and_ephemeral_port(project: Path) -> None:
     asyncio.run(scenario())
 
 
-def test_server_module_has_no_host_override() -> None:
+def test_server_command_has_no_host_override() -> None:
+    harness_cli = Path(__file__).parents[2] / "harness" / "bin" / "harness.py"
     result = subprocess.run(
-        [sys.executable, "-m", "harness.console.server", ".", "--host", "0.0.0.0"],
+        [sys.executable, str(harness_cli), "console-server", ".", "--host", "0.0.0.0"],
         capture_output=True,
         text=True,
         timeout=5,

@@ -17,3 +17,19 @@ def test_dev_dependency_group_pins_the_same_textual_version_as_console_pin() -> 
     pinned = [entry for entry in dev_group if entry.startswith("textual==")]
 
     assert pinned == [f"textual=={TEXTUAL_PIN}"]
+
+
+def test_dev_dependency_group_pins_every_console_server_requirement() -> None:
+    from harness.console import pin
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev_group = pyproject["dependency-groups"]["dev"]
+
+    assert pin.CONSOLE_SERVER_REQUIREMENTS == (
+        "h11==0.16.0",
+        "websockets==17.3",
+        "jinja2==3.1.6",
+    )
+    names = ("h11==", "websockets==", "jinja2==")
+    pinned = [entry for entry in dev_group if entry.startswith(names)]
+    assert sorted(pinned) == sorted(pin.CONSOLE_SERVER_REQUIREMENTS)
