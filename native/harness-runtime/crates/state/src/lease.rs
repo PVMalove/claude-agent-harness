@@ -14,7 +14,9 @@
 //!   `stale_heartbeat`, `verdict`, `owner`, `expires_at` and `heartbeat_at`;
 //! - `lease_clear` is the operator override: a human approval and a reason, whatever the verdict.
 //!
-//! The row stays after a release, so the fencing token never goes back. Every change appends one
+//! The generic mutations (`create`, `replace`, `delete`) of `qa-lane/lease.json` are refused: the
+//! lease changes only through these operations. The row stays after a release, so the fencing
+//! token never goes back. Every change appends one
 //! audit record with an existing action (`immutable-record`, `transition`, `deletion`) and the
 //! details `lease_op`, `fencing_token`, `owner`, and for a reap or a clear `verdict`, `identity`
 //! and `observed`.
@@ -120,7 +122,8 @@ pub fn parse(kind: Kind, arguments: Option<&Value>) -> Result<LeaseRequest, Stri
         owner_kind: text("owner_kind")?,
         owner_id: text("owner_id")?,
         fencing_token: takes_token
-            .then(|| number("fencing_token", 1, i64::MAX))
+            // A lease of schema version 2 has the token 0: a reap or a clear names it so.
+            .then(|| number("fencing_token", 0, i64::MAX))
             .transpose()?,
         ttl_seconds: takes_ttl
             .then(|| number("ttl_seconds", 1, MAX_TTL_SECONDS))

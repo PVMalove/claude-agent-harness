@@ -119,7 +119,8 @@ class Guard:
 # One ``state.write`` request: the batch of the mutations, the revision of its batch row that the
 # command read (0 for a batch that the mutations create), the mutations and, for a unit that
 # decided over every batch, its guard. The answer is the revision of every row the request created
-# or changed.
+# or changed; ``answer``, when given, receives the whole result of the request (a request with a
+# QA lease operation answers the lease).
 class Commit(Protocol):
     def __call__(
         self,
@@ -129,7 +130,14 @@ class Commit(Protocol):
         /,
         *,
         guard: Guard | None = None,
+        answer: list[JsonObject] | None = None,
     ) -> dict[str, int]: ...
+
+
+# The typed operations on the QA lease, which the runtime decides (ADR 0020, section 7).
+LEASE_OPERATIONS = frozenset(
+    {"lease_acquire", "lease_release", "lease_heartbeat", "lease_reap", "lease_clear"}
+)
 
 
 class StateView:
@@ -287,6 +295,41 @@ class StoreUnit:
         self._touched: set[str] = set()
         # Set once a decision of the unit read every batch (``depend_on_shared``).
         self.guard: Guard | None = None
+        # The staged QA lease operations that wait for the lease the runtime answers.
+        self._lease_answers: list[tuple[JsonObject, Callable[[JsonObject | None], None]]] = []
+
+    def lease(
+        self,
+        mutation: JsonObject,
+        *,
+        on_answer: Callable[[JsonObject | None], None] | None = None,
+    ) -> None:
+        """Stage a typed operation on the QA lease (``lease_acquire``, ...). The runtime decides it
+        at the flush; ``on_answer`` then receives the lease it answered, or ``None`` for a free
+        lane. The view forgets the lease it read, so a later read asks the runtime again."""
+        self._mutations.append((None, mutation))
+        if on_answer is not None:
+            self._lease_answers.append((mutation, on_answer))
+        relative = str(mutation["path"])
+        self.view._records.pop(relative, None)
+        self.view._asked.discard(relative)
+
+    def cancel_lease(self, owner_kind: str, owner_id: str) -> bool:
+        """Drop a staged ``lease_acquire`` of this owner: the command never held the lane.
+        Returns whether there was one."""
+
+        def staged(mutation: JsonObject) -> bool:
+            lease = mutation.get("lease")
+            return (
+                mutation.get("op") == "lease_acquire"
+                and isinstance(lease, dict)
+                and (lease.get("owner_kind"), lease.get("owner_id")) == (owner_kind, owner_id)
+            )
+
+        before = len(self._mutations)
+        self._mutations = [(b, m) for b, m in self._mutations if not staged(m)]
+        self._lease_answers = [(m, f) for m, f in self._lease_answers if not staged(m)]
+        return len(self._mutations) != before
 
     def depend_on_shared(self) -> None:
         """Make every request of this unit expect the generation revision of the snapshot that
@@ -432,18 +475,32 @@ class StoreUnit:
         aborts would drop it."""
         for batch, mutations in self._segments():
             self._carry_revisions(mutations)
-            if self.guard is None:
+            waiting = [
+                (mutation, on_answer)
+                for mutation, on_answer in self._lease_answers
+                if any(mutation is staged for staged in mutations)
+            ]
+            answers: list[JsonObject] = []
+            if self.guard is None and not waiting:
                 revisions = self._commit(batch, self._guard(batch, mutations), mutations)
             else:
                 revisions = self._commit(
-                    batch, self._guard(batch, mutations), mutations, guard=self.guard
+                    batch,
+                    self._guard(batch, mutations),
+                    mutations,
+                    guard=self.guard,
+                    answer=answers if waiting else None,
                 )
+            for _, on_answer in waiting:
+                lease = answers[-1].get("lease") if answers else None
+                on_answer(lease if isinstance(lease, dict) else None)
             for mutation in mutations:
                 if mutation["op"] == "delete":
                     self.view.revisions.pop(str(mutation["path"]), None)
             self.view.revisions.update(revisions)
         self.view._settle()
         self._mutations = []
+        self._lease_answers = []
         self._created.clear()
         self._touched.clear()
 

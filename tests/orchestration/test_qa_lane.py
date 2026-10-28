@@ -443,7 +443,7 @@ class QaLaneStatusTests(QaLaneTestCase):
     def test_status_reports_queue_and_lease(self) -> None:
         self.assertEqual(
             qa_lane.status(self._args()),
-            {"lease": None, "lease_stale": False, "queue": []},
+            {"lease": None, "lease_stale": False, "stale_heartbeat": False, "queue": []},
         )
         qa_lane._enqueue(self.ledger, DISPATCH_ID)
         lease = self._lease()
@@ -453,6 +453,7 @@ class QaLaneStatusTests(QaLaneTestCase):
 
         self.assertEqual(status["lease"], lease)
         self.assertTrue(status["lease_stale"])
+        self.assertTrue(status["stale_heartbeat"])
         self.assertEqual(
             [entry["dispatch_id"] for entry in status["queue"]], [DISPATCH_ID]
         )

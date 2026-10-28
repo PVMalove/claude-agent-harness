@@ -324,6 +324,13 @@ fn parse_mutation(index: usize, item: &Value) -> Result<Mutation, ErrorBody> {
     if members.contains_key("lease") {
         return Err(at("only a lease operation carries a lease object"));
     }
+    if path == lease::LEASE_PATH {
+        return Err(at(&format!(
+            "{} changes only through the lease operations (lease_acquire, lease_release, \
+             lease_heartbeat, lease_reap, lease_clear)",
+            lease::LEASE_PATH
+        )));
+    }
     match op {
         Op::Delete => {
             if content.is_some() || reason.is_none() {

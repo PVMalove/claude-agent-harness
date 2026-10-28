@@ -323,6 +323,31 @@ fn an_owner_without_an_identity_is_never_reaped() {
     assert_eq!(lane.row(), (1, Some("d1".to_owned())));
 }
 
+/// A lease that schema version 2 held has no identity and the token 0: it is never reaped, and an
+/// operator clears it by that token.
+#[test]
+fn a_lease_of_schema_version_two_is_never_reaped_and_an_operator_clears_it() {
+    let repo = cut_over("version-two");
+    let lane = Lane::of(&repo);
+    let old = "2000-01-01T00:00:00+00:00";
+    lane.store()
+        .execute(
+            "INSERT INTO qa_lane (id, revision, fencing_token, body_json, owner_kind, owner_id,
+                                  acquired_at, expires_at, heartbeat_at)
+             VALUES (1, 1, 0, '{}', 'dispatch', 'd1', ?1, ?1, ?1)",
+            [old],
+        )
+        .unwrap();
+
+    let error = lane.named("lease_reap", "d1", 0).unwrap_err();
+    assert_eq!(error.code, ErrorCode::LeaseHeld);
+    assert_eq!(error.facts["verdict"], "owner-unknown");
+    lane.clear("d1", 0, "operator").unwrap();
+
+    assert_eq!(lane.row(), (0, None));
+    assert_eq!(token(&lane.acquire("d2", None).unwrap()), 1);
+}
+
 #[cfg(any(target_os = "linux", windows))]
 mod processes {
     use super::*;

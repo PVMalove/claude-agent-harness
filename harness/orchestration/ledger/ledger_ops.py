@@ -191,6 +191,7 @@ def _runtime_commit(repo: Path) -> state_view.Commit:
         /,
         *,
         guard: state_view.Guard | None = None,
+        answer: list[JsonObject] | None = None,
     ) -> dict[str, int]:
         payload: JsonObject = {"mutations": mutations}
         if guard is not None and guard.expected is not None:
@@ -210,6 +211,8 @@ def _runtime_commit(repo: Path) -> state_view.Commit:
             if exc.code == "store_busy":
                 raise LedgerBusyError(exc.message, remedy=exc.remedy) from exc
             raise
+        if answer is not None:
+            answer.append(reply.result)
         generation = reply.result.get("generation_revision")
         if guard is not None and isinstance(generation, int):
             # The next request of the unit expects the generation this one left.

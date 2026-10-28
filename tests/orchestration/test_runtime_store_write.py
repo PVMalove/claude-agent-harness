@@ -347,6 +347,7 @@ class _FakeStore:
         /,
         *,
         guard: state_view.Guard | None = None,
+        answer: list[JsonObject] | None = None,
     ) -> dict[str, int]:
         self.commits.append((batch_id, expected, [dict(mutation) for mutation in mutations]))
         return {
@@ -707,6 +708,7 @@ class _SnapshotStore(_FakeStore):
         /,
         *,
         guard: state_view.Guard | None = None,
+        answer: list[JsonObject] | None = None,
     ) -> dict[str, int]:
         self.guards.append(None if guard is None else guard.expected)
         if guard is not None:

@@ -746,68 +746,38 @@ fn opposite_requests_over_two_batches_and_the_qa_queue_have_one_winner_under_the
     }
 }
 
+/// The QA lease changes only through the lease operations (`tests/lease.rs`): its generic
+/// mutations are refused, and nothing is written.
 #[test]
-fn a_qa_lease_is_created_replaced_and_deleted_with_its_evidence() {
+fn the_generic_mutations_of_the_qa_lease_are_refused() {
     let repo = cut_over("lease");
+    let audit_before = count(&repo, "audit");
     let lease = canonical(&json!({"owner": "a"}));
-    let created = write(
-        &repo.state(),
-        &request(
-            "op-1",
-            None,
-            None,
-            json!([{"op": "create", "path": "qa-lane/lease.json", "content": lease}]),
-        ),
-    )
-    .unwrap();
-    assert_eq!(created.result["revisions"]["qa-lane/lease.json"], 1);
-    let renewed = write(
-        &repo.state(),
-        &request(
-            "op-2",
-            None,
-            None,
-            json!([{"op": "replace", "path": "qa-lane/lease.json",
-                    "content": canonical(&json!({"owner": "b"})), "expected_revision": 1}]),
-        ),
-    )
-    .unwrap();
-    assert_eq!(renewed.result["revisions"]["qa-lane/lease.json"], 2);
-
-    let deleted = write(
-        &repo.state(),
-        &request(
-            "op-3",
-            None,
-            None,
-            json!([{"op": "delete", "path": "qa-lane/lease.json", "reason": "complete QA lease",
-                    "expected_revision": 2}]),
-        ),
-    )
-    .unwrap();
-
-    assert!(
-        deleted.result["revisions"]
-            .get("qa-lane/lease.json")
-            .is_none()
-    );
-    // The lane row outlives the lease: it is free, and its revision and fencing token stay.
-    assert!(stored(&repo, "qa-lane/lease.json").is_none());
-    let lane: (i64, i64, Option<String>) = store(&repo)
-        .query_row(
-            "SELECT revision, fencing_token, owner_id FROM qa_lane WHERE id = 1",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    for (index, mutation) in [
+        json!({"op": "create", "path": "qa-lane/lease.json", "content": lease}),
+        json!({"op": "replace", "path": "qa-lane/lease.json", "content": lease,
+               "expected_revision": 1}),
+        json!({"op": "delete", "path": "qa-lane/lease.json", "reason": "complete QA lease",
+               "expected_revision": 1}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let error = write(
+            &repo.state(),
+            &request(&format!("op-{index}"), None, None, json!([mutation])),
         )
-        .unwrap();
-    assert_eq!(lane, (3, 0, None));
-    let (action, details) = &audit_tail(&repo, 1)[0];
-    assert_eq!(action, "deletion");
-    assert_eq!(details["reason"], "complete QA lease");
-    assert_eq!(
-        details["sha256"],
-        sha256_hex(canonical(&json!({"owner": "b"})).as_bytes())
-    );
+        .unwrap_err();
+
+        assert_eq!(code(&error), ErrorCode::MalformedRequest, "{mutation}");
+        assert!(
+            error.message.contains("lease operations"),
+            "{}",
+            error.message
+        );
+    }
+    assert_eq!(count(&repo, "audit"), audit_before);
+    assert_eq!(count(&repo, "qa_lane"), 0);
 }
 
 #[test]

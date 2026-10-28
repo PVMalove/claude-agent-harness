@@ -354,6 +354,11 @@ def integration_local_qa(args: argparse.Namespace) -> JsonObject:
             }
             _write_record(ledger, IntegrationLocalQaRecord.from_dict(request))
     result_id = _result_id(request_id)
+    # In the store epoch an expired lease whose owner is provably dead is reaped before the
+    # admission below; a live owner keeps it.
+    from harness.orchestration.workflow import qa_integration
+
+    qa_lane.reap_dead_owner(ledger, root, qa_integration._ops())
     with _ledger_lock(ledger):
         result_path = _path(root, result_id)
         if state_view.exists(result_path):
